@@ -96,13 +96,32 @@ The set is closed. Adding one is a protocol change and bumps `apiVersion`.
 read the content. It updates the canonical record and every live response at
 once: a search reports the new label the instant the migration commits, because a
 result reads the item's current sensitivity the way it already reads the item's
-current status, not the immutable revision's. It does **not** force a rebuild —
-the built index keeps the label it derived until the next `index build`, which
-re-derives every affected chunk and node scope at the item's current
-classification. That lag reaches no reader, because no query filters on a chunk's
-or node's sensitivity yet
-([#119](https://github.com/theurian/theurian/issues/119)). Reclassification is
-still not a change anyone should be able to make without saying why.
+current status, not the immutable revision's. It does **not** force a full
+rebuild.
+
+It is not inert on the index either, and it stopped being so in
+[#119](https://github.com/theurian/theurian/issues/119): every retriever now
+filters on a chunk's and a node's sensitivity against the ceiling this deployment
+declares, so a stale index row is no longer a label nothing reads. Three cases,
+and only the middle one is a lag:
+
+- **Past the ceiling the published build ran under** — the item is withdrawn from
+  this deployment, and `migrate apply` purges its rows out of the published index
+  in the same command, with no `index build` after it. The forest half is
+  re-derived over the surviving rows, exactly as a `deprecateItem` already was
+  (ADR-0024 decision 5, ADR-0025 part 2).
+- **Within that ceiling** — nothing is withdrawn, so nothing is purged and no
+  index file is copied. The chunk rows keep the label they were derived under
+  until the next `index build`, and that lag reaches no reader: the label a caller
+  sees is published from the item, and the gate the row must clear is applied
+  against the item's current class as well.
+- **Back down into that ceiling** — a purge copies a build and deletes from the
+  copy, so an item the build was never allowed to write has no row to restore. It
+  stays unserved until the next `index build` re-derives from canonical state,
+  which fails toward *fewer* results.
+
+Reclassification is still not a change anyone should be able to make without
+saying why.
 
 ## Engine guarantees
 
@@ -318,9 +337,16 @@ not something each migration author has to implement.
 `upsertRevision`'s `metadata` carries `tenantId` (default `local`) and
 `aclGroup` (default `default`). The schema keeps both fields and their types —
 they describe the shape a hosted, multi-tenant deployment needs (ADR-0003) —
-but no `AuthorizationProvider` is implemented anywhere in Theurian Core yet.
-Accepting a document that names another tenant or ACL group would let the
-field read as an enforced boundary when nothing checks it.
+and **nothing routes on either.** An `AuthorizationProvider` does exist in
+Theurian Core since [#119](https://github.com/theurian/theurian/issues/119)
+(`application/authorization.StaticAuthorizationProvider`), and it answers a
+*deployment* serving profile: one tenant, one ACL group, and a sensitivity
+ceiling. It has no notion of a second tenant, so accepting a document that names
+another one would let the field read as an enforced boundary when nothing checks
+it. The refusal below is what discharges these two axes rather than a predicate
+([ADR-0025](https://github.com/theurian/theurian/blob/main/docs/adr/0025-sensitivity-is-enforced-before-0-1-0-stable.md));
+sensitivity is the axis that got the predicate, because its values are the ones
+a corpus can actually vary.
 
 **`migrate validate` and `migrate apply` both refuse a revision naming a
 `tenantId` other than `local` or an `aclGroup` other than `default`.** The
@@ -414,7 +440,7 @@ flowchart TD
     C --> D{"Applied id with a<br/>different checksum?"}
     D -->|yes| E["FATAL: an applied migration was edited.<br/>Do not repair. Do not delete state --<br/>except the recovery in 'Upgrading a<br/>project that already applied one of<br/>these', above (issue #63)."]
     D -->|no| S{"Any tenantId != local<br/>or aclGroup != default?"}
-    S -->|yes| T["FATAL: UnenforceableScopeError.<br/>No AuthorizationProvider exists yet (issue #63)."]
+    S -->|yes| T["FATAL: UnenforceableScopeError.<br/>No provider routes on either field (issue #63)."]
     S -->|no| U{"One body file named by<br/>two different revisions?"}
     U -->|yes| V["FATAL: DuplicateContentFileError.<br/>A body file holds one version (issue #210)."]
     U -->|no| W{"An alias key equal to a<br/>non-deprecated item id?"}

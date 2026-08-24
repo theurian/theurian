@@ -35,9 +35,19 @@ from pathlib import Path
 import pytest
 
 from theurian.domain.chunking import Chunk, IndexableChunk
+from theurian.domain.enums import Sensitivity
 from theurian.infrastructure.sqlite.index_store import IndexUnreadableError, SqliteIndexStore
 
 pytestmark = pytest.mark.integration
+
+#: The disclosure grant every retriever call in this file runs under: all four
+#: levels, which is what "this deployment serves everything" means once the
+#: retrievers take the axis as a WHERE predicate (#119 phase 4). Spelled out
+#: rather than read from ``StaticAuthorizationProvider``'s shipped default, which
+#: a later phase narrows -- a file that inherited it would start withholding its
+#: own fixtures silently, turning these tests into tests of something else.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
 
 PROJECT = "demo"
 QUERY = "retention"
@@ -77,7 +87,13 @@ def build(tmp_path: Path) -> Path:
 
 def _read(store: SqliteIndexStore) -> int:
     return len(
-        store.search_lexical(QUERY, project_id=PROJECT, limit=50, include_unapproved=False).rows
+        store.search_lexical(
+            QUERY,
+            project_id=PROJECT,
+            limit=50,
+            include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        ).rows
     )
 
 

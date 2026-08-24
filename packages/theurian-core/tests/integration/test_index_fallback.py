@@ -6,8 +6,14 @@ bearing part: every one of these failures once produced the same sentence -- "no
 retrieval index has been built for this project" -- which is true of exactly one
 of them. The rest told a user to run a command they had already run.
 
-Seven reason codes, twelve recipes, and the two counts do not line up in either
-direction:
+Eight reason codes and fifteen recipes -- counted off the ``BREAKAGES`` table
+below rather than restated from memory, which is how the previous pair of numbers
+("seven, twelve") came to be a code and three recipes short of the table it
+described. ``index-unbuilt`` is the ninth code the module can emit and has no
+recipe here; it is exercised in ``test_state_provenance.py``, where the
+provenance record it depends on is the subject.
+
+The two counts do not line up in either direction, deliberately:
 
 - ``index-pointer-invalid`` is reached by five recipes. Four leave a pointer file
   that names no build at all -- truncated JSON, a JSON array, an object without
@@ -49,8 +55,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import closing
 from pathlib import Path
@@ -60,8 +68,17 @@ import pytest
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
+from theurian.application.authorization import (
+    DEPLOYMENT_ACL_GROUPS,
+    DEPLOYMENT_TENANT,
+    SERVING_PROFILE_FILENAME,
+    AuthorizationGrant,
+    StaticAuthorizationProvider,
+    load_serving_profile,
+)
 from theurian.application.project_service import (
     INDEX_POINTER_REMEDY,
+    BuildProvenance,
     ProjectPaths,
     ProjectRegistry,
     read_active_index_pointer,
@@ -71,7 +88,9 @@ from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.chunking import Chunk
 from theurian.domain.context import RequestContext
+from theurian.domain.enums import Sensitivity
 from theurian.domain.identifiers import ProjectId
+from theurian.infrastructure.secrets.file_store import default_data_dir
 from theurian.infrastructure.sqlite.index_schema import INDEX_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.index_store import (
     IndexableChunk,
@@ -86,11 +105,28 @@ from theurian.mcp.search import (
     INDEX_SCHEMA_MISMATCH,
     INDEX_UNREADABLE,
     NO_INDEX,
+    SERVING_PROFILE_MISMATCH,
     UNAPPROVED_NOT_INDEXED,
+    Fallback,
+    _published_index,
 )
 from theurian.mcp.tools import MAX_RESULTS
 
 pytestmark = pytest.mark.integration
+
+#: The disclosure grant every retriever call in this file runs under: all four
+#: levels, which is what "this deployment serves everything" means once the
+#: retrievers take the axis as a WHERE predicate (#119 phase 4). Spelled out
+#: rather than read from ``StaticAuthorizationProvider``'s shipped default, which
+#: a later phase narrows -- a file that inherited it would start withholding its
+#: own fixtures silently, turning these tests into tests of something else.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
+#: The offline CI job runs as root, where a ``chmod`` denies nothing and a
+#: refusal keyed on one never fires. The same guard the migration loader and the
+#: project registry carry.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
+
 
 runner = CliRunner()
 
@@ -212,9 +248,36 @@ def _must(root: Path, *args: str) -> dict[str, Any]:
     return payload
 
 
+def _declare_a_ceiling(data_dir: Path, ceiling: Sensitivity) -> None:
+    """Write the deployment serving profile ``theurian index build`` will read.
+
+    Mode 0600 because ``load_serving_profile`` refuses a profile other local
+    users can reach, and ``write_text`` under the usual umask leaves 0644 -- so a
+    caller that skipped this would exercise the refusal while looking like a
+    ceiling.
+    """
+    auth = data_dir / "auth"
+    # 0700 on the directory as well as 0600 on the file. `load_serving_profile`
+    # refuses both, because a directory's write bit governs *replacing* an entry
+    # in it -- and a bare `mkdir` under the usual umask leaves 0755, which is the
+    # shape `FileSecretStore.set` never creates and this refusal exists for.
+    auth.mkdir(parents=True, exist_ok=True, mode=0o700)
+    auth.chmod(0o700)
+    profile = auth / SERVING_PROFILE_FILENAME
+    profile.write_text(f"{ceiling.value}\n", encoding="utf-8")
+    profile.chmod(0o600)
+
+
 async def _search(registry: ProjectRegistry, **arguments: Any) -> dict[str, Any]:
     """Call ``knowledge.search`` through the same entry point the transport uses."""
-    result = await build_server(registry).call_tool(
+    return await _search_with(registry, None, **arguments)
+
+
+async def _search_with(
+    registry: ProjectRegistry, grant: AuthorizationGrant | None, **arguments: Any
+) -> dict[str, Any]:
+    """The same call under a stated deployment grant. ``None`` is this build's default."""
+    result = await build_server(registry, grant).call_tool(
         "knowledge.search", {"projectId": "demo", **arguments}
     )
     structured = getattr(result, "structuredContent", None)
@@ -461,6 +524,47 @@ def _pointer_predates_the_project_id_field(root: Path) -> None:
     )
 
 
+def _built_under_another_ceiling(root: Path) -> None:
+    """The deployment's disclosure profile moved after the build (#119).
+
+    An operator edits the ceiling in the profile file and does not rebuild. The
+    build then holds the set of rows the *old* ceiling chose, and an FTS5
+    external-content table scores what it returns against statistics computed
+    over every row it holds -- so this is not something a read-time filter could
+    repair, and the file is stood aside whole.
+
+    Rewritten on the pointer rather than through the profile file, the way
+    `_built_for_another_project_id` rewrites the id: the recipe has to leave a
+    published build whose recorded flavor differs from the grant this file's
+    server is built with, and that server is the shipped default. Both directions
+    of the disagreement land on this one branch, which is deliberate -- a
+    narrower build under a wider deployment answers with a silence a caller reads
+    as "this team has made no such decision".
+    """
+    _must(root, "index", "build")
+    published = json.loads(_pointer(root).read_text())
+    _pointer(root).write_text(json.dumps({**published, "indexedSensitivities": ["public"]}))
+
+
+def _pointer_predates_the_profile_field(root: Path) -> None:
+    """A pointer that does not record which ceiling its build ran under.
+
+    Not reachable by upgrade -- the field arrived with `INDEX_SCHEMA_VERSION` 6,
+    and a pointer old enough to lack it names a file refused one branch earlier
+    -- which is exactly why it is worth a recipe. The pointer is derived,
+    git-ignored and unsigned (SEC-7), so a hand edit or a half-written generator
+    leaves this shape, and "flavor unknown" must never be read as "the flavor
+    this deployment happens to have".
+    """
+    _must(root, "index", "build")
+    published = json.loads(_pointer(root).read_text())
+    _pointer(root).write_text(
+        json.dumps(
+            {key: value for key, value in published.items() if key != "indexedSensitivities"}
+        )
+    )
+
+
 Recipe = Callable[[Path], None]
 
 #: The four ways a pointer file can exist and name no build at all.
@@ -539,6 +643,20 @@ BREAKAGES: tuple[tuple[str, str, str, Recipe, dict[str, Any]], ...] = (
         UNAPPROVED_NOT_INDEXED,
         _holds_no_drafts,
         {"includeUnapproved": True},
+    ),
+    (
+        "built-under-another-ceiling",
+        "profile-moved",
+        SERVING_PROFILE_MISMATCH,
+        _built_under_another_ceiling,
+        {},
+    ),
+    (
+        "pointer-records-no-ceiling",
+        "profile-unrecorded",
+        SERVING_PROFILE_MISMATCH,
+        _pointer_predates_the_profile_field,
+        {},
     ),
 )
 
@@ -703,11 +821,14 @@ def test_no_two_diagnoses_share_a_sentence(notes_by_case: dict[str, str]) -> Non
 def test_one_diagnosis_never_produces_two_sentences(notes_by_case: dict[str, str]) -> None:
     """The other half, and the half that keeps the test above from being cheap.
 
-    Uniqueness alone is satisfied by giving all twelve recipes twelve different
-    sentences, which would put the four corrupt-pointer shapes -- one file, one
-    remedy -- in front of a user as four different problems. Five recipes reach
-    `pointer-invalid` through four arms of two functions, and what has to be
-    asserted about them is that they *converge*.
+    Uniqueness alone is satisfied by giving every recipe its own sentence, which
+    would put the four corrupt-pointer shapes -- one file, one remedy -- in front
+    of a user as four different problems. Five recipes reach `pointer-invalid`
+    through four arms of two functions, and what has to be asserted about them is
+    that they *converge*. The two `serving-profile-mismatch` recipes are the
+    counter-case in the same table: one code, two notes, and the assertion that
+    keeps them apart is `test_the_two_profile_notes_say_which_of_the_two_happened`
+    rather than this one.
     """
     varying = {
         diagnosis: notes
@@ -734,6 +855,33 @@ def test_the_two_project_mismatch_notes_say_which_of_the_two_happened(
     assert "does not record which project it was built for" in unverified
     assert "theurian index build" in renamed
     assert "theurian index build" in unverified
+
+
+def test_the_two_profile_notes_say_which_of_the_two_happened(
+    notes_by_case: dict[str, str],
+) -> None:
+    """The same split on the disclosure axis (#119 phase 3), for the same reason.
+
+    An operator who moved their ceiling has a build made under the old one; a
+    pointer that records no ceiling names a build whose flavor cannot be
+    established at all. Both rebuild, so both carry one reason code -- and a
+    person reading the transcript is told which of the two they are looking at.
+
+    Neither may name a level. The remedy does not depend on which levels were
+    involved, and this reply goes to an agent that has no business learning the
+    shape of the deployment's ceiling from a degraded search -- the same line
+    `_PROJECT_MISMATCH` draws around the other project's id.
+    """
+    moved = notes_by_case["built-under-another-ceiling"]
+    unrecorded = notes_by_case["pointer-records-no-ceiling"]
+
+    assert "under a different disclosure profile" in moved
+    assert "does not record which disclosure profile" in unrecorded
+    assert "theurian index build" in moved
+    assert "theurian index build" in unrecorded
+    for note in (moved, unrecorded):
+        named = [level.value for level in Sensitivity if level.value in note]
+        assert not named, f"a fallback note named {named} of this deployment's ceiling: {note!r}"
 
 
 @pytest.mark.parametrize(
@@ -1325,7 +1473,317 @@ def test_the_retired_only_project_really_holds_a_revision(only_retired_knowledge
     )
 
 
+def test_a_project_entirely_above_the_ceiling_builds_an_empty_index(
+    project: Path, tmp_path: Path
+) -> None:
+    """The sibling of the case above, on the axis #119 phase 3 added.
+
+    ``_indexable_items`` decides whether an empty build is a bug, and it repeats
+    the builder's selection rule independently so that the two can be caught
+    disagreeing. A term added to the builder and not to it makes them disagree by
+    construction: every item here is ``internal``, the declared ceiling is
+    ``public``, so the build correctly writes nothing -- and the refusal would
+    tell an operator their canonical state is broken and send them to delete it,
+    over a build that did exactly what their profile asked for.
+
+    The profile is written the way an operator writes it, so the CLI reads it
+    through the shipped path rather than through a patched constant.
+    """
+    _declare_a_ceiling(tmp_path / "datadir", Sensitivity.PUBLIC)
+
+    code, payload = _in(project, "index", "build")
+
+    assert code == 0, payload
+    assert payload["chunks"] == 0
+    assert _pointer(project).is_file(), "a correctly empty build must still publish"
+
+
+def _break_the_profile(data_dir: Path, how: str) -> Path:
+    """Leave a profile file `load_serving_profile` must refuse, one shape per name."""
+    auth = data_dir / "auth"
+    auth.mkdir(parents=True, exist_ok=True, mode=0o700)
+    auth.chmod(0o700)
+    profile = auth / SERVING_PROFILE_FILENAME
+    if how == "unknown-word":
+        profile.write_text("secret\n", encoding="utf-8")
+        profile.chmod(0o600)
+    elif how == "group-readable":
+        profile.write_text("public\n", encoding="utf-8")
+        profile.chmod(0o644)
+    elif how == "unreadable":
+        profile.write_text("public\n", encoding="utf-8")
+        profile.chmod(0o000)
+    elif how == "world-accessible-directory":
+        profile.write_text("public\n", encoding="utf-8")
+        profile.chmod(0o600)
+        auth.chmod(0o777)
+    else:  # pragma: no cover - a name with no recipe is a test bug
+        raise AssertionError(how)
+    return profile
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+@pytest.mark.parametrize(
+    "how", ["unknown-word", "group-readable", "unreadable", "world-accessible-directory"]
+)
+def test_a_profile_the_build_cannot_honour_ends_in_a_remedy_and_not_a_traceback(
+    project: Path, tmp_path: Path, how: str
+) -> None:
+    """CP-2 over the whole refusal family, not over the shapes that already worked.
+
+    ``_deployment_grant`` catches ``TheurianError`` and turns it into
+    ``{"error", "remedy"}``. Three of these four shapes always did; ``unreadable``
+    -- a 0600 file the operator has since ``chmod 000``-ed, or one owned by
+    another account -- raised a bare ``PermissionError``, which is not a
+    ``TheurianError``, so it left ``theurian index build --json`` with exit 1, an
+    empty stdout and a Rich traceback. Parametrised rather than written for that
+    one shape, because the property is *the family refuses in this shape* and a
+    test naming only the newest member cannot notice the next one leaving it.
+
+    ``catch_exceptions=False`` in :func:`_in` is what makes this a real check: an
+    escaping exception fails the test where a caught one would have been reported
+    as exit 1 with the traceback in ``stdout``.
+    """
+    _break_the_profile(tmp_path / "datadir", how)
+
+    code, payload = _in(project, "index", "build")
+
+    assert code == 1, payload
+    assert payload["remedy"], f"a refusal with no remedy: {payload}"
+    assert "serving profile" in payload["error"]
+    assert not _pointer(project).exists(), "nothing may be published on a refused build"
+
+
+@pytest.fixture
+def built(project: Path) -> Path:
+    """``project`` with one default index build published.
+
+    A **synchronous** fixture for the reason ``broken`` is one: `theurian index
+    build` embeds through ``asyncio.run``, which raises inside the event loop an
+    async test body already owns.
+    """
+    _must(project, "index", "build")
+    return project
+
+
+@pytest.mark.asyncio
+async def test_a_ceiling_narrowed_after_a_build_degrades_and_still_withholds(
+    built: Path, registry: ProjectRegistry
+) -> None:
+    """The direction the recipe table cannot reach, and the one that matters.
+
+    An index built while the deployment served everything holds an ``internal``
+    document's title, body and excerpts. The operator then lowers the ceiling to
+    ``public`` alone and does not rebuild. Two things have to happen at once, and
+    only one of them is the fallback:
+
+    - the ranked path must stand aside, because the file it would search prices
+      what it returns against collection statistics computed over rows this
+      deployment no longer serves (T-17a on the sensitivity axis); and
+    - the answer it degrades *to* must still withhold. The unranked scan is the
+      path any local process can force by deleting a file, so a fallback that
+      served the above-ceiling document would make `rm` the way past the ceiling.
+
+    The item is asserted present in the index first: an absence that was never
+    there proves nothing about either half.
+    """
+    assert _index_file(built).is_file()
+    up_to_public = AuthorizationGrant(
+        tenant=DEPLOYMENT_TENANT,
+        sensitivities=frozenset({Sensitivity.PUBLIC}),
+        acl_groups=DEPLOYMENT_ACL_GROUPS,
+    )
+
+    served = await _search_with(registry, up_to_public, query="token")
+    allow_all = await _search(registry, query="token")
+
+    assert allow_all["retrieval"]["indexed"] is True, (
+        "precondition: the unnarrowed deployment must be answered from the index, or the "
+        "degradation below is not about the ceiling"
+    )
+    assert allow_all["count"] >= 1, "precondition: the index must hold the internal document"
+    assert served["retrieval"]["fallbackReason"] == SERVING_PROFILE_MISMATCH
+    assert served["retrieval"]["indexed"] is False
+    assert served["count"] == 0, (
+        f"an above-ceiling document survived the degradation: {served['results']}. The "
+        f"unranked scan is reachable by deleting a file, so it must withhold what the "
+        f"ranked path withholds"
+    )
+    assert served["results"] == []
+
+
 # -- `theurian index status` --------------------------------------------------
+
+
+@_CASES
+def test_index_status_reports_as_stale_whatever_the_ranked_path_refuses(
+    project: Path,
+    broken: tuple[str, dict[str, Any]],
+) -> None:
+    """The invariant ``index_status``' own docstring states, held over the table.
+
+    It says an index the ranked path has refused must not be reported "fresh,
+    nothing to do", and it said it about *one* axis: the schema version. Two more
+    were added afterwards and neither reached this command. A build whose
+    recorded disclosure flavor is not the one in force degrades every
+    `knowledge.search` to an unranked scan with ``indexed: false``, while
+    ``theurian index status`` answered ``stale: false`` with an empty remedy --
+    and ``mcp/search.py``'s own note for that fallback says *`theurian index
+    status` is where an operator at their own terminal would be told*.
+
+    So the pin is the relationship rather than a list of axes:
+    :func:`~theurian.mcp.search._published_index` is asked, and whatever it
+    refuses has to come back stale here. A recipe it does *not* refuse is the
+    control, and there are two -- ``holds-no-drafts``, which is a refusal of a
+    request parameter rather than of the file, and ``table-dropped``, whose
+    version is correct and whose missing table this command does not open. The
+    second is a recorded residual, not a claim that the file is healthy: that one
+    surfaces at query time as ``index-unreadable``.
+
+    The grant is read through the shipped path rather than constructed, so the
+    two sides are compared under the ceiling the CLI itself would resolve.
+    """
+    grant = StaticAuthorizationProvider(load_serving_profile(default_data_dir())).deployment_grant()
+
+    published = _published_index(
+        _paths(project),
+        project_id="demo",
+        include_unapproved=False,
+        visible_sensitivities=grant.sensitivities,
+        provenance=BuildProvenance.default(),
+    )
+    status = _must(project, "index", "status")
+
+    if isinstance(published, Fallback):
+        assert status["stale"] is True, (
+            f"the ranked path refuses this build ({published.reason}) and `index status` "
+            f"calls it fresh: {status}"
+        )
+        assert status["remedy"], "a stale index with no remedy is a support request"
+    else:
+        assert status["stale"] is False, (
+            "the control: the ranked path uses this build, so nothing here is stale"
+        )
+
+
+def test_index_status_names_the_disclosure_axis_a_healthy_build_agrees_on(project: Path) -> None:
+    """The control the two flag tests below are read against (#119 phase 4).
+
+    ``profileMismatch is True`` and ``profileUnrecorded is True`` only mean
+    something beside a build the deployment does agree with. Without this,
+    ``profileMismatch is True`` is satisfied by a field wired to a constant
+    ``True``, and the ``servedSensitivities`` value is unpinned in either
+    direction.
+
+    The served set is asserted as a value and by its order: ``encode_sensitivities``
+    writes disclosure order (``public`` before ``internal``), never the alphabetical
+    order a ``StrEnum`` sorts into, and a caller reading the ceiling off this key
+    would be misled by the wrong order as surely as by the wrong members. The
+    undeclared ``project`` fixture serves the built-in ``internal`` default, which
+    is ``{public, internal}``.
+    """
+    _must(project, "index", "build")
+
+    status = _must(project, "index", "status")
+
+    assert status["profileMismatch"] is False
+    assert status["profileUnrecorded"] is False
+    assert status["servedSensitivities"] == ["public", "internal"]
+    assert status["indexedSensitivities"] == ["public", "internal"]
+    assert status["stale"] is False
+
+
+def test_index_status_flags_a_build_made_under_a_different_ceiling(project: Path) -> None:
+    """``profileMismatch`` carries the value, not merely the key (#119 phase 4).
+
+    An operator who moved the deployment's ceiling under a build has a file the
+    ranked path stands aside on every query, and ``index status`` is where they
+    are told which axis is wrong. The flag was published but its *value* was held
+    by nothing: replacing ``verdict is ProfileVerdict.MISMATCH`` with a constant
+    ``False`` left every other assertion in this file green, so the key reported
+    "no mismatch" for the very build ``knowledge.search`` was degrading on the
+    disclosure axis.
+
+    The recipe records ``["public"]`` against a deployment serving
+    ``{public, internal}`` -- a narrower build, the ``count: 0, indexed: true``
+    shape -- so the verdict is ``MISMATCH`` and not ``UNRECORDED``. Both #119 flags
+    are asserted so that a mismatch cannot masquerade as the other verdict.
+    """
+    _built_under_another_ceiling(project)
+
+    status = _must(project, "index", "status")
+
+    assert status["profileMismatch"] is True
+    assert status["profileUnrecorded"] is False, "a recorded-but-wrong flavor is not an absent one"
+    assert status["servedSensitivities"] == ["public", "internal"]
+    assert status["indexedSensitivities"] == ["public"], "the narrower set the recipe recorded"
+    assert status["stale"] is True
+    assert "index build" in status["remedy"]
+
+
+def test_index_status_flags_a_pointer_that_records_no_ceiling(project: Path) -> None:
+    """``profileUnrecorded`` carries the value, the other half of the split.
+
+    A pointer that records no readable flavor is not the same as one recording the
+    wrong one: one says the profile moved, the other says which rows the file holds
+    cannot be established at all, and a reader told the first goes hunting for an
+    edit that never happened. The flag existed but its value was unheld --
+    replacing ``published is not None and verdict is ProfileVerdict.UNRECORDED``
+    with ``False`` passed the suite -- so this pins ``True`` on the unrecorded
+    recipe and ``False`` on the mismatch and healthy cases (the two tests around
+    it), which is what keeps the two verdicts from collapsing into one.
+    """
+    _pointer_predates_the_profile_field(project)
+
+    status = _must(project, "index", "status")
+
+    assert status["profileUnrecorded"] is True
+    assert status["profileMismatch"] is False, "an absent flavor is not a wrong one"
+    assert status["indexedSensitivities"] is None, "nothing was recorded to write back"
+    assert status["stale"] is True
+    assert "index build" in status["remedy"]
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_index_status_names_a_chmod_when_the_deployment_profile_cannot_be_read(
+    project: Path, tmp_path: Path
+) -> None:
+    """A present-but-unreadable profile is reported, and its remedy is the right one.
+
+    The recipe table reaches every disagreement *recorded in the pointer*; it
+    cannot reach the profile file the deployment reads at status time being there
+    and unopenable -- a 0600 file the operator has since ``chmod 000``-ed, or one
+    owned by another account. On that input ``load_serving_profile`` raises
+    ``UnreadableServingProfileError``, ``profile_state`` catches it, and two things
+    must both hold:
+
+    - ``profileUnreadable`` names the fault rather than being blanked. Emptying it
+      (``"profileUnreadable": fault`` -> ``""``) left the caller with no signal
+      that the profile, not the index, was the problem -- and no other assertion
+      noticed.
+    - the remedy is a ``chmod`` and *not* ``theurian index build``. The rebuild
+      reads this same file and refuses on the same refusal, so naming it first
+      would hand the operator a command that cannot run until this one has. Drop
+      the ``if profile_remedy: return profile_remedy`` arm and the remedy falls
+      through to the ``stale`` arm's rebuild -- true-sounding and useless here.
+
+    ``servedSensitivities`` is ``None`` because nothing was served, which is a
+    different statement from an empty set. Skipped where a mode cannot refuse --
+    the offline CI job runs as root -- because there the ``chmod 000`` denies
+    nothing and the whole branch never fires.
+    """
+    _must(project, "index", "build")
+    _break_the_profile(tmp_path / "datadir", "unreadable")
+
+    status = _must(project, "index", "status")
+
+    assert status["profileUnreadable"], "an unreadable profile must be named, not blanked"
+    assert status["servedSensitivities"] is None, "nothing was served, so no set is published"
+    assert status["stale"] is True, "a build whose ceiling cannot be established is not fresh"
+    assert "chmod" in status["remedy"], "the profile's mode is what has to be fixed first"
+    assert "index build" not in status["remedy"], (
+        "a rebuild reads this same file and refuses on the same fault, so it cannot be the remedy"
+    )
 
 
 def test_index_status_reports_the_schema_it_found_and_the_one_it_wants(project: Path) -> None:
@@ -1430,7 +1888,7 @@ def test_a_missing_table_raises_instead_of_answering_nothing(
 
     search = store.search_lexical if table == "chunks_fts" else store.search_substring
     with pytest.raises(IndexUnreadableError, match="cannot be read"):
-        search("token", project_id="demo")
+        search("token", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY)
 
 
 @pytest.mark.parametrize("table", ["chunks_fts", "chunks_trigram"])
@@ -1443,7 +1901,7 @@ def test_the_error_names_the_rebuild_rather_than_the_sql(
 
     search = store.search_lexical if table == "chunks_fts" else store.search_substring
     with pytest.raises(IndexUnreadableError) as raised:
-        search("token", project_id="demo")
+        search("token", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY)
 
     assert "theurian index build" in str(raised.value)
     assert "nothing is lost" in str(raised.value)
@@ -1467,7 +1925,7 @@ def test_a_dense_search_over_a_lost_embeddings_table_raises_too(
     _corrupt(store.path, "DROP TABLE embeddings")
 
     with pytest.raises(IndexUnreadableError, match="cannot be read"):
-        store.search_dense([1.0, 0.0], project_id="demo")
+        store.search_dense([1.0, 0.0], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY)
 
 
 def test_a_dense_search_over_an_index_with_no_vectors_returns_nothing(
@@ -1479,7 +1937,12 @@ def test_a_dense_search_over_an_index_with_no_vectors_returns_nothing(
     is gone" and "the table is empty" must not share an answer, or `--no-embeddings`
     would look like corruption.
     """
-    assert store.search_dense([1.0, 0.0], project_id="demo").rows == ()
+    assert (
+        store.search_dense(
+            [1.0, 0.0], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+        == ()
+    )
 
 
 @pytest.mark.parametrize("retriever", ["search_lexical", "search_substring"])
@@ -1493,8 +1956,12 @@ def test_a_query_that_matches_nothing_returns_nothing_and_does_not_raise(
     """
     search = getattr(store, retriever)
 
-    assert search("kubernetes", project_id="demo").rows == ()
-    assert search("token", project_id="demo").rows, "and a matching one still matches"
+    assert (
+        search("kubernetes", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY).rows == ()
+    )
+    assert search("token", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY).rows, (
+        "and a matching one still matches"
+    )
 
 
 @pytest.mark.parametrize(

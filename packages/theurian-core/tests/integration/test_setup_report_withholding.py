@@ -106,7 +106,7 @@ def _context(tmp_path: Path, *, for_publication: bool = True, **overrides: Any) 
     # and without it `core-present` conflicts, which is one of the two verdicts
     # `_blocking_conflicts` reads -- so every payload below would be a report of
     # an ABORTED run rather than of the plan this module is about. Measured: all
-    # eighteen steps are still published either way and the withholding still
+    # nineteen steps are still published either way and the withholding still
     # happens, so nothing here goes red; what changes is the object under test.
     # `test_the_payloads_here_describe_a_plan_and_not_an_aborted_run` pins it.
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -149,7 +149,7 @@ def test_the_payloads_here_describe_a_plan_and_not_an_aborted_run(tmp_path: Path
     """The fixture's mode, pinned -- because nothing else in this module needs it.
 
     Every seed below is asserted absent from the published payload, and an
-    ABORTED run publishes all eighteen steps too, so each of them stays green
+    ABORTED run publishes all nineteen steps too, so each of them stays green
     against a `core-present` that conflicts. Reverting `_context` to `touch()`
     was measured as a SURVIVING mutation at 1731 passed for exactly that reason:
     the module would go on testing withholding, but on a report of a run that
@@ -644,6 +644,7 @@ _OBSERVED_SEEDS: Final = (
     "launchagent plist",
     "another daemon's /health",
     "project registry",
+    "serving profile",
 )
 
 
@@ -673,6 +674,7 @@ def _seed_every_external_source(context: SetupContext) -> tuple[SetupContext, di
         "env file": "SweepEnvFileQQQQ",
         "token file": "SweepTokenFileRRRR",
         "migration file": "SweepMigrationSSSS",
+        "serving profile": "SweepServingProfileTTTT",
     }
 
     (home / ".claude.json").write_text(
@@ -718,8 +720,22 @@ def _seed_every_external_source(context: SetupContext) -> tuple[SetupContext, di
         f"{env_block(data_dir)}\nexport {TOKEN_ENV_VAR}={seeds['env file']}\n",
         encoding="utf-8",
     )
-    (data_dir / "auth").mkdir(parents=True, exist_ok=True)
-    (data_dir / "auth" / "mcp-token").write_text(seeds["token file"], encoding="utf-8")
+    # 0700, the mode `FileSecretStore.set` gives it. A bare `mkdir` leaves 0755
+    # under the usual umask, and `load_serving_profile` refuses a profile in a
+    # directory other accounts can reach -- so the seed below would be answered
+    # by a refusal about the *directory*, which quotes nothing from the file, and
+    # the sweep would be measuring the wrong arm.
+    auth = data_dir / "auth"
+    auth.mkdir(parents=True, exist_ok=True, mode=0o700)
+    auth.chmod(0o700)
+    (auth / "mcp-token").write_text(seeds["token file"], encoding="utf-8")
+    # A word no ceiling can be, so `probe_serving_profile` conflicts and
+    # `UnknownSensitivityCeilingError` echoes it -- which is the one place a byte
+    # of that file enters a message, and therefore the one that has to be
+    # withheld from a shared report.
+    profile = auth / "serving-profile"
+    profile.write_text(f"{seeds['serving profile']}\n", encoding="utf-8")
+    profile.chmod(0o600)
 
     migrations = root / ".theurian" / "migrations"
     migrations.mkdir(parents=True, exist_ok=True)
@@ -770,7 +786,13 @@ def test_no_step_publishes_a_value_it_only_read(tmp_path: Path) -> None:
 
     statuses = {step["id"]: step["status"] for step in json.loads(published)["steps"]}
     assert len(statuses) == len(StepId), "the sweep must cover every step"
-    for reached in ("mcp-connection", "daemon-service", "single-instance", "project-registered"):
+    for reached in (
+        "mcp-connection",
+        "daemon-service",
+        "single-instance",
+        "project-registered",
+        "serving-profile",
+    ):
         assert statuses[reached] == "conflicting", f"{reached} never read what was seeded"
 
 

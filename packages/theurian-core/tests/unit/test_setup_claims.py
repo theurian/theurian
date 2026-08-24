@@ -30,7 +30,7 @@ back in, and eight mutations survived it.
 
 The claim generalises past installation. The wording that replaced it was itself
 drafted as "registers the project, and can build the initial index", and then as
-a two-item list of the eleven steps that only report -- false the same way, and
+a two-item list of the steps that only report -- false the same way, and
 for the same reason: prose about a step's behaviour, written without running it.
 So the enumeration below is derived from ``STEPS``, and the commands the docstring
 names are derived from what those steps actually offer.
@@ -504,7 +504,7 @@ def test_the_cli_docstring_denies_installing_core_and_names_the_installer() -> N
 
 
 def test_the_cli_docstring_enumerates_every_step_that_only_reports() -> None:
-    """All eleven, in ``STEPS`` order, and the count of the seven that write.
+    """All twelve, in ``STEPS`` order, and the count of the seven that write.
 
     The enumeration was "project registration and the initial index" -- two of
     eleven, omitting ``project-layout``, ``gitignore`` and ``migrations-valid``,

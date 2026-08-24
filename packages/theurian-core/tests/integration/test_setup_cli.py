@@ -20,6 +20,7 @@ import pytest
 from fakes.setup import FakeMcpConfig, FakeService
 from typer.testing import CliRunner
 
+from theurian.application.authorization import DEFAULT_CEILING, SERVING_PROFILE_FILENAME
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.cli import setup_commands
@@ -540,6 +541,126 @@ def test_the_anchors_are_ordered_longest_first(tmp_path: Path) -> None:
     lengths = [len(needle) for needle, _ in _redaction_anchors(context)]
 
     assert lengths == sorted(lengths, reverse=True)
+
+
+# -- The deployment serving profile (#119, ADR-0025) --------------------------
+#
+# `doctor` had no step that read the ceiling at all, so the one security setting
+# that decides what every `knowledge.search` may return was the only one absent
+# from the health check. Three states, because they call for three different
+# things from the reader: nothing, nothing, and a `chmod` or an edit.
+
+
+def _declare_a_ceiling(data_dir: Path, contents: str, *, mode: int = 0o600) -> Path:
+    """The profile file as an operator writes it, in a 0700 directory."""
+    auth = data_dir / "auth"
+    auth.mkdir(parents=True, exist_ok=True, mode=0o700)
+    auth.chmod(0o700)
+    profile = auth / SERVING_PROFILE_FILENAME
+    profile.write_text(contents, encoding="utf-8")
+    profile.chmod(mode)
+    return profile
+
+
+def _step(payload: dict[str, Any], step_id: str) -> dict[str, Any]:
+    found: list[dict[str, Any]] = [step for step in payload["steps"] if step["id"] == step_id]
+    assert len(found) == 1, f"{step_id} is not in the report: {[s['id'] for s in payload['steps']]}"
+    return found[0]
+
+
+def test_doctor_names_the_ceiling_a_deployment_that_declared_none_serves(
+    converged: SetupContext,
+) -> None:
+    """Undeclared is the ordinary state, and it is still worth being told.
+
+    ``NOT_APPLICABLE`` rather than ``MISSING``: ``MISSING`` is ``would_change``,
+    so it is counted a problem and `doctor` exits 1 -- forever, on every machine
+    that never declares a ceiling, with no command that clears it. Declaring
+    nothing is not a thing to fix; the default is the *restrictive* end, and
+    ``test_doctor_names_a_remedy_for_every_problem`` would require an ``action``
+    naming a command that does not exist.
+
+    The summary still names the level in force, which is the whole reason the
+    step exists: an operator who has never opened the file cannot otherwise find
+    out what their deployment withholds.
+    """
+    code, payload = _invoke("doctor")
+
+    step = _step(payload, "serving-profile")
+    assert step["status"] == "not-applicable"
+    assert DEFAULT_CEILING.value in step["summary"]
+    assert code == 0, payload
+    assert payload["healthy"] is True
+    assert payload["problemCount"] == 0, (
+        "an undeclared ceiling must not make a converged machine unhealthy"
+    )
+
+
+def test_doctor_names_a_declared_ceiling(converged: SetupContext) -> None:
+    """The counterpart, so ``not-applicable`` above is not the only branch reached.
+
+    The level is named on the operator's own terminal, which is exactly the split
+    ``mcp/search.py``'s ``_PROFILE_MISMATCH`` note defers to: a degraded search
+    tells an agent to rebuild and never which levels the deployment serves.
+    """
+    _declare_a_ceiling(converged.data_dir, "confidential\n")
+
+    code, payload = _invoke("doctor")
+
+    step = _step(payload, "serving-profile")
+    assert step["status"] == "satisfied"
+    assert "confidential" in step["summary"]
+    assert code == 0, payload
+
+
+def test_doctor_calls_a_profile_it_cannot_honour_a_problem(converged: SetupContext) -> None:
+    """A ceiling the daemon will refuse to start on is a problem, not a warning.
+
+    ``CONFLICTING`` and never ``MISSING``: the file is the operator's own and
+    setup overwrites nothing it did not install (SEC-18), so what this earns is
+    consent to proceed past it -- and the detail carries the refusal's own
+    remedy, which is the only text that says what would have worked.
+    """
+    _declare_a_ceiling(converged.data_dir, "secret\n")
+
+    code, payload = _invoke("doctor")
+
+    step = _step(payload, "serving-profile")
+    assert step["status"] == "conflicting"
+    assert code == 1
+    assert payload["healthy"] is False
+    assert "public, internal, confidential, restricted" in step["detail"], (
+        "a refusal that does not say what would have worked leaves the reader guessing"
+    )
+
+
+#: A word no valid profile can contain, distinctive enough that a payload
+#: carrying it cannot do so by coincidence.
+TYPO_IN_THE_PROFILE = "SentinelCeilingTypoZZZZ"
+
+
+def test_report_mode_withholds_a_ceiling_word_theurian_did_not_write(
+    sandbox: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one place a byte of that file enters a message (O-3, SEC-6).
+
+    ``UnknownSensitivityCeilingError`` echoes the word deliberately -- an
+    operator cannot fix a typo they cannot see -- and ``doctor --report`` exists
+    to be pasted into a public issue. The word is whatever somebody typed into a
+    file in their own data directory, so it is a value Theurian did not author
+    and there is no anchor in ``_redacted`` that could reach it.
+    """
+    (tmp_path / ".git").mkdir(exist_ok=True)
+    monkeypatch.chdir(tmp_path)
+    _declare_a_ceiling(sandbox / ".theurian", f"{TYPO_IN_THE_PROFILE}\n")
+
+    _, published = _invoke("doctor", "--report")
+    _, private = _invoke("doctor")
+
+    assert TYPO_IN_THE_PROFILE not in json.dumps(published)
+    assert TYPO_IN_THE_PROFILE in json.dumps(private), (
+        "the person who ran it is the reader who has to correct the word"
+    )
 
 
 # -- What a report may say about things Theurian did not write ----------------

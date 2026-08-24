@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from theurian.domain.chunking import Chunk
+from theurian.domain.enums import Sensitivity
 from theurian.infrastructure.sqlite.index_scan import SCAN_TERMS, scan_statement
 from theurian.infrastructure.sqlite.index_schema import INDEX_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.index_store import (
@@ -29,6 +30,14 @@ from theurian.infrastructure.sqlite.index_store import (
 
 pytestmark = pytest.mark.integration
 
+#: The disclosure grant every retriever call in this file runs under: all four
+#: levels, which is what "this deployment serves everything" means once the
+#: retrievers take the axis as a WHERE predicate (#119 phase 4). Spelled out
+#: rather than read from ``StaticAuthorizationProvider``'s shipped default, which
+#: a later phase narrows -- a file that inherited it would start withholding its
+#: own fixtures silently, turning these tests into tests of something else.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
 
 def _indexable(  # noqa: PLR0913 - one keyword per canonical field the filters read
     chunk_id: str,
@@ -37,6 +46,7 @@ def _indexable(  # noqa: PLR0913 - one keyword per canonical field the filters r
     item: str = "architecture.auth",
     project: str = "demo",
     status: str = "approved",
+    sensitivity: str = "internal",
     heading: str = "",
 ) -> IndexableChunk:
     return IndexableChunk(
@@ -45,7 +55,7 @@ def _indexable(  # noqa: PLR0913 - one keyword per canonical field the filters r
         item_id=item,
         revision_id=f"rev-{chunk_id}",
         status=status,
-        sensitivity="internal",
+        sensitivity=sensitivity,
         trust_level="reviewed",
     )
 
@@ -120,7 +130,9 @@ def test_a_term_finds_the_chunk_that_contains_it(store: SqliteIndexStore) -> Non
         ]
     )
 
-    hits = store.search_lexical("JWT", project_id="demo").rows
+    hits = store.search_lexical(
+        "JWT", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert [h.chunk_id for h in hits] == ["c1"]
 
@@ -128,7 +140,9 @@ def test_a_term_finds_the_chunk_that_contains_it(store: SqliteIndexStore) -> Non
 def test_matching_is_case_and_accent_insensitive(store: SqliteIndexStore) -> None:
     store.add_chunks([_indexable("c1", "The résumé parser rejects malformed input.")])
 
-    assert store.search_lexical("RESUME", project_id="demo").rows
+    assert store.search_lexical(
+        "RESUME", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
 
 def test_matching_every_term_beats_matching_one_of_them(store: SqliteIndexStore) -> None:
@@ -155,7 +169,9 @@ def test_matching_every_term_beats_matching_one_of_them(store: SqliteIndexStore)
         ]
     )
 
-    hits = store.search_lexical("authentication tokens", project_id="demo").rows
+    hits = store.search_lexical(
+        "authentication tokens", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert [h.chunk_id for h in hits] == ["both", "one"], "a chunk sharing no term is not returned"
     assert hits[0].score > hits[1].score, "the full match outranks the partial one"
@@ -169,10 +185,12 @@ def test_fts5_operators_typed_by_a_user_are_treated_as_words(store: SqliteIndexS
     """
     store.add_chunks([_indexable("c1", "auth and token rotation")])
 
-    assert store.search_lexical("auth NOT token", project_id="demo").rows, (
-        "NOT must be a word, not an operator that excludes the match"
-    )
-    assert store.search_lexical('auth OR "token"', project_id="demo").rows
+    assert store.search_lexical(
+        "auth NOT token", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows, "NOT must be a word, not an operator that excludes the match"
+    assert store.search_lexical(
+        'auth OR "token"', project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
 
 def test_a_natural_language_question_reaches_the_lexical_index(
@@ -187,7 +205,9 @@ def test_a_natural_language_question_reaches_the_lexical_index(
     store.add_chunks([_indexable("c1", "Rotate signing keys for auth tokens every ninety days.")])
 
     hits = store.search_lexical(
-        "How do we rotate signing keys for auth tokens?", project_id="demo"
+        "How do we rotate signing keys for auth tokens?",
+        project_id="demo",
+        visible_sensitivities=EVERY_SENSITIVITY,
     ).rows
 
     assert [h.chunk_id for h in hits] == ["c1"]
@@ -198,7 +218,10 @@ def test_punctuation_never_raises_at_the_user(store: SqliteIndexStore, query: st
     """A search box that punishes punctuation is a broken search box."""
     store.add_chunks([_indexable("c1", "some text")])
 
-    assert store.search_lexical(query, project_id="demo").rows == ()
+    assert (
+        store.search_lexical(query, project_id="demo", visible_sensitivities=EVERY_SENSITIVITY).rows
+        == ()
+    )
 
 
 @pytest.mark.parametrize("retriever", ["search_lexical", "search_substring"])
@@ -219,7 +242,12 @@ def test_a_nul_byte_in_a_query_returns_nothing_rather_than_raising(
     """
     store.add_chunks([_indexable("c1", "every call carries a signed token")])
 
-    assert getattr(store, retriever)(query, project_id="demo", limit=10).rows == ()
+    assert (
+        getattr(store, retriever)(
+            query, project_id="demo", limit=10, visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+        == ()
+    )
 
 
 @pytest.mark.parametrize("retriever", ["search_lexical", "search_substring"])
@@ -236,7 +264,12 @@ def test_a_lone_surrogate_in_a_query_returns_nothing_rather_than_raising(
     """
     store.add_chunks([_indexable("c1", "every call carries a signed token")])
 
-    assert getattr(store, retriever)(query, project_id="demo", limit=10).rows == ()
+    assert (
+        getattr(store, retriever)(
+            query, project_id="demo", limit=10, visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+        == ()
+    )
 
 
 def test_a_well_formed_term_survives_beside_an_untransportable_one(
@@ -249,7 +282,9 @@ def test_a_well_formed_term_survives_beside_an_untransportable_one(
     """
     store.add_chunks([_indexable("c1", "every call carries a signed token")])
 
-    hits = store.search_lexical("carries token\x00", project_id="demo", limit=10).rows
+    hits = store.search_lexical(
+        "carries token\x00", project_id="demo", limit=10, visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert [h.chunk_id for h in hits] == ["c1"]
 
@@ -262,7 +297,9 @@ def test_results_are_ranked_best_first(store: SqliteIndexStore) -> None:
         ]
     )
 
-    hits = store.search_lexical("tokens", project_id="demo").rows
+    hits = store.search_lexical(
+        "tokens", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert hits[0].chunk_id == "dense"
 
@@ -314,10 +351,14 @@ def test_the_lexical_limit_is_a_ceiling_and_never_pads_past_the_corpus(
     # The precondition the boundary cases rest on. Without it a corpus that
     # matched only three chunks would make "asking for 61 returns 60" pass by
     # being wrong twice.
-    complete = store.search_lexical("rotation", project_id="demo", limit=CEILING_CORPUS).rows
+    complete = store.search_lexical(
+        "rotation", project_id="demo", limit=CEILING_CORPUS, visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
     assert len(complete) == CEILING_CORPUS, "every chunk must match, or the boundaries move"
 
-    hits = store.search_lexical("rotation", project_id="demo", limit=limit).rows
+    hits = store.search_lexical(
+        "rotation", project_id="demo", limit=limit, visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert len(hits) == expected
 
@@ -335,7 +376,9 @@ def test_another_project_is_never_ranked(store: SqliteIndexStore) -> None:
         ]
     )
 
-    hits = store.search_lexical("shared secret", project_id="demo").rows
+    hits = store.search_lexical(
+        "shared secret", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert [h.chunk_id for h in hits] == ["mine"]
 
@@ -348,11 +391,157 @@ def test_drafts_are_withheld_unless_asked_for(store: SqliteIndexStore) -> None:
         ]
     )
 
-    assert [h.chunk_id for h in store.search_lexical("caching", project_id="demo").rows] == [
-        "approved"
-    ]
-    with_drafts = store.search_lexical("caching", project_id="demo", include_unapproved=True).rows
+    assert [
+        h.chunk_id
+        for h in store.search_lexical(
+            "caching", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+    ] == ["approved"]
+    with_drafts = store.search_lexical(
+        "caching",
+        project_id="demo",
+        include_unapproved=True,
+        visible_sensitivities=EVERY_SENSITIVITY,
+    ).rows
     assert len(with_drafts) == 2
+
+
+# -- The deployment's disclosure ceiling (#119 phase 4, ADR-0025 part 3) ------
+#
+# **Why these tests call the store directly, and what that stands in for.** In the
+# shipped stack this predicate is the second line, not the first: a build writes
+# no row for an item above the ceiling (#119 phase 3), and
+# `mcp.search._published_index` stands aside any build whose recorded
+# `indexedSensitivities` disagrees with the grant in force -- so through the whole
+# stack the fallback fires before a retriever runs, and the clause never has an
+# above-ceiling row to withhold. That is exactly why the clause needs a driving
+# test at its own layer: a guard no input reaches survives its own deletion.
+#
+# The file these build is what a *wider* build looks like from the retriever's
+# side: a v6 index holding rows this deployment does not serve, reached because a
+# pointer was rewritten, a file was copied in, or the equality check was defeated.
+# Calling the retriever with a narrow grant against it is the bypass, and it is
+# artificial on purpose -- there is no supported path that gets here.
+
+#: One chunk per disclosure class, all matching every retriever in this section.
+#:
+#: The Latin term reaches `chunks_fts`, the six-character CJK term reaches
+#: `chunks_trigram`, the two-character one falls below the trigram floor into the
+#: `LIKE` scan, and one shared vector puts every row above the dense floor -- so
+#: all four SQL shapes `_scope` feeds see the same four candidate rows, and the
+#: only thing that can decide the answer is the predicate under test.
+_CEILING_TERM = "gatewaycredential"
+_CEILING_TRIGRAM_TERM = "認証ポリシー"
+_CEILING_SHORT_TERM = "認証"
+_CEILING_VECTOR = [1.0, 0.0]
+
+#: What a deployment declaring an `internal` ceiling serves (`DISCLOSURE_ORDER`).
+_UP_TO_INTERNAL = frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL})
+
+#: `(id, page)` per retriever, so every branch of `_scope`'s single clause list is
+#: exercised rather than one standing in for the rest. `search_summaries` is
+#: absent because it filters `nodes`, not `chunks`: `_node_scope` has its own
+#: driving tests in `test_forest_node_scope.py`.
+_CEILING_RETRIEVERS = (
+    (
+        "lexical",
+        lambda store, visible: store.search_lexical(
+            _CEILING_TERM, project_id="demo", visible_sensitivities=visible
+        ),
+    ),
+    (
+        "trigram-lookup",
+        lambda store, visible: store.search_substring(
+            _CEILING_TRIGRAM_TERM, project_id="demo", visible_sensitivities=visible
+        ),
+    ),
+    (
+        "scan-below-the-floor",
+        lambda store, visible: store.search_substring(
+            _CEILING_SHORT_TERM, project_id="demo", visible_sensitivities=visible
+        ),
+    ),
+    (
+        "dense",
+        lambda store, visible: store.search_dense(
+            _CEILING_VECTOR, project_id="demo", visible_sensitivities=visible
+        ),
+    ),
+)
+
+
+def _ceiling_chunk(chunk_id: str, sensitivity: Sensitivity) -> IndexableChunk:
+    """One row carrying every term the retrievers above match on."""
+    return _indexable(
+        chunk_id,
+        f"{_CEILING_TERM} {_CEILING_TRIGRAM_TERM} rotation",
+        item=f"architecture.{chunk_id}",
+        sensitivity=sensitivity.value,
+    )
+
+
+def _with_levels(store: SqliteIndexStore, levels: Sequence[Sensitivity]) -> SqliteIndexStore:
+    """Write one matching chunk per level, embedded so the dense scan sees them too."""
+    store.add_chunks([_ceiling_chunk(level.value, level) for level in levels])
+    store.add_embeddings([(level.value, _CEILING_VECTOR) for level in levels])
+    return store
+
+
+@pytest.mark.parametrize(
+    "retriever", _CEILING_RETRIEVERS, ids=[shape[0] for shape in _CEILING_RETRIEVERS]
+)
+def test_a_build_wider_than_the_grant_is_withheld_by_the_clause_alone(
+    store: SqliteIndexStore,
+    retriever: tuple[str, Callable[[SqliteIndexStore, frozenset[Sensitivity]], Any]],
+) -> None:
+    """The driving test for the predicate itself: no build gate, no canonical gate.
+
+    Four rows are in the file, one per class, and every one of them matches. An
+    `internal` deployment must receive the two it serves and no trace of the two
+    it does not -- not a row, and not a rank the missing rows would have taken,
+    which is what `== ` on the whole id list checks rather than a membership test.
+
+    RED with the `chunks.sensitivity` clause removed from `_scope`: all four rows
+    come back on every one of the four shapes.
+    """
+    _, page = retriever
+    _with_levels(store, tuple(Sensitivity))
+
+    surfaced = sorted(row.chunk_id for row in page(store, _UP_TO_INTERNAL).rows)
+
+    assert surfaced == ["internal", "public"], (
+        f"an `internal` deployment reading a build made under a wider grant must "
+        f"receive only the classes it serves; got {surfaced}"
+    )
+
+
+@pytest.mark.parametrize(
+    "retriever", _CEILING_RETRIEVERS, ids=[shape[0] for shape in _CEILING_RETRIEVERS]
+)
+def test_the_clause_changes_nothing_on_a_build_made_under_the_same_grant(
+    store: SqliteIndexStore,
+    retriever: tuple[str, Callable[[SqliteIndexStore, frozenset[Sensitivity]], Any]],
+) -> None:
+    """The other half, and the one that says what this predicate costs a real
+    deployment: on the build it is actually served, nothing.
+
+    Every row in a build made under a grant is at a class that grant admits (#119
+    phase 3), so asking for exactly that grant and asking for everything must
+    return the identical page -- the same rows, in the same order, with the same
+    scores. Scores included deliberately: BM25 is computed over the whole file's
+    collection statistics rather than over the rows a WHERE clause keeps, so an
+    equality on ids alone would pass even if the two calls were scoring different
+    corpora.
+
+    This is also the closure for the pair above. Together they say the predicate
+    withholds exactly when the file disagrees with the grant, and is inert when it
+    agrees -- so no deployment reading its own build pays for it in either recall
+    or ranking.
+    """
+    _, page = retriever
+    _with_levels(store, sorted(_UP_TO_INTERNAL))
+
+    assert page(store, _UP_TO_INTERNAL).rows == page(store, EVERY_SENSITIVITY).rows
 
 
 # -- Dense search ------------------------------------------------------------
@@ -362,7 +551,9 @@ def test_the_nearest_vector_ranks_first(store: SqliteIndexStore) -> None:
     store.add_chunks([_indexable("near", "a"), _indexable("mid", "b", item="i2")])
     store.add_embeddings([("near", [1.0, 0.0]), ("mid", [0.7, 0.7])])
 
-    hits = store.search_dense([0.9, 0.1], project_id="demo").rows
+    hits = store.search_dense(
+        [0.9, 0.1], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert [h.chunk_id for h in hits] == ["near", "mid"]
 
@@ -377,7 +568,9 @@ def test_a_barely_similar_vector_is_not_returned_at_all(store: SqliteIndexStore)
     store.add_chunks([_indexable("near", "a"), _indexable("far", "b", item="i2")])
     store.add_embeddings([("near", [1.0, 0.0]), ("far", [0.0, 1.0])])
 
-    hits = store.search_dense([0.9, 0.1], project_id="demo").rows
+    hits = store.search_dense(
+        [0.9, 0.1], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert [h.chunk_id for h in hits] == ["near"], "0.11 cosine is noise, not a match"
 
@@ -386,7 +579,12 @@ def test_a_query_matching_nothing_returns_nothing(store: SqliteIndexStore) -> No
     store.add_chunks([_indexable("c1", "a")])
     store.add_embeddings([("c1", [1.0, 0.0])])
 
-    assert store.search_dense([0.0, 1.0], project_id="demo").rows == ()
+    assert (
+        store.search_dense(
+            [0.0, 1.0], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+        == ()
+    )
 
 
 def test_dense_search_respects_the_same_filters(store: SqliteIndexStore) -> None:
@@ -395,7 +593,9 @@ def test_dense_search_respects_the_same_filters(store: SqliteIndexStore) -> None
     )
     store.add_embeddings([("mine", [1.0, 0.0]), ("theirs", [1.0, 0.0])])
 
-    hits = store.search_dense([1.0, 0.0], project_id="demo").rows
+    hits = store.search_dense(
+        [1.0, 0.0], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert [h.chunk_id for h in hits] == ["mine"]
 
@@ -408,7 +608,9 @@ def test_a_corpus_embedded_by_another_model_is_skipped_not_scored(
     store.add_chunks([_indexable("two-dim", "a"), _indexable("three-dim", "b", item="i2")])
     store.add_embeddings([("two-dim", [1.0, 0.0]), ("three-dim", [1.0, 0.0, 0.0])])
 
-    hits = store.search_dense([1.0, 0.0], project_id="demo").rows
+    hits = store.search_dense(
+        [1.0, 0.0], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert [h.chunk_id for h in hits] == ["two-dim"]
 
@@ -452,7 +654,9 @@ def test_a_vector_cell_that_cannot_be_one_is_skipped_rather_than_failing_the_sea
     store.add_embeddings([("healthy", [1.0, 0.0]), ("corrupt", [1.0, 0.0])])
     _corrupt(store.path, "UPDATE embeddings SET vector = ? WHERE chunk_id = 'corrupt'", (cell,))
 
-    hits = store.search_dense([1.0, 0.0], project_id="demo").rows
+    hits = store.search_dense(
+        [1.0, 0.0], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert [h.chunk_id for h in hits] == ["healthy"]
 
@@ -464,7 +668,12 @@ def test_an_index_with_no_embeddings_returns_nothing_rather_than_failing(
     reported mode says so; the search does not crash."""
     store.add_chunks([_indexable("c1", "text")])
 
-    assert store.search_dense([1.0, 0.0], project_id="demo").rows == ()
+    assert (
+        store.search_dense(
+            [1.0, 0.0], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+        == ()
+    )
 
 
 def test_a_zero_query_vector_yields_nothing(store: SqliteIndexStore) -> None:
@@ -472,7 +681,12 @@ def test_a_zero_query_vector_yields_nothing(store: SqliteIndexStore) -> None:
     store.add_chunks([_indexable("c1", "text")])
     store.add_embeddings([("c1", [1.0, 0.0])])
 
-    assert store.search_dense([0.0, 0.0], project_id="demo").rows == ()
+    assert (
+        store.search_dense(
+            [0.0, 0.0], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+        == ()
+    )
 
 
 def test_dense_ties_break_deterministically(store: SqliteIndexStore) -> None:
@@ -480,7 +694,12 @@ def test_dense_ties_break_deterministically(store: SqliteIndexStore) -> None:
     store.add_chunks([_indexable("b", "x", item="i1"), _indexable("a", "x", item="i2")])
     store.add_embeddings([("b", [1.0, 0.0]), ("a", [1.0, 0.0])])
 
-    assert [h.chunk_id for h in store.search_dense([1.0, 0.0], project_id="demo").rows] == [
+    assert [
+        h.chunk_id
+        for h in store.search_dense(
+            [1.0, 0.0], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+    ] == [
         "a",
         "b",
     ]
@@ -492,7 +711,9 @@ def test_vectors_survive_a_round_trip(store: SqliteIndexStore) -> None:
     store.add_chunks([_indexable("c1", "x")])
     store.add_embeddings([("c1", [0.25, -0.5, 0.125])])
 
-    hits = store.search_dense([0.25, -0.5, 0.125], project_id="demo").rows
+    hits = store.search_dense(
+        [0.25, -0.5, 0.125], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert hits[0].score == pytest.approx(1.0)
 
@@ -650,8 +871,13 @@ def test_japanese_is_searchable_by_substring(store: SqliteIndexStore, query: str
     """
     store.add_chunks([_indexable("ja", JAPANESE, heading="認証ポリシー")])
 
-    assert store.search_lexical(query, project_id="demo").rows == (), "the word index cannot"
-    assert store.search_substring(query, project_id="demo").rows, "the trigram index can"
+    assert (
+        store.search_lexical(query, project_id="demo", visible_sensitivities=EVERY_SENSITIVITY).rows
+        == ()
+    ), "the word index cannot"
+    assert store.search_substring(
+        query, project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows, "the trigram index can"
 
 
 def test_substring_matching_still_discriminates(store: SqliteIndexStore) -> None:
@@ -659,8 +885,18 @@ def test_substring_matching_still_discriminates(store: SqliteIndexStore) -> None
     for another."""
     store.add_chunks([_indexable("ja", JAPANESE, heading="認証ポリシー")])
 
-    assert store.search_substring("kubernetes", project_id="demo").rows == ()
-    assert store.search_substring("課金モデル", project_id="demo").rows == ()
+    assert (
+        store.search_substring(
+            "kubernetes", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+        == ()
+    )
+    assert (
+        store.search_substring(
+            "課金モデル", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+        == ()
+    )
 
 
 def test_the_substring_index_is_scoped_to_one_project(store: SqliteIndexStore) -> None:
@@ -679,8 +915,12 @@ def test_the_substring_index_is_scoped_to_one_project(store: SqliteIndexStore) -
         ]
     )
 
-    mine = store.search_substring("トークン", project_id="demo").rows
-    theirs = store.search_substring("トークン", project_id="other").rows
+    mine = store.search_substring(
+        "トークン", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
+    theirs = store.search_substring(
+        "トークン", project_id="other", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert [h.chunk_id for h in mine] == ["mine"]
     assert [h.chunk_id for h in theirs] == ["theirs"]
@@ -699,8 +939,15 @@ def test_the_substring_index_withholds_drafts_too(store: SqliteIndexStore) -> No
         ]
     )
 
-    withheld = store.search_substring("トークン", project_id="demo").rows
-    asked_for = store.search_substring("トークン", project_id="demo", include_unapproved=True).rows
+    withheld = store.search_substring(
+        "トークン", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
+    asked_for = store.search_substring(
+        "トークン",
+        project_id="demo",
+        include_unapproved=True,
+        visible_sensitivities=EVERY_SENSITIVITY,
+    ).rows
 
     assert [h.chunk_id for h in withheld] == ["approved"]
     assert len(asked_for) == 2
@@ -722,7 +969,9 @@ def test_the_substring_index_ors_its_terms_like_the_word_index(store: SqliteInde
         ]
     )
 
-    hits = store.search_substring("トークン ローテーション", project_id="demo").rows
+    hits = store.search_substring(
+        "トークン ローテーション", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert sorted(h.chunk_id for h in hits) == ["both", "one"], "OR, as the word index does"
 
@@ -754,8 +1003,13 @@ def test_a_term_too_short_to_form_a_trigram_is_still_searchable(
     """
     store.add_chunks([_indexable("ja", SHORT_TERMS)])
 
-    assert store.search_lexical(query, project_id="demo").rows == (), "the word index cannot"
-    assert store.search_substring(query, project_id="demo").rows, "the scan below the floor can"
+    assert (
+        store.search_lexical(query, project_id="demo", visible_sensitivities=EVERY_SENSITIVITY).rows
+        == ()
+    ), "the word index cannot"
+    assert store.search_substring(
+        query, project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows, "the scan below the floor can"
 
 
 def test_the_scan_below_the_floor_still_discriminates(store: SqliteIndexStore) -> None:
@@ -764,8 +1018,15 @@ def test_the_scan_below_the_floor_still_discriminates(store: SqliteIndexStore) -
     `LIKE` pattern is keeping it honest."""
     store.add_chunks([_indexable("ja", SHORT_TERMS)])
 
-    assert store.search_substring("課金", project_id="demo").rows == ()
-    assert store.search_substring("鍵", project_id="demo").rows, "and a term that is there is found"
+    assert (
+        store.search_substring(
+            "課金", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+        == ()
+    )
+    assert store.search_substring(
+        "鍵", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows, "and a term that is there is found"
 
 
 def test_the_scan_below_the_floor_keeps_the_project_filter(store: SqliteIndexStore) -> None:
@@ -783,10 +1044,18 @@ def test_the_scan_below_the_floor_keeps_the_project_filter(store: SqliteIndexSto
         ]
     )
 
-    assert [h.chunk_id for h in store.search_substring("認証", project_id="demo").rows] == ["mine"]
-    assert [h.chunk_id for h in store.search_substring("認証", project_id="other").rows] == [
-        "theirs"
-    ]
+    assert [
+        h.chunk_id
+        for h in store.search_substring(
+            "認証", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+    ] == ["mine"]
+    assert [
+        h.chunk_id
+        for h in store.search_substring(
+            "認証", project_id="other", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+    ] == ["theirs"]
 
 
 def test_the_scan_below_the_floor_withholds_drafts_too(store: SqliteIndexStore) -> None:
@@ -800,8 +1069,12 @@ def test_the_scan_below_the_floor_withholds_drafts_too(store: SqliteIndexStore) 
         ]
     )
 
-    withheld = store.search_substring("認証", project_id="demo").rows
-    asked_for = store.search_substring("認証", project_id="demo", include_unapproved=True).rows
+    withheld = store.search_substring(
+        "認証", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
+    asked_for = store.search_substring(
+        "認証", project_id="demo", include_unapproved=True, visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert [h.chunk_id for h in withheld] == ["approved"]
     assert len(asked_for) == 2
@@ -826,7 +1099,12 @@ def test_a_like_wildcard_typed_by_a_user_is_a_character_not_a_pattern(
     """
     store.add_chunks([_indexable("plain", "the gateway verifies every signed token")])
 
-    assert store.search_substring(query, project_id="demo").rows == ()
+    assert (
+        store.search_substring(
+            query, project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+        == ()
+    )
 
 
 def test_an_escaped_wildcard_still_finds_a_literal_one(store: SqliteIndexStore) -> None:
@@ -840,7 +1118,9 @@ def test_an_escaped_wildcard_still_finds_a_literal_one(store: SqliteIndexStore) 
     """
     store.add_chunks([_indexable("literal", "budget utilisation reached 100% last quarter")])
 
-    hits = store.search_substring("0%", project_id="demo").rows
+    hits = store.search_substring(
+        "0%", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert [h.chunk_id for h in hits] == ["literal"]
     assert hits[0].score > 0, "found by the pattern, ordered by the term it came from"
@@ -864,7 +1144,12 @@ def test_the_scan_orders_case_insensitively_because_it_matches_that_way(
         ]
     )
 
-    assert [h.chunk_id for h in store.search_substring("ab", project_id="demo").rows] == [
+    assert [
+        h.chunk_id
+        for h in store.search_substring(
+            "ab", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+    ] == [
         "b-shouting",
         "a-quiet",
     ]
@@ -887,10 +1172,15 @@ def test_the_scan_below_the_floor_reads_every_column_the_trigram_index_does(
     """
     store.add_chunks([_indexable("head", "この文書は署名の話をする。", heading="認証ポリシー")])
 
-    assert [h.chunk_id for h in store.search_substring("認証", project_id="demo").rows] == [
-        "head"
-    ], "the scan reads the heading"
-    assert store.search_substring("認証ポリシー", project_id="demo").rows, "and so does the lookup"
+    assert [
+        h.chunk_id
+        for h in store.search_substring(
+            "認証", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+    ] == ["head"], "the scan reads the heading"
+    assert store.search_substring(
+        "認証ポリシー", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows, "and so does the lookup"
 
 
 def test_the_scan_below_the_floor_selects_by_relevance_not_by_creation_order(
@@ -919,11 +1209,15 @@ def test_the_scan_below_the_floor_selects_by_relevance_not_by_creation_order(
         ]
     )
 
-    hits = store.search_substring("認証", project_id="demo", limit=50).rows
+    hits = store.search_substring(
+        "認証", project_id="demo", limit=50, visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert len(hits) == 120, "the scan branch ranks everything it matched; `limit` is a floor"
     assert hits[0].chunk_id == "c119", "the densest chunk leads, though it is the newest"
-    shallow = store.search_substring("認証", project_id="demo", limit=1).rows
+    shallow = store.search_substring(
+        "認証", project_id="demo", limit=1, visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
     assert shallow[0].chunk_id == "c119", "and it leads at every limit, which is what was broken"
 
 
@@ -942,9 +1236,17 @@ def test_the_scan_below_the_floor_breaks_ties_the_way_the_lookup_does(
         [_indexable(f"c{n:02d}", "認証の規則。署名付きトークンを運ぶ。") for n in range(10)]
     )
 
-    scanned = [h.chunk_id for h in store.search_substring("認証", project_id="demo", limit=4).rows]
+    scanned = [
+        h.chunk_id
+        for h in store.search_substring(
+            "認証", project_id="demo", limit=4, visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+    ]
     looked_up = [
-        h.chunk_id for h in store.search_substring("トークン", project_id="demo", limit=4).rows
+        h.chunk_id
+        for h in store.search_substring(
+            "トークン", project_id="demo", limit=4, visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
     ]
 
     # Compared as prefixes, because the two branches disagree about `limit` and
@@ -985,7 +1287,9 @@ def test_a_realistic_keyword_query_is_searched_in_full(store: SqliteIndexStore) 
         ]
     )
 
-    hits = store.search_substring(" ".join(REALISTIC_NOUNS), project_id="demo").rows
+    hits = store.search_substring(
+        " ".join(REALISTIC_NOUNS), project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     found = {h.chunk_id: h.score for h in hits}
     for n, noun in enumerate(REALISTIC_NOUNS):
@@ -1016,7 +1320,9 @@ def test_the_scan_spends_a_bounded_number_of_terms(store: SqliteIndexStore) -> N
         [_indexable(f"c{n:02d}", term, item=f"architecture.i{n}") for n, term in enumerate(terms)]
     )
 
-    hits = store.search_substring(" ".join(terms), project_id="demo").rows
+    hits = store.search_substring(
+        " ".join(terms), project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert {h.chunk_id for h in hits} == {f"c{n:02d}" for n in range(SCAN_TERMS)}, (
         "every term up to the bound selects, and the one past it is not spent at all"
@@ -1059,7 +1365,9 @@ def test_every_term_the_scan_matches_on_also_ranks(store: SqliteIndexStore) -> N
         + [_indexable(f"n{n:02d}", terms[0] * 2, item=f"architecture.n{n}") for n in range(60)]
     )
 
-    hits = store.search_substring(" ".join(terms), project_id="demo", limit=10).rows
+    hits = store.search_substring(
+        " ".join(terms), project_id="demo", limit=10, visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
     assert hits[0].chunk_id == "saturated", "the last admitted term carries full weight"
 
@@ -1079,7 +1387,12 @@ def test_a_single_letter_does_not_earn_a_pass_over_the_corpus(
     """
     store.add_chunks([_indexable("plain", "the gateway verifies every signed token # 7")])
 
-    assert store.search_substring(query, project_id="demo").rows == ()
+    assert (
+        store.search_substring(
+            query, project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+        == ()
+    )
 
 
 def test_a_single_character_that_is_a_whole_word_still_scans(store: SqliteIndexStore) -> None:
@@ -1093,8 +1406,16 @@ def test_a_single_character_that_is_a_whole_word_still_scans(store: SqliteIndexS
     """
     store.add_chunks([_indexable("ja", SHORT_TERMS)])
 
-    assert store.search_lexical("鍵", project_id="demo").rows == (), "the word index cannot"
-    assert [h.chunk_id for h in store.search_substring("鍵", project_id="demo").rows] == ["ja"]
+    assert (
+        store.search_lexical("鍵", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY).rows
+        == ()
+    ), "the word index cannot"
+    assert [
+        h.chunk_id
+        for h in store.search_substring(
+            "鍵", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+    ] == ["ja"]
 
 
 def test_a_query_of_only_common_words_still_matches_today(store: SqliteIndexStore) -> None:
@@ -1110,8 +1431,12 @@ def test_a_query_of_only_common_words_still_matches_today(store: SqliteIndexStor
     """
     store.add_chunks([_indexable("only", "The gateway verifies the token.")])
 
-    assert store.search_lexical("the", project_id="demo").rows, "known gap, not a feature"
-    assert store.search_lexical("gateway token", project_id="demo").rows
+    assert store.search_lexical(
+        "the", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows, "known gap, not a feature"
+    assert store.search_lexical(
+        "gateway token", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
 
 
 # -- One corpus, two builds (FR-R7) -------------------------------------------
@@ -1235,7 +1560,12 @@ def test_two_builds_of_one_corpus_answer_a_tie_identically(
     )
 
     hits = [
-        getattr(built, retriever)(query, project_id="demo", limit=TIE_LIMIT).rows
+        getattr(built, retriever)(
+            query,
+            project_id="demo",
+            limit=TIE_LIMIT,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        ).rows
         for built in (first, second)
     ]
 
@@ -1275,8 +1605,15 @@ def test_a_query_is_truncated_at_the_character_bound(store: SqliteIndexStore) ->
     store.add_chunks([_indexable("c1", "the gateway rejects an unsigned request")])
     padding = "x" * MAX_QUERY_CHARS
 
-    assert store.search_lexical(f"{padding} gateway", project_id="demo").rows == (), "past the cut"
-    assert store.search_lexical(f"gateway {padding}", project_id="demo").rows, "before the cut"
+    assert (
+        store.search_lexical(
+            f"{padding} gateway", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+        == ()
+    ), "past the cut"
+    assert store.search_lexical(
+        f"gateway {padding}", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows, "before the cut"
 
 
 def test_only_the_first_terms_by_length_are_spent(store: SqliteIndexStore) -> None:
@@ -1290,12 +1627,15 @@ def test_only_the_first_terms_by_length_are_spent(store: SqliteIndexStore) -> No
     store.add_chunks([_indexable("c1", "gateway")])
     fillers = " ".join(f"filler{index:04d}long" for index in range(MAX_QUERY_TERMS))
 
-    assert store.search_lexical(f"gateway {fillers}", project_id="demo").rows == (), (
-        "the short, real term loses its slot to longer fillers"
-    )
-    assert store.search_lexical(f"gateway {fillers[:20]}", project_id="demo").rows, (
-        "well inside the bound, the same term is spent"
-    )
+    assert (
+        store.search_lexical(
+            f"gateway {fillers}", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+        == ()
+    ), "the short, real term loses its slot to longer fillers"
+    assert store.search_lexical(
+        f"gateway {fillers[:20]}", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows, "well inside the bound, the same term is spent"
 
 
 # -- Exhaustion (issue #16) --------------------------------------------------
@@ -1349,7 +1689,11 @@ def test_a_limit_bearing_retriever_states_exhaustion_at_the_boundary(
     ``limit == 1`` and cost the caller five rows it never learns it lost.
     """
     page = getattr(six_matching_chunks, retriever)(
-        "authentication", project_id="demo", limit=limit, include_unapproved=False
+        "authentication",
+        project_id="demo",
+        limit=limit,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
     )
 
     assert len(page.rows) == expected_rows
@@ -1368,7 +1712,11 @@ def test_the_probe_row_is_never_returned(
     rather than like a bug.
     """
     page = getattr(six_matching_chunks, retriever)(
-        "authentication", project_id="demo", limit=2, include_unapproved=False
+        "authentication",
+        project_id="demo",
+        limit=2,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
     )
 
     assert len(page.rows) == 2, "the probe row must be dropped, not returned"
@@ -1388,7 +1736,13 @@ def test_the_scan_and_the_lookup_both_answer_exhausted_when_they_hold_everything
     """
     store.add_chunks([_indexable("ja", "認証は署名付きトークンで行う。")])
 
-    page = store.search_substring(query, project_id="demo", limit=50, include_unapproved=False)
+    page = store.search_substring(
+        query,
+        project_id="demo",
+        limit=50,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
+    )
 
     assert page.rows, "the fixture must match, or exhaustion is trivially true"
     assert page.exhausted is True
@@ -1413,7 +1767,11 @@ def test_a_limit_below_one_is_refused_rather_than_sliced(
     """
     with pytest.raises(ValueError, match="limit must be at least 1"):
         getattr(six_matching_chunks, retriever)(
-            "authentication", project_id="demo", limit=limit, include_unapproved=False
+            "authentication",
+            project_id="demo",
+            limit=limit,
+            include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
         )
 
 
@@ -1428,7 +1786,11 @@ def test_a_limit_of_exactly_one_is_allowed(
     would refuse it while every test above still passed.
     """
     page = getattr(six_matching_chunks, retriever)(
-        "authentication", project_id="demo", limit=1, include_unapproved=False
+        "authentication",
+        project_id="demo",
+        limit=1,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
     )
 
     assert len(page.rows) == 1
@@ -1447,7 +1809,16 @@ def test_a_limit_of_exactly_one_is_allowed(
 def test_a_fresh_build_reports_the_current_schema_version(store: SqliteIndexStore) -> None:
     """The literal, so a DDL change that forgets to bump -- or bumps wrong -- fails.
 
-    Five at the time of writing. Version 3 added `chunks.derived` and
+    Six at the time of writing, and the newest one adds no column: version 6
+    marks the build that stopped writing rows for items above the deployment's
+    disclosure ceiling (#119, ADR-0025 part 1). It moves the DDL only in
+    `chunks.sensitivity`'s comment, which is enough under this file's own rule --
+    and the reason it is a *version* rather than a comment is that every
+    version-5 file predates the exclusion, so it may hold above-ceiling text
+    whose collection statistics price the rows this deployment does serve. Those
+    files report `index-schema-mismatch` and are rebuilt rather than filtered.
+
+    Version 3 added `chunks.derived` and
     `chunk_derivation` for a writer that did not exist yet; version 4 drops both
     and adds `nodes`, `node_derivation` and `nodes_fts` in their place (ADR-0008
     decision 5's amendment, ADR-0024 decision 8's amendment) -- a RAPTOR summary
@@ -1461,7 +1832,7 @@ def test_a_fresh_build_reports_the_current_schema_version(store: SqliteIndexStor
     constant *is*.
     """
     assert store.schema_version() == INDEX_SCHEMA_VERSION
-    assert store.schema_version() == 5, (
+    assert store.schema_version() == 6, (
         "the index schema version changed. If a DDL change intended it, update this literal "
         "and the CHANGELOG; if not, a bump slipped in without a schema change behind it"
     )
@@ -1469,11 +1840,12 @@ def test_a_fresh_build_reports_the_current_schema_version(store: SqliteIndexStor
 
 
 #: The 14 provenance columns ADR-0008 decision 5 names, plus the three queryable
-#: scope columns the amendment adds ahead of #119's predicate: `project_id`
-#: (the future single-point predicate, mirroring `chunks.project_id`),
-#: `sensitivity` (D6: node rows carry sensitivity, still a published label and
-#: not a control -- see the Context amendment) and `status` (the build-flavor
-#: column a node-table predicate will filter on, per decision 1's amendment).
+#: scope columns the amendment added ahead of #119's predicate and that
+#: `_node_scope` now filters on, all three: `project_id` (mirroring
+#: `chunks.project_id`), `sensitivity` (D6: node rows carry the scope tuple's
+#: level, and since #119 it is a serving predicate here as well as a build-time
+#: partition -- ADR-0025 part 3) and `status` (the build-flavor column, per
+#: decision 1's amendment).
 #: `tree_id` already encodes the full six-component scope tuple; these three are
 #: carried denormalised on the row for the same reason `chunks` carries them --
 #: filtering has to happen in the same statement as the match, before ranking.
@@ -1602,12 +1974,24 @@ _READS_THAT_MUST_NOT_CONJURE_A_FILE: tuple[
     ("chunk_count", lambda store: store.chunk_count()),
     ("chunk_texts", lambda store: store.chunk_texts(["r0#0"], project_id="demo")),
     ("texts", lambda store: store.texts(["r0#0"], project_id="demo")),
-    ("search_lexical", lambda store: store.search_lexical("token", project_id="demo", limit=10)),
+    (
+        "search_lexical",
+        lambda store: store.search_lexical(
+            "token", project_id="demo", limit=10, visible_sensitivities=EVERY_SENSITIVITY
+        ),
+    ),
     (
         "search_substring",
-        lambda store: store.search_substring("token", project_id="demo", limit=10),
+        lambda store: store.search_substring(
+            "token", project_id="demo", limit=10, visible_sensitivities=EVERY_SENSITIVITY
+        ),
     ),
-    ("search_dense", lambda store: store.search_dense([0.1, 0.2, 0.3], project_id="demo")),
+    (
+        "search_dense",
+        lambda store: store.search_dense(
+            [0.1, 0.2, 0.3], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ),
+    ),
 )
 
 

@@ -260,8 +260,9 @@ def scan_statement(
     Args:
         terms: What to match, longest first. Must not be empty; only the first
             :data:`SCAN_TERMS` are spent.
-        clauses: The project-and-status filter, from `SqliteIndexStore._scope`
-            -- two of FR-R1's five axes, not the whole of it (#63). Module-owned
+        clauses: The project, status and sensitivity filter, from
+            `SqliteIndexStore._scope` -- two of FR-R1's five axes plus the status
+            check it does not name, not the whole of it (#63, #119). Module-owned
             literals — this function interpolates them and binds nothing.
         scope: The values those clauses bind.
 

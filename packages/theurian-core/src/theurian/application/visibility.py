@@ -27,7 +27,7 @@ from datetime import datetime
 from typing import Protocol, final, runtime_checkable
 
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import may_surface
+from theurian.domain.enums import Sensitivity, may_disclose, may_surface
 from theurian.domain.errors import DomainError
 from theurian.domain.identifiers import ItemId
 from theurian.domain.knowledge import KnowledgeItem
@@ -85,10 +85,11 @@ class Visibility(Protocol):
 class CanonicalVisibility:
     """The canonical store's answer, for one request.
 
-    The index is never authoritative (ADR-0004). Its ``status`` column is a
-    build-time snapshot and its ``revision_id`` is whichever revision was current
-    when it was written, so the two checks below are the difference between a
-    stale index returning *fewer* results and it returning wrong ones.
+    The index is never authoritative (ADR-0004). Its ``status`` and
+    ``sensitivity`` columns are build-time snapshots and its ``revision_id`` is
+    whichever revision was current when it was written, so the three checks below
+    are the difference between a stale index returning *fewer* results and it
+    returning wrong ones.
 
     Memoised by item for the life of one request. The retrievers overlap, one
     document contributes several chunks, and re-reading cannot change the answer
@@ -109,9 +110,18 @@ class CanonicalVisibility:
         context: RequestContext,
         *,
         include_unapproved: bool,
+        visible_sensitivities: frozenset[Sensitivity],
         moment: datetime | None = None,
     ) -> None:
         """``moment`` is the caller's ``asOf``, or ``None`` for no pin (#63).
+
+        ``visible_sensitivities`` is what this deployment serves (#119): the set
+        the operator's declared ceiling expanded to, resolved once at startup and
+        threaded down. Required, like ``include_unapproved`` and for the same
+        reason -- "everything is visible" is the bug, and a default parameter is
+        how it comes back. Nothing in the request reaches it: it is a property of
+        the deployment, which is what makes it safe to apply inside
+        :meth:`cleared` where a caller-chosen filter must not go (see below).
 
         Defaulted, unlike ``include_unapproved``, because ``None`` here means
         "apply no *additional* temporal restriction" rather than "everything is
@@ -132,6 +142,7 @@ class CanonicalVisibility:
         self._store = store
         self._context = context
         self._include_unapproved = include_unapproved
+        self._visible_sensitivities = visible_sensitivities
         self._moment = moment
         self._items: dict[str, KnowledgeItem | None] = {}
 
@@ -280,6 +291,33 @@ class CanonicalVisibility:
         # an item retired after the build came back labelled `deprecated` — or
         # `rejected`, which is where the secret that caused the rejection lives.
         if not may_surface(item.status, include_unapproved=self._include_unapproved):
+            return False
+        # The deployment's sensitivity ceiling, checked here beside status and for
+        # the same reason (#119): the *item* carries the level, so the index's
+        # build-time copy of it is a snapshot, and an item reclassified upward
+        # after the build would otherwise be served on the strength of what it used
+        # to be. This is the gate that closes that window before the index-side
+        # exclusion exists to make it unnecessary.
+        #
+        # Inside `cleared`, never in `at_moment`, and the two placements are not
+        # interchangeable. `cleared` is what the depth loop's exit condition counts
+        # (`len(cleared) >= CANDIDATE_DEPTH` in `RetrievalService._visible_ranking`);
+        # `at_moment` runs only after that loop has stopped asking retrievers, over
+        # the whole cleared set and *before* the `[:CANDIDATE_DEPTH]` cut, not after
+        # it (`retrieval_service.py`, reordered by the HIGH in review round 2 of PR
+        # #112). So a withholding folded into `at_moment` would let a withheld row
+        # count toward `CANDIDATE_DEPTH` and occupy a candidate slot the loop's exit
+        # condition tallied -- displacing a visible row the loop then never digs
+        # deeper to reach -- the displacement defect SEC-13 was reopened by twice,
+        # where `count`, `usedTokens` and every rank move with a document the caller
+        # may not read. What makes `cleared` the *safe*
+        # place for this one, when `self._moment` is deliberately excluded from
+        # it, is that no request parameter reaches this set: `moment` is chosen
+        # freely by the caller, so folding it in here would hand them a dial with
+        # which to tune the excluded fraction up to the depth loop's boundary and
+        # read off a single withheld row (CRITICAL, review round 1 of PR #112).
+        # A deployment ceiling is fixed for the process and offers no such dial.
+        if not may_disclose(item.sensitivity, visible=self._visible_sensitivities):
             return False
         # Deliberately no validity-window check here. `self._moment` (#63
         # phase 2) is applied by `at_moment`, once, after the depth loop in

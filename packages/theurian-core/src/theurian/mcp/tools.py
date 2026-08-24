@@ -30,6 +30,7 @@ from typing import Any, Final
 from mcp.server import MCPServer
 
 from theurian import __protocol_version__, __version__
+from theurian.application.authorization import DEPLOYMENT_TENANT, AuthorizationGrant
 from theurian.application.project_service import (
     BuildProvenance,
     ProjectError,
@@ -40,7 +41,7 @@ from theurian.application.project_service import (
 )
 from theurian.application.retrieval_service import DEFAULT_BUDGET_TOKENS
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import may_surface
+from theurian.domain.enums import Sensitivity, may_disclose, may_surface
 from theurian.domain.errors import InvalidIdentifierError, TheurianError
 from theurian.domain.identifiers import MAX_IDENTIFIER_LENGTH, ItemId, ProjectId
 from theurian.domain.knowledge import KnowledgeRelation
@@ -208,6 +209,16 @@ def _integrity_signal(
     recorded inside ``migrate apply``'s own transaction; ``live_surfaceable`` is
     what the same predicate counts now.
 
+    **"The same predicate" is load-bearing and is now narrower than what
+    ``knowledge.status`` publishes** (#119 phase 6). The recorded half is written
+    ceiling-blind, from the rows the apply wrote, so the live half is read
+    ceiling-blind too --
+    :meth:`~theurian.domain.ports.canonical_store.CanonicalStore.count_surfaceable_items`,
+    which takes no grant. The counts that *are* published follow the grant and
+    come from a different method. Feeding a narrowed count in here instead would
+    report ``damageDetected`` on every restricted deployment: a false security
+    claim, and a louder one than the count it would have tidied.
+
     Both use ``!=`` rather than ``<``. The state database is immutable once
     built, so a healthy project has each pair equal and a difference in *either*
     direction is damage -- rows lost, or another project's rows bleeding in.
@@ -250,24 +261,37 @@ def _measure_integrity(
     store: SqliteCanonicalStore,
     context: RequestContext,
     active: ActiveState,
-    *,
-    live_surfaceable: int | None = None,
 ) -> dict[str, Any] | None:
     """Take both measurements against ``store`` and report what they say (#30).
 
     The one place a tool asks the question, so the three that publish the answer
-    cannot drift on what "damage" means or on which pointer the migration count
-    is compared against.
+    cannot drift on what "damage" means, on which pointer the migration count is
+    compared against, or on **which population the surfaceable comparison runs
+    over**.
 
-    ``live_surfaceable`` is a parameter rather than always a read because
-    ``knowledge.status`` has already counted the same population, grouped by
-    status, for the ``itemsByStatus`` it publishes -- the sum of that breakdown
-    is this number by construction, and passing it spends one query rather than
-    two. ``knowledge.search`` and ``knowledge.get`` publish no breakdown and pass
-    nothing, so the count is read here: one ``COUNT`` over ``idx_items_status``,
-    ``O(surfaceable)`` and independent of the corpus, which is the same cost
-    discipline PR1 held for ``count_migration_history`` -- neither reopens the
-    ``O(withheld)`` timing channels #158 and #19 closed.
+    That last one used to be the caller's choice: ``knowledge.status`` passed the
+    sum of the breakdown it had already read, one query cheaper and identical
+    while the two predicates were identical. #119 phase 6 narrowed the published
+    breakdown by the deployment's ceiling and did not narrow the record
+    ``migrate apply`` writes, so the parameter's two values stopped naming one
+    number -- and the cheaper one would have reported damage on every restricted
+    deployment. The parameter is gone rather than re-documented: this function
+    now reads
+    :meth:`~theurian.domain.ports.canonical_store.CanonicalStore.count_surfaceable_items`
+    itself, so no caller can supply a population and the comparison is
+    ceiling-blind at both ends by construction.
+
+    The read it costs is one ``COUNT`` over ``idx_items_status``, flat in the
+    retired rows -- the same discipline PR1 held for ``count_migration_history``,
+    so the *status* channels #158 and #19 closed stay closed. It is **not** free
+    of the corpus, though: ``count_surfaceable_items`` is ceiling-blind by design
+    (the #30 comparison must be, at both ends), so it counts the above-ceiling
+    rows in a surfaceable status and carries a measured, corpus-bounded slope --
+    4.0 SQLite VM steps per above-ceiling row, exact and linear, reached on every
+    request of all three tools. That term is a distinct class from T-22's -- it is
+    *ceiling-blind counting*, not a ``sensitivity`` predicate over an index that
+    lacks the column -- and is recorded there as the third statement carrying it,
+    Medium and accepted.
 
     Called with the store already open, so a tool pays one connection for its
     answer and its integrity check together.
@@ -275,9 +299,7 @@ def _measure_integrity(
     return _integrity_signal(
         live_migrations=store.count_migration_history(context.project_id),
         expected_migrations=active.migration_count,
-        live_surfaceable=(
-            store.count_surfaceable_items(context) if live_surfaceable is None else live_surfaceable
-        ),
+        live_surfaceable=store.count_surfaceable_items(context),
         expected_surfaceable=store.expected_surfaceable_count(context.project_id),
     )
 
@@ -288,6 +310,7 @@ def _relation_is_visible(
     relation: KnowledgeRelation,
     *,
     include_unapproved: bool,
+    visible_sensitivities: frozenset[Sensitivity],
 ) -> bool:
     """Whether **both** ends of ``relation`` are items this caller may see.
 
@@ -329,6 +352,13 @@ def _relation_is_visible(
     referenced id -- must read the literally-named row.** The cost is one extra
     primary-key lookup per edge for the near end, which is the fetched item and
     has already cleared this predicate.
+
+    **Both axes, per endpoint** (#119). ``knowledge.get`` refusing an
+    above-ceiling item by id achieves nothing on its own while an edge to that
+    item is published from a visible one: the id and the ``note`` explaining the
+    edge are exactly the pair the ``rejected`` case above was measured leaking,
+    and neither becomes safe because the endpoint is confidential rather than
+    rejected.
     """
     for endpoint_id in (relation.source_item_id, relation.target_item_id):
         # `get_item_exact`, not `get_item`: a visibility decision on a referenced
@@ -336,17 +366,56 @@ def _relation_is_visible(
         # rejected endpoint that is also an alias key clear the gate as the
         # approved item the alias points at (SEC-13, T-21).
         endpoint = store.get_item_exact(context, endpoint_id)
-        if endpoint is None or not may_surface(
-            endpoint.status, include_unapproved=include_unapproved
-        ):
+        if endpoint is None:
+            return False
+        if not may_surface(endpoint.status, include_unapproved=include_unapproved):
+            return False
+        if not may_disclose(endpoint.sensitivity, visible=visible_sensitivities):
             return False
     return True
 
 
+def _tenant_boundary_refusal(grant: AuthorizationGrant) -> ToolError:
+    """The refusal when a grant names a tenant this deployment does not serve.
+
+    Unreachable through the shipped composition and written out anyway. OSS Core
+    runs one process per user with one tenant (ADR-0002), and
+    ``StaticAuthorizationProvider`` sets :data:`DEPLOYMENT_TENANT` on every grant
+    it builds -- so the check below can only fire for a grant assembled by hand,
+    which today means a test. Writing the message now is what makes the boundary a
+    *refusal* rather than a comment: the hosted deployment #119 anticipates adds
+    tenants to the grant, and a seam that has never had a message is a seam that
+    acquires one under time pressure.
+
+    Both values come from this deployment's own configuration, never from the
+    caller's request, so naming them discloses nothing a caller did not supply.
+
+    **Its reach is ``_resolve``, which is the project-scoped tools and only
+    those.** ``project.list`` and ``system.capabilities`` resolve no project and
+    so never pass this seam; ``project.list`` in particular enumerates every
+    registered project. That is correct while one process serves one tenant, and
+    it is a question the hosted deployment has to answer rather than inherit.
+    """
+    return ToolError(
+        f"This daemon serves tenant {DEPLOYMENT_TENANT.value!r}, and the authorization "
+        f"grant it was started with names tenant {grant.tenant.value!r}. Refusing rather "
+        f"than answering across a tenant boundary. Route the request to the daemon that "
+        f"serves tenant {grant.tenant.value!r}, or restart this one with a grant for "
+        f"tenant {DEPLOYMENT_TENANT.value!r}."
+    )
+
+
 def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the set
-    server: MCPServer, registry: ProjectRegistry
+    server: MCPServer, registry: ProjectRegistry, grant: AuthorizationGrant
 ) -> MCPServer:
-    """Register Milestone 3's read-only tools."""
+    """Register Milestone 3's read-only tools.
+
+    ``grant`` is what this deployment's one principal may see, resolved once by
+    the composition root (``daemon/runner.build_server``) rather than re-asked per
+    call. Required rather than defaulted: a tool surface that can be registered
+    without an authorization decision is a surface where forgetting one is
+    invisible.
+    """
 
     # Derived from the registry rather than re-read from the environment, so the
     # provenance the serve path checks is the file beside the very registry this
@@ -488,12 +557,25 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         could come back empty, so the field had to admit `null` for a case that
         cannot arise once the value is carried rather than re-fetched.
 
+        It is also where the request boundary is checked, for the same reason the
+        provenance check below lives here: every knowledge tool resolves through
+        this one function, so a gate placed here is a gate none of them can be
+        registered without (#119 decision 4).
+
         Raises:
-            ToolError: If the project is unknown, if its registry entry cannot
-                be read, or if it has no built state. All three are actionable,
-                all three are different from "no results", and each names the
-                command that fixes *it* -- see :func:`_unresolvable`.
+            ToolError: If the grant names a tenant this deployment does not
+                serve, if the project is unknown, if its registry entry cannot
+                be read, or if it has no built state. All four are actionable,
+                all four are different from "no results", and each names the
+                command that fixes *it* -- see :func:`_unresolvable` and
+                :func:`_tenant_boundary_refusal`.
         """
+        # First, before the registry is even read: a grant from another tenant
+        # must not be able to learn which projects this daemon serves, and
+        # `_unresolvable` names every one of them.
+        if grant.tenant != DEPLOYMENT_TENANT:
+            raise _tenant_boundary_refusal(grant)
+
         try:
             entries = registry.load()
         except ProjectError as exc:
@@ -650,6 +732,11 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # never reaches `ValidityPeriod.contains` -- see `_parse_as_of`.
         as_of = None if asOf is None else _parse_as_of(asOf)
 
+        # Both answer paths take the same grant, because a caller must not be able
+        # to pick the one that withholds less: an unbuilt or unreadable index is a
+        # condition any local process can create, and a fallback that served an
+        # above-ceiling document would make deleting a file the way past the
+        # ceiling (#119).
         answer = hybrid_answer(
             paths,
             database,
@@ -658,6 +745,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             query=searched,
             limit=capped_limit,
             include_unapproved=includeUnapproved,
+            visible_sensitivities=grant.sensitivities,
             budget_tokens=capped_budget,
             use_dense=useDense,
             as_of=as_of,
@@ -671,6 +759,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 query=searched,
                 limit=capped_limit,
                 include_unapproved=includeUnapproved,
+                visible_sensitivities=grant.sensitivities,
                 budget_tokens=capped_budget,
                 fallback=answer,
                 as_of=as_of,
@@ -692,8 +781,11 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         #
         # A short-lived connection for three indexed reads, each O(migrations) or
         # O(surfaceable): the ranked and scan paths open and close their own
-        # stores, and this stays off their hot path so it cannot reopen the
-        # O(withheld) timing channels they close.
+        # stores, and this stays off their hot path. The *status* channels #158/#19
+        # closed stay closed here too, but the surfaceable count is ceiling-blind
+        # by #30's design, so it carries the bounded per-above-ceiling-row slope
+        # recorded at `_measure_integrity` and in T-22 -- a distinct class, not
+        # those channels reopened.
         with SqliteCanonicalStore(database) as store:
             integrity = _measure_integrity(
                 store, RequestContext(project_id=ProjectId(projectId)), active
@@ -759,8 +851,15 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
 
         with SqliteCanonicalStore(database) as store:
             item = store.get_item(context, wanted)
-            withheld = item is not None and not may_surface(
-                item.status, include_unapproved=includeUnapproved
+            # Both axes, and the same refusal for either (#119). An item above this
+            # deployment's ceiling is withheld exactly as a retired one is: the
+            # caller already holds the id, so a message that distinguished "above
+            # your ceiling" from "not present" would confirm the item exists and
+            # what class it is in -- the inference SEC-13 refuses, arriving through
+            # an error rather than through a field.
+            withheld = item is not None and (
+                not may_surface(item.status, include_unapproved=includeUnapproved)
+                or not may_disclose(item.sensitivity, visible=grant.sensitivities)
             )
             if item is None or item.current_revision_id is None or withheld:
                 # "Not present" and "damaged" are different answers with the same
@@ -813,15 +912,22 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             relations = tuple(
                 relation
                 for relation in store.list_relations(context, item.item_id)
-                # A relation touching a retired item is itself a pointer to
+                # A relation touching a withheld item is itself a pointer to
                 # withheld content -- it is how the rejected id was found in the
                 # first place, and its `note` is written by whichever side
                 # authored the edge, not by whichever side is being fetched.
                 # Withholding the body while publishing either would be
-                # withholding nothing that matters. See `_relation_is_visible`
-                # for why the gate asks about both ends.
+                # withholding nothing that matters. Both axes, because a
+                # confidential item's id and the note explaining the edge to it
+                # are the same disclosure whether the item is retired or above
+                # this deployment's ceiling. See `_relation_is_visible` for why
+                # the gate asks about both ends.
                 if _relation_is_visible(
-                    store, context, relation, include_unapproved=includeUnapproved
+                    store,
+                    context,
+                    relation,
+                    include_unapproved=includeUnapproved,
+                    visible_sensitivities=grant.sensitivities,
                 )
             )
             # On the success path the item was read; the signal still applies,
@@ -863,22 +969,35 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         context = RequestContext(project_id=ProjectId(projectId))
 
         with SqliteCanonicalStore(database) as store:
-            by_status = store.count_surfaceable_by_status(context)
-            # The sum of that breakdown *is* the live surfaceable count -- same
-            # predicate, same rows, one query instead of two -- so this tool
-            # measures the second half of the #30 check for free. It is also the
-            # number published as `itemCount` below, which is what makes a
-            # mismatch here a statement about the very integer this response
-            # carries.
-            integrity = _measure_integrity(
-                store, context, active, live_surfaceable=sum(by_status.values())
+            # Narrowed by this deployment's ceiling, because these two numbers are
+            # published (#119 phase 6). `itemsByStatus` and its sum `itemCount`
+            # are statistics over rows the caller may see -- the disclosure family
+            # T-17 enumerates, and the member that survived phases 2 to 5 because
+            # `knowledge.get` refusing an id says nothing about a tool that counts
+            # it. A caller under an `internal` ceiling is told how much `internal`
+            # knowledge this project holds and learns nothing about the rest, not
+            # even a total.
+            by_status = store.count_surfaceable_by_status(
+                context, sensitivities=grant.sensitivities
             )
+            # And the integrity comparison is **not** narrowed, which is why it no
+            # longer reads the sum of the breakdown above. `migrate apply` records
+            # `expected_surfaceable_count` from the rows it wrote, knowing no
+            # ceiling; comparing a ceiling-narrowed live count against it reports
+            # `damageDetected` on a healthy restricted deployment -- measured in
+            # phase 2, which is why that phase left the counts alone rather than
+            # narrowing one half. The cost is one `COUNT` this tool used to get
+            # for free, and it buys a check that compares like with like.
+            integrity = _measure_integrity(store, context, active)
 
         # What may be counted, and what the counts may not restore by
-        # subtraction: `itemsByStatus` covers `SURFACEABLE_STATUSES` alone, and
-        # `itemCount` is the sum of that breakdown rather than the store's size,
-        # so no count below reports anything about withheld content, not even a
-        # total (SEC-13, T-17). This now holds in the timing dimension too: the
+        # subtraction: `itemsByStatus` covers `SURFACEABLE_STATUSES` **within this
+        # deployment's ceiling** alone, and `itemCount` is the sum of that
+        # breakdown rather than the store's size, so no count below reports
+        # anything about withheld content, not even a total (SEC-13, T-17).
+        # Neither axis leaves a total from which the other could be recovered:
+        # the retired rows and the above-ceiling rows are absent from the same
+        # single count. This now holds in the timing dimension too: the
         # count runs in SQL and the withheld rows are never read, so the response
         # time no longer scales with them -- filtering `list_items` in Python did
         # scale with the withheld count, recoverable by subtraction (#158 owns
@@ -1008,6 +1127,22 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 # project actually has a forest is discovered per response, through
                 # `raptorPath`'s presence, exactly as `hybridRetrieval` is.
                 "raptor": True,
+                # A server property, like `raptor`: this build enforces the
+                # disclosure axis, so an empty result may mean "withheld by the
+                # deployment's ceiling" and not only "nothing matched". ADR-0025
+                # forbade advertising this in any form until all four of its parts
+                # had landed -- a client told a control exists when it does not has
+                # been given a false answer to a security question -- and #119
+                # phase 6 discharged that prohibition in the document that made it.
+                #
+                # **The flag, never the ceiling.** Publishing the ceiling word
+                # would tell a caller which levels it is not being shown, which is
+                # a statement about withheld content on a surface no gate protects:
+                # this tool resolves no project, so it never passes `_resolve`.
+                # Every other flag here is a build property for the same reason.
+                # The operator who needs the ceiling reads the file they wrote it
+                # into.
+                "sensitivityEnforcement": True,
                 "reviewIngestion": False,
                 "traceability": False,
                 "writeTools": False,

@@ -18,6 +18,39 @@ The file is named for the index build id, not the state hash, because two index
 builds over one canonical state are a normal thing to have — a re-embedding with
 a different model changes nothing canonical.
 
+**Version 6 changes no column and is still a real break: from it on, a build
+consults the deployment's disclosure ceiling and writes no row for an item above
+it** (#119, ADR-0025 part 1). The DDL moves only in `chunks.sensitivity`'s
+comment, which said the column was read by no query -- and that sentence has to
+change, because the column is now the record of a decision the *build* made
+rather than a label nothing acted on. That alone earns the bump under this file's
+own rule.
+
+**Phase 4 moves that comment again and the version stays at 6, which is an
+exception to the rule above and is argued rather than assumed.** The read-side
+predicate (`_scope`, `_node_scope`) reads `chunks.sensitivity` and
+`nodes.sensitivity`, columns every version-6 file already has, and writes nothing
+new -- so there is no file the new code could misread, which is the whole of what
+the version gate is for. Every file that could disagree with this DDL text is
+version 5 or lower and is already rejected. Version 6 has never left this branch:
+`main` pins 5 and the released artifacts pin 2, so "a version-6 build made by the
+phase-3 code" is the only kind that exists, and the phase-4 predicate serves it
+correctly by construction. Bumping to 7 would order a rebuild of files that need
+none, and would split one unreleased change across two versions.
+
+The forcing function is what makes the bump the point rather than the paperwork.
+Every version-5 index predates the exclusion, so it may hold an above-ceiling
+document's text -- and `chunks_fts` and `chunks_trigram` score what they return
+against collection statistics computed over every row in the file, so those rows
+price the visible ones whether or not any query can return them (T-17a on the
+sensitivity axis). A serve path that merely *filtered* such a file would inherit
+that. Bumping makes it structural: every pre-enforcement build reports
+`index-schema-mismatch` on the first search and is rebuilt, under a ceiling, by
+the same command that has always been the remedy. The pointer's
+`indexedSensitivities` then keeps a *post*-enforcement build from being served
+under a ceiling it was not built for; the version bump is what covers the builds
+that recorded no ceiling at all.
+
 **Version 5 gives `chunks` a `kind` column, so a purge can re-derive the forest
 from the index's own surviving rows.** The withdrawal purge re-derives each
 affected scope's trees from the published build rather than from canonical state
@@ -77,7 +110,7 @@ from typing import Final
 
 #: Bump for ANY change to the DDL below. Independent of the canonical store's
 #: version: they version separately because they are rebuilt separately.
-INDEX_SCHEMA_VERSION: Final = 5
+INDEX_SCHEMA_VERSION: Final = 6
 
 #: FTS5 is a compile-time option. It ships with the python.org, Homebrew, and
 #: Debian builds, but not with every distribution's, so its absence is detected
@@ -133,13 +166,26 @@ CREATE TABLE chunks (
     -- ranking would let a caller learn that a document they may not read exists,
     -- by watching how many results disappeared.
     --
-    -- Today only `status` is filtered on. `sensitivity`, `trust_level`, and
-    -- `namespace` are carried for the scope filtering #119 adds (Milestone 6)
-    -- and are read by no query yet -- said plainly here because a comment that implies
-    -- an access control which does not exist is how the next person concludes
-    -- it is already handled. `namespace` is populated as of the RAPTOR builder,
-    -- which partitions the forest by the scope tuple this column is a component
-    -- of; it is still read by no query.
+    -- `project_id`, `status` and `sensitivity` are all filtered on by a *query*.
+    -- `sensitivity` stopped being inert at v6: every build now consults the
+    -- deployment's disclosure ceiling and writes no row at all for an item above
+    -- it (#119, ADR-0025 part 1), so this column records the class a row was
+    -- admitted under rather than a label nothing acted on, and `_scope` /
+    -- `_node_scope` emit an `IN` predicate over it beside the other two (#119
+    -- phase 4). Which of those two is the control matters: the build is. Against
+    -- a file built under the grant now in force the predicate excludes nothing,
+    -- because every row in it was already admitted under that grant; it answers
+    -- for a file built under a wider one. And it cannot take back what such a
+    -- file's FTS5 collection statistics have already priced. A document
+    -- reclassified upward *after* a build is a third case again, withheld by the
+    -- canonical re-check on its current class rather than by anything here, since
+    -- this column still says what was true when the row was written.
+    --
+    -- `trust_level` and `namespace` are read by no query, and #119 did not change
+    -- that: it enforced the sensitivity axis and left these two where they were.
+    -- `namespace` is populated as of the RAPTOR builder, which partitions the
+    -- forest by the scope tuple this column is a component of; it is still read
+    -- by no query.
     --
     -- `kind` is the one exception to "read by no query": no *retrieval* reads it,
     -- but the withdrawal purge's re-derivation does (v5). A Domain tree is keyed
@@ -256,12 +302,15 @@ CREATE TABLE embeddings (
 -- rebuilt, no guessing. `project_id`, `sensitivity` and `status` are carried
 -- denormalised for the same reason `chunks` carries its own copies: filtering
 -- has to happen in the same statement as the match, before ranking (FR-R1).
--- `project_id` is the future single-point predicate #119 adds; `sensitivity` is
--- today a published label and not a control (see the Context amendment to
--- ADR-0008); `status` is the build-flavor column a node-table predicate will
--- filter on once one exists. `tree_id` already encodes the full six-component
--- scope tuple `(project, tenant, sensitivity, acl_group, namespace, status)`, so
--- these three are read, not derived from it, at query time.
+-- All three are filtered on, and that sentence used to name only futures:
+-- `project_id` was "the predicate #119 adds", `sensitivity` "today a published
+-- label and not a control", and `status` "the column a node-table predicate will
+-- filter on once one exists". `SqliteIndexStore._node_scope` is that predicate
+-- (#119 phase 4, ADR-0025 part 3) and emits all three over `nodes`, so an
+-- above-ceiling or unapproved summary is not traversed at all. `tree_id` already
+-- encodes the full six-component scope tuple
+-- `(project, tenant, sensitivity, acl_group, namespace, status)`, so these three
+-- are read, not derived from it, at query time.
 --
 -- `theurian index build --raptor` writes these rows, through
 -- `IndexStore.add_nodes`; a build without the flag writes none (ADR-0008

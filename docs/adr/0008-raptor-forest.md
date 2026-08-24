@@ -63,6 +63,28 @@ fact.
 > holds it over rows a build wrote. The `test_raptor_scope.py` item in Compliance
 > closes with that note; the rest of this paragraph is unchanged, because #119
 > still gives sensitivity no predicate to filter on.
+>
+> **Amended again in #119 (2026-08-24). "Sensitivity is a published label, not a
+> control" is no longer true, and the sentence directly above — that #119 "still
+> gives sensitivity no predicate to filter on" — is now false.** ADR-0025 records
+> the decision; what it changes here is that the column this forest carries so
+> that "the day #119 gives sensitivity a predicate there is a column to filter
+> on" is filtered on today. `SqliteIndexStore._node_scope` emits
+> `sensitivity IN (…)` over `nodes` beside its project and status predicates, so
+> an above-ceiling summary is not traversed at all; `IndexBuilder` writes no
+> chunk row above the deployment's declared ceiling, so the forest derived over
+> what it wrote has no such node to traverse in the first place; and a
+> `changeSensitivity` past that ceiling purges the affected rows and re-derives
+> the affected scopes' trees in the same `migrate apply`.
+>
+> **What is *not* amended is everything this block says about partitioning**, and
+> the distinction is worth keeping rather than collapsing. Partitioning stops a
+> node's text spanning two sensitivities; the ceiling stops a deployment reading
+> a level it does not serve. On a deployment that serves both levels the ceiling
+> withholds nothing, and partitioning is still the only thing standing between a
+> `restricted` incident report and a summary of it — so the forest's reason for
+> carrying the scope tuple survives the axis becoming a control rather than being
+> replaced by it.
 
 ## Decision
 
@@ -2012,3 +2034,18 @@ the decision it belongs to states a property that is otherwise only an argument:
   > path. Both enforcement points the forest reads through — the node match in
   > `search_summaries` and the walk in `walk_raptor_path` — now carry their own
   > mutation-checked isolation test, so this item is fully discharged.
+  >
+  > **Amended by [#119](https://github.com/theurian/theurian/issues/119) phase 5:
+  > the walk-side gate was one axis short of the node match.** `_node_scope`
+  > gained `nodes.sensitivity IN (…)` in phase 4 while `walk_raptor_path` went on
+  > filtering project and status alone, so a hand-edited or corrupted file — the
+  > only population either guard exists for — could walk an ancestor whose
+  > disclosure class disagreed with its leaf's, on the one axis a deployment under
+  > a declared ceiling is actually withholding on. The walk now reads
+  > `sensitivity` off the same anchoring chunk row it already read `status` from
+  > and filters on all three. Read off the *leaf*, not off the caller's grant: the
+  > grant decided the leaf may surface three gates ago, and re-applying it here
+  > would answer that question twice while leaving this one — is the ancestor in
+  > this leaf's scope — unasked.
+  > `tests/integration/test_forest_store_retrieval.py::test_an_internal_leafs_raptor_path_excludes_a_confidential_ancestor`
+  > is the sibling fixture, measured RED by reverting the clause.

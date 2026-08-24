@@ -236,9 +236,18 @@ class ChangeSensitivity(Operation):
     item_id: ItemId
     sensitivity: Sensitivity
     #: Required by the schema. Reclassification changes who may read the content,
-    #: so the rationale is recorded. It does not force a rebuild: a result reads
-    #: the item's current sensitivity, so the response reflects the new label at
-    #: once, and the built index re-derives the label on the next ``index build``.
+    #: so the rationale is recorded. It does not force a full rebuild: a result
+    #: reads the item's current sensitivity, so the response reflects the new label
+    #: at once.
+    #:
+    #: It is not inert on the index either, and saying only "the next
+    #: ``index build`` re-derives the label" left out the half that matters since
+    #: #119. A move *past* the ceiling the published build ran under withdraws the
+    #: item from this deployment, so ``migrate apply`` purges its rows out of the
+    #: published index in the same command
+    #: (``migration_engine._withdrawal_affected_item``, ADR-0025 part 2). A move
+    #: that stays within that ceiling purges nothing, and a move back *down* into
+    #: it has no row to restore and waits for the next ``index build``.
     reason: str
 
     @override

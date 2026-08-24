@@ -8,10 +8,22 @@ and this is the one that *writes*. Everything left there reads.
 
 The seam is real rather than arithmetic. Nothing here consults a
 :class:`~theurian.application.visibility.Visibility`, because at build time there
-is no caller to be visible *to*: the filter that applies is
+is no caller to be visible *to*: the filters that apply are
 :func:`~theurian.domain.enums.may_surface` against the operator's
-``include_unapproved``, and it decides what is written rather than what is shown.
-The equality property the query side exists to hold has no counterpart here.
+``include_unapproved`` and :func:`~theurian.domain.enums.may_disclose` against
+the deployment's serving profile, and they decide what is written rather than
+what is shown. The equality property the query side exists to hold has no
+counterpart here.
+
+**Two build flavors, for two reasons that are not the same.** ``include_unapproved``
+exists so an operator can guarantee a draft is not in the file at all; the
+sensitivity filter exists because a row that *is* in the file is priced into the
+FTS5 collection statistics -- ``N``, ``avgdl`` and the per-term document
+frequencies -- that score every visible row against it, whatever a later query
+predicate does (T-17a, ADR-0025 part 1). Excluding at build time is the choice
+ADR-0025 left open and #119 settled: a read-side predicate alone leaves the
+withheld text in the index, and the statistics it moves are observable without
+ever returning it.
 
 **The RAPTOR forest is derived here too, over the chunks that survived that
 filter** (ADR-0008). It has to be: a summary of a withheld revision holds the
@@ -35,7 +47,7 @@ from typing import Final, final
 from theurian.application.forest_builder import ForestBuilder
 from theurian.domain.chunking import IndexableChunk, chunk_document
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import may_surface
+from theurian.domain.enums import Sensitivity, may_disclose, may_surface
 from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.ports.canonical_store import CanonicalReadSession
@@ -58,6 +70,17 @@ class IndexRequest:
     project_id: str
     state_hash: str
     index_build_id: str
+    #: The disclosure classes this deployment serves, already expanded from the
+    #: operator's declared ceiling (#119, ADR-0025). An item outside it writes no
+    #: chunk row, and therefore no summary node either -- the forest is derived
+    #: over what this build wrote.
+    #:
+    #: **No default, deliberately**, for the reason
+    #: :func:`~theurian.domain.enums.may_disclose` has none: "everything is
+    #: visible" is the state this filter exists to stop being implicit, and a
+    #: default parameter is how it would come back. Every caller states it, which
+    #: is four lines in the composition roots and a keyword in each test.
+    visible_sensitivities: frozenset[Sensitivity]
     #: Whether unapproved revisions are written at all. Off by default, so an
     #: operator who never opts in has a hard guarantee that no draft is in the
     #: file — not merely that a query filter is expected to hold.
@@ -91,7 +114,8 @@ class IndexBuilder:
         """Write a new index file from a canonical state.
 
         Unapproved revisions are written only when asked for, `rejected` never
-        is, and a summary forest is derived only when asked for.
+        is, an item above this deployment's disclosure ceiling never is, and a
+        summary forest is derived only when asked for.
 
         The obvious simplification — index everything, filter at query time —
         was tried and reverted. It makes `includeUnapproved=True` a single
@@ -144,6 +168,24 @@ class IndexBuilder:
                 # two comparisons until `may_surface` moved to the domain, which
                 # is one copy of a security rule too many.
                 if not may_surface(item.status, include_unapproved=request.include_unapproved):
+                    continue
+                # The second axis, and the one a query-time predicate cannot
+                # fully cover. `_scope` does emit one for it now (#119 phase 4),
+                # and it is defence in depth rather than the control: an FTS5
+                # external-content table scores what it returns against
+                # collection statistics computed over every row it holds, so a
+                # row filtered out on read goes on pricing the rows that are
+                # returned. Excluded here, an above-ceiling document contributes
+                # nothing to `N`, to `avgdl` or to any term's document frequency,
+                # so T-17a is held by construction on this axis rather than by a
+                # filter (ADR-0025 part 1).
+                #
+                # The item's current level, matching the `sensitivity=` written
+                # below and for the same reason: `changeSensitivity` moves the
+                # classification on the item without writing a new revision
+                # (ADR-0005), so reading the revision's would admit a document by
+                # the label it was authored under.
+                if not may_disclose(item.sensitivity, visible=request.visible_sensitivities):
                     continue
                 if item.current_revision_id is None:
                     continue

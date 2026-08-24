@@ -24,6 +24,11 @@ What these tests hold, and why each one is not already held elsewhere:
   belongs to the purge-closure one: an id or a text that moves between two
   derivations of the same state makes the later test unwritable rather than
   merely red.
+- **The disclosure ceiling, over both halves.** ADR-0025 part 1 is a statement
+  about the builder *and* the forest derived from it, because a query-time
+  predicate leaves the withheld text in four FTS5 tables whose collection
+  statistics score everything else. This is where a build under a declared
+  ceiling meets a real corpus and a real forest.
 - **The purge, over derived rows.** `test_index_purge_nodes.py` proves universal
   grounding against hand-written fixtures. This is the first time the traversal
   meets a graph the builder shaped, which is also the re-check
@@ -55,6 +60,7 @@ import pytest
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
+from theurian.application.authorization import SERVING_PROFILE_FILENAME
 from theurian.application.project_service import ProjectPaths, read_active_index_pointer
 from theurian.cli.main import app
 from theurian.domain.enums import KnowledgeStatus, Sensitivity
@@ -911,6 +917,119 @@ def test_a_purged_forest_leaves_no_residue_in_a_node_text_index(project: Path, t
         assert term in surviving, (
             f"{table} still indexes {term!r}, which no surviving node's text contains"
         )
+
+
+# -- The disclosure ceiling, over both halves (ADR-0025 part 1) --------------
+
+
+def _declare_a_ceiling(data_dir: Path, ceiling: Sensitivity) -> None:
+    """Write the deployment serving profile ``theurian index build`` will read.
+
+    Mode 0600 is not tidiness. ``load_serving_profile`` refuses a profile other
+    local users can reach, and ``write_text`` under the usual umask leaves 0644 --
+    so a test that skipped this would exercise the refusal rather than the
+    ceiling, and would say "the build failed" while looking like a withholding.
+    """
+    auth = data_dir / "auth"
+    # 0700 on the directory as well as 0600 on the file. `load_serving_profile`
+    # refuses both, because a directory's write bit governs *replacing* an entry
+    # in it -- and a bare `mkdir` under the usual umask leaves 0755, which is the
+    # shape `FileSecretStore.set` never creates and this refusal exists for.
+    auth.mkdir(parents=True, exist_ok=True, mode=0o700)
+    auth.chmod(0o700)
+    profile = auth / SERVING_PROFILE_FILENAME
+    profile.write_text(f"{ceiling.value}\n", encoding="utf-8")
+    profile.chmod(0o600)
+
+
+def _only_from(withheld: Doc, visible: Sequence[Doc], terms: set[str]) -> set[str]:
+    """The indexed terms that could only have come from ``withheld``.
+
+    Written as "in that document's text and in no other document's" rather than
+    as a token list, so it means the same thing for a word index and for a
+    trigram one: `nodes_fts` indexes words while `chunks_trigram` indexes
+    three-character sequences, and an assertion phrased in either one's units
+    would silently pass over the other.
+    """
+    elsewhere = " ".join(_body(doc) for doc in visible).lower()
+    body = _body(withheld).lower()
+    return {term for term in terms if term in body and term not in elsewhere}
+
+
+@pytest.mark.parametrize("table", ["chunks_fts", "chunks_trigram", "nodes_fts", "nodes_trigram"])
+def test_an_above_ceiling_document_reaches_neither_half_of_the_index(
+    project: Path, tmp_path: Path, table: str
+) -> None:
+    """ADR-0025 part 1's owed test, over both halves and all four text indexes.
+
+    The ADR's compliance section recorded this as owed and said why it could not
+    be written: ``IndexBuilder._build``'s only scope gate was status, and
+    ``ForestBuilder.derive`` inherits whatever the builder wrote. Both halves have
+    to participate, because a query-time predicate alone leaves the withheld text
+    in FTS5 -- leaf text in `chunks_fts`/`chunks_trigram`, summary text in
+    `nodes_fts`/`nodes_trigram` -- where it is scored against as collection
+    statistics whether or not any query can return it (T-17a on the sensitivity
+    axis). So the assertion is over the *index*, not over a response: no chunk
+    row, no summary node, and no term that could only have come from the withheld
+    document.
+
+    Two builds of one corpus, which is what makes the absence mean anything. The
+    first runs under a declared ``restricted`` ceiling, where every level is
+    served: it pins that this document *is* indexable and that this table really
+    does index a term unique to it -- without which the second build's silence
+    would be the silence of a fixture nothing ever reached. The second runs under
+    an ``internal`` ceiling. Both are declared the way an operator declares one,
+    in the profile file beside the token, and both are the shipped path end to
+    end: `theurian index build` reads it through the same provider the daemon
+    serves through.
+
+    **The control build declares its ceiling rather than inheriting the shipped
+    default**, and it inherited it until the flip. Once ``DEFAULT_CEILING`` became
+    ``internal``, an undeclared build was already the *gated* one: the control
+    indexed nothing of the withheld document and the assertion below -- that the
+    document is indexable at all -- went RED. What the control has to be is a
+    build allowed to hold the row; which ceiling produces that is incidental, so
+    it is now said out loud rather than borrowed from a constant that moved.
+
+    The forest is asserted non-empty on both sides. A ceiling that took the whole
+    forest with it would satisfy every absence below and destroy the capability.
+    """
+    visible = (Doc("auth-policy"), Doc("quota-policy"))
+    withheld = Doc("payroll-bands", sensitivity="confidential")
+    _write_corpus(project, (*visible, withheld))
+    _must(project, "migrate", "apply")
+
+    _declare_a_ceiling(tmp_path / "datadir", Sensitivity.RESTRICTED)
+    _must(project, "index", "build", "--raptor")
+    served_everything = _published_index(project)
+    assert withheld.item_id in {
+        str(row["item_id"]) for row in _chunks(served_everything).values()
+    }, "a `restricted` ceiling must index a confidential document, or the control build is not one"
+    assert _nodes(served_everything), "no forest was derived, so neither half can be shown empty"
+    discriminating = _only_from(withheld, visible, _terms(served_everything, table))
+    assert discriminating, (
+        f"{table} indexed no term unique to the withheld document, so its absence below "
+        f"would prove nothing about the ceiling"
+    )
+
+    _declare_a_ceiling(tmp_path / "datadir", Sensitivity.INTERNAL)
+    _must(project, "index", "build", "--raptor")
+    gated = _published_index(project)
+
+    assert gated != served_everything, "the second build must have published a new file"
+    assert _chunks(gated), "the gated build indexed nothing at all"
+    assert withheld.item_id not in {str(row["item_id"]) for row in _chunks(gated).values()}, (
+        "an item above the deployment's ceiling was written into `chunks`"
+    )
+    assert _nodes(gated), "the ceiling took the whole forest, not just the withheld document"
+    assert not any(withheld.marker in str(row["text"]) for row in _nodes(gated).values()), (
+        "a summary node was derived from an above-ceiling document's text"
+    )
+    assert not (discriminating & _terms(gated, table)), (
+        f"{table} holds {sorted(discriminating & _terms(gated, table))}, terms that appear in "
+        f"no document this build was allowed to write -- the withheld text is in the file's "
+        f"collection statistics even though no row of it can be returned"
+    )
 
 
 # -- Reporting ---------------------------------------------------------------

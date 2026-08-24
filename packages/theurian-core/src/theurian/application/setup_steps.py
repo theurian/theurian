@@ -1,4 +1,4 @@
-"""The individual setup steps of §6.2.
+"""The individual setup steps of §6.2, and the one step §6.2 predates.
 
 Each step is a **probe** that reports what it found without changing anything,
 and — where setup acts on the answer — an **apply** that makes that answer true.
@@ -34,6 +34,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from theurian.application.authorization import (
+    DISCLOSURE_ORDER,
+    ServingProfileError,
+    load_serving_profile,
+    serving_profile_path,
+)
 from theurian.application.project_service import (
     ProjectError,
     ProjectPaths,
@@ -43,6 +49,7 @@ from theurian.application.project_service import (
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_withholding import (
     ANOTHER_DATA_DIRECTORY,
+    failure_detail,
     unreadable_registry_summary,
     withheld_difference,
     withheld_registry_detail,
@@ -437,6 +444,90 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
 
 def apply_token_storage(context: SetupContext) -> None:
     apply_token(context)
+
+
+# -- 6a. The deployment serving profile (#119, ADR-0025) ---------------------
+
+
+def probe_serving_profile(context: SetupContext) -> SetupStep:
+    """Which sensitivity ceiling this deployment serves, and whether it is honoured.
+
+    The only security setting `doctor` did not look at, and the one that decides
+    what every ``knowledge.search`` may return. A profile the loader refuses
+    stops the daemon from starting and refuses every ``theurian index build``,
+    and until this step existed the health check had nothing to say about either.
+
+    **Three statuses, and none of them is ``MISSING``.** ``MISSING`` is
+    ``would_change``, so `doctor` counts it a problem and exits 1 -- and an
+    undeclared ceiling is the ordinary state of every deployment, cleared by no
+    command Theurian ships. A permanent non-zero exit that nothing can clear is
+    how a health check stops being read (§6.2), and
+    ``test_doctor_names_a_remedy_for_every_problem`` would demand an ``action``
+    naming a command that does not exist. So:
+
+    - **not-applicable** -- no profile declared. Reported rather than omitted,
+      with the level in force named, because an operator who has never opened
+      that file has no other way to learn what their deployment withholds. This
+      is ``probe_serena``'s shape: probed, found not to apply, and said so.
+    - **satisfied** -- a profile is declared and honoured, and the summary names
+      the ceiling. That is the split ``mcp/search.py``'s ``_PROFILE_MISMATCH``
+      note defers here: a degraded search never names a level to an agent, and
+      this is the operator at their own terminal.
+    - **conflicting** -- the file is present and cannot be honoured. Never
+      ``MISSING``: setup overwrites nothing it did not install, and this file is
+      the operator's own (SEC-18), so what a conflict buys is consent to proceed
+      past it. The detail carries the refusal's own remedy, which is the only
+      text that says what would have worked.
+
+    ``paths`` is empty on every arm, because no arm writes: setup neither creates
+    a profile nor repairs one, and a path listed there is read as "setup would
+    touch this" by the plan and by ``changedPaths``.
+
+    The word from the file reaches ``detail`` on the conflicting arm only, and
+    only when the report is not for publication. ``UnknownSensitivityCeilingError``
+    echoes what it read -- deliberately, since an operator cannot fix a typo they
+    cannot see -- and that is a value Theurian did not author, so
+    ``doctor --report`` gets the type name instead (:func:`failure_detail`).
+    """
+    path = serving_profile_path(context.data_dir)
+    try:
+        profile = load_serving_profile(context.data_dir)
+    except ServingProfileError as exc:
+        return SetupStep(
+            step_id=StepId.SERVING_PROFILE,
+            status=StepStatus.CONFLICTING,
+            summary=f"{path} does not declare a ceiling Theurian can honour.",
+            detail=(
+                failure_detail(exc, for_publication=True)
+                if context.for_publication
+                else f"{exc} {exc.remedy}".strip()
+            ),
+        )
+
+    # `is_file` and never `exists`, which follows a symlink and answers False for
+    # a dangling one -- the widening `load_serving_profile` was corrected for.
+    # Reached only after a successful load, which leaves exactly two shapes: no
+    # entry at all, or a regular file the loader read. Every other shape raised.
+    if not path.is_file():
+        return SetupStep(
+            step_id=StepId.SERVING_PROFILE,
+            status=StepStatus.NOT_APPLICABLE,
+            summary=(
+                f"No deployment serving profile is declared, so this deployment serves "
+                f"{profile.ceiling.value} and below."
+            ),
+            detail=(
+                f"Write one of {', '.join(level.value for level in DISCLOSURE_ORDER)} into "
+                f"{path} at mode 0600 to declare a different ceiling, then rebuild each "
+                f"project's index with `theurian index build`."
+            ),
+        )
+
+    return SetupStep(
+        step_id=StepId.SERVING_PROFILE,
+        status=StepStatus.SATISFIED,
+        summary=f"This deployment serves {profile.ceiling.value} and below.",
+    )
 
 
 # -- 7. Env reference -------------------------------------------------------
@@ -1065,9 +1156,12 @@ def probe_serena(context: SetupContext) -> SetupStep:
     )
 
 
-#: Every step, in the order §6.2 lists them. The order is the contract: the
-#: token must exist before the env file references it, and the service must be
-#: registered before anything tries to start it.
+#: Every step, in the order §6.2 lists them, plus the one step §6.2 predates.
+#: The order is the contract: the token must exist before the env file
+#: references it, and the service must be registered before anything tries to
+#: start it. ``serving-profile`` sits after ``token-storage`` because it is the
+#: other operator-owned file in ``auth/``; §6.2 calls it row 6a rather than
+#: renumbering the rows it is cited by.
 STEPS: Final[tuple[Step, ...]] = (
     Step(StepId.PLATFORM, probe_platform, None),
     Step(StepId.CORE_PRESENT, probe_core, None),
@@ -1075,6 +1169,7 @@ STEPS: Final[tuple[Step, ...]] = (
     Step(StepId.DATA_DIRECTORY, probe_data_directory, apply_data_directory),
     Step(StepId.TOKEN, probe_token, apply_token),
     Step(StepId.TOKEN_STORAGE, probe_token_storage, apply_token_storage),
+    Step(StepId.SERVING_PROFILE, probe_serving_profile, None, critical=False),
     Step(StepId.ENV_REFERENCE, probe_env_reference, apply_env_reference),
     Step(StepId.DAEMON_SERVICE, probe_daemon_service, apply_daemon_service),
     Step(StepId.DAEMON_RUNNING, probe_daemon_running, apply_daemon_running, critical=False),

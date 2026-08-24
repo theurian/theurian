@@ -17,6 +17,7 @@ import pytest
 
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import (
+    SURFACEABLE_STATUSES,
     KnowledgeKind,
     KnowledgeStatus,
     RelationType,
@@ -686,22 +687,41 @@ def test_list_items_never_filters_by_validity(database: Path, lock: Path) -> Non
     )
 
 
+@pytest.mark.parametrize(
+    ("statuses", "sensitivities", "axis"),
+    [
+        (frozenset[KnowledgeStatus](), frozenset(Sensitivity), "statuses"),
+        (SURFACEABLE_STATUSES, frozenset[Sensitivity](), "sensitivities"),
+        (frozenset[KnowledgeStatus](), frozenset[Sensitivity](), "both"),
+    ],
+    ids=["empty-statuses", "empty-sensitivities", "both-empty"],
+)
 def test_list_items_by_status_short_circuits_an_empty_set_without_a_query(
-    database: Path, lock: Path
+    database: Path,
+    lock: Path,
+    statuses: frozenset[KnowledgeStatus],
+    sensitivities: frozenset[Sensitivity],
+    axis: str,
 ) -> None:
-    """SEC-13, T-17, #158. An empty status set must resolve to no items via no query.
+    """SEC-13, T-17, #158, #119. An empty set on either axis: no items, via no query.
 
-    ``list_items_by_status`` builds ``status IN (?, ?, ...)`` with one placeholder
-    per status, so an empty set would build ``status IN ()``. The
-    ``if not statuses: return ()`` guard short-circuits before that statement is
-    ever assembled. It is not reachable from ``_scan`` today (the resolved
-    surfaceable set always contains ``approved``), so nothing else exercises it:
-    the adversarial reviewer mutated the guard to ``if statuses is None:`` and the
-    whole suite stayed green, because an empty ``frozenset`` is not ``None`` and
-    falls straight through to build ``IN ()``.
+    ``list_items_by_status`` builds ``status IN (?, ?, ...)`` and ``sensitivity IN
+    (?, ?, ...)`` with one placeholder per member, so an empty set on either axis
+    would build ``IN ()``. The ``if not statuses or not sensitivities: return ()``
+    guard short-circuits before that statement is ever assembled. Neither arm is
+    reachable from ``_scan`` today -- the resolved surfaceable set always contains
+    ``approved``, and ``AuthorizationGrant`` refuses at construction to hold an
+    empty sensitivity set -- so nothing else exercises them: the adversarial
+    reviewer mutated the original guard to ``if statuses is None:`` and the whole
+    suite stayed green, because an empty ``frozenset`` is not ``None`` and falls
+    straight through to build ``IN ()``.
+
+    Both arms are parametrised, because a guard written as ``if not statuses:``
+    alone passes the first case and lets the second build ``sensitivity IN ()`` --
+    the exact half-fix a single-axis test cannot see.
 
     Why this asserts *no statement ran* and not merely *the result is empty*: on
-    this SQLite build ``status IN ()`` does not raise -- it evaluates to false and
+    this SQLite build ``IN ()`` does not raise -- it evaluates to false and
     returns zero rows -- so ``result == ()`` holds under the mutation too and would
     not catch it. Verified: with the guard mutated to ``if statuses is None:`` this
     test goes RED only on the ``statements == []`` assertion, having recorded the
@@ -743,16 +763,17 @@ def test_list_items_by_status_short_circuits_an_empty_set_without_a_query(
     with SqliteCanonicalStore(database) as store, pytest.MonkeyPatch.context() as patch:
         patch.setattr(SqliteCanonicalStore, "_read_all", spy)
         result = store.list_items_by_status(
-            RequestContext(project_id=PROJECT), statuses=frozenset()
+            RequestContext(project_id=PROJECT), statuses=statuses, sensitivities=sensitivities
         )
 
     assert result == (), (
-        f"an empty status set must resolve to no items; the store returned {result!r} instead"
+        f"an empty {axis} set must resolve to no items; the store returned {result!r} instead"
     )
     assert statements == [], (
-        "the empty status set reached the store's reader, so it built `status IN ()` "
-        "-- an invalid statement SQLite raises on. The `if not statuses` short-circuit "
-        f"is gone. Statements run: {statements!r}"
+        f"the empty {axis} set reached the store's reader, so it built `IN ()` on that "
+        f"axis -- a predicate that silently matches nothing rather than raising. The "
+        f"`if not statuses or not sensitivities` short-circuit is gone or covers only "
+        f"one axis. Statements run: {statements!r}"
     )
 
 

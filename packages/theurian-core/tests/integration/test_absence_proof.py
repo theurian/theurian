@@ -177,21 +177,42 @@ Four further things this file does not reach, so nobody has to rediscover them:
   for a statistical latency test -- ``dudect``-style, or a Welch t-test over
   samples classed by withheld count -- so that a regression in the timing family
   fails a run instead of sitting in prose. It is not built here, and the reason
-  is that the quantity underneath it is already pinned *exactly*. What varies
-  with the withheld count is the number of SQL round-trips, and that is asserted
-  from both sides of its threshold by
+  is that the quantity underneath it is pinned *exactly*. What varies with the
+  withheld count on the *status* axis is the number of SQL round-trips, and that
+  is asserted from both sides of its threshold by
   ``test_the_second_pass_arrives_at_fifty_withheld_rows_and_not_before``, its
   geometric step by ``test_each_pass_reaches_twice_as_far_as_the_one_before``
   (both ``tests/unit/test_retrieval_depth.py``), and the corpus scan count by
-  ``test_one_search_scans_the_corpus_once_however_many_rows_were_withheld``
-  (``tests/integration/test_scan_cache.py``). A t-test over wall clock would be a
-  noisier measurement of the same variable, on a machine that also runs the rest
-  of the suite -- and it would fail intermittently, which is the failure mode
-  this repository can least afford in a security assertion. If the pass count is
-  right, the latency follows; if it is wrong, a deterministic test says so and
-  names the constant. What no test here covers is the *constant factor* -- what
-  one pass costs on a large corpus -- and those numbers live in
-  ``FIRST_PASS_DEPTH``'s docstring, measured by hand and not re-measured.
+  ``test_one_search_reads_the_scan_once_however_many_rows_were_withheld``
+  (``tests/integration/test_scan_exhaustion.py``). A t-test over wall clock would
+  be a noisier measurement of the same variable, on a machine that also runs the
+  rest of the suite -- and it would fail intermittently, which is the failure
+  mode this repository can least afford in a security assertion. If the pass
+  count is right, the latency follows; if it is wrong, a deterministic test says
+  so and names the constant.
+
+  **"If the pass count is right, the latency follows" is now too narrow to be the
+  whole reason, and saying so is what keeps this an exclusion rather than a false
+  closure argument.** It was written when the pass count was the only quantity
+  that moved with what was withheld. On the *ceiling* axis (#119) a second one
+  moves while the pass count is held at one: the canonical statement
+  ``list_items_by_status`` spends about 0.20 us and 6.0 SQLite VM steps per
+  above-ceiling row, measured, linear, and bounded by the corpus rather than by
+  the caller's ask, because that statement carries no ``LIMIT``. It is a recorded
+  and accepted residual, not an open defect -- the measurement, the per-row
+  comparison against T-17's accepted 14.7 us per withheld row, and what it would
+  take to flatten it are on ``SqliteCanonicalStore.list_items_by_status``, and the
+  flattening is owned by https://github.com/theurian/theurian/issues/338.
+
+  **This suite deliberately does not measure it.** Every pair here compares
+  *response content*, and a term of that size is far below what a pair built out
+  of one process's wall clock could separate from noise -- the threat model puts
+  a real client's end-to-end floor at 1.40 ms (TB-1), thousands of above-ceiling
+  rows away. Adding a timing assertion here would therefore assert nothing while
+  reading as though it asserted the family. What no test here covers is that
+  residual and the *constant factor* -- what one pass costs on a large corpus --
+  and those numbers live in ``FIRST_PASS_DEPTH``'s docstring and in the note
+  named above, measured by hand and not re-measured.
 - **``rejected`` items.** :func:`~theurian.domain.enums.may_surface` refuses them
   under every flag, so :class:`~theurian.application.index_builder.IndexBuilder`
   never writes one and there is no withheld row for a pair to differ by.
@@ -229,9 +250,12 @@ Milestone 5's account of T-17a is precisely that of an acceptance drifting away
 from the measurement behind it, carried for two rounds in the orchestrator's own
 words before anyone re-measured it.
 
-The secondary cost is that the split needs a shared helper module in a test tree
-with no package structure (no ``__init__.py``, ``--import-mode=importlib``),
-which is a new import mechanism introduced for one file.
+The often-cited secondary cost -- that a split needs a shared helper module the
+tree cannot import -- does not hold: ``conftest.py`` already puts the tests root
+on ``sys.path``, which is how ``fakes`` and ``migration_fixtures`` are imported
+as top-level modules under ``--import-mode=importlib``. A shared helper would use
+that existing mechanism, not a new one, so the reason not to split is the
+keep-together argument above and nothing about imports.
 
 Sizes here for calibration rather than as an excuse: ``test_mcp_tools.py`` is
 3,757 lines, ``test_retrieval_service.py`` 2,002 and
@@ -245,7 +269,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import subprocess
+from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -258,6 +284,13 @@ from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
+from theurian.application.authorization import (
+    DEPLOYMENT_ACL_GROUPS,
+    DEPLOYMENT_TENANT,
+    SERVING_PROFILE_FILENAME,
+    AuthorizationGrant,
+    encode_sensitivities,
+)
 from theurian.application.index_builder import IndexBuilder, IndexRequest
 from theurian.application.project_service import (
     BuildProvenance,
@@ -287,6 +320,15 @@ from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWri
 from theurian.mcp.tools import MAX_BUDGET_TOKENS, MAX_RESULTS
 
 pytestmark = pytest.mark.integration
+
+#: The disclosure grant every retriever call in this file runs under: all four
+#: levels, which is what "this deployment serves everything" means once the
+#: retrievers take the axis as a WHERE predicate (#119 phase 4). Spelled out
+#: rather than read from ``StaticAuthorizationProvider``'s shipped default, which
+#: a later phase narrows -- a file that inherited it would start withholding its
+#: own fixtures silently, turning these tests into tests of something else.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
 
 #: The visible corpus and every query term are built from these, and the letters
 #: are the load-bearing part: **a to o only**.
@@ -372,6 +414,10 @@ class _Document:
     title: str
     body: str
     status: KnowledgeStatus
+    #: What this deployment must be serving to see it (#119). ``internal`` for
+    #: everything the ceiling shape does not raise, which is what every document
+    #: in this file was before the axis existed.
+    sensitivity: Sensitivity = Sensitivity.INTERNAL
 
 
 #: Withheld at query time because the *canonical store* retired it after the
@@ -391,7 +437,47 @@ RETIRED_AFTER_BUILD: Final = "retired-after-build"
 #: separation here would be a defect in a different gate.
 DRAFT_IN_AN_UNAPPROVED_INDEX: Final = "draft-in-an-unapproved-index"
 
-WITHHOLDING_MECHANISMS: Final = (RETIRED_AFTER_BUILD, DRAFT_IN_AN_UNAPPROVED_INDEX)
+#: Withheld at query time because the item's sensitivity is above the ceiling
+#: this deployment serves (#119). Structurally the strongest of the three: the
+#: rows are ``approved`` at build *and* at query time, so every retriever's SQL
+#: admits them, the index holds their text stamped with a level the ceiling would
+#: admit, and nothing but the canonical re-check on the item's *current* level
+#: stands between the row and the caller.
+#:
+#: It is the retired shape's sibling and not its duplicate. There the withheld
+#: rows have left ``SURFACEABLE_STATUSES``, so five other things also stop
+#: counting them -- the #30 expected count, `itemsByStatus`, the purge. Here they
+#: are ordinary approved knowledge that this *deployment* may not disclose, so
+#: those quantities still include them and only the disclosure gates may not.
+ABOVE_THE_CEILING: Final = "above-the-ceiling"
+
+WITHHOLDING_MECHANISMS: Final = (
+    RETIRED_AFTER_BUILD,
+    DRAFT_IN_AN_UNAPPROVED_INDEX,
+    ABOVE_THE_CEILING,
+)
+
+#: The level the ceiling shape raises its withheld documents to, and the grant
+#: that then excludes them. Every other document in this file is ``internal``, so
+#: the ceiling admits the visible corpus whole and stops exactly at the withheld
+#: rows.
+ABOVE_CEILING_LEVEL: Final = Sensitivity.RESTRICTED
+CEILING_GRANT: Final = AuthorizationGrant(
+    tenant=DEPLOYMENT_TENANT,
+    sensitivities=frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL}),
+    acl_groups=DEPLOYMENT_ACL_GROUPS,
+)
+
+#: What every other shape runs under: the four levels the shipped default serves.
+#: Spelled out rather than read from `StaticAuthorizationProvider`, because a
+#: later phase narrows that default and this file's other two mechanisms must go
+#: on being about status.
+ALLOW_ALL_LEVELS: Final = frozenset(Sensitivity)
+ALLOW_ALL_GRANT: Final = AuthorizationGrant(
+    tenant=DEPLOYMENT_TENANT,
+    sensitivities=ALLOW_ALL_LEVELS,
+    acl_groups=DEPLOYMENT_ACL_GROUPS,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -443,18 +529,68 @@ class _Case:
     def build_status(self) -> KnowledgeStatus:
         """What the withheld documents are when the index is written.
 
-        ``approved`` for the retired shape: it has to be in the index as a row a
-        retriever will return, or the canonical gate never sees it and the pair
-        proves nothing about the gate. That mistake was made in this file's first
-        version -- every withheld document was a ``draft``, so the retrievers'
-        own ``WHERE`` removed it and deleting the canonical gate outright left
-        all ten tests here green.
+        ``approved`` for the retired and ceiling shapes: the row has to be in the
+        index as one a retriever will return, or the canonical gate never sees it
+        and the pair proves nothing about the gate. That mistake was made in this
+        file's first version -- every withheld document was a ``draft``, so the
+        retrievers' own ``WHERE`` removed it and deleting the canonical gate
+        outright left all ten tests here green.
         """
         return (
-            KnowledgeStatus.APPROVED
-            if self.withheld_by == RETIRED_AFTER_BUILD
-            else KnowledgeStatus.DRAFT
+            KnowledgeStatus.DRAFT
+            if self.withheld_by == DRAFT_IN_AN_UNAPPROVED_INDEX
+            else KnowledgeStatus.APPROVED
         )
+
+    @property
+    def build_sensitivity(self) -> Sensitivity:
+        """What the withheld documents' *level* is, in the store and in the index.
+
+        Raised for the ceiling shape alone, and raised **before** the build. Until
+        #119 phase 3 that made the index stamp its chunks with the very level the
+        ceiling excludes -- the harder case, and the only one available while the
+        builder ignored the ceiling. The builder no longer does, so on this shape
+        the level now decides that the withheld documents are never written, and
+        the pair's index-side difference is gone by construction rather than
+        filtered.
+
+        **What that costs, said plainly:** the ranked path's canonical re-check on
+        this axis is no longer exercised from here, because the rows it would
+        re-check are not in either index. It is exercised by
+        ``test_mcp_tools.py::test_the_ranked_path_withholds_a_document_
+        reclassified_after_the_build``, which is now the only place a *ranked*
+        answer meets an above-ceiling row -- reachable only through
+        reclassification after a build, since nothing else puts one in a file this
+        deployment will read. A pair shaped like that (build at ``internal``,
+        reclassify to ``restricted``, serve at ``internal``) would restore the
+        index-side difference on this axis and is owed by ADR-0025 part 4, whose
+        owner is #119.
+        """
+        return (
+            ABOVE_CEILING_LEVEL if self.withheld_by == ABOVE_THE_CEILING else Sensitivity.INTERNAL
+        )
+
+    @property
+    def grant(self) -> AuthorizationGrant:
+        """The deployment grant the caller's server is built with (#119).
+
+        Narrowed for the ceiling shape and allow-all for the other two, so each
+        mechanism is exercised by the thing that actually stops it and the pair's
+        equality is never satisfied by a second gate withholding the same row.
+        """
+        return CEILING_GRANT if self.withheld_by == ABOVE_THE_CEILING else ALLOW_ALL_GRANT
+
+    @property
+    def indexes_unapproved(self) -> bool:
+        """Whether the index is built with drafts in it.
+
+        Only the draft shape needs them, and only it gets them: an index built
+        with ``--include-unapproved`` is a different published field
+        (``indexesUnapproved``) and a different fallback vocabulary, so switching
+        it on for shapes that hold no draft would test the tool's less common
+        configuration everywhere and its shipped one nowhere.
+        """
+        return self.withheld_by == DRAFT_IN_AN_UNAPPROVED_INDEX
 
     @property
     def retired(self) -> tuple[str, ...]:
@@ -472,6 +608,7 @@ class _Case:
                 title=self.withheld_titles[index],
                 body=f"{filler} {pair[0] if secret else pair[1]}",
                 status=self.build_status,
+                sensitivity=self.build_sensitivity,
             )
             for index, (filler, pair) in enumerate(
                 zip(self.withheld_filler, self.payloads, strict=True)
@@ -730,7 +867,7 @@ def _revision(document: _Document, created_at: datetime) -> KnowledgeRevision:
             namespace="backend",
             status=document.status,
             trust_level=TrustLevel.REVIEWED,
-            sensitivity=Sensitivity.INTERNAL,
+            sensitivity=document.sensitivity,
             owner="platform-team",
         ),
         validity=ValidityPeriod(valid_from=created_at),
@@ -752,7 +889,7 @@ def _item(document: _Document, created_at: datetime) -> KnowledgeItem:
         current_revision_id=RevisionId(document.revision_id),
         owner="platform-team",
         trust_level=TrustLevel.REVIEWED,
-        sensitivity=Sensitivity.INTERNAL,
+        sensitivity=document.sensitivity,
         validity=ValidityPeriod(valid_from=created_at),
     )
 
@@ -820,11 +957,14 @@ def _retire_in_the_store(
         writer.record_expected_surfaceable_count(ProjectId(PROJECT_ID))
 
 
-def _build_project(
+def _build_project(  # noqa: PLR0913 - one per axis a generated shape varies
     root: Path,
     documents: tuple[_Document, ...],
     created_at: datetime,
     retired: tuple[str, ...] = (),
+    *,
+    indexes_unapproved: bool | None = None,
+    visible_sensitivities: frozenset[Sensitivity] = ALLOW_ALL_LEVELS,
 ) -> ProjectRegistry:
     """One project, built the way the withholding it is meant to exercise needs.
 
@@ -858,8 +998,29 @@ def _build_project(
     documents are ``approved`` when the build runs. So it builds at the default
     and the draft shape does not, and the two now differ in that published field
     as well.
+
+    ``indexes_unapproved`` says which of the two this is. It used to be inferred
+    as ``not retired``, and the inference stopped holding the moment a third
+    withholding mechanism arrived that retires nothing and holds no draft either
+    (:data:`ABOVE_THE_CEILING`) -- it would have built that shape's index with
+    drafts it does not have, publishing a field value the shipped ``theurian
+    index build`` does not produce. ``None`` keeps the old reading for the
+    hand-written callers below, which have no ``_Case`` to ask.
+
+    **``visible_sensitivities`` is the grant this project's index is built under,
+    and it is the same grant the pair is then queried through** (#119 phase 3).
+    Since the builder excludes an above-ceiling item, "which ceiling was in force
+    at build time" decides which rows the file holds -- so the serve path stands a
+    build made under another one aside entirely
+    (``mcp.search._published_index``, ``serving-profile-mismatch``). Building the
+    ceiling shape allow-all and querying it narrow would therefore not test a
+    narrow deployment at all: both sides would fall back to the unranked scan and
+    the equality would hold over a path neither this file nor its docstrings are
+    about. It defaults to every level because every other shape here is queried
+    through :data:`ALLOW_ALL_GRANT`.
     """
-    indexes_unapproved = not retired
+    if indexes_unapproved is None:
+        indexes_unapproved = not retired
     paths = ProjectPaths.of(root)
     paths.state.mkdir(parents=True, exist_ok=True)
     paths.runtime.mkdir(parents=True, exist_ok=True)
@@ -907,9 +1068,15 @@ def _build_project(
             project_id=PROJECT_ID,
             state_hash=str(built_from),
             index_build_id=INDEX_BUILD_ID,
+            visible_sensitivities=visible_sensitivities,
             include_unapproved=indexes_unapproved,
         )
     )
+    # Written by hand rather than through `write_active_index_pointer`, which is
+    # what `theurian index build` publishes with, because this fixture stands in
+    # for the CLI. `indexedSensitivities` is encoded through the shipped helper
+    # even so: the serve path decodes it, and a hand-spelled list here would be a
+    # second encoding of one wire field, free to drift from the one under test.
     paths.active_index_pointer.write_text(
         json.dumps(
             {
@@ -917,6 +1084,7 @@ def _build_project(
                 "stateHash": str(built_from),
                 "projectId": PROJECT_ID,
                 "indexesUnapproved": indexes_unapproved,
+                "indexedSensitivities": encode_sensitivities(visible_sensitivities),
             }
         ),
         encoding="utf-8",
@@ -966,27 +1134,58 @@ class _Pair:
     control: ProjectRegistry
     #: The probe's project root, so a guard can read its index file directly.
     probe_root: Path
+    #: The control's, for the one guard that compares the two *files* rather than
+    #: the two responses -- see `_indexed_text`.
+    control_root: Path
     case: _Case
 
 
 def _pair(base: Path, case: _Case) -> _Pair:
     created_at = datetime.now(UTC) - AGE_OFFSET
     probe_root = base / "probe"
+    control_root = base / "control"
     return _Pair(
-        probe=_build_project(probe_root, case.documents(secret=True), created_at, case.retired),
+        probe=_build_project(
+            probe_root,
+            case.documents(secret=True),
+            created_at,
+            case.retired,
+            indexes_unapproved=case.indexes_unapproved,
+            visible_sensitivities=case.grant.sensitivities,
+        ),
         control=_build_project(
-            base / "control", case.documents(secret=False), created_at, case.retired
+            control_root,
+            case.documents(secret=False),
+            created_at,
+            case.retired,
+            indexes_unapproved=case.indexes_unapproved,
+            visible_sensitivities=case.grant.sensitivities,
         ),
         probe_root=probe_root,
+        control_root=control_root,
         case=case,
     )
 
 
-def _call(registry: ProjectRegistry, tool: str, **arguments: Any) -> dict[str, Any]:
-    """Invoke a tool through the same entry point the transport uses."""
+def _call(
+    registry: ProjectRegistry,
+    tool: str,
+    grant: AuthorizationGrant = ALLOW_ALL_GRANT,
+    **arguments: Any,
+) -> dict[str, Any]:
+    """Invoke a tool through the same entry point the transport uses.
+
+    ``grant`` is what the daemon was started with (#119). Defaulted to allow-all
+    so that every caller written before the axis existed keeps asking the
+    question it was written to ask -- and stated explicitly by
+    :meth:`_Case.grant` for the ceiling shape, which is the only one whose
+    withholding depends on it. It is *not* defaulted to `build_server`'s own
+    default: a later phase narrows that, and this file's other two mechanisms
+    must go on being about status.
+    """
 
     async def invoke() -> Any:
-        return await build_server(registry).call_tool(tool, arguments)
+        return await build_server(registry, grant).call_tool(tool, arguments)
 
     result = asyncio.run(invoke())
     structured = getattr(result, "structuredContent", None)
@@ -1014,13 +1213,31 @@ def _search(registry: ProjectRegistry, case: _Case, **arguments: Any) -> dict[st
     A caller that wants the generated triple asks for it by name --
     :attr:`_Case.arguments` -- so which of the two is in force is visible at the
     call site rather than decided here.
+
+    The grant comes from the case, not from the caller. The ceiling shape's
+    withholding *is* the grant, so a search issued against the default one would
+    return the withheld rows and this file's equalities would compare two answers
+    that both hold the payload -- green, and measuring the opposite of what they
+    claim.
     """
-    return _call(registry, "knowledge.search", projectId=PROJECT_ID, query=case.query, **arguments)
+    return _call(
+        registry,
+        "knowledge.search",
+        case.grant,
+        projectId=PROJECT_ID,
+        query=case.query,
+        **arguments,
+    )
 
 
-def _failing(registry: ProjectRegistry, tool: str, **arguments: Any) -> str:
+def _failing(
+    registry: ProjectRegistry,
+    tool: str,
+    grant: AuthorizationGrant = ALLOW_ALL_GRANT,
+    **arguments: Any,
+) -> str:
     with pytest.raises(SdkToolError) as raised:
-        _call(registry, tool, **arguments)
+        _call(registry, tool, grant, **arguments)
     return str(raised.value)
 
 
@@ -1061,12 +1278,14 @@ def _offered_by_the_index(root: Path, case: _Case, *, include_unapproved: bool) 
             project_id=PROJECT_ID,
             limit=_EXHAUSTIVE_DEPTH,
             include_unapproved=include_unapproved,
+            visible_sensitivities=EVERY_SENSITIVITY,
         ),
         index.search_substring(
             case.query,
             project_id=PROJECT_ID,
             limit=_EXHAUSTIVE_DEPTH,
             include_unapproved=include_unapproved,
+            visible_sensitivities=EVERY_SENSITIVITY,
         ),
     )
     assert all(page.exhausted for page in pages), (
@@ -1075,6 +1294,45 @@ def _offered_by_the_index(root: Path, case: _Case, *, include_unapproved: bool) 
         f"offered. This corpus has outgrown _EXHAUSTIVE_DEPTH={_EXHAUSTIVE_DEPTH}"
     )
     return {row.item_id for page in pages for row in page.rows}
+
+
+def _indexed_text(root: Path) -> list[tuple[str, str]]:
+    """Every ``(item id, chunk text)`` this project's published build holds.
+
+    Read with plain SQL rather than through a retriever, because the claim it
+    supports is about the *file* and not about what a query can reach: an FTS5
+    external-content table scores what it returns against ``N``, ``avgdl`` and
+    the per-term document frequencies computed over every row in ``chunks``, so a
+    row no query can return still moves the score of one that can.
+
+    Ordered, so two builds are compared as sequences and a duplicated row is a
+    difference rather than a set collapsing onto itself.
+    """
+    path = ProjectPaths.of(root).index_for(INDEX_BUILD_ID)
+    with closing(sqlite3.connect(path)) as connection:
+        return [
+            (str(item_id), str(text))
+            for item_id, text in connection.execute(
+                "SELECT item_id, text FROM chunks ORDER BY item_id, ordinal"
+            )
+        ]
+
+
+def _above_the_ceiling_in_the_store(root: Path, item_ids: set[str]) -> bool:
+    """Whether every id in ``item_ids`` is at a level :data:`CEILING_GRANT` excludes.
+
+    Read from the canonical store rather than from the ``_Case`` that asked for
+    it, because the ``_Case`` is the thing under suspicion: it is what decides the
+    level, and a generator that stopped raising it would report its own intention
+    back to the guard. The store is where the gate reads from.
+    """
+    paths = ProjectPaths.of(root)
+    context = RequestContext(project_id=ProjectId(PROJECT_ID))
+    with SqliteCanonicalStore(paths.database_for(STATE_NOW)) as store:
+        items = [store.get_item(context, ItemId(item_id)) for item_id in sorted(item_ids)]
+    return bool(items) and all(
+        item is not None and item.sensitivity not in CEILING_GRANT.sensitivities for item in items
+    )
 
 
 def _assert_the_pair_bites(pair: _Pair, probe: dict[str, Any]) -> None:
@@ -1133,6 +1391,31 @@ def _assert_the_pair_bites(pair: _Pair, probe: dict[str, Any]) -> None:
             "index, so a retriever must offer them on the caller's own flags -- "
             "if it does not, the canonical gate is never consulted and this pair "
             "says nothing about it"
+        )
+    elif case.withheld_by == ABOVE_THE_CEILING:
+        # Inverted by #119 phase 3, and the inversion is the finding rather than
+        # a weakening. This branch used to require the withheld rows to be
+        # *offered*, because the builder ignored the ceiling and the canonical
+        # re-check was the only thing between them and the caller. The builder no
+        # longer writes them, so requiring them to be offered would now be
+        # requiring the exclusion to have failed.
+        assert not (withheld_ids & offered), (
+            f"a build under this deployment's ceiling still offers "
+            f"{sorted(withheld_ids & offered)} to the retrievers, so the withheld text is in "
+            f"the index and in the FTS5 "
+            f"collection statistics every visible row is scored against (#119 phase 3, "
+            f"ADR-0025 part 1)"
+        )
+        assert _above_the_ceiling_in_the_store(root, withheld_ids), (
+            "and the store must actually hold them above the ceiling: a shape "
+            "whose withheld rows are `internal` like everything else is withheld "
+            "by nothing, and every equality below would hold vacuously"
+        )
+        assert _indexed_text(root) == _indexed_text(pair.control_root), (
+            "the two builds do not hold the same text. That is what carries this shape now: "
+            "the pair's corpora differ only inside documents neither build was allowed to "
+            "write, so a difference here is the withheld content reaching the file -- and "
+            "from there the collection statistics -- without being returned by anything"
         )
     else:
         assert not withheld_ids & offered, (
@@ -1395,15 +1678,28 @@ def test_a_withheld_item_is_refused_by_the_same_words_that_refuse_an_absent_one(
     id that exists in neither, and -- as the guard on the guard -- a *visible* id,
     which must come back rather than be refused. Without the last one, three
     identical refusals would be satisfied by a project that holds nothing.
+
+    **Three withholding mechanisms reach these four arms, not two** (#119). The
+    third is :data:`ABOVE_THE_CEILING`, where the row is ``approved`` and current
+    and the *deployment* may not disclose its level -- so the refusal has to be
+    identical across a boundary the other two never cross. It is the case a
+    hand-written implementation gets wrong in the most tempting way: "you are not
+    cleared for this item" is a helpful message, and it confirms both that the
+    item exists and what class it is in.
     """
     pair = _pair(tmp_path_factory.mktemp("absence"), case)
     withheld_id = case.withheld(secret=True)[0].item_id
     visible_id = case.visible[0].item_id
+    grant = case.grant
 
-    from_probe = _failing(pair.probe, "knowledge.get", projectId=PROJECT_ID, itemId=withheld_id)
-    from_control = _failing(pair.control, "knowledge.get", projectId=PROJECT_ID, itemId=withheld_id)
-    absent = _failing(pair.probe, "knowledge.get", projectId=PROJECT_ID, itemId=NO_SUCH_ITEM)
-    present = _call(pair.probe, "knowledge.get", projectId=PROJECT_ID, itemId=visible_id)
+    from_probe = _failing(
+        pair.probe, "knowledge.get", grant, projectId=PROJECT_ID, itemId=withheld_id
+    )
+    from_control = _failing(
+        pair.control, "knowledge.get", grant, projectId=PROJECT_ID, itemId=withheld_id
+    )
+    absent = _failing(pair.probe, "knowledge.get", grant, projectId=PROJECT_ID, itemId=NO_SUCH_ITEM)
+    present = _call(pair.probe, "knowledge.get", grant, projectId=PROJECT_ID, itemId=visible_id)
 
     assert from_probe == from_control, "the two corpora must refuse identically"
     assert from_probe == absent.replace(NO_SUCH_ITEM, withheld_id), (
@@ -1614,7 +1910,11 @@ def test_a_rejected_item_is_never_written_into_the_index(tmp_path: Path) -> None
 
     index = SqliteIndexStore(ProjectPaths.of(tmp_path / "one").index_for(INDEX_BUILD_ID))
     page = index.search_lexical(
-        "ledger", project_id=PROJECT_ID, limit=MAX_RESULTS, include_unapproved=True
+        "ledger",
+        project_id=PROJECT_ID,
+        limit=MAX_RESULTS,
+        include_unapproved=True,
+        visible_sensitivities=EVERY_SENSITIVITY,
     )
     assert page.exhausted, "or the rejected item is merely below the cut"
     assert {row.item_id for row in page.rows} == {visible.item_id}, (
@@ -1842,10 +2142,18 @@ def test_the_t17a_corpus_still_has_something_to_withhold(tmp_path: Path) -> None
     index = SqliteIndexStore(ProjectPaths.of(tmp_path / "holds-it").index_for(INDEX_BUILD_ID))
 
     with_the_flag = index.search_lexical(
-        "backend", project_id=PROJECT_ID, limit=MAX_RESULTS, include_unapproved=True
+        "backend",
+        project_id=PROJECT_ID,
+        limit=MAX_RESULTS,
+        include_unapproved=True,
+        visible_sensitivities=EVERY_SENSITIVITY,
     )
     as_the_search_asks = index.search_lexical(
-        "backend", project_id=PROJECT_ID, limit=MAX_RESULTS, include_unapproved=False
+        "backend",
+        project_id=PROJECT_ID,
+        limit=MAX_RESULTS,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
     )
     answer = _call(registry, "knowledge.search", projectId=PROJECT_ID, query="backend", limit=10)
 
@@ -1968,7 +2276,11 @@ def test_the_pair_builder_writes_a_canonical_store_the_gate_actually_reads(
         items = store.list_items(RequestContext(project_id=ProjectId(PROJECT_ID)))
     by_id = {item.item_id.value: item for item in items}
     offered = SqliteIndexStore(paths.index_for(INDEX_BUILD_ID)).search_lexical(
-        "manifold", project_id=PROJECT_ID, limit=MAX_RESULTS, include_unapproved=False
+        "manifold",
+        project_id=PROJECT_ID,
+        limit=MAX_RESULTS,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
     )
 
     assert by_id[approved.item_id].status is KnowledgeStatus.APPROVED
@@ -2303,6 +2615,26 @@ def _write_shipped_withdrawal(root: Path, *, face: str) -> None:
     )
 
 
+def _declare_every_level(data_dir: Path) -> None:
+    """Declare a ``restricted`` ceiling, the way an operator entitled to the whole
+    corpus does.
+
+    Mode 0600 because ``load_serving_profile`` refuses a profile other local users
+    can reach, and ``write_text`` under the usual umask leaves 0644 -- a caller
+    that skipped this would exercise that refusal and read as "the build failed".
+    """
+    auth = data_dir / "auth"
+    # 0700 on the directory as well as 0600 on the file. `load_serving_profile`
+    # refuses both, because a directory's write bit governs *replacing* an entry
+    # in it -- and a bare `mkdir` under the usual umask leaves 0755, which is the
+    # shape `FileSecretStore.set` never creates and this refusal exists for.
+    auth.mkdir(parents=True, exist_ok=True, mode=0o700)
+    auth.chmod(0o700)
+    profile = auth / SERVING_PROFILE_FILENAME
+    profile.write_text(f"{Sensitivity.RESTRICTED.value}\n", encoding="utf-8")
+    profile.chmod(0o600)
+
+
 def _shipped_project(
     root: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch, *, face: str, build_before: bool
 ) -> ProjectRegistry:
@@ -2320,6 +2652,16 @@ def _shipped_project(
     state and report the identical ``snapshotId``. Neither runs a second
     ``index build`` after the withdrawal: that a purged build needs no rebuild is
     the property under test.
+
+    **The ``restricted`` ceiling is declared, and it is what keeps this about the
+    status axis.** ``_call`` answers under :data:`ALLOW_ALL_GRANT`, and a build is
+    specific to the ceiling it ran under (#119 phase 3): once the shipped default
+    became ``internal``, a build made under it recorded a *narrower* flavor than
+    that grant, ``_published_index`` stood aside, and both sides of the equality
+    answered from the substring scan with nothing to compare. Declaring the
+    ceiling makes the build's flavor and the serving grant agree, which is the
+    state this pair was written in and the only one in which its equality is
+    about a withdrawal.
     """
     root.mkdir(parents=True)
     for git in (
@@ -2329,6 +2671,7 @@ def _shipped_project(
     ):
         subprocess.run(git, cwd=root, check=True, capture_output=True)  # noqa: S603
 
+    _declare_every_level(data_dir)
     _shipped_cli(root, data_dir, monkeypatch, "init")
     _shipped_cli(
         root, data_dir, monkeypatch, "project", "register", "--project-id", SHIPPED_PROJECT_ID
@@ -2354,7 +2697,11 @@ def _published_offers(root: Path, query: str, *, include_unapproved: bool) -> se
     assert payload is not None, "the project must have a published index"
     index = SqliteIndexStore(ProjectPaths.of(root).index_for(str(payload["indexBuildId"])))
     page = index.search_lexical(
-        query, project_id=SHIPPED_PROJECT_ID, limit=500, include_unapproved=include_unapproved
+        query,
+        project_id=SHIPPED_PROJECT_ID,
+        limit=500,
+        include_unapproved=include_unapproved,
+        visible_sensitivities=EVERY_SENSITIVITY,
     )
     assert page.exhausted, "the page must be complete for an absence to mean anything"
     return {row.item_id for row in page.rows}
@@ -2479,7 +2826,11 @@ def _visible_orders_before_and_after_the_purge(probe_root: Path) -> tuple[list[s
 
     def visible_order(build: Path) -> list[str]:
         page = SqliteIndexStore(build).search_lexical(
-            SHIPPED_QUERY, project_id=SHIPPED_PROJECT_ID, limit=MAX_RESULTS, include_unapproved=True
+            SHIPPED_QUERY,
+            project_id=SHIPPED_PROJECT_ID,
+            limit=MAX_RESULTS,
+            include_unapproved=True,
+            visible_sensitivities=EVERY_SENSITIVITY,
         )
         seen: list[str] = []
         for row in page.rows:
@@ -2499,6 +2850,7 @@ def _visible_orders_before_and_after_the_purge(probe_root: Path) -> tuple[list[s
                 project_id=SHIPPED_PROJECT_ID,
                 limit=MAX_RESULTS,
                 include_unapproved=True,
+                visible_sensitivities=EVERY_SENSITIVITY,
             )
             .rows
         )

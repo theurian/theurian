@@ -41,7 +41,7 @@ import pytest
 
 import theurian
 from theurian.application.retrieval_service import ResultGate
-from theurian.domain.enums import may_surface
+from theurian.domain.enums import may_disclose, may_surface
 
 pytestmark = pytest.mark.unit
 
@@ -179,6 +179,13 @@ def test_exactly_one_place_in_the_product_hands_candidates_to_the_gate() -> None
 #: before this scan quietly finds zero sites for a name nothing has.
 STATUS_GATE = may_surface.__name__
 
+#: The domain function that decides whether this *deployment* may disclose an
+#: item's sensitivity class (SEC-13, #119), read off the symbol for the same
+#: reason. The second axis, enumerated the same way as the first, because it fails
+#: the same way: a read path that forgets it publishes above-ceiling content, and
+#: nothing in the type system says a path was meant to consult it.
+DISCLOSURE_GATE = may_disclose.__name__
+
 #: Every place the product consults the status gate, as
 #: ``(module path under theurian/, enclosing function)``.
 #:
@@ -215,6 +222,64 @@ STATUS_GATE_CALL_SITES = {
     ("mcp/tools.py", "register.knowledge_get"),
 }
 
+#: Every place the product consults the disclosure gate, as
+#: ``(module path under theurian/, enclosing function)``.
+#:
+#: Five: three canonical-side read paths a caller can reach content through
+#: (#119 phase 2), the build side that decides what exists to be reached
+#: (#119 phase 3), and the purge that removes it from a build already published
+#: (#119 phase 5), each with the test that holds it to gating:
+#:   - the ranked path's canonical re-check on the item's *current* level
+#:     (``test_the_ranked_path_withholds_a_document_reclassified_after_the_build``);
+#:   - ``knowledge.get``'s gate on the item it hands over by id, refused in the
+#:     words that refuse an absent one
+#:     (``test_a_narrow_ceiling_withholds_the_item_from_search_and_from_get`` and
+#:     ``test_absence_proof.py``'s generated refusal equality);
+#:   - the per-edge gate on each endpoint of a relation, because an edge's target
+#:     id and ``note`` are the disclosure whether or not the body is
+#:     (``test_a_relation_to_an_above_ceiling_item_is_not_published``);
+#:   - the index builder, which decides what is *written* rather than what is
+#:     shown, so that an above-ceiling document's text never reaches the FTS5
+#:     tables whose collection statistics price every visible row -- the T-17a
+#:     mechanism, moved to this axis (ADR-0025 part 1,
+#:     ``test_forest_builder.py::test_an_above_ceiling_document_reaches_neither_
+#:     half_of_the_index``);
+#:   - the withdrawal purge, the one *inverse* use -- it names what a published
+#:     build must stop holding once an item is reclassified past the ceiling that
+#:     build ran under, so the purge and the read gates cannot disagree about what
+#:     "withheld" means for a given file (ADR-0025 part 2,
+#:     ``test_sensitivity_purge.py::test_a_reclassification_above_the_ceiling_
+#:     purges_the_published_index_without_a_separate_build``).
+#:
+#: **The gates spelled as a predicate are deliberately absent, and they are not
+#: further sites.** This axis is enforced in two spellings, and a scan that reads
+#: names can only see one of them:
+#:   - ``mcp/search.py :: _scan`` hands the grant to the *canonical* store as a
+#:     SQL predicate, so an above-ceiling row is never materialised for a Python
+#:     check to run on (``test_the_unranked_scan_withholds_an_above_ceiling_item``,
+#:     and the cost note on ``list_items_by_status``);
+#:   - every retriever hands it to the *index* the same way, through
+#:     ``SqliteIndexStore._scope`` and ``._node_scope`` (#119 phase 4), which emit
+#:     ``chunks.sensitivity IN (…)`` and ``nodes.sensitivity IN (…)`` in the same
+#:     statement as the match.
+#: Adding either here would mean deleting the predicate that makes it cheap. What
+#: covers the predicate side instead is
+#: ``test_the_axes_security_md_publishes_are_the_axes_the_scope_filter_emits``
+#: below, which reads ``_scope``'s own clause literals -- so between the two
+#: tests, a gate that disappears is caught whichever way it was written.
+#:
+#: ``cli/index_commands.py :: _indexable_items`` is absent for the reason it is
+#: absent from the status set above: it *repeats* the builder's selection rule
+#: inline rather than calling either gate, so that "what was there to be indexed"
+#: and "what got indexed" stay two derivations that can be caught disagreeing.
+DISCLOSURE_GATE_CALL_SITES = {
+    ("application/index_builder.py", "IndexBuilder._build"),
+    ("application/migration_engine.py", "revisions_to_purge"),
+    ("application/visibility.py", "CanonicalVisibility._may_surface"),
+    ("mcp/tools.py", "_relation_is_visible"),
+    ("mcp/tools.py", "register.knowledge_get"),
+}
+
 
 #: The module ``may_surface`` lives in, matched against imports to follow the
 #: symbol rather than a spelling.
@@ -235,8 +300,8 @@ def _dotted(node: ast.AST) -> str | None:
     return None
 
 
-def _enums_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
-    """Per module: the local names bound to ``may_surface``, and to the enums module.
+def _enums_bindings(tree: ast.AST, symbol: str) -> tuple[set[str], set[str]]:
+    """Per module: the local names bound to ``symbol``, and to the enums module.
 
     So the scan follows the import, not a spelling. ``import may_surface as gate``
     binds ``gate`` to the function (a *direct* name); ``import theurian.domain.enums
@@ -244,13 +309,18 @@ def _enums_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
     through which the function is reached as ``e.may_surface``. Both are how a
     sixth call site could hide from a scan that only knew the bare name — the
     adversarial review demonstrated both survive a bare-``Name`` scan.
+
+    ``symbol`` is a parameter because there are two gates on this path and they
+    fail identically. A second copy of this resolver for ``may_disclose`` would be
+    the same rule written twice, which is what the enumeration exists to stop
+    happening to the rules themselves.
     """
     direct: set[str] = set()
     module_aliases: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and not node.level:
             if node.module == ENUMS_MODULE:
-                direct |= {a.asname or a.name for a in node.names if a.name == STATUS_GATE}
+                direct |= {a.asname or a.name for a in node.names if a.name == symbol}
             elif node.module == "theurian.domain":
                 module_aliases |= {a.asname or a.name for a in node.names if a.name == "enums"}
         elif isinstance(node, ast.Import):
@@ -258,8 +328,8 @@ def _enums_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
     return direct, module_aliases
 
 
-def _status_gate_uses(path: pathlib.Path) -> list[tuple[str, str]]:
-    """Every place ``path`` reaches ``may_surface``, as ``(module path, enclosing function)``.
+def _gate_uses(path: pathlib.Path, symbol: str) -> list[tuple[str, str]]:
+    """Every place ``path`` reaches ``symbol``, as ``(module path, enclosing function)``.
 
     Resolves imports rather than matching a spelling, so all reaching forms count:
     the bare name it is imported under (``may_surface`` or an ``as`` alias) and an
@@ -269,18 +339,23 @@ def _status_gate_uses(path: pathlib.Path) -> list[tuple[str, str]]:
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     module = path.relative_to(SRC).as_posix()
-    direct, module_aliases = _enums_bindings(tree)
+    direct, module_aliases = _enums_bindings(tree, symbol)
     found: list[tuple[str, str]] = []
     for node, scope in _iter_nodes_with_scope(tree):
         by_bare_name = isinstance(node, ast.Name) and node.id in direct
         by_module_attr = (
             isinstance(node, ast.Attribute)
-            and node.attr == STATUS_GATE
+            and node.attr == symbol
             and _dotted(node.value) in module_aliases
         )
         if by_bare_name or by_module_attr:
             found.append(_here(module, scope))
     return found
+
+
+def _sites_reaching(symbol: str) -> list[tuple[str, str]]:
+    """The whole shipped tree's call sites for ``symbol``, sorted and deduplicated."""
+    return sorted({site for path in sorted(SRC.rglob("*.py")) for site in _gate_uses(path, symbol)})
 
 
 def test_every_place_the_product_consults_the_status_gate_is_enumerated() -> None:
@@ -311,7 +386,7 @@ def test_every_place_the_product_consults_the_status_gate_is_enumerated() -> Non
     name — so it is a floor on the review a new call site gets, not a proof that
     an ungated path cannot exist.
     """
-    sites = sorted({site for path in sorted(SRC.rglob("*.py")) for site in _status_gate_uses(path)})
+    sites = _sites_reaching(STATUS_GATE)
 
     assert sites == sorted(STATUS_GATE_CALL_SITES), (
         f"`{STATUS_GATE}` is consulted from {len(sites)} place(s) in the shipped "
@@ -329,6 +404,46 @@ def test_every_place_the_product_consults_the_status_gate_is_enumerated() -> Non
         f"`{STATUS_GATE}` before returning content, add a test that goes red when "
         f"it stops, and only then add it here with that test named beside it. If "
         f"you removed or moved one, amend this set and both docstrings together."
+    )
+
+
+def test_every_place_the_product_consults_the_disclosure_gate_is_enumerated() -> None:
+    """A new ``may_disclose`` call site is a new place a deployment ceiling can be forgotten.
+
+    The sibling of the status assertion above, and it exists for the reason that
+    one turned out to be needed: a second gate on the same paths, consulted from
+    several places, whose omission from any one of them is invisible until
+    somebody reaches content through it. ``knowledge.get`` having no copy of the
+    *status* gate is how a caller who could not search for a withheld item could
+    still fetch it; the same shape on this axis would be a caller who could not
+    search for an above-ceiling item fetching it by id, or reading its id and its
+    ``note`` off a relation.
+
+    Equality against the whole spelled-out set, so it fails in both directions.
+    A site added is a new disclosure path to argue for; a site removed or moved is
+    a gate that has quietly stopped being consulted, and either way the failure
+    names what it found.
+
+    The scan is the same resolver the status assertion uses, so all three reaching
+    forms count here too -- bare name, ``as`` alias, and module attribute.
+    """
+    sites = _sites_reaching(DISCLOSURE_GATE)
+
+    assert sites == sorted(DISCLOSURE_GATE_CALL_SITES), (
+        f"`{DISCLOSURE_GATE}` is consulted from {len(sites)} place(s) in the shipped "
+        f"source, and the pinned set has {len(DISCLOSURE_GATE_CALL_SITES)}:\n"
+        + "\n".join(f"  {module} :: {function}" for module, function in sites)
+        + "\n\nExpected exactly:\n"
+        + "\n".join(
+            f"  {module} :: {function}" for module, function in sorted(DISCLOSURE_GATE_CALL_SITES)
+        )
+        + f"\n\n`{DISCLOSURE_GATE}` is the one rule for whether this deployment may "
+        f"disclose an item's sensitivity class (SEC-13, #119). If you added a call "
+        f"site, it is a new path above-ceiling content can leave by -- establish that "
+        f"it gates before returning content, add a test that goes red when it stops, "
+        f"and only then add it here with that test named beside it. If you removed "
+        f"one, say which query or which build-side exclusion now enforces that path "
+        f"instead, the way `mcp/search.py :: _scan` is accounted for above."
     )
 
 
@@ -432,9 +547,12 @@ def test_the_axes_security_md_publishes_are_the_axes_the_scope_filter_emits(
 ) -> None:
     """Hold each document to its own claim: the axes it publishes are the ones ``_scope`` emits.
 
-    SECURITY.md tells a reader that project isolation and status withholding are
-    the two authorization axes enforced on retrieval today (T-11, SEC-13), and the
-    FR-R1 register repeats the list; both source it to ``_scope``. A document
+    SECURITY.md tells a reader which authorization axes are enforced on retrieval
+    today -- project isolation, status withholding and, since #119 phase 4, the
+    deployment's disclosure class (T-11, SEC-13) -- and the FR-R1 register repeats
+    the list; both source it to ``_scope``. Neither the axes nor the count is
+    spelled here, deliberately: this test derives both from the shipped source, so
+    the next axis needs no edit to it. A document
     naming a control that has drifted from — or never matched — the code is exactly
     the compliance-claims defect #115 tracks, and a *third* copy nothing reads is
     how the count drifts, so both documents are pinned here against one source.
@@ -472,4 +590,109 @@ def test_the_axes_security_md_publishes_are_the_axes_the_scope_filter_emits(
         f"spelled number inside the markers so a third axis cannot land while the "
         f"prose still says 'two' — the count-in-prose drift `may_surface` had, kept "
         f"off the document side."
+    )
+
+
+# -- build_server's one default in a required-no-default change ---------------
+#
+# The deployment grant (#119) is a required argument everywhere it decides what a
+# caller may be shown -- `Visibility` has no default because "everything is
+# visible" is the bug and a default parameter is how it comes back, and
+# `CanonicalVisibility.__init__` says the same in prose. `build_server` is the one
+# constructor on that change that keeps a `grant=None` default, and it keeps it for
+# a narrow, test-only reason: 29 call sites across the suite lean on it to mean
+# "this build's own default ceiling", and making it required would churn them for
+# no production safety, since `serve` is the only shipped caller and already reads
+# the operator's profile and passes the grant. What must stay true is that no
+# *shipped* path relies on the default -- the default is `DEFAULT_CEILING`, so a
+# production caller that inherited it would serve a ceiling nobody declared.
+
+#: The constructor whose shipped call sites are counted.
+BUILD_SERVER = "build_server"
+
+#: The shipped `build_server` call sites that pass an explicit grant, as
+#: `(module path under theurian/, enclosing function)`. One: the composition root,
+#: which hands `serve`'s resolved deployment grant to the server it builds.
+BUILD_SERVER_CALLS_WITH_GRANT = {("daemon/runner.py", "serve")}
+
+#: The shipped `build_server` call sites that omit the grant. Empty by decision
+#: (#119): the `grant=None` default is a test seam, and a production
+#: `build_server(registry)` relying on it is the finding this pins.
+BUILD_SERVER_CALLS_WITHOUT_GRANT: set[tuple[str, str]] = set()
+
+
+def _passes_a_grant(node: ast.Call) -> bool:
+    """Whether a `build_server(...)` call hands over an explicit grant.
+
+    A second positional argument, or a `grant=` keyword. `grant=None` written out
+    would count as passing one: it is an explicit choice at the call site, which is
+    what this enforces -- not the value.
+    """
+    return len(node.args) >= 2 or any(keyword.arg == "grant" for keyword in node.keywords)
+
+
+def _build_server_calls(
+    path: pathlib.Path,
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """`build_server` call sites in `path`, split into (with grant, without grant).
+
+    Matches `build_server(...)` as a bare `Name` call, the only form the product
+    uses. A docstring mention -- `infrastructure/sqlite/connection.py` has one --
+    is an `ast.Constant`, not a `Call`, and the `def build_server` line is a
+    `FunctionDef`; neither is matched.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    module = path.relative_to(SRC).as_posix()
+    with_grant: set[tuple[str, str]] = set()
+    without_grant: set[tuple[str, str]] = set()
+    for node, scope in _iter_nodes_with_scope(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == BUILD_SERVER
+        ):
+            target = with_grant if _passes_a_grant(node) else without_grant
+            target.add(_here(module, scope))
+    return with_grant, without_grant
+
+
+def test_every_shipped_build_server_call_passes_an_explicit_grant() -> None:
+    """`build_server`'s `grant=None` default is a test seam no shipped path may use.
+
+    The default resolves to `DEFAULT_CEILING`, so a production caller that inherited
+    it would serve a ceiling the operator never declared -- the same "everything is
+    visible" shape the rest of #119 makes impossible by requiring the grant. It is
+    the one default in that change, kept only because 29 test call sites lean on it;
+    the discipline it breaks with is held on the *shipped* tree instead, here.
+
+    Two equalities rather than a length, and the pair is what makes it fail rather
+    than pass vacuously: the with-grant set pins the one real call site, so a
+    scanner that found nothing (a rename of `build_server`, a broken parser) reddens
+    on it; the without-grant set is empty, so a new shipped `build_server(registry)`
+    reddens on that. RED confirmed by mutation: dropping the grant from the `serve`
+    composition (`daemon/runner.py`, `build_server(ProjectRegistry.default(resolved),
+    grant)` -> `build_server(ProjectRegistry.default(resolved))`) moves that site
+    from with-grant to without-grant and fails both assertions.
+    """
+    with_grant: set[tuple[str, str]] = set()
+    without_grant: set[tuple[str, str]] = set()
+    for path in sorted(SRC.rglob("*.py")):
+        found_with, found_without = _build_server_calls(path)
+        with_grant |= found_with
+        without_grant |= found_without
+
+    assert with_grant == BUILD_SERVER_CALLS_WITH_GRANT, (
+        f"`{BUILD_SERVER}` is called with an explicit grant from {sorted(with_grant)}, "
+        f"expected {sorted(BUILD_SERVER_CALLS_WITH_GRANT)}. If the composition root "
+        f"moved or a second shipped caller now passes a grant, amend "
+        f"BUILD_SERVER_CALLS_WITH_GRANT; if this found nothing, `{BUILD_SERVER}` was "
+        f"renamed and this test is now counting a name the product has stopped using."
+    )
+    assert without_grant == BUILD_SERVER_CALLS_WITHOUT_GRANT, (
+        f"`{BUILD_SERVER}` is called *without* a grant from {sorted(without_grant)} in "
+        f"the shipped source, and that set is pinned empty (#119): the `grant=None` "
+        f"default is a test seam, and a production call that inherits it serves "
+        f"`DEFAULT_CEILING` to a deployment that declared nothing. Pass the "
+        f"deployment's grant explicitly -- the way `serve` does -- rather than adding "
+        f"the site here."
     )

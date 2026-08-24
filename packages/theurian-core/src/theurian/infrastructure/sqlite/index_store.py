@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Final, final
 
 from theurian.domain.chunking import Chunk, IndexableChunk
-from theurian.domain.enums import KnowledgeStatus
+from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.domain.errors import TheurianError
 from theurian.domain.ports.index_store import ForestRecompute
 from theurian.domain.ranking import Ranked, RetrieverPage, estimate_tokens
@@ -1032,11 +1032,13 @@ class SqliteIndexStore:
         project_id: str,
         limit: int = 50,
         include_unapproved: bool = False,
+        visible_sensitivities: frozenset[Sensitivity],
     ) -> RetrieverPage:
         """Rank chunks by BM25 (FR-R2).
 
-        Filters run in the same statement as the match, so an unapproved or
-        out-of-project chunk is never ranked in the first place (FR-R1).
+        Filters run in the same statement as the match, so an unapproved,
+        above-ceiling or out-of-project chunk is never ranked in the first place
+        (FR-R1).
 
         **``LIMIT ? + 1``, and the extra row is never returned.** ``limit`` is a
         true ceiling on this port, so exactly ``limit`` rows is the one answer a
@@ -1051,7 +1053,7 @@ class SqliteIndexStore:
         if not expression:
             return RetrieverPage(rows=(), exhausted=True)
 
-        clauses, parameters = self._scope(project_id, include_unapproved)
+        clauses, parameters = self._scope(project_id, include_unapproved, visible_sensitivities)
 
         # The f-string interpolates only literals this module wrote (see
         # `_scope`); every user-supplied value is a bound parameter.
@@ -1101,6 +1103,7 @@ class SqliteIndexStore:
         project_id: str,
         limit: int = 50,
         include_unapproved: bool = False,
+        visible_sensitivities: frozenset[Sensitivity],
     ) -> RetrieverPage:
         """Rank by trigram substring match.
 
@@ -1134,9 +1137,10 @@ class SqliteIndexStore:
                 query,
                 project_id=project_id,
                 include_unapproved=include_unapproved,
+                visible_sensitivities=visible_sensitivities,
             )
 
-        clauses, parameters = self._scope(project_id, include_unapproved)
+        clauses, parameters = self._scope(project_id, include_unapproved, visible_sensitivities)
         sql = (
             "SELECT chunks.chunk_id, chunks.item_id, chunks.revision_id, "  # noqa: S608 - clauses are module-owned literals; values are bound
             "  bm25(chunks_trigram) AS rank_score "
@@ -1164,6 +1168,7 @@ class SqliteIndexStore:
         *,
         project_id: str,
         include_unapproved: bool,
+        visible_sensitivities: frozenset[Sensitivity],
     ) -> RetrieverPage:
         """Answer a query too short to form a trigram, by scanning instead.
 
@@ -1265,7 +1270,7 @@ class SqliteIndexStore:
             # only sense in which it is a query.
             return RetrieverPage(rows=(), exhausted=True)
 
-        clauses, parameters = self._scope(project_id, include_unapproved)
+        clauses, parameters = self._scope(project_id, include_unapproved, visible_sensitivities)
         sql, arguments = scan_statement(terms, clauses=clauses, scope=parameters)
         # No query-shaped carve-out: this branch matches with `LIKE` over bound
         # parameters, so no caller text is ever parsed as an expression and every
@@ -1275,24 +1280,57 @@ class SqliteIndexStore:
             rows = connection.execute(sql, arguments).fetchall()
             return RetrieverPage(rows=_ranked(rows, _scan_score), exhausted=True)
 
-    def _scope(self, project_id: str, include_unapproved: bool) -> tuple[list[str], list[object]]:
-        """Project and status, shared by every retriever so none can forget it.
+    def _scope(
+        self,
+        project_id: str,
+        include_unapproved: bool,
+        visible_sensitivities: frozenset[Sensitivity],
+    ) -> tuple[list[str], list[object]]:
+        """Project, status and disclosure class, shared by every retriever.
 
         **Not "the FR-R1 filter", which is what this said until #63.** FR-R1 is
         *filter by Project, tenant, ACL, sensitivity, and validity window before
-        ranking*; the two clauses below are Project, plus a status check FR-R1
-        does not name. `chunks` carries `sensitivity`, `trust_level` and
-        `namespace`, and no query reads any of them -- the schema says so beside
-        the columns, and this docstring said the opposite 850 lines later, which
-        is the version a reader inspecting the filter would have found.
+        ranking*; the three clauses below are Project, a status check FR-R1 does
+        not name, and sensitivity, which it does. `chunks` still carries
+        `trust_level` and `namespace`, and no query reads either -- the schema
+        says so beside the columns, and this docstring said the opposite 850 lines
+        later, which is the version a reader inspecting the filter would have
+        found.
 
-        Every retriever means every retriever: lexical, substring, and dense all
-        build their WHERE clause from here. That was not true when this docstring
-        was first written -- only the substring retriever called it, while the
-        other two assembled the same two predicates by hand -- and the gap was
-        found by mutation: the cross-project isolation test only failed when all
-        three copies were broken at once, so any single copy could have lost its
-        `project_id` predicate with the suite still green.
+        Every retriever means every retriever: lexical, substring, summary and
+        dense all build their WHERE clause from here. That was not true when this
+        docstring was first written -- only the substring retriever called it,
+        while the other two assembled the same predicates by hand -- and the gap
+        was found by mutation: the cross-project isolation test only failed when
+        all three copies were broken at once, so any single copy could have lost
+        its `project_id` predicate with the suite still green.
+
+        **The sensitivity clause is defence in depth over a build that already
+        excluded these rows, and that is what it is worth (#119 phase 4, ADR-0025
+        part 3).** From index schema 6 a build consults the deployment's grant and
+        writes no row for an item above it, and `mcp.search._published_index`
+        stands aside any build whose recorded `indexedSensitivities` disagrees
+        with the grant in force. So against the file this deployment is meant to
+        be reading, this clause excludes nothing: every row in it was admitted
+        under this same set. What it answers for is the file this deployment is
+        *not* meant to be reading -- a v6 build made under a wider grant, reached
+        because a pointer was rewritten, a file was copied in, or the equality
+        check above was defeated -- where it is the layer that withholds. It
+        cannot take back T-17a on that file: `chunks_fts` and `chunks_trigram`
+        score what they return against collection statistics computed over every
+        row the file holds, so a wider build still prices the visible rows against
+        text no query can return. Exclusion at build time is what closes that, and
+        this predicate is the second line rather than the first.
+
+        Emitted as `IN` over the *expanded set* rather than a comparison against a
+        ceiling, for the reason :func:`~theurian.domain.enums.may_disclose` takes
+        a set: :class:`~theurian.domain.enums.Sensitivity` is a `StrEnum` whose
+        members compare as strings, so `sensitivity <= ?` would serve
+        `confidential` under an `internal` ceiling without raising. An empty set
+        emits `IN ()`, which SQLite accepts and no row satisfies -- a deployment
+        that serves no class serves no row, answered by the same statement rather
+        than by a branch that would have to be kept in step with this one. Levels
+        are bound in sorted order so two runs build the same statement (FR-R7).
 
         A comment claiming a single point of enforcement is worse than no comment
         when there are three, because it tells the next reader this is already
@@ -1305,28 +1343,45 @@ class SqliteIndexStore:
         if not include_unapproved:
             clauses.append("chunks.status = ?")
             parameters.append(KnowledgeStatus.APPROVED.value)
+        levels = _levels(visible_sensitivities)
+        clauses.append(f"chunks.sensitivity IN ({','.join('?' * len(levels))})")
+        parameters.extend(levels)
         return clauses, parameters
 
     def _node_scope(
-        self, project_id: str, include_unapproved: bool
+        self,
+        project_id: str,
+        include_unapproved: bool,
+        visible_sensitivities: frozenset[Sensitivity],
     ) -> tuple[list[str], list[object]]:
         """:meth:`_scope`, over the `nodes` table -- the forest's first gate.
 
-        The same Project and status predicates the leaf retrievers apply, but on
-        the summary rows a query matches before it descends to any leaf (ADR-0008
-        decision 8). A draft-scope summary node is therefore not even traversed on
-        a default query, so routing cannot make a withheld document a candidate in
-        the first place -- the descended leaves are gated a second time by
-        :meth:`_scope`, and a third by the canonical store. Separate from
-        :meth:`_scope` because `nodes` and `chunks` are different tables with the
-        same two columns, and a single point of change per table is what SEC-13
-        asks for.
+        The same Project, status and sensitivity predicates the leaf retrievers
+        apply, but on the summary rows a query matches before it descends to any
+        leaf (ADR-0008 decision 8). A draft-scope or above-ceiling summary node is
+        therefore not even traversed on a default query, so routing cannot make a
+        withheld document a candidate in the first place -- the descended leaves
+        are gated a second time by :meth:`_scope`, and a third by the canonical
+        store. Separate from :meth:`_scope` because `nodes` and `chunks` are
+        different tables with the same three columns, and a single point of change
+        per table is what SEC-13 asks for.
+
+        The sensitivity clause is here for the reason ADR-0025 gives for requiring
+        all four scoring surfaces: a node's text is a summariser's paraphrase of
+        its children, so a gate that covered `chunks_fts`/`chunks_trigram` and
+        left `nodes_fts`/`nodes_trigram` open would withhold a document's own
+        chunks while routing on -- and inheriting a score from -- a summary of it.
+        A node carries one sensitivity by construction, never a mixture (ADR-0008
+        decision 1), so this predicate has a single value to test per row.
         """
         clauses = ["nodes.project_id = ?"]
         parameters: list[object] = [project_id]
         if not include_unapproved:
             clauses.append("nodes.status = ?")
             parameters.append(KnowledgeStatus.APPROVED.value)
+        levels = _levels(visible_sensitivities)
+        clauses.append(f"nodes.sensitivity IN ({','.join('?' * len(levels))})")
+        parameters.extend(levels)
         return clauses, parameters
 
     def search_summaries(
@@ -1336,6 +1391,7 @@ class SqliteIndexStore:
         project_id: str,
         limit: int = 50,
         include_unapproved: bool = False,
+        visible_sensitivities: frozenset[Sensitivity],
     ) -> RetrieverPage:
         """Route a query through the forest to the leaves beneath a matched summary.
 
@@ -1362,8 +1418,12 @@ class SqliteIndexStore:
         if not fts and not trigram:
             return RetrieverPage(rows=(), exhausted=True)
 
-        node_clauses, node_scope = self._node_scope(project_id, include_unapproved)
-        leaf_clauses, leaf_scope = self._scope(project_id, include_unapproved)
+        node_clauses, node_scope = self._node_scope(
+            project_id, include_unapproved, visible_sensitivities
+        )
+        leaf_clauses, leaf_scope = self._scope(
+            project_id, include_unapproved, visible_sensitivities
+        )
         sql, arguments = summary_statement(
             fts_expression=fts,
             trigram_expression=trigram,
@@ -1403,6 +1463,7 @@ class SqliteIndexStore:
         *,
         project_id: str,
         include_unapproved: bool = False,
+        visible_sensitivities: frozenset[Sensitivity],
     ) -> RetrieverPage:
         """Rank chunks by cosine similarity, by exact scan.
 
@@ -1426,7 +1487,7 @@ class SqliteIndexStore:
         if not query_vector:
             return RetrieverPage(rows=(), exhausted=True)
 
-        clauses, parameters = self._scope(project_id, include_unapproved)
+        clauses, parameters = self._scope(project_id, include_unapproved, visible_sensitivities)
 
         sql = (
             "SELECT chunks.chunk_id, chunks.item_id, chunks.revision_id, embeddings.vector "  # noqa: S608 - clauses are module-owned literals; values are bound
@@ -1557,6 +1618,24 @@ def _ranked(
         )
         for row in rows
     )
+
+
+def _levels(visible_sensitivities: frozenset[Sensitivity]) -> list[str]:
+    """A deployment's grant as the values `chunks.sensitivity` stores, sorted.
+
+    Sorted because the parameter order decides the statement two runs bind, and a
+    frozenset has no order to inherit (FR-R7). `value` rather than `str()` because
+    the column holds the wire spelling; a `Sensitivity` would bind as its
+    `StrEnum` value anyway, and relying on that makes the row's format depend on
+    an enum base class nothing else here depends on.
+
+    Shared by :meth:`SqliteIndexStore._scope` and
+    :meth:`SqliteIndexStore._node_scope` while the clause text is not, and the
+    split is deliberate: the two tables spell their column differently, so the
+    text has to be written twice, but the *values* are one rule and are written
+    once.
+    """
+    return sorted(level.value for level in visible_sensitivities)
 
 
 def _require_a_positive_limit(limit: int) -> None:
