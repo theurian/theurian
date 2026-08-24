@@ -338,6 +338,42 @@ Requests to `/mcp` need a bearer token, which `daemon start` mints into
 session-based: `initialize` returns an `mcp-session-id` header that every later
 request must carry, so `tools/list` on its own answers `400 Missing session ID`.
 Your MCP client handles this.
+
+**What the daemon will disclose is one word in a file beside that token.**
+`~/.theurian/auth/serving-profile` holds a single **sensitivity ceiling** —
+`public`, `internal`, `confidential` or `restricted` — and declares the highest
+class this deployment serves. Everything at or below it is served; everything
+above it is withheld from `knowledge.search`, from `knowledge.get`, from
+`knowledge.status`'s counts, and from the index build itself, so the withheld
+text is never written into a file a query reads
+([ADR-0025](docs/adr/0025-sensitivity-is-enforced-before-0-1-0-stable.md)).
+
+```sh
+cat ~/.theurian/auth/serving-profile     # what this deployment serves
+echo restricted > ~/.theurian/auth/serving-profile && chmod 600 $_
+theurian index build                     # a build is specific to the ceiling it ran under
+```
+
+- **With no file, the ceiling is `restricted`** — every level is served. This is
+  the ceiling the closing commit of
+  [#119](https://github.com/theurian/theurian/issues/119) lowers; see *Security
+  posture* below for what the default becomes and why.
+- **It lives in the data directory, deliberately not in a project's tracked
+  `.theurian/config.yaml`.** A committed ceiling would make *raising* it a change
+  any repository contributor could author.
+- **Mode 0600, and refused if another local account can reach it.** A ceiling
+  somebody else can rewrite is not a ceiling.
+- **A word the file does not recognise refuses at startup**, rather than falling
+  back to the built-in default. An access control that widens on a typo is not
+  one. The refusal names the four valid words and never echoes more than the one
+  it read.
+- **Rebuild after changing it.** A build records the ceiling it ran under, and a
+  search against a build whose ceiling differs from the one in force stands aside
+  to an unranked, still-gated scan and says so
+  (`fallbackReason: serving-profile-mismatch`). Both directions refuse: a wider
+  build would price the rows it *does* return against text this deployment does
+  not serve, and a narrower one answers with a silence a caller reads as "this
+  team has made no such decision".
 [docs/security/local-mcp.md](docs/security/local-mcp.md) covers the controls
 around that endpoint — binding, `Origin` and `Host` validation, where the token
 lives, and how to get it to a client without writing it down — not the JSON-RPC
@@ -547,6 +583,7 @@ found beside the version it expects.
 | :-- | :-- |
 | **Nothing leaves your machine** | Loopback only, bearer token at mode 0600, no telemetry, no account, no API key. |
 | **Indexed text is labelled as data, not as instructions** | Every result carries `untrusted-knowledge`, `mayContainInstructions`, and `executable`. **Theurian labels; it does not enforce.** Acting on the label is the calling agent's responsibility, and no MCP server can take it over (T-3). |
+| **Sensitivity is an enforced read control, not a label** | One word in `~/.theurian/auth/serving-profile` declares the highest class this deployment serves, and everything above it is withheld — from search, from `knowledge.get`, from `knowledge.status`'s counts, and from the index build, so the withheld text never reaches a file a query reads. **The shipped default is `restricted`, which serves every level; #119's closing commit lowers it to `internal`, so `confidential` and `restricted` are withheld until an operator raises the ceiling.** That is a behaviour change and it is the intended one: measured on a real mixed-sensitivity corpus, a default-parameter search returned four `confidential` items ranked and excerpted in its top six. `system.capabilities` reports `sensitivityEnforcement: true` and never the ceiling itself. Tenant and ACL group are a weaker claim and not the same one: they are refused at write time, so nothing is stored to withhold. ([ADR-0025](docs/adr/0025-sensitivity-is-enforced-before-0-1-0-stable.md), [#119](https://github.com/theurian/theurian/issues/119)) |
 | **Nothing is ever overwritten** | Revisions are immutable; items point at the current one. |
 | **Apache-2.0, DCO, no CLA** | Core cannot be relicensed away from Apache-2.0 without every contributor's agreement. ([ADR-0015](docs/adr/0015-dco-over-cla.md)) |
 | **Artifact verification is not implemented** | `SHA256SUMS` and a CycloneDX SBOM are published with every release, so the record a verifier would check against exists on every release — and **nothing in Theurian checks it**. Setup has no artifact to hash and no point in its flow where a check would run: it does not obtain Core, and cannot even report Core missing, because setup *is* Core. `artifact-integrity` reports `not-applicable` rather than claiming a check it did not make — `theurian setup --dry-run` prints it, and installs nothing. Checking a download against the `SHA256SUMS` on [its release](https://github.com/theurian/theurian/releases) is a manual step, and a narrow one: the checksums are unsigned and published by the pipeline that built the artifact, so they catch a substituted download, not a compromised release. ([#39](https://github.com/theurian/theurian/issues/39), T-16) |
@@ -568,7 +605,7 @@ Milestones 0 through 6, which are history rather than a plan:
 | :-- | :-- | :-- |
 | 0–4 | Architecture and ADRs · canonical store and migrations · source ingestion · single MCP daemon · Claude Code plugin | **done** |
 | 5 | Ranked retrieval: FTS5 word + trigram indexes, RRF, token budgets; dense built but opt-in | **done** |
-| 6 | Incremental rebuild (purge is a build, transitive withdrawal, `index gc`) and blue/green index switchover, landed · index states exhaustion explicitly, landed · scope filtering: project + status enforced, tenant/ACL refused at write time, validity window pinned by caller-chosen `asOf`, sensitivity and full axis enforcement deferred to [#119](https://github.com/theurian/theurian/issues/119) (now a 0.1.0 release gate — see below) · RAPTOR forest end to end (opt-in): `index build --raptor` derives and stores it (three tiers; the Catalog tier is not fanned out, so a build wall remains far above the one removed, [#144](https://github.com/theurian/theurian/issues/144)); a withdrawal re-derives each affected scope so a purged forest equals one that never held the withdrawn rows (ADR-0008 decision 9's two-corpus equality; status axis, with residuals recorded in the threat model); retrieval routes through summaries to leaves and a hit carries its `raptorPath`, gated so a title crosses no scope the caller's leaf is not in | **done** |
+| 6 | Incremental rebuild (purge is a build, transitive withdrawal, `index gc`) and blue/green index switchover, landed · index states exhaustion explicitly, landed · scope filtering: project + status enforced, tenant/ACL refused at write time, validity window pinned by caller-chosen `asOf`, sensitivity deferred to [#119](https://github.com/theurian/theurian/issues/119) — **which has since closed it: sensitivity is an enforced read control as of Phase 0, and tenant and ACL group are discharged degenerately rather than enforced** · RAPTOR forest end to end (opt-in): `index build --raptor` derives and stores it (three tiers; the Catalog tier is not fanned out, so a build wall remains far above the one removed, [#144](https://github.com/theurian/theurian/issues/144)); a withdrawal re-derives each affected scope so a purged forest equals one that never held the withdrawn rows (ADR-0008 decision 9's two-corpus equality; status axis, with residuals recorded in the threat model); retrieval routes through summaries to leaves and a hit carries its `raptorPath`, gated so a title crosses no scope the caller's leaf is not in | **done** |
 
 ### What comes next
 
@@ -584,7 +621,7 @@ what each phase does *not* claim:
 
 | Phase | Scope |
 | :-- | :-- |
-| 0 | Stabilize: take the `pre-1.0` label to zero and ship 0.1.0 stable, with sensitivity/tenant/ACL enforcement ([#119](https://github.com/theurian/theurian/issues/119)) mandatory before it |
+| 0 | Stabilize: take the `pre-1.0` label to zero and ship 0.1.0 stable. Sensitivity/tenant/ACL enforcement ([#119](https://github.com/theurian/theurian/issues/119)) was the gate on it and has landed |
 | A | A reproducible retrieval-evaluation baseline, so ranking changes stop shipping against no measurement |
 | B | The agent write path over MCP, and GitHub review ingestion (SEC-12 input validation is a precondition) |
 | C | Traceability: collecting the graph and querying it |
