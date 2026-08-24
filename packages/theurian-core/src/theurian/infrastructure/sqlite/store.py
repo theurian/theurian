@@ -464,16 +464,48 @@ class SqliteCanonicalStore:
         # The `sensitivity` predicate rides along and is *not* flat in the same way,
         # because no index carries that column: the seek locates the in-status rows
         # and this drops the above-ceiling ones after they have been fetched from the
-        # table. Measured on SQLite 3.47.1 against this schema, 50 admitted rows and
-        # 0/50/300/1,000 above the ceiling: VM steps 2,110 -> 2,410 -> 3,910 ->
-        # 8,110 while the rows crossing into Python stayed at 50 -- 6.0 steps per
-        # above-ceiling row, against the 34 the same rows cost when they are
-        # returned instead, and against the 15 us per withheld document the ranked
-        # path already accepts and records (`CanonicalVisibility.cleared`).
-        # Flattening it exactly means adding `sensitivity` as a third column here
-        # (measured: 2,032 steps at both 0 and 1,000), which bumps SCHEMA_VERSION --
-        # a change #119 phase 2 must not make, since its contract is that an
-        # allow-all deployment behaves as it did.
+        # table. So this statement carries a term that grows with the rows it
+        # withholds. It is accepted rather than absent, which means saying how large
+        # it is in the unit the residual it is measured against uses.
+        #
+        # Measured on SQLite 3.47.1 against this schema, an `approved` project with
+        # 50 rows an `internal` ceiling admits and 0/50/300/1,000/3,000 above it,
+        # median of 60 warm in-process calls: VM steps 1,816 -> 2,116 -> 3,616 ->
+        # 7,816 -> 19,816 and 363 -> 373 -> 423 -> 552 -> 957 us, while the rows
+        # crossing into Python stayed at 50 throughout. That is **6.0 VM steps and
+        # about 0.20 us per above-ceiling row**, linear, with no threshold in it.
+        # The step count is exact and reproduces anywhere; the microseconds are this
+        # machine's, which is why they are quoted to two figures.
+        #
+        # **Bounded by the corpus, not by the ask.** This statement carries no
+        # `LIMIT` -- `search._scan` cuts in Python, after the whole result set has
+        # been built -- so the term is proportional to every above-ceiling row in the
+        # project, and no caller can shrink it by asking for less.
+        #
+        # **What it is worth is a per-row comparison and only a per-row one.** The
+        # ranked path already accepts, and the threat model records, a canonical read
+        # of 14.7 us per withheld row (T-17); this is about 70 times smaller per row.
+        # Compared as totals the two say nothing to each other, because they are
+        # bounded by different populations. Against the end-to-end noise floor the
+        # threat model records for a real client -- 1.40 ms across the loopback hop
+        # (TB-1) -- this term needs on the order of 7,000 above-ceiling rows in one
+        # project to reach a single floor's width, which is where the acceptance
+        # stops being obvious and the flattening below stops being optional.
+        #
+        # **The acceptance is this method's alone.** `count_surfaceable_by_status`
+        # below is not narrowed by the ceiling at all and so carries no such term;
+        # that is a recorded gap rather than an oversight, pinned by
+        # `test_knowledge_status_counts_are_not_yet_narrowed_by_the_ceiling`
+        # (`tests/integration/test_mcp_tools.py`), because the same population is the
+        # live half of the #30 integrity comparison.
+        #
+        # Flattening it exactly means adding `sensitivity` as a third column of
+        # `idx_items_status` (measured: 2,032 steps at both 0 and 1,000 above the
+        # ceiling, on the fixture the earlier note used), which bumps SCHEMA_VERSION
+        # and so invalidates every existing state database. That was not a change
+        # #119 phase 2 could make, since its contract was that an allow-all
+        # deployment behaves as it did; it is owned by
+        # https://github.com/theurian/theurian/issues/338.
         sql = (
             "SELECT * FROM knowledge_items INDEXED BY idx_items_status "  # noqa: S608 - placeholders only
             f"WHERE project_id = ? AND status IN ({placeholders}) "
