@@ -181,10 +181,11 @@ CREATE TABLE chunks (
     -- canonical re-check on its current class rather than by anything here, since
     -- this column still says what was true when the row was written.
     --
-    -- `trust_level` and `namespace` are carried for the scope filtering #119
-    -- adds (Milestone 6) and are read by no query. `namespace` is populated as of
-    -- the RAPTOR builder, which partitions the forest by the scope tuple this
-    -- column is a component of; it is still read by no query.
+    -- `trust_level` and `namespace` are read by no query, and #119 did not change
+    -- that: it enforced the sensitivity axis and left these two where they were.
+    -- `namespace` is populated as of the RAPTOR builder, which partitions the
+    -- forest by the scope tuple this column is a component of; it is still read
+    -- by no query.
     --
     -- `kind` is the one exception to "read by no query": no *retrieval* reads it,
     -- but the withdrawal purge's re-derivation does (v5). A Domain tree is keyed
