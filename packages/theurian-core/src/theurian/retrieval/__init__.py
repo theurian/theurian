@@ -33,9 +33,28 @@ loop's own exit condition watches, because a caller-chosen moment folded into
 that check would let the loop's retriever-call count move with ``asOf``,
 reviving the single-withheld-row timing oracle the loop's depth margin exists
 to prevent (a second CRITICAL finding in the same review round; see
-``theurian.application.visibility.Visibility.at_moment``). Tenant, ACL and
-sensitivity remain unenforced as controls; enforcing them is tracked by #119,
-the successor to #63.
+``theurian.application.visibility.Visibility.at_moment``).
+
+**FR-R1's remaining three axes are disposed of, and not all in the same way.**
+This paragraph used to say that tenant, ACL and sensitivity "remain unenforced as
+controls", with enforcement tracked by #119. #119 has since closed, and the two
+halves of it settled differently
+(`ADR-0025 <https://github.com/theurian/theurian/blob/main/docs/adr/0025-sensitivity-is-enforced-before-0-1-0-stable.md>`_):
+
+- **Sensitivity is enforced, at read time, in three places that back each other
+  up.** A build writes no chunk row for an item above the ceiling this deployment
+  declares, so the withheld text is not in the FTS5 tables to price the visible
+  rows against; ``_scope`` and ``_node_scope`` emit ``sensitivity IN (…)`` over
+  that grant in the same statement as the match, on both halves of the derived
+  index; and a ``changeSensitivity`` moving an item past that ceiling purges its
+  rows out of the published build in the same ``migrate apply``. The canonical
+  re-check on the item's *current* class stands behind all three.
+- **Tenant and ACL group are discharged degenerately, which is a different claim
+  and a weaker one.** They are refused at write time, so no stored row carries
+  anything but the single-tenant default and there is nothing along either axis
+  to withhold. No predicate filters on them because none can be exercised. A
+  deployment that ever stores a second tenant needs a real control, not this
+  argument.
 
 This docstring ships inside the wheel, so it is the one a user reads from
 ``theurian.retrieval.__doc__`` rather than from the repository.
