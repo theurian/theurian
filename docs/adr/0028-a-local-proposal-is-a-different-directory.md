@@ -119,12 +119,13 @@ sets are the same:
   the entries. That comment becomes false for one of them. The block needs a
   second labelled line for the non-derived entry, or a comment that no longer
   claims the whole list is derived.
-- **`test_dogfood_corpus_governance.py::test_the_managed_gitignore_block_lists_exactly_the_derived_patterns`
-  compares this repository's own committed `.gitignore` against
-  `GITIGNORE_ENTRIES`, in order, exactly.** It goes RED unless the repository's
-  `.gitignore` is edited in the same commit — which is the test working. Its
-  name and docstring say "derived patterns", and both stop being accurate at the
-  same moment.
+- **`test_dogfood_corpus_governance.py`'s managed-block test compares this
+  repository's own committed `.gitignore` against `GITIGNORE_ENTRIES`, in order,
+  exactly.** It goes RED unless the repository's `.gitignore` is edited in the
+  same commit — which is the test working. Its name and docstring said "derived
+  patterns", and both stopped being accurate at the same moment: it is
+  `::test_the_managed_gitignore_block_lists_exactly_the_patterns_init_writes`
+  since the implementation, which is the rename this paragraph mandated.
 
 `init` creates the directory alongside the others in `INITIAL_DIRECTORIES`, and
 it does **not** get a `.gitkeep`. The existing code only marks
@@ -135,8 +136,11 @@ applies to an ignored directory that is not derived.
 
 ### 4. Out of scope, with the residues named
 
-Three things this decision deliberately does not do. Each gets an issue at
-implementation; none is quietly dropped.
+Three things this decision deliberately does not do. Each has an issue —
+[#332](https://github.com/theurian/theurian/issues/332),
+[#333](https://github.com/theurian/theurian/issues/333) and
+[#334](https://github.com/theurian/theurian/issues/334), in the order below;
+none is quietly dropped.
 
 - **An overlay for locally-*accepted* knowledge.** `--local` covers a proposal,
   which is the pre-approval artifact. The dogfood machine's 56 private notes are
@@ -208,9 +212,11 @@ implementation; none is quietly dropped.
   that is not ADR-0004's.
 - The touch set for the implementation commit: `GITIGNORE_ENTRIES` and
   `INITIAL_DIRECTORIES` in `domain/project.py`, the block comment in
-  `application/project_service.py`, a `proposals_local` property on
-  `ProjectPaths` and on `Project`, the `--local` flag and the proposal-lookup
-  path in `cli/propose_commands.py` and `application/proposal_service.py`, this
+  `application/project_service.py`, `ProjectPaths.proposals_local` and
+  `Project.proposals_local_directory` — the sibling convention on `Project`
+  suffixes the directory-name properties, so the two are named differently on
+  purpose — the `--local` flag and the proposal-lookup path in
+  `cli/propose_commands.py` and `application/proposal_service.py`, this
   repository's own `.gitignore`, and the two tests named in decision 3.
   Re-enumerate with
   `grep -rn 'GITIGNORE_ENTRIES\|INITIAL_DIRECTORIES' packages/ tools/` rather
@@ -230,50 +236,57 @@ implementation; none is quietly dropped.
 
 ## Compliance
 
-**Nothing in this section has landed.** This ADR is written at the design stage
-of #316's CL; the tests below are what the implementation owes.
+**Everything owed at design time has landed in Milestone 7**, in #316's CL, with
+the test that discharges each item named below. Every path is relative to
+`packages/theurian-core/`.
 
-Owed with the implementation:
+Landed in Milestone 7:
 
-- A test that `theurian propose --local` writes only under
-  `.theurian/proposals-local/<id>/`, in the shape
-  `test_proposal_service.py::test_generation_writes_only_under_the_proposal_directory`
-  already uses for the tracked location — a whole-tree diff plus a content
-  snapshot of every file outside it, so an overwrite that adds no new path is
-  caught too.
-- A test that the path is ignored by the `.gitignore` `init` writes, driven
-  through Git rather than through string matching: initialise a scratch
-  repository, write a local proposal, and assert `git status --porcelain`
-  reports nothing. A test that only checks membership in `GITIGNORE_ENTRIES`
-  passes against a pattern Git does not actually apply.
-- The update to
-  `test_dogfood_corpus_governance.py::test_the_managed_gitignore_block_lists_exactly_the_derived_patterns`,
-  together with this repository's own `.gitignore` — the test compares the two
-  in order and exactly, so it goes RED until both move. Its name and docstring
-  are corrected in the same edit, because "derived patterns" stops describing
-  the list.
-- A test that `Project.is_derived` returns `False` for a path under
-  `.theurian/proposals-local/`. This is the one that goes RED if a later change
-  "tidies up" by folding the new entry into `DERIVED_SUBDIRECTORIES`, which
-  would make `doctor` describe authored content as rebuildable.
-- A test that `accept` refuses a proposal id present in both locations, naming
-  both paths — not one that asserts a precedence.
-- A test that a symlinked local proposal directory is refused exactly as a
-  symlinked tracked one is (SEC-7, T-5). If the two locations ever disagree
-  here, the containment guarantee has two implementations and one of them is
-  wrong.
-- A test that `init` creates `.theurian/proposals-local/` **without** a
-  `.gitkeep`, so the directory a clone must not commit is not committed by the
-  command that creates it.
+- `theurian propose --local` writes only under `.theurian/proposals-local/<id>/`:
+  `tests/integration/test_proposal_service.py::test_generation_writes_only_under_the_proposal_directory`
+  and `::test_generation_modifies_no_file_outside_the_proposal_directory`, both
+  parametrized over the two locations rather than duplicated, so the containment
+  claim is one claim. The directory is asserted whole rather than by prefix,
+  because `.theurian/proposals/` and `.theurian/proposals-local/` are each
+  other's near-misses — a draft that ignored the flag would still be "under a
+  proposal directory" by any looser phrasing.
+- The path is ignored by the `.gitignore` `init` writes, driven through Git and
+  not through string matching:
+  `tests/integration/test_propose_cli.py::test_a_local_proposal_is_invisible_to_git_while_an_ordinary_one_is_not`.
+  The property that made this ADR worth writing — that the rule travels — is
+  separate: `::test_the_rule_that_hides_a_local_proposal_is_one_a_clone_would_inherit`.
+- The managed-block test moved with the list it grades, and is now
+  `tests/unit/test_dogfood_corpus_governance.py::test_the_managed_gitignore_block_lists_exactly_the_patterns_init_writes`.
+  It compares this repository's own committed `.gitignore` against
+  `GITIGNORE_ENTRIES` in order and exactly, so it went RED until both moved.
+- `Project.is_derived` returns `False` for a path under
+  `.theurian/proposals-local/`:
+  `tests/unit/test_project_and_traceability.py::test_the_local_proposal_directory_is_ignored_without_being_derived`.
+  This is the one that goes RED if a later change "tidies up" by folding the new
+  entry into `DERIVED_SUBDIRECTORIES`, which would make `doctor` describe
+  authored content as rebuildable.
+- `accept` refuses a proposal id present in both locations, naming both paths:
+  `tests/integration/test_proposal_service.py::test_accept_refuses_a_proposal_id_that_exists_in_both_locations`.
+- A symlinked local proposal directory is refused exactly as a symlinked tracked
+  one is (SEC-7, T-5):
+  `tests/integration/test_proposal_service.py::test_accept_refuses_a_symlinked_proposal_directory`,
+  parametrized over both locations and asserting the refusal's own path, which
+  is where a lookup that graded one location and fell through to the other would
+  show itself.
+- `init` creates `.theurian/proposals-local/` **without** a `.gitkeep`:
+  `tests/integration/test_cli_commands.py::test_init_creates_the_local_proposal_directory_without_marking_it`.
 
-Still owed, with the issue that will satisfy it — each filed at implementation:
+Still owed, with the issue that will satisfy it:
 
-- **An overlay for locally-accepted knowledge.** Until it exists, the 56
-  accepted private notes on the dogfood machine are held out of Git by the
-  machine-local `.git/info/exclude` fence alone, and a clone inherits none of
-  it. This is the largest remaining piece of #265 and it is not closed here.
+- **An overlay for locally-accepted knowledge**
+  ([#332](https://github.com/theurian/theurian/issues/332)). Until it exists,
+  the 56 accepted private notes on the dogfood machine are held out of Git by
+  the machine-local `.git/info/exclude` fence alone, and a clone inherits none
+  of it. This is the largest remaining piece of #265 and it is not closed here.
 - **A repository-side guard against committing a non-`public` proposal** from a
-  public repository. The corpus governance test grades tracked migrations after
-  acceptance; nothing grades proposals.
-- **Recovery from `git clean -xdf`.** Accepted as an availability residual with
-  a manual recovery, recorded rather than fixed.
+  public repository ([#333](https://github.com/theurian/theurian/issues/333)).
+  The corpus governance test grades tracked migrations after acceptance; nothing
+  grades proposals.
+- **Recovery from `git clean -xdf`**
+  ([#334](https://github.com/theurian/theurian/issues/334)). Accepted as an
+  availability residual with a manual recovery, recorded rather than fixed.
