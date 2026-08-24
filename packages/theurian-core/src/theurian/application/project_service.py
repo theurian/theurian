@@ -24,7 +24,7 @@ from theurian.domain.project import (
     DEFAULT_KNOWLEDGE_DIRECTORY,
     GITIGNORE_BLOCK_END,
     GITIGNORE_BLOCK_START,
-    GITIGNORE_ENTRIES,
+    GITIGNORE_SECTIONS,
     Project,
 )
 from theurian.domain.state import ActiveState, StateHash, compute_state_hash, state_inputs_from
@@ -42,6 +42,7 @@ INITIAL_DIRECTORIES: Final = (
     "specifications",
     "evaluations",
     "proposals",
+    "proposals-local",
     "schema",
     "state",
     "cache",
@@ -274,6 +275,23 @@ class ProjectPaths:
         return self.knowledge_dir / "proposals"
 
     @property
+    def proposals_local(self) -> Path:
+        """Where ``theurian propose --local`` drafts instead (ADR-0028).
+
+        The other half of :attr:`proposals`' sentence: not derived either, and
+        git-ignored anyway -- for a reason that is not ADR-0004's. A local
+        proposal is authored content whose *bytes* must not leave the machine,
+        so ``theurian init`` writes this path into the managed ``.gitignore``
+        block, which every clone inherits. Nothing rebuilds it, which is why it
+        must never join ``DERIVED_SUBDIRECTORIES``.
+
+        The layout inside is identical to :attr:`proposals`. Only the parent
+        differs, and ``propose accept`` reads both through one implementation:
+        a second location must not become a second reader (SEC-7).
+        """
+        return self.knowledge_dir / "proposals-local"
+
+    @property
     def config(self) -> Path:
         """The project's own settings, if it has written any.
 
@@ -400,7 +418,10 @@ def initialize_project(paths: ProjectPaths) -> tuple[str, ...]:
 
     # `.gitkeep` only where Git must carry an otherwise-empty directory. Derived
     # directories are git-ignored, so marking them would commit a path that is
-    # supposed to be absent from the repository (ADR-0004).
+    # supposed to be absent from the repository (ADR-0004). `proposals-local/`
+    # is git-ignored for a different reason -- authored content deliberately
+    # kept off Git (ADR-0028) -- and the argument lands the same way: a
+    # `.gitkeep` there would commit the one directory a clone must not carry.
     for relative in ("migrations", "specifications", "proposals"):
         keep = paths.knowledge_dir / relative / ".gitkeep"
         if not keep.exists():
@@ -465,11 +486,18 @@ def ensure_gitignore(root: Path) -> tuple[bool, str]:
             start marker, or a start with no end after it. Each arm names what
             to look for and the command to re-run.
     """
+    # One comment per section, not one per block: the block carries two
+    # categories since ADR-0028 -- derived artifacts, and authored content kept
+    # out of Git on purpose -- and a single "Derived artifacts" header would be
+    # false for the second in the direction that loses work.
     block = "\n".join(
         [
             GITIGNORE_BLOCK_START,
-            "# Derived artifacts. Rebuilt from Git-tracked migrations (ADR-0004).",
-            *GITIGNORE_ENTRIES,
+            *(
+                line
+                for section in GITIGNORE_SECTIONS
+                for line in (section.comment, *section.entries)
+            ),
             GITIGNORE_BLOCK_END,
         ]
     )

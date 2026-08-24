@@ -4,7 +4,10 @@ Two operations, and the boundary between them is the product:
 
 ``draft`` writes ``.theurian/proposals/<proposal-id>/`` -- a schema-valid,
 directly applicable migration, the body in its native format, and the evidence a
-reviewer reads. It writes nowhere else.
+reviewer reads. It writes nowhere else. A draft asked for ``local=True`` writes
+the same layout under ``.theurian/proposals-local/`` instead, which
+``theurian init`` git-ignores: same content, a parent that does not travel
+(ADR-0028).
 
 ``accept`` moves those files into place, once it has proved the move is safe to
 make. **It automates the file moves and not the judgement**: it does not apply
@@ -60,7 +63,7 @@ from typing import Final, NoReturn
 
 import yaml
 
-from theurian.application.project_service import ProjectPaths
+from theurian.application.project_service import ProjectError, ProjectPaths, ensure_gitignore
 from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, TrustLevel
 from theurian.domain.errors import (
     InputTooLargeError,
@@ -383,9 +386,11 @@ class BodySecretFinding:
     ``body`` is the path *relative to* ``.theurian/knowledge/``, which is the one
     spelling that is correct both before and after the move: a proposal mirrors
     the sub-path its body will occupy, so the same string names the file in
-    ``.theurian/proposals/<id>/`` and in ``.theurian/knowledge/``. A refusal
-    happens before the move and a warning after it, and neither has to say which
-    it means.
+    either proposal directory and in ``.theurian/knowledge/``. A refusal happens
+    before the move and a warning after it, and neither has to say which it
+    means -- nor which of the two locations the proposal came from, which is why
+    this spelling survived ADR-0028 unchanged while the refusal's own remedy did
+    not.
     """
 
     body: str
@@ -418,6 +423,12 @@ class AcceptedProposal:
     proposal_id: ProposalId
     migration: MovedFile
     bodies: tuple[MovedFile, ...] = ()
+    #: Whether the proposal was read from ``.theurian/proposals-local/`` rather
+    #: than the tracked location (ADR-0028). Published so a composition root can
+    #: say what happens next without comparing paths: the tracked directory
+    #: travels in the pull request, and the local one is git-ignored and does
+    #: not. Defaulted to the committable case, which is ADR-0013 point 7's.
+    local: bool = False
     #: What the SEC-11 scan did. Defaulted to the policy an unconfigured project
     #: gets, so a hand-built result -- a fake in a test, a future caller -- states
     #: the strictest reading rather than an unscanned one it did not check.
@@ -458,8 +469,26 @@ class ProposalService:
 
     # -- generation --------------------------------------------------------
 
-    def draft(self, request: ProposalRequest) -> DraftedProposal:
-        """Write one proposal directory, and nothing outside it.
+    def draft(self, request: ProposalRequest, *, local: bool = False) -> DraftedProposal:
+        """Write one proposal directory, and -- for ``--local`` -- the ignore rule it needs.
+
+        ``local`` picks the parent (ADR-0028): the layout inside the directory is
+        identical, and the migration's ``contentFile`` is unaffected because it is
+        relative to ``.theurian/migrations/``, which is where the migration lands
+        from either location. It is a parameter of the *act* rather than a field
+        of :class:`ProposalRequest`, which is what becomes the migration document
+        -- where the draft is written is not something the reviewed text says.
+
+        A ``local=True`` draft also brings the managed ``.gitignore`` block current
+        before it writes, because ``--local``'s confidentiality *is* that ignore
+        rule (:meth:`_ensure_local_is_ignored`); it is refused rather than written
+        if the rule cannot be established. An ordinary draft writes only its own
+        proposal directory and touches nothing outside it.
+
+        It defaults to the committable location, and that direction is
+        deliberate: a caller who forgets it gets a proposal that shows up in
+        ``git status``, which is visible, rather than one that silently does
+        not.
 
         Every identifier is fresh: the proposal, the migration, and the
         revision. A revision id names one item for the life of a project, and
@@ -482,9 +511,10 @@ class ProposalService:
 
         Raises:
             ProposalError: If the request cannot be packaged, if an update omits
-                or misplaces its ``expectedRevision``, or if the built migration
-                does not satisfy the published schema. Nothing is written in any
-                case.
+                or misplaces its ``expectedRevision``, if the built migration does
+                not satisfy the published schema, or if a ``--local`` draft cannot
+                make ``.theurian/proposals-local/`` git-ignored. No proposal
+                directory is written in any case.
         """
         self._check_expected_revision(request)
         proposal_id = ProposalId(self._ids.new_ulid().value)
@@ -509,7 +539,15 @@ class ProposalService:
         )
         self._validate(document)
 
-        directory = self._paths.proposals / proposal_id.value
+        if local:
+            # Before a single byte is written: `--local`'s confidentiality rests
+            # entirely on `.theurian/proposals-local/` being git-ignored, and that
+            # is only true if the managed block carries the ADR-0028 entry (see
+            # `_ensure_local_is_ignored`). Refused here, nothing is written.
+            self._ensure_local_is_ignored()
+
+        parent = self._paths.proposals_local if local else self._paths.proposals
+        directory = parent / proposal_id.value
         directory.mkdir(parents=True)
         # The body mirrors the sub-path it will occupy under `knowledge/`, not a
         # flat leaf name. Two content files that differ only in namespace --
@@ -548,6 +586,48 @@ class ProposalService:
             content_sha256=digest,
             body_destination=self._paths.knowledge / relative_body,
         )
+
+    def _ensure_local_is_ignored(self) -> None:
+        """Bring the managed ``.gitignore`` block current before a ``--local`` draft writes.
+
+        ``--local``'s whole promise is confidentiality: the body does not appear
+        in ``git status`` and does not travel to a clone or a pull request. That
+        rests entirely on ``.theurian/proposals-local/`` being git-ignored, which
+        is true only when the managed block carries the ADR-0028 entry. A project
+        initialised before ADR-0028 -- every shipped ``0.1.0.dev9`` project -- has
+        a block that does not, so a ``--local`` draft there would write a private
+        body to a directory Git tracks while the command claimed it was ignored
+        (HIGH-2, reproduced with a stale block).
+
+        :func:`~theurian.application.project_service.ensure_gitignore` is
+        idempotent and is the same re-run path ``theurian init`` uses, so a stale
+        block is brought current and a current one is left untouched. If the block
+        cannot be made current -- a ``.gitignore`` the filesystem refuses to write
+        or read, or markers only the operator can repair -- the draft is *refused*
+        rather than written and then falsely reported as ignored. The refusal
+        never interpolates the absolute project path, which would carry the
+        developer's home directory into an ``accept --json`` document (the
+        discipline :meth:`_unreadable` records).
+        """
+        try:
+            ensure_gitignore(self._paths.root)
+        except ProjectError as exc:
+            raise ProposalError(
+                "A --local draft needs .theurian/proposals-local/ to be git-ignored, but the "
+                "project's .gitignore has a Theurian block that cannot be rewritten safely. "
+                "Nothing was written.",
+                remedy=exc.remedy
+                or "Repair the Theurian block in .gitignore by hand, then run `theurian init`.",
+            ) from exc
+        except (OSError, UnicodeDecodeError) as exc:
+            reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else "it is unusable"
+            raise ProposalError(
+                f"A --local draft needs .theurian/proposals-local/ to be git-ignored, but the "
+                f"project's .gitignore could not be updated ({reason}). Nothing was written.",
+                remedy="Make .gitignore readable and writable, or run `theurian init`, then "
+                "draft again. To draft without the ignore guarantee, drop --local -- but the "
+                "proposal will then show up in git status.",
+            ) from exc
 
     def _check_expected_revision(self, request: ProposalRequest) -> None:
         """Refuse an update with no guard, and a first revision with a stale one.
@@ -592,6 +672,15 @@ class ProposalService:
 
     def accept(self, proposal_id: ProposalId) -> AcceptedProposal:
         """Prove the project still applies with this proposal in it, then move it.
+
+        **The proposal is looked up in both locations** -- the tracked
+        ``.theurian/proposals/`` and the git-ignored ``.theurian/proposals-local/``
+        -- through one lookup, one symlink refusal, one containment check and one
+        size cap. ADR-0028's hard condition: a second location must not become a
+        second reader, because SEC-7 is held by one implementation or by none.
+        An id present in *both* is refused naming both paths, never resolved by
+        precedence: the two directories can hold different bytes, and choosing
+        silently is the ambiguity class this project has already paid for.
 
         **Before anything moves, the union of the landed migration set and this
         proposal is put through the pipeline ``migrate apply`` runs. If it does
@@ -675,7 +764,9 @@ class ProposalService:
             MigrationNameTakenError: If the migration's name is taken, whether by
                 a previous acceptance of this proposal or by a different change
                 that collided.
-            ProposalError: If the proposal is unknown, ambiguous, incomplete,
+            ProposalError: If the proposal is unknown, ambiguous -- two migration
+                files inside it, or the same id present in both proposal
+                locations -- incomplete,
                 could not be fully examined -- including a directory or a file
                 in it the filesystem refuses to list, stat or read -- names a
                 file the security layer refuses, carries a body that appears to
@@ -693,8 +784,9 @@ class ProposalService:
                 size cap.
         """
         try:
-            directory = self._require_directory(proposal_id)
-            migration_file = self._require_migration(directory, proposal_id)
+            location = self._require_directory(proposal_id)
+            directory = location.directory
+            migration_file = self._require_migration(location, proposal_id)
             migration_bytes = self._read_within_project(migration_file)
             document = _parse_migration(migration_bytes, migration_file)
             destination = self._paths.migrations / migration_file.name
@@ -739,23 +831,23 @@ class ProposalService:
         # the cheaper order: the scan is a regex pass over bytes already in
         # hand, and the rehearsal copies and replays the project's whole
         # migration set.
-        secret_scan = self._scan_bodies_for_secrets(proposal_id, moves)
+        secret_scan = self._scan_bodies_for_secrets(location, moves)
 
         # Outside the clause above, deliberately: the pre-check reads every
         # landed migration and body, so its faults are not this proposal's and
         # must not be reported as "the proposal could not be examined". It
         # translates its own (CP-2, the fourth site).
         self._refuse_unless_the_union_applies(
-            proposal_id, migration_file, migration_bytes, document, moves
+            location, migration_file, migration_bytes, document, moves
         )
 
         accepted = self._commit(proposal_id, moves, migration_file, migration_bytes, destination)
-        return replace(accepted, secret_scan=secret_scan)
+        return replace(accepted, secret_scan=secret_scan, local=location.local)
 
     # -- the secret scan (SEC-11, ADR-0027 decision 3) ---------------------
 
     def _scan_bodies_for_secrets(
-        self, proposal_id: ProposalId, moves: tuple[_BodyMove, ...]
+        self, location: _ProposalLocation, moves: tuple[_BodyMove, ...]
     ) -> SecretScanResult:
         """Scan every incoming body, and refuse the acceptance if the policy says to.
 
@@ -823,11 +915,11 @@ class ProposalService:
             for finding in scan_text(move.data.decode("utf-8", errors="replace"))
         )
         if policy is SecretScanPolicy.BLOCK and findings:
-            raise self._secret_refusal(proposal_id, findings)
+            raise self._secret_refusal(location, findings)
         return SecretScanResult(policy=policy, findings=findings)
 
     def _secret_refusal(
-        self, proposal_id: ProposalId, findings: tuple[BodySecretFinding, ...]
+        self, location: _ProposalLocation, findings: tuple[BodySecretFinding, ...]
     ) -> ProposalError:
         """The refusal for a body that appears to carry a secret.
 
@@ -841,6 +933,9 @@ class ProposalService:
         that reached a proposal directory is in a Git working tree and, if the
         proposal was committed, in history -- so telling the author to delete
         the line and carry on would be advice that leaves the credential live.
+        That holds for a ``--local`` proposal too: the directory is git-ignored,
+        which keeps the bytes out of a *commit* and not off the disk, so the
+        rotation advice is unconditional and only the path named changes.
         The escape hatch for a false positive is named second and names the key,
         because ``block`` is the default and a false positive is otherwise a
         dead end.
@@ -852,7 +947,7 @@ class ProposalService:
             remedy=(
                 "Treat the value as exposed and rotate it -- it is already in a working tree, "
                 "and in Git history if the proposal has been committed. Then remove it from the "
-                f"body in .theurian/proposals/{proposal_id.value}/ and accept the proposal "
+                f"body in {location.relative}/ and accept the proposal "
                 "again. If it is not a secret, set security.secretScan to warn or off in "
                 ".theurian/config.yaml (block, warn, off; block is what an absent key selects)."
             ),
@@ -862,7 +957,7 @@ class ProposalService:
 
     def _refuse_unless_the_union_applies(
         self,
-        proposal_id: ProposalId,
+        location: _ProposalLocation,
         migration_file: Path,
         migration_bytes: bytes,
         document: Mapping[str, object],
@@ -933,7 +1028,7 @@ class ProposalService:
             # proposal would send the author to edit a file that is correct.
             raise
         except (TheurianError, OSError) as exc:
-            raise self._union_refusal(proposal_id, migration_file, landed, exc) from exc
+            raise self._union_refusal(location, migration_file, landed, exc) from exc
 
     def _refuse_a_document_the_schema_rejects(
         self, migration_file: Path, document: Mapping[str, object]
@@ -1054,7 +1149,7 @@ class ProposalService:
 
     def _union_refusal(
         self,
-        proposal_id: ProposalId,
+        location: _ProposalLocation,
         migration_file: Path,
         landed: tuple[str, ...],
         error: BaseException,
@@ -1085,15 +1180,14 @@ class ProposalService:
                     "Another change to this item landed first. Nothing has moved, so either "
                     "give the proposal's own migration the expectedRevision the message "
                     "reports, or draft the change again with --expected-revision and delete "
-                    f".theurian/proposals/{proposal_id.value}/."
+                    f"{location.relative}/."
                 ),
             )
         return ProposalError(
             message,
             remedy=(
-                f"Correct {_names([migration_file.name])} in .theurian/proposals/"
-                f"{proposal_id.value}/, then accept it again. Nothing has moved and the "
-                "proposal's own files are intact."
+                f"Correct {_names([migration_file.name])} in {location.relative}/, then accept "
+                "it again. Nothing has moved and the proposal's own files are intact."
             ),
         )
 
@@ -1154,28 +1248,92 @@ class ProposalService:
             return exc
         return None
 
-    def _require_directory(self, proposal_id: ProposalId) -> Path:
-        # Built from a validated ULID, so no caller-supplied text reaches the
+    def _require_directory(self, proposal_id: ProposalId) -> _ProposalLocation:
+        """Find the one directory this id names, across both locations (ADR-0028).
+
+        The two candidates are probed for *presence* first and graded second,
+        and that order is what makes the ambiguity refusal real. Grading one
+        location and falling through to the other on failure would resolve by
+        precedence -- a symlinked tracked proposal would be answered by a local
+        one of the same id, which is exactly the silent choice between two
+        directories that may hold different bytes the ADR refuses.
+
+        Presence is ``lexists``: anything at the name, a broken symlink and a
+        regular file included. A candidate that is present and not a real
+        directory is *refused*, never skipped, for the same reason -- the reader
+        is told what is in the way rather than sent to look for a proposal the
+        lookup silently declined to read.
+        """
+        # Built from a validated ULID, so no caller-supplied text reaches either
         # path: `ProposalId` cannot spell a separator, let alone a traversal.
         # But the name being safe says nothing about what it resolves *to*: a
         # committed proposal directory that is itself a symlink to somewhere out
         # of the project would pull that target's `*.yaml` into the accept path.
-        # `is_dir()` follows the link, so it is checked separately.
-        directory = self._paths.proposals / proposal_id.value
-        if directory.is_symlink():
+        # `is_dir()` follows the link, so it is checked separately, below.
+        parents = ((self._paths.proposals, False), (self._paths.proposals_local, True))
+        candidates = tuple(
+            _ProposalLocation(
+                directory=parent / proposal_id.value,
+                relative=self._within_project(parent / proposal_id.value),
+                local=local,
+            )
+            for parent, local in parents
+        )
+        present = [
+            candidate
+            for candidate in candidates
+            # `exists(follow_symlinks=False)`, so a dangling symlink counts as
+            # present: it is something in the way of this id, and answering "no
+            # such proposal" for it would send the author to draft a duplicate.
+            if candidate.directory.exists(follow_symlinks=False)
+        ]
+        if len(present) > 1:
+            raise self._ambiguous_locations(proposal_id, present)
+        if not present:
+            # "or" states where it was not found; "and" is what the reader has to
+            # do about it. A remedy saying "list A or B" is an instruction that
+            # can be followed correctly and still miss the proposal, because
+            # which of the two holds it is exactly what is not known here.
+            searched = [f"{self._within_project(parent)}/" for parent, _ in parents]
+            raise ProposalError(
+                f"No proposal {proposal_id.value} under {' or '.join(searched)}.",
+                remedy=f"List {' and '.join(searched)} to see which proposals are waiting.",
+            )
+        location = present[0]
+        if location.directory.is_symlink():
             raise ProposalError(
                 f"Proposal {proposal_id.value} is a symlink, not a directory.",
-                remedy="A proposal is a real directory under .theurian/proposals/. "
-                "Remove the link and commit the directory itself.",
+                remedy=f"A proposal is a real directory at {location.relative}. "
+                "Remove the link and put the directory itself there.",
             )
-        if not directory.is_dir():
+        if not location.directory.is_dir():
             raise ProposalError(
-                f"No proposal {proposal_id.value} under .theurian/proposals/.",
-                remedy="List .theurian/proposals/ to see which proposals are waiting.",
+                f"{location.relative} is not a directory, so it cannot be a proposal.",
+                remedy=f"Remove what is at {location.relative} and put the proposal directory "
+                "itself there.",
             )
-        return directory
+        return location
 
-    def _require_migration(self, directory: Path, proposal_id: ProposalId) -> Path:
+    def _ambiguous_locations(
+        self, proposal_id: ProposalId, present: Sequence[_ProposalLocation]
+    ) -> ProposalError:
+        """Refuse an id that names a directory in both locations (ADR-0028).
+
+        Never resolved by precedence. The two directories are independent trees
+        that can hold different migrations for the same proposal id, and a
+        silent pick would accept one of them while the author was looking at the
+        other -- with the loser's body left behind and nothing said. Both paths
+        are named so the reader can compare them before deleting either.
+        """
+        named = " and ".join(f"{location.relative}/" for location in present)
+        return ProposalError(
+            f"Proposal {proposal_id.value} is in two places at once: {named}. They can hold "
+            "different changes, so Theurian will not choose between them.",
+            remedy=f"Compare {named}, delete the one that is not the change you mean to accept, "
+            "then run theurian propose accept again.",
+        )
+
+    def _require_migration(self, location: _ProposalLocation, proposal_id: ProposalId) -> Path:
         # The migration is identified by its `<ulid>-<slug>.yaml` name, not by
         # any `*.yaml`: a YAML or YML *body* is a `*.yaml` too, so matching the
         # suffix counted the body as a second migration and a YAML-bodied
@@ -1194,6 +1352,7 @@ class ProposalService:
         # own enumeration, here handing an unreadable directory to the
         # already-accepted diagnosis below. `iterdir()` raises instead, and
         # `accept` translates it (#227).
+        directory = location.directory
         entries = sorted(path for path in directory.iterdir() if is_migration_file_name(path.name))
         # `is_file()` follows a symlink, so a name-matching link to an
         # out-of-project file would otherwise count as the migration and have its
@@ -1205,12 +1364,12 @@ class ProposalService:
             raise ProposalError(
                 f"Proposal {proposal_id.value} holds a symlinked migration file: "
                 f"{_names(symlinked)}.",
-                remedy="A proposal's migration is a real file. Remove the link and commit "
-                "the migration itself.",
+                remedy="A proposal's migration is a real file. Remove the link and put "
+                "the migration itself there.",
             )
         candidates = [path for path in entries if path.is_file()]
         if not candidates:
-            raise self._no_migration_error(directory, proposal_id)
+            raise self._no_migration_error(location, proposal_id)
         if len(candidates) > 1:
             raise ProposalError(
                 f"Proposal {proposal_id.value} holds two or more migration files: "
@@ -1219,7 +1378,9 @@ class ProposalService:
             )
         return candidates[0]
 
-    def _no_migration_error(self, directory: Path, proposal_id: ProposalId) -> ProposalError:
+    def _no_migration_error(
+        self, location: _ProposalLocation, proposal_id: ProposalId
+    ) -> ProposalError:
         """Diagnose a proposal directory that holds no migration file.
 
         The question is whether this proposal has already been accepted, and the
@@ -1251,20 +1412,20 @@ class ProposalService:
         one, and concluding "accepted" or "draft again" from "could not read it"
         is how a permission slip or a tamper becomes a wrong verdict.
         """
-        document = self._read_evidence_record(directory, proposal_id)
+        document = self._read_evidence_record(location, proposal_id)
         if document is None:
             # No evidence.json at all: a legacy proposal (the 26 committed before
             # the record existed), an accepted one whose evidence was removed, an
             # interrupted draft that never reached its evidence write, or a bare
             # directory. None carries a claim to check, so the answer is inferred
             # and points at the migration set first.
-            return self._inferred_answer(directory, proposal_id)
+            return self._inferred_answer(location.directory, proposal_id)
         recorded = _migration_id_or_none(document.get("migrationId"))
         if recorded is None:
             # Present, readable evidence, but no usable migration id: a legacy
             # file (no such key) or a malformed value. No claim to check, so it is
             # inferred exactly like an absent record.
-            return self._inferred_answer(directory, proposal_id)
+            return self._inferred_answer(location.directory, proposal_id)
         landed = self._landed_state(recorded, document)
         if landed is not None and landed.confirmed:
             return ProposalAlreadyAcceptedError(
@@ -1348,7 +1509,7 @@ class ProposalService:
         )
 
     def _read_evidence_record(
-        self, directory: Path, proposal_id: ProposalId
+        self, location: _ProposalLocation, proposal_id: ProposalId
     ) -> Mapping[str, object] | None:
         """Parse ``evidence.json``, or ``None`` if it is genuinely absent.
 
@@ -1374,22 +1535,22 @@ class ProposalService:
         because that table's fallthrough asserts the document parsed. None may
         fall through to an answer.
         """
-        evidence = directory / EVIDENCE_FILE
+        evidence = location.directory / EVIDENCE_FILE
         if not evidence.exists() and not evidence.is_symlink():
             return None
         try:
             document = json.loads(self._read_within_project(evidence))
         except (OSError, UnicodeDecodeError, ValueError, RecursionError, TheurianError) as exc:
-            raise self._evidence_indeterminate(proposal_id, exc) from exc
+            raise self._evidence_indeterminate(proposal_id, location, exc) from exc
         if isinstance(document, Mapping):
             return document
         # Present and parseable, but not an object: it records no fields at all,
         # so it cannot prove acceptance. Indeterminate rather than "no record",
         # which would drop to inference and could conclude accepted.
-        raise self._evidence_indeterminate(proposal_id, None)
+        raise self._evidence_indeterminate(proposal_id, location, None)
 
     def _evidence_indeterminate(
-        self, proposal_id: ProposalId, error: BaseException | None
+        self, proposal_id: ProposalId, location: _ProposalLocation, error: BaseException | None
     ) -> ProposalError:
         """An indeterminate verdict: the record is present but could not be read.
 
@@ -1403,7 +1564,7 @@ class ProposalService:
             f"Proposal {proposal_id.value} could not be examined: its {EVIDENCE_FILE} is present "
             f"but could not be read ({_evidence_failure_reason(error)}), so whether it has been "
             "accepted cannot be answered.",
-            remedy=f"Make .theurian/proposals/{proposal_id.value}/{EVIDENCE_FILE} readable and "
+            remedy=f"Make {location.relative}/{EVIDENCE_FILE} readable and "
             "well-formed, then run theurian propose accept again. If it cannot be recovered, look "
             "in .theurian/migrations/ for the migration this proposal drafted before re-drafting.",
         )
@@ -2070,6 +2231,27 @@ class ProposalService:
 
 
 @dataclass(frozen=True, slots=True)
+class _ProposalLocation:
+    """Which of the two proposal directories one acceptance is reading (ADR-0028).
+
+    ``relative`` is carried beside the absolute path rather than recomputed at
+    each message, because that is where the two locations would otherwise
+    diverge: a refusal built from the literal ``.theurian/proposals/`` reads
+    correctly for a tracked proposal and sends the author of a ``--local`` one to
+    a directory that does not exist. It is project-relative for the reason
+    :func:`_project_relative` records -- an absolute path carries the developer's
+    home directory into a message.
+
+    ``local`` is the same fact as ``relative``, reduced to what a composition
+    root branches on: whether the directory travels in the pull request.
+    """
+
+    directory: Path
+    relative: str
+    local: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _BodyMove:
     """One body the accept path will write, with the bytes it already checked."""
 
@@ -2173,7 +2355,7 @@ def _project_relative(filename: object, root: Path) -> str:
 
     :func:`_within`'s sibling, for the accept path, where the refused call can be
     anywhere the command reached rather than only inside one proposal directory:
-    a probe under ``.theurian/proposals/``, a body under ``.theurian/knowledge/``,
+    a probe under either proposal directory, a body under ``.theurian/knowledge/``,
     the migration destination. The absolute path is never returned, for the reason
     :func:`_within` records -- it is the machine's home directory, not the
     proposal's.

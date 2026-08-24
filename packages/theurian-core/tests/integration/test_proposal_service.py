@@ -15,6 +15,7 @@ import sys
 import tempfile
 from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path
+from typing import Final
 
 import pytest
 import yaml
@@ -275,11 +276,23 @@ def _tree_bytes(root: Path) -> str:
     return "\n".join(out)
 
 
+#: The two directories a proposal may live in, as ``(local, project-relative
+#: parent)`` (ADR-0028). ``--local`` picks the parent and nothing else, so every
+#: property below that is about *where* a proposal is written or read from has to
+#: be asked of both -- a second location checked by a second test is a second
+#: implementation waiting to happen, and SEC-7 is held by one or by none.
+_LOCATIONS: Final = (
+    pytest.param(False, ".theurian/proposals/", id="tracked"),
+    pytest.param(True, ".theurian/proposals-local/", id="local"),
+)
+
+
 # -- generation ------------------------------------------------------------
 
 
+@pytest.mark.parametrize(("local", "parent"), _LOCATIONS)
 def test_generation_writes_only_under_the_proposal_directory(
-    service: ProposalService, paths: ProjectPaths
+    service: ProposalService, paths: ProjectPaths, local: bool, parent: str
 ) -> None:
     """ADR-0013's first owed compliance item, checked over the whole tree.
 
@@ -287,21 +300,36 @@ def test_generation_writes_only_under_the_proposal_directory(
     property ADR-0013 states is about everything a write-intent path may touch,
     and a version that wrote the body straight into ``.theurian/knowledge/``
     would satisfy any assertion phrased over the proposal directory alone.
+
+    Parametrized over both locations for ADR-0028's first owed item. A tracked
+    draft writes only under its proposal directory. A ``--local`` draft writes
+    *one* file outside it -- the managed ``.gitignore``, brought current because
+    that ignore rule is what makes the local directory confidential (ADR-0028,
+    HIGH-2). That single named exception is allowed here and nothing else is: a
+    body written into ``.theurian/knowledge/`` is still caught. The directory is
+    asserted whole (``<parent>/<proposal-id>``) rather than by prefix, because
+    ``.theurian/proposals-local/`` and ``.theurian/proposals/`` are each other's
+    near-misses: a draft that ignored the flag would still be "under a proposal
+    directory" by any looser phrasing.
     """
     before = _tree(paths.root)
 
-    drafted = service.draft(_request())
+    drafted = service.draft(_request(), local=local)
 
     written = _tree(paths.root) - before
     directory = drafted.directory.relative_to(paths.root).as_posix()
+    allowed_outside = {".gitignore"} if local else set[str]()
 
     assert written, "the draft wrote nothing at all"
-    assert all(path.startswith(f"{directory}/") for path in written), written
-    assert directory.startswith(".theurian/proposals/")
+    assert all(path.startswith(f"{directory}/") or path in allowed_outside for path in written), (
+        written
+    )
+    assert directory == f"{parent}{drafted.proposal_id.value}"
 
 
+@pytest.mark.parametrize(("local", "parent"), _LOCATIONS)
 def test_generation_modifies_no_file_outside_the_proposal_directory(
-    service: ProposalService, paths: ProjectPaths
+    service: ProposalService, paths: ProjectPaths, local: bool, parent: str
 ) -> None:
     """A new-file diff cannot see a *modified* existing file (adversarial b1).
 
@@ -310,6 +338,14 @@ def test_generation_modifies_no_file_outside_the_proposal_directory(
     set unchanged and pass the test above. This snapshots content, so a
     modification outside the proposal directory is caught even when no path is
     added or removed.
+
+    The other half of ADR-0028's first owed item, and the reason it names a
+    content snapshot as well as a tree diff. What it covers is every file that
+    already exists outside the parent the flag chose -- including the sibling
+    proposal directory's own contents, which is the one place a location switch
+    could reach that the sibling test would still call "under a proposal
+    directory". It says nothing about *new* files written elsewhere; that is the
+    tree diff's half, and neither is sufficient alone.
     """
     seeded = paths.knowledge / "architecture" / "retry-policy.md"
     seeded.parent.mkdir(parents=True, exist_ok=True)
@@ -317,10 +353,10 @@ def test_generation_modifies_no_file_outside_the_proposal_directory(
     outside = {
         path: path.read_bytes()
         for path in paths.root.rglob("*")
-        if path.is_file() and ".theurian/proposals/" not in path.relative_to(paths.root).as_posix()
+        if path.is_file() and parent not in path.relative_to(paths.root).as_posix()
     }
 
-    service.draft(_request())
+    service.draft(_request(), local=local)
 
     assert {p: p.read_bytes() for p in outside} == outside, "a file outside the proposal changed"
 
@@ -863,6 +899,58 @@ def test_a_filename_check_still_names_a_short_wrong_id(tmp_path: Path) -> None:
     assert "01K1BBBBBB01234567890ABCDE" in str(caught.value)
 
 
+def test_a_dangling_symlink_in_one_location_still_forces_the_ambiguity_refusal(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """adversarial M-4: presence is ``lexists``, so a broken link is "in the way".
+
+    A proposal exists in ``.theurian/proposals/`` and a *dangling* symlink of the
+    same id sits in ``.theurian/proposals-local/``. Both are present -- the link
+    is something in the way of this id even though it resolves to nothing -- so
+    the accept is refused naming both, never resolved by precedence to the real
+    one (ADR-0028). ``exists()`` following the link would drop it and let the
+    tracked proposal win silently, the choice the ambiguity refusal exists to
+    prevent; ``exists(follow_symlinks=False)`` is what keeps it real.
+    """
+    drafted = service.draft(_request())
+    link = paths.proposals_local / drafted.proposal_id.value
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(paths.proposals_local / "target-that-does-not-exist")
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert "two places at once" in str(caught.value), str(caught.value)
+    assert "proposals-local" in str(caught.value) and "proposals/" in str(caught.value)
+
+
+def test_a_symlinked_migration_file_is_named_as_such_not_read_through(
+    service: ProposalService,
+) -> None:
+    """adversarial M-5: the specific refusal, not a generic downstream one.
+
+    ``_require_migration`` rejects a name-matching migration file that is a
+    *symlink* by name, before anything reads through it -- so the author is told a
+    link is in the way rather than sent to draft again over a "missing" migration.
+    Dropping that check (``symlinked = []``) lets the link be read as the
+    migration; containment then holds through ``_reject_symlink_in_chain``, but
+    the specific diagnosis is lost. This pins the message; the containment is
+    covered separately.
+    """
+    drafted = service.draft(_request())
+    migration = drafted.migration_file
+    # Move the real file aside under a non-migration name, then leave a symlink of
+    # the migration's own name pointing at it: name-matched, but a link.
+    real = migration.with_name(migration.name + ".real")
+    migration.rename(real)
+    migration.symlink_to(real)
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert "symlinked migration file" in str(caught.value), str(caught.value)
+
+
 def test_accept_replaces_an_unpinned_file_at_the_destination(
     service: ProposalService,
 ) -> None:
@@ -1390,6 +1478,74 @@ def test_accept_reports_an_unknown_proposal_rather_than_raising_from_the_filesys
 ) -> None:
     with pytest.raises(ProposalError, match="No proposal"):
         service.accept(ProposalId("01K9C7VN4TQZB2M8XR5HD3JFEW"))
+
+
+def test_the_unknown_proposal_refusal_sends_the_reader_to_both_locations(
+    service: ProposalService,
+) -> None:
+    """A remedy is an instruction, and "list A or B" is one that misses (ADR-0028).
+
+    Which of the two directories holds the proposal is exactly what is not known
+    at this point, so a reader who lists one of them correctly has still not
+    found it. "or" belongs in the *message*, which states where the id was not
+    found; "and" belongs in the *remedy*, which says what to do next.
+
+    Pinned because the message and the remedy drifted apart in the shipped code
+    and no test noticed: the suite asserted on ``No proposal`` and never read the
+    remedy, so the wrong instruction was found by running the CLI by hand. Both
+    conjunctions are asserted, in the field each belongs to, because a fix that
+    put "and" in both would make the message claim the id was absent from a
+    combined location that does not exist.
+    """
+    with pytest.raises(ProposalError) as caught:
+        service.accept(ProposalId("01K9C7VN4TQZB2M8XR5HD3JFEW"))
+
+    assert ".theurian/proposals/ or .theurian/proposals-local/" in str(caught.value)
+    assert ".theurian/proposals/ and .theurian/proposals-local/" in caught.value.remedy
+
+
+def test_accept_refuses_a_proposal_id_that_exists_in_both_locations(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """ADR-0028 decision 2: the ambiguity is refused, never resolved by precedence.
+
+    The two directories are independent trees that can hold different migrations
+    under one proposal id -- a draft written with ``--local``, then copied into
+    the committable location and edited, is enough. A lookup that graded one
+    location and fell through to the other on failure would resolve that
+    silently: ``accept`` would consume one directory while the author was
+    reading the other, and the loser's body would be left behind with nothing
+    said.
+
+    So this asserts the refusal *and* that neither side landed, which is what
+    separates it from a precedence assertion: a test that only checked which
+    directory won would pass against exactly the behaviour the ADR forbids. The
+    bodies are deliberately different, so a silent pick is a real change to the
+    project rather than a harmless one.
+
+    Both paths are named because the reader is being asked to compare two
+    directories and delete one; a message naming a single path is an instruction
+    to delete something without seeing what it is being compared against.
+    """
+    drafted = service.draft(_request())
+    twin = paths.proposals_local / drafted.proposal_id.value
+    shutil.copytree(drafted.directory, twin)
+    twin_body = twin / drafted.body_file.relative_to(drafted.directory)
+    twin_body.write_text(
+        "# Retry policy\n\nFive attempts, from the local copy.\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    said = str(caught.value) + caught.value.remedy
+    assert f".theurian/proposals/{drafted.proposal_id.value}" in said, said
+    assert f".theurian/proposals-local/{drafted.proposal_id.value}" in said, said
+    # Neither was chosen: nothing landed, and both directories are still whole.
+    assert not (paths.migrations / drafted.migration_file.name).exists()
+    assert not drafted.body_destination.exists()
+    assert drafted.migration_file.is_file(), "the tracked proposal is intact"
+    assert twin_body.is_file(), "and so is the local one"
 
 
 @pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
@@ -2558,21 +2714,35 @@ def test_accept_refuses_a_symlinked_migration_and_leaks_nothing(
     assert "SUPER-SECRET" not in _tree_bytes(paths.root)
 
 
+@pytest.mark.parametrize(("local", "parent"), _LOCATIONS)
 def test_accept_refuses_a_symlinked_proposal_directory(
-    service: ProposalService, paths: ProjectPaths, tmp_path: Path
+    service: ProposalService, paths: ProjectPaths, tmp_path: Path, local: bool, parent: str
 ) -> None:
     """Face B: the ULID name is safe, but not what it resolves to.
 
     The proposal directory itself is a symlink to an out-of-project directory
     whose `*.yaml` would otherwise be pulled onto the accept path.
+
+    Parametrized over both locations for ADR-0028's sixth owed item. The
+    git-ignored directory is *more* exposed to this shape, not less: nothing in
+    a pull request review ever looks at it, so a link planted there is seen by
+    no human before ``accept`` reads it. If the two locations ever disagree here
+    the containment guarantee has two implementations and one of them is wrong,
+    so the remedy's own path is asserted too -- that string is where a lookup
+    that graded one location and fell through to the other would show itself,
+    by sending the author of a local proposal to a directory that does not hold
+    it.
     """
-    drafted = service.draft(_request())
+    drafted = service.draft(_request(), local=local)
     elsewhere = tmp_path / "elsewhere"
     drafted.directory.rename(elsewhere)
     drafted.directory.symlink_to(elsewhere, target_is_directory=True)
 
-    with pytest.raises(ProposalError, match="symlink"):
+    with pytest.raises(ProposalError, match="symlink") as caught:
         service.accept(drafted.proposal_id)
+
+    assert f"{parent}{drafted.proposal_id.value}" in caught.value.remedy
+    assert not (paths.migrations / drafted.migration_file.name).exists(), "nothing landed"
 
 
 def test_accept_refuses_a_symlinked_body_source(

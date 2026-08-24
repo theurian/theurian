@@ -40,8 +40,10 @@ from theurian.application.setup_context import SetupContext
 from theurian.application.setup_steps import (
     _REQUIRED_PROJECT_DIRS,
     probe_core,
+    probe_gitignore,
     probe_project_layout,
 )
+from theurian.domain.project import GITIGNORE_ENTRIES
 from theurian.domain.setup import StepStatus
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
@@ -284,3 +286,38 @@ def test_a_file_is_not_a_directory_for_the_purpose_of_the_layout(tmp_path: Path)
     step = probe_project_layout(_context(tmp_path, project_root=root))
 
     assert step.status is StepStatus.MISSING
+
+
+# -- gitignore ---------------------------------------------------------------
+
+
+def test_the_whole_current_block_is_what_satisfies_the_gitignore_step(tmp_path: Path) -> None:
+    """`satisfied` means every managed entry is present, not one substring of one."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".gitignore").write_text("\n".join(GITIGNORE_ENTRIES) + "\n", encoding="utf-8")
+
+    step = probe_gitignore(_context(tmp_path, project_root=root))
+
+    assert step.status is StepStatus.SATISFIED
+
+
+def test_a_stale_pre_adr_0028_block_is_not_satisfied(tmp_path: Path) -> None:
+    """HIGH-2 / #49: a stale block reported `satisfied` off a one-entry substring check.
+
+    Every 0.1.0.dev9 project has the managed block without ADR-0028's
+    `.theurian/proposals-local/` entry. The old check was `".theurian/state" in
+    contents`, which that block satisfies -- so `doctor` reported the ignore step
+    converged while `propose --local` there wrote a private body to a directory
+    Git tracks. The probe now requires the whole current block, so a stale one is
+    MISSING and its summary names the entry a re-run brings in.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    stale = [entry for entry in GITIGNORE_ENTRIES if entry != ".theurian/proposals-local/"]
+    (root / ".gitignore").write_text("\n".join(stale) + "\n", encoding="utf-8")
+
+    step = probe_gitignore(_context(tmp_path, project_root=root))
+
+    assert step.status is StepStatus.MISSING
+    assert ".theurian/proposals-local/" in step.summary

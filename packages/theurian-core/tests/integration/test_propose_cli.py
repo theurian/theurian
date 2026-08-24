@@ -9,6 +9,8 @@ migration commands actually applies.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -30,7 +32,8 @@ from typer.testing import CliRunner
 
 from theurian.cli import commands, migration_pipeline, propose_commands
 from theurian.cli.main import app
-from theurian.cli.propose_commands import _DRAFT_STEPS
+from theurian.cli.propose_commands import _ACCEPT_STEPS, _DRAFT_STEPS
+from theurian.domain.project import GITIGNORE_BLOCK_START, GITIGNORE_SECTIONS
 from theurian.infrastructure.filesystem import migration_loader
 
 pytestmark = pytest.mark.integration
@@ -299,6 +302,271 @@ def test_propose_with_no_arguments_prints_its_help(project: Path) -> None:
     assert result.exit_code == migrate.exit_code == 2
     assert "accept" in result.stderr
     assert "--item-id" in result.stderr
+
+
+# -- `--local`: the boundary is asked of Git, not of a pattern list ----------
+#
+# ADR-0028's owed compliance item is worded against Git deliberately. Membership
+# in `GITIGNORE_ENTRIES` is not the property #265 needs: a pattern can be in the
+# tuple, spelled in a way Git does not apply to the path it was meant for -- an
+# absent trailing slash, a leading one that anchors it somewhere else, a case
+# that does not match -- and a test phrased over the tuple passes while every
+# byte of a private draft is still offered to `git add -A`. So the question goes
+# to `git status` and `git check-ignore`, in a real repository, and the answer
+# comes back from Git.
+
+
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run Git in ``root`` with the developer's own configuration out of reach.
+
+    ``GIT_CONFIG_GLOBAL`` and ``GIT_CONFIG_SYSTEM`` are pointed at the null
+    device so the ignore decision comes from this repository and from nothing
+    else. Without them the measurement is taken through whatever the person
+    running the suite has installed: a global ``core.excludesFile`` covering
+    ``.theurian/`` would hide the local proposal from ``git status`` with the
+    rule under test deleted, and the test would report the boundary working on a
+    machine where the boundary does not exist. Where the ignore comes from *is*
+    the requirement here, so it cannot be left to the environment.
+
+    The repository-local identity the fixture wrote stays in effect: it lives in
+    ``.git/config``, which neither variable reaches.
+    """
+    return subprocess.run(  # noqa: S603
+        ["git", *args],  # noqa: S607 - Git is a documented prerequisite; PATH lookup is the point
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull},
+    )
+
+
+def test_a_local_proposal_is_invisible_to_git_while_an_ordinary_one_is_not(
+    project: Path,
+) -> None:
+    """ADR-0028's second owed item: `git status` is the thing that has to be silent.
+
+    A private draft leaks through an absent-minded ``git add -A``, and what
+    stands between the two is whether Git considers the path ignored -- not
+    whether a string is present in a tuple in ``domain/project.py``.
+
+    The ordinary proposal is drafted alongside as the control, and it carries the
+    whole weight of the test being able to fail: without it, an ignore rule that
+    swallowed ``.theurian/`` entirely, a ``git status`` invocation that errored,
+    or a run in a directory that is not a repository would each read as the
+    boundary working. Both are asserted from the same status output, so the two
+    answers are one measurement rather than two.
+
+    ``--untracked-files=all`` because the default collapses an untracked
+    directory to a single entry: ``?? .theurian/`` names neither proposal and
+    would make the local one look absent for a reason that has nothing to do
+    with the ignore rule.
+    """
+    _, local = _draft(project, "--local")
+    _, tracked = _draft(project)
+
+    status = _git(project, "status", "--porcelain", "--untracked-files=all")
+
+    assert status.returncode == 0, status.stderr
+    lines = status.stdout.splitlines()
+    assert local["proposalDirectory"] == f".theurian/proposals-local/{local['proposalId']}"
+    assert [line for line in lines if tracked["proposalDirectory"] in line], (
+        f"the committable proposal must still be offered to Git: {lines}"
+    )
+    assert not [line for line in lines if "proposals-local" in line], (
+        f"a --local proposal reached git status: {lines}"
+    )
+
+
+def test_the_rule_that_hides_a_local_proposal_is_one_a_clone_would_inherit(
+    project: Path,
+) -> None:
+    """The whole point of ADR-0028, and the half `git status` alone cannot see.
+
+    #265 measured a fence that worked perfectly on one machine and reached no
+    clone, because it lived in ``.git/info/exclude`` -- a file Git never
+    transmits. A rule installed there would satisfy the status test above and
+    discharge none of the requirement, so the source of the decision is asserted
+    rather than its effect: ``git check-ignore -v`` names the file and line the
+    answer came from, and it must be the working tree's ``.gitignore``, which is
+    a tracked file that travels with the repository.
+
+    Asked about a file *inside* the proposal directory rather than the directory
+    itself, because that is what ``git add -A`` walks.
+    """
+    _, local = _draft(project, "--local")
+    inside = f"{local['proposalDirectory']}/{local['migrationFile']}"
+
+    checked = _git(project, "check-ignore", "-v", inside)
+
+    assert checked.returncode == 0, f"Git does not ignore {inside}: {checked.stderr}"
+    source, _, rest = checked.stdout.partition(":")
+    assert source == ".gitignore", checked.stdout
+    assert rest.split(":")[1].startswith(".theurian/proposals-local/"), checked.stdout
+
+
+#: A base64url token derived from a fixed seed -- the shape the content scanner
+#: flags -- split from its seed so no credential-shaped literal sits in the file
+#: for gitleaks to judge (the discipline `test_content_secrets.py` records).
+_PLANTED_TOKEN = (
+    base64.urlsafe_b64encode(hashlib.sha256(b"propose-cli warn rotate fixture (#198)").digest())
+    .decode()
+    .rstrip("=")
+)
+
+
+def test_a_warn_acceptance_that_lands_a_secret_leads_with_rotate_guidance(
+    project: Path,
+) -> None:
+    """code-review M-4 / adversarial M-3: `warn` proceeds, so the steps must warn.
+
+    Under `secretScan: warn` the acceptance succeeds (exit 0) and the findings
+    ride on `secretFindings` -- but the nextSteps used to open with "review the
+    diff, then open a pull request", saying nothing about a body the scan believes
+    carries a live credential. The exit code is 0, so the rotate instruction lives
+    in the steps or it lives nowhere. It now leads them.
+    """
+    (project / ".theurian" / "config.yaml").write_text(
+        'security:\n  secretScan: "warn"\n', encoding="utf-8"
+    )
+    (project / "body.md").write_text(
+        f"# Retry policy\n\nThree attempts.\n\n    THEURIAN_MCP_TOKEN={_PLANTED_TOKEN}\n",
+        encoding="utf-8",
+    )
+    _, drafted = _draft(project)
+
+    code, accepted = _invoke("propose", "accept", drafted["proposalId"])
+
+    assert code == 0, accepted
+    assert accepted["secretScanPolicy"] == "warn"
+    assert accepted["secretFindings"], "the fixture body must actually be flagged"
+    first = accepted["nextSteps"][0]
+    assert "rotate" in first and "exposed" in first, f"the rotate step does not lead: {first}"
+    assert accepted["nextSteps"][1:] == list(_ACCEPT_STEPS), "the standing steps must follow intact"
+
+
+def _roll_the_block_back_to_pre_adr_0028(root: Path) -> None:
+    """Make the managed ``.gitignore`` block the one every 0.1.0.dev9 project has.
+
+    ADR-0028 added the ``.theurian/proposals-local/`` section; a project
+    initialised before it has the block without that section. Removing exactly
+    that section reproduces the shipped stale block -- the reviewers'
+    ``repro_local_ignore.sh`` shape, derived from the sections rather than pasted
+    so it tracks the real block.
+    """
+    authored = GITIGNORE_SECTIONS[1]
+    removal = authored.comment + "\n" + "".join(f"{entry}\n" for entry in authored.entries)
+    gitignore = root / ".gitignore"
+    gitignore.write_text(gitignore.read_text(encoding="utf-8").replace(removal, ""), "utf-8")
+
+
+def test_a_local_draft_brings_a_stale_ignore_block_current_before_it_writes(
+    project: Path,
+) -> None:
+    """HIGH-2: `--local` confidentiality cannot rest on an ignore rule that is absent.
+
+    Every project initialised by the shipped 0.1.0.dev9 has a managed block that
+    predates ADR-0028, so it does *not* ignore `.theurian/proposals-local/`. A
+    `--local` draft there wrote a private body to a directory Git tracks while its
+    own nextSteps asserted it would not appear in `git status`.
+
+    The draft now brings the block current before writing, so the body really is
+    ignored and the assertion the command prints is verified reality. Asked of
+    Git, not of the tuple, for the reason the sibling tests give -- and the stale
+    block is rolled back to the *shipped* shape, which the ADR-0028 compliance
+    tests structurally cannot reach because they re-init with the current block.
+    """
+    _roll_the_block_back_to_pre_adr_0028(project)
+    assert ".theurian/proposals-local/" not in (project / ".gitignore").read_text("utf-8"), (
+        "the fixture must actually be stale, or this asserts nothing"
+    )
+
+    code, local = _draft(project, "--local")
+
+    assert code == 0, local
+    inside = f"{local['proposalDirectory']}/{local['migrationFile']}"
+    checked = _git(project, "check-ignore", "-v", inside)
+    assert checked.returncode == 0, f"a --local body is not git-ignored after the draft: {inside}"
+    assert ".theurian/proposals-local/" in (project / ".gitignore").read_text("utf-8"), (
+        "the draft did not bring the managed block current"
+    )
+    assert any("proposals-local" in step and "git status" in step for step in local["nextSteps"]), (
+        f"the --local step is missing from nextSteps: {local['nextSteps']}"
+    )
+
+
+def test_a_local_draft_is_refused_when_the_ignore_rule_cannot_be_written(
+    project: Path,
+) -> None:
+    """The other arm of HIGH-2: refuse rather than write a private body unignored.
+
+    When the managed block cannot be brought current -- here a `.gitignore` with a
+    second start marker, which `ensure_gitignore` refuses to rewrite rather than
+    guess which rules are Theurian's -- `--local` refuses with a remedy and writes
+    no proposal directory, instead of landing a private body Git would track.
+    """
+    gitignore = project / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text("utf-8") + f"\n{GITIGNORE_BLOCK_START}\nsomething\n", "utf-8"
+    )
+
+    code, refusal = _draft(project, "--local")
+
+    assert code == EXIT_INVALID_INPUT, refusal
+    assert refusal.get("remedy"), refusal
+    # `init` creates an empty `proposals-local/`; the refusal must not have written
+    # a proposal *into* it while the ignore rule was unestablished.
+    assert not list((project / ".theurian" / "proposals-local").iterdir()), (
+        "a proposal was written despite the ignore rule being unestablished"
+    )
+
+
+def test_accepting_a_local_proposal_says_what_stays_behind_and_what_does_not(
+    project: Path,
+) -> None:
+    """The step it replaces cannot be followed for a `--local` proposal.
+
+    The ordinary first step tells the author to open a pull request *with the
+    proposal directory in it*, and for a local one that instruction is only
+    carryable through ``git add -f`` -- the publication the flag was chosen to
+    prevent. The migration and the body have left the ignored directory by the
+    time this prints, so the pull request is complete without it; what stays
+    behind is ``evidence.json``, and a reviewer who is not told will look for a
+    file that was never going to arrive.
+
+    The tracked wording is asserted absent as well as the local wording present:
+    a step list that printed both would be self-contradicting, and one that
+    printed neither is what a mistyped branch produces.
+    """
+    _, drafted = _draft(project, "--local")
+
+    code, accepted = _invoke("propose", "accept", drafted["proposalId"])
+
+    assert code == 0, accepted
+    first = accepted["nextSteps"][0]
+    assert ".theurian/proposals-local/" in first, first
+    assert "evidence.json" in first, first
+    assert first != _ACCEPT_STEPS[0], "the committable wording is what this replaces"
+    assert accepted["nextSteps"][1:] == list(_ACCEPT_STEPS[1:]), "only the first step differs"
+
+
+def test_an_ordinary_acceptance_keeps_the_step_that_names_the_pull_request(
+    project: Path,
+) -> None:
+    """The control for the test above: the default is the committable one.
+
+    ADR-0013 point 7 is not reversed by ADR-0028 -- a proposal is still review
+    input that travels in the pull request -- so the local wording must reach
+    only a proposal that asked for it. Without this, a change that printed the
+    local step unconditionally would leave every assertion above green while
+    telling every author that their proposal is git-ignored.
+    """
+    _, drafted = _draft(project)
+
+    code, accepted = _invoke("propose", "accept", drafted["proposalId"])
+
+    assert code == 0, accepted
+    assert accepted["nextSteps"] == list(_ACCEPT_STEPS)
 
 
 # -- acceptance ------------------------------------------------------------

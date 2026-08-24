@@ -36,6 +36,8 @@ from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.project import (
     DEFAULT_KNOWLEDGE_DIRECTORY,
     GITIGNORE_ENTRIES,
+    GITIGNORE_SECTIONS,
+    GitignoreSection,
     Project,
 )
 from theurian.domain.retrieval import (
@@ -102,6 +104,7 @@ def test_project_exposes_its_standard_subdirectories() -> None:
     assert project.knowledge_content_directory == PurePosixPath(".theurian/knowledge")
     assert project.specifications_directory == PurePosixPath(".theurian/specifications")
     assert project.proposals_directory == PurePosixPath(".theurian/proposals")
+    assert project.proposals_local_directory == PurePosixPath(".theurian/proposals-local")
     assert project.state_directory == PurePosixPath(".theurian/state")
 
 
@@ -145,6 +148,78 @@ def test_gitignore_block_covers_every_derived_location() -> None:
     assert "*.sqlite" in GITIGNORE_ENTRIES
     assert "*.sqlite-wal" in GITIGNORE_ENTRIES
     assert "*.sqlite-shm" in GITIGNORE_ENTRIES
+
+
+def test_the_local_proposal_directory_is_ignored_without_being_derived() -> None:
+    """The two properties are separate, and only one of them applies (ADR-0028).
+
+    `theurian init` must git-ignore `.theurian/proposals-local/`, because a
+    committed ignore rule is the one thing `.git/info/exclude` could not give a
+    clone. It must *not* be derived: `doctor` reads `is_derived` to tell an
+    operator that a tracked path is a rebuildable artifact, and nothing rebuilds
+    an authored local proposal -- so the sentence would be false in the
+    direction that loses work.
+    """
+    assert ".theurian/proposals-local/" in GITIGNORE_ENTRIES
+    assert not _project().is_derived(PurePosixPath(".theurian/proposals-local/01K/a.yaml"))
+
+
+def test_each_managed_ignore_section_labels_by_the_derived_test_it_claims() -> None:
+    """A section's label is a claim ``Project.is_derived`` must agree with (M-1).
+
+    The block carries two labels since ADR-0028: "Derived artifacts. Rebuilt from
+    Git-tracked migrations" and "Authored ... Nothing rebuilds it". ``doctor``
+    reads ``is_derived`` to decide whether a tracked path is a rebuildable
+    artifact it may tell an operator to delete, so an entry filed under the
+    derived label that ``is_derived`` calls ``False`` -- or the reverse -- is a
+    label that lies about the entry beneath it. Moving
+    ``.theurian/proposals-local/`` under the derived header is exactly that, and a
+    mutation doing so survives every other rule here; this is where it dies.
+
+    The label's derived-claim is read from its own ADR-0004 wording ("Rebuilt"),
+    so a reword that changes what a label claims is meant to land on this test.
+    """
+    project = _project()
+
+    for section in GITIGNORE_SECTIONS:
+        claims_derived = "Rebuilt" in section.comment
+        for entry in section.entries:
+            assert project.is_derived(PurePosixPath(entry)) == claims_derived, (
+                f"{entry!r} is filed under {section.comment!r} (derived={claims_derived}), but "
+                f"Project.is_derived reports {project.is_derived(PurePosixPath(entry))}"
+            )
+
+
+def test_every_managed_ignore_entry_is_declared_under_exactly_one_label() -> None:
+    """`GITIGNORE_ENTRIES` is the sections' concatenation, not a second list.
+
+    The block stopped being homogeneous in ADR-0028, so the label moved onto the
+    run of entries it covers. That is worth nothing if the flat tuple is
+    restated beside the sections: the two would agree on the day they were
+    written and drift on the day an entry is added to one of them.
+    """
+    from_sections = [entry for section in GITIGNORE_SECTIONS for entry in section.entries]
+
+    assert list(GITIGNORE_ENTRIES) == from_sections
+    assert len(set(from_sections)) == len(from_sections), from_sections
+    assert all(section.comment.startswith("#") for section in GITIGNORE_SECTIONS)
+
+
+@pytest.mark.parametrize(
+    ("comment", "entries", "expected"),
+    [
+        # A label written without its `#` is not a label: `ensure_gitignore`
+        # writes it verbatim, so Git would read it as a rule and ignore a path
+        # nobody chose.
+        ("Derived artifacts.", (".theurian/state/",), "'#'"),
+        ("# Derived artifacts.", (), "no entries"),
+    ],
+)
+def test_a_gitignore_section_that_could_not_label_anything_is_refused(
+    comment: str, entries: tuple[str, ...], expected: str
+) -> None:
+    with pytest.raises(InvariantViolationError, match=expected):
+        GitignoreSection(comment=comment, entries=entries)
 
 
 # ==========================================================================

@@ -52,6 +52,34 @@ be the only home for something a human needs to keep. If a generated Markdown
 review summary is worth preserving, it is promoted into approved knowledge
 through a migration — not rescued from a git-ignored directory.
 
+> **Amended in Milestone 7, by the write-path design CL
+> ([#316](https://github.com/theurian/theurian/issues/316),
+> [ADR-0028](0028-a-local-proposal-is-a-different-directory.md)). This ADR's
+> two lists are not the same partition as "tracked / ignored", and the managed
+> `.gitignore` block stops being a list of derived paths.**
+>
+> Everything above stays true of *derived* artifacts, and the controlling
+> requirement is unchanged. What implementing #265 revealed is that this ADR's
+> framing had been read as an equivalence — git-ignored *means* derived —
+> because until now every entry in `GITIGNORE_ENTRIES` happened to be one. The
+> block `theurian init` writes even says so in its own header comment,
+> `# Derived artifacts. Rebuilt from Git-tracked migrations (ADR-0004).`
+>
+> ADR-0028 adds `.theurian/proposals-local/` to that block. It is **authored
+> content that is deliberately not committed**, and nothing rebuilds it. So
+> from Milestone 7 there are three categories, not two: Git-tracked inputs,
+> derived artifacts, and authored-but-local content. Only the second is
+> rebuildable, and only the second is what `Project.is_derived` and
+> `DERIVED_SUBDIRECTORIES` may grow — `doctor` uses `is_derived` to tell an
+> operator that a tracked path is a rebuildable artifact, and saying that about
+> a local proposal would be false in the direction that loses work.
+>
+> The corollary above applies to the new category with full force and is the
+> reason ADR-0028 records `git clean -xdf` as an accepted residual rather than
+> a defect: a local proposal must not be the only home for something a human
+> needs to keep, and on the dogfood machine it is not — the operator's vault is
+> the source and Theurian holds a copy.
+
 ## Consequences
 
 ### Positive
