@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Final
 
@@ -51,7 +52,7 @@ from theurian.infrastructure.filesystem.migration_loader import (
     load_migrations,
     validate_migration_document,
 )
-from theurian.security.content_secrets import HIGH_ENTROPY
+from theurian.security.content_secrets import HIGH_ENTROPY, scan_text
 from theurian.security.project_config import SecretScanPolicy
 
 pytestmark = pytest.mark.integration
@@ -164,6 +165,80 @@ def _configure(paths: ProjectPaths, policy: str) -> None:
 def _accept(service: ProposalService, paths: ProjectPaths, body: str) -> AcceptedProposal:
     drafted = service.draft(_request(body))
     return service.accept(drafted.proposal_id)
+
+
+#: A migration filename as a knowledge author would quote one in a title. The
+#: detector reports every string of this shape as a secret *unless* its ULID
+#: subtraction runs first -- ``_looks_like_a_secret`` records the measurement:
+#: all 26 of this repository's committed migration filenames scored 4.59 to 4.95
+#: bits. Kept here as a whole filename rather than a bare ULID because that is
+#: the string a person writes.
+MIGRATION_FILENAME: Final = "01K3Z8Q9V4MRB7T2XNFCD5HGJW-retry-policy.yaml"
+
+#: Where a contributor's own words reach the migration document, one entry per
+#: field, each planting :data:`PLANTED_TOKEN` the way a leak actually arrives:
+#: pasted into a sentence, a name, a label or a URL rather than sitting alone.
+#:
+#: Every value here was measured to be reported by ``scan_text`` on its own
+#: (2026-08-24, all ``high-entropy-token``), so a test built on one is red
+#: because the accept path did not scan the field and not because the detector
+#: had nothing to find. The population is the document's author-controlled
+#: strings, taken from ``_migration_document`` and ``_anchor_document`` rather
+#: than from this file's imagination: the migration's own ``author`` and
+#: ``description``, ``createItem``'s ``namespace`` and ``owner``, the revision
+#: metadata's ``title``/``namespace``/``owner``/``labels``/``scope``, and every
+#: string of every source anchor. ``sourceUri`` is the sharpest of them --
+#: ``knowledge.search`` and ``knowledge.get`` publish it on every result, so a
+#: credential there is disclosed to an agent that never reads the body.
+#:
+#: What is deliberately absent is the derived half: ``id``, ``revisionId``,
+#: ``contentSha256``, ``createdAt``, ``contentFile``, ``contentType`` and the
+#: enum fields. Those are Theurian's own output, and
+#: ``test_a_title_quoting_a_migration_filename_is_still_accepted_under_block``
+#: is what says so from the other side.
+_METADATA_PLANTS: Final[Mapping[str, Callable[[ProposalRequest], ProposalRequest]]] = {
+    "title": lambda request: replace(request, title=f"Retry policy {PLANTED_TOKEN}"),
+    "description": lambda request: replace(
+        request, description=f"Settled at three attempts. Staging token={PLANTED_TOKEN}"
+    ),
+    "author": lambda request: replace(request, author=f"{PLANTED_TOKEN}@example.com"),
+    "owner": lambda request: replace(request, owner=f"platform-team-{PLANTED_TOKEN}"),
+    "namespace": lambda request: replace(request, namespace=f"architecture-{PLANTED_TOKEN}"),
+    "label": lambda request: replace(request, labels=(PLANTED_TOKEN,)),
+    "scope-path": lambda request: replace(request, scope_paths=(f"src/**/{PLANTED_TOKEN}.py",)),
+    "anchor-source-uri": lambda request: replace(
+        request,
+        source_anchors=(replace(ANCHOR, source_uri=f"https://ci.example/j?token={PLANTED_TOKEN}"),),
+    ),
+    "anchor-provider": lambda request: replace(
+        request, source_anchors=(replace(ANCHOR, provider=f"git-{PLANTED_TOKEN}"),)
+    ),
+    "anchor-file-path": lambda request: replace(
+        request, source_anchors=(replace(ANCHOR, file_path=f"deploy/{PLANTED_TOKEN}.env"),)
+    ),
+}
+
+
+def _with_a_planted_secret(field: str, body: str = CLEAN_BODY) -> ProposalRequest:
+    """The ordinary request, with ``field`` carrying a secret and the body clean.
+
+    The body stays clean on purpose: a proposal that leaked through both would
+    be refused by the body scan that already exists, and every metadata test
+    here would pass with the new control absent.
+    """
+    return _METADATA_PLANTS[field](_request(body))
+
+
+def _rendered(accepted: AcceptedProposal) -> str:
+    """Every finding on a result as one string, the way a caller would print it.
+
+    ``describe`` rather than any field of the finding: it is what
+    ``_secret_refusal`` calls to build the message a contributor reads and what
+    an ``accept --json`` document carries, so it is the surface a test may hold.
+    Which *field* of a finding names the location is the implementation's to
+    choose.
+    """
+    return "\n".join(finding.describe() for finding in accepted.secret_scan.findings)
 
 
 def test_a_body_carrying_a_secret_is_refused_by_default(
@@ -314,7 +389,7 @@ def test_warn_lands_the_body_and_reports_what_it_found(
     assert accepted.secret_scan.policy is SecretScanPolicy.WARN
     assert [f.finding.family for f in accepted.secret_scan.findings] == [HIGH_ENTROPY]
     (finding,) = accepted.secret_scan.findings
-    assert finding.body.endswith(".md"), f"the finding names {finding.body!r}"
+    assert finding.location.endswith(".md"), f"the finding names {finding.location!r}"
     assert PLANTED_TOKEN not in finding.describe(), (
         f"a warning reproduces the token it warns about: {finding.describe()!r}"
     )
@@ -359,3 +434,270 @@ def test_a_config_this_build_cannot_read_refuses_the_acceptance(
 
     assert not drafted.body_destination.exists(), "the acceptance moved files before refusing"
     assert caught.value.remedy, "a config refusal reached the caller with no remedy (#227)"
+
+
+# -- the migration document, not only the bodies (#336) ---------------------
+#
+# Everything above plants its secret in a body file, and every one of those
+# tests passes while a credential in the *migration* sails through: the scan
+# iterates body moves, and the parsed document -- in scope at the call site --
+# is never read. Measured on 55fe588 through the real CLI at policy `block`
+# (2026-08-24, https://github.com/theurian/theurian/issues/336): `propose` with
+# a clean body and a secret in --title, --description and --label, then
+# `propose accept`, exits 0 with `secretFindings: []` and lands all three values
+# in .theurian/migrations/. SEC-11 says "scan content for secrets before it
+# becomes an approved revision", and a revision's title is content.
+
+
+@pytest.mark.parametrize("field", list(_METADATA_PLANTS))
+def test_every_planted_field_reaches_the_migration_document_and_is_detectable(
+    service: ProposalService, field: str
+) -> None:
+    """The guard on the tests below, which are worthless without it.
+
+    Each of them asserts that the accept path refuses a secret in one field.
+    Two things have to be true before that assertion means anything: the field
+    has to reach the migration document at all -- ``labels`` and ``scope`` are
+    written only when non-empty, and an anchor's optional strings only when set
+    -- and the value has to be one the detector reports. A plant that failed
+    either would leave those tests red for the fixture's reason rather than the
+    control's, and one failing the first can be worse than red: a secret planted
+    in ``evidence.reasoning`` never reaches the migration at all, so a refusal
+    would mean ``evidence.json`` was scanned -- a different class, out of #336's
+    scope -- while the metadata channel this file is about stayed open.
+
+    The whole migration text is scanned rather than the field in isolation,
+    which also pins the thing #336 is about: the value is in the document, in
+    the tree ``migrate apply`` reads. A clean proposal's document scans empty
+    here (measured 2026-08-24), so every finding this sees is the plant.
+    """
+    drafted = service.draft(_with_a_planted_secret(field))
+
+    document = drafted.migration_file.read_text(encoding="utf-8")
+
+    assert PLANTED_TOKEN in document, f"{field} never reached the migration document"
+    families = {finding.family for finding in scan_text(document)}
+    assert HIGH_ENTROPY in families, (
+        f"the detector reports {families or 'nothing'} for a secret planted in {field}, so a "
+        f"refusal test built on it would not be testing the accept path"
+    )
+
+
+@pytest.mark.parametrize("field", list(_METADATA_PLANTS))
+def test_a_secret_in_the_migration_document_is_refused_by_default(
+    service: ProposalService, paths: ProjectPaths, field: str
+) -> None:
+    """SEC-11's gate covers what the migration says, not only what it carries.
+
+    A body is one of two ways a credential reaches an approved revision, and it
+    is the way that gets reviewed: the other is a field a human skims. ``title``
+    and ``sourceUri`` are published on every ``knowledge.search`` and
+    ``knowledge.get`` result, so a secret there is disclosed to an agent that
+    never opens the body -- which makes the metadata channel wider than the one
+    already guarded, not narrower.
+
+    Parametrized over the document's author-controlled strings rather than
+    written once for ``title``, because a control that covers the field the fix
+    was reported against and no other is the same defect one field along.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    drafted = service.draft(_with_a_planted_secret(field))
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert HIGH_ENTROPY in str(caught.value), (
+        f"a secret in {field} was not what refused the acceptance: {caught.value}"
+    )
+
+
+@pytest.mark.parametrize("field", ["title", "anchor-source-uri"])
+def test_a_refused_metadata_secret_leaves_the_proposal_intact(
+    service: ProposalService, paths: ProjectPaths, field: str
+) -> None:
+    """The recovery property, on the new surface (#307's requirement, #336's input).
+
+    The same reasoning as ``test_a_refused_acceptance_consumes_nothing``: an
+    author whose acceptance is refused must still hold the files to correct. It
+    needs saying separately here because the metadata refusal fires from a
+    different input -- a parsed document rather than a staged body -- and an
+    implementation that scanned after the move would satisfy every assertion in
+    the test above this one.
+
+    The migration matters more than the body on this path: the body is clean, so
+    what must not reach ``.theurian/migrations/`` is the document holding the
+    credential.
+    """
+    drafted = service.draft(_with_a_planted_secret(field))
+    before = {p.relative_to(drafted.directory).as_posix() for p in drafted.directory.rglob("*")}
+
+    with pytest.raises(ProposalError):
+        service.accept(drafted.proposal_id)
+
+    assert {
+        p.relative_to(drafted.directory).as_posix() for p in drafted.directory.rglob("*")
+    } == before, "the proposal directory changed on a refused acceptance"
+    assert not (paths.migrations / drafted.migration_file.name).exists(), (
+        "the migration landed in .theurian/migrations/ despite the refusal -- the secret is now "
+        "in the tree the migration set reads"
+    )
+    assert not drafted.body_destination.exists()
+    assert PLANTED_TOKEN in drafted.migration_file.read_text(encoding="utf-8"), (
+        "the proposal's own migration no longer holds the value the author has to correct"
+    )
+
+
+def test_a_metadata_refusal_does_not_reproduce_the_secret_it_reports(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A report that quotes the credential is a second copy of it.
+
+    ``SecretFinding`` bounds this at four characters for the body path and
+    refuses construction past it, but a message assembled from *field values*
+    rather than from findings would route around that: naming the offending
+    field is useful, echoing what is in it is not. The refusal is printed to a
+    terminal and, under ``--json``, published into a document something will
+    log.
+    """
+    drafted = service.draft(_with_a_planted_secret("title"))
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert PLANTED_TOKEN not in str(caught.value), (
+        f"the refusal reproduced the secret it refused: {caught.value}"
+    )
+    assert PLANTED_TOKEN not in caught.value.remedy, (
+        f"the remedy reproduced the secret it refused: {caught.value.remedy!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "named"), [("title", "title"), ("anchor-source-uri", "sourceuri")]
+)
+def test_warn_lands_the_proposal_and_names_the_metadata_it_found(
+    service: ProposalService, paths: ProjectPaths, field: str, named: str
+) -> None:
+    """Under ``warn`` a metadata finding has to be findable by the human reading it.
+
+    ``warn`` exists so a reviewer is told where to look before they open the
+    pull request. A finding that named the body file would send them to a file
+    the secret is not in -- the body here is clean -- so the assertion is that
+    the rendering points at the field and not at a body path.
+
+    Held loosely on purpose: how the location is spelled is the implementation's
+    choice, and pinning ``metadata.title`` would make an equally correct
+    ``operations[1].metadata.title`` a failure. What may not vary is that the
+    field is named and that no ``.md`` body is blamed for it.
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+    drafted = service.draft(_with_a_planted_secret(field))
+
+    accepted = service.accept(drafted.proposal_id)
+
+    rendered = _rendered(accepted)
+    assert accepted.secret_scan.policy is SecretScanPolicy.WARN
+    assert accepted.secret_scan.findings, f"warn reported nothing for a secret in {field}"
+    assert HIGH_ENTROPY in rendered, f"the finding does not name what matched: {rendered!r}"
+    assert named in rendered.lower().replace("_", ""), (
+        f"the finding does not name the field the secret is in: {rendered!r}"
+    )
+    assert ".md" not in rendered, (
+        f"the finding blames a body file for a secret that is in the migration: {rendered!r}"
+    )
+    assert PLANTED_TOKEN not in rendered, (
+        f"a warning reproduces the token it warns about: {rendered!r}"
+    )
+    assert (paths.migrations / drafted.migration_file.name).exists(), "warn refused the acceptance"
+
+
+def test_one_listing_bound_covers_the_body_and_the_metadata_together(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The cap is over both kinds of finding, not one cap each.
+
+    ``test_a_refusal_lists_at_most_the_name_cap_and_does_not_reveal_the_count``
+    holds the bound for a leaky body, and it stays green against an
+    implementation that scans the document into a *second* list with a second
+    cap: nine findings would then print ten lines and, worse, say that the
+    proposal leaked on both sides. This is the same assertion with the findings
+    coming from both places at once: measured 2026-08-24, this fixture produces
+    eleven -- one body finding and ten metadata ones, ``namespace`` and ``owner``
+    counting twice because ``createItem`` and the revision metadata each carry
+    them -- so it is over the cap from either direction.
+    """
+    request = _request(LEAKY_BODY)
+    for plant in _METADATA_PLANTS.values():
+        request = plant(request)
+    drafted = service.draft(request)
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    message = str(caught.value)
+    assert message.count(HIGH_ENTROPY) == _MAX_NAMES_LISTED, (
+        f"the refusal listed {message.count(HIGH_ENTROPY)} findings, not the {_MAX_NAMES_LISTED} "
+        f"cap: {message}"
+    )
+    assert "more" not in message, (
+        f"the refusal revealed how many findings there were past the cap: {message}"
+    )
+
+
+def test_off_leaves_the_migration_document_unscanned_too(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The escape hatch has to cover the whole control, or it is not one.
+
+    ``block`` is the default and there is no per-finding suppression, so a
+    project that hits a false positive in a title has exactly one move. An
+    implementation that scanned metadata unconditionally -- before the policy is
+    consulted, which is where the cheapest patch puts it -- would leave that
+    project unable to accept anything, and would do it while reporting the
+    policy as ``off``.
+    """
+    _configure(paths, SecretScanPolicy.OFF.value)
+    drafted = service.draft(_with_a_planted_secret("title"))
+
+    accepted = service.accept(drafted.proposal_id)
+
+    assert accepted.secret_scan.policy is SecretScanPolicy.OFF
+    assert accepted.secret_scan.findings == (), "off scanned the migration document anyway"
+    landed = paths.migrations / drafted.migration_file.name
+    assert PLANTED_TOKEN in landed.read_text(encoding="utf-8")
+
+
+def test_a_title_quoting_a_migration_filename_is_still_accepted_under_block(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The false positive that would make this control the first thing switched off.
+
+    Theurian's own derived identifiers are high-entropy by construction, and the
+    detector only tolerates them because ``_looks_like_a_secret`` subtracts
+    ULIDs before judging anything -- its docstring records that all 26 committed
+    migration filenames in this repository were otherwise reported as secrets,
+    at 4.59 to 4.95 bits. Bodies have been scanned since #198, so that
+    subtraction is already load-bearing for prose; extending the scan to titles
+    and descriptions points it at the strings most likely to *cite* a migration.
+
+    A knowledge item titled after the migration that introduced it is an
+    ordinary thing to write. If accepting it takes turning the scan off, the
+    project turns the scan off, and SEC-11's control is gone for the bodies too.
+
+    Both halves are the assertion: ``scan_text`` is asked directly, so a future
+    change that made the title genuinely detectable would fail here loudly
+    rather than turn this into a test of nothing.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    title = f"Retry policy, introduced by {MIGRATION_FILENAME}"
+    assert scan_text(title) == (), (
+        f"the fixture title is detectable on its own, so this asserts nothing: {title!r}"
+    )
+    drafted = service.draft(replace(_request(CLEAN_BODY), title=title))
+
+    accepted = service.accept(drafted.proposal_id)
+
+    assert accepted.secret_scan.findings == (), (
+        f"a title quoting a migration filename was reported as a secret: {_rendered(accepted)}"
+    )
+    assert (paths.migrations / drafted.migration_file.name).exists()

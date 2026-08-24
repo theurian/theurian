@@ -547,18 +547,21 @@ def propose_accept(
 # the real CLI: `_render` prints a list entry through
 # `escape_terminal_controls`, which stringifies a mapping with `repr`, so a
 # mapping here reaches a terminal as
-# `{'body': 'architecture/...', 'family': 'high-entropy-token', ...}`. That is
-# tolerable for an ingest report nobody has to act on, and it is not tolerable
+# `{'location': 'architecture/...', 'family': 'high-entropy-token', ...}`. That
+# is tolerable for an ingest report nobody has to act on, and it is not tolerable
 # for the one output whose entire purpose is that a person reads it before
 # opening a pull request -- `warn`'s whole contract is "accepted, now go and
-# look". The line is `<body>:<line>:<column>: <family> (<prefix>)`, the shape
+# look". The line is `<location>:<line>:<column>: <family> (<prefix>)`, the shape
 # every compiler and linter emits, so a `--json` consumer can still split it and
 # a human can paste it into an editor.
 #
+# A location is either a body path or a field of the migration document (#336).
 # The body path is a contributor's -- it comes from the migration's
 # `contentFile` -- so it reaches the human sink through
 # `_render`/`escape_terminal_controls` like every other string this command
-# publishes, and reaches the JSON sink escaped by `json.dumps`.
+# publishes, and reaches the JSON sink escaped by `json.dumps`. A field location
+# is built from literals in `proposal_service.py` and carries no contributor
+# text at all.
 
 
 #: What a caller does next, and the one thing about it that surprises people:
@@ -595,16 +598,18 @@ _LOCAL_ACCEPT_FIRST_STEP: Final = (
 )
 
 
-#: The step a ``warn`` acceptance that landed a flagged body gets, ahead of
+#: The step a ``warn`` acceptance that landed a flagged value gets, ahead of
 #: everything else. Under ``warn`` the acceptance succeeds (exit 0) and the
 #: findings ride on ``secretFindings`` -- but with no next step, the report told
-#: the author to open a pull request over a body the scan believes carries a live
-#: credential (code-review M-4, adversarial M-3). The wording is
+#: the author to open a pull request over content the scan believes carries a
+#: live credential (code-review M-4, adversarial M-3). The wording is
 #: :meth:`~theurian.application.proposal_service.ProposalService._secret_refusal`'s
-#: rotate advice, in the tense the landed case needs: the body is already in
-#: ``.theurian/knowledge/`` rather than still in the proposal.
+#: rotate advice, in the tense the landed case needs: the value is already in
+#: ``.theurian/knowledge/`` or ``.theurian/migrations/`` rather than still in the
+#: proposal. It names no single file, because a finding is in a body *or* in the
+#: migration's own fields (#336) and only ``secretFindings`` knows which.
 _SECRET_ROTATE_STEP: Final = (
-    "The secret scan flagged a body this acceptance landed (security.secretScan is `warn`, "  # noqa: S105 - operator guidance, not a secret
+    "The secret scan flagged something this acceptance landed (security.secretScan is `warn`, "  # noqa: S105 - operator guidance, not a secret
     "so it proceeded). Treat each flagged value as exposed and rotate it -- it is now in the "
     "working tree, and in Git history once this is committed. The findings, with their "
     "locations, are in `secretFindings`. If any is a false positive, no action is needed for "
