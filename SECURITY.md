@@ -234,9 +234,13 @@ public security channel — only when **both** of these hold:
     re-checks each candidate against the item's *current* class, and a
     `changeSensitivity` that moves an item past the ceiling its build ran under
     purges that item out of the published index in the same `migrate apply`
-    (#119, ADR-0025). One part of that ADR is still owed and is named there: the
-    two-corpora equality suite is not yet parametrized over this axis. The purge
-    is not symmetric and the ADR records why — a reclassification *into* the
+    (#119, ADR-0025). The two-corpora equality suite that ADR requires is
+    parametrized over this axis in
+    `packages/theurian-core/tests/integration/test_sensitivity_absence_proof.py`
+    — one query against a deployment that held above-ceiling documents and one
+    that never did, over all three of those mechanisms, with the whole response
+    compared. The purge is not symmetric and the ADR records why — a
+    reclassification *into* the
     ceiling waits for the next `theurian index build`, failing toward fewer
     results. This list moves when — and only when — `_scope`
     gains or drops a WHERE predicate; an axis that reaches the schema but not that

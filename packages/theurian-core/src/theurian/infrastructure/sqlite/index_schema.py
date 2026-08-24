@@ -302,12 +302,15 @@ CREATE TABLE embeddings (
 -- rebuilt, no guessing. `project_id`, `sensitivity` and `status` are carried
 -- denormalised for the same reason `chunks` carries its own copies: filtering
 -- has to happen in the same statement as the match, before ranking (FR-R1).
--- `project_id` is the future single-point predicate #119 adds; `sensitivity` is
--- today a published label and not a control (see the Context amendment to
--- ADR-0008); `status` is the build-flavor column a node-table predicate will
--- filter on once one exists. `tree_id` already encodes the full six-component
--- scope tuple `(project, tenant, sensitivity, acl_group, namespace, status)`, so
--- these three are read, not derived from it, at query time.
+-- All three are filtered on, and that sentence used to name only futures:
+-- `project_id` was "the predicate #119 adds", `sensitivity` "today a published
+-- label and not a control", and `status` "the column a node-table predicate will
+-- filter on once one exists". `SqliteIndexStore._node_scope` is that predicate
+-- (#119 phase 4, ADR-0025 part 3) and emits all three over `nodes`, so an
+-- above-ceiling or unapproved summary is not traversed at all. `tree_id` already
+-- encodes the full six-component scope tuple
+-- `(project, tenant, sensitivity, acl_group, namespace, status)`, so these three
+-- are read, not derived from it, at query time.
 --
 -- `theurian index build --raptor` writes these rows, through
 -- `IndexStore.add_nodes`; a build without the flag writes none (ADR-0008

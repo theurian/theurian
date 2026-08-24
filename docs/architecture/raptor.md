@@ -42,14 +42,26 @@ implementation happened to assign. The leak then lives in generated text with no
 anchor to the restricted source, which is what makes it nearly undetectable
 afterwards.
 
-That describes the un-partitioned alternative, not Theurian's retrieval. No
-retrieval path reads `chunks.sensitivity`: sensitivity is a **published label,
-not a control**, with the control deferred to
-[#119](https://github.com/theurian/theurian/issues/119) — the per-axis register
-in [requirements-analysis.md](requirements-analysis.md) records that disposition
-axis by axis. What partitioning stops is a summary mixing two sensitivities into
-one text — and it makes no serving decision even so, which is why the forest
-neither waits for #119 nor advances it.
+That describes the un-partitioned alternative, not Theurian's retrieval. Two
+separate things stop it here, and only one of them is partitioning.
+
+Since [#119](https://github.com/theurian/theurian/issues/119), sensitivity is an
+enforced read control rather than a published label. A build writes no chunk row
+above the deployment's declared ceiling and therefore derives no summary node
+from one (ADR-0025 part 1); every retriever emits `sensitivity IN (…)` — `_scope`
+over `chunks` and `_node_scope` over `nodes` alike (part 3); and a
+reclassification purges the affected rows out of the published build in the same
+`migrate apply` (part 2). So on a deployment that does not serve `restricted`, a
+node's children cannot span a `restricted` incident report and a `public` guide:
+the report is not in the file the forest was derived from.
+
+What *partitioning* adds is orthogonal to that ceiling, which is why one does not
+make the other redundant. A deployment that serves **both** levels still derives
+no summary mixing them into one text, because the tree identity includes
+sensitivity. That is a build-time property and makes no serving decision on its
+own. The per-axis register in
+[requirements-analysis.md](requirements-analysis.md) records where each axis
+stands.
 
 ## The structure
 
@@ -371,9 +383,16 @@ source. Sensitivity and ACL: a node's row carries the scope its children share,
 because the scope is what decided which tree it belongs to. The sensitivity in
 that scope is the item's current classification — the value `index_builder`
 stamps on a chunk, carrying the same authority `status` does — captured at build
-time, not the immutable revision's authored label; a `changeSensitivity` moves it
-on the next build. Uniform by construction is a build-time property, and
-sensitivity is still a published label rather than a retrieval control (#119).
+time, not the immutable revision's authored label. Uniform by construction is a
+build-time property and stays one; what changed with
+[#119](https://github.com/theurian/theurian/issues/119) is that the axis is now
+also a *retrieval* control, so the two hold different halves. A
+`changeSensitivity` no longer waits for the next build to take effect on either:
+`_node_scope` filters a node on the deployment's grant on every query, and an
+item reclassified past the ceiling its build ran under is purged out of the
+published build by the same `migrate apply` (ADR-0025 parts 2 and 3). What still
+waits for a build is a reclassification *into* the ceiling — a purge deletes and
+cannot restore a row the build was never allowed to write.
 
 Implementations must wrap source content in a delimited untrusted region and
 never interpolate it into a system-role message. The port docstring states that
@@ -476,16 +495,21 @@ finds keeps its rank and one only a summary match reaches is what the forest add
 (`test_a_summary_match_routes_to_sibling_leaves_a_leaf_search_misses`).
 
 Retrieval performs no authorization-scope determination, which is what the first
-box would otherwise be read as doing. Two axes are enforced: project, and status
-as a pre-ranking predicate when the caller has not passed `includeUnapproved`
-and as `may_surface` at the canonical gate when they have. Tenant and ACL group
-are refused at write time, and sensitivity is a published label
-([requirements-analysis.md](requirements-analysis.md),
-[#119](https://github.com/theurian/theurian/issues/119)). The summary match is
-gated the same way and then again: `_node_scope` filters the node on project and
-status, so a draft-scope summary is not even traversed on a default query; the
-descended leaves are re-filtered by `_scope` and re-cleared by `may_surface`, so
-a withheld leaf reached through the forest still does not surface
+box would otherwise be read as doing. Three axes are enforced: project; status,
+as a pre-ranking predicate when the caller has not passed `includeUnapproved` and
+as `may_surface` at the canonical gate when they have; and, since
+[#119](https://github.com/theurian/theurian/issues/119), sensitivity against the
+deployment's declared ceiling — kept out of the build entirely (ADR-0025 part 1),
+emitted as `sensitivity IN (…)` beside the status predicate (part 3), and
+re-checked on the item's *current* classification at the canonical gate, which is
+the only thing that can catch a document reclassified after the build. Tenant and
+ACL group are still refused at write time rather than filtered
+([requirements-analysis.md](requirements-analysis.md)). The summary match is
+gated the same way and then again: `_node_scope` filters the node on project,
+status and sensitivity, so neither a draft-scope nor an above-ceiling summary is
+traversed at all; the descended leaves are re-filtered by `_scope` and re-cleared
+by `may_surface` and `may_disclose`, so a withheld leaf reached through the
+forest still does not surface
 (`test_routing_over_an_unapproved_forest_cannot_resurrect_a_withheld_leaf`).
 
 Filtering happens **before** ranking, and that is worth keeping whatever the

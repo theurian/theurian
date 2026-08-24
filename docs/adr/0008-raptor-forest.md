@@ -63,6 +63,28 @@ fact.
 > holds it over rows a build wrote. The `test_raptor_scope.py` item in Compliance
 > closes with that note; the rest of this paragraph is unchanged, because #119
 > still gives sensitivity no predicate to filter on.
+>
+> **Amended again in #119 (2026-08-24). "Sensitivity is a published label, not a
+> control" is no longer true, and the sentence directly above — that #119 "still
+> gives sensitivity no predicate to filter on" — is now false.** ADR-0025 records
+> the decision; what it changes here is that the column this forest carries so
+> that "the day #119 gives sensitivity a predicate there is a column to filter
+> on" is filtered on today. `SqliteIndexStore._node_scope` emits
+> `sensitivity IN (…)` over `nodes` beside its project and status predicates, so
+> an above-ceiling summary is not traversed at all; `IndexBuilder` writes no
+> chunk row above the deployment's declared ceiling, so the forest derived over
+> what it wrote has no such node to traverse in the first place; and a
+> `changeSensitivity` past that ceiling purges the affected rows and re-derives
+> the affected scopes' trees in the same `migrate apply`.
+>
+> **What is *not* amended is everything this block says about partitioning**, and
+> the distinction is worth keeping rather than collapsing. Partitioning stops a
+> node's text spanning two sensitivities; the ceiling stops a deployment reading
+> a level it does not serve. On a deployment that serves both levels the ceiling
+> withholds nothing, and partitioning is still the only thing standing between a
+> `restricted` incident report and a summary of it — so the forest's reason for
+> carrying the scope tuple survives the axis becoming a control rather than being
+> replaced by it.
 
 ## Decision
 

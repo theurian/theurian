@@ -1840,11 +1840,12 @@ def test_a_fresh_build_reports_the_current_schema_version(store: SqliteIndexStor
 
 
 #: The 14 provenance columns ADR-0008 decision 5 names, plus the three queryable
-#: scope columns the amendment adds ahead of #119's predicate: `project_id`
-#: (the future single-point predicate, mirroring `chunks.project_id`),
-#: `sensitivity` (D6: node rows carry sensitivity, still a published label and
-#: not a control -- see the Context amendment) and `status` (the build-flavor
-#: column a node-table predicate will filter on, per decision 1's amendment).
+#: scope columns the amendment added ahead of #119's predicate and that
+#: `_node_scope` now filters on, all three: `project_id` (mirroring
+#: `chunks.project_id`), `sensitivity` (D6: node rows carry the scope tuple's
+#: level, and since #119 it is a serving predicate here as well as a build-time
+#: partition -- ADR-0025 part 3) and `status` (the build-flavor column, per
+#: decision 1's amendment).
 #: `tree_id` already encodes the full six-component scope tuple; these three are
 #: carried denormalised on the row for the same reason `chunks` carries them --
 #: filtering has to happen in the same statement as the match, before ranking.

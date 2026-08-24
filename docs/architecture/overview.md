@@ -172,17 +172,25 @@ than requested and leaks the existence of hidden content through result-count
 differences.
 
 Box 1 named all five of FR-R1's axes until this pass. `SqliteIndexStore._scope`
-emits two — project, and status when the caller has not opted into unapproved
-rows. Tenant and ACL groups exist as domain values (`Scope`, `TenantId`,
-`AclGroup`, pinned by `tests/unit/test_scope_isolation.py`) and default to the
-single-tenant case; the index carries `sensitivity`, `trust_level` and
-`namespace` as columns no query reads. Steps 3, 4 and 6 are likewise Milestone 6
-— dense retrieval is built but off by default, and the RAPTOR forest is *built*
-but never *read*: `theurian index build --raptor` derives and stores it, and no
-retriever names the node tables, so steps 4 and 6 run against nothing.
-The remaining pre-filter gap — enforcing tenant, ACL and sensitivity — is
-[#119](https://github.com/theurian/theurian/issues/119); #63 phase 0 recorded
-the per-axis disposition and closed.
+emits three — project; status, when the caller has not opted into unapproved
+rows; and, since [#119](https://github.com/theurian/theurian/issues/119),
+sensitivity against the disclosure ceiling the deployment declares. That third
+predicate does not stand alone, and it is the weaker half of what closed the
+axis: a build writes no chunk row above the ceiling in the first place, so the
+withheld text never reaches an FTS5 table's collection statistics, and a
+`changeSensitivity` past that ceiling purges the affected rows out of the
+published build in the same `migrate apply` (ADR-0025).
+Tenant and ACL groups exist as domain values (`Scope`, `TenantId`, `AclGroup`,
+pinned by `tests/unit/test_scope_isolation.py`), default to the single-tenant
+case and are refused at write time rather than filtered; the index carries
+`trust_level` and `namespace` as columns no query reads. Steps 3, 4 and 6 are
+likewise Milestone 6 — dense retrieval is built but off by default, and the
+RAPTOR forest is *built* but never *read*: `theurian index build --raptor`
+derives and stores it, and no retriever names the node tables, so steps 4 and 6
+run against nothing.
+The remaining pre-filter gap is tenant and ACL, which #119 closes by refusal
+rather than by predicate; #63 phase 0 recorded the per-axis disposition and
+closed.
 
 Every result carries `itemId`, `revisionId`, `snapshotId`, `indexBuildId`,
 `sourceAnchors`, `raptorPath`, `trustLevel`, `freshness`, and the safety triple

@@ -170,17 +170,31 @@ class CanonicalStore(Protocol):
         So the *Python* cost -- item construction, and in ``search._scan`` the
         per-item revision read and body scan that dominate it -- is flat, while
         the predicate itself carries exactly 6.0 VM steps per above-ceiling row
-        against the 34 the same rows cost when they are returned instead. Smaller
-        than the ``O(withheld document)`` canonical read the ranked path already
-        accepts and records
-        (:meth:`~theurian.application.visibility.CanonicalVisibility.cleared`, 15
-        us per distinct document), and not zero. Adding ``sensitivity`` as a third
-        column of ``idx_items_status`` flattens it exactly -- 2,032 steps at 0 and
-        at 1,000, measured the same way -- at the price of a ``SCHEMA_VERSION``
-        bump, which invalidates every existing state database and moves the
-        ``schemaVersion`` ``knowledge.status`` publishes. That is not a change
-        #119 phase 2 may make, because its contract is that an allow-all
-        deployment behaves exactly as it did.
+        against the 34 the same rows cost when they are returned instead.
+
+        **The comparison against the residual the ranked path already accepts is
+        in microseconds, not in VM steps**, because the two are not measured in
+        one unit and an earlier revision of this paragraph compared them as
+        though they were. Six VM steps is **about 0.20 us** per above-ceiling row
+        on the machine the table above was taken on -- the figure and its method
+        are recorded at
+        :meth:`~theurian.infrastructure.sqlite.store.SqliteCanonicalStore.list_items_by_status`,
+        which is where a re-measurement belongs. Against that, the canonical read
+        the ranked path accepts and the threat model records is **14.7 us per
+        withheld row** (T-17; the 15 us
+        :meth:`~theurian.application.visibility.CanonicalVisibility.cleared`
+        quotes is the same measurement rounded), so this term is roughly seventy
+        times smaller *per row* -- and it is not zero, and it is bounded by the
+        corpus rather than by the caller's ask, because the statement carries no
+        ``LIMIT``.
+
+        Adding ``sensitivity`` as a third column of ``idx_items_status`` flattens
+        it exactly -- 2,032 steps at 0 and at 1,000, measured the same way -- at
+        the price of a ``SCHEMA_VERSION`` bump, which invalidates every existing
+        state database and moves the ``schemaVersion`` ``knowledge.status``
+        publishes. That was not a change #119 phase 2 could make, because its
+        contract was that an allow-all deployment behaves exactly as it did; it
+        is owned by https://github.com/theurian/theurian/issues/338.
 
         An empty ``statuses`` or an empty ``sensitivities`` returns ``()`` without
         a query: neither can match, so a query would only return zero rows. Both
