@@ -92,6 +92,10 @@ ignore = [
 # Development tools are console programs: stdout is their interface, not a
 # stray debug statement. Everything else in the rule set still applies.
 "tools/**" = ["T20"]
+# Sample programs are console programs for the same reason: a reader runs
+# `query.py` to see a response printed. Everything else in the rule set still
+# applies, and `examples/` is linted by the documented `ruff check .` gate.
+"examples/**" = ["T20"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "theurian.infrastructure".msg = "Domain and application layers must depend on ports, not infrastructure. Import infrastructure only from composition roots (cli, daemon, mcp, di)."
