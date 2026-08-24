@@ -220,7 +220,7 @@
     },
     "opUpsertRevision": {
       "type": "object",
-      "required": ["op", "itemId", "revisionId", "contentFile", "metadata"],
+      "required": ["op", "itemId", "revisionId", "contentFile", "contentSha256", "metadata"],
       "additionalProperties": false,
       "properties": {
         "op": { "const": "upsertRevision" },
@@ -228,13 +228,13 @@
         "revisionId": { "$ref": "#/$defs/ulid" },
         "expectedRevision": {
           "oneOf": [{ "$ref": "#/$defs/ulid" }, { "type": "null" }],
-          "description": "Optimistic concurrency guard. Must equal the item's current revision, or be absent when creating the first revision. A mismatch is reported, never merged (ADR-0006)."
+          "description": "Optimistic concurrency guard. Must equal the item's current revision. May be absent in two cases, not one: when this creates the item's first revision, and when it re-runs an operation whose own revisionId the item already holds -- the idempotent re-run FR-K8 requires. Any other absence over an existing item is a conflict. A mismatch is reported, never merged (ADR-0006)."
         },
         "contentFile": { "$ref": "#/$defs/contentFile" },
         "contentSha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$",
-          "description": "Optional pin of the body file's digest. When present, a mismatch fails the migration -- this is what makes an out-of-band edit to the body detectable."
+          "description": "SHA-256 of the body file's bytes, lowercase hex -- `shasum -a 256 <contentFile>`. Required (ADR-0027): the loader re-hashes the body on every load and fails the migration when the two disagree, so an out-of-band edit to the body is refused rather than adopted. An absent pin is a schema error at `theurian migrate validate`, before anything is applied."
         },
         "metadata": { "$ref": "#/$defs/revisionMetadata" }
       }

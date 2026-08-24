@@ -54,6 +54,7 @@ from typing import Any, Final, NamedTuple
 import pytest
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
+from migration_fixtures import body_pin
 from referencing import Registry, Resource
 
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
@@ -107,6 +108,7 @@ operations:
     itemId: architecture.{slug}
     revisionId: 01K1{letter}AAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/{slug}.md
+    contentSha256: {pin}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -297,6 +299,7 @@ def _build_conformance_project(root: pathlib.Path) -> None:
             title=document.title,
             status=document.status,
             provenance=document.provenance.format(slug=slug),
+            pin=body_pin(document.body),
         )
         (
             root / f".theurian/migrations/01K1{document.letter}AAAAA01234567890ABCDE-{slug}.yaml"
@@ -698,6 +701,7 @@ STATUS_OPERATIONS = """  - op: createItem
     itemId: architecture.{slug}
     revisionId: 01K1{letter}AAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/{slug}.md
+    contentSha256: {pin}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -820,14 +824,16 @@ def _build_status_project(
     _cli("init")
     operations = ""
     for document in documents:
+        body = f"# {document.title}\n\nBody text for {document.slug}.\n"
         (root / f".theurian/knowledge/architecture/{document.slug}.md").write_text(
-            f"# {document.title}\n\nBody text for {document.slug}.\n", encoding="utf-8"
+            body, encoding="utf-8"
         )
         operations += STATUS_OPERATIONS.format(
             letter=document.letter,
             slug=document.slug,
             title=document.title,
             status=document.status,
+            pin=body_pin(body),
         )
         if document.deprecate:
             operations += STATUS_DEPRECATION.format(slug=document.slug)

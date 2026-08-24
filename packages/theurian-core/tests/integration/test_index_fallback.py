@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.project_service import (
@@ -105,7 +106,9 @@ DRAFT_BODY = "# Caching draft\n\nAn unreviewed proposal about the token cache.\n
 SECOND_BODY = "# Quota policy\n\nThe gateway meters every signed token per tenant.\n"
 
 
-def _migration(migration_id: str, item: str, revision: str, title: str, status: str) -> str:
+def _migration(  # noqa: PLR0913, PLR0917 -- one argument per migration field
+    migration_id: str, item: str, revision: str, title: str, status: str, body: str
+) -> str:
     """One item, one revision. The filename is derived from the item id, so a
     migration cannot name content that belongs to a different item."""
     filename = f"{item.split('.', 1)[1]}.md"
@@ -123,6 +126,7 @@ operations:
     itemId: {item}
     revisionId: {revision}
     contentFile: ../knowledge/architecture/{filename}
+    contentSha256: {body_pin(body)}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -166,6 +170,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
             REVISION_ID,
             "Authentication policy",
             "approved",
+            BODY,
         )
     )
     (root / f".theurian/migrations/{DRAFT_ID}-draft.yaml").write_text(
@@ -175,6 +180,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
             DRAFT_REVISION_ID,
             "Caching draft",
             "draft",
+            DRAFT_BODY,
         )
     )
     _in(root, "project", "register")
@@ -1068,6 +1074,7 @@ def stale_index(fresh_index: Path) -> Path:
             SECOND_REVISION_ID,
             "Quota policy",
             "approved",
+            SECOND_BODY,
         )
     )
     _must(fresh_index, "migrate", "apply")
@@ -1148,11 +1155,10 @@ def six_matching_documents(project: Path) -> Path:
     knowledge = project / ".theurian/knowledge/architecture"
     for migration_id, item, revision_id in _LIMIT_CORPUS:
         slug = item.split(".", 1)[1]
-        (knowledge / f"{slug}.md").write_text(
-            f"# {slug}\n\nThe gateway checks every signed token before {slug} applies.\n"
-        )
+        body = f"# {slug}\n\nThe gateway checks every signed token before {slug} applies.\n"
+        (knowledge / f"{slug}.md").write_text(body)
         (project / f".theurian/migrations/{migration_id}-{slug}.yaml").write_text(
-            _migration(migration_id, item, revision_id, slug, "approved")
+            _migration(migration_id, item, revision_id, slug, "approved", body)
         )
     _must(project, "migrate", "apply")
     return project
@@ -1265,6 +1271,7 @@ def only_retired_knowledge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
             RETIRED_ONLY_REVISION_ID,
             "Authentication policy",
             "rejected",
+            BODY,
         )
     )
     _in(root, "project", "register")

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectPaths
@@ -32,7 +33,9 @@ pytestmark = pytest.mark.integration
 
 runner = CliRunner()
 
-MIGRATION = """apiVersion: theurian.dev/v1
+BODY = "# Authentication policy\n\nEvery call carries a signed token.\n"
+
+MIGRATION = f"""apiVersion: theurian.dev/v1
 id: 01K1AAAAAA01234567890ABCDE
 createdAt: 2026-08-03T10:00:00+09:00
 author: engineer@example.com
@@ -46,6 +49,7 @@ operations:
     itemId: architecture.auth
     revisionId: 01K1AREVAA01234567890ABCDE
     contentFile: ../knowledge/architecture/auth.md
+    contentSha256: {body_pin(BODY)}
     metadata:
       title: Authentication policy
       contentType: text/markdown
@@ -80,9 +84,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
     monkeypatch.chdir(root)
     assert runner.invoke(app, ["init", "--json"]).exit_code == 0
-    (root / ".theurian/knowledge/architecture/auth.md").write_text(
-        "# Authentication policy\n\nEvery call carries a signed token.\n"
-    )
+    (root / ".theurian/knowledge/architecture/auth.md").write_text(BODY)
     (root / ".theurian/migrations/01K1AAAAAA01234567890ABCDE-auth.yaml").write_text(MIGRATION)
     assert runner.invoke(app, ["project", "register", "--json"]).exit_code == 0
     assert runner.invoke(app, ["migrate", "apply", "--json"]).exit_code == 0

@@ -28,6 +28,7 @@ from theurian.domain.project import (
     Project,
 )
 from theurian.domain.state import ActiveState, StateHash, compute_state_hash, state_inputs_from
+from theurian.security.project_config import PROJECT_CONFIG_FILE
 
 #: Directories `theurian init` creates. The derived ones are created too, so a
 #: fresh clone has somewhere to put state without a later mkdir race.
@@ -271,6 +272,18 @@ class ProjectPaths:
         and read by a person.
         """
         return self.knowledge_dir / "proposals"
+
+    @property
+    def config(self) -> Path:
+        """The project's own settings, if it has written any.
+
+        Optional, unlike every other path here: ``theurian init`` writes no such
+        file and every key it can carry has a shipped default. Composed from
+        :data:`~theurian.security.project_config.PROJECT_CONFIG_FILE` rather than
+        from a literal, so the path and its only reader cannot end up meaning
+        different files.
+        """
+        return self.knowledge_dir / PROJECT_CONFIG_FILE
 
     @property
     def state(self) -> Path:

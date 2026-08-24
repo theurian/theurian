@@ -51,6 +51,7 @@ from typing import Any, Final
 
 import pytest
 from jsonschema import Draft202012Validator
+from migration_fixtures import body_pin
 from referencing import Registry, Resource
 from typer.testing import CliRunner
 
@@ -156,7 +157,7 @@ _DOCS: Final = {
 
 
 def _migration(  # noqa: PLR0913, PLR0917 - one argument per migration field
-    mid: str, rid: str, item: str, slug: str, title: str, status: str
+    mid: str, rid: str, item: str, slug: str, title: str, status: str, body: str
 ) -> str:
     return f"""apiVersion: theurian.dev/v1
 id: {mid}
@@ -172,6 +173,7 @@ operations:
     itemId: {item}
     revisionId: {rid}
     contentFile: ../knowledge/architecture/{slug}.md
+    contentSha256: {body_pin(body)}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -259,7 +261,7 @@ def _build(where: pathlib.Path, *, raptor: bool, include_unapproved: bool) -> Bu
         for slug, (mid, rid, item, title, status, body) in _DOCS.items():
             (root / f".theurian/knowledge/architecture/{slug}.md").write_text(body)
             (root / f".theurian/migrations/{mid}-{slug}.yaml").write_text(
-                _migration(mid, rid, item, slug, title, status)
+                _migration(mid, rid, item, slug, title, status, body)
             )
         _cli("project", "register")
         _cli("migrate", "apply")

@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
     _PERMISSION_ERRNOS,
+    ApprovedSetUnusableError,
+    CandidateMigrationSet,
     ChangeAlreadyInPlaceError,
     DraftedProposal,
     ProposalAlreadyAcceptedError,
@@ -31,7 +34,9 @@ from theurian.application.proposal_service import (
     ProposalRequest,
     ProposalService,
     _evidence_failure_reason,
+    _require_filename_matches_id,
 )
+from theurian.cli.migration_pipeline import rehearse_migration_set
 from theurian.domain.enums import KnowledgeKind
 from theurian.domain.errors import (
     InputTooLargeError,
@@ -39,18 +44,28 @@ from theurian.domain.errors import (
     IrregularSourceFileError,
     MigrationError,
     PathEscapeError,
+    SchemaUnreadableError,
 )
-from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProposalId, RevisionId, TaskId
+from theurian.domain.identifiers import (
+    AgentId,
+    ItemId,
+    MigrationId,
+    ProjectId,
+    ProposalId,
+    RevisionId,
+    TaskId,
+)
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
 from theurian.domain.migration import Migration, current_revision_in
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
 from theurian.domain.proposal import Evidence
-from theurian.domain.values import JSON, MARKDOWN, YAML
+from theurian.domain.values import JSON, MARKDOWN, YAML, ContentHash
 from theurian.infrastructure.filesystem.migration_loader import (
     load_migrations,
     validate_migration_document,
 )
 from theurian.security.paths import MAX_SOURCE_FILE_BYTES
+from theurian.security.yaml_loading import load_yaml_mapping
 
 #: A ``chmod 0o000`` denies nothing to root and nothing on Windows, so a test
 #: that needs the mode to actually refuse cannot run there (the offline CI job
@@ -138,12 +153,17 @@ def service(paths: ProjectPaths) -> ProposalService:
 
     return ProposalService(
         paths=paths,
+        project_id=ProjectId("demo"),
         clock=FrozenClock(),
         ids=SeededIdGenerator(),
         validate=_validator,
         current_revision=current_revision,
         landed_migration=landed_migration,
         landed_migrations=landed_migrations,
+        # The real rehearsal, not a double: the pre-check's whole point is that
+        # it reaches the pipeline `migrate apply` reaches (ADR-0027 decision 2),
+        # and a stub here would assert the opposite of what it claims.
+        rehearse=lambda candidate: rehearse_migration_set(candidate, clock=FrozenClock()),
     )
 
 
@@ -167,20 +187,62 @@ def _tree(root: Path) -> set[str]:
     return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
 
 
-def _hand_authored_two_body_migration(migration_id: str, rev_a: str, rev_b: str) -> str:
+def _hand_authored_two_body_migration(
+    migration_id: str, revisions: tuple[tuple[str, str, str], ...]
+) -> str:
     """A migration naming two bodies whose leaf names collide (both `notes.md`).
 
     The two ``contentFile`` paths differ only in namespace -- ``alpha/notes.md``
     and ``beta/notes.md`` -- so they share the leaf ``notes.md``. That is the
     exact shape a leaf-name lookup conflated: it found one file for both. The
-    revisions still differ (``rev_a`` / ``rev_b``), so the two are genuinely two
-    changes, not one written twice.
+    revisions still differ, so the two are genuinely two changes, not one
+    written twice.
 
-    Only what ``accept`` reads -- the ``contentFile`` of each operation and the
-    ``id`` -- has to be present; ``accept`` does not validate, so the metadata a
-    real migration carries is left out on purpose. The ``id`` is quoted because
-    the seeded generator's ULIDs are all digits, which YAML would otherwise
-    coerce to an int (a real ULID contains letters and needs no quoting).
+    Each entry is ``(namespace, revision id, body text)``, and the body's digest
+    is computed here rather than passed in: since ADR-0027 ``accept`` puts the
+    document through the published schema and then replays it, so a migration
+    that pins nothing -- which is what this helper used to write, because
+    ``accept`` validated nothing -- is refused before the layout question this
+    fixture exists to ask is reached.
+
+    The ``id`` is quoted because the seeded generator's ULIDs are all digits,
+    which YAML would otherwise coerce to an int (a real ULID contains letters
+    and needs no quoting).
+    """
+    operations = "".join(
+        "- op: upsertRevision\n"
+        f"  itemId: {namespace}.notes\n"
+        f"  revisionId: {revision_id}\n"
+        f"  contentFile: ../knowledge/{namespace}/notes.md\n"
+        f"  contentSha256: {ContentHash.of_bytes(body.encode()).value}\n"
+        "  metadata:\n"
+        f"    title: {namespace} notes\n"
+        "    contentType: text/markdown\n"
+        "    kind: architecture\n"
+        f"    namespace: {namespace}\n"
+        "    status: approved\n"
+        "    owner: platform-team\n"
+        # INV-8: a revision states where it came from or declares that it came
+        # from nowhere. The replay enforces it, which is the point -- this used
+        # to be checked only by `migrate apply`, after the pull request merged.
+        f"    labels: ['{AUTHORED_IN_THEURIAN}']\n"
+        for namespace, revision_id, body in revisions
+    )
+    return (
+        "apiVersion: theurian.dev/v1\n"
+        f"id: '{migration_id}'\n"
+        "createdAt: '2026-08-02T12:00:00+00:00'\n"
+        "author: a@example.com\n"
+        "operations:\n"
+    ) + operations
+
+
+def _createitem_migration(migration_id: str, item_id: str) -> str:
+    """The smallest schema-valid, applyable migration: one ``createItem``.
+
+    Body-free, so a test that needs a *landed* migration to exist -- rather than
+    one that says anything in particular -- can plant one without also planting
+    a body for the accept-path replay to read.
     """
     return (
         "apiVersion: theurian.dev/v1\n"
@@ -188,14 +250,11 @@ def _hand_authored_two_body_migration(migration_id: str, rev_a: str, rev_b: str)
         "createdAt: '2026-08-02T12:00:00+00:00'\n"
         "author: a@example.com\n"
         "operations:\n"
-        "- op: upsertRevision\n"
-        "  itemId: alpha.notes\n"
-        f"  revisionId: {rev_a}\n"
-        "  contentFile: ../knowledge/alpha/notes.md\n"
-        "- op: upsertRevision\n"
-        "  itemId: beta.notes\n"
-        f"  revisionId: {rev_b}\n"
-        "  contentFile: ../knowledge/beta/notes.md\n"
+        "- op: createItem\n"
+        f"  itemId: {item_id}\n"
+        "  kind: architecture\n"
+        f"  namespace: {item_id.rpartition('.')[0]}\n"
+        "  owner: platform-team\n"
     )
 
 
@@ -685,17 +744,24 @@ def test_accept_moves_the_body_out_of_the_proposal_directory(
 def test_accept_uses_o_excl_when_the_name_appears_after_the_precheck(
     service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """m05: the O_EXCL create, not the pre-check, is the real race guard.
+    """m05: the O_EXCL create, not the name check, is the real race guard.
 
     ``test_accept_refuses_to_land_a_migration_on_an_existing_name`` is caught by
-    the pre-check that runs before any write. That leaves the O_EXCL create --
-    the guard for a name that appears in the window *after* the pre-check --
-    unexercised, so a mutation to ``O_TRUNC`` survives it. Here the pre-check is
+    the name check that runs before any write. That leaves the O_EXCL create --
+    the guard for a name that appears in the window *after* that check --
+    unexercised, so a mutation to ``O_TRUNC`` survives it. Here the name check is
     neutered so the create is what has to refuse, and the bytes already at the
     name must survive.
+
+    The file planted at the name is a *valid* migration rather than the
+    ``EXISTING\\n`` this used to write. Since ADR-0027 ``accept`` loads and
+    replays the approved set before it moves anything, and a project whose
+    ``.theurian/migrations/`` holds a file that is not a migration is refused by
+    that pre-check long before the write this test is aiming at.
     """
     drafted = service.draft(_request())
     landed = paths.migrations / drafted.migration_file.name
+    planted = _createitem_migration("00000000000000000000000099", "planted.item")
 
     def _no_precheck(
         _self: ProposalService, _destination: Path, _document: Mapping[str, object]
@@ -703,12 +769,12 @@ def test_accept_uses_o_excl_when_the_name_appears_after_the_precheck(
         return None
 
     monkeypatch.setattr(ProposalService, "_refuse_if_migration_present", _no_precheck)
-    landed.write_text("EXISTING\n", encoding="utf-8")
+    landed.write_text(planted, encoding="utf-8")
 
     with pytest.raises(ProposalError, match="appeared"):
         service.accept(drafted.proposal_id)
 
-    assert landed.read_text() == "EXISTING\n", "O_EXCL must not overwrite the existing migration"
+    assert landed.read_text() == planted, "O_EXCL must not overwrite the existing migration"
     assert not drafted.body_destination.exists(), "the body write is rolled back"
 
 
@@ -756,6 +822,45 @@ def test_accept_refuses_a_filename_that_does_not_match_the_inner_id(
 
     with pytest.raises(ProposalError, match="filename ULID must equal"):
         service.accept(drafted.proposal_id)
+
+
+def test_a_filename_check_refuses_an_alias_bomb_id_without_rendering_it() -> None:
+    """HIGH-1 Face B (adversarial e19): ``id: *anchor`` is a T-6 denial of service.
+
+    ``_require_filename_matches_id`` runs *before* stage-1 schema validation, so
+    ``document["id"]`` is still raw YAML. When it aliases a DAG, the value is a
+    container whose ``{inner!r}`` re-expands the graph PyYAML collapsed -- 551
+    bytes rendered to 3.4 GB in the reproduction. The guard refuses a non-scalar
+    id before rendering it; the short, key-only message is what pins that, because
+    the vulnerable form rendered the whole expansion into the refusal.
+    """
+    lines = ["a0: &a0 'x'"]
+    for level in range(1, 7):
+        refs = ", ".join(f"*a{level - 1}" for _ in range(6))
+        lines.append(f"a{level}: &a{level} [{refs}]")
+    lines.append("id: *a6")
+    document = load_yaml_mapping("\n".join(lines))
+    migration_file = Path("01K1AAAAAA01234567890ABCDE-x.yaml")
+
+    with pytest.raises(ProposalError) as caught:
+        _require_filename_matches_id(migration_file, document)
+
+    assert len(str(caught.value)) < 1000, "the refusal rendered the expanded alias graph"
+    assert "filename ULID must equal" in str(caught.value)
+
+
+def test_a_filename_check_still_names_a_short_wrong_id(tmp_path: Path) -> None:
+    """A short, wrong id is still echoed -- the guard only refuses to render a bomb.
+
+    The helpful diagnosis (``its id is '...'``) is preserved for the ordinary
+    mismatch: a scalar id that is simply not the filename's ULID.
+    """
+    migration_file = Path("01K1AAAAAA01234567890ABCDE-x.yaml")
+
+    with pytest.raises(ProposalError) as caught:
+        _require_filename_matches_id(migration_file, {"id": "01K1BBBBBB01234567890ABCDE"})
+
+    assert "01K1BBBBBB01234567890ABCDE" in str(caught.value)
 
 
 def test_accept_replaces_an_unpinned_file_at_the_destination(
@@ -953,59 +1058,6 @@ def test_accept_refuses_a_case_variant_of_a_landed_body(
     assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
 
 
-def test_accept_refuses_replacing_an_unpinned_landed_body(
-    service: ProposalService, paths: ProjectPaths
-) -> None:
-    """HIGH-C(i): an *unpinned* landed body still backs a revision the set validates.
-
-    ``contentSha256`` is optional -- the loader adopts the body's current hash
-    where it is absent (#210) -- so a landed migration may reference a body it
-    does not freeze. The old guard filtered on ``content_pinned`` and so waved
-    such a replacement through, yet the *set* then holds two distinct revisions
-    on one physical file, which ``refuse_duplicate_content_files`` refuses for the
-    whole project (exit 4). The identity key carries no pinning filter, so the
-    already-claimed inode is refused whether or not the claim was frozen.
-    Reproduced by the orchestrator (``probes/e8``: accept exit 0 -> validate exit 4).
-    """
-    first = service.draft(_request())
-    service.accept(first.proposal_id)
-    # Strip the declared pin from the landed migration: the body is now
-    # referenced but not frozen -- the case the `content_pinned` filter missed.
-    landed = next(paths.migrations.glob(f"{first.migration_id.value}-*.yaml"))
-    landed.write_text(
-        "\n".join(
-            line
-            for line in landed.read_text(encoding="utf-8").splitlines()
-            if "contentSha256" not in line
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    assert "contentSha256" not in landed.read_text(encoding="utf-8")
-    # An unpinned reference is legal: the set still loads and would validate.
-    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
-
-    second = service.draft(
-        _request(item_id=ItemId("architecture.other"), body="# Retry policy\n\nFive attempts.\n")
-    )
-    second.migration_file.write_text(
-        second.migration_file.read_text(encoding="utf-8").replace(
-            second.content_file, first.content_file
-        ),
-        encoding="utf-8",
-    )
-    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
-    hand_authored = second.directory / tail
-    hand_authored.parent.mkdir(parents=True, exist_ok=True)
-    hand_authored.write_bytes(second.body_file.read_bytes())
-
-    with pytest.raises(ProposalError, match="backing a landed revision"):
-        service.accept(second.proposal_id)
-
-    assert first.body_destination.read_text() == BODY, "the landed body is untouched"
-    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
-
-
 def test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
@@ -1119,68 +1171,6 @@ def test_accept_refuses_a_byte_different_redeclare_of_a_pinned_landed_revision(
         service.accept(second.proposal_id)
 
     assert first.body_destination.read_text() == BODY, "the pinned body is untouched"
-    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
-
-
-def test_accept_refuses_a_byte_different_redeclare_of_an_unpinned_landed_revision(
-    service: ProposalService, paths: ProjectPaths
-) -> None:
-    """The unpinned face of the byte conjunct: no pin to break, content still immutable.
-
-    ``contentSha256`` is optional (the loader adopts the body's current hash where
-    it is absent, #210), so a landed revision may reference a body it does not
-    freeze. There is no pin to break here, but re-declaring that revision -- same
-    item, same revision id -- with *different* bytes still silently mutates
-    immutable content and leaves the set at exit 4 (``refuse_duplicate_content_files``).
-    The byte-identity conjunct refuses both faces at once: the guard reads the
-    loaded operation's ``content_sha256`` -- populated pinned or not -- and
-    compares it with the incoming bytes, so the missing pin does not open the gap.
-    As in the pinned face, the item id and revision id are re-pointed to match the
-    landed revision so that byte-identity is the sole deciding conjunct; the prior
-    cross-item shape let the item conjunct short-circuit the check.
-    """
-    first = service.draft(_request())
-    service.accept(first.proposal_id)
-    # Strip the declared pin from the landed migration: the body is now referenced
-    # but not frozen -- the loader still records its hash, so the guard still sees
-    # the bytes the re-declare would overwrite.
-    landed = next(paths.migrations.glob(f"{first.migration_id.value}-*.yaml"))
-    landed.write_text(
-        "\n".join(
-            line
-            for line in landed.read_text(encoding="utf-8").splitlines()
-            if "contentSha256" not in line
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    assert "contentSha256" not in landed.read_text(encoding="utf-8")
-
-    second = service.draft(
-        _request(
-            item_id=ItemId("architecture.other"),
-            body="# Retry policy\n\nFIVE HUNDRED attempts.\n",
-        )
-    )
-    text = second.migration_file.read_text(encoding="utf-8")
-    text = text.replace(second.content_file, first.content_file)
-    text = text.replace(
-        f"revisionId: '{second.revision_id.value}'",
-        f"revisionId: '{first.revision_id.value}'",
-    )
-    text = text.replace("architecture.other", "architecture.retry-policy")
-    second.migration_file.write_text(text, encoding="utf-8")
-    assert f"revisionId: '{first.revision_id.value}'" in text, "the revision id re-declare failed"
-    assert "architecture.other" not in text, "the item id re-declare failed"
-    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
-    hand_authored = second.directory / tail
-    hand_authored.parent.mkdir(parents=True, exist_ok=True)
-    hand_authored.write_bytes(second.body_file.read_bytes())
-
-    with pytest.raises(ProposalError, match="backing a landed revision"):
-        service.accept(second.proposal_id)
-
-    assert first.body_destination.read_text() == BODY, "the immutable body is untouched"
     assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
 
 
@@ -1523,11 +1513,14 @@ def test_a_migration_file_that_cannot_be_opened_is_answered_rather_than_crashing
 def _poison_content_file(drafted: DraftedProposal, quoted_value: str) -> None:
     """Repoint the drafted migration's ``contentFile`` at a hand-authored value.
 
-    ``accept`` does not schema-validate the proposal's migration, so a value the
+    ``accept`` computes its body moves before its pre-check runs, so a value the
     JSON Schema would reject -- one holding a NUL byte or an unpaired surrogate --
-    reaches ``_destination_of``'s ``resolve()`` unfiltered. ``quoted_value`` is a
-    YAML double-quoted scalar so its ``\\0`` / ``\\uXXXX`` escapes decode to the
-    real code points.
+    reaches ``_destination_of``'s ``resolve()`` unfiltered, ahead of stage 1's
+    schema check (ADR-0027 decision 2). The order is what makes these faults
+    reachable, not an absence of validation: the moves are an *input* to the
+    pre-check, so :meth:`_body_moves` necessarily runs first.
+    ``quoted_value`` is a YAML double-quoted scalar so its ``\\0`` / ``\\uXXXX``
+    escapes decode to the real code points.
     """
     text = drafted.migration_file.read_text(encoding="utf-8")
     replaced = text.replace(f"contentFile: {drafted.content_file}", f"contentFile: {quoted_value}")
@@ -1581,9 +1574,11 @@ def test_the_unreadable_remedy_does_not_prescribe_chmod_for_a_non_permission_fau
     """Round-one HIGH (CLASS-B): ``_unreadable`` prescribed ``chmod`` for any errno.
 
     A ``contentFile`` naming a directory reaches ``read_source_file`` as
-    ``../knowledge`` -- accept does not schema-validate (ADR-0013 §4) -- and the
-    open raises ``IsADirectoryError`` (``EISDIR``), which the examination clause
-    translates. The old remedy said *"Make ... readable -- chmod u+rX on it"*
+    ``../knowledge`` -- the body moves are computed before the pre-check, so this
+    is read before stage 1's schema check ever sees the document (ADR-0027
+    decision 2) -- and the open raises ``IsADirectoryError`` (``EISDIR``), which
+    the examination clause translates. The old remedy said *"Make ... readable
+    -- chmod u+rX on it"*
     regardless, but no ``chmod`` cures ``EISDIR``: the fault is the authored
     ``contentFile``, which is what the remedy must name. This is the class
     ``c7cf455`` (#233) closed for :class:`PathEscapeError`, reopened at this site.
@@ -2777,14 +2772,16 @@ def test_two_content_files_sharing_a_leaf_name_do_not_collide(
     finds each by its full relative path.
     """
     drafted = service.draft(_request())
-    rev_a = "01K9AAAAAA0000000000000001"
-    rev_b = "01K9AAAAAA0000000000000002"
-    migration = _hand_authored_two_body_migration(drafted.migration_id.value, rev_a, rev_b)
+    revisions = (
+        ("alpha", "01K9AAAAAA0000000000000001", "A\n"),
+        ("beta", "01K9AAAAAA0000000000000002", "B\n"),
+    )
+    migration = _hand_authored_two_body_migration(drafted.migration_id.value, revisions)
     drafted.migration_file.write_text(migration, encoding="utf-8")
     drafted.body_file.unlink()
     # Both bodies are named `notes.md` -- the collision -- and told apart only by
     # their subdirectory, which is what a leaf lookup threw away.
-    for namespace, text in (("alpha", "A\n"), ("beta", "B\n")):
+    for namespace, _revision_id, text in revisions:
         body = drafted.directory / namespace / "notes.md"
         body.parent.mkdir(parents=True, exist_ok=True)
         body.write_text(text, encoding="utf-8")
@@ -2828,3 +2825,328 @@ def test_a_failing_body_write_rolls_the_migration_set_back(
         service.accept(drafted.proposal_id)
 
     assert _tree(paths.root) == before, "a failed accept leaves the tree exactly as it was"
+
+
+# -- accept validates before it moves (ADR-0027 decision 2) -----------------
+#
+# The three faces #307 demonstrated, and the recovery property the decision buys:
+# a proposal survives its own rejection, because nothing was consumed. Each test
+# asserts both halves, because an assertion on the refusal alone passes against a
+# version that refuses *after* deleting the sources -- which is the shape #307
+# reported, and which was run here as a mutation: with the pre-check moved below
+# the move, all three keep raising and all three go RED on the second half.
+#
+# The racing face lives in `test_propose_cli.py`, where `migrate apply` can say
+# whether the set left behind really applies.
+
+
+def _contents(root: Path) -> dict[str, bytes]:
+    """Every regular file under ``root``, keyed by its project-relative path.
+
+    Bytes, not the path set :func:`_tree` returns: a version that rewrote a file
+    in place -- or deleted one and wrote another under the same name -- leaves the
+    path set unchanged. No digest is taken either, so nothing here can agree with
+    a broken :class:`ContentHash`; the comparison is byte equality.
+    """
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and not path.is_symlink()
+    }
+
+
+def test_two_operations_naming_one_body_are_refused_with_the_proposal_intact(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#307 face 1: a breakage contained entirely inside one proposal.
+
+    A pair of ``upsertRevision`` operations naming one ``contentFile`` involves
+    no landed migration at all, so
+    :meth:`_refuse_if_a_replacement_breaks_an_existing_pin` -- which judges the
+    *landed* set, and which the sibling tests above cover -- has nothing to say
+    about it. Before ADR-0027 decision 2 the pair landed, ``migrate validate``
+    then refused the whole project at exit 4, and the proposal that produced it
+    had already been deleted.
+
+    ``refuse_duplicate_content_files`` now refuses it before anything moves, and
+    the replay reaches that guard *twice*: once as one of the whole-set guards in
+    stage 3, and again inside ``MigrationEngine.apply`` in stage 4. Measured --
+    deleting the stage-3 call alone leaves this green, because the engine's own
+    copy still refuses; deleting both is what turns it RED. So this pins the
+    pipeline's answer rather than one call site's, which is what ADR-0027's
+    closure argument is about.
+
+    The second assertion is the one an exit-code check cannot make and the one
+    #307 asked for: **the proposal directory is byte-identical afterwards**, so
+    the author still has the sources to correct rather than re-draft.
+    """
+    drafted = service.draft(_request())
+    document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    operations = document["operations"]
+    assert isinstance(operations, list)
+    upsert = next(op for op in operations if op["op"] == "upsertRevision")
+    # A second, genuinely different revision on a second, genuinely created item
+    # -- so the shared `contentFile` is the only thing wrong with the document.
+    operations.append(
+        {
+            "op": "createItem",
+            "itemId": "architecture.twin-policy",
+            "kind": "architecture",
+            "namespace": "architecture",
+            "owner": "platform-team",
+        }
+    )
+    operations.append(
+        {
+            **upsert,
+            "itemId": "architecture.twin-policy",
+            "revisionId": "01K9AAAAAA0000000000000009",
+        }
+    )
+    drafted.migration_file.write_text(yaml.safe_dump(document), encoding="utf-8")
+    before = _contents(drafted.directory)
+
+    with pytest.raises(ProposalError, match="same body file on disk"):
+        service.accept(drafted.proposal_id)
+
+    assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+    assert not drafted.body_destination.exists()
+
+
+def test_a_pin_that_does_not_match_its_own_body_is_refused_with_the_proposal_intact(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#307 face 2: the migration pins a digest its own body no longer has.
+
+    The authoring slip is editing the body after the migration was written. The
+    loader verifies a declared pin every time it re-reads a referenced body, and
+    the pre-check's replay is what puts the incoming proposal through that loader
+    (stage 2) -- before ADR-0027 decision 2 nothing on the accept path re-read the
+    body at all, so the pair landed and ``migrate validate`` refused the project
+    afterwards with the proposal gone.
+    """
+    drafted = service.draft(_request())
+    drafted.body_file.write_text(BODY + "\nAppended after the migration was written.\n")
+    before = _contents(drafted.directory)
+
+    with pytest.raises(ProposalError, match="but the migration pins") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+    # The refusal comes from inside the replay, whose loader read a copy under a
+    # temporary directory. What reaches the author must name their own file and
+    # not that copy, or the remedy points at a path that no longer exists.
+    assert drafted.migration_file.name in str(caught.value)
+    assert "theurian-rehearsal" not in f"{caught.value} {caught.value.remedy}"
+
+
+def test_an_empty_content_file_is_refused_with_the_proposal_intact(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#307 face 3: ``contentFile: ""`` under a schema ``minLength`` of 1.
+
+    The empty value never reaches the body moves -- ``_upsert_bodies`` skips an
+    operation whose ``contentFile`` is empty, so ``accept`` had nothing to move
+    and moved the migration alone. What refuses it is stage 1, the published
+    schema, run against the proposal's *own* document rather than the replay's
+    copy so that the message names the file the author has to correct.
+    """
+    drafted = service.draft(_request())
+    text = drafted.migration_file.read_text(encoding="utf-8")
+    poisoned = text.replace(f"contentFile: {drafted.content_file}", 'contentFile: ""')
+    assert poisoned != text, "the contentFile anchor did not match"
+    drafted.migration_file.write_text(poisoned, encoding="utf-8")
+    before = _contents(drafted.directory)
+
+    with pytest.raises(ProposalError, match="is not a valid migration") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+    assert drafted.migration_file.name in str(caught.value)
+    assert "Nothing has moved" in caught.value.remedy
+
+
+def test_a_refused_acceptance_modifies_no_file_anywhere_in_the_project(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """ADR-0027 decision 2's last owed compliance item, over the whole tree.
+
+    The replay stages the union of the landed set and the incoming proposal on
+    disk and applies it into a database, and it must do all of that outside the
+    project. Scoped to every file under the root and to their *bytes* -- the
+    shape ``test_generation_modifies_no_file_outside_the_proposal_directory``
+    uses for ``draft`` -- because a replay that wrote into ``.theurian/state/``
+    or over a landed body would leave the path set unchanged.
+
+    Driven by the racing refusal deliberately: it is the one that runs every
+    stage, so the replay had loaded the set, created its database and begun
+    applying before it refused. A refusal at stage 1 would prove far less.
+
+    The landed migration is placed **by hand rather than accepted**, and that is
+    load-bearing rather than convenience: an earlier ``accept`` would have run a
+    replay of its own, so anything that replay wrote into the project would
+    already be in the baseline, and a leak that writes the same path on every run
+    would be absorbed instead of caught. Measured -- against a version whose
+    replay wrote one fixed file into the project root, the accepted-first shape
+    stayed green.
+    """
+    first = service.draft(_request())
+    second = service.draft(_request(body="# Retry policy\n\nFive attempts.\n"))
+    shutil.copy(first.migration_file, paths.migrations / first.migration_file.name)
+    first.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(first.body_file, first.body_destination)
+    shutil.rmtree(first.directory)
+    before = _contents(paths.root)
+
+    with pytest.raises(ProposalError, match="Revision conflict"):
+        service.accept(second.proposal_id)
+
+    assert _contents(paths.root) == before, "a refused acceptance wrote somewhere in the project"
+
+
+def test_the_replay_removes_the_throwaway_tree_it_staged_the_union_in(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The replay's target is throwaway, and a leak of it is a leak of knowledge.
+
+    What is staged there is a copy of every landed body plus the incoming one, so
+    a target left behind is the project's knowledge sitting in a temporary root
+    -- not a stray empty directory. ``tempfile.tempdir`` is redirected so this can
+    name the directory the rehearsal chose rather than trust the stdlib's
+    default, and ``_materialize`` is wrapped so the emptiness assertion cannot
+    pass against a run that never staged anything at all.
+    """
+    from theurian.cli import migration_pipeline as pipeline
+
+    system_temp = tmp_path / "system-temp"
+    system_temp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(system_temp))
+    staged: list[Path] = []
+    real_materialize = pipeline._materialize
+
+    def spy(candidate: CandidateMigrationSet, target: Path) -> Path:
+        staged.append(target)
+        return real_materialize(candidate, target)
+
+    monkeypatch.setattr(pipeline, "_materialize", spy)
+    first = service.draft(_request())
+    second = service.draft(_request(body="# Retry policy\n\nFive attempts.\n"))
+    # Landed by hand, as in the test above, so every target `staged` records
+    # belongs to the refused acceptance under test and to nothing before it.
+    shutil.copy(first.migration_file, paths.migrations / first.migration_file.name)
+    first.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(first.body_file, first.body_destination)
+    shutil.rmtree(first.directory)
+
+    with pytest.raises(ProposalError, match="Revision conflict"):
+        service.accept(second.proposal_id)
+
+    assert staged, "the replay staged nothing: the assertions below would prove nothing"
+    assert all(path.is_relative_to(system_temp) for path in staged), staged
+    assert not [path for path in staged if path.exists()], "a replay target was left behind"
+    assert list(system_temp.iterdir()) == [], "the replay left residue in the temporary root"
+
+
+# -- stage 1's second half, and the faults it must not claim -----------------
+#
+# Both guards below are ones no real input reaches, which on this project is the
+# shape that survives its own deletion. Each is driven synthetically instead.
+
+
+def test_a_build_that_disagrees_with_the_schema_about_apiversion_refuses_the_proposal(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stage 1's second half: the ``apiVersion`` this *build* understands.
+
+    Not the schema's ``const`` written twice. The schema is a file located at
+    runtime and :data:`MIGRATION_API_VERSION` is compiled into the build, so a
+    document declaring an ``apiVersion`` the schema rejects never gets here -- the
+    ``const`` refuses it first, and the branch is reachable only when the two
+    disagree. That is why it is driven by moving the constant rather than by
+    editing the document: the proposal is drafted against today's pair, and the
+    build's answer is then changed underneath it, which is exactly the
+    installed-schema-versus-installed-code skew the check exists for.
+
+    The direction matters as much as the refusal. This is a plain
+    :class:`ProposalError` and not an :class:`ApprovedSetUnusableError`, so
+    ``propose accept`` reports it on the code that means *this proposal could not
+    be used as it stands* rather than the one that means *read the knowledge
+    state* -- and the proposal survives, so correcting it is possible at all.
+    """
+    from theurian.application import proposal_service as module
+
+    drafted = service.draft(_request())
+    before = _contents(drafted.directory)
+    monkeypatch.setattr(module, "MIGRATION_API_VERSION", "theurian.dev/v2")
+
+    with pytest.raises(ProposalError, match="apiVersion") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ApprovedSetUnusableError), (
+        "the proposal's own apiVersion is the proposal's fault, not the landed set's"
+    )
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError)
+    assert drafted.migration_file.name in str(caught.value)
+    assert "theurian.dev/v2" in str(caught.value), "the reader is told what this build reads"
+    assert "Nothing has moved" in caught.value.remedy
+    assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
+@pytest.mark.parametrize("broken_stage", ["the schema check", "the replay"])
+def test_an_unreadable_installed_schema_is_not_reported_as_the_proposals_fault(
+    service: ProposalService,
+    paths: ProjectPaths,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    broken_stage: str,
+) -> None:
+    """A broken installation is not something the author of a proposal can fix.
+
+    The pre-check reads the published JSON Schemas at two points -- stage 1
+    against the proposal's own document, and again inside the replay when the
+    loader reads the staged copy -- and each is wrapped in a clause that
+    translates a :class:`TheurianError` into a :class:`ProposalError` naming the
+    proposal. :class:`SchemaUnreadableError` is a ``TheurianError``, so without an
+    explicit re-raise ahead of those clauses it would arrive as *"correct the
+    migration in the proposal directory"* for a file that is perfectly correct;
+    what it needs to say is *reinstall theurian* (#205, #227). ``propose accept``
+    routes on exactly that distinction: :class:`ProposalError` takes exit 1 with a
+    remedy about the proposal, and everything else keeps its own remedy.
+
+    Driven by a real unreadable schema rather than a raised stand-in: the
+    published schemas are copied and ``migration.schema.json`` emptied, so
+    ``json.loads`` fails inside the loader's own validator construction and the
+    error is the one the product raises. Both points are exercised, because a
+    re-raise deleted at one of them is invisible from the other.
+    """
+    from theurian.cli import migration_pipeline as pipeline
+
+    drafted = service.draft(_request())
+    broken = tmp_path / "broken-schemas"
+    shutil.copytree(SCHEMAS, broken)
+    (broken / "migrations" / "migration.schema.json").write_text("", encoding="utf-8")
+    if broken_stage == "the schema check":
+        # The injected schema check, pointed at the broken installation -- the
+        # same dependency `cli/propose_commands.py::_service` builds from
+        # `schema_root()`, wired to a root whose schema cannot be read.
+        monkeypatch.setattr(
+            service, "_validate", lambda document: validate_migration_document(document, broken)
+        )
+    else:
+        monkeypatch.setattr(pipeline, "schema_root", lambda: broken)
+    before = _contents(drafted.directory)
+
+    with pytest.raises(SchemaUnreadableError) as caught:
+        service.accept(drafted.proposal_id)
+
+    # Not a `ProposalError`, which is what keeps it off exit 1's "correct your
+    # proposal" branch, and its own remedy is what the caller then publishes.
+    assert not isinstance(caught.value, ProposalError)
+    assert "Reinstall theurian" in caught.value.remedy, caught.value.remedy
+    assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"

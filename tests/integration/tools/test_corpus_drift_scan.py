@@ -79,9 +79,10 @@ def _seed(
     """One migration, its pinned body, and the `docs/` document its anchor names.
 
     ``document=None`` leaves the source document unwritten -- the shape a
-    deleted ADR takes. ``pin=False`` drops ``contentSha256``, which the published
-    schema allows and which the tool answers by re-deriving the digest from the
-    committed body.
+    deleted ADR takes. ``pin=False`` drops ``contentSha256``. The published
+    schema requires it since ADR-0027, but this tool reads the tracked YAML
+    directly and runs no schema check, so the shape still reaches it -- and it
+    answers by re-deriving the digest from the committed body.
     """
     revision: dict[str, Any] = {
         "op": "upsertRevision",
@@ -199,11 +200,14 @@ def test_a_snapshot_of_a_document_this_repository_no_longer_publishes_is_drift(
 def test_a_revision_that_records_no_digest_is_held_to_its_committed_body(
     tmp_path: Path,
 ) -> None:
-    """`contentSha256` is optional in the published schema, so its absence is reachable.
+    """A migration missing its pin still reaches this tool, so it must be answered.
 
-    The tool re-derives the digest from the pinned body with the same call that
-    produced the recorded value, rather than treating the revision as
-    uncheckable.
+    ADR-0027 made `contentSha256` schema-required, and this tool validates
+    nothing: it reads the tracked YAML directly, so a hand-edited migration with
+    the pin line deleted arrives here ahead of the `migrate validate` run that
+    refuses it. The tool re-derives the digest from the committed body with the
+    same call that produced the recorded value, rather than treating the
+    revision as uncheckable.
     """
     migration = _seed(tmp_path, pin=False)
 

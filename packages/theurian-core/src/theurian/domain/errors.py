@@ -917,6 +917,28 @@ class AuthorizationError(SecurityError):
         super().__init__(f"Not authorized to {action} project {project_id}")
 
 
+class ProjectConfigError(TheurianError):
+    """A project's ``.theurian/config.yaml`` could not be read, or states a value nothing means.
+
+    Its own type rather than the error of whichever command was running, because
+    the two send the reader to different files. ``theurian propose accept`` lets
+    it out untranslated for exactly that reason: re-labelling a configuration
+    fault as a fault in the proposal would send an author to correct a migration
+    that is correct -- the mistake :class:`SchemaUnreadableError` is already kept
+    separate to avoid, arriving from the project's side rather than the
+    installation's.
+
+    ``remedy`` is a constructor argument and not a class attribute, because these
+    failures have genuinely different cures: a file that will not parse, a block
+    of the wrong shape, and a policy value that is a typo are three different
+    edits.
+    """
+
+    def __init__(self, message: str, *, remedy: str) -> None:
+        self.remedy = remedy
+        super().__init__(message)
+
+
 class CompatibilityError(TheurianError):
     """The plugin and Core versions, or their protocol versions, are incompatible.
 

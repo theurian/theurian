@@ -27,6 +27,7 @@ from typing import Annotated, Final, NoReturn
 import typer
 
 from theurian.application.proposal_service import (
+    ApprovedSetUnusableError,
     ChangeAlreadyInPlaceError,
     DraftedProposal,
     ProposalError,
@@ -34,6 +35,7 @@ from theurian.application.proposal_service import (
     ProposalService,
 )
 from theurian.cli.context import CommandContext, schema_root
+from theurian.cli.migration_pipeline import rehearse_migration_set
 from theurian.domain.enums import KnowledgeKind, Sensitivity, TrustLevel
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import AgentId, ItemId, ProposalId, RevisionId, TaskId
@@ -244,19 +246,20 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
     no CLI or MCP surface that approves anything, because approval is a human
     merging a pull request (ADR-0013).
 
-    The generated migration pins its body's digest, and states which revision it
-    replaces when ``--expected-revision`` says this is an update. Both fields are
-    optional to the schema and neither is omitted here: the generator has the
-    body in hand, and an update that does not name the revision it replaces is
-    the race #210 describes.
+    The generated migration pins its body's digest -- schema-required since
+    ADR-0027 decision 1 -- and states which revision it replaces when
+    ``--expected-revision`` says this is an update. ``expectedRevision`` is the
+    one of the two the schema still leaves optional, and it is not omitted here
+    either: an update that does not name the revision it replaces is the race
+    #210 describes.
 
     An update to an item that already exists **must** carry ``--expected-revision``.
     The generator derives the item's current revision from the approved migration
     set -- which is the canonical state -- and refuses a draft that would produce
-    an unguarded update, rather than emitting one that validates and then fails at
-    ``migrate apply`` after the pull request has merged (#210). ``--expected-revision``
-    on an item that does not exist yet is refused for the same reason: a first
-    revision has nothing to replace.
+    an unguarded update, rather than emitting one ``theurian propose accept``
+    would then refuse for conflicting with the revision in place (#210).
+    ``--expected-revision`` on an item that does not exist yet is refused for the
+    same reason: a first revision has nothing to replace.
     """
     provided: dict[str, object] = {
         "--item-id": item_id,
@@ -340,9 +343,29 @@ def propose_accept(
     """Move an accepted proposal's files into place. Never the judgement.
 
     The migration goes to ``.theurian/migrations/`` under the name it already
-    has, and the body to the path its ``contentFile`` names. Nothing is
-    validated beyond what the move needs, nothing is applied, and nothing is
-    approved -- approval is the pull request, and this command runs before it.
+    has, and the body to the path its ``contentFile`` names. Nothing is applied
+    and nothing is approved -- approval is the pull request, and this command
+    runs before it.
+
+    **What is checked before anything moves**: that no body would land a secret,
+    and that the project's migration set, with this proposal in it, still
+    survives the pipeline ``theurian migrate apply`` runs -- the published
+    schema, the whole-set guards, and a dry replay against a throwaway store
+    that catches the invariants only applying can check, a revision's source
+    anchor and a reused revision id among them. If either refuses, the
+    acceptance is refused and **nothing is consumed**: the proposal directory is
+    left exactly as it was, so the change can be corrected and accepted rather
+    than re-drafted from nothing (ADR-0027, #307).
+
+    **Secret scanning** (SEC-11) runs over every body first, under the policy
+    ``security.secretScan`` selects in ``.theurian/config.yaml``: ``block``,
+    which is also what an absent key or an absent file selects, refuses the
+    acceptance; ``warn`` proceeds and reports what it found on the result;
+    ``off`` skips it. The detector is best effort: it matches known credential
+    shapes and flags strings that look randomly generated. It is not a
+    repository secret scanner and not a substitute for one. It will produce
+    false positives, and the escape hatch for one is the policy key, which the
+    refusal's own remedy names.
 
     The two moves are not symmetric. The migration file may never land on an
     existing name: the name carries the migration's id, so a collision means
@@ -356,23 +379,41 @@ def propose_accept(
     stands -- no such proposal, a draft interrupted before its migration was
     written, a proposal directory or a file in it the filesystem refuses to list,
     examine or read, a contentFile the filesystem cannot resolve or the security
-    layer refuses; 2 the id is not a ULID; 4 the
+    layer refuses, a body that appears to carry a secret while the policy is
+    ``block``, a ``.theurian/config.yaml`` that cannot be read or names a
+    ``security.secretScan`` value this build does not recognise, or a migration
+    that does not satisfy the schema or would not apply; 2 the id is not a ULID; 4 the
     project's knowledge state refuses the move -- this proposal was accepted
     before, that migration id is already in ``.theurian/migrations/``, or the
-    approved migration set does not resolve (it is unreadable, tampered, or
-    internally inconsistent).
+    approved migration set does not resolve or does not apply (it is unreadable,
+    tampered, or internally inconsistent) with or without this proposal.
 
     **4 means "read the knowledge state before doing anything", not "already
     done".** Its migration-set case -- raised while resolving the project, so
-    before this command dispatches at all -- leaves the proposal undelivered, so a
-    caller that treats 4 as "already accepted, skip it" abandons it. 1 normally
-    means nothing landed and drafting again is the recovery; normally, because a
-    part-way write is rolled back on a best-effort basis, and a rollback that
-    itself fails leaves a body in ``.theurian/knowledge/`` while this still
-    reports the original failure -- and because a read the filesystem refused
-    exits 1 without having established anything either way, so its own remedy
-    sends the reader to ``.theurian/migrations/`` before re-drafting rather than
-    straight to a second draft (#227).
+    before this command dispatches at all, or by the pre-check when the set turns
+    out not to apply on its own -- leaves the proposal undelivered, so a caller
+    that treats 4 as "already accepted, skip it" abandons it, and one that treats
+    it as "re-draft" mints a duplicate for a fault the proposal does not have
+    (#89). 1 normally means nothing landed and drafting again is the recovery;
+    normally, because a part-way write is rolled back on a best-effort basis, and
+    a rollback that itself fails leaves a body in ``.theurian/knowledge/`` while
+    this still reports the original failure -- and because a read the filesystem
+    refused exits 1 without having established anything either way, so its own
+    remedy sends the reader to ``.theurian/migrations/`` before re-drafting
+    rather than straight to a second draft (#227).
+
+    **A ``.theurian/config.yaml`` fault also exits 1, though the proposal is not
+    at fault** -- the same "proposal is fine" property
+    :class:`~theurian.application.proposal_service.ApprovedSetUnusableError`
+    carries into exit 4. It deliberately does not share that 4: exit 4 is
+    anchored to the project's *knowledge state* -- the approved migration set, a
+    proposal already accepted -- and a configuration fault is not one, so widening
+    4 to cover it would blur what "read the knowledge state" means. Exit 1 is the
+    bucket for "this proposal could not be used as it stands, and the remedy names
+    the fix", which is exactly what a config fault is: its own remedy names
+    ``config.yaml`` and the three ``secretScan`` values rather than sending the
+    author to draft again, the same honesty the refused read above relies on,
+    where the remedy carries the action.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         EXIT_STATE_ERROR,
@@ -402,6 +443,15 @@ def propose_accept(
         # the help text has always documented as 4 (#254).
         _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
         return
+    except ApprovedSetUnusableError as exc:
+        # The pre-check found `.theurian/migrations/` unusable on its own, so the
+        # proposal is not the cause. Exit 1's contract is "nothing landed, and
+        # drafting again is the recovery", and the second half is false here:
+        # re-drafting mints a duplicate for a fault the proposal does not have
+        # (#89). This is the third case the help text's 4 already covers -- an
+        # approved migration set that does not resolve -- reached one stage later.
+        _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
+        return
     except ProposalError as exc:
         _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=1)
         return
@@ -411,11 +461,18 @@ def propose_accept(
         # input from whoever can commit, and SEC-7 refuses the path rather than
         # writing it. It is not the only case that arrives, and it was published
         # for all of them -- a proposal *body* that is a FIFO is refused here
-        # too, and its `contentFile` is not what is wrong with it. So the error's
-        # own remedy wins where it has one, and this text is the fallback for a
+        # too; now that the pre-check reads the published schema a
+        # `SchemaUnreadableError` ("reinstall theurian") reaches here as well;
+        # and a `ProjectConfigError` does too, when `.theurian/config.yaml` is
+        # unreadable or names a `security.secretScan` value this build does not
+        # recognise (SEC-11) -- it arrives here rather than as a `ProposalError`
+        # deliberately, because the proposal is fine and its author has nothing
+        # to correct, and its own remedy names the file and the three values. In
+        # none of these is the `contentFile` what is wrong. So the error's own
+        # remedy wins where it has one, and this text is the fallback for a
         # refusal that carries none: the preference `TheurianError.remedy` and
         # `cli/commands.py::_context_remedy` already document, applied at the one
-        # composition root that was overwriting it.
+        # composition root that was overwriting it (#227, #205).
         _fail(
             str(exc),
             remedy=exc.remedy
@@ -433,6 +490,13 @@ def propose_accept(
         "replacedBodies": [
             _relative(move.destination, root) for move in accepted.bodies if move.replaced
         ],
+        # Part of the shape rather than a field that appears on trouble: an
+        # empty list says the scan ran and found nothing, and a caller that only
+        # ever sees a key when something is wrong learns not to read it. The
+        # list is empty under `off` too, where nothing was scanned -- which is
+        # exactly what the policy beside it distinguishes (SEC-11).
+        "secretScanPolicy": accepted.secret_scan.policy.value,
+        "secretFindings": [f.describe() for f in accepted.secret_scan.findings],
         "nextSteps": list(_ACCEPT_STEPS),
     }
     # Set only when the move landed but the proposal's own source files could not
@@ -443,31 +507,55 @@ def propose_accept(
     _emit(payload, as_json=as_json)
 
 
+# `secretFindings` is a list of *rendered lines*, and not the list of mappings
+# `ingest --json` publishes for its `failures` and `warnings`. Measured against
+# the real CLI: `_render` prints a list entry through
+# `escape_terminal_controls`, which stringifies a mapping with `repr`, so a
+# mapping here reaches a terminal as
+# `{'body': 'architecture/...', 'family': 'high-entropy-token', ...}`. That is
+# tolerable for an ingest report nobody has to act on, and it is not tolerable
+# for the one output whose entire purpose is that a person reads it before
+# opening a pull request -- `warn`'s whole contract is "accepted, now go and
+# look". The line is `<body>:<line>:<column>: <family> (<prefix>)`, the shape
+# every compiler and linter emits, so a `--json` consumer can still split it and
+# a human can paste it into an editor.
+#
+# The body path is a contributor's -- it comes from the migration's
+# `contentFile` -- so it reaches the human sink through
+# `_render`/`escape_terminal_controls` like every other string this command
+# publishes, and reaches the JSON sink escaped by `json.dumps`.
+
+
 #: What a caller does next, and the one thing about it that surprises people:
-#: `migrate validate` is schema conformance and nothing else. The invariants
-#: `migrate apply` enforces -- a revision's source anchor, a reused revision id
-#: -- are checked after the pull request has already merged (#36).
+#: what this acceptance proved is not what `migrate validate` proves. The
+#: acceptance replayed the whole set, so the apply-time invariants hold for what
+#: is now in `.theurian/migrations/` (ADR-0027 decision 2); `migrate validate` is
+#: still schema conformance plus the statically decidable set guards, by recorded
+#: design (#36), so it is not the thing that re-establishes that after a hand
+#: edit.
 _ACCEPT_STEPS: Final = (
     "Review the diff, then open a pull request with the proposal directory in it. "
     "The merge is the approval.",
-    "`theurian migrate validate --json` checks schema conformance only. It does not "
-    "prove the migration will apply: source anchors and revision-id reuse are checked "
-    "by `theurian migrate apply`, after the pull request has merged.",
+    "This acceptance already proved the set applies: the migration and every one in "
+    "`.theurian/migrations/` were replayed together, source anchors and revision-id "
+    "reuse included. `theurian migrate validate --json` re-checks schema conformance "
+    "and the whole-set guards, and does not replay.",
     "Once it has merged: `theurian migrate apply --json`, then "
     "`theurian index build --json`, or the knowledge just approved is not searchable.",
 )
 
 #: The steps that follow a draft. The judgement and the moves are the human's;
-#: `propose accept` automates the moves and nothing else (ADR-0013 point 4).
+#: `propose accept` automates the moves and the check that they are safe to make,
+#: never the approval (ADR-0013 point 4, ADR-0027 decision 2).
 _DRAFT_STEPS: Final = (
     "Read the proposal. Nothing has been approved and nothing has moved.",
     "If you agree: `theurian propose accept <proposal-id>` moves the migration and the "
     "body into place. That is the file moves, not the approval.",
     "`theurian migrate validate --json` reads .theurian/migrations/ only, so it reports "
     "nothing at all while a proposal is still under .theurian/proposals/.",
-    "Validation is schema conformance and nothing more. The invariants "
-    "`theurian migrate apply` enforces -- a revision's source anchor, a reused revision "
-    "id -- are checked after the pull request has merged, not before it.",
+    "The invariants `theurian migrate apply` enforces -- a revision's source anchor, a "
+    "reused revision id -- are checked by `theurian propose accept`, before it moves "
+    "anything. A proposal that would not apply is refused with nothing consumed.",
 )
 
 
@@ -665,6 +753,7 @@ def _service(context: CommandContext) -> ProposalService:
     migrations = context.loaded.migration_set
     return ProposalService(
         paths=context.paths,
+        project_id=context.project_id,
         clock=context.clock,
         ids=context.ids,
         validate=lambda document: validate_migration_document(document, schemas),
@@ -680,6 +769,11 @@ def _service(context: CommandContext) -> ProposalService:
         # loader follows, so a pin held by a relocated migration was invisible to
         # it and `accept` overwrote the body the set validates against (#234).
         landed_migrations=lambda: migrations,
+        # The accept pre-check's dry replay. `rehearse_migration_set` reaches the
+        # engine through the same `apply_migration_set` `migrate apply` calls,
+        # which is ADR-0027 decision 2's hard condition: the two cannot disagree
+        # about whether a set is usable, because there is one pipeline, not two.
+        rehearse=lambda candidate: rehearse_migration_set(candidate, clock=context.clock),
     )
 
 

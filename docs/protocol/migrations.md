@@ -137,18 +137,19 @@ Theurian exists to prevent.
 ### Pinning the body: `contentSha256`
 
 `expectedRevision` guards the item. `contentSha256` guards the body file the
-revision points at. It is optional in the schema, and only the declared form
-freezes anything:
+revision points at. It is **required** on every `upsertRevision`
+([ADR-0027](../adr/0027-accept-validates-before-it-moves.md)):
 
-| `contentSha256` | What the loader does |
+| `contentSha256` | What happens |
 | :-- | :-- |
-| declared | Hashes the body on every load and refuses a mismatch. An out-of-band edit to the body becomes detectable. |
-| absent | Adopts whatever the file hashes to now as that revision's content hash. Nothing to compare against, so nothing to refuse. |
+| present, agrees with the body | The migration loads. |
+| present, disagrees with the body | `MigrationError`, exit 4. An out-of-band edit to the body is refused rather than adopted. |
+| absent | A schema error at `theurian migrate validate`, before anything is applied. |
 
 `theurian propose` pins every revision it writes, unconditionally — that pin is
 why a proposed body is written to a per-revision path
 ([ADR-0013](../adr/0013-ai-writes-produce-proposals.md)). **A hand-written
-migration should pin too, and an update should carry `expectedRevision` as
+migration must pin too, and an update should carry `expectedRevision` as
 well.** The value is the SHA-256 of the body file's bytes:
 
 ```console
@@ -165,56 +166,50 @@ hashes to 7e1eb70348da but the migration pins 9a1584226439. The body file change
 after the migration was written.
 ```
 
-#### What an unpinned body does not get
+#### Why the pin is required rather than recommended
 
-**An unpinned body is frozen by nothing.** FR-K5 checksums the migration YAML;
-that checksum does not cover the file the YAML points at. Measured on a project
-whose one migration declared no `contentSha256`: apply it, edit the body, and
-`migrate validate` still reports `valid: true` at exit 0. A second `migrate
-apply` then records the edited bytes under the same revision id and returns
-`changed: true` — the state hash covers body content, so the edit lands in a new
-state partition rather than being reported anywhere. This residual, and the
-decision to leave the schema field optional until Milestone 7, are recorded on
-[#210](https://github.com/theurian/theurian/issues/210#issuecomment-5328173657).
-Requiring the pin is a breaking schema change: both shipped example migrations
-are unpinned today.
+**A body nothing pins is frozen by nothing.** FR-K5 checksums the migration
+YAML; that checksum does not cover the file the YAML points at. Measured while
+the field was optional, on a project whose one migration declared no
+`contentSha256`: apply it, edit the body, and `migrate validate` still reported
+`valid: true` at exit 0. A second `migrate apply` then recorded the edited bytes
+under the same revision id and returned `changed: true` — the state hash covers
+body content, so the edit landed in a new state partition rather than being
+reported anywhere. That residual is what
+[#210](https://github.com/theurian/theurian/issues/210#issuecomment-5328173657)
+recorded and what ADR-0027 closed by making the field required.
 
-What `migrate validate` does instead is stop being silent about it. Its output
-carries `unpinnedRevisions`, one line per `upsertRevision` that declares no pin,
-naming the migration, the revision inside it, the body's **project-relative**
-path — the one a reader can `shasum` from the repository root, not the authored
-`contentFile`, which is relative to the migration file — and the remedy:
+Requiring it was a breaking schema change with **no migration documents to
+repair**: every tracked migration in this repository, the two under
+`examples/sample-project/` included, already carried a `contentSha256` on every
+`upsertRevision` (measured 2026-08-23). `theurian propose` has never emitted a
+revision without one.
 
-```console
-$ theurian migrate validate
-valid: True
-migrationCount: 1
-contentFileCount: 1
-stateHash: 4e640de8baeb1f70e293d88c0b1160f15e6d02df676574937a9557ac8f6d87af
-applicationOrder:
-  - 01K1AAAAAA01234567890ABCDE
-unpinnedRevisions:
-  - 01K1AAAAAA01234567890ABCDE: 01K1AAAREV01234567890ABCDE declares no contentSha256 for .theurian/knowledge/architecture/auth-policy.md, so an edit to that body is adopted, not refused. Pin it with the digest from `shasum -a 256 .theurian/knowledge/architecture/auth-policy.md`; if this migration is already applied, editing it trips the applied-migration checksum guard, so delete `.theurian/state/` and run `theurian migrate apply` to rebuild from the corrected migrations (FR-K4).
+An absent pin is now a schema error, so `migrate validate` refuses the document
+at exit 4 instead of warning about it. The refusal arrives as a `oneOf` failure
+rather than a "required property" message, because an operation is a `oneOf`
+over the operation types and dropping a required field simply stops it matching
+`opUpsertRevision` — measured 2026-08-23 against a scratch project:
+
+```text
+error: 01K1AAAAAA01234567890ABCDE-auth.yaml is invalid at operations/1: does not
+satisfy 'oneOf' (expected [{'$ref': '#/$defs/opCreateItem'}, ...]); the value
+there is {'contentFile': '../knowledge/architecture/auth-policy.md', ...}
+remedy: Fix the migration file, then retry.
 ```
 
-The remedy carries its applied-case escape rather than stopping at "add the
-pin". The warning fires on **every** unpinned revision, already-applied ones
-included — and editing an *applied* migration to add the pin trips FR-K5's
-checksum guard (["Identity and immutability"](#identity-and-immutability)),
-whose own remedy says to restore the file. A remedy that stopped at the edit
-would loop a reader between the two errors, the way issue #63's HIGH-1 did with
-the scope refusal; so pinning an already-applied body means editing the
-migration, deleting `.theurian/state/`, and rebuilding from the corrected
-migrations (FR-K4) — the same sanctioned state-rebuild the scope and
-duplicate-body remedies name.
+`migrate validate --json` used to publish an `unpinnedRevisions` warning list
+for this case. **The field is gone**: with the pin required it would be empty
+for every document that got far enough to be reported on, and a permanently
+empty published field claims its condition is still reachable.
 
-The field is **always present** — an empty list when every revision pins — and
-it is a warning, not a refusal: `valid` stays `true` and the exit code stays 0.
-It is reported per operation rather than per migration, because the fix is a
-digest taken from one named body file, and a per-migration line would drop the
-half of the answer that says which file. `migrate apply` does not publish it:
-the advice is about how a migration is *written*, and the command a reader runs
-before committing one is `validate`.
+**Adding a pin to an already-applied migration is not free**, so a project
+carrying one from an older build needs the two-step escape rather than a one-line
+edit. Editing an applied migration trips FR-K5's checksum guard
+(["Identity and immutability"](#identity-and-immutability)), whose own remedy
+says to restore the file — so the way through is to edit the migration, delete
+`.theurian/state/`, and rebuild with `theurian migrate apply` (FR-K4), the same
+sanctioned state-rebuild the scope and duplicate-body remedies name.
 
 ### One body file, one revision (issue #210)
 
@@ -248,6 +243,7 @@ that, and take the withdrawal purge's own faces with it. This passes:
     revisionId: 01K1AAAREV01234567890ABCDE   # the item's *current* revision
     expectedRevision: 01K1AAAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/auth-policy.md
+    contentSha256: 9a15842264396c898700b6bcfc7cc7d81f8dcaf617492b6c7c1001a3082d29c4
     metadata:
       # every required field, as the current revision already has it, except:
       status: rejected

@@ -255,6 +255,7 @@ import pytest
 from hypothesis import given, seed, settings
 from hypothesis import strategies as st
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.index_builder import IndexBuilder, IndexRequest
@@ -2021,6 +2022,24 @@ SHIPPED_QUERY: Final = "quarantine ledger"
 #: proof it came out of the withheld document and nowhere else.
 SHIPPED_SECRET_MARKER: Final = "ROTATEME7SECRET"  # noqa: S105 - a test marker, not a credential
 
+#: The withheld document, tuned to flip the visible pair. Long and dense in
+#: `quarantine`, so its presence moves both BM25's `avgdl` (length) and the `idf`
+#: of the phrase the two visible rows share -- enough to reorder them. This is the
+#: `INCIDENT_BODY` shape from `test_retrieval_service.py`, which a sweep proved
+#: flips; the marker is appended once, a rare token the query never names, so it
+#: changes only the length. Without the purge the probe's stale index ranks the
+#: visible pair the other way from `never-did`, which is what makes the equality
+#: below able to fail.
+_SHIPPED_SECRET_BODY: Final = (
+    "# Payment tenant incident\n\n"
+    + "".join(
+        f"## {section}\n\nThe quarantine rehearsal for the payment tenant is recorded here. " * 6
+        + "\n\n"
+        for section in ("Rehearsal", "Finding")
+    )
+    + f"\n{SHIPPED_SECRET_MARKER}\n"
+)
+
 _SHIPPED_DOC_MIGRATION: Final = """apiVersion: theurian.dev/v1
 id: {mid}
 createdAt: 2026-08-03T10:00:00+09:00
@@ -2035,6 +2054,7 @@ operations:
     itemId: {item}
     revisionId: {rid}
     contentFile: ../knowledge/architecture/{slug}.md
+    contentSha256: {pin}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -2075,7 +2095,9 @@ operations:
 #: next ``migrate apply`` rebuilds the canonical database and replays the whole
 #: set (ADR-0016) -- the moment an operation-log withdrawal set re-purged the
 #: since-restored item.
-_SHIPPED_UNRELATED_MIGRATION: Final = """apiVersion: theurian.dev/v1
+_SHIPPED_EXTRA_BODY: Final = "# Extra note\n\nThe quarantine ledger has an extra note.\n"
+
+_SHIPPED_UNRELATED_MIGRATION: Final = f"""apiVersion: theurian.dev/v1
 id: 01K1XADDAA01234567890ABCDE
 createdAt: 2026-08-03T13:00:00+09:00
 author: engineer@example.com
@@ -2089,6 +2111,7 @@ operations:
     itemId: architecture.extra
     revisionId: 01K1XADDV101234567890ABCDE
     contentFile: ../knowledge/architecture/extra.md
+    contentSha256: {body_pin(_SHIPPED_EXTRA_BODY)}
     metadata:
       title: Extra note
       contentType: text/markdown
@@ -2107,7 +2130,9 @@ operations:
 #: flag -- so `never-did` never indexes it and the two builds agree on the item
 #: being absent; the point the purge has to make is that the *previous* revision's
 #: chunks, which hold the pre-redaction text, leave the published index.
-_SHIPPED_SUPERSEDE_MIGRATION: Final = """apiVersion: theurian.dev/v1
+_SHIPPED_REDACTED_BODY: Final = "# Runbook\n\nThe credential now lives in the secret store.\n"
+
+_SHIPPED_SUPERSEDE_MIGRATION: Final = f"""apiVersion: theurian.dev/v1
 id: 01K1WDEPAA01234567890ABCDE
 createdAt: 2026-08-03T11:00:00+09:00
 author: engineer@example.com
@@ -2117,6 +2142,7 @@ operations:
     revisionId: 01K1SCRTV201234567890ABCDE
     expectedRevision: 01K1SCRTV101234567890ABCDE
     contentFile: ../knowledge/architecture/secret-redacted.md
+    contentSha256: {body_pin(_SHIPPED_REDACTED_BODY)}
     metadata:
       title: Runbook
       contentType: text/markdown
@@ -2138,7 +2164,7 @@ operations:
 #: at every flavor; ``draft`` is withheld from a **default** index only -- which
 #: these projects build -- and its chunks moving visible-row rankings there is the
 #: security face a uniform ``include_unapproved=True`` reduction leaves open.
-_SHIPPED_INPLACE_MIGRATION: Final = """apiVersion: theurian.dev/v1
+_SHIPPED_INPLACE_MIGRATION: Final = f"""apiVersion: theurian.dev/v1
 id: 01K1WDEPAA01234567890ABCDE
 createdAt: 2026-08-03T11:00:00+09:00
 author: engineer@example.com
@@ -2147,36 +2173,19 @@ operations:
     itemId: architecture.secret
     revisionId: 01K1SCRTV101234567890ABCDE
     contentFile: ../knowledge/architecture/secret.md
+    contentSha256: {body_pin(_SHIPPED_SECRET_BODY)}
     metadata:
       title: Runbook
       contentType: text/markdown
       kind: architecture
       namespace: backend
-      status: {status}
+      status: {{status}}
       owner: platform-team
       trustLevel: reviewed
       sourceAnchors:
         - provider: git
           sourceUri: git://demo/secret.md
 """
-
-#: The withheld document, tuned to flip the visible pair. Long and dense in
-#: `quarantine`, so its presence moves both BM25's `avgdl` (length) and the `idf`
-#: of the phrase the two visible rows share -- enough to reorder them. This is the
-#: `INCIDENT_BODY` shape from `test_retrieval_service.py`, which a sweep proved
-#: flips; the marker is appended once, a rare token the query never names, so it
-#: changes only the length. Without the purge the probe's stale index ranks the
-#: visible pair the other way from `never-did`, which is what makes the equality
-#: below able to fail.
-_SHIPPED_SECRET_BODY: Final = (
-    "# Payment tenant incident\n\n"
-    + "".join(
-        f"## {section}\n\nThe quarantine rehearsal for the payment tenant is recorded here. " * 6
-        + "\n\n"
-        for section in ("Rehearsal", "Finding")
-    )
-    + f"\n{SHIPPED_SECRET_MARKER}\n"
-)
 
 #: The visible pair, deliberately close and opposite: one leans on `quarantine`,
 #: the other on `ledger`, each naming the other's term once, so a shift in the
@@ -2247,14 +2256,22 @@ def _write_shipped_corpus(root: Path, *, face: str) -> None:
     for item, mid, rid, slug, title in _SHIPPED_VISIBLE:
         (knowledge / f"{slug}.md").write_text(_SHIPPED_VISIBLE_BODY[slug])
         (migrations / f"{mid}-{slug}.yaml").write_text(
-            _SHIPPED_DOC_MIGRATION.format(mid=mid, item=item, rid=rid, slug=slug, title=title)
+            _SHIPPED_DOC_MIGRATION.format(
+                mid=mid,
+                item=item,
+                rid=rid,
+                slug=slug,
+                title=title,
+                pin=body_pin(_SHIPPED_VISIBLE_BODY[slug]),
+            )
         )
     for number in range(_SHIPPED_NOISE):
         slug = f"window-{number}"
-        (knowledge / f"{slug}.md").write_text(
+        filler = (
             f"# Deployment window {number}\n\nRelease {number} goes out on Thursday after the "
             f"staging soak has run for a day.\n"
         )
+        (knowledge / f"{slug}.md").write_text(filler)
         (migrations / f"01K1NZ{number}AAA01234567890ABCDE-{slug}.yaml").write_text(
             _SHIPPED_DOC_MIGRATION.format(
                 mid=f"01K1NZ{number}AAA01234567890ABCDE",
@@ -2262,6 +2279,7 @@ def _write_shipped_corpus(root: Path, *, face: str) -> None:
                 rid=f"01K1NZ{number}REV01234567890ABCDE",
                 slug=slug,
                 title=f"Deployment window {number}",
+                pin=body_pin(filler),
             )
         )
     (knowledge / "secret.md").write_text(_SHIPPED_SECRET_BODY)
@@ -2272,12 +2290,11 @@ def _write_shipped_corpus(root: Path, *, face: str) -> None:
             rid="01K1SCRTV101234567890ABCDE",
             slug="secret",
             title="Runbook",
+            pin=body_pin(_SHIPPED_SECRET_BODY),
         )
     )
     if face == "supersede":
-        (knowledge / "secret-redacted.md").write_text(
-            "# Runbook\n\nThe credential now lives in the secret store.\n"
-        )
+        (knowledge / "secret-redacted.md").write_text(_SHIPPED_REDACTED_BODY)
 
 
 def _write_shipped_withdrawal(root: Path, *, face: str) -> None:
@@ -2532,6 +2549,7 @@ def test_a_restored_item_survives_the_replay_a_later_apply_forces(
             rid="01K1SCRTV101234567890ABCDE",
             slug="secret",
             title="Runbook",
+            pin=body_pin(_SHIPPED_SECRET_BODY),
         )
     )
     _shipped_cli(root, data, monkeypatch, "migrate", "apply")
@@ -2553,9 +2571,7 @@ def test_a_restored_item_survives_the_replay_a_later_apply_forces(
     ), "the rebuild after the restore must index the now-approved secret again"
 
     # The unrelated add forces the replay that an op-log set re-purged the secret on.
-    (knowledge / "extra.md").write_text(
-        "# Extra note\n\nThe quarantine ledger has an extra note.\n"
-    )
+    (knowledge / "extra.md").write_text(_SHIPPED_EXTRA_BODY)
     (migrations / "01K1XADDAA01234567890ABCDE-extra.yaml").write_text(_SHIPPED_UNRELATED_MIGRATION)
     _shipped_cli(root, data, monkeypatch, "migrate", "apply")
 
@@ -2572,7 +2588,11 @@ def test_a_restored_item_survives_the_replay_a_later_apply_forces(
     )
 
 
-_DRAFT_DOC_MIGRATION: Final = """apiVersion: theurian.dev/v1
+_DRAFT_BODY: Final = (
+    "# Caching policy draft\n\nThe caching policy draft is under review by the team.\n"
+)
+
+_DRAFT_DOC_MIGRATION: Final = f"""apiVersion: theurian.dev/v1
 id: 01K1PDAAAA01234567890ABCDE
 createdAt: 2026-08-03T10:00:00+09:00
 author: engineer@example.com
@@ -2586,6 +2606,7 @@ operations:
     itemId: architecture.policy-draft
     revisionId: 01K1PDREVA01234567890ABCDE
     contentFile: ../knowledge/architecture/policy-draft.md
+    contentSha256: {body_pin(_DRAFT_BODY)}
     metadata:
       title: Caching policy draft
       contentType: text/markdown
@@ -2639,11 +2660,10 @@ def test_a_draft_in_an_include_unapproved_index_survives_an_unrelated_replay(
     _shipped_cli(root, data, monkeypatch, "project", "register", "--project-id", SHIPPED_PROJECT_ID)
     knowledge = root / ".theurian/knowledge/architecture"
     migrations = root / ".theurian/migrations"
-    (knowledge / "policy-draft.md").write_text(
-        "# Caching policy draft\n\nThe caching policy draft is under review by the team.\n"
-    )
+    (knowledge / "policy-draft.md").write_text(_DRAFT_BODY)
     (migrations / "01K1PDAAAA01234567890ABCDE-draft.yaml").write_text(_DRAFT_DOC_MIGRATION)
-    (knowledge / "gateway.md").write_text("# Gateway\n\nThe gateway meters every request.\n")
+    gateway = "# Gateway\n\nThe gateway meters every request.\n"
+    (knowledge / "gateway.md").write_text(gateway)
     (migrations / "01K1GAAAAA01234567890ABCDE-gateway.yaml").write_text(
         _SHIPPED_DOC_MIGRATION.format(
             mid="01K1GAAAAA01234567890ABCDE",
@@ -2651,6 +2671,7 @@ def test_a_draft_in_an_include_unapproved_index_survives_an_unrelated_replay(
             rid="01K1GAREVA01234567890ABCDE",
             slug="gateway",
             title="Gateway",
+            pin=body_pin(gateway),
         )
     )
     _shipped_cli(root, data, monkeypatch, "migrate", "apply")
@@ -2710,6 +2731,7 @@ def test_migrate_apply_reports_the_index_purge_it_ran(
             rid="01K1SCRTV101234567890ABCDE",
             slug="secret",
             title="Runbook",
+            pin=body_pin(_SHIPPED_SECRET_BODY),
         )
     )
     created = _shipped_cli(root, data, monkeypatch, "migrate", "apply")

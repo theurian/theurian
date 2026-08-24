@@ -16,10 +16,29 @@ import yaml
 
 from theurian.domain.errors import InputTooLargeError
 from theurian.security.yaml_loading import (
+    MAX_RENDERED_SCALAR_CHARS,
     MAX_YAML_BYTES,
+    is_bounded_scalar,
     load_yaml,
     load_yaml_mapping,
 )
+
+
+def _alias_bomb(levels: int, fan: int) -> str:
+    """A YAML document whose ``bomb`` key aliases a DAG of ``fan**levels`` leaves.
+
+    The reviewers' own shape (``repro_config_bomb.sh``, ``e19_proposal_bomb.sh``):
+    each anchor references the one below it ``fan`` times, so parsing stays
+    O(levels) while ``repr`` of the expanded value is exponential. A few hundred
+    bytes here renders to gigabytes if anything ever walks it as a tree.
+    """
+    lines = ["a0: &a0 'x'"]
+    for level in range(1, levels + 1):
+        refs = ", ".join(f"*a{level - 1}" for _ in range(fan))
+        lines.append(f"a{level}: &a{level} [{refs}]")
+    lines.append(f"bomb: *a{levels}")
+    return "\n".join(lines)
+
 
 MIGRATION = """
 apiVersion: theurian.dev/v1
@@ -163,3 +182,67 @@ def test_excessive_nesting_raises_value_error_not_recursion_error(
 
     with pytest.raises(ValueError, match="nesting depth"):
         loader(document)
+
+
+@pytest.mark.parametrize(
+    ("label", "value"),
+    [
+        ("a short string", "block"),
+        ("an empty string", ""),
+        ("a string at the ceiling", "x" * MAX_RENDERED_SCALAR_CHARS),
+        ("short bytes", b"payload"),
+        ("true", True),
+        ("false", False),
+        ("none", None),
+        ("a small integer", 42),
+        ("a negative integer", -7),
+        ("a float", 1.5),
+        ("a date", datetime.date(2026, 1, 1)),
+        ("a datetime", datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)),
+    ],
+)
+def test_a_bounded_scalar_is_safe_to_render(label: str, value: object) -> None:
+    """A value a caller may interpolate with ``repr`` into a bounded message.
+
+    Each of these renders to a small, fixed width, so a field guard admits it and
+    lets the caller's own validation (and its own ``{value!r}``) proceed.
+    """
+    assert is_bounded_scalar(value), label
+
+
+@pytest.mark.parametrize(
+    ("label", "value"),
+    [
+        ("an empty list", []),
+        ("an empty dict", {}),
+        ("an empty set", set()),
+        ("a tuple", ("a", "b")),
+        ("a populated mapping", {"a": 1}),
+        ("an oversized string", "x" * (MAX_RENDERED_SCALAR_CHARS + 1)),
+        ("oversized bytes", b"x" * (MAX_RENDERED_SCALAR_CHARS + 1)),
+        # bit_length 2002, one past the 2000-bit ceiling: rendering it in decimal
+        # is the quadratic-and-then-raising cost the bound refuses.
+        ("a giant integer", 2**2001),
+    ],
+)
+def test_a_container_or_giant_scalar_is_refused(label: str, value: object) -> None:
+    """The values whose ``repr`` a field guard must refuse before rendering.
+
+    A container is the T-6 alias-expansion carrier -- ``repr`` re-expands the DAG
+    a YAML alias graph collapsed -- and a giant scalar renders unboundedly. A
+    field that must be a short identifier or selector is neither.
+    """
+    assert not is_bounded_scalar(value), label
+
+
+def test_the_predicate_refuses_the_object_an_alias_bomb_parses_to() -> None:
+    """The exact object the reviewers' bomb produces, refused in O(1).
+
+    ``load_yaml`` collapses the aliases to one shared list, so parsing an
+    18-level, fan-8 bomb is cheap -- and :func:`is_bounded_scalar` never walks it,
+    it reads its type. Nothing here expands the ``8**18`` leaves; that is the
+    whole point of refusing *before* a render.
+    """
+    parsed = load_yaml(_alias_bomb(levels=18, fan=8))
+
+    assert not is_bounded_scalar(parsed["bomb"])

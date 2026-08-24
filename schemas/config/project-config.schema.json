@@ -143,7 +143,8 @@
       "properties": {
         "secretScan": {
           "enum": ["block", "warn", "off"],
-          "description": "Not in force, and reserved. What a scanner would do when a candidate revision appears to contain a secret (SEC-11). No shipped code reads this key, and no scanner exists to read it, so no value here has any effect and no default is published: a default would state a policy nothing applies. Owed with the write-path work in Milestone 7 (https://github.com/theurian/theurian/issues/198)."
+          "default": "block",
+          "description": "In force. What `theurian propose accept` does when a body it would land appears to contain a secret (SEC-11, ADR-0027 decision 3): `block` refuses the acceptance and consumes nothing, `warn` accepts and reports every finding on the result, `off` skips the scan. The default is the behaviour an absent key and an absent config file both select, so it states what the product does rather than a policy nothing applies. Write `off` **quoted** in YAML -- a bare `off` is the boolean false under YAML 1.1 and is refused rather than guessed at. The detector is in-house and best effort -- known credential shapes plus an entropy heuristic -- and is not a replacement for a repository secret scanner. It covers the approval gate only: `theurian ingest` and index building run no scan (https://github.com/theurian/theurian/issues/198)."
         },
         "maxSourceFileBytes": {
           "type": "integer",

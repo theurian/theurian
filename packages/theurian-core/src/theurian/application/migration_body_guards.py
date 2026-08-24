@@ -5,8 +5,14 @@ their body files -- extracted from ``migration_engine`` to keep that module unde
 its size ceiling. Each is a pure function of a ``MigrationSet``: they touch no
 store, open no transaction, and read nothing from disk (the loader has already
 resolved every path and taken every file's identity). ``MigrationEngine.apply``
-calls :func:`refuse_duplicate_content_files`; ``migrate validate``/``status``
-call all four through the CLI.
+and ``migrate validate``/``apply`` call :func:`refuse_duplicate_content_files`;
+``migrate status`` reports rather than gates, so it calls the non-throwing
+:func:`duplicate_content_file_violations` instead.
+
+A third guard used to live here -- ``unpinned_revisions``, which warned about a
+revision declaring no ``contentSha256``. ADR-0027 made the pin schema-required,
+so no schema-valid document can reach that state and the warning went with the
+``unpinnedRevisions`` field it fed.
 """
 
 from __future__ import annotations
@@ -17,54 +23,6 @@ from dataclasses import dataclass
 from theurian.domain.errors import DuplicateContentFileError
 from theurian.domain.identifiers import MigrationId, RevisionId
 from theurian.domain.migration import Migration, MigrationSet, UpsertRevision
-
-
-@dataclass(frozen=True, slots=True)
-class UnpinnedRevision:
-    """One ``upsertRevision`` whose body no ``contentSha256`` freezes."""
-
-    migration_id: MigrationId
-    revision_id: RevisionId
-    #: The path as authored, not as resolved: this is what a reader edits.
-    content_file: str
-    #: The loader's resolved, project-relative path -- the one a reader can
-    #: ``shasum`` from the repository root. ``None`` for an in-memory operation.
-    #: The authored ``content_file`` is relative to the *migration* file, so a
-    #: reader cannot ``shasum`` it from the root; the warning prints this instead.
-    resolved_content_path: str | None = None
-
-
-def unpinned_revisions(migration_set: MigrationSet) -> tuple[UnpinnedRevision, ...]:
-    """Every ``upsertRevision`` that declares no ``contentSha256`` (issue #210).
-
-    A warning's worth of information, not a refusal's: `migrate validate`
-    reports these and keeps exit 0. The field is optional in the schema, both
-    shipped example migrations omit it, and requiring it is a Milestone 7
-    decision with a measured cost -- what can be said now is that an unpinned
-    body is the one whose out-of-band edit nothing detects, and saying nothing
-    at all was the state issue #210 was filed against.
-
-    Reported per operation rather than per migration, unlike
-    :func:`~theurian.application.migration_engine.unenforceable_scope_violations`:
-    the fix is a digest computed from one named body file, so collapsing two
-    revisions of one migration into one id would drop the half of the answer
-    that says which file.
-
-    Returns them in migration and operation order -- deterministic, since a
-    `MigrationSet` iterates in the application order it settled at
-    construction.
-    """
-    return tuple(
-        UnpinnedRevision(
-            migration_id=migration.migration_id,
-            revision_id=operation.revision_id,
-            content_file=operation.content_file_path,
-            resolved_content_path=operation.resolved_content_path,
-        )
-        for migration in migration_set
-        for operation in migration.operations
-        if isinstance(operation, UpsertRevision) and not operation.content_pinned
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,11 +75,13 @@ def refuse_duplicate_content_files(migration_set: MigrationSet) -> None:
     A body file holds one version at a time and carries no history, so a set in
     which two *distinct* revisions read one file does not describe a state -- it
     describes whatever that file was last written with. Measured against the
-    unpinned form: both migrations applied, exit 0, and the earlier revision
-    recorded the later body under its own title and author. Nothing detects it
-    afterwards, because the loader adopts the file's current hash where no
-    ``contentSha256`` is declared, so the wrong record is internally consistent.
-    The refusal is **unconditional of pinning**: even a pair that both pin the
+    then-unpinned form, before ``contentSha256`` became schema-required (ADR-0027):
+    both migrations applied, exit 0, and the earlier revision recorded the later
+    body under its own title and author. Nothing detected it afterwards, because
+    the loader adopted the file's current hash where no ``contentSha256`` was
+    declared, so the wrong record was internally consistent. The pin is now
+    required and that branch is gone, but the refusal is **unconditional of
+    pinning** for a reason the pin never addressed: even a pair that both pin the
     same digest is refused, because one file cannot attribute distinct bytes to
     two revisions -- the hazard is the sharing, not the missing pin.
 
@@ -217,8 +177,6 @@ def duplicate_content_file_violations(migration_set: MigrationSet) -> tuple[Migr
 
 
 __all__ = [
-    "UnpinnedRevision",
     "duplicate_content_file_violations",
     "refuse_duplicate_content_files",
-    "unpinned_revisions",
 ]

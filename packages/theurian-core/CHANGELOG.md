@@ -12,6 +12,193 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **SEC-11 ships as a real control: `theurian propose accept` scans every body
+  it would land for secrets** ([#198](https://github.com/theurian/theurian/issues/198),
+  ADR-0027 decision 3). The policy is `security.secretScan` in
+  `.theurian/config.yaml`: `block` refuses the acceptance and consumes nothing,
+  `warn` accepts and reports every finding on the result, `off` skips the scan.
+  `block` is also what an absent key and an absent config file select, so a
+  project that configures nothing is scanned. An unrecognised value refuses
+  rather than coercing to `block` — a typo about a security control that
+  silently selects the strictest setting is a typo nobody ever finds.
+
+  **This is the first key of `.theurian/config.yaml` that anything in `src/`
+  reads.** Nothing read that file at all before this change — the state
+  [#129](https://github.com/theurian/theurian/issues/129) measured, and which it
+  was closed by correcting the prose about rather than by adding a reader.
+  `security.secretScan` now publishes `default: "block"`, because there is at
+  last an applied behaviour for a published default to document.
+  `security.maxSourceFileBytes` and `providers.review.repositories` are still
+  read by nothing.
+
+  **Write `off` quoted.** PyYAML implements YAML 1.1, whose implicit resolver
+  reads a bare `off` — and `no`, and `false` — as the boolean `False`, so the
+  value the enum publishes, written the obvious way, never arrives as the string
+  it looks like. It is refused with the quoting cure rather than translated:
+  `off`, `no` and `false` are indistinguishable once parsed, so reading `False`
+  as "off" would disable a security control for an operator who wrote `no` and
+  meant something else.
+
+  **What it is not.** The detector is in-house and takes no new dependency
+  (ADR-0014): pattern families for known credential shapes plus a Shannon-entropy
+  heuristic over candidate tokens. It is best effort, it will miss things and
+  fire on things that are not secrets, and there is no per-finding suppression —
+  the escape hatch for a false positive is the policy key, which the refusal's
+  own remedy names. Theurian is not a repository secret scanner and is not a
+  replacement for one, which is the stance SECURITY.md published before this
+  control existed and still publishes. It covers the **approval gate only**:
+  `theurian ingest` and index building run no scan
+  ([#329](https://github.com/theurian/theurian/issues/329)), a draft-time
+  advisory does not exist
+  ([#330](https://github.com/theurian/theurian/issues/330)), and a migration
+  written straight into `.theurian/migrations/` never passes through `accept` at
+  all. T-15 stays **High** for that reason, re-graded when #329 ships.
+
+### Changed
+
+- **BREAKING — `opUpsertRevision.contentSha256` is now required**
+  ([#210](https://github.com/theurian/theurian/issues/210), ADR-0027 decision 1).
+  **Old shape:** `$defs.opUpsertRevision.required` was
+  `["op", "itemId", "revisionId", "contentFile", "metadata"]`; a revision that
+  declared no pin loaded with the body's *current* hash adopted as though it had
+  been pinned, and `migrate validate` warned at exit 0. **New shape:** the list
+  is `["op", "itemId", "revisionId", "contentFile", "contentSha256", "metadata"]`,
+  and an `upsertRevision` without a pin is a schema error at `migrate validate`
+  and a load refusal — before anything is applied, and before it is merged. FR-K5's
+  tamper evidence stops depending on the author having remembered.
+
+  **`apiVersion` stays `theurian.dev/v1`.** ADR-0005 scopes the bump rule to
+  adding an operation, and this adds none. The loader matches the version
+  exactly, so publishing `theurian.dev/v2` would make every conforming document
+  unreadable in exchange for separating an incompatible population that does not
+  exist.
+
+  **Nothing needed repair.** Every migration document tracked in this repository
+  already pinned every `upsertRevision` — 28 of them, 26 in the dogfood corpus
+  and 2 under `examples/sample-project/` — as did all 82 in the live dogfood
+  project's working tree, measured 2026-08-23 against `main` @ `68e8a0b`.
+  `ProposalService.draft` has never emitted an unpinned revision. What breaks is
+  a **hand-written** migration that omits the field: it is now refused at load
+  rather than silently adopted.
+- **BREAKING — `migrate validate --json` no longer publishes
+  `unpinnedRevisions`** ([#210](https://github.com/theurian/theurian/issues/210),
+  ADR-0027 decision 1). A second, separate break riding the first: a
+  published-field removal rather than a schema tightening. **Old shape:** the
+  payload carried `unpinnedRevisions`, a list of warnings naming revisions that
+  declared no pin. **New shape:** the key is absent. With the pin required that
+  list is empty for every schema-valid input, and a permanently empty published
+  field is a claim that its condition is still reachable. The domain flag
+  `UpsertRevision.content_pinned` and the `unpinned_revisions()` helper go with
+  it, having become a guard no real data reaches.
+- **BREAKING (contract) — `theurian propose accept` validates before it moves,
+  and a refusal consumes nothing** ([#307](https://github.com/theurian/theurian/issues/307),
+  ADR-0027 decision 2). **Old shape:** `accept` moved the proposal's files into
+  `.theurian/migrations/` and `.theurian/knowledge/` and deleted the proposal
+  directory, without validating what it moved; a self-inconsistent proposal
+  landed, broke `migrate validate` project-wide, and was no longer available to
+  re-accept because its sources were gone. **New shape:** before anything moves,
+  `accept` proves that the union of the landed migration set and the incoming
+  proposal survives the same pipeline `migrate apply` runs — the published
+  schema and the document limits, the proposal's self-consistency, the whole-set
+  guards `migrate validate` runs, and a dry replay of landed ∪ incoming against
+  a throwaway store. If any stage refuses, the proposal directory is left exactly
+  as it was, so the change is corrected and accepted rather than re-drafted from
+  nothing.
+
+  **The replay invokes the same engine path `migrate apply` invokes**, differing
+  only in the write target, rather than re-implementing the checks. Two detectors
+  deriving one fact independently agree until they do not, and the disagreement
+  would surface as "`accept` said yes and `apply` said no" with nothing to
+  arbitrate. `test_propose_cli.py::test_the_accept_replay_and_migrate_apply_reach_one_apply_function`
+  and `::test_the_accept_pre_check_reaches_the_loaders_own_entry_points_and_every_guard`
+  walk the call graph rather than compare answers on a fixture, so a
+  re-implementation that agrees today still fails them.
+
+  That closes #307's three demonstrated faces — two operations naming one
+  `contentFile`, a self-pin that mismatches its own body, and `contentFile: ""`
+  — and a fourth that measurement turned up: two proposals drafted before either
+  acceptance, each claiming an item's first revision, produce a set that
+  `migrate validate` calls green and `migrate apply` refuses permanently, with
+  both proposals already consumed. Stages short of the replay do not catch it.
+
+  **A fault in the *landed* set is now a distinct failure.** It raises
+  `ApprovedSetUnusableError` at **exit 4**, not proposal-at-fault **exit 1**:
+  exit 1's contract is "nothing landed, and drafting again is the recovery", and
+  the second half is false when the proposal is not the cause — a second draft
+  mints a duplicate migration for a fault it does not have (#89). Its remedy
+  names neither the proposal nor a re-draft, and points into
+  `.theurian/migrations/` at what the message itself names.
+
+  **Cost, measured rather than estimated**: a full `migrate apply` over the live
+  dogfood corpus — 82 migrations, 164 operations — took 0.55 s wall against
+  `migrate validate`'s 0.56 s load-and-guards pass over the same corpus (measured
+  2026-08-23 on a development machine, against a scratch copy). The replay is
+  indistinguishable from the work the guard stage already does; the cost is
+  process startup.
+
+  **What it is not.** Only `accept` gained the replay, so a validate-green,
+  apply-red-forever set stays reachable for a migration placed into
+  `.theurian/migrations/` by hand. Two `accept` invocations racing at the process
+  level remain unaddressed, and this change *lengthens* the interval between
+  examining and moving by the replay's own duration (ADR-0018). No CI job applies
+  the committed corpus ([#325](https://github.com/theurian/theurian/issues/325)).
+- **Every install command Theurian prints now names the interpreter as well as
+  the extra**: `uv tool install --python 3.13 'theurian[daemon]'` and
+  `pipx install --python 3.13 'theurian[daemon]'`
+  ([#323](https://github.com/theurian/theurian/pull/323)). These are the remedies
+  a user actually copies, and they previously left the interpreter to whatever
+  the installer picked by default, while `requires-python` has been `>=3.13`
+  throughout and the README's quick start had said so since it was written. Not
+  breaking: the old commands are not rejected, they are unqualified, and the
+  qualified ones are what the product now recommends.
+
+  Three surfaces read `theurian.domain.extras.DAEMON_INSTALLERS` rather than
+  spelling a command of their own, so their answers cannot drift apart:
+
+  - `core-present`'s detail, when `theurian setup` finds no Core.
+  - the daemon-extra remedy the CLI prints when a bare install reaches
+    `ModuleNotFoundError: No module named 'uvicorn'`. Its pipx form is
+    `pipx install --force --python 3.13 'theurian[daemon]'` — `--force` because
+    a plain `pipx install` over an existing installation reports success and
+    changes nothing, which is measured and recorded in `domain/extras.py`. The
+    `--python 3.13` in that one command is **not** covered by that measurement;
+    it is there so the repair command cannot choose a different interpreter from
+    the install commands beside it.
+  - `domain/compatibility.py`'s `core-missing` remedy, published as the string
+    third-party plugins implement against in
+    [`docs/protocol/plugin-core-compatibility.md`](../../docs/protocol/plugin-core-compatibility.md),
+    whose outcome table and flowchart carry the same pair. No production caller
+    reaches that branch — its one call site always passes a parsed version — so
+    the copy a user actually meets is the plugin's `SessionStart` hook, which
+    carries the same advice and moved with it.
+
+  The fourth, `theurian setup --help`, spells the two commands in its docstring
+  instead of reading the constant, and is held to `core-present`'s own words by
+  `test_setup_claims.py::test_the_installers_pinned_here_are_the_ones_the_step_reports`.
+
+  `3.13` is now held to `requires-python` by
+  `test_daemon_extra.py::test_the_install_commands_pin_the_python_core_requires`,
+  which reads the floor out of `pyproject.toml`. Raising the floor without
+  touching `domain/extras.py` would otherwise ship, as the remedy for an install
+  that did not work, a command pinning an interpreter the only wheel it may
+  install rejects.
+
+  The written surfaces follow: this package's README — whose install line also
+  moves from `theurian[all]` to `theurian[daemon]`, matching what the root README
+  recommends and what the extra is actually for — the plugin's README,
+  `SessionStart` hook, `setup` and `upgrade` commands, ADR-0014, the macOS
+  packaging note, `docs/contributing/release.md`, and the `Install:` line
+  `release-core.yml` writes into every GitHub release body — which now reads
+  `uv tool install --python 3.13 'theurian[daemon]==<version>'`. That release
+  line and the release document were the last two surfaces still naming the bare
+  command; T-16 in
+  [the threat model](../../docs/security/threat-model.md) recorded them as a
+  deferral discharged by
+  [#71](https://github.com/theurian/theurian/pull/71) and records them as closed
+  here.
+
 ### Fixed
 
 - **`InputTooLargeError` now carries its own remedy** telling the user which
@@ -113,6 +300,33 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   open issue ([#327](https://github.com/theurian/theurian/issues/327)) and not
   closed here.
 
+### Security
+
+- **A single field rendered with `repr` re-expands a YAML alias chain that parsed
+  small** ([#210](https://github.com/theurian/theurian/issues/210),
+  [#316](https://github.com/theurian/theurian/issues/316), ADR-0027; T-6 in
+  [the threat model](../../docs/security/threat-model.md)). `theurian propose
+  accept` rendered two fields materialised from parsed YAML — `security.secretScan`
+  read from `.theurian/config.yaml`, and a proposal migration's `id` — with `repr`
+  before any per-shared-reference bound applied. PyYAML collapses an alias to a
+  shared object, so an alias chain parses in a few hundred bytes and re-expands
+  exponentially only when a field is rendered: a hostile committed
+  `.theurian/config.yaml` of 481 bytes drove 16.9 s and 4.8 GB of RSS before the
+  fix, and a proposal migration whose `id` is an alias graph does the same
+  (measured 2026-08-24 against the real CLI). The fix bounds each field with
+  `is_bounded_scalar` before it is rendered — a container or an oversized scalar is
+  refused first — so the same inputs now refuse in ~0.2 s with a bounded
+  `{error, remedy}` document.
+
+  **The migration-`id` face was a released defect in `0.1.0.dev9`**, where
+  `_require_filename_matches_id` ran the render before schema validation. It is the
+  same T-6 alias-re-expansion class the migration loader closed for whole documents
+  ([#291](https://github.com/theurian/theurian/issues/291)) and the ingest
+  projection closed in [#335](https://github.com/theurian/theurian/pull/335)
+  ([#232](https://github.com/theurian/theurian/issues/232),
+  [#245](https://github.com/theurian/theurian/issues/245)); it is now closed for
+  these two single-field render sites too.
+
 ### Documentation
 
 - **T-6's ingestion controls reconciled with what `src/` enforces**
@@ -156,63 +370,6 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   walk declined to enter always leaves a record. The arithmetic is unchanged and
   deliberate — counting truncations is what stops a capped document answering
   "no external references" at all.
-
-### Changed
-
-- **Every install command Theurian prints now names the interpreter as well as
-  the extra**: `uv tool install --python 3.13 'theurian[daemon]'` and
-  `pipx install --python 3.13 'theurian[daemon]'`
-  ([#323](https://github.com/theurian/theurian/pull/323)). These are the remedies
-  a user actually copies, and they previously left the interpreter to whatever
-  the installer picked by default, while `requires-python` has been `>=3.13`
-  throughout and the README's quick start had said so since it was written. Not
-  breaking: the old commands are not rejected, they are unqualified, and the
-  qualified ones are what the product now recommends.
-
-  Three surfaces read `theurian.domain.extras.DAEMON_INSTALLERS` rather than
-  spelling a command of their own, so their answers cannot drift apart:
-
-  - `core-present`'s detail, when `theurian setup` finds no Core.
-  - the daemon-extra remedy the CLI prints when a bare install reaches
-    `ModuleNotFoundError: No module named 'uvicorn'`. Its pipx form is
-    `pipx install --force --python 3.13 'theurian[daemon]'` — `--force` because
-    a plain `pipx install` over an existing installation reports success and
-    changes nothing, which is measured and recorded in `domain/extras.py`. The
-    `--python 3.13` in that one command is **not** covered by that measurement;
-    it is there so the repair command cannot choose a different interpreter from
-    the install commands beside it.
-  - `domain/compatibility.py`'s `core-missing` remedy, published as the string
-    third-party plugins implement against in
-    [`docs/protocol/plugin-core-compatibility.md`](../../docs/protocol/plugin-core-compatibility.md),
-    whose outcome table and flowchart carry the same pair. No production caller
-    reaches that branch — its one call site always passes a parsed version — so
-    the copy a user actually meets is the plugin's `SessionStart` hook, which
-    carries the same advice and moved with it.
-
-  The fourth, `theurian setup --help`, spells the two commands in its docstring
-  instead of reading the constant, and is held to `core-present`'s own words by
-  `test_setup_claims.py::test_the_installers_pinned_here_are_the_ones_the_step_reports`.
-
-  `3.13` is now held to `requires-python` by
-  `test_daemon_extra.py::test_the_install_commands_pin_the_python_core_requires`,
-  which reads the floor out of `pyproject.toml`. Raising the floor without
-  touching `domain/extras.py` would otherwise ship, as the remedy for an install
-  that did not work, a command pinning an interpreter the only wheel it may
-  install rejects.
-
-  The written surfaces follow: this package's README — whose install line also
-  moves from `theurian[all]` to `theurian[daemon]`, matching what the root README
-  recommends and what the extra is actually for — the plugin's README,
-  `SessionStart` hook, `setup` and `upgrade` commands, ADR-0014, the macOS
-  packaging note, `docs/contributing/release.md`, and the `Install:` line
-  `release-core.yml` writes into every GitHub release body — which now reads
-  `uv tool install --python 3.13 'theurian[daemon]==<version>'`. That release
-  line and the release document were the last two surfaces still naming the bare
-  command; T-16 in
-  [the threat model](../../docs/security/threat-model.md) recorded them as a
-  deferral discharged by
-  [#71](https://github.com/theurian/theurian/pull/71) and records them as closed
-  here.
 
 ## [0.1.0.dev9] - 2026-08-22
 

@@ -7,10 +7,10 @@ allowed-tools: Bash(theurian:*), Read, Write(.theurian/proposals/**)
 
 Turn something worth remembering into a proposal a human can review.
 
-`theurian propose` drafts the proposal; `theurian propose accept <id>` moves it
-into place once a human agrees. Neither approves anything — `accept` moves files
-and stops short of the judgement, and approval is a human merging the pull
-request that carries the proposal
+`theurian propose` drafts the proposal; `theurian propose accept <id>` checks it
+and moves it into place once a human agrees. Neither approves anything — `accept`
+stops short of the judgement, and approval is a human merging the pull request
+that carries the proposal
 ([ADR-0013](../../../docs/adr/0013-ai-writes-produce-proposals.md) point 4).
 There is no CLI or MCP surface that stands in for that merge.
 
@@ -88,8 +88,9 @@ cannot approve knowledge"** rule below, not the front-matter
      refuses it there too.
    - **Do not try to pin the digest or pick ids yourself.** The command computes
      `contentSha256` from the body you passed and mints fresh ULIDs for the
-     proposal, the migration and the revision. There is nothing to hand-author,
-     and no `migration.schema.json` in the repository to read — it ships inside the
+     proposal, the migration and the revision. Every revision must pin its body,
+     so there is nothing optional to hand-author here — and no
+     `migration.schema.json` in the repository to read either: it ships inside the
      installed Core, and the generator validates against it before it writes a
      file.
 
@@ -107,28 +108,49 @@ cannot approve knowledge"** rule below, not the front-matter
       theurian propose accept <proposal-id> --json
       ```
 
-      This moves the migration into `.theurian/migrations/` under the name it
-      already has, and the body to the path its `contentFile` names. It moves
-      files and nothing else: it does not validate, does not apply, and does not
-      approve. The two moves are asymmetric — the migration may never land on an
-      existing name (a collision means that migration is already in place), while
-      the body *may* replace what is at its path, since on an update to existing
-      knowledge that is the intent. `accept` rejects a proposal directory that is
-      or contains a symlink, and confines every write to `.theurian/knowledge/`
-      and `.theurian/migrations/`.
+      This checks first and moves second. Before anything moves it scans every
+      body for secrets (SEC-11) — the body only, so keep credentials out of the
+      `--title`, `--description`, `--label` and the `--source-*` anchors too:
+      those are not scanned, and the title and the source anchors (provider,
+      sourceUri, repository, commitSha, filePath) are published on every search
+      result, the title also becoming the migration filename
+      ([#336](https://github.com/theurian/theurian/issues/336)) — and proves that
+      the project's migration set with this proposal in it still survives the
+      pipeline `migrate apply` runs — the
+      published schema, the whole-set guards, and a dry replay that reaches the
+      invariants only applying can check, a revision's source anchor and a reused
+      revision id among them. **If any of that refuses, nothing is consumed**: the
+      proposal directory is left exactly as it was, so the change is corrected and
+      accepted rather than re-drafted from nothing (ADR-0027).
+
+      It then moves the migration into `.theurian/migrations/` under the name it
+      already has, and the body to the path its `contentFile` names. It does not
+      apply, and it does not approve. The two moves are asymmetric — the migration
+      may never land on an existing name (a collision means that migration is
+      already in place), while the body *may* replace what is at its path, since
+      on an update to existing knowledge that is the intent. `accept` rejects a
+      proposal directory that is or contains a symlink, and confines every write
+      to `.theurian/knowledge/` and `.theurian/migrations/`.
+
+      Read the exit code before you report success. **1** means this proposal
+      could not be used as it stands — correct it and accept it again. **4** means
+      the project's knowledge state refuses the move: either this migration is
+      already in place, or `.theurian/migrations/` does not apply *with or without
+      this proposal*. On a 4 that says "with or without this proposal", the
+      proposal is not the cause and re-drafting mints a duplicate; the remedy
+      names what to read under `.theurian/migrations/`.
    3. Check it:
 
       ```sh
       theurian migrate validate --json
       ```
 
-      This checks schema conformance, and it is the first point at which anything
-      is checked. It reads `.theurian/migrations/` only, so it reports nothing
-      while a proposal still sits under `.theurian/proposals/`. It does not prove
-      the migration will apply: the invariants `migrate apply` enforces — a
-      revision's source anchor, a reused revision id — are checked in step 5, after
-      the pull request has already merged
-      ([#36](https://github.com/theurian/theurian/issues/36)).
+      This re-checks schema conformance and the whole-set guards over what
+      landed. It does not replay, so it is a weaker check than the acceptance
+      that just ran, not a stronger one — the acceptance already proved the set
+      applies ([#36](https://github.com/theurian/theurian/issues/36)). It reads
+      `.theurian/migrations/` only, so it reports nothing about a proposal whose
+      migration has not been moved there.
    4. Open a pull request with the accepted migration and body in it. **The merge
       is the approval.** `evidence.json` is read by the reviewers or by nobody;
       `.theurian/proposals/` is not in the `.gitignore` block `theurian init`
@@ -139,8 +161,9 @@ cannot approve knowledge"** rule below, not the front-matter
       theurian migrate apply --json
       ```
 
-      This is where the invariants land. A migration that fails one exits 4 and
-      applies nothing.
+      This is where the invariants are *enforced* — `accept` proved them against
+      a throwaway store, and this is the write. A migration that fails one exits 4
+      and applies nothing.
    6. Rebuild the index, or the knowledge just approved is not searchable.
       **Ask first whether the project keeps a RAPTOR summary forest**, the way
       `/theurian:reindex` step 1 does: a build writes zero summary nodes unless it

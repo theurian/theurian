@@ -54,6 +54,7 @@ from typing import Any, Final, override
 import pytest
 import typer.main
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectRegistry
@@ -389,6 +390,7 @@ operations:
     itemId: architecture.auth-policy
     revisionId: 01K1AAAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/auth-policy.md
+    contentSha256: {body_pin(BODY)}
     metadata:
       title: Authentication policy
       contentType: text/markdown
@@ -412,6 +414,7 @@ operations:
     itemId: architecture.caching-draft
     revisionId: 01K1BBBREV01234567890ABCDE
     contentFile: ../knowledge/architecture/caching-draft.md
+    contentSha256: {body_pin(DRAFT_BODY)}
     metadata:
       title: Caching draft
       contentType: text/markdown

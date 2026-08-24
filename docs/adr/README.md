@@ -34,6 +34,7 @@ alternatives that were rejected and why.
 | [0024](0024-a-purge-is-a-build.md) | A purge is a build; a published index is never written | accepted |
 | [0025](0025-sensitivity-is-enforced-before-0-1-0-stable.md) | Sensitivity is enforced before 0.1.0 stable | accepted |
 | [0026](0026-evidence-plane-not-control-plane.md) | Theurian is an evidence plane, not a control plane | accepted |
+| [0027](0027-accept-validates-before-it-moves.md) | Accept validates before it moves, and every revision pins its body | accepted |
 
 ## Writing a new ADR
 

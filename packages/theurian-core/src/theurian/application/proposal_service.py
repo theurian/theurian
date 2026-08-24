@@ -6,10 +6,24 @@ Two operations, and the boundary between them is the product:
 directly applicable migration, the body in its native format, and the evidence a
 reviewer reads. It writes nowhere else.
 
-``accept`` moves those files into place. **It automates the file moves and not
-the judgement**: it does not validate the change, does not apply it, and above
-all does not approve it. Approval is a human merging a pull request, and there
-is no code path here that stands in for one.
+``accept`` moves those files into place, once it has proved the move is safe to
+make. **It automates the file moves and not the judgement**: it does not apply
+the change, and above all does not approve it. Approval is a human merging a
+pull request, and there is no code path here that stands in for one.
+
+What it *does* check is two things, both before it moves anything, and ADR-0027
+is where the reasoning lives:
+
+* **That the landed migration set with this proposal in it still survives the
+  pipeline ``migrate apply`` runs** (decision 2). If it does not, the acceptance
+  is refused and nothing is consumed, so the proposal is still there to correct.
+  That is a change from ADR-0013 §4's division, which left every question about
+  the migration to ``migrate validate``; it held while ``accept`` was a ``mv``,
+  and stopped holding when the same command began deleting its sources (#307).
+* **That no body it would land appears to carry a secret** (decision 3, SEC-11,
+  T-15), under the policy ``security.secretScan`` selects -- ``block`` unless the
+  project says otherwise. Best effort, and the product's published stance that it
+  is not a replacement for a repository secret scanner is unchanged by it.
 
 Both are driven by a composition root -- the CLI today, Milestone 7's
 write-intent MCP tools next -- which is why the schema check arrives as an
@@ -40,7 +54,7 @@ import errno
 import json
 import os
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Final, NoReturn
 
@@ -52,9 +66,11 @@ from theurian.domain.errors import (
     InputTooLargeError,
     IrregularSourceFileError,
     PathEscapeError,
+    RevisionConflictError,
+    SchemaUnreadableError,
     TheurianError,
 )
-from theurian.domain.identifiers import ItemId, MigrationId, ProposalId, RevisionId
+from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, ProposalId, RevisionId
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
 from theurian.domain.migration import (
     MIGRATION_API_VERSION,
@@ -73,12 +89,14 @@ from theurian.domain.proposal import (
     require_evidence,
 )
 from theurian.domain.values import ContentHash, MediaType
+from theurian.security.content_secrets import SecretFinding, scan_text
 from theurian.security.paths import (
     assert_no_symlink_escape,
     read_source_file,
     resolve_within_root,
 )
-from theurian.security.yaml_loading import load_yaml_mapping
+from theurian.security.project_config import SecretScanPolicy, read_secret_scan_policy
+from theurian.security.yaml_loading import is_bounded_scalar, load_yaml_mapping
 
 #: The evidence file's name. Fixed, unlike the migration's: nothing moves it, so
 #: it cannot collide with anything, and a reviewer looking for the reasoning
@@ -140,6 +158,54 @@ LandedMigrationLookup = Callable[[MigrationId], Migration | None]
 LandedMigrations = Callable[[], Collection[Migration]]
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateMigrationSet:
+    """A migration set to prove applyable, described as files rather than as objects.
+
+    What :data:`MigrationSetRehearsal` is handed. It is files and not a
+    ``MigrationSet`` because the pipeline it will be put through *reads a project
+    tree*: the loader re-reads each ``upsertRevision``'s body from the path its
+    ``contentFile`` resolves to, and an incoming proposal's bodies are not at
+    those paths yet. Handing over an already-parsed set would mean the pre-check
+    parsed it -- a second loader, which is the shape ADR-0027 decision 2 forbids.
+
+    Every path is project-relative, so a copy laid out the same way resolves
+    every ``../knowledge/...`` the same way the original does.
+    """
+
+    #: The project every path below is relative to, and the only tree a rehearsal
+    #: reads. It writes nothing here.
+    root: Path
+    #: The knowledge directory's own name -- ``.theurian`` unless this project was
+    #: registered with another. The copy is laid out under the same name.
+    knowledge_directory: PurePosixPath
+    #: The id the replay's throwaway store records its rows under. The real
+    #: project's, so the replay exercises the key the real apply would.
+    project_id: ProjectId
+    #: Project-relative files to copy across: each landed migration's own file and
+    #: each body a landed ``upsertRevision`` reads. Sorted and deduplicated, so
+    #: the copy is the same on every run and every filesystem.
+    landed: tuple[str, ...]
+    #: Project-relative destination and bytes for each file the *incoming*
+    #: proposal contributes -- its migration under ``migrations/``, its bodies
+    #: under ``knowledge/``. Written after ``landed``, so a body this proposal
+    #: replaces is replaced in the copy too: the copy is the union, not the two
+    #: sets side by side. The bytes are the ones ``accept`` already read through
+    #: the security layer, never a second read of the same file.
+    incoming: tuple[tuple[str, bytes], ...]
+
+
+#: Proves a :class:`CandidateMigrationSet` survives the pipeline ``migrate
+#: apply`` runs, raising if it does not, and writing nothing outside a throwaway
+#: target. Injected, and deliberately **not** a second implementation of that
+#: pipeline: the composition root wires the very function ``migrate apply``
+#: calls (``cli/migration_pipeline.py``), which is what makes "``accept`` and
+#: ``migrate apply`` cannot disagree about whether a set is usable" structural
+#: rather than a property two pieces of code happen to share today (ADR-0027
+#: decision 2's hard condition).
+MigrationSetRehearsal = Callable[[CandidateMigrationSet], None]
+
+
 class ProposalError(TheurianError):
     """A proposal could not be drafted or accepted.
 
@@ -189,6 +255,21 @@ class ProposalAlreadyAcceptedError(ChangeAlreadyInPlaceError):
 
     The evidence-only shape :func:`_no_migration_error` diagnoses: nothing is
     left to move, because a previous ``accept`` moved it.
+    """
+
+
+class ApprovedSetUnusableError(ProposalError):
+    """``.theurian/migrations/`` cannot be applied, with or without this proposal.
+
+    Its own type, and not the plain :class:`ProposalError` every other
+    pre-check refusal raises, because the two carry opposite instructions and a
+    caller acts on the type before it reads the message. A plain
+    ``ProposalError`` says *this proposal could not be used as it stands*, whose
+    recovery is to correct or re-draft it. That recovery is wrong here: the
+    proposal may be perfect, and drafting a second one mints a duplicate for a
+    fault it does not have (#89's hazard, arriving through the pre-check ADR-0027
+    added). What a caller must do instead is read the project's knowledge state,
+    which is what the exit code reserved for that already means.
     """
 
 
@@ -296,12 +377,51 @@ class MovedFile:
 
 
 @dataclass(frozen=True, slots=True)
+class BodySecretFinding:
+    """One secret-shaped string the accept-path scan found, and which body it is in.
+
+    ``body`` is the path *relative to* ``.theurian/knowledge/``, which is the one
+    spelling that is correct both before and after the move: a proposal mirrors
+    the sub-path its body will occupy, so the same string names the file in
+    ``.theurian/proposals/<id>/`` and in ``.theurian/knowledge/``. A refusal
+    happens before the move and a warning after it, and neither has to say which
+    it means.
+    """
+
+    body: str
+    finding: SecretFinding
+
+    def describe(self) -> str:
+        """One line naming the body, the position, the family, and nothing else."""
+        return self.finding.describe(at=self.body)
+
+
+@dataclass(frozen=True, slots=True)
+class SecretScanResult:
+    """What the accept-path secret scan did, and what it found (SEC-11).
+
+    The policy rides along with the findings because an empty list means two
+    different things and a caller has to be able to tell them apart: under
+    ``warn`` it says the bodies were scanned and are clean, and under ``off`` it
+    says nothing was scanned at all. Under ``block`` it is always empty -- a
+    finding refuses the acceptance, so a result exists only when there was none.
+    """
+
+    policy: SecretScanPolicy
+    findings: tuple[BodySecretFinding, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class AcceptedProposal:
     """What one call to :meth:`ProposalService.accept` moved."""
 
     proposal_id: ProposalId
     migration: MovedFile
     bodies: tuple[MovedFile, ...] = ()
+    #: What the SEC-11 scan did. Defaulted to the policy an unconfigured project
+    #: gets, so a hand-built result -- a fake in a test, a future caller -- states
+    #: the strictest reading rather than an unscanned one it did not check.
+    secret_scan: SecretScanResult = SecretScanResult(policy=SecretScanPolicy.BLOCK)
     #: A remedy set only when the move landed but the proposal's own source files
     #: could not then be removed (a read-only proposal directory). The acceptance
     #: succeeded, so this rides on the success result rather than turning it into
@@ -317,20 +437,24 @@ class ProposalService:
         self,
         *,
         paths: ProjectPaths,
+        project_id: ProjectId,
         clock: Clock,
         ids: IdGenerator,
         validate: MigrationDocumentValidator,
         current_revision: CurrentRevisionLookup,
         landed_migration: LandedMigrationLookup,
         landed_migrations: LandedMigrations,
+        rehearse: MigrationSetRehearsal,
     ) -> None:
         self._paths = paths
+        self._project_id = project_id
         self._clock = clock
         self._ids = ids
         self._validate = validate
         self._current_revision = current_revision
         self._landed_migration = landed_migration
         self._landed_migrations = landed_migrations
+        self._rehearse = rehearse
 
     # -- generation --------------------------------------------------------
 
@@ -339,16 +463,18 @@ class ProposalService:
 
         Every identifier is fresh: the proposal, the migration, and the
         revision. A revision id names one item for the life of a project, and
-        reusing an applied one is accepted by ``migrate validate`` and then
-        refused by ``migrate apply`` -- after the pull request has merged.
+        reusing an applied one is accepted by ``migrate validate`` and refused by
+        ``migrate apply`` -- so a generator that reused one would produce a
+        proposal ``accept`` refuses, on the replay, having consumed nothing.
 
         The body path carries the revision id for a reason measured on this
         branch (see :func:`body_relative_path`): one path per item made the
         second accepted proposal invalidate the first migration's pinned digest,
         and the project stopped validating entirely.
 
-        An update states which revision it replaces, or it is refused here rather
-        than at ``migrate apply`` after the pull request has merged (#210). The
+        An update states which revision it replaces, or it is refused here --
+        at the point the author can still act on it, rather than at ``accept``
+        with the work already done (#210). The
         generator does not have to be told the item already exists: it derives
         the item's current revision from the approved migration set (which is the
         canonical state), so ``--expected-revision`` is required exactly when the
@@ -431,8 +557,10 @@ class ProposalService:
         item's first. Both are checkable at generation from the approved set,
         and checking here is what stops #210's unguarded update -- a second
         proposal for an existing item with no ``--expected-revision`` -- from
-        validating and then failing at ``migrate apply`` after the pull request
-        has merged.
+        being written at all. ``accept`` would refuse it on the replay
+        (ADR-0027 decision 2) and consume nothing, so the cost of dropping this
+        check would be a wasted draft rather than a broken set; refusing at
+        generation is still where the author can act on it soonest.
         """
         current = self._current_revision(request.item_id)
         expected = request.expected_revision
@@ -447,8 +575,8 @@ class ProposalService:
         if expected is None:
             raise ProposalError(
                 f"{request.item_id.value} already exists at revision {current.value}; an "
-                "update must state which revision it replaces, or it validates and then "
-                "fails at apply after the pull request has merged.",
+                "update must state which revision it replaces, or accepting it would be "
+                "refused for conflicting with the revision already in place.",
                 remedy=f"Pass --expected-revision {current.value} to update it, or a new "
                 "--item-id to create a different item.",
             )
@@ -463,7 +591,32 @@ class ProposalService:
     # -- acceptance --------------------------------------------------------
 
     def accept(self, proposal_id: ProposalId) -> AcceptedProposal:
-        """Move a proposal's migration and body into place. Nothing else.
+        """Prove the project still applies with this proposal in it, then move it.
+
+        **Before anything moves, the union of the landed migration set and this
+        proposal is put through the pipeline ``migrate apply`` runs. If it does
+        not survive, ``accept`` refuses and consumes nothing** (ADR-0027 decision
+        2). The proposal directory is untouched on every refusal path, which is
+        the property #307 asked for: a proposal survives its own rejection, so
+        the author still has the sources to correct.
+
+        That is a change of contract, not a new guard rail. ``accept`` used to
+        move files and leave every question about the migration to ``migrate
+        validate`` and ``migrate apply`` (ADR-0013 §4), which was defensible
+        while ``accept`` was a ``mv`` -- and stopped being defensible once it
+        also *deleted* its sources, because a check that runs after the input is
+        destroyed cannot be acted on.
+
+        The pre-check runs after the structural checks below, so what an already
+        accepted proposal answers is unchanged, and it is described where it
+        lives: :meth:`_refuse_unless_the_union_applies`.
+
+        **Every incoming body is scanned for secrets first** (SEC-11, ADR-0027
+        decision 3), under the policy ``security.secretScan`` selects and
+        ``block`` by default. It sits between the structural checks and the
+        pre-check on purpose: the pre-check stages the bodies into a throwaway
+        tree, and a body that is going to be refused should not be written
+        anywhere at all. :meth:`_scan_bodies_for_secrets` has the reasoning.
 
         Every file this reads is proved to be a regular file inside the project
         with no symlink anywhere in its chain, and every file it writes lands
@@ -488,20 +641,29 @@ class ProposalService:
 
         **CP-2 invariant: no accept-path filesystem or path fault escapes
         ``accept`` untranslated.** A fault that must abort ``accept`` is turned
-        into a ``ProposalError`` at one of three *translation* sites: the
-        examination phase's ``except OSError`` in this method, :meth:`_commit`'s
-        own clause, and :meth:`_destination_of`, which catches its ``resolve()``
+        into an error carrying a ``remedy`` at one of five *translation* sites:
+        the examination phase's ``except OSError`` in this method,
+        :meth:`_refuse_unless_the_union_applies`, :meth:`_commit`'s own clause,
+        :meth:`_destination_of`, which catches its ``resolve()``
         ``ValueError`` -- not an ``OSError``, so the examination clause never sees
-        it -- in place. The examination and commit clauses are deliberately
-        separate, because a failed *write* must roll the destinations back before
-        it reports, and one clause spanning both would describe a half-written
-        tree as an unreadable proposal. Two further sites catch ``OSError`` on the
-        accept path but deliberately do *not* translate: :meth:`_remove_proposal_sources`
+        it -- in place, and
+        :func:`~theurian.security.project_config.read_secret_scan_policy`, which
+        translates every way ``.theurian/config.yaml`` can fail before it
+        returns. The examination and commit clauses are deliberately separate,
+        because a failed *write* must roll the destinations back before it
+        reports, and one clause spanning both would describe a half-written tree
+        as an unreadable proposal. The pre-check and the secret scan sit outside
+        the examination clause for the same reason in the other direction: they
+        read the whole project and its configuration, so a fault in a *landed*
+        file or in ``config.yaml`` reaching the examination clause would be
+        reported as an unreadable proposal with a ``chmod`` remedy for the wrong
+        file. Two further sites catch ``OSError`` on the accept path but
+        deliberately do *not* translate: :meth:`_remove_proposal_sources`
         degrades a post-landing cleanup failure to a remedy and still returns
         success, and :func:`_roll_back` stays silent so a raise cannot mask the
         error already propagating. An editor adding a filesystem call that must
-        abort ``accept`` has to land it under one of the three translation sites,
-        or add a fourth -- a raw escape publishes no ``{error, remedy}`` under
+        abort ``accept`` has to land it under one of the five translation sites,
+        or add a sixth -- a raw escape publishes no ``{error, remedy}`` under
         ``--json`` (#227).
 
         Raises:
@@ -515,10 +677,16 @@ class ProposalService:
                 that collided.
             ProposalError: If the proposal is unknown, ambiguous, incomplete,
                 could not be fully examined -- including a directory or a file
-                in it the filesystem refuses to list, stat or read -- or names a
-                file the security layer refuses. Both types above are
-                subclasses, so a caller that catches only this still catches
-                everything.
+                in it the filesystem refuses to list, stat or read -- names a
+                file the security layer refuses, carries a body that appears to
+                contain a secret while ``security.secretScan`` is ``block``, or
+                would leave the project's migration set unable to apply. Both
+                types above are subclasses, so a caller that catches only this
+                still catches everything.
+            ProjectConfigError: If ``.theurian/config.yaml`` exists and cannot be
+                read or states a ``security.secretScan`` value the build does not
+                recognise. Not a :class:`ProposalError`, because the proposal has
+                nothing wrong with it and its author has nothing to correct.
             PathEscapeError: If a ``contentFile`` resolves outside
                 ``.theurian/knowledge/``.
             InputTooLargeError: If a file the accept path reads exceeds SEC-8's
@@ -558,7 +726,433 @@ class ProposalService:
             # proposal.
             raise self._unreadable(proposal_id, exc) from exc
 
-        return self._commit(proposal_id, moves, migration_file, migration_bytes, destination)
+        # Outside the clause above for the same reason the pre-check is: this
+        # reads `.theurian/config.yaml`, whose faults are the project's and not
+        # this proposal's, and it raises its own translated errors (CP-2, the
+        # fifth site).
+        #
+        # Before the pre-check, not after, and that ordering is load-bearing:
+        # the rehearsal stages the incoming bodies into a throwaway tree, so a
+        # body carrying a secret would be written somewhere -- briefly, but
+        # written -- before anything had decided to refuse it. Scanning first
+        # means a blocked body's bytes reach no filesystem at all. It is also
+        # the cheaper order: the scan is a regex pass over bytes already in
+        # hand, and the rehearsal copies and replays the project's whole
+        # migration set.
+        secret_scan = self._scan_bodies_for_secrets(proposal_id, moves)
+
+        # Outside the clause above, deliberately: the pre-check reads every
+        # landed migration and body, so its faults are not this proposal's and
+        # must not be reported as "the proposal could not be examined". It
+        # translates its own (CP-2, the fourth site).
+        self._refuse_unless_the_union_applies(
+            proposal_id, migration_file, migration_bytes, document, moves
+        )
+
+        accepted = self._commit(proposal_id, moves, migration_file, migration_bytes, destination)
+        return replace(accepted, secret_scan=secret_scan)
+
+    # -- the secret scan (SEC-11, ADR-0027 decision 3) ---------------------
+
+    def _scan_bodies_for_secrets(
+        self, proposal_id: ProposalId, moves: tuple[_BodyMove, ...]
+    ) -> SecretScanResult:
+        """Scan every incoming body, and refuse the acceptance if the policy says to.
+
+        The control T-15 names, at the point SEC-11 names it: ``accept`` is the
+        last place a body can be stopped before a human merges it and ``migrate
+        apply`` makes it canonical. The detector is best effort by recorded
+        design (:mod:`theurian.security.content_secrets`), and the product's
+        published stance -- *Theurian is not a repository secret scanner and is
+        not a replacement for one* -- is unchanged by its existence.
+
+        **The policy is read here rather than injected**, unlike every adapter
+        this service takes. ADR-0003's reason for injection is that locating
+        schemas and opening databases is an adapter's job; ``security/`` is a
+        shared primitive that this layer already calls directly for path
+        containment and YAML loading. The deciding argument is what the two
+        shapes fail like: an injected policy is one a composition root can
+        forget to wire, and Milestone 7's write-intent MCP tools are a second
+        root arriving. A security control that a caller can omit by omission is
+        not a control.
+
+        The configuration is read on every acceptance, including one whose
+        migration carries no body at all. The policy governs the accept path
+        rather than this particular proposal, so a configuration file that
+        states something the build cannot act on is a refusal whatever is being
+        accepted -- which surfaces the typo on the first acceptance instead of
+        on the first one that happens to carry a body.
+
+        Returns:
+            The policy that was in force and the findings to report on the
+            success result. Findings are non-empty only under ``warn``: ``off``
+            scans nothing and ``block`` raises rather than returning.
+
+        Raises:
+            ProposalError: If the policy is ``block`` and a body appears to carry
+                a secret. Raised before anything has been written, so the
+                proposal directory is intact and the change can be corrected
+                rather than re-drafted.
+            ProjectConfigError: If ``.theurian/config.yaml`` exists and cannot be
+                read, or states a ``security.secretScan`` value that is not one
+                of the three. Deliberately not translated into a
+                :class:`ProposalError`: the fault is in the project's
+                configuration and the author has nothing to correct in the
+                proposal, so re-labelling it would send them to edit a migration
+                that is right -- the same reasoning that keeps
+                :class:`~theurian.domain.errors.SchemaUnreadableError` distinct
+                on this path.
+        """
+        policy = read_secret_scan_policy(self._paths.root, self._paths.config)
+        if policy is SecretScanPolicy.OFF:
+            return SecretScanResult(policy=policy)
+
+        knowledge = self._paths.knowledge.resolve()
+        findings = tuple(
+            BodySecretFinding(
+                body=move.destination.relative_to(knowledge).as_posix(), finding=finding
+            )
+            for move in moves
+            # `errors="replace"` rather than a refusal on undecodable bytes. A
+            # body that is not UTF-8 is a fault the rehearsal's loader reports
+            # with a better message than this scan could, and refusing here
+            # would make the secret scan the thing that reports it. Replacement
+            # leaves every ASCII run intact, which is what a credential is; the
+            # residual is a secret deliberately split by an undecodable byte,
+            # which a best-effort detector does not claim to catch.
+            for finding in scan_text(move.data.decode("utf-8", errors="replace"))
+        )
+        if policy is SecretScanPolicy.BLOCK and findings:
+            raise self._secret_refusal(proposal_id, findings)
+        return SecretScanResult(policy=policy, findings=findings)
+
+    def _secret_refusal(
+        self, proposal_id: ProposalId, findings: tuple[BodySecretFinding, ...]
+    ) -> ProposalError:
+        """The refusal for a body that appears to carry a secret.
+
+        The listing is bounded by :data:`_MAX_NAMES_LISTED` for the reason that
+        constant already records: the count is the contributor's, not ours. The
+        detector bounds it again at its own :data:`~theurian.security
+        .content_secrets.MAX_FINDINGS`, so this is the second of two ceilings
+        rather than the only one.
+
+        **The remedy says to rotate before it says how to proceed.** A secret
+        that reached a proposal directory is in a Git working tree and, if the
+        proposal was committed, in history -- so telling the author to delete
+        the line and carry on would be advice that leaves the credential live.
+        The escape hatch for a false positive is named second and names the key,
+        because ``block`` is the default and a false positive is otherwise a
+        dead end.
+        """
+        listed = [finding.describe() for finding in findings[:_MAX_NAMES_LISTED]]
+        return ProposalError(
+            f"A body this proposal would land appears to contain a secret: {_names(listed)}. "
+            "Nothing has moved.",
+            remedy=(
+                "Treat the value as exposed and rotate it -- it is already in a working tree, "
+                "and in Git history if the proposal has been committed. Then remove it from the "
+                f"body in .theurian/proposals/{proposal_id.value}/ and accept the proposal "
+                "again. If it is not a secret, set security.secretScan to warn or off in "
+                ".theurian/config.yaml (block, warn, off; block is what an absent key selects)."
+            ),
+        )
+
+    # -- the pre-check (ADR-0027 decision 2) -------------------------------
+
+    def _refuse_unless_the_union_applies(
+        self,
+        proposal_id: ProposalId,
+        migration_file: Path,
+        migration_bytes: bytes,
+        document: Mapping[str, object],
+        moves: tuple[_BodyMove, ...],
+    ) -> None:
+        """Refuse unless the landed set *with this proposal in it* still applies.
+
+        The four stages ADR-0027 decision 2 names, in its order:
+
+        1. **Schema and document limits**, against the proposal's own document --
+           the same :data:`MigrationDocumentValidator` ``draft`` calls, so a
+           proposal this build generated cannot fail it and a hand-authored one
+           is refused naming its own file. It runs here rather than only inside
+           the replay because the replay's loader would name the copy's path.
+        2. **Self-consistency of the incoming proposal** -- the digest
+           verification the loader performs when it re-reads a referenced body,
+           and the body-sharing guard over the incoming operations together with
+           the landed set.
+        3. **The whole-set guards** ``migrate validate`` runs.
+        4. **A dry replay** of the landed set and the proposal together, against
+           a throwaway target.
+
+        Stages 2 to 4 are the injected :data:`MigrationSetRehearsal`, and they
+        are not run here in three steps because they are not three passes: the
+        rehearsal loads the copy once, which *is* the digest verification, and
+        hands the one loaded set to the guards and then to the engine. Splitting
+        them apart here would mean parsing the set a second time -- the second
+        implementation the ADR's hard condition forbids.
+
+        **Why stage 4 is not optional**, measured on #316: two proposals drafted
+        before either acceptance both claim their item's first revision, and the
+        pair is schema-valid, passes every statically decidable guard, exits 0 on
+        ``migrate validate`` -- and can never be applied. Stages 1 to 3 pass it.
+        The replay is what refuses it, and it refuses the invariants nobody has
+        written a guard for yet by construction rather than one at a time.
+
+        Nothing is consumed on any path through this method: it reads the
+        project and writes only inside the rehearsal's own throwaway target.
+
+        Raises:
+            ProposalError: If any stage refuses. The remedy separates the two
+                fault directions -- this proposal's own migration, or a landed
+                one that was already broken before it -- because they need
+                different actions from the reader and only one of them is the
+                author's to fix.
+        """
+        self._refuse_a_document_the_schema_rejects(migration_file, document)
+
+        try:
+            landed = self._landed_files()
+        except (ProposalError, SchemaUnreadableError):
+            raise
+        except (TheurianError, OSError) as exc:
+            # The approved set cannot even be enumerated, which is a fault in
+            # `.theurian/migrations/` and never in a proposal that has not moved.
+            # It does not reach here from the CLI -- resolving the project loads
+            # the same set and fails first -- but a composition root that
+            # enumerates lazily can, and "unreadable landed migration" must not
+            # arrive as "your proposal is broken" (#227).
+            raise self._landed_set_refusal(exc) from exc
+
+        candidate = self._candidate(landed, migration_file, migration_bytes, moves)
+        try:
+            self._rehearse(candidate)
+        except SchemaUnreadableError:
+            # The installation's schema, not this project's content: it says
+            # "reinstall theurian", and re-labelling it as a fault in the
+            # proposal would send the author to edit a file that is correct.
+            raise
+        except (TheurianError, OSError) as exc:
+            raise self._union_refusal(proposal_id, migration_file, landed, exc) from exc
+
+    def _refuse_a_document_the_schema_rejects(
+        self, migration_file: Path, document: Mapping[str, object]
+    ) -> None:
+        """Stage 1: the published schema, then the version this build understands.
+
+        The ``apiVersion`` check is not the schema's ``const`` written twice. The
+        schema is a *file*, located at runtime (``cli/context.py::schema_root``,
+        which prefers the packaged copy but falls back to a source checkout's),
+        while :data:`MIGRATION_API_VERSION` is compiled into this build. They can
+        disagree, and when they do it is the build's answer that decides what the
+        loader will accept -- which is why the loader checks both too, and why
+        the same pair is checked here rather than assuming the file agrees.
+        """
+        try:
+            self._validate(document)
+        except SchemaUnreadableError:
+            raise
+        except TheurianError as exc:
+            raise ProposalError(
+                f"{_names([migration_file.name])} is not a valid migration: {exc}",
+                remedy=(
+                    "Correct the migration in the proposal directory, then accept it again. "
+                    "Nothing has moved."
+                ),
+            ) from exc
+        if document.get("apiVersion") != MIGRATION_API_VERSION:
+            raise ProposalError(
+                f"{_names([migration_file.name])} declares an apiVersion this build does not "
+                f"understand; it reads {MIGRATION_API_VERSION!r}.",
+                remedy=(
+                    "Correct apiVersion in the migration, or install the Theurian build that "
+                    "wrote it. Nothing has moved."
+                ),
+            )
+
+    def _landed_files(self) -> tuple[str, ...]:
+        """Every project-relative file the approved migration set was read from.
+
+        Each landed migration's own file, and the body each ``upsertRevision``
+        resolved to -- the paths the *loader* recorded, so the copy the replay
+        reads holds exactly the files the loader would read here, not whatever a
+        second enumeration of ``.theurian/migrations/`` would find (the
+        disagreement #234 measured on the sibling guard).
+
+        Sorted and deduplicated: two operations legitimately naming one body
+        contribute one file, and a total order keeps the copy identical run to
+        run.
+        """
+        files: set[str] = set()
+        for migration in self._landed_migrations():
+            files.add(self._staged_path(migration.source_path))
+            for operation in migration.operations:
+                if isinstance(operation, UpsertRevision):
+                    files.add(self._staged_path(operation.resolved_content_path))
+        return tuple(sorted(files))
+
+    def _staged_path(self, recorded: str | None) -> str:
+        """One loader-recorded project-relative path, refusing an absent one.
+
+        ``None`` is the in-memory case the loader never produces (it records
+        ``source_path`` for every migration it reads and ``resolved_content_path``
+        for every body it resolves). Refused rather than skipped: a skip would
+        leave that migration or body out of the copy, and the replay would then
+        answer "it applies" about a set that is not the one on disk.
+        """
+        if recorded is None:  # pragma: no cover - the loader records both
+            raise ProposalError(
+                "The approved migration set holds a migration with no recorded source file, "
+                "so whether this proposal can be accepted cannot be decided.",
+                remedy="Run theurian migrate validate --json and fix what it reports.",
+            )
+        return recorded
+
+    def _candidate(
+        self,
+        landed: tuple[str, ...],
+        migration_file: Path,
+        migration_bytes: bytes,
+        moves: tuple[_BodyMove, ...],
+    ) -> CandidateMigrationSet:
+        """The union to rehearse: the landed files, plus this proposal's own.
+
+        The proposal's files are described by the destinations they *would*
+        occupy, not by where they sit now, because that is the tree the pre-check
+        is asking about. Their bytes are the ones :meth:`accept` already read
+        through the security layer -- re-reading them here would ask a second
+        question about a file that has already answered.
+        """
+        destination = self._paths.migrations / migration_file.name
+        incoming = [(self._within_project(destination), migration_bytes)]
+        incoming.extend((self._within_project(move.destination), move.data) for move in moves)
+        return CandidateMigrationSet(
+            root=self._paths.root,
+            knowledge_directory=self._knowledge_directory(),
+            project_id=self._project_id,
+            landed=landed,
+            incoming=tuple(incoming),
+        )
+
+    def _knowledge_directory(self) -> PurePosixPath:
+        """Where ``.theurian/`` sits, relative to the project root.
+
+        The whole relative path and not ``knowledge_dir.name``: a project
+        registered with a *nested* knowledge directory would lay its files out
+        under both segments, and a copy that kept only the leaf would put the
+        migrations somewhere the loader then reports as an empty set -- a replay
+        that passes because it read nothing.
+        """
+        return PurePosixPath(self._within_project(self._paths.knowledge_dir))
+
+    def _within_project(self, path: Path) -> str:
+        """``path`` as a project-relative POSIX string, for the copy's layout."""
+        try:
+            return path.relative_to(self._paths.root).as_posix()
+        except ValueError as exc:  # pragma: no cover - every path here was contained above
+            raise PathEscapeError(str(path), str(self._paths.root)) from exc
+
+    def _union_refusal(
+        self,
+        proposal_id: ProposalId,
+        migration_file: Path,
+        landed: tuple[str, ...],
+        error: BaseException,
+    ) -> ProposalError:
+        """Turn a refused rehearsal into a refusal a reader can act on.
+
+        Two directions, and which one it is decides the whole remedy. If the
+        landed set fails the same replay *without* this proposal in it, the
+        project was already broken and the author has nothing to correct; if it
+        passes, this proposal is what breaks it. The discriminator is a second
+        rehearsal of the landed set alone, and it costs nothing on the path that
+        matters: it runs only when the acceptance is already being refused.
+        """
+        landed_error = self._landed_set_alone_fails(landed)
+        if landed_error is not None:
+            return self._landed_set_refusal(landed_error)
+        message = (
+            f"Accepting this proposal would leave .theurian/migrations/ unable to apply: {error}"
+        )
+        if isinstance(error, RevisionConflictError):
+            # The racing face (#307): this proposal claimed a revision that was
+            # free when it was drafted and is not free now. Re-drafting is the
+            # honest cure *here* and nowhere else on this path -- nothing of this
+            # proposal was consumed, so a second draft duplicates nothing (#89).
+            return ProposalError(
+                message,
+                remedy=(
+                    "Another change to this item landed first. Nothing has moved, so either "
+                    "give the proposal's own migration the expectedRevision the message "
+                    "reports, or draft the change again with --expected-revision and delete "
+                    f".theurian/proposals/{proposal_id.value}/."
+                ),
+            )
+        return ProposalError(
+            message,
+            remedy=(
+                f"Correct {_names([migration_file.name])} in .theurian/proposals/"
+                f"{proposal_id.value}/, then accept it again. Nothing has moved and the "
+                "proposal's own files are intact."
+            ),
+        )
+
+    def _landed_set_refusal(self, error: BaseException) -> ApprovedSetUnusableError:
+        """The refusal for a fault that predates this proposal.
+
+        Direction (b): the project's own ``.theurian/migrations/`` is what
+        cannot be applied, and the author of this proposal has nothing to
+        correct in it. The remedy therefore names neither the proposal's file
+        nor a re-draft -- both would send the reader to change something that is
+        not wrong -- and points at the directory the fault is in.
+
+        It points at the *directory* and not at a file, which is weaker than it
+        looks like it should be and is the strongest thing that is true: what
+        the underlying message identifies depends on which stage refused. The
+        loader names a migration file; a revision conflict names an *item* and
+        two revision ids, because the engine does not know which of the two
+        migrations claiming that item is the wrong one. "Read what the message
+        names, in ``.theurian/migrations/``" holds for both; "fix the migration
+        the message names" was false for the second, and a remedy that is false
+        for a case is worse than one that is general.
+        """
+        return ApprovedSetUnusableError(
+            f"The project's migration set cannot be applied as it stands, with or without "
+            f"this proposal: {error}",
+            remedy=(
+                "This proposal is not the cause: nothing has moved and its directory is "
+                "intact. The fault is in .theurian/migrations/ -- read what the message "
+                "names there and correct it, then accept this proposal again. "
+                "theurian migrate apply runs the same pipeline over the same set."
+            ),
+        )
+
+    def _landed_set_alone_fails(self, landed: tuple[str, ...]) -> BaseException | None:
+        """The fault the landed set carries on its own, or ``None`` if it carries none.
+
+        The same rehearsal, over the same files, with the incoming proposal left
+        out -- so the two answers cannot differ for any reason except the
+        proposal itself. An empty set is not rehearsed: there is nothing for it
+        to fail at, and creating a store to prove it would be work spent on a
+        foregone answer.
+        """
+        if not landed:
+            return None
+        try:
+            self._rehearse(
+                CandidateMigrationSet(
+                    root=self._paths.root,
+                    knowledge_directory=self._knowledge_directory(),
+                    project_id=self._project_id,
+                    landed=landed,
+                    incoming=(),
+                )
+            )
+        except SchemaUnreadableError:
+            raise
+        except (TheurianError, OSError) as exc:
+            return exc
+        return None
 
     def _require_directory(self, proposal_id: ProposalId) -> Path:
         # Built from a validated ULID, so no caller-supplied text reaches the
@@ -1125,15 +1719,17 @@ class ProposalService:
         """Refuse a body replacement that would break an existing landed pin.
 
         This guard holds one narrow invariant, not a global one: a replacement
-        never breaks a pin **already landed** in the approved set. It is *not* the
-        claim that ``accept`` leaves the set able to validate -- ``accept`` does
-        not schema-validate the incoming migration and does not check it against
-        itself, so a self-contained breakage in one proposal (two operations
+        never breaks a pin **already landed** in the approved set. It is *not*
+        the claim that ``accept`` leaves the set able to apply -- that claim is
+        :meth:`_refuse_unless_the_union_applies`'s, which runs after this one and
+        is what refuses a self-contained breakage in one proposal (two operations
         naming one ``contentFile``, a self-inconsistent pin, an empty
-        ``contentFile``) lands here and is caught by ``migrate validate`` in CI,
-        which is the check by design (ADR-0013 §4). What this method refuses is the
-        one fault it can judge from the *landed* set alone -- *the destination is
-        a body a landed revision already reads*:
+        ``contentFile``). Until ADR-0027 decision 2 nothing refused those at all:
+        they landed here and were caught by ``migrate validate`` in CI, after the
+        proposal that produced them had been consumed. What *this* method refuses
+        is the one fault it can judge from the *landed* set alone, and it stays
+        because it judges it more precisely than a replay can -- *the destination
+        is a body a landed revision already reads*:
 
         * If that landed revision **pinned** the body, the loader re-reads it and
           finds bytes the pin no longer matches: *"hashes to abc7cdb70713 but the
@@ -1663,21 +2259,43 @@ def _require_filename_matches_id(migration_file: Path, document: Mapping[str, ob
     """
     inner = document.get("id")
     prefix = migration_file.name.split("-", 1)[0]
-    if not isinstance(inner, str) or inner != prefix:
+    if isinstance(inner, str) and inner == prefix:
+        return
+    if not is_bounded_scalar(inner):
+        # This runs *before* stage-1 schema validation, so `inner` is still raw
+        # YAML: `id: *anchor` pointing at an alias graph is a container whose
+        # `{inner!r}` re-expands to gigabytes from a few hundred bytes (T-6). A
+        # migration id is a ULID, so anything but a short scalar is a mistake and
+        # is refused without being rendered -- the filename ULID is the diagnosis.
         raise ProposalError(
-            f"The migration file is named for {prefix} but its id is {inner!r}; the "
+            f"The migration file is named for {prefix} but its id is not a simple value; the "
             "filename ULID must equal the migration id.",
             remedy="Rename the file to <id>-<slug>.yaml, or correct the id inside it.",
         )
+    raise ProposalError(
+        f"The migration file is named for {prefix} but its id is {inner!r}; the "
+        "filename ULID must equal the migration id.",
+        remedy="Rename the file to <id>-<slug>.yaml, or correct the id inside it.",
+    )
 
 
 def _parse_migration(data: bytes, path: Path) -> Mapping[str, object]:
-    """Parse an accepted proposal's migration, for its ``contentFile`` alone.
+    """Parse an accepted proposal's migration into the mapping the accept path reads.
 
-    Deliberately not a validation pass. ``accept`` moves files; whether the
-    migration is well-formed is ``migrate validate``'s question and whether it
-    applies is ``migrate apply``'s, and answering either here would imply this
-    command had checked something it has not.
+    Syntax only, and deliberately: it answers *is this YAML, and is it a
+    mapping*, so the structural checks that follow have something to key on --
+    the migration's id, its filename agreement, the ``contentFile`` of each
+    operation. Whether the document is a valid migration, and whether the set it
+    joins still applies, are settled afterwards by
+    :meth:`ProposalService._refuse_unless_the_union_applies`, which puts it
+    through the published schema and then through ``migrate apply``'s own
+    pipeline (ADR-0027 decision 2).
+
+    That division used to run the other way: ``accept`` moved files and left
+    both questions to ``migrate validate`` and ``migrate apply`` (ADR-0013 §4).
+    It was defensible while ``accept`` was a ``mv``, and stopped being
+    defensible once the command also deleted its sources -- a check that runs
+    after the input is destroyed cannot be acted on (#307).
     """
     try:
         return load_yaml_mapping(data.decode("utf-8"))

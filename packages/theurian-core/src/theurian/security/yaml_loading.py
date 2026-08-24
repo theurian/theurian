@@ -20,6 +20,7 @@ that validates is the document that was written.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Final
 
 import yaml
@@ -29,6 +30,21 @@ from theurian.domain.errors import InputTooLargeError
 #: Maximum bytes for a YAML document. Migrations and configuration are small;
 #: anything larger is a mistake or a resource-exhaustion attempt (T-6).
 MAX_YAML_BYTES: Final = 4 * 1024 * 1024
+
+#: Ceiling on the length of a string or bytes scalar a caller may interpolate
+#: with ``repr`` into an error message. Generous enough to echo any plausible
+#: typo of a short field -- a mistyped policy selector or a wrong migration id --
+#: back to the author, and far below the megabytes a rejected value could
+#: otherwise carry into a terminal.
+MAX_RENDERED_SCALAR_CHARS: Final = 200
+
+#: Ceiling on the bit length of an integer scalar a caller may render. Keyed on
+#: ``bit_length`` and never ``str(value)``, because stringifying a giant integer
+#: is quadratic and, past CPython's int->str conversion limit, *raises* -- the
+#: very cost this bound exists to refuse. 2000 bits is at most ~603 decimal
+#: digits, the same bound the migration loader's own echo (`_MAX_ECHOED_INT_BITS`)
+#: applies for the same reason.
+_MAX_SCALAR_INT_BITS: Final = 2_000
 
 
 class _StrictLoader(yaml.SafeLoader):
@@ -137,3 +153,43 @@ def load_yaml_mapping(text: str, *, max_bytes: int = MAX_YAML_BYTES) -> dict[str
         msg = f"Expected a YAML mapping at the document root, got {type(loaded).__name__}"
         raise ValueError(msg)
     return loaded
+
+
+def is_bounded_scalar(value: object) -> bool:
+    """Whether ``value`` is a scalar small enough to interpolate with ``repr`` safely.
+
+    A field materialised from a parsed YAML document that a caller renders with
+    ``%r``/``repr``/an f-string *before* any per-shared-reference bound is a T-6
+    denial of service. PyYAML collapses aliases to shared identity, so parsing a
+    deeply-aliased document stays O(source) -- but ``repr`` walks the resulting
+    graph as a *tree*, re-expanding every shared reference, so a few hundred bytes
+    of anchors render to gigabytes. The migration *loader* closes this for a whole
+    document with a charge-per-shared-reference walk (issue #291); a *single field*
+    that must be a short scalar -- a config selector, a migration id -- has a
+    simpler correct answer: it is illegitimate as anything but a short scalar, so
+    refusing anything else *before* it reaches a render closes the class without a
+    document walk.
+
+    The refusal is the caller's, worded in its own error type; this only answers
+    whether a value may be rendered. It returns ``True`` for a short ``str``/
+    ``bytes``, a ``bool``/``None``, a ``float`` or a parsed ``!!timestamp``
+    (``date``/``datetime``) -- each an inherently bounded render -- and for an
+    integer whose ``bit_length`` is bounded, since a giant integer's ``repr`` is
+    the same quadratic-and-then-raising cost the loader's echo refuses. It returns
+    ``False`` for every mapping, sequence or set -- the containers a YAML alias
+    graph re-expands under ``repr`` -- and for an oversized string, bytes or
+    integer.
+    """
+    if isinstance(value, str | bytes):
+        return len(value) <= MAX_RENDERED_SCALAR_CHARS
+    if isinstance(value, bool):
+        # Before ``int``: a bool is an ``int`` subclass whose one-bit
+        # ``bit_length`` would pass the integer arm, but its render is already
+        # bounded, so it is admitted here on its own.
+        return True
+    if isinstance(value, int):
+        return value.bit_length() <= _MAX_SCALAR_INT_BITS
+    # A float, None, or a parsed !!timestamp each renders to a small, bounded
+    # width. Every other object -- a container from an alias graph, or anything an
+    # in-memory caller might pass -- is refused rather than rendered.
+    return isinstance(value, float | date) or value is None

@@ -133,9 +133,12 @@ Two properties fall out, and both are the intended behaviour:
 - `tests/e2e/test_migration_workflow.py::test_editing_an_applied_migration_is_fatal`
   — applies a migration, edits it, and asserts exit 4 with a checksum-mismatch
   error: the regression that motivated the section above.
-- `tests/e2e/test_migration_workflow.py::test_editing_a_content_file_forks_a_new_state`
-  — a *content* edit produces a new state hash with no error, so the two cases
-  stay distinguishable.
+- `tests/e2e/test_migration_workflow.py::test_a_new_revision_forks_a_new_state`
+  — moving a body forward produces a new state hash with no error, so the two
+  cases stay distinguishable. Written as a second revision rather than an edit
+  of the landed body since [ADR-0027](0027-accept-validates-before-it-moves.md)
+  made `contentSha256` required: an out-of-band rewrite of a pinned body is now
+  refused at load, so it is no longer the "no error" half of the pair.
 
 Five bullets, seven tests. Three of the seven are e2e, and no CI job runs the
 e2e suite ([#65](https://github.com/theurian/theurian/issues/65)) — including

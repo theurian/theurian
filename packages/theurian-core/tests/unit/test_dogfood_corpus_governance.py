@@ -100,8 +100,10 @@ would make this module the thing people learn to ignore. Also out of scope: the
 *contents* of a body or of an ``evidence.json`` ``reasoning`` string. Nothing
 here scans free text for secrets, and the evidence rules below close the
 *structural* escapes -- an unknown key, a stray file in a proposal directory, an
-anchor naming a document no migration names -- not the prose. SEC-11's secret
-scanner does not exist (#198).
+anchor naming a document no migration names -- not the prose. SEC-11's scanner
+runs at ``theurian propose accept`` and nowhere else (#198), so it says nothing
+about a body already committed here: every one of these landed before the
+control shipped, and the corpus is not re-scanned.
 
 **Not marked ``unit``.** It runs ``git`` in a subprocess, which the ``unit``
 marker's own definition excludes. It lives here with the other structural

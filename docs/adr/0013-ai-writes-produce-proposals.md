@@ -145,6 +145,42 @@ it" is precisely the knowledge that gets lost otherwise. Recording it uses the
 > indeterminate rather than guessed, and no branch discards work or duplicates a
 > landed change, so a wrong guess costs a reread and never a lost or doubled
 > migration.
+>
+> **Amended in Milestone 7 again, by the write-path design CL
+> ([#316](https://github.com/theurian/theurian/issues/316),
+> [ADR-0027](0027-accept-validates-before-it-moves.md)). Point 4's first half
+> stands; its recorded division of labour does not.**
+>
+> *"`theurian propose accept` automates the file moves; it does not automate the
+> judgement"* remains exactly true, and nothing in ADR-0027 moves the approval:
+> a human still reads the proposal and still merges the pull request.
+> Validation is not judgement.
+>
+> What moves is the second half, recorded in `_parse_migration`'s docstring as
+> *"whether the migration is well-formed is `migrate validate`'s question"* —
+> and it moves further than well-formedness. **Before `accept` moves or deletes
+> anything, it proves that the union of the landed migration set and the
+> incoming proposal survives the pipeline `migrate apply` runs**, using that
+> pipeline's own code rather than a second copy of it. Schema conformance is
+> the first of four stages; the last is a dry replay against a throwaway
+> target, which is what reaches the invariants the engine enforces only while
+> applying.
+>
+> What implementing the old division revealed is that a check which runs after
+> the input has been destroyed cannot be acted on. `accept` deletes the proposal
+> directory once the move completes, so a proposal that lands and *then* fails
+> `migrate validate` is gone, and re-drafting is the only way forward
+> ([#307](https://github.com/theurian/theurian/issues/307)). Measurement then
+> found a face the issue had not: two proposals drafted before either
+> acceptance both claim the item's first revision, and accepting both yields a
+> set `migrate validate` calls green and `migrate apply` refuses permanently,
+> with both proposals already consumed — and the documented recovery, deleting
+> a landed migration, is exactly what
+> [`propose.md`](../../plugins/claude-code/commands/propose.md) forbids the
+> drafting agent to do. The new answer is better for one measurable reason: the
+> proposal survives its own rejection.
+> [ADR-0027](0027-accept-validates-before-it-moves.md) carries the mechanism,
+> the closure argument, and the three residues the change does not cover.
 
 ## Consequences
 
@@ -293,13 +329,18 @@ Landed in Milestone 7, by the `theurian propose` CL:
   refuses a byte-identical body re-declared under a *different* item's id (a
   cross-item revision reuse `migrate apply` refuses, INV-1/SEC-13),
   `::test_accept_refuses_a_byte_different_redeclare_of_a_pinned_landed_revision`
-  and `::test_accept_refuses_a_byte_different_redeclare_of_an_unpinned_landed_revision`
-  refuse a re-declare that reuses the id with different bytes, and
-  `::test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body` with
-  `::test_accept_refuses_replacing_an_unpinned_landed_body` refuse a *different*
-  revision landing on the same body.
+  refuses a re-declare that reuses the id with different bytes, and
+  `::test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body` refuses a
+  *different* revision landing on the same body.
   `::test_accept_allows_a_replacement_over_a_body_no_landed_revision_reads` is the
-  control that an ordinary replacement is untouched.
+  control that an ordinary replacement is untouched. **Each of those two had an
+  unpinned twin, and both twins were deleted rather than renamed by
+  [ADR-0027](0027-accept-validates-before-it-moves.md) decision 1**: each reached
+  its state by stripping the pin from a landed migration, and a landed migration
+  with no `contentSha256` no longer loads. Neither face lost coverage with them —
+  the guard keys on `(st_dev, st_ino)` and never on whether a pin was declared,
+  so the surviving siblings hold the same property against the input that is
+  still reachable.
 
 Still owed, with the milestone that brings the feature under test:
 
