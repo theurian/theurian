@@ -2012,3 +2012,18 @@ the decision it belongs to states a property that is otherwise only an argument:
   > path. Both enforcement points the forest reads through — the node match in
   > `search_summaries` and the walk in `walk_raptor_path` — now carry their own
   > mutation-checked isolation test, so this item is fully discharged.
+  >
+  > **Amended by [#119](https://github.com/theurian/theurian/issues/119) phase 5:
+  > the walk-side gate was one axis short of the node match.** `_node_scope`
+  > gained `nodes.sensitivity IN (…)` in phase 4 while `walk_raptor_path` went on
+  > filtering project and status alone, so a hand-edited or corrupted file — the
+  > only population either guard exists for — could walk an ancestor whose
+  > disclosure class disagreed with its leaf's, on the one axis a deployment under
+  > a declared ceiling is actually withholding on. The walk now reads
+  > `sensitivity` off the same anchoring chunk row it already read `status` from
+  > and filters on all three. Read off the *leaf*, not off the caller's grant: the
+  > grant decided the leaf may surface three gates ago, and re-applying it here
+  > would answer that question twice while leaving this one — is the ancestor in
+  > this leaf's scope — unasked.
+  > `tests/integration/test_forest_store_retrieval.py::test_an_internal_leafs_raptor_path_excludes_a_confidential_ancestor`
+  > is the sibling fixture, measured RED by reverting the clause.

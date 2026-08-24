@@ -330,16 +330,21 @@ amendment).
 One gap the tables leave open, and one now closed. Tenant, ACL group and
 namespace have no node column — `tree_id` encodes the whole six-component tuple,
 so a node's tree is expressible, but no predicate can filter on those axes. What
-is closed is project and status for node reads: `SqliteIndexStore._node_scope` is
-the single enforcement point, the counterpart of `_scope` for chunk reads,
-filtering `nodes.project_id` and `nodes.status`. It is load-bearing rather than
-agreeing with the leaf gate by accident:
+is closed is project, status and sensitivity for node reads:
+`SqliteIndexStore._node_scope` is the single enforcement point, the counterpart of
+`_scope` for chunk reads, filtering `nodes.project_id`, `nodes.status` and — since
+[#119](https://github.com/theurian/theurian/issues/119) phase 4 —
+`nodes.sensitivity IN (…)` over the deployment's expanded grant. It is
+load-bearing rather than agreeing with the leaf gate by accident:
 `tests/integration/test_forest_node_scope.py` neutralises each clause in turn
 over a node whose scope disagrees with its one leaf's — so the leaf gate has
 nothing to withhold and only `_node_scope` decides — and requires the matching
 isolation test to go RED (ADR-0008 decision 5's amendment, discharged). The
-upward walk carries its own gate too: `walk_raptor_path` filters its `nodes`
-lookup on the surfaced leaf's own project and status, so a scope-disagreeing
+upward walk carries its own gate too, on the same three axes: `walk_raptor_path`
+filters its `nodes` lookup on the surfaced leaf's own project, status and
+disclosure class — each read off the anchoring chunk row and never off the
+caller's grant, because this asks whether an ancestor is in *that leaf's* scope
+rather than re-asking what the deployment serves — so a scope-disagreeing
 ancestor cannot ride out on a `raptorPath` even were the construction-time
 invariant ever violated.
 

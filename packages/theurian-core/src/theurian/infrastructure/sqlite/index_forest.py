@@ -31,13 +31,16 @@ title, must never widen what a caller may read:
   a cleared leaf is in that leaf's own scope. That invariant is what the domain
   layer enforces at construction, not a promise this file could rely on alone
   against a hand-edited or corrupted file, so the walk's own ``nodes`` lookup
-  filters on the leaf's project and status too -- a second, independent gate a
-  scope-disagreeing ancestor cannot clear even if the invariant above were ever
-  violated. An ancestor title therefore carries no content from a scope the leaf
-  is not in, and a *withheld* leaf contributes no result and so no path -- its
-  ancestors' titles never reach the wire. The title's build-time staleness is the
-  recorded T-17a/#130 residual, the same one every excerpt carries, not a new
-  channel.
+  filters on the leaf's project, **disclosure class** and status too -- a second,
+  independent gate a scope-disagreeing ancestor cannot clear even if the
+  invariant above were ever violated. All three axes, and that is the set
+  :func:`summary_statement` gates on rather than a shorter one chosen here: a
+  guard missing the very axis a query is being withheld on is the shape that
+  looks enforced and is not. An ancestor title therefore carries no content from
+  a scope the leaf is not in, and a *withheld* leaf contributes no result and so
+  no path -- its ancestors' titles never reach the wire. The title's build-time
+  staleness is the recorded T-17a/#130 residual, the same one every excerpt
+  carries, not a new channel.
 """
 
 from __future__ import annotations
@@ -158,29 +161,40 @@ def walk_raptor_path(
     has no Document node, so this returns ``()`` and the caller emits no
     ``raptorPath``.
 
-    The final ``nodes`` lookup is scoped to the leaf's own ``project_id`` and
-    ``status`` -- read off the same chunk row the walk anchors from, never a
-    hardcoded ``approved``, so an ``include_unapproved`` caller's draft leaf keeps
-    its (also draft) ancestors. A node id read from ``node_derivation``
-    references ``nodes`` under a foreign key, so *finding* the row is never in
-    doubt; the membership guard drops one whose scope disagrees with the leaf's,
-    the defense in depth the module docstring describes, or whose file is simply
-    inconsistent -- both fail towards a shorter path rather than a crash or a
-    leaked title.
+    The final ``nodes`` lookup is scoped to the leaf's own ``project_id``,
+    ``sensitivity`` and ``status`` -- all read off the same chunk row the walk
+    anchors from, never a hardcoded ``approved`` or a deployment ceiling, so an
+    ``include_unapproved`` caller's draft leaf keeps its (also draft) ancestors
+    and a leaf this deployment does serve keeps its (also servable) ones. A node
+    id read from ``node_derivation`` references ``nodes`` under a foreign key, so
+    *finding* the row is never in doubt; the membership guard drops one whose
+    scope disagrees with the leaf's, the defense in depth the module docstring
+    describes, or whose file is simply inconsistent -- both fail towards a shorter
+    path rather than a crash or a leaked title.
+
+    **The disclosure axis is read off the leaf and not off the caller's grant**,
+    which is what keeps this a *membership* guard rather than a second copy of the
+    read gate. The grant already decided the leaf may surface, three times over --
+    the build wrote it, ``_scope`` matched it, ``CanonicalVisibility`` re-checked
+    the item's current class -- so re-applying it here would answer a question
+    already answered while leaving the one this guard exists for, whether the
+    ancestor is in *this leaf's* scope, unasked.
     """
     leaf_rows = list(
         connection.execute(
-            "SELECT chunk_id, status FROM chunks WHERE project_id = ? AND revision_id = ?",
+            "SELECT chunk_id, status, sensitivity FROM chunks "
+            "WHERE project_id = ? AND revision_id = ?",
             (project_id, revision_id),
         )
     )
     if not leaf_rows:
         return ()
     # Every chunk of one revision is indexed from the same `IndexableChunk` call
-    # and so carries the same `status` (`SqliteIndexStore.add_chunks`) -- reading
-    # it off the first row is not an assumption this query makes, only one it
-    # does not need to re-derive.
+    # and so carries the same `status` and `sensitivity`
+    # (`SqliteIndexStore.add_chunks`) -- reading them off the first row is not an
+    # assumption this query makes, only one it does not need to re-derive.
     leaf_status = str(leaf_rows[0]["status"])
+    leaf_sensitivity = str(leaf_rows[0]["sensitivity"])
     chunk_ids = [str(row["chunk_id"]) for row in leaf_rows]
     placeholders = ",".join("?" * len(chunk_ids))
     document = connection.execute(
@@ -206,8 +220,9 @@ def walk_raptor_path(
         str(row["node_id"]): row
         for row in connection.execute(
             f"SELECT node_id, level, text FROM nodes "  # noqa: S608 - placeholders only
-            f"WHERE node_id IN ({node_placeholders}) AND project_id = ? AND status = ?",
-            [*leaf_to_root, project_id, leaf_status],
+            f"WHERE node_id IN ({node_placeholders}) "
+            f"AND project_id = ? AND sensitivity = ? AND status = ?",
+            [*leaf_to_root, project_id, leaf_sensitivity, leaf_status],
         )
     }
     return tuple(

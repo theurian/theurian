@@ -94,13 +94,15 @@ def _node(  # noqa: PLR0913 - a raw row helper, one keyword per column a test va
     level: int = 1,
     node_type: str = "document",
     status: str = "approved",
+    sensitivity: str = "internal",
     project_id: str = PROJECT,
 ) -> None:
     """A raw `nodes` row, written the way RAPTOR would (ADR-0008 decision 5).
 
     Mirrors `test_forest_node_scope._node`; ``level`` and ``node_type`` are
     keywords here because these tests build two- and three-tier ancestries the
-    node-scope tests never needed.
+    node-scope tests never needed, and ``sensitivity`` because the walk's
+    membership guard gates on that axis too (#119).
     """
     connection.execute(
         "INSERT INTO nodes (node_id, tree_id, level, node_type, text, content_hash, "
@@ -108,8 +110,8 @@ def _node(  # noqa: PLR0913 - a raw row helper, one keyword per column a test va
         "embedding_model_revision, embedding_dimension, source_revision_id, "
         "index_build_id, project_id, sensitivity, status) "
         "VALUES (?, 'tree-abc', ?, ?, ?, 'deadbeef', '', '', '', '', '', 0, '', "
-        "'01K1NSCOPE', ?, 'internal', ?)",
-        (node_id, level, node_type, text, project_id, status),
+        "'01K1NSCOPE', ?, ?, ?)",
+        (node_id, level, node_type, text, project_id, sensitivity, status),
     )
 
 
@@ -163,6 +165,24 @@ def _node_status(path: Path, node_id: str) -> str:
             "SELECT status FROM nodes WHERE node_id = ?", (node_id,)
         ).fetchone()
     assert row is not None, f"precondition: {node_id} was never written"
+    return str(row[0])
+
+
+def _node_sensitivity(path: Path, node_id: str) -> str:
+    with closing(sqlite3.connect(path)) as connection:
+        row = connection.execute(
+            "SELECT sensitivity FROM nodes WHERE node_id = ?", (node_id,)
+        ).fetchone()
+    assert row is not None, f"precondition: {node_id} was never written"
+    return str(row[0])
+
+
+def _chunk_sensitivity(path: Path, chunk_id: str) -> str:
+    with closing(sqlite3.connect(path)) as connection:
+        row = connection.execute(
+            "SELECT sensitivity FROM chunks WHERE chunk_id = ?", (chunk_id,)
+        ).fetchone()
+    assert row is not None, f"precondition: {chunk_id} was never written"
     return str(row[0])
 
 
@@ -462,3 +482,81 @@ def test_an_approved_leafs_raptor_path_excludes_a_draft_scope_ancestor(tmp_path:
     )
     joined = " ".join(segment.title for segment in segments).lower()
     assert secret not in joined, "the draft ancestor's summary text must not ride out on the path"
+
+
+def test_an_internal_leafs_raptor_path_excludes_a_confidential_ancestor(tmp_path: Path) -> None:
+    """SEC-13, #119. The same guard on the axis it was missing, and it was missing one.
+
+    The walk's membership guard read the leaf's ``project_id`` and ``status`` off
+    the anchoring chunk row and filtered ``nodes`` on both -- and on nothing else,
+    while ``summary_statement`` above it gates on three axes since #119 phase 4.
+    The gap is only reachable through a file whose rows disagree with the domain
+    invariant they were supposedly written under, which is exactly the population
+    this guard exists for: it is defense in depth *against a hand-edited or
+    corrupted index*, and a defense that omits the one axis a deployment is
+    currently withholding on is the shape that looks enforced and is not.
+
+    So this is the sibling of the draft-ancestor test above, built the same way:
+    an ``internal`` leaf whose Domain ancestor is a ``confidential`` node holding
+    a secret, a shape ``SummaryNode.__post_init__`` refuses and no shipped build
+    produces. The approved *and internal* intermediate ancestor must survive, so
+    the path is shortened rather than emptied -- a guard that dropped everything
+    would satisfy the absence and destroy the capability.
+
+    Measured RED by reverting the clause: the confidential ancestor's title, and
+    the secret in it, come back in the path.
+    """
+    path = tmp_path / "theurian-index-walk-disclosure.sqlite"
+    secret = "obsidiansecret"  # noqa: S105 - fixture text, not a credential
+    store = _store(path)
+    store.add_chunks(
+        [_indexable("internal-leaf#0", "an ordinary internal paragraph", revision="internal-rev")]
+    )
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with connection:
+            _node(
+                connection,
+                "internal-doc#0",
+                text="internal document summary",
+                level=1,
+                node_type="document",
+                sensitivity="internal",
+            )
+            _node(
+                connection,
+                "confidential-domain#0",
+                text=f"confidential domain summary holding {secret} material",
+                level=2,
+                node_type="domain",
+                sensitivity="confidential",
+            )
+            _edge_chunk(connection, "internal-doc#0", chunk="internal-leaf#0")
+            _edge_node(connection, "confidential-domain#0", child="internal-doc#0")
+
+    assert _chunk_sensitivity(path, "internal-leaf#0") == "internal", (
+        "precondition: the leaf must be the class the walk anchors on, or the filter "
+        "below is comparing something else"
+    )
+    assert _node_sensitivity(path, "confidential-domain#0") == "confidential", (
+        "precondition: the ancestor must be above the leaf's class, or there is nothing "
+        "for a disclosure gate to withhold"
+    )
+    assert _node_sensitivity(path, "internal-doc#0") == "internal", (
+        "precondition: the intermediate ancestor shares the leaf's class, so a correct "
+        "filter keeps it while dropping only the confidential one"
+    )
+
+    segments = store.raptor_path("internal-rev", project_id=PROJECT)
+
+    node_ids = {segment.node_id for segment in segments}
+    assert "internal-doc#0" in node_ids, (
+        "the internal ancestor shares the leaf's scope and must remain in the path"
+    )
+    assert "confidential-domain#0" not in node_ids, (
+        "an above-class ancestor must not appear in an internal leaf's raptorPath"
+    )
+    joined = " ".join(segment.title for segment in segments).lower()
+    assert secret not in joined, (
+        "the confidential ancestor's summary text must not ride out on the path"
+    )
