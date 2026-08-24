@@ -164,11 +164,12 @@ def setup_command(
     anything. The extra is not decoration: without it `theurian daemon start`
     has no server to run, and `core-present` refuses.
 
-    The other 11 steps only report what they found: platform, core-present,
-    artifact-integrity, single-instance, project-registered, project-layout,
-    gitignore, mcp-health, migrations-valid, initial-index, serena-detection.
-    Several of them name the command that does the work instead --
-    `theurian init`, `theurian project register` -- and setup runs none of them.
+    The other 12 steps only report what they found: platform, core-present,
+    artifact-integrity, serving-profile, single-instance, project-registered,
+    project-layout, gitignore, mcp-health, migrations-valid, initial-index,
+    serena-detection. Several of them name the command that does the work
+    instead -- `theurian init`, `theurian project register` -- and setup runs
+    none of them.
     """
     service = SetupService(build_context(port=port))
     report = service.run(SetupRequest(dry_run=dry_run, approve_conflicts=approve_conflicts))

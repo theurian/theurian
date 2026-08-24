@@ -306,6 +306,51 @@ def decode_sensitivities(raw: object) -> frozenset[Sensitivity] | None:
     return frozenset(levels)
 
 
+class ProfileVerdict(StrEnum):
+    """Whether a published build's recorded flavor is the one in force."""
+
+    MATCHES = "matches"
+    #: The pointer records no readable flavor, so which rows the file holds
+    #: cannot be established. Never folded into :attr:`MISMATCH`: one says the
+    #: profile moved under a build, the other says nothing is known, and a
+    #: reader told the first goes looking for an edit that never happened.
+    UNRECORDED = "unrecorded"
+    MISMATCH = "mismatch"
+
+
+def recorded_flavor_verdict(recorded: object, *, served: frozenset[Sensitivity]) -> ProfileVerdict:
+    """Judge one pointer's ``indexedSensitivities`` against the grant in force.
+
+    **One derivation, two readers**, and that is the whole reason this is a
+    function rather than four lines in each of them. ``mcp.search._published_index``
+    stands an index aside on this answer and degrades every query to an unranked
+    scan; ``cli.index_commands.index_status`` reports whether an operator has
+    anything to do about it. Written twice, the two disagreed in the ordinary
+    direction -- the serve path refused a build on every query while the status
+    command answered ``stale: false`` with an empty remedy, for the very file the
+    search had just refused, and ``_PROFILE_MISMATCH``'s own note says *`theurian
+    index status` is where an operator would be told*.
+
+    Equality, and it refuses in both directions for two different failures. A
+    *wider* build holds text this deployment does not serve, and an FTS5
+    external-content table scores what it returns against collection statistics
+    -- ``N``, ``avgdl``, per-term document frequencies -- computed over every row
+    it holds, so the withheld rows price the visible ones even though no query
+    could return them (T-17a on this axis). A *narrower* build is missing rows
+    the deployment does serve, and an index that silently answers less is the
+    ``count: 0, indexed: true`` shape every other check exists to prevent.
+
+    Compared against the set the pointer recorded rather than a ceiling word
+    re-expanded here: the recorded set is the predicate the build actually
+    applied, and re-deriving it would be a second derivation that can drift from
+    the first (see :func:`encode_sensitivities`).
+    """
+    built_for = decode_sensitivities(recorded)
+    if built_for is None:
+        return ProfileVerdict.UNRECORDED
+    return ProfileVerdict.MATCHES if built_for == served else ProfileVerdict.MISMATCH
+
+
 @dataclass(frozen=True, slots=True)
 class ServingProfile:
     """One deployment's declared sensitivity ceiling, expanded once.

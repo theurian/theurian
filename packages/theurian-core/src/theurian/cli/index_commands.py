@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Final
 
@@ -33,8 +34,12 @@ import typer
 
 from theurian.application.authorization import (
     AuthorizationGrant,
+    ProfileVerdict,
     StaticAuthorizationProvider,
+    decode_sensitivities,
+    encode_sensitivities,
     load_serving_profile,
+    recorded_flavor_verdict,
 )
 from theurian.application.forest_builder import ForestBuilder
 from theurian.application.index_builder import IndexBuilder, IndexRequest
@@ -383,6 +388,16 @@ def index_status(as_json: JsonOption = False) -> None:
     "no built state" here for the same file would send a person to run
     ``theurian migrate apply`` for state that was never the problem, while the
     corrupt file sat on disk the whole time.
+
+    **The invariant that governs all of it: whatever the ranked path refuses,
+    this command reports as stale.** It was stated above about the schema
+    version and held about nothing else. A build whose recorded disclosure
+    flavor is not the one in force degrades every ``knowledge.search`` to an
+    unranked scan with ``indexed: false`` (``serving-profile-mismatch``), and
+    this command answered ``stale: false`` with an empty remedy -- while
+    ``mcp/search.py``'s own note for that fallback says an operator would be told
+    *here*. The levels are named on both sides, because that is exactly what the
+    fallback withholds from an agent and defers to this terminal.
     """
     from theurian.cli.commands import _emit, _read_active, _require_project  # noqa: PLC0415 - cycle
 
@@ -413,7 +428,14 @@ def index_status(as_json: JsonOption = False) -> None:
     # freshness that was never established is what this command exists to avoid.
     index_project = (published or {}).get("projectId")
     orphaned = published is not None and index_project != context.project_id.value
-    stale = published is None or indexed != current or schema != INDEX_SCHEMA_VERSION or orphaned
+    profile = _profile_state(published)
+    stale = (
+        published is None
+        or indexed != current
+        or schema != INDEX_SCHEMA_VERSION
+        or orphaned
+        or profile.stale
+    )
 
     _emit(
         {
@@ -430,15 +452,99 @@ def index_status(as_json: JsonOption = False) -> None:
             "stale": stale,
             "orphaned": orphaned,
             "knowledgeNotApplied": needs_apply,
+            **profile.payload,
             "remedy": _remedy(
                 stale=stale,
                 needs_apply=needs_apply,
                 orphaned=orphaned,
                 pointer_corrupt=pointer.unreadable,
+                profile_remedy=profile.remedy,
             ),
         },
         as_json=as_json,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _ProfileState:
+    """What this deployment serves, what the published build holds, and the gap.
+
+    A record rather than five locals, so ``index_status`` reads as one line about
+    the disclosure axis beside its one line about each other axis -- and so the
+    fields cannot be assembled two different ways by a later edit.
+    """
+
+    #: The keys ``index status`` publishes for this axis, ready to merge.
+    payload: dict[str, Any]
+    #: Whether this axis alone makes the published build unusable.
+    stale: bool
+    #: What to run when it is the profile itself that cannot be read, or ``""``.
+    #: Ahead of every other remedy, because `theurian index build` refuses on
+    #: exactly the same refusal: telling an operator to rebuild would name a
+    #: command that cannot run until this is fixed.
+    remedy: str
+
+
+def _profile_state(published: dict[str, Any] | None) -> _ProfileState:
+    """Compare the published build's disclosure flavor against the one in force.
+
+    Reads the ceiling through the same :func:`load_serving_profile` the build and
+    the daemon use, and judges it with the same
+    :func:`~theurian.application.authorization.recorded_flavor_verdict` the
+    ranked path stands an index aside on -- so a build ``knowledge.search``
+    refuses cannot be reported fresh here.
+
+    **Never raises**, for the reason :func:`_index_schema_version` does not: a
+    profile file the operator has made unreadable is a status to report, and a
+    status command that ends in a traceback is a status command at the one moment
+    it is needed. The refusal's own message and remedy are published instead --
+    this is an operator at their own terminal, the reader ``mcp/search.py``
+    defers the level names to.
+    """
+    try:
+        served: frozenset[Sensitivity] | None = (
+            StaticAuthorizationProvider(load_serving_profile(default_data_dir()))
+            .deployment_grant()
+            .sensitivities
+        )
+        fault = ""
+        remedy = ""
+    except TheurianError as exc:
+        served = None
+        fault = str(exc)
+        remedy = exc.remedy or "Run `theurian doctor`."
+
+    recorded = (published or {}).get("indexedSensitivities")
+    verdict = None if served is None else recorded_flavor_verdict(recorded, served=served)
+    return _ProfileState(
+        payload={
+            "servedSensitivities": None if served is None else encode_sensitivities(served),
+            "indexedSensitivities": _decoded_flavor(recorded),
+            "profileMismatch": verdict is ProfileVerdict.MISMATCH,
+            # Only meaningful once something is published: a project that has
+            # never built has no pointer to have recorded anything, and
+            # `published is None` already carries that.
+            "profileUnrecorded": published is not None and verdict is ProfileVerdict.UNRECORDED,
+            "profileUnreadable": fault,
+        },
+        # An unreadable profile makes the comparison impossible, and a build
+        # that cannot be shown to match the deployment is not one this command
+        # may call fresh -- the same reasoning `orphaned` applies to a pointer
+        # that records no project id.
+        stale=served is None or (published is not None and verdict is not ProfileVerdict.MATCHES),
+        remedy=remedy,
+    )
+
+
+def _decoded_flavor(recorded: object) -> list[str] | None:
+    """The levels a pointer recorded, written back in disclosure order.
+
+    ``None`` when the value names none, which is what ``profileUnrecorded``
+    reports as a flag: a list is published only when there is one to publish, so
+    a reader never has to tell an empty list from an unreadable value.
+    """
+    levels = decode_sensitivities(recorded)
+    return None if levels is None else encode_sensitivities(levels)
 
 
 def _index_schema_version(paths: ProjectPaths, published: dict[str, Any] | None) -> int | None:
@@ -456,10 +562,22 @@ def _index_schema_version(paths: ProjectPaths, published: dict[str, Any] | None)
     return SqliteIndexStore(path).schema_version() if path.is_file() else 0
 
 
-def _remedy(*, stale: bool, needs_apply: bool, orphaned: bool, pointer_corrupt: bool) -> str:
+def _remedy(
+    *,
+    stale: bool,
+    needs_apply: bool,
+    orphaned: bool,
+    pointer_corrupt: bool,
+    profile_remedy: str,
+) -> str:
     """The next command to run, in the order it has to be run in.
 
-    A corrupt pointer is named first, ahead of even ``orphaned``: it is the one
+    An unreadable serving profile is named first, ahead of the corrupt pointer:
+    `theurian index build` reads that file too and refuses on the same refusal
+    (:func:`_deployment_grant`), so every remedy below it names a command that
+    cannot run until this one has been carried out.
+
+    A corrupt pointer is named next, ahead of even ``orphaned``: it is the one
     case where "run `theurian index build`" alone understates what happened, and
     it is the exact remedy ``knowledge.search`` already gives an agent for the
     same file (:data:`~theurian.application.project_service.INDEX_POINTER_REMEDY`)
@@ -468,7 +586,14 @@ def _remedy(*, stale: bool, needs_apply: bool, orphaned: bool, pointer_corrupt: 
     Indexing before applying would build from a database that is itself behind,
     producing a fresh-looking index of stale knowledge. An orphaned index is
     named next because the rebuild it asks for subsumes both other remedies.
+
+    A profile *mismatch* takes no arm of its own. One rebuild under the ceiling
+    in force is the whole cure, which is what the ``stale`` arm already says --
+    and an arm that repeated it would be a second place for the sentence to
+    drift from ``_PROFILE_MISMATCH``'s.
     """
+    if profile_remedy:
+        return profile_remedy
     if pointer_corrupt:
         return INDEX_POINTER_REMEDY
     if orphaned:

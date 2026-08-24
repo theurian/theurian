@@ -67,7 +67,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
-from theurian.application.authorization import decode_sensitivities
+from theurian.application.authorization import ProfileVerdict, recorded_flavor_verdict
 from theurian.application.project_service import (
     INDEX_POINTER_REMEDY,
     BuildProvenance,
@@ -221,7 +221,14 @@ _NO_DRAFTS_INDEXED = Fallback(
 #: in force. The remedy does not depend on which, and this reply goes to a caller
 #: that has no business learning the shape of the deployment's ceiling from a
 #: degraded search. `theurian index status` is where an operator at their own
-#: terminal would be told, the same split `_PROJECT_MISMATCH` makes for ids.
+#: terminal *is* told, the same split `_PROJECT_MISMATCH` makes for ids: it
+#: publishes `profileMismatch`, `profileUnrecorded`, and both level sets by name.
+#:
+#: That sentence was written before the command implemented it, and read as a
+#: promise for one release: `index status` reported `stale: false` with an empty
+#: remedy for a build every query here was degrading. Both surfaces now read one
+#: answer (`application.authorization.recorded_flavor_verdict`), so the split is
+#: a division of what each reader is told rather than of who bothered to check.
 _PROFILE_MISMATCH = Fallback(
     SERVING_PROFILE_MISMATCH,
     "This project's index was built under a different disclosure profile than this "
@@ -399,24 +406,17 @@ def _published_index(  # noqa: PLR0911 - one return per distinguishable fallback
     # passing, while this build is the wrong build for this deployment on every
     # query it will ever be asked.
     #
-    # Equality, and it refuses in both directions for two different failures. A
-    # *wider* build holds text this deployment does not serve, and an FTS5
-    # external-content table scores what it returns against collection
-    # statistics -- `N`, `avgdl`, per-term document frequencies -- computed over
-    # every row it holds, so the withheld rows would price the visible ones even
-    # though no query could return them (T-17a on this axis). A *narrower* build
-    # is missing rows the deployment does serve, and an index that silently
-    # answers less is the `count: 0, indexed: true` shape every other check here
-    # exists to prevent.
-    #
-    # Compared against the set the pointer recorded rather than a ceiling word
-    # re-expanded here: the recorded set is the predicate the build actually
-    # applied, and re-deriving it would be a second derivation that can drift
-    # from the first (see `encode_sensitivities`).
-    built_for = decode_sensitivities(published.get("indexedSensitivities"))
-    if built_for is None:
+    # The comparison itself lives in `application.authorization`, because
+    # `theurian index status` has to report as stale exactly what this refuses --
+    # and written out twice, the two disagreed: the status command answered
+    # "fresh, nothing to do" for a build every query here was degrading. Its
+    # docstring carries the reasoning for the equality and for both directions.
+    verdict = recorded_flavor_verdict(
+        published.get("indexedSensitivities"), served=visible_sensitivities
+    )
+    if verdict is ProfileVerdict.UNRECORDED:
         return _PROFILE_UNRECORDED
-    if built_for != visible_sensitivities:
+    if verdict is ProfileVerdict.MISMATCH:
         return _PROFILE_MISMATCH
 
     indexes_unapproved = bool(published.get("indexesUnapproved", False))

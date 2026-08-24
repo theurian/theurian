@@ -297,12 +297,16 @@ def test_a_step_can_be_found_by_id() -> None:
 
 
 def test_every_step_of_the_specification_has_an_identifier() -> None:
-    """§6.2 lists 19 rows; row 19 is the report itself rather than a step.
+    """§6.2 lists 19 numbered rows and one unnumbered; row 19 is the report itself.
+
+    18 numbered steps, plus ``serving-profile`` -- §6.2's row 6a, added by #119
+    with the deployment serving profile and left unnumbered so that inserting it
+    does not move every "§6.2 row N" reference in the tree.
 
     A step that exists in the specification but not here would silently never
     run, and the report would look complete.
     """
-    assert len(StepId) == 18
+    assert len(StepId) == 19
     assert StepId.PLATFORM is next(iter(StepId)), "platform check runs first"
 
 

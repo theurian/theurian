@@ -73,9 +73,12 @@ from theurian.application.authorization import (
     DEPLOYMENT_TENANT,
     SERVING_PROFILE_FILENAME,
     AuthorizationGrant,
+    StaticAuthorizationProvider,
+    load_serving_profile,
 )
 from theurian.application.project_service import (
     INDEX_POINTER_REMEDY,
+    BuildProvenance,
     ProjectPaths,
     ProjectRegistry,
     read_active_index_pointer,
@@ -87,6 +90,7 @@ from theurian.domain.chunking import Chunk
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import Sensitivity
 from theurian.domain.identifiers import ProjectId
+from theurian.infrastructure.secrets.file_store import default_data_dir
 from theurian.infrastructure.sqlite.index_schema import INDEX_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.index_store import (
     IndexableChunk,
@@ -103,6 +107,8 @@ from theurian.mcp.search import (
     NO_INDEX,
     SERVING_PROFILE_MISMATCH,
     UNAPPROVED_NOT_INDEXED,
+    Fallback,
+    _published_index,
 )
 from theurian.mcp.tools import MAX_RESULTS
 
@@ -1607,6 +1613,57 @@ async def test_a_ceiling_narrowed_after_a_build_degrades_and_still_withholds(
 
 
 # -- `theurian index status` --------------------------------------------------
+
+
+@_CASES
+def test_index_status_reports_as_stale_whatever_the_ranked_path_refuses(
+    project: Path,
+    broken: tuple[str, dict[str, Any]],
+) -> None:
+    """The invariant ``index_status``' own docstring states, held over the table.
+
+    It says an index the ranked path has refused must not be reported "fresh,
+    nothing to do", and it said it about *one* axis: the schema version. Two more
+    were added afterwards and neither reached this command. A build whose
+    recorded disclosure flavor is not the one in force degrades every
+    `knowledge.search` to an unranked scan with ``indexed: false``, while
+    ``theurian index status`` answered ``stale: false`` with an empty remedy --
+    and ``mcp/search.py``'s own note for that fallback says *`theurian index
+    status` is where an operator at their own terminal would be told*.
+
+    So the pin is the relationship rather than a list of axes:
+    :func:`~theurian.mcp.search._published_index` is asked, and whatever it
+    refuses has to come back stale here. A recipe it does *not* refuse is the
+    control, and there are two -- ``holds-no-drafts``, which is a refusal of a
+    request parameter rather than of the file, and ``table-dropped``, whose
+    version is correct and whose missing table this command does not open. The
+    second is a recorded residual, not a claim that the file is healthy: that one
+    surfaces at query time as ``index-unreadable``.
+
+    The grant is read through the shipped path rather than constructed, so the
+    two sides are compared under the ceiling the CLI itself would resolve.
+    """
+    grant = StaticAuthorizationProvider(load_serving_profile(default_data_dir())).deployment_grant()
+
+    published = _published_index(
+        _paths(project),
+        project_id="demo",
+        include_unapproved=False,
+        visible_sensitivities=grant.sensitivities,
+        provenance=BuildProvenance.default(),
+    )
+    status = _must(project, "index", "status")
+
+    if isinstance(published, Fallback):
+        assert status["stale"] is True, (
+            f"the ranked path refuses this build ({published.reason}) and `index status` "
+            f"calls it fresh: {status}"
+        )
+        assert status["remedy"], "a stale index with no remedy is a support request"
+    else:
+        assert status["stale"] is False, (
+            "the control: the ranked path uses this build, so nothing here is stale"
+        )
 
 
 def test_index_status_reports_the_schema_it_found_and_the_one_it_wants(project: Path) -> None:

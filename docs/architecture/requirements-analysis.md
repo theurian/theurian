@@ -371,6 +371,7 @@ the state a run with no findings at all reaches is
 | 4 | Data directory | `~/.theurian` exists, mode 0700 | `mkdir -p`, `chmod 700` | tighten mode, report the change |
 | 5 | Token | token exists and is ≥ 32 bytes | generate via CSPRNG | reuse; never regenerate silently |
 | 6 | Token storage | file mode 0600, or Keychain entry | write | `chmod`, report |
+| 6a | Serving profile | `~/.theurian/auth/serving-profile` names a ceiling this build can honour | — never `Missing`: an undeclared ceiling is `NotApplicable`, and the summary names the default in force | report the refusal and its remedy; setup never writes or repairs that file |
 | 7 | Env reference | `~/.theurian/env` holds a current Theurian-owned block | write the block, or rewrite a stale one, leaving every other line alone | markers that delimit no single block: report, never write |
 | 8 | Daemon service | LaunchAgent / systemd user unit present | install a user-scoped unit | show a diff, back up, ask |
 | 9 | Daemon running | `GET /health` returns 200 | start the service | reuse the existing daemon |
@@ -384,6 +385,15 @@ the state a run with no findings at all reaches is
 | 17 | Initial index | an `active_index` exists for the current `state_hash` | build | reuse |
 | 18 | Serena detection | a `serena` MCP entry exists | — | report coexistence, change nothing |
 | 19 | Report | — | print the changed-files list | — |
+
+**Row 6a is not numbered, and that is deliberate.** It arrived with the
+deployment serving profile ([#119](https://github.com/theurian/theurian/issues/119),
+ADR-0025) — long after this table was written — and it belongs beside the token,
+because it is the other operator-owned file in `auth/`. Inserting it as a numbered
+row would move every row below it, and "§6.2 row *N*" is cited across the tree,
+the threat model included. `StepId` carries it as `SERVING_PROFILE`, `STEPS`
+places it after `token-storage`, and `probe_serving_profile` states why none of
+its three arms is `Missing`.
 
 **Rows 2 and 3 are required, not implemented.** Setup neither installs Core nor
 verifies an artifact.
@@ -539,10 +549,10 @@ returns, `"failed"` when it raises
 apply is the condition, not being one of the seven — a step whose probe found it
 `Satisfied` never reaches it, a `Conflicting` one never does either (approval
 buys progress on the rest of the list, never an overwrite), and neither does any
-step after a critical failure has halted the run. The other eleven steps — rows
-1–3, 10–13 and 15–18; row 19 is the report itself and not a step — have no apply
-and never journal, so the file records what setup *did* and not what it looked
-at.
+step after a critical failure has halted the run. The other twelve steps — rows
+1–3, 6a, 10–13 and 15–18; row 19 is the report itself and not a step — have no
+apply and never journal, so the file records what setup *did* and not what it
+looked at.
 
 The journal is append-only and a record is `{"step", "event", "detail"}`. There
 is no path *field* — but `detail` is prose written for a person, and it does name

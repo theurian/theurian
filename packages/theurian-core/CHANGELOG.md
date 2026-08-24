@@ -120,6 +120,21 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   **Tenant and ACL group are a weaker claim and are recorded as one.** They are
   discharged degenerately — refused at write time, so nothing is stored to
   withhold — not enforced by any predicate.
+
+  **Both operator surfaces can see the ceiling.** `theurian index status` gains
+  `profileMismatch`, `profileUnrecorded`, `profileUnreadable`,
+  `servedSensitivities` and `indexedSensitivities` — additive keys, so a client
+  reading the existing ones is unaffected — and folds all three refusals into
+  `stale`, with the profile's own remedy named ahead of every other when the file
+  itself cannot be read. Without them a narrowed ceiling degraded every
+  `knowledge.search` to an unranked scan with `indexed: false` while `index
+  status` answered `stale: false` and an empty remedy, for the very build the
+  search had refused. Both surfaces now read one comparison
+  (`recorded_flavor_verdict`), because that pair was written twice and disagreed.
+  `theurian doctor` gains a `serving-profile` step that names the level in force
+  and reports a profile it cannot honour as a problem — `not-applicable` when
+  none is declared, because declaring none is the ordinary state and no command
+  clears it.
 - **`system.capabilities` reports `sensitivityEnforcement: true`**
   ([#119](https://github.com/theurian/theurian/issues/119)). An eighth flag in the
   capability block, and a client should read it as changing what an *empty*
