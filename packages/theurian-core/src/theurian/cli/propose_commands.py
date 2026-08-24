@@ -391,7 +391,8 @@ def propose_accept(
     left exactly as it was, so the change can be corrected and accepted rather
     than re-drafted from nothing (ADR-0027, #307).
 
-    **Secret scanning** (SEC-11) runs over every body first, under the policy
+    **Secret scanning** (SEC-11) runs over the bodies and the migration
+    document's author-written field values first, under the policy
     ``security.secretScan`` selects in ``.theurian/config.yaml``: ``block``,
     which is also what an absent key or an absent file selects, refuses the
     acceptance; ``warn`` proceeds and reports what it found on the result;
