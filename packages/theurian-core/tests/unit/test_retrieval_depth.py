@@ -557,6 +557,137 @@ def test_a_pinned_moment_still_returns_valid_rows_ranked_below_candidate_depth()
     )
 
 
+#: A deployment that serves up to `internal` and no higher, and the level the
+#: withheld rows carry *now* -- above that ceiling, so `CanonicalVisibility`
+#: withholds them on the item's current sensitivity (#119). Spelled out rather than
+#: read from the shipped default, the reason :data:`EVERY_SENSITIVITY` is.
+UP_TO_INTERNAL = frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL})
+ABOVE_THE_CEILING = Sensitivity.RESTRICTED
+
+
+@final
+class _SensitivitySession:
+    """A canonical read session whose first ``withheld`` items are current at a
+    level this deployment does not serve, and the rest within it -- so the real
+    ``CanonicalVisibility`` withholds by sensitivity, exercised without a database.
+
+    Every item is approved, current, and valid at :data:`MOMENT`, so the only thing
+    that can withhold a row is ``may_disclose`` on its *current* sensitivity. That
+    isolation is what lets the behaviour test below tell the ceiling gate's
+    placement apart: a validity or status difference would move the same counts.
+    """
+
+    def __init__(self, withheld_ids: frozenset[str]) -> None:
+        self._withheld_ids = withheld_ids
+
+    def __enter__(self) -> _SensitivitySession:
+        return self
+
+    def __exit__(self, *details: object) -> None:
+        return None
+
+    def list_items(self, context: RequestContext) -> tuple[KnowledgeItem, ...]:
+        raise NotImplementedError  # pragma: no cover - CanonicalVisibility never lists
+
+    def get_item(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:  # noqa: ARG002
+        number = int(item_id.value.rsplit("-", 1)[-1])
+        current = ABOVE_THE_CEILING if item_id.value in self._withheld_ids else Sensitivity.INTERNAL
+        return KnowledgeItem(
+            item_id=item_id,
+            project_id=DEMO,
+            namespace="architecture",
+            kind=KnowledgeKind.ARCHITECTURE,
+            status=KnowledgeStatus.APPROVED,
+            current_revision_id=RevisionId(f"01K1M{number:021d}"),
+            owner="platform-team",
+            trust_level=TrustLevel.REVIEWED,
+            sensitivity=current,
+            validity=ValidityPeriod(valid_from=MOMENT - timedelta(days=1)),
+        )
+
+    def get_item_exact(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
+        # This fake resolves no alias, so the exact read is the resolving one; it
+        # exists to satisfy the port `CanonicalVisibility` depends on (T-21).
+        return self.get_item(context, item_id)
+
+    def get_revision(
+        self, context: RequestContext, revision_id: RevisionId
+    ) -> KnowledgeRevision | None:
+        raise NotImplementedError  # pragma: no cover - not read by CanonicalVisibility
+
+
+def _search_withholding_by_sensitivity(
+    withheld: int,
+) -> tuple[_CountingIndex, SearchOutcome, frozenset[str]]:
+    """One ordinary search over an all-approved corpus whose top ``withheld`` rows
+    are current at a level above this deployment's ceiling, served up to ``internal``.
+    """
+    rows = tuple(_moment_row(number) for number in range(VISIBLE_TAIL))
+    withheld_ids = frozenset(row.item_id for row in rows[:withheld])
+    index = _CountingIndex(rows)
+    service = RetrievalService(index)
+    visibility = CanonicalVisibility(
+        _SensitivitySession(withheld_ids),
+        DEMO_CONTEXT,
+        include_unapproved=False,
+        visible_sensitivities=UP_TO_INTERNAL,
+        moment=MOMENT,
+    )
+
+    outcome = service.search(
+        SearchRequest(query="gateway", project_id="demo", visible_sensitivities=UP_TO_INTERNAL),
+        visibility,
+    )
+
+    return index, outcome, withheld_ids
+
+
+def test_a_sensitivity_withholding_lives_in_cleared_and_drives_the_depth_loop() -> None:
+    """The ceiling gate belongs in ``cleared``, not ``at_moment`` -- reached by row count.
+
+    Moving ``may_disclose`` out of ``CanonicalVisibility._may_surface`` (which
+    ``cleared`` calls) and into ``at_moment`` is caught on the AST by
+    ``test_gate_call_sites.py``, but the only *behaviour* test on the ranked ceiling
+    gate reclassifies a single row -- below :data:`CANDIDATE_DEPTH`, so the depth
+    loop's second-pass branch never runs and the move could not be seen in a
+    response. This puts fifty-one above-ceiling rows at the top of the ranking, one
+    past the threshold ``FIRST_PASS_DEPTH`` absorbs, so the branch does run.
+
+    Shipped (gate in ``cleared``): those rows fail ``cleared``, the first pass clears
+    too few, and the loop asks a second time twice as deep, reaches the visible tail
+    and returns :data:`CANDIDATE_DEPTH` rows in two passes. Moved into ``at_moment``:
+    they pass ``cleared`` (all approved), so the loop counts them toward
+    ``CANDIDATE_DEPTH``, exits on the first pass, and ``at_moment`` then strips them
+    -- a short answer at one pass.
+
+    Three complementary assertions, so the test reddens whichever way the gate is
+    broken: the pass count and the result count catch the *move* (one pass, a short
+    answer), and the withheld-absent check catches a mutation that merely *deletes*
+    the gate (an above-ceiling row reaching the response). The moment is pinned so
+    ``at_moment`` actually runs -- it returns early on ``None`` -- and every item is
+    valid at it, so validity strips nothing and only the ceiling can move a count.
+    """
+    index, outcome, withheld_ids = _search_withholding_by_sensitivity(ABSORBED_WITHHELD_ROWS + 1)
+    returned = {candidate.item_id for candidate in outcome.candidates}
+
+    assert _first_read_was_a_choice(index), (
+        "the corpus must outlast the first pass, or this measures exhaustion"
+    )
+    assert index.passes(LEXICAL_READS) == 2, (
+        "fifty-one above-ceiling rows must fail `cleared` and force a second pass; a gate "
+        "that ran in `at_moment` would let them pass `cleared` and exit at one"
+    )
+    assert index.passes(SUBSTRING_READS) == 2
+    assert len(outcome.candidates) == CANDIDATE_DEPTH, (
+        f"the depth loop must dig past the withheld rows to the visible tail: got "
+        f"{len(outcome.candidates)}"
+    )
+    assert returned.isdisjoint(withheld_ids), (
+        f"an above-ceiling row reached the response, so the ceiling gate withheld nothing: "
+        f"{sorted(returned & withheld_ids)}"
+    )
+
+
 #: Withheld counts, each twice the last, for the growth test below.
 #:
 #: Absolute like everything else here, and chosen so every rung needs several

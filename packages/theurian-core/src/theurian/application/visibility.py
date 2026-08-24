@@ -300,11 +300,17 @@ class CanonicalVisibility:
         # exclusion exists to make it unnecessary.
         #
         # Inside `cleared`, never in `at_moment`, and the two placements are not
-        # interchangeable. A withholding folded into `at_moment` runs after the
-        # `[:CANDIDATE_DEPTH]` cut, so a withheld row would have occupied a
-        # candidate slot on the way there -- the displacement defect SEC-13 was
-        # reopened by twice, where `count`, `usedTokens` and every rank move with
-        # a document the caller may not read. What makes `cleared` the *safe*
+        # interchangeable. `cleared` is what the depth loop's exit condition counts
+        # (`len(cleared) >= CANDIDATE_DEPTH` in `RetrievalService._visible_ranking`);
+        # `at_moment` runs only after that loop has stopped asking retrievers, over
+        # the whole cleared set and *before* the `[:CANDIDATE_DEPTH]` cut, not after
+        # it (`retrieval_service.py`, reordered by the HIGH in review round 2 of PR
+        # #112). So a withholding folded into `at_moment` would let a withheld row
+        # count toward `CANDIDATE_DEPTH` and occupy a candidate slot the loop's exit
+        # condition tallied -- displacing a visible row the loop then never digs
+        # deeper to reach -- the displacement defect SEC-13 was reopened by twice,
+        # where `count`, `usedTokens` and every rank move with a document the caller
+        # may not read. What makes `cleared` the *safe*
         # place for this one, when `self._moment` is deliberately excluded from
         # it, is that no request parameter reaches this set: `moment` is chosen
         # freely by the caller, so folding it in here would hand them a dial with
