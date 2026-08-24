@@ -2748,12 +2748,16 @@ def _document_findings(document: Mapping[str, object]) -> tuple[ProposalSecretFi
     """
     findings: list[ProposalSecretFinding] = []
     for at, value in _authored_strings(document):
+        # Read before the extend rather than inside it. The budget is a function
+        # of a list this statement is about to append to, so computing it in the
+        # generator expression would tie its value to when that expression is
+        # first advanced. It is never zero, because the loop breaks at the
+        # ceiling -- and `scan_text` with `max_findings=0` appends before it
+        # checks, so it would report one finding anyway.
+        remaining = MAX_FINDINGS - len(findings)
         findings.extend(
             ProposalSecretFinding(location=at, finding=finding)
-            # Never zero: the loop below breaks at the ceiling, so `remaining`
-            # is at least 1 here. `scan_text` with `max_findings=0` appends
-            # before it checks and would report one finding anyway.
-            for finding in scan_text(value, max_findings=MAX_FINDINGS - len(findings))
+            for finding in scan_text(value, max_findings=remaining)
         )
         if len(findings) >= MAX_FINDINGS:
             break
