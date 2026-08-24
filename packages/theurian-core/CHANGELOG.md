@@ -147,10 +147,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   that comparison now runs its own ungated count internally instead of reusing the
   published sum.
 
-- **BREAKING (contract) — `theurian propose accept` refuses a secret in the
-  migration document, not only in a body**
-  ([#336](https://github.com/theurian/theurian/issues/336)). The security entry
-  above carries the reasoning; this is the part a caller can observe. **Old
+- **`theurian propose accept` refuses a secret in the migration document, not
+  only in a body**
+  ([#336](https://github.com/theurian/theurian/issues/336)). A tightening of the
+  approval gate, not a wire-contract break — `secretFindings` keeps its shape and
+  no read is affected — but a behaviour a caller can observe, so it is recorded
+  here as well as in the security entry above. **Old
   shape:** an acceptance was refused under `security.secretScan: block` only
   when an incoming *body file* appeared to carry a secret, and every entry in
   `accept --json`'s `secretFindings` began with a body path relative to
