@@ -595,16 +595,44 @@ _LOCAL_ACCEPT_FIRST_STEP: Final = (
 )
 
 
-def _accept_steps(accepted: AcceptedProposal) -> list[str]:
-    """The accept steps, with the first one corrected for a local proposal.
+#: The step a ``warn`` acceptance that landed a flagged body gets, ahead of
+#: everything else. Under ``warn`` the acceptance succeeds (exit 0) and the
+#: findings ride on ``secretFindings`` -- but with no next step, the report told
+#: the author to open a pull request over a body the scan believes carries a live
+#: credential (code-review M-4, adversarial M-3). The wording is
+#: :meth:`~theurian.application.proposal_service.ProposalService._secret_refusal`'s
+#: rotate advice, in the tense the landed case needs: the body is already in
+#: ``.theurian/knowledge/`` rather than still in the proposal.
+_SECRET_ROTATE_STEP: Final = (
+    "The secret scan flagged a body this acceptance landed (security.secretScan is `warn`, "  # noqa: S105 - operator guidance, not a secret
+    "so it proceeded). Treat each flagged value as exposed and rotate it -- it is now in the "
+    "working tree, and in Git history once this is committed. The findings, with their "
+    "locations, are in `secretFindings`. If any is a false positive, no action is needed for "
+    "it."
+)
 
-    Only the first step differs, because only the first step names the proposal
-    directory. Built from :data:`_ACCEPT_STEPS`' own tail rather than restated,
-    so the two lists cannot drift where they agree.
+
+def _accept_steps(accepted: AcceptedProposal) -> list[str]:
+    """The accept steps, with the first one corrected for a local proposal and a
+    rotate step prepended when ``warn`` landed a flagged body.
+
+    Only the first of the standing steps differs for a local proposal, because
+    only it names the proposal directory. Built from :data:`_ACCEPT_STEPS`' own
+    tail rather than restated, so the two lists cannot drift where they agree.
+
+    A ``warn`` finding prepends :data:`_SECRET_ROTATE_STEP`: the acceptance
+    succeeded and the exit code says nothing is wrong, so the rotate instruction
+    has to live in the steps or it lives nowhere (findings are non-empty only
+    under ``warn`` -- ``block`` refuses and ``off`` scans nothing).
     """
-    if not accepted.local:
-        return list(_ACCEPT_STEPS)
-    return [_LOCAL_ACCEPT_FIRST_STEP, *_ACCEPT_STEPS[1:]]
+    standing = (
+        list(_ACCEPT_STEPS)
+        if not accepted.local
+        else [_LOCAL_ACCEPT_FIRST_STEP, *_ACCEPT_STEPS[1:]]
+    )
+    if accepted.secret_scan.findings:
+        return [_SECRET_ROTATE_STEP, *standing]
+    return standing
 
 
 #: The steps that follow a draft. The judgement and the moves are the human's;

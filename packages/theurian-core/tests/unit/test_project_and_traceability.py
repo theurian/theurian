@@ -164,6 +164,32 @@ def test_the_local_proposal_directory_is_ignored_without_being_derived() -> None
     assert not _project().is_derived(PurePosixPath(".theurian/proposals-local/01K/a.yaml"))
 
 
+def test_each_managed_ignore_section_labels_by_the_derived_test_it_claims() -> None:
+    """A section's label is a claim ``Project.is_derived`` must agree with (M-1).
+
+    The block carries two labels since ADR-0028: "Derived artifacts. Rebuilt from
+    Git-tracked migrations" and "Authored ... Nothing rebuilds it". ``doctor``
+    reads ``is_derived`` to decide whether a tracked path is a rebuildable
+    artifact it may tell an operator to delete, so an entry filed under the
+    derived label that ``is_derived`` calls ``False`` -- or the reverse -- is a
+    label that lies about the entry beneath it. Moving
+    ``.theurian/proposals-local/`` under the derived header is exactly that, and a
+    mutation doing so survives every other rule here; this is where it dies.
+
+    The label's derived-claim is read from its own ADR-0004 wording ("Rebuilt"),
+    so a reword that changes what a label claims is meant to land on this test.
+    """
+    project = _project()
+
+    for section in GITIGNORE_SECTIONS:
+        claims_derived = "Rebuilt" in section.comment
+        for entry in section.entries:
+            assert project.is_derived(PurePosixPath(entry)) == claims_derived, (
+                f"{entry!r} is filed under {section.comment!r} (derived={claims_derived}), but "
+                f"Project.is_derived reports {project.is_derived(PurePosixPath(entry))}"
+            )
+
+
 def test_every_managed_ignore_entry_is_declared_under_exactly_one_label() -> None:
     """`GITIGNORE_ENTRIES` is the sections' concatenation, not a second list.
 

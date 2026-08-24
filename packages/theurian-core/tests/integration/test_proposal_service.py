@@ -899,6 +899,58 @@ def test_a_filename_check_still_names_a_short_wrong_id(tmp_path: Path) -> None:
     assert "01K1BBBBBB01234567890ABCDE" in str(caught.value)
 
 
+def test_a_dangling_symlink_in_one_location_still_forces_the_ambiguity_refusal(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """adversarial M-4: presence is ``lexists``, so a broken link is "in the way".
+
+    A proposal exists in ``.theurian/proposals/`` and a *dangling* symlink of the
+    same id sits in ``.theurian/proposals-local/``. Both are present -- the link
+    is something in the way of this id even though it resolves to nothing -- so
+    the accept is refused naming both, never resolved by precedence to the real
+    one (ADR-0028). ``exists()`` following the link would drop it and let the
+    tracked proposal win silently, the choice the ambiguity refusal exists to
+    prevent; ``exists(follow_symlinks=False)`` is what keeps it real.
+    """
+    drafted = service.draft(_request())
+    link = paths.proposals_local / drafted.proposal_id.value
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(paths.proposals_local / "target-that-does-not-exist")
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert "two places at once" in str(caught.value), str(caught.value)
+    assert "proposals-local" in str(caught.value) and "proposals/" in str(caught.value)
+
+
+def test_a_symlinked_migration_file_is_named_as_such_not_read_through(
+    service: ProposalService,
+) -> None:
+    """adversarial M-5: the specific refusal, not a generic downstream one.
+
+    ``_require_migration`` rejects a name-matching migration file that is a
+    *symlink* by name, before anything reads through it -- so the author is told a
+    link is in the way rather than sent to draft again over a "missing" migration.
+    Dropping that check (``symlinked = []``) lets the link be read as the
+    migration; containment then holds through ``_reject_symlink_in_chain``, but
+    the specific diagnosis is lost. This pins the message; the containment is
+    covered separately.
+    """
+    drafted = service.draft(_request())
+    migration = drafted.migration_file
+    # Move the real file aside under a non-migration name, then leave a symlink of
+    # the migration's own name pointing at it: name-matched, but a link.
+    real = migration.with_name(migration.name + ".real")
+    migration.rename(real)
+    migration.symlink_to(real)
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert "symlinked migration file" in str(caught.value), str(caught.value)
+
+
 def test_accept_replaces_an_unpinned_file_at_the_destination(
     service: ProposalService,
 ) -> None:

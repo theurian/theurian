@@ -9,6 +9,8 @@ migration commands actually applies.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -401,6 +403,46 @@ def test_the_rule_that_hides_a_local_proposal_is_one_a_clone_would_inherit(
     source, _, rest = checked.stdout.partition(":")
     assert source == ".gitignore", checked.stdout
     assert rest.split(":")[1].startswith(".theurian/proposals-local/"), checked.stdout
+
+
+#: A base64url token derived from a fixed seed -- the shape the content scanner
+#: flags -- split from its seed so no credential-shaped literal sits in the file
+#: for gitleaks to judge (the discipline `test_content_secrets.py` records).
+_PLANTED_TOKEN = (
+    base64.urlsafe_b64encode(hashlib.sha256(b"propose-cli warn rotate fixture (#198)").digest())
+    .decode()
+    .rstrip("=")
+)
+
+
+def test_a_warn_acceptance_that_lands_a_secret_leads_with_rotate_guidance(
+    project: Path,
+) -> None:
+    """code-review M-4 / adversarial M-3: `warn` proceeds, so the steps must warn.
+
+    Under `secretScan: warn` the acceptance succeeds (exit 0) and the findings
+    ride on `secretFindings` -- but the nextSteps used to open with "review the
+    diff, then open a pull request", saying nothing about a body the scan believes
+    carries a live credential. The exit code is 0, so the rotate instruction lives
+    in the steps or it lives nowhere. It now leads them.
+    """
+    (project / ".theurian" / "config.yaml").write_text(
+        'security:\n  secretScan: "warn"\n', encoding="utf-8"
+    )
+    (project / "body.md").write_text(
+        f"# Retry policy\n\nThree attempts.\n\n    THEURIAN_MCP_TOKEN={_PLANTED_TOKEN}\n",
+        encoding="utf-8",
+    )
+    _, drafted = _draft(project)
+
+    code, accepted = _invoke("propose", "accept", drafted["proposalId"])
+
+    assert code == 0, accepted
+    assert accepted["secretScanPolicy"] == "warn"
+    assert accepted["secretFindings"], "the fixture body must actually be flagged"
+    first = accepted["nextSteps"][0]
+    assert "rotate" in first and "exposed" in first, f"the rotate step does not lead: {first}"
+    assert accepted["nextSteps"][1:] == list(_ACCEPT_STEPS), "the standing steps must follow intact"
 
 
 def _roll_the_block_back_to_pre_adr_0028(root: Path) -> None:
