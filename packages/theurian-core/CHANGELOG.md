@@ -55,6 +55,31 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ([#330](https://github.com/theurian/theurian/issues/330)), and a migration
   written straight into `.theurian/migrations/` never passes through `accept` at
   all. T-15 stays **High** for that reason, re-graded when #329 ships.
+- **`theurian propose --local` drafts under `.theurian/proposals-local/`**
+  ([#265](https://github.com/theurian/theurian/issues/265), ADR-0028), for an
+  author whose draft must not leave the machine. `theurian init` writes that
+  path into the managed `.gitignore` block, and **a committed ignore rule is
+  inherited by every clone**, which is the one property the `.git/info/exclude`
+  fence it replaces does not have. The directory is git-ignored and **not**
+  derived: nothing rebuilds it, so `doctor` must never describe a force-added
+  local proposal as a rebuildable artifact, and `init` creates it without a
+  `.gitkeep`.
+
+  `propose accept` reads both locations through one implementation — a second
+  location must not become a second reader (SEC-7) — and **refuses a proposal id
+  present in both**, naming both paths rather than picking one: two directories
+  of that id can hold different bytes, and choosing silently would accept one
+  while the author was reading the other.
+
+  **What it is not.** `--local` covers the *proposal*, not the knowledge:
+  accepting one still writes the migration and the body into their tracked
+  locations, so it hides the pre-approval artifact and nothing after it. There
+  is no overlay for locally-accepted knowledge
+  ([#332](https://github.com/theurian/theurian/issues/332)), nothing grades a
+  non-`public` proposal that a contributor commits from a public repository
+  ([#333](https://github.com/theurian/theurian/issues/333)), and `git clean -xdf`
+  deletes the directory — an accepted availability residual, recorded rather than
+  fixed ([#334](https://github.com/theurian/theurian/issues/334)).
 
 ### Changed
 
