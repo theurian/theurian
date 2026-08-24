@@ -82,6 +82,39 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ([#333](https://github.com/theurian/theurian/issues/333)), and `git clean -xdf`
   deletes the directory — an accepted availability residual, recorded rather than
   fixed ([#334](https://github.com/theurian/theurian/issues/334)).
+- **A deployment declares one sensitivity ceiling, and it is enforced**
+  ([#119](https://github.com/theurian/theurian/issues/119), ADR-0025). One word —
+  `public`, `internal`, `confidential` or `restricted` — in
+  `<data_dir>/auth/serving-profile`, beside the bearer token, mode 0600 and
+  refused if another local account can reach it. It is deliberately **not** read
+  from a project's Git-tracked `.theurian/config.yaml`: repository contributors
+  are an untrusted actor class, and a committed ceiling would make *raising* it a
+  contributor-authored access-control change. An absent file is the ordinary
+  state and selects this build's default; a word the file does not recognise
+  **refuses at startup** rather than falling back, because an access control that
+  widens on a typo is not one, and the refusal names the four valid words without
+  echoing more than the one it read.
+
+  Enforcement is three places deep, not a predicate: a build writes no chunk row
+  and no summary node for an item above the ceiling, so the withheld text never
+  reaches `chunks_fts`, `chunks_trigram`, `nodes_fts` or `nodes_trigram` where
+  BM25 collection statistics would price the visible rows against it; `_scope` and
+  `_node_scope` emit `sensitivity IN (…)` in the same statement as the match; and
+  a `changeSensitivity` past the ceiling a published build ran under purges that
+  item's rows in the same `migrate apply`. The canonical re-check on the item's
+  *current* class stands behind all three.
+
+  **Tenant and ACL group are a weaker claim and are recorded as one.** They are
+  discharged degenerately — refused at write time, so nothing is stored to
+  withhold — not enforced by any predicate.
+- **`system.capabilities` reports `sensitivityEnforcement: true`**
+  ([#119](https://github.com/theurian/theurian/issues/119)). An eighth flag in the
+  capability block, and a client should read it as changing what an *empty*
+  answer means: no results can mean "withheld by this deployment's ceiling"
+  rather than "nothing matched". It reports that the axis is enforced and
+  **never which ceiling this deployment declares** — that word would tell a caller
+  which levels it is not being shown, on a tool that resolves no project and
+  passes no gate.
 
 ### Changed
 
@@ -225,6 +258,70 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   deferral discharged by
   [#71](https://github.com/theurian/theurian/pull/71) and records them as closed
   here.
+- **BREAKING — the shipped default sensitivity ceiling is `internal`, so
+  `confidential` and `restricted` knowledge is withheld until an operator raises
+  it** ([#119](https://github.com/theurian/theurian/issues/119), ADR-0025).
+  **Old behaviour:** every level was served, because nothing read the label.
+  **New behaviour:** a deployment that declares no serving profile serves `public`
+  and `internal` and withholds the rest — from `knowledge.search`, from
+  `knowledge.get`, from `knowledge.status`'s counts, and from the index build
+  itself. Every existing installation that upgrades loses results it used to get,
+  with no configuration change on its part.
+
+  **Remedy, if a deployment is entitled to the whole corpus:**
+
+  ```sh
+  echo restricted > ~/.theurian/auth/serving-profile
+  chmod 600 ~/.theurian/auth/serving-profile
+  theurian index build   # a build is specific to the ceiling it ran under
+  ```
+
+  **Why the default is restrictive rather than permissive.** Measured on a
+  resident loopback daemon serving this repository's own mixed-sensitivity corpus
+  (82 items, 6 of them `confidential`), a default-parameter `knowledge.search`
+  returned four `confidential` items ranked and excerpted in its top six, and
+  `knowledge.get` served a 5,058-character `confidential` body. A permissive
+  default is what made that the shipped behaviour. An operator surprised by fewer
+  results has been told something true; an operator surprised by a `confidential`
+  excerpt has not.
+- **BREAKING — `INDEX_SCHEMA_VERSION` goes 5 → 6, so every existing index takes
+  the mismatch fallback until it is rebuilt**
+  ([#119](https://github.com/theurian/theurian/issues/119)). A version-5 index
+  predates the build-side exclusion and may hold above-ceiling text, and **no
+  pointer field can establish what such a build excluded** — the flavor it would
+  have to record was not written. The bump makes those files unusable by
+  construction rather than filtered on read: `knowledge.search` reports
+  `fallbackReason: index-schema-mismatch` and answers from the gated canonical
+  scan until `theurian index build` runs. No canonical schema change and no new
+  index columns; the columns already existed and were already written.
+- **BREAKING — a new `fallbackReason`, `serving-profile-mismatch`, joins the
+  published enum** ([#119](https://github.com/theurian/theurian/issues/119),
+  `schemas/mcp/retrieval-metadata.schema.json`). A client that exhaustively
+  switches on that enum meets a value it does not know. It fires when the
+  published build's recorded disclosure flavor differs from the ceiling in force —
+  the state an operator reaches by changing the ceiling without rebuilding — and
+  the ranked path stands aside to the canonical scan, which carries the same grant
+  as a SQL predicate. **Both directions refuse**: a wider build would price the
+  rows it does return against text this deployment does not serve, which no
+  read-time filter can undo, and a narrower one is missing rows the deployment
+  serves and would answer with a silence a caller reads as "this team has made no
+  such decision". Neither the reason nor its `note` names a level. Remedy:
+  `theurian index build`.
+- **BREAKING — `knowledge.status`'s `itemCount` and `itemsByStatus` are narrowed
+  by the ceiling** ([#119](https://github.com/theurian/theurian/issues/119)). They
+  are a statistic over rows the caller may not see — the disclosure-family member
+  reached through a tool nobody checking `knowledge.search` would think to call —
+  so they follow the grant. A caller under an `internal` ceiling is told how much
+  `internal` knowledge a project holds and learns nothing about the rest, not even
+  a total: `itemCount` is the sum of the narrowed breakdown rather than the
+  store's size, so no count restores the withheld population by subtraction.
+
+  **The `#30` integrity comparison deliberately does not follow it.**
+  `expected_surfaceable_count` is written ceiling-blind by `migrate apply`, so
+  comparing a narrowed live count against it makes a *healthy* restricted
+  deployment report `damageDetected` from its own ceiling — measured, which is why
+  that comparison now runs its own ungated count internally instead of reusing the
+  published sum.
 
 ### Fixed
 
@@ -374,6 +471,27 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   that previously touched only `.theurian/proposals-local/` now also updates the
   managed `.gitignore` block, which is what makes the confidentiality claim true
   before the body lands.
+- **`sensitivity` stops being a published label and becomes an enforced read
+  control** ([#119](https://github.com/theurian/theurian/issues/119), ADR-0025;
+  T-17a in [the threat model](../../docs/security/threat-model.md), FR-R1,
+  SEC-13, SEC-14). It was published on every result and filtered on by no query,
+  which by this project's own grading is a claim that misleads a security
+  decision. The four parts are listed under Added and Changed above; what this
+  entry records is that T-17a's closure now covers the sensitivity axis as well
+  as the status axis, and by a stronger mechanism — the status axis is closed
+  after the fact by a purge, this one **by construction at build time**, so all
+  four BM25 scoring surfaces are covered by rows that do not exist.
+
+  **Two residuals, recorded rather than closed.** A canonical read's cost grows
+  with the above-ceiling rows it withholds, because `idx_items_status` does not
+  carry the `sensitivity` column: 0.20 µs per above-ceiling row on the unranked
+  scan and 0.54 µs on `knowledge.status`'s counts, in-process, corpus-bounded, no
+  recovery of content demonstrated — new threat-model entry **T-22**, flattening
+  owned by [#338](https://github.com/theurian/theurian/issues/338). And a purged
+  build can hold the withheld body's raw bytes in SQLite free pages, since
+  `DELETE` frees without zeroing and `backup` page-copies the free list; no query
+  reads a free page, a `deprecateItem` control shows it predates this trigger, and
+  it is [#344](https://github.com/theurian/theurian/issues/344).
 
 ### Documentation
 
