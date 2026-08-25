@@ -87,13 +87,19 @@ follow from that and are deliberate:
   migration file's own bytes, once over its filename and once per landed body
   path (#349) -- and neither the schema's ``operations`` array nor the service
   bounds how many bodies one proposal carries, so the accept-path total is that
-  per-body cost times the number of bodies, plus one pass over a migration file
-  ``MAX_SOURCE_FILE_BYTES`` bounds the same way. The two name channels are a few
-  dozen characters each and do not move the total. Measured 2026-08-25, eight
-  scans of a 2 MiB body in the worst-case ``sk-`` shape above: 17.36 s. Same
-  reckoning as that row -- a local, interactive command, recorded rather than
-  bounded, and the bound that does exist is ``MAX_SOURCE_FILE_BYTES`` on each
-  file rather than on their number.
+  per-body cost times the number of bodies, plus one pass over the migration
+  file. A body is bounded by ``read_source_file``'s ``MAX_SOURCE_FILE_BYTES`` (8
+  MiB); the migration file is bounded *tighter*, by ``MAX_YAML_BYTES`` (4 MiB),
+  because ``proposal_service._parse_migration`` refuses anything larger before
+  this scan is ever reached. The two name channels are a few dozen characters
+  each and do not move the total. Measured 2026-08-25, eight scans of a 2 MiB
+  body in the worst-case ``sk-`` shape above: 17.36 s; and one pass over a 4 MiB
+  migration file of that same worst-case shape -- the largest a migration can be
+  here -- 4.49 s for the detector alone, against 0.46 s for a benign 4 MiB shape.
+  Same reckoning as that row -- a local, interactive command, recorded rather than
+  bounded, and the bound that does exist is a per-file size cap
+  (``MAX_SOURCE_FILE_BYTES`` for a body, ``MAX_YAML_BYTES`` for the migration)
+  rather than a bound on their number.
 
 **A finding never carries the secret.** It names the family, where the match
 starts, and at most :data:`REDACTED_PREFIX_CHARS` leading characters. A refusal

@@ -25,9 +25,11 @@ is where the reasoning lives:
   and stopped holding when the same command began deleting its sources (#307).
 * **That nothing it would land appears to carry a secret** (decision 3, SEC-11,
   T-15), under the policy ``security.secretScan`` selects -- ``block`` unless the
-  project says otherwise. Two inputs: the body files, and the migration
-  document's own author-written fields, which reach every search result while
-  the body is only read on request (#336). Best effort, and the product's
+  project says otherwise. It scans everything the acceptance would land -- each
+  body's content, the migration document's own author-written fields (its
+  ``contentFile`` among them), the migration file's bytes, its filename, and each
+  body's landed path (#336, #349); a field reaches every search result while the
+  body is only read on request. Best effort, and the product's
   published stance that it is not a replacement for a repository secret scanner
   is unchanged by it.
 
@@ -117,18 +119,21 @@ _MAX_NAMES_LISTED: Final = 5
 #: Where a secret-scan finding sits when the text it was found in is an artifact
 #: ``accept`` lands rather than a field of the migration document (#349).
 #:
-#: **Fixed literals, because on these channels the scanned text is a name.** A
-#: location built from the migration's filename or from a body's landed path
-#: would be a verbatim second copy of the credential it reports, in the refusal a
-#: terminal prints and in the ``accept --json`` document something logs -- around
-#: the four-character bound :class:`~theurian.security.content_secrets
-#: .SecretFinding` refuses to be constructed past. The same discipline
-#: :func:`_authored_strings` holds for a document key, for the same reason.
+#: **No finding location is ever built from author-controlled or scanned text.**
+#: A location assembled from a body's landed path, from the migration's filename,
+#: or from the body content itself would be a verbatim second copy of the
+#: credential it reports -- in the refusal a terminal prints and in the ``accept
+#: --json`` document something logs -- routing straight around the four-character
+#: bound :class:`~theurian.security.content_secrets.SecretFinding` refuses to be
+#: constructed past. So every channel here names *itself* with a fixed literal,
+#: carrying at most an integer index, exactly the discipline
+#: :func:`_authored_strings` holds for a document key.
 #:
 #: Prose rather than a dotted path, so a reader does not go looking for a field
-#: of the document by that name: none of the three is one. Each is rendered as
+#: of the document by that name: none of these is one. Each is rendered as
 #: ``<location>:<line>:<column>``, and the position is real -- into the migration
-#: file for the bytes, into the name for the two name channels.
+#: file for its bytes, into a body for its content, and into the name for the two
+#: name channels.
 _AT_MIGRATION_BYTES: Final = "the migration file as written"
 _AT_MIGRATION_NAME: Final = "the migration filename"
 
@@ -137,6 +142,17 @@ _AT_MIGRATION_NAME: Final = "the migration filename"
 #: because a migration may land several and two of them may both be secret-shaped;
 #: by position rather than by the path, which is the thing being reported.
 _AT_BODY_PATH: Final = "the landed path of body"
+
+#: The content of one body the acceptance lands, indexed by the *same* position
+#: :data:`_AT_BODY_PATH` uses, so a content finding and a path finding at one
+#: index name the same body. A fixed literal rather than that body's landed path,
+#: which is where this channel's location sat until the review of #349 found the
+#: echo: when the path is itself the credential, locating a body-content finding
+#: by it republished the value, walking around the same four-character bound the
+#: two name channels do -- and it was the last finding-location channel still
+#: built from scanned text. The broader class of author-supplied names echoed in
+#: *refusal messages* elsewhere on the accept path is tracked separately (#360).
+_AT_BODY_CONTENT: Final = "the content of body"
 
 #: The errnos a ``chmod`` actually cures, for the accept-path read-failure remedy.
 #: An ``EISDIR``/``ENOTDIR``/``ENAMETOOLONG``/``ELOOP`` is the proposal's own input
@@ -410,37 +426,35 @@ class MovedFile:
 class ProposalSecretFinding:
     """One secret-shaped string the accept-path scan found, and where it sits.
 
-    ``location`` is one of three spellings, because the scan reads three kinds of
-    input (#336, #349):
+    ``location`` is one of two kinds, because the scan reads two kinds of input
+    (#336, #349):
 
-    * **A body's content**, named by the body's path *relative to*
-      ``.theurian/knowledge/``. That is the one spelling correct both before and
-      after the move: a proposal mirrors the sub-path its body will occupy, so
-      the same string names the file in either proposal directory and in
-      ``.theurian/knowledge/``. A refusal happens before the move and a warning
-      after it, and neither has to say which it means -- nor which of the two
-      locations the proposal came from, which is why this spelling survived
-      ADR-0028 unchanged while the refusal's own remedy did not.
     * **A field of the migration document**, named by its path inside that
-      document -- ``migration.operations[1].metadata.title``. Every segment is a
-      literal this module chose (:func:`_authored_strings`), never a key read
+      document -- ``migration.operations[1].metadata.title``, or an
+      ``upsertRevision``'s ``migration.operations[1].contentFile``. Every segment
+      is a literal this module chose (:func:`_authored_strings`), never a key read
       back out of the document, so an untrusted key cannot ride into the message
       this renders.
-    * **An artifact the acceptance lands**, named by a fixed literal for the
-      channel it came from (:data:`_AT_MIGRATION_BYTES`,
-      :data:`_AT_MIGRATION_NAME`, :data:`_AT_BODY_PATH`). Two of those channels
-      scan a *name*, so a location derived from what was found would republish
-      the credential; the literals say why they are literals.
+    * **An artifact the acceptance lands** -- a body's content or its landed
+      path, the migration's own bytes, or its filename -- named by a fixed
+      literal for the channel it came from (:data:`_AT_BODY_CONTENT`,
+      :data:`_AT_BODY_PATH`, :data:`_AT_MIGRATION_BYTES`,
+      :data:`_AT_MIGRATION_NAME`), the two body channels each carrying an integer
+      index so two bodies stay tellable apart. None is built from what was
+      scanned: on the two name channels, and on a body whose content is itself
+      credential-shaped, a location derived from the match would republish it, so
+      the literal is what keeps the finding from being a second copy of what it
+      reports (#360).
 
     They are told apart by shape rather than by a flag, because nothing acts on
     the difference: all are printed for a human to go and look at.
 
     ``finding.line``/``finding.column`` are positions **within the scanned
-    text**. For a body or the migration's own bytes that is the position in the
-    file; for a migration field it is the position in that field's own value,
-    because the document is scanned one value at a time (see
-    :func:`_document_findings` for why); for a filename or a landed path it is
-    the position in that name.
+    text**. For a body's content or the migration's own bytes that is the
+    position in the file; for a migration field it is the position in that field's
+    own value, because the document is scanned one value at a time (see
+    :func:`_document_findings` for why); for a filename or a landed path it is the
+    position in that name.
     """
 
     location: str
@@ -750,9 +764,11 @@ class ProposalService:
         accepted proposal answers is unchanged, and it is described where it
         lives: :meth:`_refuse_unless_the_union_applies`.
 
-        **Every incoming body, and the migration's own author-written fields,
-        are scanned for secrets first** (SEC-11, ADR-0027 decision 3, #336),
-        under the policy ``security.secretScan`` selects and ``block`` by
+        **Everything the acceptance would land is scanned for secrets first**
+        (SEC-11, ADR-0027 decision 3, #336, #349) -- each body's content, the
+        migration document's own author-written fields (its ``contentFile``
+        included), the migration file's bytes, its filename and each body's landed
+        path -- under the policy ``security.secretScan`` selects and ``block`` by
         default. It sits between the structural checks and the pre-check on
         purpose: the pre-check stages the bodies into a throwaway tree, and a
         body that is going to be refused should not be written anywhere at all.
@@ -929,12 +945,15 @@ class ProposalService:
           skimmed rather than read, and ``title`` and an anchor's ``sourceUri``
           are published on every ``knowledge.search`` and ``knowledge.get``
           result, so a credential in one reaches an agent that never opens a
-          body. :func:`_authored_strings` is the population and why it is that
-          one;
+          body. An ``upsertRevision``'s ``contentFile`` is one of them: its
+          *parsed* value is the one channel that catches a credential in a
+          ``..``-removed path segment or spelled with YAML escapes, which the two
+          path-shaped channels below each miss (#349).
+          :func:`_authored_strings` is the population and why it is that one;
         * **the migration file's own bytes**, which is what lands in
           ``.theurian/migrations/`` verbatim. It covers what no parse survives --
           a YAML comment holding the rotation note that names the retired value,
-          and every field *as written*, ``contentFile`` included;
+          and every field's spelling *as written*;
         * **the migration's filename**, whose slug after the ULID prefix is the
           contributor's on a hand-authored proposal and appears nowhere in the
           bytes; and
@@ -943,18 +962,22 @@ class ProposalService:
           ``destination.parent.mkdir(parents=True)``, so every component becomes
           a real directory in the tree.
 
-        **The raw bytes do not subsume the field values, and neither is
-        redundant.** A double-quoted YAML scalar spells any character as
-        ``\\xNN``, so a token can sit in the parsed value while the bytes hold
-        only three-character runs no family matches; and the landed path is the
-        *resolved* one, which a ``contentFile`` spelled with the same escapes
-        does not put in the bytes either. Both directions are pinned by tests.
+        **No channel subsumes the parsed field values, and none is redundant.** A
+        double-quoted YAML scalar spells any character as ``\\xNN``, so a token
+        can sit in a parsed value -- a metadata field, or a ``contentFile`` --
+        while the bytes hold only three-character runs no family matches; and a
+        body's landed path is the *resolved* one, from which ``..`` can drop the
+        very segment a ``contentFile`` credential sits in, leaving it a subset of
+        the parsed value rather than a superset. Every direction is pinned by
+        tests.
 
         **One token may be reported by more than one channel, and that is the
         choice made here.** A ``contentFile`` naming a credential is reported
-        twice, once against the migration's bytes and once against the path it
-        resolves to; a field value spelled plainly is reported against the bytes
-        and against the field. Nothing is deduplicated: the channels answer
+        against its parsed field value, against the migration's bytes where its
+        as-written spelling matches, and against the landed path where the
+        segment survives resolution; a field value spelled plainly is reported
+        against the bytes and against the field. Nothing is deduplicated: the
+        channels answer
         different questions -- what the file says, what its fields mean, what the
         tree ends up holding -- and each location sends a reviewer somewhere
         different. Suppressing the duplicate would need a key over the
@@ -1047,23 +1070,24 @@ class ProposalService:
         states. Lazy, so a run that fills the budget in the first channel never
         decodes the migration a second time.
 
-        **A body's *content* is located by its landed path and a body's *path* is
-        not.** The content finding keeps the spelling it has had since #198 --
-        the reviewer has to be told which file to open, and for content that
-        string is the answer -- and the echo it carries when the path itself is
-        the credential is a recorded residual (#339). The two name channels have
-        no such excuse: what they found *is* the name, so a location built from
-        it would be a verbatim second copy of the credential in a message a
-        terminal prints and ``accept --json`` publishes -- the bound
-        :class:`~theurian.security.content_secrets.SecretFinding` holds on itself
-        at four characters, walked around by the location field. Both are fixed
-        literals of this module's own, the discipline :func:`_authored_strings`
-        records for document keys, and the body-path one carries an index into
-        the bodies this migration lands so two dirty paths stay tellable apart.
+        **Every location is a fixed literal of this module's own, never the text
+        that was scanned.** A body's *content* and a body's *path* are two
+        channels over the same body, told apart by literal and shared by index
+        (:data:`_AT_BODY_CONTENT`, :data:`_AT_BODY_PATH`), so two dirty bodies
+        stay tellable apart and a content finding and a path finding at one index
+        name the same body. The content channel located itself by that landed
+        path until the review of #349 found the echo: when the path is *itself*
+        the credential, the location republished it, walking around the
+        four-character bound :class:`~theurian.security.content_secrets
+        .SecretFinding` holds on the match -- the same reason the two name
+        channels never name what they found. Bringing it under the literal rule
+        is what makes *no* finding location author-controlled or scanned text;
+        the broader class of author-supplied names echoed in refusal *messages*
+        elsewhere on the accept path is tracked separately (#360).
         """
         knowledge = self._paths.knowledge.resolve()
         landed = tuple(move.destination.relative_to(knowledge).as_posix() for move in moves)
-        for at, move in zip(landed, moves, strict=True):
+        for index, move in enumerate(moves):
             # `errors="replace"` rather than a refusal on undecodable bytes. A
             # body that is not UTF-8 is a fault the rehearsal's loader reports
             # with a better message than this scan could, and refusing here
@@ -1071,7 +1095,7 @@ class ProposalService:
             # leaves every ASCII run intact, which is what a credential is; the
             # residual is a secret deliberately split by an undecodable byte,
             # which a best-effort detector does not claim to catch.
-            yield at, move.data.decode("utf-8", errors="replace")
+            yield f"{_AT_BODY_CONTENT}[{index}]", move.data.decode("utf-8", errors="replace")
         yield from _authored_strings(document)
         # `replace` again, though nothing can reach it today: `_parse_migration`
         # decodes these same bytes strictly and refuses before the scan runs. It
@@ -2825,14 +2849,17 @@ def _upsert_bodies(document: Mapping[str, object]) -> Iterable[tuple[str, str | 
 #: * ``op``, ``apiVersion`` and every enum (``kind``, ``status``,
 #:   ``sensitivity``, ``trustLevel``, ``relationType``) admit only a fixed
 #:   vocabulary, none of whose members the detector reports.
-#: * ``contentFile`` is left out because it is a body-file *path*, and what lands
-#:   is the path rather than the string: the *resolved* destination -- leaf and
-#:   every directory component ``_commit`` creates on the way to it -- is scanned
-#:   by the artifact channels (#349), which is strictly more than this walk would
-#:   see, a ``../`` traversal and a ``.`` segment resolved away. Its as-written
-#:   spelling is covered too, by the raw-bytes channel beside them. A
-#:   secret-shaped path that backs no file never reaches either: ``_body_moves``
-#:   refuses it first.
+#:
+#: ``contentFile`` is *scanned*, not excluded, and its parsed value is why: the
+#: review of #349 found that neither artifact channel beside it covers what that
+#: value does. ``..`` resolution can drop the very path segment a credential sits
+#: in, so the resolved landed path is a strict *subset* of what the author wrote
+#: rather than a superset; and a double-quoted YAML scalar spells any character as
+#: ``\\xNN``, so the migration's raw bytes carry only escape runs no family
+#: matches while the loader parses out the decoded credential. The parsed value is
+#: the one place both are visible, so ``contentFile`` sits in
+#: :data:`_AUTHORED_OPERATION_FIELDS`. A secret-shaped path that backs no file
+#: never reaches acceptance: ``_body_moves`` refuses it first.
 #:
 #: ``createdAt`` and the date-time metadata fields (``validFrom``, ``validTo``)
 #: are *scanned*, not excluded: their schema ``format: date-time`` is not
@@ -2844,10 +2871,13 @@ _AUTHORED_MIGRATION_FIELDS: Final = ("author", "createdAt", "description")
 #: Every operation's author-written strings, unioned across the schema's
 #: operation types: the item, alias and specification names an author chooses,
 #: the free-text ``reason``/``note``/``description``, the ``sourceUri`` and
-#: ``format`` a specification or an evidence removal records, and ``namespace``/
-#: ``owner``.
+#: ``format`` a specification or an evidence removal records, ``namespace``/
+#: ``owner``, and an ``upsertRevision``'s ``contentFile`` -- the parsed value,
+#: which carries what its as-written bytes and its resolved landed path can each
+#: miss (the ``contentFile`` note above).
 _AUTHORED_OPERATION_FIELDS: Final = (
     "alias",
+    "contentFile",
     "description",
     "format",
     "itemId",

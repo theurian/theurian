@@ -38,6 +38,8 @@ from jsonschema import Draft202012Validator
 
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
+    _AT_BODY_CONTENT,
+    _AT_MIGRATION_NAME,
     _AUTHORED_ANCHOR_FIELDS,
     _AUTHORED_METADATA_FIELDS,
     _AUTHORED_MIGRATION_FIELDS,
@@ -412,9 +414,11 @@ def test_warn_lands_the_body_and_reports_what_it_found(
 
     A ``warn`` that accepted silently would be indistinguishable from ``off`` to
     every caller, and the point of the policy is that a human is told which body
-    to look at before they open the pull request. The finding names the body by
-    the path it has under ``knowledge/`` -- the same relative path it has inside
-    the proposal directory, so the string is right on both sides of the move.
+    carries the finding before they open the pull request. The finding names the
+    body content by a fixed channel literal and an index, not by the body's landed
+    path: when the path is itself the credential, a location built from it would
+    republish the value (#360). The path a reviewer opens stays on the result, in
+    ``bodies[index].destination``.
     """
     _configure(paths, SecretScanPolicy.WARN.value)
 
@@ -423,7 +427,9 @@ def test_warn_lands_the_body_and_reports_what_it_found(
     assert accepted.secret_scan.policy is SecretScanPolicy.WARN
     assert [f.finding.family for f in accepted.secret_scan.findings] == [HIGH_ENTROPY]
     (finding,) = accepted.secret_scan.findings
-    assert finding.location.endswith(".md"), f"the finding names {finding.location!r}"
+    assert finding.location == f"{_AT_BODY_CONTENT}[0]", (
+        f"the body-content finding is not located by its channel literal: {finding.location!r}"
+    )
     assert PLANTED_TOKEN not in finding.describe(), (
         f"a warning reproduces the token it warns about: {finding.describe()!r}"
     )
@@ -1358,6 +1364,12 @@ def test_every_drivable_allowlist_entry_has_a_fixture_that_reaches_it(
     # its own mechanism -- a top-level rewrite -- and would otherwise be the one
     # newly scanned field (#336) with no fixture reaching it.
     reached |= _entries_reached_by(_a_proposal_carrying_a_secret_in_created_at(service))
+    # `contentFile` joined the operation allowlist in #349: its parsed value is
+    # scanned, so a secret-shaped body path reaches `operation.contentFile`
+    # through the field walk, where no metadata or hand-authored plant does.
+    reached |= _entries_reached_by(
+        _a_proposal_whose_body_lands_at(service, f"architecture/{PLANTED_TOKEN}.md")
+    )
 
     expected = _allowlist_population() - set(_UNDRIVABLE)
     assert reached == expected, (
@@ -1716,9 +1728,12 @@ def _schema_string_properties() -> dict[str, Mapping[str, Any]]:
 
 #: Every schema string field that is deliberately *not* scanned, with the
 #: category of its mechanical reason. Each reason is exercised by
-#: :func:`test_a_schema_excluded_field_admits_no_reported_secret` (the schema
-#: rejects a planted secret, and every value it admits is undetectable) or, for
-#: ``contentFile``, by :func:`test_a_secret_shaped_content_file_is_refused_by_the_artifact_scan`.
+#: :func:`test_a_schema_excluded_field_admits_no_reported_secret`: the schema
+#: rejects a planted secret, and every value it admits is undetectable.
+#:
+#: ``operation.contentFile`` is **not** here: the review of #349 moved it into
+#: :data:`_AUTHORED_OPERATION_FIELDS` (its parsed value carries what its bytes and
+#: its resolved landed path can miss), so it is scanned rather than excluded.
 #:
 #: What is **not** here is the leftover: ``migration.createdAt``,
 #: ``metadata.contentType``, ``metadata.validFrom`` and ``metadata.validTo``.
@@ -1748,12 +1763,6 @@ _EXCLUDED: Final[Mapping[str, tuple[str, str]]] = {
     ),
     "operation.relationType": ("enum", "$defs/relationType, fourteen fixed labels"),
     "operation.status": ("enum", "the specification status enum: draft/active/superseded/retired"),
-    "operation.contentFile": (
-        "scope",
-        "a body-file path; what lands is the path itself -- the leaf and every directory "
-        "component -- so it is read by the artifact-level scan (#349) rather than by this "
-        "field walk, and a secret-shaped path that backs no file is refused before it lands",
-    ),
     "metadata.kind": ("enum", "$defs/kind"),
     "metadata.status": ("enum", "$defs/status, six fixed labels"),
     "metadata.trustLevel": ("enum", "$defs/trustLevel"),
@@ -1903,23 +1912,23 @@ def test_a_schema_excluded_field_admits_no_reported_secret(name: str) -> None:
 def test_a_secret_shaped_content_file_is_refused_by_the_artifact_scan(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
-    """``contentFile`` stays out of the *field* population and is still scanned (#336, #349).
+    """A secret-shaped ``contentFile`` is refused, and scanned as a parsed field (#336, #349).
 
-    Excluding ``contentFile`` from :func:`_allowlist_population` is not a gap and
-    is not a claim that a credential cannot live there. It is a claim about
-    *which* scan reads it: a ``contentFile`` is a path, and what lands is the
-    path -- the file's name and every directory component ``_commit`` creates on
-    the way to it -- so it belongs to the artifact-level scan #349 added rather
-    than to the parsed-field walk #336 added. This asserts both halves at once,
-    which is what makes the exclusion tested rather than asserted:
+    Before the review of #349 the parsed ``contentFile`` was excluded from the
+    field walk and left to the artifact channels. That was a gap: a credential in
+    a ``..``-removed segment or spelled with YAML escapes reaches neither the
+    landed path nor the raw bytes, so ``contentFile`` joined
+    :data:`_AUTHORED_OPERATION_FIELDS`. Here the credential survives resolution,
+    so it is over-determined -- both the field walk and the landed-path channel
+    see it -- which is what lets this assert both halves:
 
     * the acceptance **is** refused, naming the family, and nothing lands; and
-    * :func:`_document_findings` -- the field walk alone -- still reports
-      **nothing** for the same document, so the refusal came from the artifact
-      channels. Were ``contentFile`` quietly added to an ``_AUTHORED_*`` tuple
-      instead, this second assertion fails and
-      ``test_the_allowlist_covers_every_string_field_the_schema_declares``
-      fails with it, because the field is in :data:`_EXCLUDED`.
+    * :func:`_document_findings` -- the field walk alone -- now reports the
+      credential, and *only* it, at ``migration.operations[1].contentFile``, so
+      the refusal reaches the field walk rather than only the artifact channels.
+      The ``..``-removed and escaped faces the landed path and the raw bytes miss
+      are pinned separately, by
+      ``test_an_escaped_traversal_content_file_is_refused_under_block``.
 
     The body is moved to the path the ``contentFile`` names, unlike the version
     of this test that preceded #349: a ``contentFile`` that backs no file is
@@ -1937,9 +1946,11 @@ def test_a_secret_shaped_content_file_is_refused_by_the_artifact_scan(
     assert HIGH_ENTROPY in str(caught.value), (
         f"a credential in contentFile was not what refused the acceptance: {caught.value}"
     )
-    assert _document_findings(document) == (), (
-        "the parsed-field walk reported contentFile, which is in _EXCLUDED -- the refusal is "
-        "coming from the wrong scan and the allowlist pin will fail with it"
+    assert {f.location for f in _document_findings(document)} == {
+        f"migration.operations[{_UPSERT_INDEX}].contentFile"
+    }, (
+        "the field walk did not report the secret-shaped contentFile at its own location; #349 "
+        "moved contentFile into the scanned set"
     )
     assert PLANTED_TOKEN not in str(caught.value), (
         f"the refusal reproduced the credential it refused: {caught.value}"
@@ -1948,6 +1959,82 @@ def test_a_secret_shaped_content_file_is_refused_by_the_artifact_scan(
         "the migration landed despite naming a body whose path is a credential"
     )
     assert not (paths.knowledge / tail).exists(), "the body landed under a credential-shaped name"
+
+
+def _xnn(value: str) -> str:
+    """``value`` with every character spelled as a ``\\xNN`` YAML escape."""
+    return "".join(f"\\x{ord(character):02x}" for character in value)
+
+
+def _unnnn(value: str) -> str:
+    """``value`` with every character spelled as a ``\\uNNNN`` YAML escape."""
+    return "".join(f"\\u{ord(character):04x}" for character in value)
+
+
+#: The three ways one hand-authored ``contentFile`` can carry a credential in a
+#: path segment that ``..`` then removes -- as plain text, and spelled so the
+#: migration's raw bytes never hold the decoded value. Each parses back to the
+#: same traversal, the ``..`` drops the secret-bearing segment from the landed
+#: path, and the two escaped spellings never reach the raw bytes, so the parsed
+#: ``contentFile`` field walk is the only channel that can see any of them (#349).
+_TRAVERSAL_SEGMENT_SPELLINGS: Final[Mapping[str, str]] = {
+    "plain": PLANTED_TOKEN,
+    "x-escaped": _xnn(PLANTED_TOKEN),
+    "u-escaped": _unnnn(PLANTED_TOKEN),
+}
+
+
+@pytest.mark.parametrize("spelling", list(_TRAVERSAL_SEGMENT_SPELLINGS))
+def test_an_escaped_traversal_content_file_is_refused_under_block(
+    service: ProposalService, paths: ProjectPaths, spelling: str
+) -> None:
+    """A credential in a ``..``-removed ``contentFile`` segment is caught by the field walk (#349).
+
+    The HIGH the review of #349 reproduced: a hand-authored ``contentFile`` naming
+    ``../knowledge/<secret>/../architecture/note.md`` lands its body at
+    ``architecture/note.md`` -- the ``<secret>`` segment collapsed away -- so the
+    landed-path channel never sees it, and when the segment is spelled ``\\xNN`` or
+    ``\\uNNNN`` the migration's raw bytes never hold the decoded value either. The
+    parsed ``contentFile``, now in :data:`_AUTHORED_OPERATION_FIELDS`, is the only
+    channel that carries it, which is why pattern enumeration could not close the
+    class -- three spellings, one field.
+
+    The ``plain`` case is the control: the same traversal, readable, where the raw
+    bytes *do* spell the secret, so it isolates the ``..`` collapse (the landed
+    path is clean under every spelling) from the escape decoding the other two add.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    segment = _TRAVERSAL_SEGMENT_SPELLINGS[spelling]
+    landed_tail = "architecture/note.md"
+    drafted = _a_proposal_whose_body_lands_at(
+        service, landed_tail, spelled=f'"../knowledge/{segment}/../architecture/note.md"'
+    )
+    text = drafted.migration_file.read_text(encoding="utf-8")
+
+    assert PLANTED_TOKEN not in landed_tail, "the fixture leaves the secret in the landed path"
+    if spelling != "plain":
+        assert scan_text(text) == (), (
+            f"the {spelling} contentFile is detectable in the migration's own bytes, so this no "
+            f"longer isolates the parsed-field channel: {scan_text(text)}"
+        )
+    parsed = yaml.safe_load(text)["operations"][_UPSERT_INDEX]["contentFile"]
+    assert parsed.endswith(f"/{PLANTED_TOKEN}/../architecture/note.md"), (
+        f"the contentFile did not parse back to the traversal this case is about: {parsed!r}"
+    )
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert HIGH_ENTROPY in str(caught.value), (
+        f"a credential in a ..-removed contentFile segment was not what refused: {caught.value}"
+    )
+    assert PLANTED_TOKEN not in str(caught.value) and PLANTED_TOKEN not in caught.value.remedy, (
+        f"the refusal reproduced the credential it refused: {caught.value}"
+    )
+    assert not (paths.migrations / drafted.migration_file.name).exists(), (
+        "the migration landed despite naming a contentFile whose removed segment is a credential"
+    )
+    assert not (paths.knowledge / landed_tail).exists(), "the body landed despite the refusal"
 
 
 @pytest.mark.parametrize("value", [_A_HEX64, "abcdef1", "a" * 40, "f" * 64, "0123456789abcdef"])
@@ -2161,7 +2248,7 @@ def test_body_findings_are_listed_before_document_findings(
     and the order is part of the contract: a reviewer reading a ``warn`` result, or
     the capped refusal list, meets the reviewed artefact (the body) before the
     skimmed one (the metadata). A secret in the body and one in the title produce
-    two findings; the body's ``.md`` location must come first. Swapping the
+    two findings; the body-content finding must come first. Swapping the
     concatenation order -- which round one's mutation did and the suite did not
     notice -- puts the metadata finding first.
     """
@@ -2172,7 +2259,7 @@ def test_body_findings_are_listed_before_document_findings(
 
     locations = [finding.location for finding in accepted.secret_scan.findings]
     assert len(locations) >= 2, f"expected a body and a metadata finding, got {locations}"
-    assert locations[0].endswith(".md"), (
+    assert locations[0] == f"{_AT_BODY_CONTENT}[0]", (
         f"the first finding is not the body; body findings must precede the document's: {locations}"
     )
     assert any("title" in location for location in locations[1:]), (
@@ -2593,25 +2680,26 @@ def test_a_secret_in_a_landed_body_s_directory_component_is_refused_under_block(
 def test_a_landed_path_secret_the_migration_bytes_do_not_spell_is_still_refused(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
-    """The landed path is its own channel, not a shadow of the raw-bytes one (#349).
+    """A credential spelled only in an escaped, ``..``-resolved path is still refused (#349).
 
-    Every other path face here is caught twice over: the ``contentFile`` string
-    is in the migration's bytes, so a raw-bytes scan alone would refuse them and
-    a build with no landed-path scan at all would look green. This one isolates
-    the channel. The ``b`` of ``xoxb`` is written as the YAML escape ``\\x62`` in
-    a double-quoted scalar, so:
+    The ``b`` of ``xoxb`` is written as the YAML escape ``\\x62`` in a
+    double-quoted scalar, so:
 
     * the migration's **bytes** spell ``xox\\x62-...``, which the detector does
       not report (asserted below, so a detector that later did would redden here
-      loudly rather than turn this into a test of nothing);
-    * the **parsed** ``contentFile`` is not in any ``_AUTHORED_*`` allowlist, and
-      must not be -- ``test_the_allowlist_covers_every_string_field_the_schema
-      _declares`` holds it excluded; and
-    * the **landed path** is ``xoxb-.../note.md``, a Slack bot token, and is the
-      only place the credential is spelled at all.
+      loudly rather than turn this into a test of nothing); while
+    * both the **parsed** ``contentFile`` and the **landed path** decode to
+      ``xoxb-.../note.md``, a Slack bot token.
 
-    So this is red until the *landed path* is scanned, and stays red under a fix
-    that scans only the document's bytes or only the ``contentFile`` as written.
+    So a raw-bytes scan alone would let it through; it is refused because the
+    value is read as a *decoded* string. **This no longer isolates the landed-path
+    channel.** #349 round 2 put ``contentFile`` in
+    :data:`_AUTHORED_OPERATION_FIELDS`, and the landed path is a subset of the
+    parsed ``contentFile`` (``..`` only ever drops segments), so any secret in the
+    landed path is in the parsed value too -- the field walk catches this fixture
+    as well. The landed-path channel can no longer be isolated by any fixture, and
+    whether it remains worth keeping beside the field walk is a separate question
+    (recorded for the #349 round-2 report).
     """
     assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
     tail = f"{_DIRECTORY_SECRET}/note.md"
@@ -2620,7 +2708,7 @@ def test_a_landed_path_secret_the_migration_bytes_do_not_spell_is_still_refused(
     text = drafted.migration_file.read_text(encoding="utf-8")
     assert scan_text(text) == (), (
         f"the escaped spelling is detectable in the migration's own bytes, so this no longer "
-        f"isolates the landed-path channel: {scan_text(text)}"
+        f"distinguishes the decoded channels from a raw-bytes scan: {scan_text(text)}"
     )
     assert yaml.safe_load(text)["operations"][_UPSERT_INDEX]["contentFile"].endswith(tail), (
         "the escaped scalar did not parse back to the path the body was moved to; the fixture "
@@ -2743,6 +2831,100 @@ def test_a_name_channel_finding_locates_by_the_channel_rather_than_by_the_name(
         assert first_secret not in location and second_secret not in location, (
             f"a finding's location is a verbatim copy of the credential it reports: {location!r}"
         )
+
+
+def _a_leaky_body_landing_at(service: ProposalService, tail: str) -> DraftedProposal:
+    """A proposal whose body is ``LEAKY_BODY`` and whose ``contentFile`` lands it at ``tail``.
+
+    The dirty-body sibling of :func:`_a_proposal_whose_body_lands_at`, which the
+    body-content location tests below need: only a body that carries a secret
+    produces a body-content finding, and only then can that finding's *location*
+    echo the landed path or spoof another channel's literal.
+    """
+    drafted = service.draft(_request(LEAKY_BODY))
+    document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    upsert = document["operations"][_UPSERT_INDEX]
+    assert upsert["op"] == "upsertRevision", (
+        f"operations[{_UPSERT_INDEX}] is a {upsert['op']!r}, not the upsertRevision this repoints"
+    )
+    upsert["contentFile"] = f"../knowledge/{tail}"
+    drafted.migration_file.write_text(
+        yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    moved = drafted.directory / tail
+    moved.parent.mkdir(parents=True, exist_ok=True)
+    drafted.body_file.rename(moved)
+    return drafted
+
+
+def test_a_body_content_finding_never_spoofs_the_migration_filename_channel(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A body-content finding is located by its own literal, never a path an author chose (#360).
+
+    The spoof the review of #349 reproduced: the body-content channel located a
+    finding by the body's landed path, so a body whose content carries a secret,
+    landed at ``.theurian/knowledge/the migration filename``, produced a finding
+    whose location string *equalled* :data:`_AT_MIGRATION_NAME`. The refusal then
+    pointed a maintainer at the (clean) migration filename and its remedy invited
+    turning the scan off -- a misdirection channel an author controls. Located by
+    :data:`_AT_BODY_CONTENT` instead, a body-content finding can never wear another
+    channel's literal.
+
+    ``warn`` rather than ``block``: a refusal raises before a caller can read the
+    findings, so the location only reaches a test through the success result.
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+    drafted = _a_leaky_body_landing_at(service, _AT_MIGRATION_NAME)
+
+    accepted = service.accept(drafted.proposal_id)
+
+    locations = {finding.location for finding in accepted.secret_scan.findings}
+    assert f"{_AT_BODY_CONTENT}[0]" in locations, (
+        f"the leaky body produced no body-content finding at its literal: {sorted(locations)}"
+    )
+    assert _AT_MIGRATION_NAME not in locations, (
+        f"a body-content finding wears the migration-filename channel's literal, spoofing it: "
+        f"{sorted(locations)}"
+    )
+
+
+def test_a_body_content_finding_does_not_echo_a_credential_shaped_landed_path(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """When the landed path is the credential, the refusal must not print it (#360).
+
+    The echo the review of #349 reproduced: the body-content channel located its
+    finding by the landed path, so a dirty body landed at
+    ``architecture/staging-<credential>.md`` produced a finding whose *location*
+    was the full credential -- printed verbatim into the refusal a terminal shows
+    and the ``accept --json`` document logs, walking straight around the
+    four-character bound :class:`~theurian.security.content_secrets.SecretFinding`
+    holds on the match and this PR leans on. The name channels beside it already
+    redact to four characters; located by :data:`_AT_BODY_CONTENT`, so does this.
+
+    ``block`` is the default, so the whole refusal -- message and remedy -- is
+    asserted free of the credential, and a body-content finding located by the
+    literal is asserted present so the case is not vacuous.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    tail = f"architecture/staging-{_LEAF_SECRET}.md"
+    drafted = _a_leaky_body_landing_at(service, tail)
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert f"{_AT_BODY_CONTENT}[0]:" in str(caught.value), (
+        f"no body-content finding located by its literal reached the refusal: {caught.value}"
+    )
+    assert _LEAF_SECRET not in str(caught.value), (
+        f"the refusal echoed the credential from the landed path: {caught.value}"
+    )
+    assert _LEAF_SECRET not in caught.value.remedy, (
+        f"the remedy echoed the credential from the landed path: {caught.value.remedy!r}"
+    )
+    assert not (paths.knowledge / tail).exists(), "the body landed despite the refusal"
 
 
 #: The four faces, as the ``off`` policy has to see them: a builder and the

@@ -30,6 +30,7 @@ import yaml
 from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from typer.testing import CliRunner
 
+from theurian.application.proposal_service import _AT_BODY_CONTENT
 from theurian.cli import commands, migration_pipeline, propose_commands
 from theurian.cli.main import app
 from theurian.cli.propose_commands import _ACCEPT_STEPS, _DRAFT_STEPS
@@ -2080,20 +2081,22 @@ def test_a_warned_acceptance_renders_a_finding_a_person_can_act_on(project: Path
 
     So the line is pinned in the shape every compiler and linter emits, and the
     absence of a ``repr`` is pinned with it -- a mapping would satisfy "contains
-    the family" and fail here.
+    the family" and fail here. The body-content finding names its channel by a
+    fixed literal and an index rather than by the landed path (#360): the path a
+    reviewer opens is on the result's ``bodyFiles``, rendered above this line, so
+    ``the content of body[0]`` and ``bodyFiles[0]`` are the same body.
     """
-    rendered, drafted = _warned_accept(project)
+    rendered, _drafted = _warned_accept(project)
 
     line = next(
         stripped
         for raw in rendered.stdout.splitlines()
-        if (stripped := raw.strip()).startswith("- architecture/")
+        if (stripped := raw.strip()).startswith(f"- {_AT_BODY_CONTENT}[0]:")
     )
     assert re.fullmatch(
-        rf"- architecture/retry-policy\.{drafted['revisionId']}\.md:5:24: "
-        rf"high-entropy-token \(\S{{4}}\.\.\.\)",
+        rf"- {re.escape(_AT_BODY_CONTENT)}\[0\]:5:24: high-entropy-token \(\S{{4}}\.\.\.\)",
         line,
-    ), f"the finding does not render as `<body>:<line>:<column>: <family> (<prefix>)`: {line!r}"
+    ), f"the finding does not render as `<location>:<line>:<column>: <family> (<prefix>)`: {line!r}"
     assert "{'body'" not in rendered.stdout, (
         f"a finding reaches the terminal as a Python mapping repr:\n{rendered.stdout}"
     )
