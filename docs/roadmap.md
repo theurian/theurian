@@ -161,7 +161,8 @@ not; **absent** — effectively nothing.
   [ADR-0024](adr/0024-a-purge-is-a-build.md)) **for the status axis only**, and
   the threat model records two residuals with it: a request already in flight at
   the pointer swap can still answer from the pre-purge build, and a purge that
-  fails leaves the stale build serving — reported (`indexPurge` with
+  fails now taints the active-index pointer so the stale build is no longer served
+  (GHSA-97q9-xxfg-33r6) — the failure is still reported (`indexPurge` with
   `published: false`, `failed: true`, and a remedy) rather than silent. The
   sensitivity axis is #119's work, and Phase 0 states its shape.
 - **A RAPTOR forest** — implemented and opt-in (`raptor.enabled` defaults to

@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.1.0.dev11] - 2026-08-25
+
 ### Added
 
 - **A deployment declares one sensitivity ceiling, and it is enforced**
@@ -165,6 +167,19 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   the refusal's own remedy names: there is still no per-finding suppression.
 
 ### Security
+
+- **A `--raptor` retrieval index whose withdrawal purge failed is no longer
+  served** (`GHSA-97q9-xxfg-33r6`; T-17a in
+  [the threat model](../../docs/security/threat-model.md)). A build left stale by
+  a failed withdrawal or reclassification purge could still answer queries,
+  disclosing withheld content two ways: a visible hit's `raptorPath` title
+  carried the withheld document's text verbatim, and the stale build's BM25
+  collection statistics still priced the visible rows against the withheld ones.
+  Fixed by refusing to serve a build whose purge did not complete — the
+  active-index pointer is marked tainted and the serve path stands the build
+  aside to the unranked canonical scan until `theurian index build` rebuilds it.
+  **HIGH**, reachable only with a non-default `--raptor` build together with a
+  purge failure; no release is yanked.
 
 - **`sensitivity` stops being a published label and becomes an enforced read
   control** ([#119](https://github.com/theurian/theurian/issues/119), ADR-0025;

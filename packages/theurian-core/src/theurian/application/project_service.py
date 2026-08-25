@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
-from theurian.application.authorization import encode_sensitivities
+from theurian.application.authorization import decode_sensitivities, encode_sensitivities
 from theurian.domain.enums import Sensitivity
 from theurian.domain.errors import InvalidIdentifierError, TheurianError
 from theurian.domain.identifiers import ProjectId
@@ -683,6 +683,7 @@ def write_active_index_pointer(  # noqa: PLR0913 - one keyword per published poi
     project_id: str,
     indexes_unapproved: bool,
     indexed_sensitivities: frozenset[Sensitivity],
+    purge_failed: bool = False,
 ) -> None:
     """Point retrieval at a finished build, atomically (ADR-0007, ADR-0024).
 
@@ -714,6 +715,15 @@ def write_active_index_pointer(  # noqa: PLR0913 - one keyword per published poi
     stands aside when they differ (``mcp.search._published_index``), which is why
     it is written here rather than derived from the file: the file cannot say what
     was *excluded* from it.
+
+    ``purge_failed`` records that a withdrawal-triggered purge against *this*
+    build did not complete, so the build still holds rows a migration removed from
+    canonical state (:func:`mark_active_index_purge_failed`, GHSA-97q9-xxfg-33r6).
+    A published build the serve path reads is clean by default; it is set only on
+    the failure path, and one rebuild clears it because a fresh publish writes the
+    default. The key is always present -- ``false`` on a healthy build -- so no
+    reader has to branch on its absence, the discipline every other pointer field
+    already holds to.
     """
     pointer = paths.active_index_pointer
     pointer.parent.mkdir(parents=True, exist_ok=True)
@@ -726,12 +736,83 @@ def write_active_index_pointer(  # noqa: PLR0913 - one keyword per published poi
                 "projectId": project_id,
                 "indexesUnapproved": indexes_unapproved,
                 "indexedSensitivities": encode_sensitivities(indexed_sensitivities),
+                "purgeFailed": purge_failed,
             },
             indent=2,
         ),
         encoding="utf-8",
     )
     os.replace(temporary, pointer)  # noqa: PTH105 - os.replace is the atomic primitive
+
+
+def mark_active_index_purge_failed(paths: ProjectPaths, *, expected_build_id: str) -> bool:
+    """Record that the published build's withdrawal purge failed, if it is still it.
+
+    A withdrawal's or reclassification's index purge can fail while the migration
+    it follows is already committed (:func:`~theurian.application.withdrawal_purge.
+    publish_purge_for_withdrawal`). The stale build then stays published and goes
+    on holding rows the withdrawal removed from canonical state, so a ``--raptor``
+    build hands a withheld document's text to a caller through a visible sibling's
+    ``raptorPath`` and the FTS5 collection statistics still price every visible
+    row against it (GHSA-97q9-xxfg-33r6, T-17a). This taints the pointer so the
+    serve path stands the build aside whole (``mcp.search._published_index``).
+
+    Returns whether the taint applied, and never raises:
+
+    - ``False`` when there is no pointer, or it does not parse: a build that names
+      nothing serves nothing, and overwriting a corrupt pointer would replace a
+      diagnosable fault with a fabricated build id (see
+      :func:`read_active_index_pointer`).
+    - ``False`` when the pointer no longer names ``expected_build_id``. The purge
+      holds no index-write lock (ADR-0022, #113), so a concurrent ``index build``
+      may have published a clean build in the window between the purge failing and
+      this write. Tainting whatever the pointer names at that moment would condemn
+      the clean build and drop retrieval onto the unranked scan until someone
+      rebuilt again -- a self-inflicted outage whose only symptom is worse results.
+      But this check is best-effort, not a compare-and-swap: it reads the pointer
+      once and writes with a plain ``os.replace``, so it only protects a clean
+      build published *before* that read. One published in the window between this
+      read and this write is still reverted to the stale build with
+      ``purge_failed=True``. That reversion is SAFE-DIRECTION -- the reverted
+      pointer carries the taint, so the serve path stands the build aside and
+      serves no withheld content; the only symptom is the same self-inflicted
+      degradation to the unranked canonical scan until the next rebuild. It is the
+      success purge path's lock-free-write class (``withdrawal_purge`` publishing
+      ``new_id`` under no index-write lock), and a compare-and-swap pointer write
+      is #113's scope, not this fix's.
+    - ``False`` when the recorded ``indexedSensitivities`` cannot be decoded: such
+      a build is already stood aside by the flavor gate, so it serves nobody the
+      withdrawn rows and there is nothing here to close by tainting it.
+    - ``False`` when the write itself is refused (``OSError``). The only caller is
+      already inside the purge's failure path handling one exception; a second one
+      escaping here would report a ``migrate apply`` failed for a migration that is
+      already committed. A double disk failure degrades to today's not-silent
+      behaviour -- the purge's own ``failed``/``remedy`` still stands.
+
+    Otherwise re-publishes the pointer with every field preserved from the current
+    payload and ``purge_failed=True``, and returns ``True``.
+    """
+    payload = read_active_index_pointer(paths).payload
+    if payload is None:
+        return False
+    if payload.get("indexBuildId") != expected_build_id:
+        return False
+    indexed = decode_sensitivities(payload.get("indexedSensitivities"))
+    if indexed is None:
+        return False
+    try:
+        write_active_index_pointer(
+            paths,
+            index_build_id=str(payload["indexBuildId"]),
+            state_hash=str(payload.get("stateHash", "")),
+            project_id=str(payload.get("projectId", "")),
+            indexes_unapproved=bool(payload.get("indexesUnapproved", False)),
+            indexed_sensitivities=indexed,
+            purge_failed=True,
+        )
+    except OSError:
+        return False
+    return True
 
 
 def write_active_state(

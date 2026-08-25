@@ -2374,7 +2374,9 @@ response, and its summary's title appears in no approved leaf's `raptorPath`
 remains is the residual every excerpt already carries: a `title` is build-time
 index text, stale against the canonical store between builds — the T-17a/#130
 residual (T-17a's order and excerpt movement, #130's same-revision content
-drift) — not a new channel.
+drift) — not a new channel *while the purge succeeds*. See the
+GHSA-97q9-xxfg-33r6 correction below for the purge-*failed* case, where it was a
+new channel and is now closed.
 
 Withdrawal already reaches the forest, and Milestone 6's builder was the first
 thing to hand that traversal a graph it did not write itself: a purge deletes
@@ -2396,6 +2398,25 @@ the retrieval CL does that, above — but it is what keeps that path honest acro
 withdrawal: a `raptorPath.title` is drawn from a `nodes` row, and re-deriving the
 forest over the surviving rows removes a withdrawn row's influence from the node
 text a later title could quote.
+
+**Corrected by GHSA-97q9-xxfg-33r6.** The two claims above — that a stale `title`
+is "not a new channel", and that re-deriving the forest removes a withdrawn row's
+influence from the text a later title could quote — hold only when the purge
+*succeeds*. When a withdrawal's purge *fails*, the `--raptor` summary node keeps
+its build-time text, and that text was demonstrated reaching a caller verbatim: a
+*visible* sibling leaf's `raptorPath[].title` carried the withheld document's
+content — the marker `mk-payroll-bands-mk` from a withheld item, surfaced through
+a visible "Cache Policy" hit. That is a real extraction channel, not merely stale
+build-time text — the same class as T-17a (*the index still holds the withdrawn
+rows*), but a verbatim face of it rather than a statistical one. It is now closed
+the way T-17a's serve-time face is: a purge failure taints the active-index
+pointer (`mark_active_index_purge_failed`) and `mcp.search._published_index`
+refuses to serve the tainted build whole, degrading to the unranked canonical
+scan, which emits no `raptorPath` — so the `raptorPath` title channel closes with
+it. Pinned by `test_purge_failed_build_is_not_served.py`. What remains is only the
+three narrow windows recorded under T-17a residual #2 (an in-flight request
+against the pre-taint build, a double disk fault, and a concurrent clean build
+reverted by the non-atomic taint write) — all SAFE-direction, none a disclosure.
 
 #### T-17 — Search accounting is a truth oracle for withheld content (Information disclosure, **Critical**)
 
@@ -3973,18 +3994,55 @@ the dense path, which T-6 enumerates as the second member of that class.
 > caller through any tool; it is a disk-forensics surface, tracked as
 > [#344](https://github.com/theurian/theurian/issues/344).
 >
-> **Two residuals remain, both content-independent and measured, neither an
-> extraction channel:**
+> **Two residuals remain, both measured. The first is content-independent and not
+> an extraction channel; the second is a purge failure, now closed by
+> GHSA-97q9-xxfg-33r6 except for the three narrow windows named under it:**
 >
 > 1. A request already in flight at the pointer swap finishes against the
 >    pre-purge build. Bounded to that one request — the swap protects the next
 >    window, not a response already served (ADR-0024 decision 5) — and independent
 >    of what was withdrawn.
-> 2. A purge that *fails* leaves the stale build serving until a manual `theurian
->    index build`. This is **not silent**: `migrate apply` reports it in
->    `indexPurge` (`published: false`, `failed: true`, and a `remedy` naming the
->    rebuild), so an operator acting on the answer can see the withdrawn rows are
->    still held.
+> 2. A purge that *fails* no longer leaves the stale build serving. **Corrected by
+>    GHSA-97q9-xxfg-33r6:** a purge failure taints the active-index pointer
+>    (`purgeFailed: true`, via `mark_active_index_purge_failed`, conditional on the
+>    pointer still naming the build that failed to purge), and
+>    `mcp.search._published_index` stands the tainted build aside whole, so the
+>    withdrawn rows are no longer served — retrieval degrades to the unranked
+>    canonical scan until a manual `theurian index build`, which re-derives a clean
+>    build and clears the taint. This remains **not silent**: `migrate apply`
+>    reports the failure in `indexPurge` (`published: false`, `failed: true`, and a
+>    `remedy` naming the rebuild). Three narrower residuals replace the old one:
+>    - A request already in flight at the moment the taint is written finishes
+>      against the pre-taint build — the same bound as residual #1 above, and
+>      independent of what was withdrawn.
+>    - A *double* failure: the purge fails **and** the taint write itself is refused
+>      (`OSError`, so `mark_active_index_purge_failed` returns `False`). This
+>      degrades to the prior not-silent behaviour — the stale build stays served, so
+>      for a `--raptor` build the verbatim `raptorPath` channel this GHSA closed is
+>      open again — with the purge's own `failed`/`remedy` still reported, so an
+>      operator acting on the answer still sees the withdrawn rows are held. It
+>      needs two independent disk faults, not one.
+>    - The taint write is itself a non-atomic read-check-write holding no
+>      index-write lock, so a clean build published by a concurrent `theurian index
+>      build` in the window between `mark_active_index_purge_failed`'s read and its
+>      write is reverted to the stale, tainted build. Direction: SAFE — the reverted
+>      pointer carries `purgeFailed: true`, so the serve path stands it aside and no
+>      withheld content reaches a caller; the cost is a self-inflicted degradation to
+>      the unranked scan until a rebuild. Same lock-free-pointer-write class as the
+>      success purge path (`withdrawal_purge` publishing `new_id` under no
+>      index-write lock); a recorded MEDIUM deferred to #113 (ADR-0022), whose
+>      compare-and-swap pointer write is its scope, not this fix's. Found by all
+>      three round-one reviewers and graded safe-direction, no disclosure.
+>
+> **GHSA-97q9-xxfg-33r6 was graded High, not Critical — a recorded design
+> decision.** The verbatim `raptorPath` disclosure it closed is a HIGH converted
+> to a recorded CRITICAL-free decision, not a CRITICAL: reproducing it needs two
+> non-default *operator* conditions at once — a `--raptor` build (`theurian index
+> build --raptor`, a build flag off by default) and a purge failure — so it fails
+> the shipped-default gate and takes the operator-only configuration exemption. A
+> default build writes zero node rows, emits no `raptorPath`, and so has no channel
+> to open. The demonstrated leak is pinned by
+> `test_purge_failed_build_is_not_served.py`.
 >
 > **A prediction this entry made was wrong, and is corrected rather than deleted.**
 > Condition 3 below expected `test_a_withheld_document_can_still_reorder_the_visible_ones`
@@ -4901,7 +4959,7 @@ fix.
 | T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — `theurian propose accept` scans every body it would land **and the migration document's author-written fields** ([#336](https://github.com/theurian/theurian/issues/336)), `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it. The document's derived fields and a proposal's `evidence.json` are not read ([#330](https://github.com/theurian/theurian/issues/330)). Ingest-time and index-time scanning are separate controls and do not ship ([#198](https://github.com/theurian/theurian/issues/198)) |
 | T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet (#39) |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
-| T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15); closed for the sensitivity axis in #119 by exclusion at build plus a `changeSensitivity` purge trigger (ADR-0025 parts 1–2), with the unpurged-build cell and the free-page byte residue ([#344](https://github.com/theurian/theurian/issues/344)) recorded |
+| T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15); closed for the sensitivity axis in #119 by exclusion at build plus a `changeSensitivity` purge trigger (ADR-0025 parts 1–2). The unpurged-build (purge-failed) cell — including its verbatim `--raptor` `raptorPath` face — is closed by GHSA-97q9-xxfg-33r6, which refuses to serve a purge-failed build (graded High: two non-default operator conditions), leaving only an in-flight request, a double disk fault, and a concurrent clean build reverted by the non-atomic taint write (all SAFE-direction, the last deferred to #113/ADR-0022); the free-page byte residue ([#344](https://github.com/theurian/theurian/issues/344)) is recorded |
 | T-18 | Reused revision id resolves to a withheld item's body | I | Critical | Closed in 0.1.0.dev3 — item-scoped `append_revision` + `put_item` store guards, `SCHEMA_VERSION` gate (GHSA-7997-g35f-q59h) |
 | T-19 | A repository ships a doctored `.theurian/state/` served without a local build | I | Critical | Closed in 0.1.0.dev4 — out-of-tree `BuildProvenance` anchor, enforced at every serve path (GHSA-266v-fcj2-qggx, ADR-0004, SEC-7) |
 | T-20 | A body file shared across two revisions is served past the status gate | I | Critical | Closed in 0.1.0.dev5 — whole-set refusal keyed on body filesystem identity (`st_dev`/`st_ino`), `DuplicateContentFileError` (GHSA-w5cm-cqf9-vm7r) |

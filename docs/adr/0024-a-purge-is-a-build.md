@@ -324,6 +324,19 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    > `failed: true` and a `remedy` naming the rebuild (`cli/commands.py`). That
    > is T-17a's residual 2, unchanged in kind by there being nodes in the build.
    >
+   > **Amended by GHSA-97q9-xxfg-33r6.** The paragraph above was wrong on both
+   > counts. A failed purge over *nodes* did open a new channel: a `--raptor`
+   > build's summary node keeps its build-time text, and a *visible* sibling leaf's
+   > `raptorPath[].title` then carries a withheld document's content verbatim — a
+   > verbatim disclosure, not the statistical residual T-17a's residual 2 then
+   > described. And the stale build no longer "keeps serving": a purge failure now
+   > taints the active-index pointer (`mark_active_index_purge_failed`) and the
+   > serve path (`mcp.search._published_index`) stands the tainted build aside
+   > whole, degrading to the unranked canonical scan until a rebuild. The
+   > statistical and the verbatim face close together, and T-17a's residual 2 now
+   > records the narrower windows that remain (an in-flight request and a double
+   > disk fault). Pinned by `test_purge_failed_build_is_not_served.py`.
+   >
    > None of this point's three rules changes; the second one's open choice is
    > simply now made. What changes is where their counterpart has to be written.
    > `chunks.derived` and `chunk_derivation` are **dropped at v4**, because a

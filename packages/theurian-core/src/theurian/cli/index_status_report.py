@@ -132,12 +132,13 @@ def index_schema_version(paths: ProjectPaths, published: dict[str, Any] | None) 
     return SqliteIndexStore(path).schema_version() if path.is_file() else 0
 
 
-def remedy_for(
+def remedy_for(  # noqa: PLR0911, PLR0913 - one keyword per axis, one return per named remedy
     *,
     stale: bool,
     needs_apply: bool,
     orphaned: bool,
     pointer_corrupt: bool,
+    purge_failed: bool,
     profile_remedy: str,
 ) -> str:
     """The next command to run, in the order it has to be run in.
@@ -157,6 +158,15 @@ def remedy_for(
     producing a fresh-looking index of stale knowledge. An orphaned index is
     named next because the rebuild it asks for subsumes both other remedies.
 
+    A failed purge is named after ``needs_apply`` and before the plain ``stale``
+    arm (GHSA-97q9-xxfg-33r6). ``needs_apply`` still comes first: if the database
+    is itself behind, applying must precede any rebuild. But a purge-failed build
+    is served by nothing (``mcp.search._published_index`` stands it aside whole),
+    so its remedy has to say *why* the index is unusable -- it still holds rows a
+    withdrawal removed -- rather than the bare rebuild ``stale`` prints, which
+    reads as an ordinary refresh. One rebuild re-derives a clean build from
+    canonical state and clears the taint.
+
     A profile *mismatch* takes no arm of its own. One rebuild under the ceiling
     in force is the whole cure, which is what the ``stale`` arm already says --
     and an arm that repeated it would be a second place for the sentence to
@@ -174,6 +184,13 @@ def remedy_for(
         )
     if needs_apply:
         return "Run `theurian migrate apply`, then `theurian index build`."
+    if purge_failed:
+        return (
+            "This index still holds rows a withdrawal removed from the knowledge state, "
+            "because the purge that follows a withdrawal did not complete. Run "
+            "`theurian index build` to produce a clean build; the index is derived, so "
+            "nothing is lost."
+        )
     if stale:
         return "Run `theurian index build`."
     return ""

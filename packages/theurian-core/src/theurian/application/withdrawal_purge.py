@@ -48,6 +48,7 @@ from theurian.application.index_builder import EMBED_BATCH
 from theurian.application.migration_engine import WithdrawalCandidate, revisions_to_purge
 from theurian.application.project_service import (
     ProjectPaths,
+    mark_active_index_purge_failed,
     read_active_index_pointer,
     write_active_index_pointer,
 )
@@ -142,12 +143,21 @@ UNTRUSTED_SOURCE_INDEX: str = "untrusted-source-index"
 
 #: What an operator does when the purge itself failed. The index is derived
 #: (ADR-0004), so the cure is always a rebuild -- and it is the load-bearing half
-#: of the failure report, because the current build still holds the withdrawn
-#: rows until it runs.
+#: of the failure report, because until it runs the current build still holds the
+#: withdrawn rows and is therefore stood aside from the serve path
+#: (GHSA-97q9-xxfg-33r6), leaving retrieval on the unranked canonical scan.
+#:
+#: Note the two sibling messages in `infrastructure/sqlite/index_purge.py` that
+#: still read "retrieval still uses the current index" are left as-is on purpose:
+#: they are `IndexPurgeError.msg` fragments, and the except block above surfaces
+#: only `type(exc).__name__`, never `.msg`, so their text never reaches an
+#: operator -- and `index_purge` is infrastructure that must not name the
+#: application-layer taint (ADR-0003). Do not "fix" them into a layering violation.
 PURGE_FAILED_REMEDY: str = (
-    "Nothing was published, so retrieval still uses the current index -- which "
-    "still holds the withdrawn rows. Run `theurian index build` to produce a "
-    "clean build; the index is derived, so nothing authored is lost."
+    "Nothing was published. The current index still holds the withdrawn rows, so "
+    "it is no longer served: retrieval falls back to an unranked scan of canonical "
+    "state until a rebuild. Run `theurian index build` to produce a clean build, "
+    "which clears the taint; the index is derived, so nothing authored is lost."
 )
 
 
@@ -346,6 +356,20 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
             # `removed == 0` path, so a failed swap never strands a build `gc` will
             # not reap (its id sorts above the published one).
             _discard(orphan)
+        # The stale build is still published and still holds the withdrawn rows,
+        # so taint its pointer: the serve path stands a tainted build aside whole
+        # rather than ranking visible rows against text no caller may read, and a
+        # `--raptor` build's summary nodes carry that text verbatim into a visible
+        # sibling's `raptorPath` (GHSA-97q9-xxfg-33r6, T-17a). `build_id` is the
+        # id the *old* pointer names, and it still names it here -- both the
+        # `derive_purged`-raised path (nothing was published) and the pointer-
+        # write-failed path (the swap did not land, `os.replace` being atomic).
+        # A concurrent `index build` may have published a clean build in the
+        # meantime, which is why the taint is conditional on the pointer still
+        # naming this build and never raises (`mark_active_index_purge_failed`):
+        # its return is not consulted, because the purge already failed and this
+        # report stands whether the taint applied or degraded to it.
+        mark_active_index_purge_failed(paths, expected_build_id=build_id)
         return WithdrawalPurge(
             published=False,
             reason=f"purge-failed: {type(exc).__name__}",

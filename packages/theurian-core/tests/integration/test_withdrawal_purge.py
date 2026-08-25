@@ -248,6 +248,10 @@ def test_an_empty_withdrawal_publishes_nothing(tmp_path: Path) -> None:
         "projectId": PROJECT,
         "indexesUnapproved": False,
         "indexedSensitivities": ["public", "internal", "confidential", "restricted"],
+        # Written on every publish since GHSA-97q9-xxfg-33r6: `false` on a clean
+        # build, so no reader branches on the key's absence. The empty withdrawal
+        # still publishes nothing -- this is the source pointer, unchanged.
+        "purgeFailed": False,
     }
 
 

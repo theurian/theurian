@@ -429,12 +429,24 @@ def index_status(as_json: JsonOption = False) -> None:
     index_project = (published or {}).get("projectId")
     orphaned = published is not None and index_project != context.project_id.value
     profile = profile_state(published)
+    # A build whose withdrawal purge failed still holds rows the withdrawal
+    # removed from canonical state, and `knowledge.search` stands it aside whole
+    # rather than serving them (GHSA-97q9-xxfg-33r6). This command must report
+    # what that path refuses, so the taint makes the build stale on its own axis
+    # -- independently of the state-hash comparison, which is `true` here anyway
+    # because a purge follows a migration, but need not be: a taint written
+    # against an otherwise-fresh build must still read stale. Truthiness rather
+    # than `is True` because the pointer is derived and unsigned (SEC-7): any
+    # value a hand edit leaves under the key is read exactly as the serve path's
+    # own `if published.get("purgeFailed")` reads it.
+    purge_failed = bool((published or {}).get("purgeFailed"))
     stale = (
         published is None
         or indexed != current
         or schema != INDEX_SCHEMA_VERSION
         or orphaned
         or profile.stale
+        or purge_failed
     )
 
     _emit(
@@ -451,6 +463,11 @@ def index_status(as_json: JsonOption = False) -> None:
             "expectedIndexSchemaVersion": INDEX_SCHEMA_VERSION,
             "stale": stale,
             "orphaned": orphaned,
+            # Always present, `false` on a healthy build, so a reader never
+            # branches on the key's absence -- the discipline every other field
+            # here holds to, and what lets a client tell "one migration behind"
+            # (`stale` alone) from "still holds withdrawn rows" (`purgeFailed`).
+            "purgeFailed": purge_failed,
             "knowledgeNotApplied": needs_apply,
             **profile.payload,
             "remedy": remedy_for(
@@ -458,6 +475,7 @@ def index_status(as_json: JsonOption = False) -> None:
                 needs_apply=needs_apply,
                 orphaned=orphaned,
                 pointer_corrupt=pointer.unreadable,
+                purge_failed=purge_failed,
                 profile_remedy=profile.remedy,
             ),
         },

@@ -266,6 +266,15 @@ nothing else.
 > remain: a request in flight at the pointer swap, and a purge that fails (reported
 > through the apply's `indexPurge`, not silent). T-17a carries the closure and the
 > residuals.
+>
+> **Amended by GHSA-97q9-xxfg-33r6.** The "purge that fails" residual named above
+> is now closed: a purge failure taints the active-index pointer
+> (`mark_active_index_purge_failed`) and the serve path
+> (`mcp.search._published_index`) refuses to serve the tainted build whole, so it
+> no longer feeds stale `bm25` statistics to RRF — nor, for a `--raptor` build, a
+> withheld document's text verbatim through a visible sibling's `raptorPath`. The
+> in-flight residual is unchanged; T-17a's residual 2 carries the narrower windows
+> that remain.
 
 For the amendment to point 5 (dense off by default):
 

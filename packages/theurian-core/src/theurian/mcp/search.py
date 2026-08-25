@@ -112,6 +112,13 @@ UNAPPROVED_NOT_INDEXED: Final = "unapproved-not-indexed"
 #: letter from `index-project-mismatch` in every transcript and every client's
 #: switch statement.
 SERVING_PROFILE_MISMATCH: Final = "serving-profile-mismatch"
+#: The published build still holds rows a withdrawal removed from canonical state,
+#: because the purge that would have removed them from the index did not complete
+#: (GHSA-97q9-xxfg-33r6, T-17a). Distinct from every reason above: this build is
+#: this project's, of the right schema, built here, under the profile in force --
+#: and unusable anyway, because serving it prices visible rows against withheld
+#: text and a `--raptor` build carries that text verbatim in a sibling's path.
+INDEX_PURGE_FAILED: Final = "index-purge-failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +250,18 @@ _PROFILE_UNRECORDED = Fallback(
     "this is an unranked substring scan. Run `theurian index build`; one rebuild "
     "records the profile, and the index is derived, so nothing is lost.",
 )
+#: The published build still holds rows a withdrawal removed from canonical state
+#: because its purge did not complete (GHSA-97q9-xxfg-33r6, T-17a), so it is not
+#: served: ranking against it prices visible rows on withheld text, and a
+#: `--raptor` build carries that text verbatim into a visible sibling's path.
+_PURGE_FAILED = Fallback(
+    INDEX_PURGE_FAILED,
+    "This project's index still holds rows a withdrawal removed from the "
+    "knowledge state, because the purge that follows a withdrawal did not "
+    "complete, so the build is not served and this is an unranked substring "
+    "scan. Run `theurian index build` to produce a clean build; the index is "
+    "derived, so nothing is lost.",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,6 +376,18 @@ def _published_index(  # noqa: PLR0911 - one return per distinguishable fallback
         return _POINTER_INVALID if pointer.unreadable else _NOT_BUILT
 
     published = pointer.payload
+    # Ahead of every other gate, unconditionally. A build whose withdrawal purge
+    # failed still holds rows a migration removed from canonical state
+    # (`mark_active_index_purge_failed`, GHSA-97q9-xxfg-33r6): the file is this
+    # project's, of the right schema, provenanced and under the profile in force,
+    # so every gate below would pass it -- and serving it prices visible rows
+    # against withheld text (T-17a) while a `--raptor` build carries that text
+    # verbatim into a visible sibling's `raptorPath`. There is no read-time filter
+    # for either; the build must not answer at all, so this is checked before the
+    # id, the file, provenance, project and flavor gates rather than after them.
+    if published.get("purgeFailed"):
+        return _PURGE_FAILED
+
     build_id = str(published.get("indexBuildId", ""))
     path = _searchable_file(paths, build_id)
     if isinstance(path, Fallback):
