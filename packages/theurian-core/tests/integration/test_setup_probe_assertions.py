@@ -37,6 +37,7 @@ import pytest
 from fakes.setup import FakeMcpConfig, FakeService
 from setup_migrations import unchecked_migrations
 
+from theurian.application.project_service import ensure_gitignore
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_steps import (
     _REQUIRED_PROJECT_DIRS,
@@ -44,7 +45,6 @@ from theurian.application.setup_steps import (
     probe_gitignore,
     probe_project_layout,
 )
-from theurian.domain.project import GITIGNORE_ENTRIES
 from theurian.domain.setup import StepStatus
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
@@ -294,10 +294,20 @@ def test_a_file_is_not_a_directory_for_the_purpose_of_the_layout(tmp_path: Path)
 
 
 def test_the_whole_current_block_is_what_satisfies_the_gitignore_step(tmp_path: Path) -> None:
-    """`satisfied` means every managed entry is present, not one substring of one."""
+    """`satisfied` means the managed block is there and current -- nothing weaker.
+
+    Built with :func:`ensure_gitignore`, which is what `theurian init` runs.
+    This test used to write the bare entries with no markers around them and
+    assert SATISFIED, and that assertion was the defect stated as a
+    requirement: a substring is not a rule, and the same file with every entry
+    negated satisfied it too (#87). The arm-by-arm coverage lives in
+    ``test_probe_gitignore_identity.py``; what stays here is the pair this
+    module is about -- the state the step is supposed to accept, beside the
+    stale one it is supposed to refuse.
+    """
     root = tmp_path / "repo"
     root.mkdir()
-    (root / ".gitignore").write_text("\n".join(GITIGNORE_ENTRIES) + "\n", encoding="utf-8")
+    ensure_gitignore(root)
 
     step = probe_gitignore(_context(tmp_path, project_root=root))
 
@@ -311,15 +321,28 @@ def test_a_stale_pre_adr_0028_block_is_not_satisfied(tmp_path: Path) -> None:
     `.theurian/proposals-local/` entry. The old check was `".theurian/state" in
     contents`, which that block satisfies -- so `doctor` reported the ignore step
     converged while `propose --local` there wrote a private body to a directory
-    Git tracks. The probe now requires the whole current block, so a stale one is
-    MISSING and its summary names the entry a re-run brings in.
+    Git tracks. The probe now requires the block to be the one `theurian init`
+    writes, so a stale one is MISSING and its summary names the entry a re-run
+    brings in.
+
+    The block is written by :func:`ensure_gitignore` and then edited, rather
+    than composed out of :data:`GITIGNORE_ENTRIES`: the entries alone are not a
+    managed block at all since #87, so composing them would put this test on the
+    no-markers arm and it would stop being about staleness.
     """
     root = tmp_path / "repo"
     root.mkdir()
-    stale = [entry for entry in GITIGNORE_ENTRIES if entry != ".theurian/proposals-local/"]
-    (root / ".gitignore").write_text("\n".join(stale) + "\n", encoding="utf-8")
+    absent = ".theurian/proposals-local/"
+    _, block = ensure_gitignore(root)
+    gitignore = root / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text(encoding="utf-8", newline="").replace(f"{absent}\n", ""),
+        encoding="utf-8",
+        newline="",
+    )
+    assert absent in block and absent not in gitignore.read_text(encoding="utf-8")
 
     step = probe_gitignore(_context(tmp_path, project_root=root))
 
     assert step.status is StepStatus.MISSING
-    assert ".theurian/proposals-local/" in step.summary
+    assert absent in step.summary

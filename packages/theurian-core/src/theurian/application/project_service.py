@@ -459,6 +459,86 @@ def _gitignore_marker_lines(content: str, marker: str) -> list[tuple[int, int]]:
     return found
 
 
+def render_gitignore_block() -> str:
+    """The managed block exactly as `theurian init` writes it.
+
+    Split out of :func:`ensure_gitignore` so that ``probe_gitignore`` can ask the
+    same question the writer answers. The step used to decide with a substring
+    search for each managed entry over the whole file, and a substring is not a
+    rule: a ``.gitignore`` with every entry prefixed by ``!`` -- the syntax for
+    *un*-ignoring -- satisfied it while ``git check-ignore`` said the paths were
+    not ignored at all (#87). Two predicates written apart drifted; sharing this
+    is what stops them.
+    """
+    # One comment per section, not one per block: the block carries two
+    # categories since ADR-0028 -- derived artifacts, and authored content kept
+    # out of Git on purpose -- and a single "Derived artifacts" header would be
+    # false for the second in the direction that loses work.
+    return "\n".join(
+        [
+            GITIGNORE_BLOCK_START,
+            *(
+                line
+                for section in GITIGNORE_SECTIONS
+                for line in (section.comment, *section.entries)
+            ),
+            GITIGNORE_BLOCK_END,
+        ]
+    )
+
+
+def locate_gitignore_block(content: str, gitignore: Path) -> tuple[int, int] | None:
+    """Slice bounds of the one managed block in *content*, or ``None`` if absent.
+
+    Read-only, and shared with ``probe_gitignore`` for the reason
+    :func:`render_gitignore_block` is: what the probe reports and what the writer
+    rewrites have to be the same span, or `doctor` calls a file current that
+    every `theurian init` changes.
+
+    *gitignore* is named only to build the refusals below. Nothing here opens it.
+
+    Raises:
+        ProjectError: The markers do not delimit exactly one block -- a second
+            start marker, or a start with no end after it. Each arm names what
+            to look for and the command to re-run.
+    """
+    opened = _gitignore_marker_lines(content, GITIGNORE_BLOCK_START)
+    if len(opened) > 1:
+        raise ProjectError(
+            f"{gitignore} holds more than one {GITIGNORE_BLOCK_START!r} line, so Theurian "
+            f"cannot tell which of the rules between them are its own.",
+            remedy=(
+                "Delete the block you do not want -- markers and all -- then re-run "
+                "`theurian init`."
+            ),
+        )
+    if not opened:
+        return None
+
+    start = opened[0][0]
+    closing = next(
+        (span for span in _gitignore_marker_lines(content, GITIGNORE_BLOCK_END) if span[0] > start),
+        None,
+    )
+    if closing is None:
+        raise ProjectError(
+            f"{gitignore} has an unterminated Theurian block, so Theurian cannot tell "
+            f"where its own rules end.",
+            # "Add the end marker" reads as unactionable to the person whose
+            # file already appears to have one: a marker is matched as a whole
+            # line, so a trailing space, an indent or a comment after it is not
+            # one, and that is the likeliest way to arrive here. The remedy
+            # therefore says what the line must be rather than only what it says
+            # -- the same honesty as the env file's "Repair the markers by hand".
+            remedy=(
+                f"End the block with a line that is exactly {GITIGNORE_BLOCK_END!r} and "
+                f"nothing else -- a trailing space is enough to stop it counting -- or "
+                f"remove the block along with its rules. Then re-run `theurian init`."
+            ),
+        )
+    return start, closing[1]
+
+
 def ensure_gitignore(root: Path) -> tuple[bool, str]:
     """Append Theurian's ignore block to ``.gitignore`` if it is missing.
 
@@ -484,68 +564,16 @@ def ensure_gitignore(root: Path) -> tuple[bool, str]:
         ``(changed, rendered_block)``.
 
     Raises:
-        ProjectError: The markers do not delimit exactly one block -- a second
-            start marker, or a start with no end after it. Each arm names what
-            to look for and the command to re-run.
+        ProjectError: The markers do not delimit exactly one block, as
+            :func:`locate_gitignore_block` describes.
     """
-    # One comment per section, not one per block: the block carries two
-    # categories since ADR-0028 -- derived artifacts, and authored content kept
-    # out of Git on purpose -- and a single "Derived artifacts" header would be
-    # false for the second in the direction that loses work.
-    block = "\n".join(
-        [
-            GITIGNORE_BLOCK_START,
-            *(
-                line
-                for section in GITIGNORE_SECTIONS
-                for line in (section.comment, *section.entries)
-            ),
-            GITIGNORE_BLOCK_END,
-        ]
-    )
-
+    block = render_gitignore_block()
     gitignore = root / ".gitignore"
     existing = gitignore.read_text(encoding="utf-8", newline="") if gitignore.exists() else ""
 
-    opened = _gitignore_marker_lines(existing, GITIGNORE_BLOCK_START)
-    if len(opened) > 1:
-        raise ProjectError(
-            f"{gitignore} holds more than one {GITIGNORE_BLOCK_START!r} line, so Theurian "
-            f"cannot tell which of the rules between them are its own.",
-            remedy=(
-                "Delete the block you do not want -- markers and all -- then re-run "
-                "`theurian init`."
-            ),
-        )
-
-    if opened:
-        start = opened[0][0]
-        closing = next(
-            (
-                span
-                for span in _gitignore_marker_lines(existing, GITIGNORE_BLOCK_END)
-                if span[0] > start
-            ),
-            None,
-        )
-        if closing is None:
-            raise ProjectError(
-                f"{gitignore} has an unterminated Theurian block, so Theurian cannot tell "
-                f"where its own rules end.",
-                # "Add the end marker" reads as unactionable to the person whose
-                # file already appears to have one: a marker is matched as a
-                # whole line, so a trailing space, an indent or a comment after
-                # it is not one, and that is the likeliest way to arrive here.
-                # The remedy therefore says what the line must be rather than
-                # only what it says -- the same honesty as the env file's
-                # "Repair the markers by hand".
-                remedy=(
-                    f"End the block with a line that is exactly {GITIGNORE_BLOCK_END!r} and "
-                    f"nothing else -- a trailing space is enough to stop it counting -- or "
-                    f"remove the block along with its rules. Then re-run `theurian init`."
-                ),
-            )
-        end = closing[1]
+    span = locate_gitignore_block(existing, gitignore)
+    if span is not None:
+        start, end = span
         if existing[start:end] == block:
             return False, block
         updated = existing[:start] + block + existing[end:]

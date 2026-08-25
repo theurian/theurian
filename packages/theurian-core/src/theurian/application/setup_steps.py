@@ -44,7 +44,9 @@ from theurian.application.project_service import (
     ProjectError,
     ProjectPaths,
     ProjectRegistry,
+    locate_gitignore_block,
     read_active_state,
+    render_gitignore_block,
 )
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_withholding import (
@@ -953,7 +955,41 @@ def probe_project_layout(context: SetupContext) -> SetupStep:
 
 
 def probe_gitignore(context: SetupContext) -> SetupStep:
-    """Derived artifacts must not be committable (ADR-0004, O-2)."""
+    """Whether the managed block is there and current (ADR-0004, O-2).
+
+    The predicate is **block identity**, not entry presence: exactly one
+    well-formed marker pair, and the span between the markers byte-for-byte the
+    block `theurian init` writes. That is deliberately the same question
+    :func:`ensure_gitignore` answers when it decides whether to rewrite, and it
+    is asked through the same two functions so the two cannot drift.
+
+    Entry presence was the old check, over the whole file, and a substring is not
+    a rule (#87). Two files satisfied it while Git ignored nothing: every entry
+    prefixed with ``!``, which is the syntax for *un*-ignoring, and every entry
+    prefixed with ``# ``, which is the syntax for not writing a rule. Measured
+    against the first, ``git check-ignore .theurian/state/index.db`` exits 1
+    while the step reported ``satisfied`` -- so ADR-0004's derived artifacts and
+    ADR-0028's deliberately machine-local `.theurian/proposals-local/` were
+    committable on a machine `doctor` called converged.
+
+    A third file satisfied it for a reason that is not a disclosure: the managed
+    entries written by hand, with no markers. Those rules do ignore what they
+    name. What is wrong there is the *next* `theurian init`, which finds no block
+    to rewrite, appends its own, and leaves the file carrying two lists that
+    drift apart with nothing to say so -- which is why the step is stricter than
+    "is it ignored" and says why in its own sentence.
+
+    HIGH-2 (#49) is the same class one step earlier and stays closed by
+    construction: a stale block -- every project initialised before ADR-0028
+    added `.theurian/proposals-local/` -- is not the rendered block, and the
+    summary names the entry a re-run brings in.
+
+    ``newline=""`` on the read is load-bearing. `ensure_gitignore` reads and
+    writes with it so a CRLF file is not silently rewritten end to end, and it
+    *does* rewrite a CRLF block (measured, ``changed=True``); a universal-newline
+    read here would find the rendered block in what it read and report satisfied
+    for a file every `theurian init` changes.
+    """
     root = context.project_root
     if root is None:
         return SetupStep(
@@ -962,38 +998,74 @@ def probe_gitignore(context: SetupContext) -> SetupStep:
             summary="Not inside a Git repository.",
         )
     gitignore = root / ".gitignore"
-    exists = gitignore.is_file()
-    contents = gitignore.read_text(encoding="utf-8") if exists else ""
-    # Every entry the current managed block writes, not just `.theurian/state`. A
-    # substring check on one entry read `satisfied` off a *stale* block -- every
-    # project initialised before ADR-0028 added `.theurian/proposals-local/`, so
-    # `theurian propose --local` there wrote a private body to a directory Git did
-    # not ignore while `doctor` reported the ignore step converged (HIGH-2).
-    missing = [entry for entry in GITIGNORE_ENTRIES if entry not in contents]
-    if not missing:
+    if not gitignore.is_file():
+        return _gitignore_missing(
+            f"{gitignore} does not exist, so nothing ignores the derived artifacts."
+        )
+
+    content = gitignore.read_text(encoding="utf-8", newline="")
+    try:
+        span = locate_gitignore_block(content, gitignore)
+    except ProjectError:
+        # The refusal's own text is not published: it names the marker line and
+        # the path, both Theurian's, but the remedy it carries tells the reader
+        # to re-run `theurian init` -- and that command refuses a file in this
+        # state. The action here says what to repair instead.
+        return SetupStep(
+            step_id=StepId.GITIGNORE,
+            status=StepStatus.MISSING,
+            summary=(
+                f"{gitignore}'s Theurian block markers are malformed; "
+                f"`theurian init` refuses the file in this state."
+            ),
+            action="Repair the Theurian block markers by hand, then run `theurian init`.",
+            critical=False,
+        )
+
+    if span is None:
+        return _gitignore_missing(
+            f"{gitignore} has no Theurian block. Rules written by hand are not evaluated here."
+        )
+    return _managed_block_verdict(gitignore, content[span[0] : span[1]])
+
+
+def _managed_block_verdict(gitignore: Path, managed: str) -> SetupStep:
+    """What to say about a well-formed block that is or is not the current one.
+
+    *managed* is the span between the markers, and every question below is asked
+    of it alone -- never of the whole file. An entry below the end marker ignores
+    what it names today and is not in what the next `theurian init` rewrites, so
+    crediting it would report a block as complete that comes back incomplete,
+    leaving the user's own line as the only thing ignoring an ADR-0028 directory
+    in a file they may reasonably tidy.
+    """
+    if managed == render_gitignore_block():
         return SetupStep(
             step_id=StepId.GITIGNORE,
             status=StepStatus.SATISFIED,
-            summary="Derived Theurian artifacts are ignored.",
+            summary=f"{gitignore}'s Theurian block is present and current.",
         )
-    # No `paths`: `init` appends the block, setup only reads the file, and the
-    # file may not be there at all -- which is how a `.gitignore` that was never
-    # created came to be reported as one setup had modified.
-    #
-    # Three summaries for one status, because a file that is absent, one that is
-    # silent, and one whose block is out of date are different things to be told
-    # and the reader acts on them differently. Naming the path is what removing
-    # `paths` has to compensate for; the stale case names the missing entries so
-    # the reader can see what a re-run brings current.
-    stale = exists and len(missing) < len(GITIGNORE_ENTRIES)
-    if stale:
-        summary = (
+    missing = [entry for entry in GITIGNORE_ENTRIES if entry not in managed]
+    if missing:
+        return _gitignore_missing(
             f"{gitignore}'s Theurian block is out of date: it does not ignore {', '.join(missing)}."
         )
-    elif exists:
-        summary = f"{gitignore} has no Theurian block."
-    else:
-        summary = f"{gitignore} does not exist, so nothing ignores the derived artifacts."
+    return _gitignore_missing(
+        f"{gitignore}'s Theurian block differs from the one `theurian init` writes."
+    )
+
+
+def _gitignore_missing(summary: str) -> SetupStep:
+    """One MISSING step, whichever way the block is not the current one.
+
+    Five summaries for one status, because a file that is absent, one that is
+    silent, one whose block is stale, one whose block was edited, and one whose
+    markers cannot be acted on are different things to be told and the reader
+    acts on them differently. The path is named in every one: `init` appends the
+    block and setup only ever reads the file, so this step names no ``paths`` --
+    which is how a `.gitignore` that was never created came to be reported as
+    one setup had modified.
+    """
     return SetupStep(
         step_id=StepId.GITIGNORE,
         status=StepStatus.MISSING,
