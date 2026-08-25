@@ -234,6 +234,19 @@ Each brief must carry, explicitly:
 - the diff scope (`git diff main...HEAD`) and the files that matter
 - the requirement IDs and ADRs the change touches
 - what is *known* to be unfinished, so the reviewer spends its time elsewhere
+- the observable families that apply to this change — chosen from the family
+  table in *A finding is closed by a closure argument, not by a fix*, plus any
+  change-specific ones — so the implementer designs and tests against them
+  *before* round one
+
+**The family list binds the implementer, not the adversarial reviewer.** The
+reviewer receives it as the set of claims the implementation says it already
+covers — to attack — and spends the rest of its mandate off-list, because its
+value is the family nobody enumerated. Handing the brief's checklist to the
+reviewer as its scope would converge review on the known families and delete
+that value. This moves "enumerate the families before round one" from a review
+practice to a briefing practice: the families are named when the work is
+assigned, not when it is reviewed.
 
 Do not write these briefs from memory each time — the agent definitions hold the
 standing context; the brief adds only what is specific to this change.
