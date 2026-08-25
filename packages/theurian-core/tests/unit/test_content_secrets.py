@@ -263,9 +263,12 @@ def test_the_pattern_geometry_the_residual_enumeration_is_derived_from() -> None
     **So a pattern edit changes what the docstring proves, and this is the case
     that says so.** Narrowing ``google-api-key``'s lookahead to ``(?![0-9A-Za-z])``
     -- proposed in #356, and measured by the round-two review to cost no false
-    positives -- moves it out of member 3 entirely. That change must arrive with a
-    red test here, so that whoever makes it re-derives the enumeration instead of
-    leaving prose that describes the pattern it used to have.
+    positives -- moves it into ``aws-access-key-id``'s quadrant, from 64 killing
+    glue characters to 62, and NOT out of member 3: a fixed repetition still ends
+    the match at exactly one offset. That change must arrive with a red test here
+    (this case's ``equal`` row goes red), so that whoever makes it re-derives the
+    enumeration instead of leaving prose that describes the pattern it used to
+    have.
 
     Everything is computed from the live :data:`_PATTERN_FAMILIES` and from the
     live fixtures: nothing here restates a pattern, so a pattern that changes
