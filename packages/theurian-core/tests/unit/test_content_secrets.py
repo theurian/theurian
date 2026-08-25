@@ -1278,8 +1278,9 @@ def test_a_digit_free_slug_recovered_from_inside_a_run_is_not_reported(
     ``-`` before ``sk`` is a real document boundary, so the boundary rule is right
     to find these and cannot be what refuses them: something else has to.
 
-    A digit is what separates the two populations. Every one of the seven declared
-    families' fixtures carries one; none of these paths does. The one digit-free
+    A digit is what separates the two populations. Six of the seven declared
+    families' fixtures carry one -- every family that can match inside a candidate
+    run; none of these paths does. The one digit-free
     family fixture is ``private-key-block``, whose pattern needs spaces and so can
     never match inside a candidate run at all -- the gate costs it nothing.
 

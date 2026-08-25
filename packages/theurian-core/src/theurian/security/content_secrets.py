@@ -457,8 +457,9 @@ def _carries_a_digit(matched: str) -> bool:
     them. Under the default ``block`` that refuses a credential-free proposal and
     tells its author to rotate a secret that does not exist.
 
-    A digit separates the two populations here. Measured the same day, all seven
-    declared families' fixtures carry one and every example above carries none.
+    A digit separates the two populations here. Measured the same day, six of the
+    seven declared families' fixtures carry one -- every family that can match
+    inside a candidate run -- and every example above carries none.
     The one digit-less fixture is ``private-key-block``, which can never match
     inside a candidate run at all (its pattern requires spaces), so the gate costs
     that family nothing.
