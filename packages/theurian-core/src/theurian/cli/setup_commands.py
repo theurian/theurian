@@ -35,9 +35,7 @@ from typing import Annotated, Any, Final
 import typer
 
 from theurian import __version__
-from theurian.application.migration_alias_guards import refuse_alias_item_id_collision
-from theurian.application.migration_body_guards import refuse_duplicate_content_files
-from theurian.application.migration_engine import refuse_unenforceable_scope
+from theurian.application.migration_engine import run_static_migration_guards
 from theurian.application.project_service import ProjectPaths
 from theurian.application.setup_context import MigrationsCheck, SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
@@ -162,9 +160,7 @@ def _check_migrations(root: Path) -> MigrationsCheck:
     paths = ProjectPaths.of(root)
     try:
         loaded = load_migrations(paths.root, paths.migrations, schema_root())
-        refuse_unenforceable_scope(loaded.migration_set)
-        refuse_duplicate_content_files(loaded.migration_set)
-        refuse_alias_item_id_collision(loaded.migration_set)
+        run_static_migration_guards(loaded.migration_set)
     except _MIGRATION_REFUSALS as exc:
         return MigrationsCheck(count=0, failure=exc)
     return MigrationsCheck(count=len(loaded.migration_set), failure=None)

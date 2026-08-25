@@ -52,10 +52,10 @@ def checked_by_the_loader(root: Path) -> MigrationsCheck:
     order.
 
     **It is the load half only.** ``theurian migrate validate`` also runs
-    ``refuse_unenforceable_scope`` and the two collision guards in
-    ``cli/commands.py`` over the loaded set, and this helper does not. A
-    document those refuse but the loader accepts is therefore *not* covered by
-    the tests that use this -- see the report accompanying these tests.
+    ``run_static_migration_guards`` over the loaded set, and this helper does
+    not. A document those guards refuse but the loader accepts is therefore
+    *not* covered by the tests that use this -- see the report accompanying
+    these tests.
 
     **The refusal net is production's, imported rather than restated.** This
     caught ``Exception``, which is wider than the ``_MIGRATION_REFUSALS`` the

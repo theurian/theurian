@@ -30,12 +30,10 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from theurian.application.migration_alias_guards import refuse_alias_item_id_collision
-from theurian.application.migration_body_guards import refuse_duplicate_content_files
 from theurian.application.migration_engine import (
     ApplyReport,
     MigrationEngine,
-    refuse_unenforceable_scope,
+    run_static_migration_guards,
 )
 from theurian.application.project_service import ProjectPaths, resolve_state_hash
 from theurian.application.proposal_service import CandidateMigrationSet
@@ -157,9 +155,7 @@ def rehearse_migration_set(candidate: CandidateMigrationSet, *, clock: Clock) ->
         paths = ProjectPaths.of(root, candidate.knowledge_directory)
         loaded = load_migrations(paths.root, paths.migrations, schema_root())
 
-        refuse_unenforceable_scope(loaded.migration_set)
-        refuse_duplicate_content_files(loaded.migration_set)
-        refuse_alias_item_id_collision(loaded.migration_set)
+        run_static_migration_guards(loaded.migration_set)
 
         state_hash = resolve_state_hash(loaded, SCHEMA_VERSION)
         database = paths.database_for(state_hash)

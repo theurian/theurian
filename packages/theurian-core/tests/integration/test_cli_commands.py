@@ -1796,6 +1796,27 @@ def _migration_with_scope(tenant_id: str | None = None, acl_group: str | None = 
     return MIGRATION.replace("      sourceAnchors:", insertion)
 
 
+def _without_the_scope_guard(seed: pytest.MonkeyPatch) -> None:
+    """Let a foreign tenant into the state database, to seed an *applied* one.
+
+    Three tests below need a migration the scope guard refuses to already be
+    recorded as applied -- a state no shipped command will produce -- so the
+    guard is neutralised for the seeding `migrate apply` alone, inside a
+    ``monkeypatch.context()`` that puts it back.
+
+    **One patch, where this needed two.** ``cli/commands.py`` used to hold its
+    own binding of ``refuse_unenforceable_scope`` and call it directly, so the
+    engine's copy and the CLI's copy both had to be replaced or the seeding apply
+    was refused. Both commands now reach the guard through
+    ``run_static_migration_guards``, which resolves it in ``migration_engine``'s
+    own globals: one binding remains, and the second ``setattr`` becoming
+    unnecessary is precisely the divergence the shared guard set removes.
+    """
+    seed.setattr(
+        "theurian.application.migration_engine.refuse_unenforceable_scope", lambda _ms: None
+    )
+
+
 def test_default_tenant_and_acl_group_apply_cleanly_end_to_end(project: Path) -> None:
     """Negative control: default scope is not refused, at either command."""
     _invoke("init")
@@ -1890,7 +1911,7 @@ def test_an_already_applied_foreign_tenant_gets_a_remedy_that_actually_works(
     `monkeypatch` directly: the `project` fixture above also patches through
     that same instance (`chdir` into the temp project, `setenv` for
     `THEURIAN_DATA_DIR`), and `.undo()` reverts every patch it has recorded,
-    not only this test's two -- it was caught here reverting the working
+    not only this test's seeding one -- it was caught here reverting the working
     directory back to wherever pytest was invoked from mid-test, which is
     exactly the real checkout the isolation rules in this repository exist to
     keep the CLI away from. `migrate validate` never writes, so nothing was
@@ -1900,10 +1921,7 @@ def test_an_already_applied_foreign_tenant_gets_a_remedy_that_actually_works(
     _write_migration(project, migration=_migration_with_scope(tenant_id="acme-corp"))
 
     with monkeypatch.context() as seed:
-        seed.setattr(
-            "theurian.application.migration_engine.refuse_unenforceable_scope", lambda _ms: None
-        )
-        seed.setattr("theurian.cli.commands.refuse_unenforceable_scope", lambda _ms: None)
+        _without_the_scope_guard(seed)
         seed_code, seeded = _invoke("migrate", "apply")
     assert seed_code == 0, "fixture setup failed: the seeding apply itself was refused"
     assert seeded["applied"] == [MIGRATION_ID]
@@ -2010,10 +2028,7 @@ def test_an_already_applied_foreign_tenant_survives_a_state_hash_shift(
     _write_migration(project, migration=_migration_with_scope(tenant_id="acme-corp"))
 
     with monkeypatch.context() as seed:
-        seed.setattr(
-            "theurian.application.migration_engine.refuse_unenforceable_scope", lambda _ms: None
-        )
-        seed.setattr("theurian.cli.commands.refuse_unenforceable_scope", lambda _ms: None)
+        _without_the_scope_guard(seed)
         seed_code, seeded = _invoke("migrate", "apply")
     assert seed_code == 0, "fixture setup failed: the seeding apply itself was refused"
     assert seeded["applied"] == [MIGRATION_ID]
@@ -2127,10 +2142,7 @@ def test_a_foreign_tenant_recorded_in_a_non_first_sorted_database_is_still_found
     # database that records *both* ids (nothing carries over from #1).
     _write_migration(project, migration=_migration_with_scope(tenant_id="acme-corp"))
     with monkeypatch.context() as seed:
-        seed.setattr(
-            "theurian.application.migration_engine.refuse_unenforceable_scope", lambda _ms: None
-        )
-        seed.setattr("theurian.cli.commands.refuse_unenforceable_scope", lambda _ms: None)
+        _without_the_scope_guard(seed)
         seed_code, seeded = _invoke("migrate", "apply")
     assert seed_code == 0, "fixture setup failed: the seeding apply itself was refused"
     assert sorted(seeded["applied"]) == sorted([MIGRATION_ID, _SECOND_MIGRATION_ID])
