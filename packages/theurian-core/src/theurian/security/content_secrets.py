@@ -415,19 +415,30 @@ def _families_inside(text: str, run: re.Match[str], *, room: int) -> list[Secret
     Ordinary Japanese prose, under a ``block`` policy, refused for a credential
     that is not there.
 
-    **What ``endpos`` is for is confinement, and nothing else.** It is not what
-    makes the trailing lookaheads succeed: every specific family's lookahead class
-    is a subset of :data:`_CANDIDATE_CLASS` and ``run`` is maximal in that class,
-    so the character at ``run.end()`` is outside every one of them and each
-    lookahead succeeds on the document's own text -- measured 2026-08-25, the
-    rescan returns identical matches with ``endpos`` and without it for a run
-    followed by a space, by a period, and at end of text. What it does is stop the
-    rescan running on to the end of the *document*: without it, the first refused
-    run's rescan reported the second run's credential as well (measured: two
-    findings from one run, the second at another run's offset). That is a
-    duplicate, and it is out of order -- :func:`scan_text` documents a total
-    document order that the outer loop's left-to-right progress is what
-    establishes.
+    **What ``endpos`` is for is confinement.** It is not what makes the trailing
+    lookaheads succeed: every specific family *that has one* admits a subset of
+    :data:`_CANDIDATE_CLASS`, and ``run`` is maximal in that class, so the
+    character at ``run.end()`` is outside every one of them and each lookahead
+    succeeds on the document's own text -- measured 2026-08-25, the rescan returns
+    identical matches with ``endpos`` and without it for a run followed by a
+    space, by a period, and at end of text.
+
+    It does two things instead, and the second is easy to miss because the
+    lookahead argument does not cover it:
+
+    * It stops the rescan running on to the end of the *document*. Without it the
+      first refused run's rescan reported the second run's credential as well
+      (measured: two findings from one run, the second at another run's offset) --
+      a duplicate, and out of the total document order :func:`scan_text` publishes
+      and the outer loop's left-to-right progress is what establishes.
+    * It is what actually enforces member 2 for ``private-key-block``, the one
+      family whose *body* leaves :data:`_CANDIDATE_CLASS` rather than merely its
+      lookahead. A match can begin inside a run and end past it, so the lookahead
+      argument says nothing here. Measured on
+      ``staging-deployment-secrets-----BEGIN RSA PRIVATE KEY-----``, whose run the
+      gate refuses: bounded, the rescan finds nothing; unbounded, it finds a
+      ``private-key-block`` at offset 26 running to 57, well past the run that
+      admitted it.
 
     **What this cannot reach, by root cause.** None is a miss to be tuned away
     later; each is a trade with something on the other side.
@@ -442,47 +453,74 @@ def _families_inside(text: str, run: re.Match[str], *, room: int) -> list[Secret
        whose pattern requires spaces. It costs little: a real PEM key's base64
        payload is long, mixed-case and near-uniform, so the generic family reports
        the body even when the header is unreachable.
-    3. *An inner match must end where its family's trailing lookahead admits, and
-       for two families that is only the run's end.* This is geometry, derivable
-       from :data:`_PATTERN_FAMILIES` and not a property of any input: a family
-       whose lookahead class equals :data:`_CANDIDATE_CLASS` cannot end anywhere
-       inside a maximal run, because every interior position is followed by a
-       character its lookahead forbids. Measured 2026-08-25 over every candidate
-       character, that is ``openai-api-key`` and ``google-api-key``; the other four
-       end at a character their lookahead omits (``-`` for ``aws-access-key-id``,
-       ``github-token`` and ``stripe-secret-key``, ``_`` for ``slack-token``). Two
-       different losses follow from the one cause:
+    3. *A credential inside a run is reached only if the family can end where the
+       run lets it, from a distance the family can span.* Two independent
+       properties of :data:`_PATTERN_FAMILIES` decide it, and reading either one
+       alone gets the membership wrong:
 
-       * ``openai-api-key`` repeats up to :data:`_MAX_TOKEN_CHARS`, so it is lost
-         once the distance from ``sk-`` to the run's end exceeds
-         ``len("sk-") + 255`` = 258. Measured 2026-08-25: a run of 258 characters
-         from ``sk-`` reports, 259 reports nothing.
-       * ``google-api-key`` repeats a *fixed* ``{35}``, so its match ends 39
-         characters after ``AIza`` and its lookahead admits nothing but the run's
-         end. **Any** trailing candidate-class character loses the family --
-         measured for ``x``, ``-`` and ``_`` alike.
+       * **Where a match may end** -- its trailing lookahead. A family whose
+         lookahead admits exactly :data:`_CANDIDATE_CLASS` can end only at the
+         run's end, because every interior position is followed by a character it
+         forbids: measured over all 64 candidate characters, that is
+         ``openai-api-key`` and ``google-api-key``. The other four also end at any
+         character their lookahead omits -- ``-`` for ``aws-access-key-id``,
+         ``github-token`` and ``stripe-secret-key``, ``_`` for ``slack-token``.
+       * **How far it can reach** -- its repetition. A *fixed* count can end at
+         exactly one offset: ``aws-access-key-id`` matches 20 characters and
+         ``google-api-key`` 39, always. An *open* count reaches ``len(prefix) +
+         255``: 258 for ``openai-api-key``, 259 for ``github-token``, 260 for
+         ``slack-token``, 263 for ``stripe-secret-key``.
+
+       The four quadrants, each measured 2026-08-25:
+
+       * *Fixed and equal* -- ``google-api-key``. One end offset, and the lookahead
+         forbids every candidate character there: **all 64** kill it. Any glue at
+         all and the family is gone.
+       * *Fixed and strict-subset* -- ``aws-access-key-id``. One end offset, but
+         two characters survive there: **62 of 64** kill it, and only ``-`` and
+         ``_`` do not. The difference from ``google-api-key`` is two characters,
+         not a difference of kind, which is why reading the lookahead column alone
+         put this family in the wrong bucket.
+       * *Open and equal* -- ``openai-api-key``. Must reach the run's end and can
+         span 258 from ``sk-``: a run of 258 reports, 259 reports nothing.
+       * *Open and strict-subset* -- ``github-token``, ``slack-token``,
+         ``stripe-secret-key``. Either an omitted delimiter appears, or the run's
+         end must fall within reach. Measured at each boundary: 259/260 for
+         ``github-token``, 260/261 for ``slack-token``, 263/264 for
+         ``stripe-secret-key``.
 
        **Losing the family is not always losing the finding**, and the difference
        is the generic gate. This function only runs on runs
        :func:`_looks_like_a_secret` refused, so *within its domain* a lost family
-       is silence: both cases above measure ``[]``. Where the gate passes instead,
-       the generic family reports the run and the loss costs precision rather than
-       the finding -- ``AIza<35>-x`` reports ``high-entropy-token``, and through the
-       real CLI at the default ``block`` that proposal is **refused**, not accepted.
-       Silence for ``google-api-key`` therefore needs a run its own characters do
-       not carry past the gate; measured examples are a digit-free key with a letter
-       tail, and a key with a long repetitive or all-lower-case tail, each of which
-       scans to ``[]``.
+       is silence. Measured through the real CLI at the default ``block``: ``AKIA``
+       and sixteen characters is refused as an ``aws-access-key-id``, while the
+       same key followed by twenty-four identical lower-case characters is
+       **accepted, and the body lands**. The two survivors behave as the geometry
+       says they must -- glue that key with ``-`` or ``_`` instead of a letter and
+       it is reported again.
 
-       Both are pre-existing behaviour, not something the rescan introduced. For
-       ``openai-api-key`` the cap is the ReDoS budget this module's own cost
-       reasoning spends, so it is not moved here. **For ``google-api-key`` that
-       excuse does not apply and should not be offered:** its repetition is fixed,
-       so it consumes no backtracking budget, and the round-two adversarial review
-       measured that narrowing its lookahead to ``(?![0-9A-Za-z])`` costs no new
-       false positives over 9.5M characters and no measurable time. That is a
-       change worth making on its own, deliberately not made in the change that
-       recorded it.
+       Where the gate passes, the generic family reports the run and the loss costs
+       precision rather than the finding: ``AIza<35>-x`` reports
+       ``high-entropy-token``, and that proposal is **refused**, not accepted. So
+       silence needs a run the credential's own characters do not carry past the
+       gate -- a *low-entropy* tail (twenty-four identical characters after that
+       AWS key measure 2.67 bits; a short cycle after a Google key, 3.51) or a run
+       with no digit at all. **Lower case is not the property, and assuming it was
+       is how this paragraph was wrong before:** twenty-four *distinct* lower-case
+       characters after the same AWS key measure 5.17 bits, clear the gate and are
+       reported, as is an ordinary English kebab slug after a Google key at 5.04.
+
+       All of it is pre-existing behaviour, not something the rescan introduced.
+       For the *open* families the reach is :data:`_MAX_TOKEN_CHARS`, which is the
+       ReDoS budget this module's own cost reasoning spends, so it is not moved
+       here. **For the two *fixed* families that excuse does not apply and should
+       not be offered:** a fixed count consumes no backtracking budget at all, so
+       nothing is being bought with what they lose. The round-two adversarial
+       review measured that narrowing ``google-api-key``'s lookahead to
+       ``(?![0-9A-Za-z])`` costs no new false positives over 9.5M characters and no
+       measurable time; that would move it into ``aws-access-key-id``'s quadrant,
+       from 64 killing characters to 62, rather than out of this member. Filed
+       as #356, and deliberately not made in the change that recorded it.
     4. *A match is leftmost-greedy and non-overlapping, at either pass, so a
        credential inside a span another match consumed is not reported.* In the
        rescan, ``backup-xoxb-<digits>-sk-<hex40>`` reports one ``slack-token`` and
