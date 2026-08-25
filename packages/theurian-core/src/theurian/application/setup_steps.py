@@ -345,6 +345,25 @@ def probe_artifact_integrity(_: SetupContext) -> SetupStep:
 
 
 def probe_data_directory(context: SetupContext) -> SetupStep:
+    """Whether the data directory is there, is a directory, and is private.
+
+    Three questions, because the summary was published for two. ``exists()`` is
+    true of a *regular file*, and ``is_world_accessible`` answers whatever that
+    file's mode says -- so a 0600 file at this path satisfied a step whose
+    summary reads "exists with private permissions", and ``token``,
+    ``token-storage`` and ``env-file`` then went on to write *inside* it while
+    the run reported CONVERGED.
+
+    The not-a-directory arm goes ahead of the mode check rather than after it. A
+    0666 file answers the world-accessible question true and would be reported
+    as "mode 0666, readable by other users" beside "Tighten it to 0700" -- a
+    remedy that leaves a file at the path with a tidier mode and nothing else
+    fixed.
+
+    CONFLICTING rather than MISSING, because setup replaces nothing it did not
+    create (SEC-18): what is there is somebody's file, and ``missing`` is the
+    status that would have setup act on it.
+    """
     directory = context.data_dir
     if not directory.exists():
         return SetupStep(
@@ -353,6 +372,16 @@ def probe_data_directory(context: SetupContext) -> SetupStep:
             summary=f"{directory} does not exist.",
             action=f"Create {directory} with mode 0700.",
             paths=(str(directory),),
+        )
+    if not directory.is_dir():
+        return SetupStep(
+            step_id=StepId.DATA_DIRECTORY,
+            status=StepStatus.CONFLICTING,
+            summary=f"{directory} exists but is not a directory.",
+            detail=(
+                "Setup never replaces a file it did not create. Move it aside; setup then "
+                "creates the directory with mode 0700."
+            ),
         )
     if is_world_accessible(directory):
         mode = directory.stat().st_mode & 0o777
@@ -417,6 +446,15 @@ def apply_token(context: SetupContext) -> None:
 
 
 def probe_token_storage(context: SetupContext) -> SetupStep:
+    """Whether anything but the owner can reach the token (SEC-4).
+
+    The check is ``st_mode & 0o077 == 0`` on the file and on the directory
+    holding it. The satisfied summary used to read "stored 0600 inside a 0700
+    directory", which is a *different* claim: a 0400 token passes the check and
+    falsifies the sentence, and no mode here was ever compared to 0600 at all.
+    That line is what an operator quotes in a security review, so it now states
+    what was measured.
+    """
     path = context.auth_dir / TOKEN_KEY
     if not path.is_file():
         return SetupStep(
@@ -440,7 +478,7 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
     return SetupStep(
         step_id=StepId.TOKEN_STORAGE,
         status=StepStatus.SATISFIED,
-        summary="The token is stored 0600 inside a 0700 directory.",
+        summary="The token is not accessible to other local users.",
     )
 
 
