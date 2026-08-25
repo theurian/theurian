@@ -381,8 +381,8 @@ def propose_accept(
     bytes and choosing silently would accept one while the author was reading
     the other.
 
-    **What is checked before anything moves**: that no body would land a secret,
-    and that the project's migration set, with this proposal in it, still
+    **What is checked before anything moves**: that nothing it would land carries
+    a secret, and that the project's migration set, with this proposal in it, still
     survives the pipeline ``theurian migrate apply`` runs -- the published
     schema, the whole-set guards, and a dry replay against a throwaway store
     that catches the invariants only applying can check, a revision's source
@@ -391,8 +391,10 @@ def propose_accept(
     left exactly as it was, so the change can be corrected and accepted rather
     than re-drafted from nothing (ADR-0027, #307).
 
-    **Secret scanning** (SEC-11) runs over the bodies and the migration
-    document's author-written field values first, under the policy
+    **Secret scanning** (SEC-11) runs first, over everything the acceptance
+    would land: the bodies, the migration document's author-written field
+    values, the migration file's own bytes -- a YAML comment included -- its
+    filename, and the path each body lands at. Under the policy
     ``security.secretScan`` selects in ``.theurian/config.yaml``: ``block``,
     which is also what an absent key or an absent file selects, refuses the
     acceptance; ``warn`` proceeds and reports what it found on the result;
