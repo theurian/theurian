@@ -39,6 +39,29 @@ ANOTHER_DATA_DIRECTORY: Final = "<another data directory>"
 
 _SEE_THE_VALUES: Final = "run `theurian doctor` without --report to see them"
 
+#: Ceiling, in characters, on what :func:`failure_detail` returns for the
+#: operator's own terminal.
+#:
+#: **A dependency's habits are not a limit this project has recorded.**
+#: ``SetupService._probe`` catches ``Exception``, so the string is whatever the
+#: raising library chose to build and nothing in Theurian bounded it. The widest
+#: channel in practice is a migration refusal, and it is short only because
+#: PyYAML truncates its own snippet -- a syntax error 5,000 characters into one
+#: line renders at 169 (measured 2026-08-26, PyYAML 6). That is an
+#: implementation detail, revisable in any release of somebody else's package,
+#: and a channel whose width is decided elsewhere is a channel Theurian has not
+#: decided about.
+#:
+#: 2,000 is an order of magnitude above every message measured on these paths and
+#: well below what buries a terminal. It bounds the whole returned string, type
+#: name and marker included, so the guarantee is the one the name states.
+MAX_FAILURE_DETAIL_CHARS: Final = 2_000
+
+#: Put in place of what was cut, so a bounded message cannot be read as a
+#: complete one. Far shorter than :data:`MAX_FAILURE_DETAIL_CHARS`, which is what
+#: keeps the slice in :func:`failure_detail` non-negative.
+_TRUNCATION_MARKER: Final = " ... [truncated]"
+
 
 def withheld_difference(subject: str, fields: DifferingFields) -> str:
     """What may be said about a configuration Theurian did not write.
@@ -152,6 +175,14 @@ def failure_detail(exc: Exception, *, for_publication: bool) -> str:
     Recorded as a decision rather than left to a future reviewer to rediscover:
     an arbitrary exception string is not publishable, and the deliberate cost is
     that a bug report opens with a type name.
+
+    **The terminal's copy is bounded too**, by
+    :data:`MAX_FAILURE_DETAIL_CHARS`, with :data:`_TRUNCATION_MARKER` in place of
+    what was dropped. Withholding decides *whether* the message travels;
+    the bound decides *how wide the channel is*, and that had been left to
+    whichever library raised -- see the constant for why a dependency's own
+    truncation is not an answer. The publication branch is untouched: it carries
+    no message at all, so there is nothing there to cut.
     """
     if for_publication:
         return (
@@ -159,4 +190,8 @@ def failure_detail(exc: Exception, *, for_publication: bool) -> str:
             f"because an exception carries whatever raised it; run `theurian doctor` "
             f"without --report to see it."
         )
-    return f"{type(exc).__name__}: {exc}"
+    detail = f"{type(exc).__name__}: {exc}"
+    if len(detail) <= MAX_FAILURE_DETAIL_CHARS:
+        return detail
+    kept = MAX_FAILURE_DETAIL_CHARS - len(_TRUNCATION_MARKER)
+    return f"{detail[:kept]}{_TRUNCATION_MARKER}"
