@@ -752,6 +752,85 @@ def test_the_ceiling_still_bounds_findings_recovered_from_inside_a_failed_candid
     )
 
 
+#: How many times the stripe credential is repeated inside the single candidate
+#: run below. Over the ceiling and independent of it, for the reason the sibling
+#: fixture records -- and over it *within one outer match*, which is the whole
+#: difference between the two cases.
+_MATCHES_INSIDE_ONE_RUN: Final = 40
+
+#: ``staging-`` followed by forty ``sk_live_<16 chars>-`` repetitions: 1,008
+#: candidate-class characters with no upper case at all, so the generic family
+#: consumes the lot and its class gate refuses what it consumed. One refused
+#: candidate holding forty ``stripe-secret-key`` matches, because that family's
+#: repetition class excludes ``-``: each match ends at a delimiter, which leaves
+#: ``\b`` satisfied for the next.
+#:
+#: **The prefix is load-bearing, not decoration.** Without it the run begins with
+#: ``sk_live_``, where the stripe branch of the top-level alternation wins outright
+#: -- the specific families are declared before the generic one -- so the outer pass
+#: reports each credential directly and *no candidate is ever refused*. Measured
+#: 2026-08-25: a bare ``sk_live_<16>-`` repeated forty times answers 20 with the
+#: inner bound and 20 without it, because nothing ever calls the function the bound
+#: lives in. Gluing a prefix in front is what moves the whole run onto the generic
+#: branch, which is the same mechanism :data:`_GLUED_OPENAI` exercises one
+#: credential at a time.
+_CROWDED_REFUSED_RUN: Final = _STAGE_PREFIX + (
+    f"{_FAMILY_CREDENTIALS['stripe-secret-key']}-" * _MATCHES_INSIDE_ONE_RUN
+)
+
+
+def test_the_ceiling_bounds_a_single_failed_candidate_that_hides_many_credentials() -> None:
+    """One refused run can hold more credentials than the whole scan may report.
+
+    ``scan_text``'s own ``break`` runs once per *outer* match, so it cannot bound
+    what a single outer match contributes. The sibling case above plants one
+    credential per line, so every refused run yields exactly one finding and the
+    outer break catches the ceiling first -- measured 2026-08-25, deleting
+    ``_families_inside``'s ``room`` bound leaves all 48 other cases in this file
+    green. This is the input where that bound is the only thing holding: one
+    1,008-character candidate carrying forty credentials, which without it returns
+    forty findings at a published ceiling of twenty, each one paying the
+    ``O(position)`` newline count the ceiling exists to cap.
+
+    Asserted as an exact list of families and columns rather than a length. Every
+    match here sits on one line, so the column is what says the three reported are
+    the *first* three, rather than the last three or one finding three times.
+    """
+    assert _MATCHES_INSIDE_ONE_RUN > _CEILING_UNDER_TEST, (
+        "one run must hold more credentials than the ceiling, or the outer break bounds this "
+        "body too and the case says nothing the sibling above does not"
+    )
+    assert len(_CROWDED_REFUSED_RUN) >= _MIN_CANDIDATE_CHARS, (
+        "the run is under the candidate floor, so the generic family never consumes it and "
+        "nothing is ever refused or re-examined"
+    )
+    assert not any(char.isupper() for char in _CROWDED_REFUSED_RUN), (
+        "the run now carries an upper-case character, so the generic family's class gate can "
+        "accept it and report one high-entropy finding instead of refusing the run"
+    )
+    assert _CROWDED_REFUSED_RUN.index(_FAMILY_CREDENTIALS["stripe-secret-key"]) > 0, (
+        "the run starts with the credential, where the stripe branch of the alternation wins "
+        "outright and the outer pass reports each match itself -- no candidate is refused, "
+        "nothing is recovered from inside one, and this case is green without exercising the "
+        "bound it is about"
+    )
+    body = f"config:\n  key: {_CROWDED_REFUSED_RUN}\n"
+    first_credential_column = len("  key: ") + len(_STAGE_PREFIX) + 1
+    stride = len(_FAMILY_CREDENTIALS["stripe-secret-key"]) + len("-")
+
+    findings = scan_text(body, max_findings=_CEILING_UNDER_TEST)
+
+    assert [(f.family, f.column) for f in findings] == [
+        ("stripe-secret-key", first_credential_column + n * stride)
+        for n in range(_CEILING_UNDER_TEST)
+    ], (
+        f"{len(findings)} findings came back from one refused candidate holding "
+        f"{_MATCHES_INSIDE_ONE_RUN} credentials with the ceiling at {_CEILING_UNDER_TEST}: "
+        f"{[(f.family, f.column) for f in findings]}. The outer `break` cannot bound this -- "
+        f"it runs once per outer match, and this body is one."
+    )
+
+
 #: ``risk-<hex40>``. The letters ``sk`` appear inside a word, and the ``-`` after
 #: them is the same delimiter the ``openai-api-key`` family looks for -- so the
 #: only thing between this and a false positive is that ``\b`` requires a
