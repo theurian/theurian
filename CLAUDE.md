@@ -110,7 +110,7 @@ dry is how a warm-up slice eats four review rounds (SEC-18 #27, #47).
 
 Finish or park the PR in flight by the normal CRITICAL/HIGH gate — merge if
 green, otherwise leave it open with the unresolved findings recorded. Then,
-before opening another PR in that class:
+before starting another slice in that class:
 
 - **Split the box.** A finding adjacent to the slice's stated scope, arising
   from a different root cause, is a *different class* — file it as its own issue
@@ -166,10 +166,10 @@ than it could.
 A finished, reviewed, CI-green PR left open is flow debt: the milestone is not
 done until it is merged (step 6 above), and the next class is started on top of
 work that has not landed. When closing an assignment and when opening the next,
-run `gh pr list --state open` and merge anything green and mergeable before
-dispatching new work. Reviews on this project settle in-session, not in the PR's
-GitHub comments, so a clean checks list plus an in-session green *is* the merge
-signal — do not wait for a GitHub review that this workflow never posts.
+run `gh pr list --state open --draft=false` and merge anything green and
+mergeable before dispatching new work. A round is recorded as a PR comment at
+the flip to Ready, but this workflow never posts a GitHub *review* — so Ready
+plus a clean checks list is the merge signal; do not wait for an approval.
 
 ## The review round
 
@@ -198,8 +198,8 @@ light-class file. The failure mode this section exists to stop is uniform
 weight: pushing a wording fix through the same machinery as a gate change
 spends the reviewers' credibility on work that cannot pay for it.
 
-Before opening any PR that takes the full round, launch all three **in a single
-message** so they run concurrently:
+Before flipping any PR out of Draft, when the change takes the full round,
+launch all three **in a single message** so they run concurrently:
 
 | Agent | Answers |
 | :-- | :-- |
@@ -545,18 +545,19 @@ its language is the point.
 - Commits: Conventional Commits, signed, with a DCO `Signed-off-by` trailer
   (`git commit -s`). One topic per PR.
 - **A commit is triggered by the quality gate going green, not by the work being
-  finished** — at that moment, not at the end of a review round and not before
-  opening the PR. Milestone 5 held 16,300 uncommitted lines for 28 hours; slicing
-  them afterwards took three attempts, and the one that built opens with a
-  13,434-line commit. Size was not the cause: a port signature change spread
-  across layers, and a commit that removes an API without moving its consumers
-  does not build — once they have landed separately, no ordering works.
-  Committing at the green keeps them together. It also bounds review: rounds four
-  to six were handed `git diff main...HEAD`, which showed 7,792 lines of a larger
-  change — four production modules and three schemas were untracked, and so
-  invisible to it. An uncommitted tree has no boundary a reviewer can check. The
-  same green also pushes: the branch reaches origin at its first green commit,
-  with a Draft PR open from that moment — see *Early push and Draft PRs*.
+  finished** — at that moment, not at the end of a review round and not batched
+  up for the flip to Ready. Milestone 5 held 16,300 uncommitted lines for 28
+  hours; slicing them afterwards took three attempts, and the one that built
+  opens with a 13,434-line commit. Size was not the cause: a port signature
+  change spread across layers, and a commit that removes an API without moving
+  its consumers does not build — once they have landed separately, no ordering
+  works. Committing at the green keeps them together. It also bounds review:
+  rounds four to six were handed `git diff main...HEAD`, which showed 7,792
+  lines of a larger change — four production modules and three schemas were
+  untracked, and so invisible to it. An uncommitted tree has no boundary a
+  reviewer can check. The same green also pushes: the branch reaches origin at
+  its first green commit, with a Draft PR open from that moment — see *Early
+  push and Draft PRs*.
 - Never run a real `theurian setup`, `theurian uninstall`, or a detached
   `daemon start` on the user's machine — those are what write `~/.claude.json`
   and register the OS service. `--dry-run` is the form that is safe here, and
@@ -572,9 +573,10 @@ the state of every lane is on GitHub, not on a local disk — and the crash-safe
 net; CI runs on the Draft from the first push, so the required checks exercise
 the work while it is still in flight.
 
-**Draft → Ready is the review gate.** The three-reviewer round of *The review
-round* runs immediately before the flip, and the PR does not leave Draft until
-the round is green — CRITICAL and HIGH at zero, per *What "green" means*.
+**Draft → Ready is the review gate.** The review round, at the weight its blast
+radius sets, runs before the flip; documentation follows the round, so the flip
+is the last step and not the next one. The PR does not leave Draft until the
+round is green — CRITICAL and HIGH at zero, per *What "green" means*.
 Flipping to Ready *asserts* that the round is green; flip with a PR comment
 recording the round — findings per severity, what was fixed, what was
 consciously deferred and why. Review weight is still set by blast radius; what
@@ -591,7 +593,9 @@ Review-Finding: <reviewer> <SEVERITY> — <one-line finding>
 for example `Review-Finding: adversarial HIGH — byte-identical body accepted
 under a second item id`. The trailer is deliberately machine-parseable:
 `git log --grep 'Review-Finding:'` reconstructs the review history, and it is
-the form a future review-ingestion surface consumes as governed knowledge.
+the form a future review-ingestion surface consumes as governed knowledge. The
+round comment and the `Review-Finding:` trailer are English, like every other
+PR-surface text — the reviewer's Japanese findings are summarised, not pasted.
 
 **Embargoed disclosure work follows the same pattern on the private fork.**
 Nothing — branch, PR, or CHANGELOG hint — touches public origin until the
