@@ -164,6 +164,55 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   see `accept` exit 1 where it exited 0, and the escape hatch is the policy key
   the refusal's own remedy names: there is still no per-finding suppression.
 
+### Fixed
+
+- **A credential glued behind a lower-case prefix is no longer invisible to the
+  SEC-11 secret scan**
+  ([#350](https://github.com/theurian/theurian/issues/350)). `staging-sk-<40 hex>`
+  in a migration document's `title` — or the same shape in a body — passed
+  `theurian propose accept` at the default `block` policy and was committed
+  unread, while the bare `sk-<40 hex>` beside it was refused. The delimiter is a
+  candidate-class character, so the whole thing is one 51-character run to the
+  generic high-entropy family; that family is declared last, but the engine takes
+  the leftmost match, so it consumes the run at its first position and is then
+  refused by the class gate for want of an upper-case character. `finditer`
+  resumes *after* what the refused branch consumed, so the word boundary the
+  internal `-` provides — exactly where `openai-api-key` would have matched — was
+  never tried.
+
+  **A refused candidate is now rescanned with the specific families alone**, at
+  every position inside the run rather than only its first, with offsets mapped
+  back to the document so a finding points at the credential and not at the run
+  that hid it. Only *refused* candidates are re-examined: a run that clears the
+  heuristic is already reported as `high-entropy-token`, and reporting it again
+  under an inner family would make one value two findings at two positions in a
+  refusal message and in a published `accept --json` document. What is recovered
+  this way is charged against the same `max_findings` ceiling as the outer pass —
+  one refused run can hold many inner matches, and forty `sk_live_` credentials
+  behind a single `staging-` prefix answer twenty findings, not forty.
+
+  **What is still missed.** A credential glued straight onto candidate-class
+  characters with no boundary at all — `stagingsk-<40 hex>` — is still unreported.
+  Reaching it means matching a family's prefix at an arbitrary offset, which
+  reports `risk-`, `task-` and `disk-` as credentials, and with `block` as the
+  default policy a false positive costs what a false negative costs. This bounds
+  the gate [#336](https://github.com/theurian/theurian/issues/336) widened rather
+  than adding one: the detector is still best effort, and SEC-11 still disclaims
+  being a complete secret scanner.
+
+  **The second pass is a constant factor, not a new complexity class.** Measured
+  2026-08-25 on CPython 3.13, paired runs against the pre-fix module: the worst
+  input found — `sk-` repeated to the 8 MiB `MAX_SOURCE_FILE_BYTES` ceiling, which
+  satisfies that family's `\bsk-` anchor at every third character — costs ≈8.7 s
+  against 0.28 s, and the same input at 1, 2, 4 and 8 MiB costs 1.08–1.09 s per
+  MiB at every size. Nothing shaped like a real body pays it: this repository's
+  largest committed knowledge body, 132,811 characters, measures 0.018 s either
+  way, because the cost lands only on runs the heuristic refuses and only where a
+  family's anchor is repeatedly satisfied inside one. `propose accept` is a local,
+  interactive command, so a bounded few seconds on a body crafted to provoke it is
+  a recorded cost rather than a denial of service; the full table is in the
+  module's docstring.
+
 ### Security
 
 - **`sensitivity` stops being a published label and becomes an enforced read
