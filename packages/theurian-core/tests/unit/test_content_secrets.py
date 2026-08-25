@@ -1636,11 +1636,15 @@ def test_a_google_key_is_recovered_only_where_the_run_itself_ends(
 ) -> None:
     """A fixed repetition plus a lookahead over the whole class leaves one landing place.
 
-    ``google-api-key`` repeats ``{35}`` exactly, so its match ends 39 characters
-    after ``AIza`` and cannot end anywhere else; its lookahead then admits only a
-    character outside :data:`_CANDIDATE_CLASS`, which inside a maximal run means the
-    run's end alone. One more candidate-class character and the family is not lost
-    to a threshold or to a heuristic -- it has nowhere legal to finish.
+    This is the *fixed x equal* quadrant of member 3. ``google-api-key`` repeats
+    ``{35}`` exactly, so its match ends 39 characters after ``AIza`` and cannot end
+    anywhere else; its lookahead then admits only a character outside
+    :data:`_CANDIDATE_CLASS`, which inside a maximal run means the run's end alone.
+    One more candidate-class character and the family is not lost to a threshold or
+    to a heuristic -- it has nowhere legal to finish. All 64 candidate characters
+    kill it, which is what separates this quadrant from
+    :func:`test_an_aws_key_is_recovered_where_its_lookahead_still_admits_the_glue`,
+    where two of the 64 survive.
 
     Within this function's domain that is silence, and the rows below measure it as
     ``[]``: the run is refused by the class gate, so the generic family does not
@@ -1648,10 +1652,14 @@ def test_a_google_key_is_recovered_only_where_the_run_itself_ends(
     answer -- where the gate *passes*, the same tail costs the family's name and not
     the finding.
 
-    Both halves are here because member 3 of the residual enumeration claims both,
-    and because the fix #356 proposes -- narrowing this family's lookahead -- would
-    turn the last three rows green. That is a change somebody makes deliberately,
-    with the geometry case red beside it.
+    **What #356 would change here is two rows of three, not three.** Narrowing this
+    family's lookahead to ``(?![0-9A-Za-z])`` moves it from 64 killing characters to
+    62: ``-`` and ``_`` become legal ends, so those two rows would report the family
+    again, while ``x`` -- an alphanumeric, which the narrowed lookahead still forbids
+    -- stays ``[]``. Measured 2026-08-25 by running that mutant against this file:
+    the ``-x`` and ``_`` rows redden and the ``x`` row does not. The sentence here
+    said "the last three rows" until round three measured it; the mistake was
+    reading "narrower" as "admits everything it used to forbid".
     """
     run = f"{_ENTROPY_KILLING_PREFIX}-{_GOOGLE_SHAPED}{tail}"
     control = scan_text(f"key: {_GOOGLE_SHAPED}\n")
@@ -1710,6 +1718,198 @@ def test_a_google_key_in_a_run_that_clears_the_gate_costs_the_family_not_the_fin
         f"a gate-clearing run holding a Google key reported {[f.family for f in findings]}. "
         f"Nothing at all would mean a proposal carrying this key is accepted at the default "
         f"`block` policy; two findings would mean one value is reported twice."
+    )
+
+
+#: A real ``aws-access-key-id``, read from :data:`_FAMILY_CREDENTIALS` so the value
+#: this quadrant is measured with and the value the family's own positive case
+#: reports cannot drift apart. ``AKIA`` and sixteen upper-case characters and
+#: digits: 20 characters, a *fixed* match length, which is the axis this case is
+#: about.
+_AWS_SHAPED: Final = _FAMILY_CREDENTIALS["aws-access-key-id"]
+
+#: What may follow the key inside the run, and what the scan then reports. Two of
+#: the 64 candidate characters leave the family reachable, and they are exactly the
+#: two its lookahead omits; a letter and a digit stand for the other 62, which is
+#: the whole difference between this quadrant and ``google-api-key``'s.
+_AWS_GLUE_FIXTURES: Final[tuple[tuple[str, list[str]], ...]] = (
+    ("", ["aws-access-key-id"]),
+    ("x", []),
+    ("7", []),
+    ("-", ["aws-access-key-id"]),
+    ("_", ["aws-access-key-id"]),
+)
+
+
+@pytest.mark.parametrize(
+    ("glue", "expected"),
+    _AWS_GLUE_FIXTURES,
+    ids=[f"glue={glue!r}" for glue, _ in _AWS_GLUE_FIXTURES],
+)
+def test_an_aws_key_is_recovered_where_its_lookahead_still_admits_the_glue(
+    glue: str, expected: list[str]
+) -> None:
+    """The *fixed x strict-subset* quadrant: one end offset, two characters that survive it.
+
+    ``aws-access-key-id`` shares ``google-api-key``'s fixed repetition -- its match
+    is always exactly 20 characters -- so it too has a single offset at which it can
+    end. What it does not share is the lookahead: ``(?![0-9A-Za-z])`` omits ``-``
+    and ``_``, so those two candidate characters are legal ends and the other 62 are
+    not. Reading the lookahead column alone puts this family in
+    ``google-api-key``'s bucket and reading the repetition column alone puts it in
+    ``openai-api-key``'s; it belongs in neither, which is why member 3 is derived
+    from both axes.
+
+    The stakes are not theoretical: measured through the real CLI at the default
+    ``block``, ``AKIA`` and sixteen characters is refused, and the same key followed
+    by one letter of glue is **accepted and the body lands**. The last two rows are
+    what keeps that from being read as "any glue hides an AWS key" -- glue it with
+    ``-`` or ``_`` and the family is reported again.
+
+    **The glue in front is identical characters on purpose, and that is the trap
+    this case was nearly built on.** The run has to fail the class gate or the
+    generic family reports it and nothing is rescanned -- and *distinct* lower-case
+    glue does not fail it: 24 distinct lower-case characters after this key measure
+    5.41 bits and clear the floor, where 24 identical ones measure 2.91 and do not.
+    Lower case is not the property; low entropy is. The gate assertion below is what
+    turns that mistake into a red test instead of a case that measures the
+    neighbouring quadrant.
+    """
+    run = f"{_ENTROPY_KILLING_PREFIX}-{_AWS_SHAPED}{glue}"
+    control = scan_text(f"key: {_AWS_SHAPED}\n")
+    assert [f.family for f in control] == ["aws-access-key-id"], (
+        f"the fixture is not reported as an aws-access-key-id even on its own "
+        f"({[f.family for f in control]}), so every row below would be measuring a value that "
+        f"was never a credential"
+    )
+    assert any(char.isdigit() for char in _AWS_SHAPED), (
+        "the key carries no digit, so the digit gate is what drops it and these rows stop "
+        "being about the lookahead at all"
+    )
+    assert not _looks_like_a_secret(run), (
+        "the run clears the class gate, so the generic family reports it whole and nothing is "
+        "rescanned. Distinct glue characters raise a run's entropy past the floor -- the "
+        "prefix has to stay repetitive for this case to reach the branch it is about."
+    )
+    assert len(run) >= _MIN_CANDIDATE_CHARS, (
+        "the run is under the candidate floor, so it is never consumed and never rescanned"
+    )
+
+    findings = scan_text(f"key: {run}\n")
+
+    assert [f.family for f in findings] == expected, (
+        f"a run ending {glue!r} after the key reported {[f.family for f in findings]}, not "
+        f"{expected}. The match is a fixed 20 characters, so it ends at one offset only, and "
+        f"its lookahead admits exactly `-` and `_` there -- 62 of the 64 candidate characters "
+        f"put the family out of reach and two do not."
+    )
+
+
+# -- What each family is spelled with: its class, and its leading anchor -------
+#
+# Both cases below are false-positive bounds, and both were surviving mutants in
+# round three: a widened repetition class and a dropped anchor each report a
+# credential that is not there, and every positive case in this file stays green
+# while they do -- a positive fixture matches a *wider* pattern just as happily.
+
+#: ``AKIA``, read from the live fixture table rather than written again, and
+#: sixteen lower-case letters. The length is read from the same row: a fixed
+#: repetition only matches at its exact count, so a tail of any other length would
+#: leave this case green under the widening it exists to catch.
+_AWS_PREFIX: Final = next(
+    prefix for family, prefix, _ in PATTERN_FAMILY_FIXTURES if family == "aws-access-key-id"
+)
+_AWS_TAIL_LENGTH: Final = len(_FAMILY_CREDENTIALS["aws-access-key-id"]) - len(_AWS_PREFIX)
+
+
+def test_an_aws_key_id_spelled_in_lower_case_is_not_reported() -> None:
+    """The repetition class is part of the credential's definition, not decoration.
+
+    An AWS access key id is upper case and digits -- ``[0-9A-Z]{16}`` is the format,
+    not a convenience. Widen that class to ``[0-9A-Za-z]`` and the family starts
+    reporting any sixteen alphanumerics after the letters ``AKIA``, which is a false
+    positive with the same cost as ``risk-`` being read as a credential: under the
+    default ``block`` policy an acceptance is refused for text that holds no secret.
+
+    Nothing else here notices. Every positive fixture in this file is upper case and
+    digits, so it matches the widened class exactly as well -- measured 2026-08-25 by
+    the round-three adversarial review, the widening survived the whole suite. A
+    false-positive bound is the only kind of case that can catch a pattern getting
+    *more* permissive.
+
+    The fixture is deliberately shorter than the candidate floor, so the generic
+    family cannot consume it: a run that reported ``high-entropy-token`` would be
+    green here for a reason that has nothing to do with the class.
+    """
+    lower_case_tail = "notesandthoughts"
+    not_a_key = f"{_AWS_PREFIX}{lower_case_tail}"
+    assert len(lower_case_tail) == _AWS_TAIL_LENGTH, (
+        f"the tail is {len(lower_case_tail)} characters and the family repeats a fixed "
+        f"{_AWS_TAIL_LENGTH}; at any other length the widened class would not match either "
+        f"and this case would be green without saying anything"
+    )
+    assert lower_case_tail.isalpha() and lower_case_tail.islower(), (
+        "the tail is no longer all lower case, so it may sit inside the family's real class "
+        "and this case stops being about the widening"
+    )
+    assert len(not_a_key) < _MIN_CANDIDATE_CHARS, (
+        f"{not_a_key!r} is at or over the candidate floor, so the generic family can consume "
+        f"it and report something whatever the specific family's class admits"
+    )
+
+    findings = scan_text(f"the {not_a_key} branch was merged\n")
+
+    assert findings == (), (
+        f"{not_a_key!r} is reported as {[(f.family, f.redacted) for f in findings]}. Sixteen "
+        f"lower-case letters after `AKIA` are not an access key id -- the format is upper case "
+        f"and digits, and a class that admits letters reports ordinary text as a credential."
+    )
+
+
+def test_a_google_key_glued_to_a_word_character_is_not_reported() -> None:
+    """The leading anchor, on the family whose prefix is a word rather than a delimiter.
+
+    ``\\bAIza`` requires a non-word character in front of the prefix, exactly as
+    ``\\bsk-`` does -- and this is where that matters most, because the rescan looks
+    at *every* position inside a refused run rather than only its first. Drop the
+    anchor and ``AIza`` is found in the middle of a word, which is the same false
+    positive :func:`test_a_prefix_that_is_part_of_a_word_is_not_reported` prices for
+    ``sk-``: ordinary text refused under the default ``block``.
+
+    That guard exists for ``openai-api-key`` and did not for this family. Measured
+    2026-08-25 by the round-three adversarial review: dropping ``\\b`` from ``AIza``
+    survived the whole suite, because every positive fixture puts the prefix at a
+    boundary and a pattern that no longer requires one still matches there.
+
+    The run has to fail the class gate, or the generic family reports it and the
+    anchor is never consulted -- so the glue is the repetitive prefix the sibling
+    cases use, with one ordinary letter between it and the key.
+    """
+    word_glued = f"{_ENTROPY_KILLING_PREFIX}x{_GOOGLE_SHAPED}"
+    control = scan_text(f"key: {_GOOGLE_SHAPED}\n")
+    assert [f.family for f in control] == ["google-api-key"], (
+        f"the key is not reported as a google-api-key even at a boundary "
+        f"({[f.family for f in control]}), so this case would be green with the anchor gone"
+    )
+    assert word_glued[word_glued.index(_GOOGLE_SHAPED) - 1].isalnum(), (
+        "the character before the key is no longer a word character, so there is a boundary "
+        "in front of the prefix after all and the anchor is not what refuses this"
+    )
+    assert not _looks_like_a_secret(word_glued), (
+        "the run clears the class gate, so it is reported whole by the generic family and the "
+        "rescan -- where the anchor decides -- is never reached"
+    )
+    assert len(word_glued) >= _MIN_CANDIDATE_CHARS, (
+        "the run is under the candidate floor, so it is never consumed and never rescanned"
+    )
+
+    findings = scan_text(f"key: {word_glued}\n")
+
+    assert findings == (), (
+        f"a key glued to a word character is reported as "
+        f"{[(f.family, f.redacted) for f in findings]}. The rescan tries every position inside "
+        f"a refused run, so `\\b` in front of `AIza` is the only thing keeping the family out "
+        f"of the middle of a word."
     )
 
 
