@@ -1068,8 +1068,26 @@ def probe_gitignore(context: SetupContext) -> SetupStep:
     entries written by hand, with no markers. Those rules do ignore what they
     name. What is wrong there is the *next* `theurian init`, which finds no block
     to rewrite, appends its own, and leaves the file carrying two lists that
-    drift apart with nothing to say so -- which is why the step is stricter than
-    "is it ignored" and says why in its own sentence.
+    drift apart with nothing to say so -- which is why block identity is a
+    **different question** than "is it ignored", and the step says so in its own
+    sentence.
+
+    **Different, and not strictly stronger.** The residual runs the other way
+    too, because block identity is blind to everything outside the markers. Two
+    inputs are ``satisfied`` here while ``git check-ignore
+    .theurian/state/index.db`` exits 1 (both measured):
+
+    - the current block, followed further down the same file by
+      ``!.theurian/state/`` -- the negation re-includes the directory, and the
+      derived artifacts inside it with it;
+    - the current block alone, beside a nested `.theurian/.gitignore` holding
+      ``!state/`` -- a file this step never opens.
+
+    Recorded rather than closed here, because what settles the actual guarantee
+    is not a wider read of ignore files: it is asking Git what is *tracked*.
+    Issue #64 owns that check -- ``git ls-files`` over the derived artifacts --
+    and it answers "is a derived artifact in the repository" for every way one
+    can get there, negation patterns and a `git add -f` alike.
 
     HIGH-2 (#49) is the same class one step earlier and stays closed by
     construction: a stale block -- every project initialised before ADR-0028
@@ -1150,13 +1168,17 @@ def _managed_block_verdict(gitignore: Path, managed: str) -> SetupStep:
 def _gitignore_missing(summary: str) -> SetupStep:
     """One MISSING step, whichever way the block is not the current one.
 
-    Five summaries for one status, because a file that is absent, one that is
-    silent, one whose block is stale, one whose block was edited, and one whose
-    markers cannot be acted on are different things to be told and the reader
-    acts on them differently. The path is named in every one: `init` appends the
-    block and setup only ever reads the file, so this step names no ``paths`` --
-    which is how a `.gitignore` that was never created came to be reported as
-    one setup had modified.
+    Several summaries share the status and the same action, because a file that
+    is absent, one that is silent, one whose block is stale and one whose block
+    was edited are different things to be told and the reader acts on them
+    differently. The malformed-marker arm is MISSING too and deliberately does
+    *not* come through here: `theurian init` refuses a file in that state, so its
+    action is to repair the markers by hand rather than to re-run the command.
+
+    The path is named in every summary: `init` appends the block and setup only
+    ever reads the file, so this step names no ``paths`` -- which is how a
+    `.gitignore` that was never created came to be reported as one setup had
+    modified.
     """
     return SetupStep(
         step_id=StepId.GITIGNORE,
