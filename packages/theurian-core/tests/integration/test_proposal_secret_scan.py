@@ -39,6 +39,7 @@ from jsonschema import Draft202012Validator
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
     _AT_BODY_CONTENT,
+    _AT_BODY_PATH,
     _AT_MIGRATION_NAME,
     _AUTHORED_ANCHOR_FIELDS,
     _AUTHORED_METADATA_FIELDS,
@@ -56,7 +57,7 @@ from theurian.cli.migration_pipeline import rehearse_migration_set
 from theurian.domain.enums import KnowledgeKind
 from theurian.domain.errors import ProjectConfigError
 from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId, RevisionId, TaskId
-from theurian.domain.knowledge import SourceAnchor
+from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
 from theurian.domain.migration import Migration, current_revision_in
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
 from theurian.domain.proposal import Evidence, is_migration_file_name
@@ -69,6 +70,7 @@ from theurian.security.content_secrets import (
     _MIN_CANDIDATE_CHARS,
     HIGH_ENTROPY,
     MAX_FINDINGS,
+    SecretFinding,
     scan_text,
 )
 from theurian.security.project_config import SecretScanPolicy
@@ -3184,4 +3186,340 @@ def test_the_finding_budget_is_shared_across_channels_not_per_channel(
         f"the {MAX_FINDINGS} findings are not split {_BUDGET_BODY_SECRETS}/{_BUDGET_OVERFLOW} "
         f"between the two channels but {dict(spent)} -- the second channel was not truncated by "
         f"what the first had already spent"
+    )
+
+
+# -- two bodies, and the index that keeps their channels paired (#349) ---------
+#
+# Everything above lands at most one body, so the two body channels only ever
+# report `[0]`, and a suite that never lands two cannot tell the real
+# `_landed_text` from three mutations round one's adversarial pass confirmed
+# survive it (2026-08-25):
+#
+#   * the content index frozen to `[0]`, so two dirty bodies' content collapses
+#     onto one location;
+#   * the landed-path index frozen to `[0]`, the same for the path channel; and
+#   * the landed paths paired to the wrong bodies (the `landed` tuple built over
+#     `reversed(moves)`), so `the landed path of body[0]` names body 1's path.
+#
+# The one test below lands two bodies, each carrying a credential of its *own
+# family* in BOTH its content and its landed path, so a finding's
+# `(location, family)` pair names exactly one plant and a family that has moved
+# off the index it belongs to is a failed assertion. Four families, one per
+# (body, channel), rather than four redacted prefixes: a family is a whole word
+# a mispair cannot half-match, where a four-character prefix of two `sk-` tokens
+# is one character apart.
+
+#: Body 0's content credential -- a base64url `high-entropy-token`, the family a
+#: prose body leaks. Split from its seed for the reason :data:`PLANTED_TOKEN`
+#: records, and measured `high-entropy-token` on its own (2026-08-25).
+_BODY0_CONTENT_SECRET: Final = _distinct_token("#349 two-body content 0")
+
+#: Body 1's content credential -- a `github-token`, a *different* family from body
+#: 0's so the content channel's two findings are told apart by family and not only
+#: by the index under test.
+_BODY1_CONTENT_SECRET: Final = "ghp_" + _hex_tail(b"theurian two-body content 1 (#349)", 36)
+
+#: Body 0's landed-path credential -- an `openai-api-key`, the shape
+#: :data:`_LEAF_SECRET` proves a body leaf can carry.
+_BODY0_PATH_SECRET: Final = "sk-" + _hex_tail(b"theurian two-body path 0 (#349)", 40)
+
+#: Body 1's landed-path credential -- a `slack-token`, the fourth distinct family,
+#: the shape :data:`_DIRECTORY_SECRET` proves a path segment can carry.
+_BODY1_PATH_SECRET: Final = (
+    "xoxb-"
+    + _hex_tail(b"theurian two-body path 1 head (#349)", 10)
+    + "-"
+    + _hex_tail(b"theurian two-body path 1 tail (#349)", 24)
+)
+
+_BODY0_CONTENT: Final = f"# Alpha\n\nThree attempts.\n\n    TOKEN={_BODY0_CONTENT_SECRET}\n"
+_BODY1_CONTENT: Final = f"# Beta\n\nFive seconds.\n\n    GITHUB={_BODY1_CONTENT_SECRET}\n"
+_BODY0_TAIL: Final = f"architecture/staging-{_BODY0_PATH_SECRET}.md"
+_BODY1_TAIL: Final = f"architecture/staging-{_BODY1_PATH_SECRET}.md"
+
+#: The two bodies in order, so the migration operations, the on-disk files and the
+#: expected `(location, family)` pairs are all driven from one source of truth.
+#: Each entry is (itemId, revisionId, contentFile tail, body text, content family,
+#: path family). The revision ids are real Crockford base32 -- no I/L/O/U -- which
+#: the fixture guard enforces; the seeded generator's numeric ids would not be.
+_TWO_BODIES: Final = (
+    (
+        "architecture.alpha-notes",
+        "01K9AAAAAA0000000000000021",
+        _BODY0_TAIL,
+        _BODY0_CONTENT,
+        HIGH_ENTROPY,
+        "openai-api-key",
+    ),
+    (
+        "architecture.beta-notes",
+        "01K9AAAAAA0000000000000022",
+        _BODY1_TAIL,
+        _BODY1_CONTENT,
+        "github-token",
+        "slack-token",
+    ),
+)
+
+
+def _two_body_migration(migration_id: str) -> str:
+    """A migration landing two bodies, each with a distinct credential in its path.
+
+    Hand-authored rather than drafted for the reason ``accept`` reads a committed
+    proposal directory (ADR-0013 point 7): ``propose`` emits one body per
+    proposal, so two upsertRevisions naming two ``contentFile`` paths is a shape
+    only a contributor writes. Mirrors ``_hand_authored_two_body_migration`` in
+    ``test_proposal_service.py`` -- two upsertRevisions, no ``createItem`` (an
+    upsert creates the item), each pinning its body's digest and declaring the
+    ``authored-in-theurian`` label INV-8 requires.
+
+    The ``id`` is quoted because the seeded generator's ids are all digits, which
+    YAML would coerce to an int; the ``contentFile`` is quoted because its value
+    is a credential-shaped path and quoting keeps YAML from guessing at it.
+    """
+    operations = "".join(
+        "- op: upsertRevision\n"
+        f"  itemId: {item_id}\n"
+        f"  revisionId: {revision_id}\n"
+        f'  contentFile: "../knowledge/{tail}"\n'
+        f"  contentSha256: {hashlib.sha256(text.encode()).hexdigest()}\n"
+        "  metadata:\n"
+        f"    title: {item_id.rpartition('.')[2]}\n"
+        "    contentType: text/markdown\n"
+        "    kind: architecture\n"
+        "    namespace: architecture\n"
+        "    status: approved\n"
+        "    owner: platform-team\n"
+        f"    labels: ['{AUTHORED_IN_THEURIAN}']\n"
+        for item_id, revision_id, tail, text, _content_family, _path_family in _TWO_BODIES
+    )
+    return (
+        "apiVersion: theurian.dev/v1\n"
+        f"id: '{migration_id}'\n"
+        "createdAt: '2026-08-02T12:00:00+00:00'\n"
+        "author: platform-team@example.com\n"
+        "operations:\n"
+    ) + operations
+
+
+def _a_two_body_proposal(service: ProposalService) -> DraftedProposal:
+    """The ordinary proposal, rewritten to land the two bodies of :data:`_TWO_BODIES`.
+
+    ``draft`` lays down the directory ``accept`` reads; its migration and body are
+    then replaced with the two-body migration and the two bodies at the sub-paths
+    their ``contentFile`` names, exactly as ``accept`` will find them.
+    """
+    drafted = service.draft(_request(CLEAN_BODY))
+    drafted.migration_file.write_text(
+        _two_body_migration(drafted.migration_id.value), encoding="utf-8"
+    )
+    drafted.body_file.unlink()
+    for _item_id, _revision_id, tail, text, _content_family, _path_family in _TWO_BODIES:
+        body = drafted.directory / tail
+        body.parent.mkdir(parents=True, exist_ok=True)
+        body.write_text(text, encoding="utf-8")
+    return drafted
+
+
+def test_two_bodies_pair_each_channel_finding_with_its_own_index(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """Each body channel's index names the body it came from, with two bodies in hand (#349).
+
+    The adversarial MEDIUM-1 that no single-body test can reach: with one body
+    every ``[index]`` is ``[0]``, so the content index frozen to ``[0]``, the
+    landed-path index frozen to ``[0]``, and the landed paths paired to the wrong
+    bodies all read identically to the real thing. Two bodies tell them apart.
+
+    Each body carries a credential of a *different family* in both its content and
+    its landed path, so the four findings this asserts on --
+    ``the content of body[0]``, ``the content of body[1]``,
+    ``the landed path of body[0]``, ``the landed path of body[1]`` -- each name a
+    unique family. A frozen index drops the ``[1]`` finding; a reversal or a swap
+    puts a family on the wrong index. Either way one of the four
+    ``(location, family)`` pairs is gone.
+
+    Under ``warn`` so the findings ride out on the success result -- ``block``
+    would raise before a caller could read them. The same path credentials are
+    over-reported by the parsed ``contentFile`` field and the migration's bytes;
+    presence of the four body-channel pairs is asserted, never the total, because
+    the double report is by design (``_scan_for_secrets`` records why).
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+    # The plants are what the pairing rests on: each has to be detectable and of
+    # the family this test tells the others apart by, or a missing pair would be
+    # the fixture's fault and not the index's.
+    assert [f.family for f in scan_text(_BODY0_CONTENT)] == [HIGH_ENTROPY]
+    assert [f.family for f in scan_text(_BODY1_CONTENT)] == ["github-token"]
+    assert [f.family for f in scan_text(_BODY0_TAIL)] == ["openai-api-key"]
+    assert [f.family for f in scan_text(_BODY1_TAIL)] == ["slack-token"]
+
+    drafted = _a_two_body_proposal(service)
+    accepted = service.accept(drafted.proposal_id)
+
+    assert accepted.secret_scan.policy is SecretScanPolicy.WARN
+    pairs = {(f.location, f.finding.family) for f in accepted.secret_scan.findings}
+    assert (f"{_AT_BODY_CONTENT}[0]", HIGH_ENTROPY) in pairs, (
+        f"body 0's content credential is not at its own index: {sorted(pairs)}"
+    )
+    assert (f"{_AT_BODY_CONTENT}[1]", "github-token") in pairs, (
+        f"body 1's content credential is not at its own index -- the content index is frozen or "
+        f"the bodies are mispaired: {sorted(pairs)}"
+    )
+    assert (f"{_AT_BODY_PATH}[0]", "openai-api-key") in pairs, (
+        f"body 0's landed-path credential is not at its own index: {sorted(pairs)}"
+    )
+    assert (f"{_AT_BODY_PATH}[1]", "slack-token") in pairs, (
+        f"body 1's landed-path credential is not at its own index -- the path index is frozen to "
+        f"[0] or the landed paths are paired to the wrong bodies: {sorted(pairs)}"
+    )
+
+
+def test_a_replaced_body_s_new_content_is_still_scanned_under_block(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A body that replaces an existing file is scanned like any other (#349, SEC-11).
+
+    The adversarial MEDIUM-2: the content channel iterates every body move, and
+    skipping the ones whose destination already exists (``move.replaced``) survives
+    the suite, because nothing lands a replacement carrying a *new* credential.
+    Here one does. The destination pre-exists as a stray file no landed revision
+    pins -- so ``_refuse_if_a_replacement_breaks_an_existing_pin`` waves it through
+    (``test_accept_replaces_an_unpinned_file_at_the_destination`` in
+    ``test_proposal_service.py`` proves a *clean* replacement of exactly this shape
+    is accepted) -- and the replacing body's bytes carry the secret.
+
+    So the only thing that can refuse this acceptance is the content scan, and the
+    family assertion says it was: skip the replaced body and the credential lands
+    in ``.theurian/knowledge/`` while the accept exits clean. The secret is in the
+    body's bytes alone -- the body lands at its drafted ULID path, which is clean --
+    so no other channel covers for a content scan that skipped it.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    drafted = service.draft(_request(LEAKY_BODY))
+    # Make the destination pre-exist, so this body is a replacement. The file is
+    # unpinned -- no landed migration reads it -- so the replacement is legitimate
+    # and the only remaining reason to refuse is the secret in the replacing bytes.
+    drafted.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    drafted.body_destination.write_text("stale, pinned by nothing\n", encoding="utf-8")
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert HIGH_ENTROPY in str(caught.value), (
+        f"a replaced body's new content was not what refused the acceptance -- the content scan "
+        f"skipped it because its destination already existed: {caught.value}"
+    )
+    assert drafted.body_destination.read_text(encoding="utf-8") == "stale, pinned by nothing\n", (
+        "the replacing body landed despite the refusal -- the credential overwrote the file that "
+        "was there"
+    )
+
+
+def test_off_touches_no_input_before_the_policy_is_read(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``off`` does not scan and discard; it never scans (#349, adversarial MEDIUM-3).
+
+    ``off`` returning an empty finding list is satisfied two ways: the policy read
+    gates the scan (the real code), or the scan runs and its findings are thrown
+    away. The observable result is identical -- an empty list either way -- so
+    moving the ``off`` early-return to *after* the scan survives the suite.
+
+    What tells them apart is whether the detector was ever asked. This records
+    every call to ``scan_text`` -- the one function ``_findings_in`` drives per
+    channel -- and asserts it was called zero times. The body carries a credential,
+    so a scan that ran would have something to find and something to record;
+    ``calls`` staying empty is the proof that ``off`` reads the policy before it
+    touches a single input, which is what makes the escape hatch an escape hatch
+    (``_scan_for_secrets`` records why per-finding suppression is not offered).
+    """
+    _configure(paths, SecretScanPolicy.OFF.value)
+    calls: list[str] = []
+
+    def recording_scan_text(
+        text: str, *, max_findings: int = MAX_FINDINGS
+    ) -> tuple[SecretFinding, ...]:
+        calls.append(text)
+        return scan_text(text, max_findings=max_findings)
+
+    # Patched by dotted path -- the name `_findings_in` looks up in its own module
+    # globals -- rather than through the module object, so the accept path's scan
+    # is the recorded one wherever it reads the name.
+    monkeypatch.setattr("theurian.application.proposal_service.scan_text", recording_scan_text)
+
+    accepted = _accept(service, paths, LEAKY_BODY)
+
+    assert accepted.secret_scan.policy is SecretScanPolicy.OFF
+    assert calls == [], (
+        "off scanned inputs and discarded the findings; the policy read must gate the scan, or "
+        f"`off` pays the scan it promises not to run: {len(calls)} call(s)"
+    )
+    assert PLANTED_TOKEN in accepted.bodies[0].destination.read_text(encoding="utf-8"), (
+        "off refused, or landed a body this fixture did not write"
+    )
+
+
+def test_a_migration_bytes_finding_is_located_by_the_migration_bytes_channel(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A migration-bytes finding names *the migration file as written*, and means it (#349).
+
+    The adversarial MEDIUM-5: a channel's location literal carries the reviewer's
+    only pointer to where to look, and blanking ``_AT_MIGRATION_BYTES`` to ``"x"``
+    survives the suite -- the comment tests above assert the family is reported and
+    the migration does not land, never the *location* the finding wears.
+
+    A YAML comment is the one input only the migration's raw bytes reach
+    (``test_a_secret_in_a_yaml_comment_is_invisible_to_the_parsed_field_scan``
+    proves the parsed field walk cannot), so under ``warn`` the sole finding is the
+    bytes channel's, and its location is asserted to be the literal string --
+    **hardcoded, not the imported ``_AT_MIGRATION_BYTES``**: the mutation this
+    kills blanks that constant, and a test importing it would move with the
+    mutation and never redden. If the literal is deliberately reworded, this is the
+    test that should change with it.
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+    drafted = _a_proposal_whose_migration_carries_a_comment(service, _COMMENT_SECRET)
+
+    accepted = service.accept(drafted.proposal_id)
+
+    locations = {finding.location for finding in accepted.secret_scan.findings}
+    assert "the migration file as written" in locations, (
+        f"the comment finding is not located by the migration-bytes channel literal, so a reader "
+        f"cannot tell which artifact to open: {sorted(locations)}"
+    )
+
+
+def test_a_landed_path_finding_is_located_by_the_landed_path_channel(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A landed-path finding names *the landed path of body[N]*, its one distinct value (#349).
+
+    Two mutations survive the suite together: blanking ``_AT_BODY_PATH`` to
+    ``"x"``, and dropping the landed-path channel's ``yield`` outright. The second
+    survives because #349 moved ``contentFile`` into the scanned field set, so the
+    parsed field and the migration's bytes now report every credential the landed
+    path does -- the landed-path channel's *only* remaining value is its distinct
+    location, and a test that asserts a refusal or a family cannot see it go.
+
+    So this pins the location and nothing else. The credential is over-reported --
+    it is in the parsed ``contentFile`` and in the bytes too -- so **presence** of
+    ``the landed path of body[0]`` is asserted, not that it is the only finding.
+    The literal is **hardcoded, not built from the imported ``_AT_BODY_PATH``**:
+    blanking that constant would move an imported expectation with it. Under
+    ``warn`` so the finding rides out on the success result.
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+    tail = f"architecture/staging-{_LEAF_SECRET}.md"
+    drafted = _a_proposal_whose_body_lands_at(service, tail)
+
+    accepted = service.accept(drafted.proposal_id)
+
+    locations = {finding.location for finding in accepted.secret_scan.findings}
+    assert "the landed path of body[0]" in locations, (
+        f"no finding is located by the landed-path channel -- its literal is blanked or the "
+        f"channel's yield is gone, and the field and bytes reports carry no landed-path pointer: "
+        f"{sorted(locations)}"
     )
