@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import math
+import re
 import string
 from collections import Counter
 from typing import Final
@@ -28,12 +29,17 @@ from typing import Final
 import pytest
 
 from theurian.security.content_secrets import (
+    _ASCII_DIGITS,
+    _CANDIDATE_CLASS,
     _MIN_CANDIDATE_CHARS,
+    _PATTERN_FAMILIES,
     FAMILIES,
     HIGH_ENTROPY,
     MAX_FINDINGS,
     REDACTED_PREFIX_CHARS,
     SecretFinding,
+    _carries_a_digit,
+    _looks_like_a_secret,
     scan_text,
 )
 
@@ -170,6 +176,148 @@ def test_each_pattern_family_reports_its_own_shape(family: str, prefix: str, tai
         f"a {family} fixture was reported as {[f.family for f in findings]}. Either the "
         f"family is gone, or it is now declared after `{HIGH_ENTROPY}` in the alternation, "
         f"which makes the generic branch win at the same position."
+    )
+
+
+#: Characters to decide a regex character class's membership by matching, rather
+#: than by comparing the class's source text. Two classes spelled differently can
+#: admit the same characters -- ``[A-Za-z0-9_-]`` and ``[0-9A-Za-z_-]`` are the two
+#: this file cares about -- and a comparison of sources would call them different
+#: while the engine calls them the same.
+#:
+#: Printable ASCII, plus the three non-ASCII characters the reviews used: a kanji
+#: (a word character to ``\b`` and not in the candidate class), a fullwidth zero
+#: and a Devanagari one (both ``str.isdigit``, neither an ASCII digit).
+#:
+#: The two digits are written as escapes rather than as themselves. They are
+#: deliberately confusable with ``0`` and ``1`` -- that confusability is the whole
+#: reason :data:`_ASCII_DIGITS` is spelled out instead of left to ``str.isdigit`` --
+#: and a reviewer cannot tell them from ASCII by looking, which is what ``RUF001``
+#: says about the literal form.
+_PROBE_ALPHABET: Final[tuple[str, ...]] = (
+    *string.printable,
+    "監",
+    "\uff10",  # FULLWIDTH DIGIT ZERO
+    "\u0967",  # DEVANAGARI DIGIT ONE
+)
+
+#: A negative lookahead over a character class, at the very end of a pattern.
+#: Anchored on ``\Z`` so it can only match the pattern's own trailing assertion.
+_TRAILING_LOOKAHEAD: Final = re.compile(r"\(\?!(\[[^\]]*\])\)\Z")
+
+#: ``{n}`` or ``{n,m}``. Each specific family carries exactly one, which the case
+#: below asserts before it reads one.
+_REPETITION: Final = re.compile(r"\{(\d+)(?:,(\d+))?\}")
+
+
+def _class_members(class_source: str) -> frozenset[str]:
+    """Which probe characters ``class_source`` admits, decided by the engine."""
+    compiled = re.compile(class_source)
+    return frozenset(char for char in _PROBE_ALPHABET if compiled.fullmatch(char))
+
+
+def _lookahead_relation(pattern: str) -> str:
+    """How a pattern's trailing lookahead class relates to :data:`_CANDIDATE_CLASS`."""
+    trailing = _TRAILING_LOOKAHEAD.search(pattern)
+    if trailing is None:
+        return "absent"
+    admitted = _class_members(trailing.group(1))
+    candidate = _class_members(_CANDIDATE_CLASS)
+    if admitted == candidate:
+        return "equal"
+    if admitted < candidate:
+        return "strict-subset"
+    return "unclassified"
+
+
+#: The geometry ``_families_inside``'s residual enumeration is *derived* from, as
+#: ``(family, its credential is spelled inside the candidate class, how its
+#: trailing lookahead relates to that class, its repetition's (min, max))``.
+#:
+#: Read the numbers as the source's own: ``{16}`` is ``(16, 16)`` and ``{36,255}``
+#: is ``(36, 255)``. The 255s are written out rather than read from
+#: :data:`_MAX_TOKEN_CHARS`, for the reason the ceiling cases record -- an
+#: expectation that reads the constant it checks holds however the constant moves.
+_PATTERN_GEOMETRY: Final[tuple[tuple[str, bool, str, tuple[int, int]], ...]] = (
+    ("aws-access-key-id", True, "strict-subset", (16, 16)),
+    ("github-token", True, "strict-subset", (36, 255)),
+    ("google-api-key", True, "equal", (35, 35)),
+    ("openai-api-key", True, "equal", (20, 255)),
+    ("private-key-block", False, "absent", (0, 20)),
+    ("slack-token", True, "strict-subset", (10, 255)),
+    ("stripe-secret-key", True, "strict-subset", (16, 255)),
+)
+
+
+def test_the_pattern_geometry_the_residual_enumeration_is_derived_from() -> None:
+    """The three properties ``_families_inside``'s residual is argued from, pinned live.
+
+    That enumeration is not a list of observed misses. Members 2 and 3 are
+    *derived*: a family whose credential needs a character outside
+    :data:`_CANDIDATE_CLASS` can never match inside a run at all, and a family
+    whose trailing lookahead admits exactly the candidate class can only ever end
+    where the run ends, because every interior position is followed by a character
+    that lookahead forbids. A fixed repetition then decides whether the family can
+    reach that end from more than one starting distance.
+
+    **So a pattern edit changes what the docstring proves, and this is the case
+    that says so.** Narrowing ``google-api-key``'s lookahead to ``(?![0-9A-Za-z])``
+    -- proposed in #356, and measured by the round-two review to cost no false
+    positives -- moves it out of member 3 entirely. That change must arrive with a
+    red test here, so that whoever makes it re-derives the enumeration instead of
+    leaving prose that describes the pattern it used to have.
+
+    Everything is computed from the live :data:`_PATTERN_FAMILIES` and from the
+    live fixtures: nothing here restates a pattern, so a pattern that changes
+    cannot leave a copy of itself behind agreeing with the old answer. Class
+    membership is decided by the engine over :data:`_PROBE_ALPHABET` rather than by
+    comparing source text, because ``[A-Za-z0-9_-]`` and ``[0-9A-Za-z_-]`` are the
+    same class written twice and one comparison of strings would call them
+    different.
+    """
+    credentials = {family: prefix + tail for family, prefix, tail in PATTERN_FAMILY_FIXTURES}
+    candidate_characters = _class_members(_CANDIDATE_CLASS)
+    assert len(candidate_characters) == len(string.ascii_letters + string.digits) + len("_-"), (
+        f"the candidate class admits {len(candidate_characters)} of the probe alphabet, not the "
+        f"64 base64url characters -- every subset relation below is measured against it, so a "
+        f"class that changed silently would re-label the table rather than redden it"
+    )
+    specific = tuple(
+        (family, pattern) for family, pattern in _PATTERN_FAMILIES if family != HIGH_ENTROPY
+    )
+    assert {family for family, _ in specific} == set(credentials), (
+        f"the specific families {sorted(family for family, _ in specific)} and the fixtures "
+        f"{sorted(credentials)} no longer name the same set -- a family with no representative "
+        f"credential cannot be placed in the table below"
+    )
+
+    derived: list[tuple[str, bool, str, tuple[int, int]]] = []
+    for family, pattern in specific:
+        credential = credentials[family]
+        assert re.fullmatch(pattern, credential), (
+            f"the {family} fixture {credential[:REDACTED_PREFIX_CHARS]}... is no longer matched "
+            f"whole by its own pattern, so it is not the representative this table reads it as"
+        )
+        repetitions = _REPETITION.findall(pattern)
+        assert len(repetitions) == 1, (
+            f"the {family} pattern carries {len(repetitions)} repetitions, not one; the "
+            f"(min, max) below names a single quantifier and can no longer say which"
+        )
+        low, high = repetitions[0]
+        derived.append(
+            (
+                family,
+                set(credential) <= candidate_characters,
+                _lookahead_relation(pattern),
+                (int(low), int(high or low)),
+            )
+        )
+
+    assert tuple(derived) == _PATTERN_GEOMETRY, (
+        f"the pattern geometry moved:\n  derived  {tuple(derived)}\n"
+        f"  recorded {_PATTERN_GEOMETRY}\n"
+        f"`_families_inside`'s residual enumeration is derived from these three properties, so "
+        f"re-derive members 2 and 3 there before recording the new table here."
     )
 
 
@@ -1251,22 +1399,39 @@ def test_japanese_prose_before_a_slug_is_not_reported_as_a_credential() -> None:
 #: credential-free proposal and tells its author to rotate a secret that does not
 #: exist.
 #:
-#: ``(the path as written, the match the family makes inside it)``. The candidate
-#: run is the path's stem: ``/`` and ``.`` are outside :data:`_CANDIDATE_CLASS`, so
-#: the run neither reaches the directory in front nor the extension behind.
-DIGIT_FREE_SLUG_FIXTURES: Final[tuple[tuple[str, str], ...]] = (
+#: ``(what it is, the path as written, the match the family makes inside it)``. The
+#: candidate run is the path's stem: ``/`` and ``.`` are outside
+#: :data:`_CANDIDATE_CLASS`, so the run reaches neither the directory in front nor
+#: the extension behind.
+#:
+#: The third row is the product's own, and it reaches the branch by a different
+#: road: its run *does* carry upper case, all of it inside a ULID that
+#: :func:`_looks_like_a_secret` subtracts before it looks at character classes. Two
+#: ways to be refused, one gate to catch what follows -- which is why the guard
+#: below asks the gate rather than looking for upper case.
+DIGIT_FREE_SLUG_FIXTURES: Final[tuple[tuple[str, str, str], ...]] = (
     (
+        "a source path",
         "website/src/lib/i18n-sk-locale-and-translation-notes.ts",
         "sk-locale-and-translation-notes",
     ),
-    ("backlog/task-sk-review-the-ranking-heuristics.md", "sk-review-the-ranking-heuristics"),
+    (
+        "a backlog note",
+        "backlog/task-sk-review-the-ranking-heuristics.md",
+        "sk-review-the-ranking-heuristics",
+    ),
+    (
+        "a migration filename",
+        f"{_SYNTHETIC_ULID}-add-sk-localisation-notes-for-the-site.yaml",
+        "sk-localisation-notes-for-the-site",
+    ),
 )
 
 
 @pytest.mark.parametrize(
     ("path", "inner_match"),
-    DIGIT_FREE_SLUG_FIXTURES,
-    ids=[path.rsplit("/", 1)[-1] for path, _ in DIGIT_FREE_SLUG_FIXTURES],
+    [(path, inner) for _, path, inner in DIGIT_FREE_SLUG_FIXTURES],
+    ids=[label for label, _, _ in DIGIT_FREE_SLUG_FIXTURES],
 )
 def test_a_digit_free_slug_recovered_from_inside_a_run_is_not_reported(
     path: str, inner_match: str
@@ -1296,9 +1461,9 @@ def test_a_digit_free_slug_recovered_from_inside_a_run_is_not_reported(
         f"{run!r} is {len(run)} characters, under the candidate floor -- the generic family "
         f"never consumes it, nothing is rescanned, and the gate under test is never reached"
     )
-    assert not any(char.isupper() for char in run), (
-        f"{run!r} now carries an upper-case character, so the class gate can accept the run "
-        f"and report it whole; the rescan and its digit gate are then never reached"
+    assert not _looks_like_a_secret(run), (
+        f"{run!r} now clears the class gate, so the outer pass reports the run whole and the "
+        f"rescan -- with the digit gate under test in it -- is never reached at all"
     )
     assert not any(char.isdigit() for char in inner_match), (
         f"{inner_match!r} now carries a digit, so the gate admits it and this case is about "
@@ -1318,6 +1483,63 @@ def test_a_digit_free_slug_recovered_from_inside_a_run_is_not_reported(
         f"at a real boundary inside the run, so only the digit gate can refuse it -- with "
         f"`block` as the default policy this refuses a proposal that contains no credential."
     )
+
+
+def test_the_digit_gate_counts_exactly_the_ten_ascii_digits() -> None:
+    """A constant pinned directly, because no input can isolate one of its members.
+
+    Every other property in this file is asserted through :func:`scan_text`, and
+    that is the right default: a behavioural assertion fails for the reason a user
+    would notice. This one cannot be reached that way. Every digit-bearing fixture
+    in the file carries several distinct digits, so no verdict anywhere turns on any
+    *single* member -- measured 2026-08-25 by the round-two adversarial review,
+    deleting nine of the ten digits from ``_ASCII_DIGITS`` survives the entire
+    suite. Three mutants of one constant, none of them observable.
+
+    So the set is pinned as a set. What that buys is the constant's own stated
+    purpose, which is otherwise unpinned in both directions:
+
+    * it must not shrink -- a gate missing ``7`` reads a credential carrying only
+      sevens as digit-free and drops it, and nothing else here would say so;
+    * it must not widen to ``str.isdigit``, which is ``True`` for a fullwidth zero
+      and a Devanagari one. Nothing in :data:`_CANDIDATE_CLASS` reaches those
+      codepoints today, so that drift would also be invisible -- until the class
+      changes, at which point the gate would have quietly changed meaning too.
+
+    **The constant and the gate are pinned separately, because pinning the constant
+    alone leaves the drift alive.** Measured 2026-08-25 while writing this case:
+    with only the set asserted, rewriting :func:`_carries_a_digit` to
+    ``any(char.isdigit() ...)`` -- abandoning the constant entirely -- passed all 72
+    cases in this file. It has to: the two definitions agree on every character a
+    candidate run can hold, which is exactly why the constant exists and exactly
+    why no input distinguishes them. So the gate is called here directly, on a
+    character that run cannot hold today: a function that answers ``True`` for a
+    fullwidth zero is ``str.isdigit`` under another name, whatever the constant
+    beside it says.
+    """
+    assert frozenset(string.digits) == _ASCII_DIGITS, (
+        f"the digit gate counts {sorted(_ASCII_DIGITS)}, not the ten ASCII digits. A member "
+        f"removed makes a credential spelled with that digit read as digit-free and dropped "
+        f"from a rescan; a member added is a character the candidate class cannot contain."
+    )
+    for digit in string.digits:
+        assert _carries_a_digit(digit), (
+            f"the gate does not count {digit!r} as a digit, so a recovered credential spelled "
+            f"with it and no other digit is dropped as digit-free"
+        )
+    unicode_digits = tuple(
+        char for char in _PROBE_ALPHABET if char.isdigit() and not char.isascii()
+    )
+    assert unicode_digits, (
+        "the probe alphabet no longer carries a non-ASCII `str.isdigit` character, so the "
+        "second half of this case -- that the gate is not `str.isdigit` -- probes nothing"
+    )
+    for unicode_digit in unicode_digits:
+        assert not _carries_a_digit(unicode_digit), (
+            f"the gate counts {unicode_digit!r} ({unicode_digit.isdigit()=}), so it has drifted "
+            f"to `str.isdigit` and now changes meaning with the candidate class rather than "
+            f"with a decision somebody takes here"
+        )
 
 
 def test_a_family_swallowed_by_a_longer_inner_match_is_not_reported_separately() -> None:
@@ -1359,6 +1581,190 @@ def test_a_family_swallowed_by_a_longer_inner_match_is_not_reported_separately()
         f"overlaps matches; a lone `openai-api-key` means the slack family stopped matching "
         f"the longer shape -- read `_MAX_TOKEN_CHARS` before recording either as an "
         f"improvement."
+    )
+
+
+# -- Member 3 of the residual: a lookahead that admits only the run's end -----
+#
+# `google-api-key` and `openai-api-key` are the two families whose trailing
+# lookahead admits exactly `_CANDIDATE_CLASS`, which
+# `test_the_pattern_geometry_the_residual_enumeration_is_derived_from` derives from
+# the live patterns. Inside a maximal run every interior position is followed by a
+# character that lookahead forbids, so such a family can only ever end where the
+# run ends. The cases below are that geometry measured through `scan_text`.
+
+#: 35 base64url characters from a fixed seed -- upper case, lower case and digits,
+#: which is what a real Google API key's body carries. Derived rather than pasted,
+#: and ``AIza`` is joined to it at run time: written whole, this is precisely the
+#: shape gitleaks' own ``gcp-api-key`` rule matches, and an allowlist entry keyed on
+#: a credential-shaped literal is a place a real credential can hide.
+_GOOGLE_KEY_BODY: Final = (
+    base64.urlsafe_b64encode(hashlib.sha256(b"google api key fixture (#350)").digest())
+    .decode()
+    .rstrip("=")[:35]
+)
+
+#: A realistic ``google-api-key``: ``AIza`` and those 35 characters.
+_GOOGLE_SHAPED: Final = f"AIza{_GOOGLE_KEY_BODY}"
+
+#: Sixty of one character. Its job is to drag a run's entropy under the floor so
+#: the class gate refuses it -- which is what puts the run in this function's domain
+#: while leaving the key it ends with untouched. A prefix rather than a suffix on
+#: purpose: a suffix would answer the lookahead question instead of setting it up.
+_ENTROPY_KILLING_PREFIX: Final = "a" * 60
+
+#: What may follow the key inside the run, and what the scan then reports. The
+#: empty tail is the run's end, where the lookahead is satisfied; every other row is
+#: one candidate-class character further on, where it is not. ``-``, ``x`` and ``_``
+#: because the class holds all three and a fix that noticed only the delimiter would
+#: pass a test that used only ``-``.
+_GOOGLE_TAIL_FIXTURES: Final[tuple[tuple[str, list[str]], ...]] = (
+    ("", ["google-api-key"]),
+    ("-x", []),
+    ("x", []),
+    ("_", []),
+)
+
+
+@pytest.mark.parametrize(
+    ("tail", "expected"),
+    _GOOGLE_TAIL_FIXTURES,
+    ids=[f"tail={tail!r}" for tail, _ in _GOOGLE_TAIL_FIXTURES],
+)
+def test_a_google_key_is_recovered_only_where_the_run_itself_ends(
+    tail: str, expected: list[str]
+) -> None:
+    """A fixed repetition plus a lookahead over the whole class leaves one landing place.
+
+    ``google-api-key`` repeats ``{35}`` exactly, so its match ends 39 characters
+    after ``AIza`` and cannot end anywhere else; its lookahead then admits only a
+    character outside :data:`_CANDIDATE_CLASS`, which inside a maximal run means the
+    run's end alone. One more candidate-class character and the family is not lost
+    to a threshold or to a heuristic -- it has nowhere legal to finish.
+
+    Within this function's domain that is silence, and the rows below measure it as
+    ``[]``: the run is refused by the class gate, so the generic family does not
+    report it either. The neighbouring case is what says silence is not the general
+    answer -- where the gate *passes*, the same tail costs the family's name and not
+    the finding.
+
+    Both halves are here because member 3 of the residual enumeration claims both,
+    and because the fix #356 proposes -- narrowing this family's lookahead -- would
+    turn the last three rows green. That is a change somebody makes deliberately,
+    with the geometry case red beside it.
+    """
+    run = f"{_ENTROPY_KILLING_PREFIX}-{_GOOGLE_SHAPED}{tail}"
+    control = scan_text(f"key: {_GOOGLE_SHAPED}\n")
+    assert [f.family for f in control] == ["google-api-key"], (
+        f"the fixture is not reported as a google-api-key even on its own "
+        f"({[f.family for f in control]}), so every row below would be measuring a value that "
+        f"was never a credential"
+    )
+    assert any(char.isdigit() for char in _GOOGLE_SHAPED), (
+        "the key carries no digit, so the digit gate is what drops it and these rows stop "
+        "being about the lookahead at all"
+    )
+    assert not _looks_like_a_secret(run), (
+        f"the run clears the class gate, so the generic family reports it whole and nothing is "
+        f"rescanned -- lengthen {_ENTROPY_KILLING_PREFIX[:4]}... until its entropy is under the "
+        f"floor again, or this case measures the neighbouring one"
+    )
+    assert len(run) >= _MIN_CANDIDATE_CHARS, (
+        "the run is under the candidate floor, so it is never consumed and never rescanned"
+    )
+
+    findings = scan_text(f"key: {run}\n")
+
+    assert [f.family for f in findings] == expected, (
+        f"a run ending {tail!r} after the key reported {[f.family for f in findings]}, not "
+        f"{expected}. The family's match ends a fixed 39 characters after `AIza` and its "
+        f"lookahead admits only a non-candidate character, so any tail at all puts the end it "
+        f"needs out of reach."
+    )
+
+
+def test_a_google_key_in_a_run_that_clears_the_gate_costs_the_family_not_the_finding() -> None:
+    """Losing the family is not losing the finding, and the difference is the gate.
+
+    The rows above measure silence, and they measure it *inside this function's
+    domain* -- runs the class gate refused. Read alone they suggest a trailing
+    character hides a Google key, and that is not what happens in general: a run
+    carrying a real key usually carries the upper case, lower case and digits that
+    take it past the gate, and then the generic family reports the run whole. The
+    name in the report is wrong and the report is still there, so ``propose accept``
+    at the default ``block`` still refuses.
+
+    This is the case that keeps the docstring's "**Losing the family is not always
+    losing the finding**" honest, and it is the one that makes the silence rows say
+    something specific rather than something alarming.
+    """
+    run = f"{_STAGE_PREFIX}{_GOOGLE_SHAPED}-x"
+    assert _looks_like_a_secret(run), (
+        "the run no longer clears the class gate, so this case has become another copy of the "
+        "silence rows above -- it exists to measure the *other* side of that gate"
+    )
+
+    findings = scan_text(f"key: {run}\n")
+
+    assert [f.family for f in findings] == [HIGH_ENTROPY], (
+        f"a gate-clearing run holding a Google key reported {[f.family for f in findings]}. "
+        f"Nothing at all would mean a proposal carrying this key is accepted at the default "
+        f"`block` policy; two findings would mean one value is reported twice."
+    )
+
+
+#: How far the ``sk-`` may sit from a refused run's end and still be recovered:
+#: ``len("sk-")`` plus the family's 255-character repetition cap. Written as the
+#: number rather than derived from :data:`_MAX_TOKEN_CHARS`, for the reason the
+#: ceiling cases record -- a fixture and an expectation that both read the constant
+#: agree with each other however it moves.
+_OPENAI_REACH: Final = 258
+
+_OPENAI_DISTANCE_FIXTURES: Final[tuple[tuple[str, int, list[str]], ...]] = (
+    ("at the reach", _OPENAI_REACH, ["openai-api-key"]),
+    ("one past the reach", _OPENAI_REACH + 1, []),
+)
+
+
+@pytest.mark.parametrize(
+    ("distance", "expected"),
+    [(distance, expected) for _, distance, expected in _OPENAI_DISTANCE_FIXTURES],
+    ids=[label for label, _, _ in _OPENAI_DISTANCE_FIXTURES],
+)
+def test_the_openai_family_reaches_a_runs_end_from_258_characters_and_no_further(
+    distance: int, expected: list[str]
+) -> None:
+    """The same geometry with a capped repetition instead of a fixed one.
+
+    ``openai-api-key``'s lookahead also admits exactly the candidate class, so it
+    too can only end where the run ends -- but its repetition runs to
+    ``_MAX_TOKEN_CHARS`` rather than to a fixed count, so it can *reach* that end
+    from any distance up to ``len("sk-") + 255``. One character further and the
+    repetition exhausts before the run's end, the lookahead is never satisfied, and
+    the credential is not reported at all.
+
+    The pair is the threshold itself, and the threshold is the ReDoS budget this
+    module spends deliberately: the cap is what bounds backtracking on a run the
+    input chooses. Moving it is a decision about that budget, so it goes red here
+    rather than quietly changing what a scan finds.
+    """
+    tail = (hashlib.sha256(b"openai reach fixture (#350)").hexdigest() * 8)[: distance - len("sk-")]
+    run = f"{_STAGE_PREFIX}sk-{tail}"
+    assert len(run) - run.index("sk-") == distance, (
+        f"the fixture puts the run's end {len(run) - run.index('sk-')} characters from `sk-`, "
+        f"not {distance}; the case measures a distance and this one is not it"
+    )
+    assert not _looks_like_a_secret(run), (
+        "the run clears the class gate, so the generic family reports it and the rescan -- "
+        "where this threshold lives -- is never reached"
+    )
+
+    findings = scan_text(f"key: {run}\n")
+
+    assert [f.family for f in findings] == expected, (
+        f"a credential {distance} characters from its run's end reported "
+        f"{[f.family for f in findings]}, not {expected}. The repetition caps at 255, so the "
+        f"reach from `sk-` is 258; check `_MAX_TOKEN_CHARS` before recording a new number."
     )
 
 
