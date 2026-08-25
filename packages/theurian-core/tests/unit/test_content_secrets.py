@@ -444,6 +444,504 @@ def test_a_token_crafted_to_embed_a_ulid_evades_the_subtraction() -> None:
     )
 
 
+# -- A credential glued behind a lower-case run (#350) ---------------------
+#
+# The scan as it ships misses a credential joined to a lower-case run by a
+# delimiter. Measured 2026-08-25 on fb88c3f, with `hex40` standing for forty
+# lower-case hexadecimal characters:
+#
+#   sk-<hex40>                              openai-api-key
+#   staging-sk-<hex40>                      []
+#   rotate staging-sk-<hex40>               []
+#   <ulid>-staging-sk-<hex40>.yaml          []
+#   staging-sk_live_<16>                    []
+#   backup-xoxb-<34>                        []
+#   abc-sk-<hex20>   (a 27-character run)   openai-api-key
+#   STAGING9-sk-<hex40>                     high-entropy-token
+#
+# The mechanism is the single non-overlapping pass. At the run's first character
+# the alternation's `high-entropy-token` branch matches the *whole* run of
+# candidate-class characters; that branch is the one family whose regex match
+# still has to clear a heuristic, and the heuristic refuses it -- nothing
+# upper-case survives the ULID subtraction. `finditer` then resumes *after* the
+# text the refused match consumed, so no position inside the run is retried, and
+# the `openai-api-key` family that would have matched at the word boundary the
+# internal `-` provides is never tried there at all.
+#
+# The last two rows are the two ways out of the class, and they are why the
+# fixtures below carry the guards they do: a run under the 32-character floor is
+# never consumed by the generic family (`abc-sk-<hex20>` is reported today), and a
+# run that *passes* the class gate is reported as a high-entropy token (so the
+# repair must not report it a second time under its specific family).
+#
+# This bounds the control #336 shipped. A proposal `title` of
+# `rotate staging-sk-<hex40>` passes `theurian propose accept` at the default
+# `block` policy, and `title` *is* scanned -- the gap is the detector's, not the
+# scan wiring's. SEC-11 disclaims completeness, so this is a known-class
+# limitation rather than a false published claim, but it is one an ordinary
+# deployment-stage prefix reaches.
+
+#: Forty lower-case hexadecimal characters, derived from a fixed seed rather than
+#: pasted -- the same construction as ``_ID_SHAPED_TOKEN`` in
+#: ``tests/integration/test_proposal_secret_scan.py``, which is the canonical
+#: planted secret of the #336 metadata scan. Deliberately the same shape, so a
+#: repair here is co-verified against the exact value that control plants.
+_HEX40: Final = hashlib.sha256(b"theurian glued-prefix fixture (#350)").hexdigest()[:40]
+
+#: ``sk-`` and those forty characters: 43 characters, all lower case and digits.
+#: That is the property the class does not survive -- the generic family's gate
+#: requires an upper-case character, so once anything is glued in front the run it
+#: consumes is refused and the credential inside it goes unexamined.
+#:
+#: Joined at run time, for the reason :data:`PATTERN_FAMILY_FIXTURES` records: a
+#: contiguous credential-shaped literal is a thing no reviewer can tell from a leak
+#: by looking.
+_OPENAI_SHAPED: Final = "sk-" + _HEX40
+
+#: A deployment-stage prefix and the delimiter that joins it. Eight characters, so
+#: the credential starts at offset 8 inside the candidate run and not at its
+#: start, which is the whole difference between the two rows of the table above.
+_STAGE_PREFIX: Final = "staging-"
+
+#: ``staging-sk-<hex40>``: 51 characters of the candidate class, no upper case.
+_GLUED_OPENAI: Final = f"{_STAGE_PREFIX}{_OPENAI_SHAPED}"
+
+#: The credential each family is spelled with, read from
+#: :data:`PATTERN_FAMILY_FIXTURES` so the value glued below and the value reported
+#: unglued cannot drift apart.
+_FAMILY_CREDENTIALS: Final = {
+    family: prefix + tail for family, prefix, tail in PATTERN_FAMILY_FIXTURES
+}
+
+#: ``(family, the lower-case run glued in front, the credential)``. Three families
+#: rather than one, because the defect is a property of the *pass*, not of any
+#: pattern: whichever specific family sits inside a refused run is the one that is
+#: lost.
+#:
+#: Only the families whose fixture is entirely lower case and digits can appear
+#: here -- ``AKIA``, ``ghp_``'s mixed-case tail and ``AIza`` all carry an
+#: upper-case character into the run, which makes the generic family accept it and
+#: report *something*. Those are a different row of the table.
+#:
+#: The stripe run is exactly 32 characters, the floor itself. That is not slack to
+#: be trimmed: shortening either half drops the run under the floor, the generic
+#: family stops consuming it, and the case starts passing without exercising
+#: anything. :func:`test_every_glued_fixture_reaches_the_branch_this_section_is_about`
+#: is what notices.
+GLUED_PREFIX_FIXTURES: Final[tuple[tuple[str, str, str], ...]] = (
+    ("openai-api-key", _STAGE_PREFIX, _OPENAI_SHAPED),
+    ("stripe-secret-key", _STAGE_PREFIX, _FAMILY_CREDENTIALS["stripe-secret-key"]),
+    ("slack-token", "backup-", _FAMILY_CREDENTIALS["slack-token"]),
+)
+
+_GLUED_IDS: Final = [family for family, _, _ in GLUED_PREFIX_FIXTURES]
+
+#: Crockford base32 with no ``I``, ``L``, ``O`` or ``U``, and obviously synthetic:
+#: the alphabet in order after a fixed head. A migration is named
+#: ``<ulid>-<slug>.yaml``, so a filename is one candidate run and the ULID is where
+#: its only upper-case characters live -- which the detector subtracts before the
+#: class gate sees them.
+_SYNTHETIC_ULID: Final = "01K9ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+@pytest.mark.parametrize(("family", "prefix", "credential"), GLUED_PREFIX_FIXTURES, ids=_GLUED_IDS)
+def test_every_glued_fixture_reaches_the_branch_this_section_is_about(
+    family: str, prefix: str, credential: str
+) -> None:
+    """A fixture that never reaches the masking branch makes every case here vacuous.
+
+    Three things have to hold at once before the tests below say anything, and
+    each of them is one edit away from silently ceasing to hold:
+
+    * the credential is reported *unglued*, or a red below would be a red about a
+      value that was never a secret rather than about #350;
+    * the glued run is at least :data:`_MIN_CANDIDATE_CHARS` characters, or the
+      generic family never matches it, nothing is consumed, and the specific
+      family is reported today -- ``abc-sk-<hex20>`` in the table above;
+    * the run carries no upper-case character, so the generic family's gate is
+      what refuses what it consumed.
+
+    The second is not hypothetical for the stripe fixture, whose run is exactly 32
+    characters. This is the guard that keeps a tail edit from turning that case
+    into a test that passes because it stopped testing.
+    """
+    run = f"{prefix}{credential}"
+
+    unglued = scan_text(f"config:\n  key: {credential}\n")
+
+    assert [f.family for f in unglued] == [family], (
+        f"{credential[:REDACTED_PREFIX_CHARS]}... is not reported as {family} even unglued "
+        f"({[f.family for f in unglued]}), so the glued case would be red for a reason that "
+        f"has nothing to do with #350 -- check the fixture before the detector"
+    )
+    assert len(run) >= _MIN_CANDIDATE_CHARS, (
+        f"the {family} run is {len(run)} characters, under the {_MIN_CANDIDATE_CHARS}-character "
+        f"floor, so the generic family never consumes it and the glued case below passes "
+        f"without exercising the masking this section is about"
+    )
+    assert not any(char.isupper() for char in run), (
+        f"the {family} run now carries an upper-case character, so the generic family's class "
+        f"gate can accept it and report the run as {HIGH_ENTROPY}; the glued case below would "
+        f"then be about a different row of the table"
+    )
+    assert run.index(credential) > 0, (
+        f"the {family} credential sits at the start of the run, which is the shape that "
+        f"already works -- there is nothing glued in front of it"
+    )
+
+
+@pytest.mark.parametrize(("family", "prefix", "credential"), GLUED_PREFIX_FIXTURES, ids=_GLUED_IDS)
+def test_a_credential_glued_behind_a_lower_case_run_is_still_reported(
+    family: str, prefix: str, credential: str
+) -> None:
+    """A prefix in front of a credential is not a way to get it past the gate.
+
+    ``sk-<hex40>`` is reported; ``staging-sk-<hex40>`` is not, and the eight
+    characters that make the difference are ones anybody would write. Nothing an
+    author has to know about the detector is required to produce this -- an
+    environment name, a service name or a ticket id in front of a pasted value is
+    ordinary, and each of them defeats the control.
+
+    Three families, because what is lost is decided by the *pass* and not by any
+    pattern: the generic branch consumes the whole run wherever a run exists, so
+    whichever specific family is inside one is the family that goes missing.
+    """
+    findings = scan_text(f"config:\n  key: {prefix}{credential}\n")
+
+    assert [f.family for f in findings] == [family], (
+        f"a {family} credential glued behind {prefix!r} was reported as "
+        f"{[f.family for f in findings]}. The generic family consumed the whole "
+        f"candidate run, its class gate refused what it consumed, and the single "
+        f"non-overlapping pass never retried the word boundary inside the run where "
+        f"{family} would have matched."
+    )
+
+
+def test_a_credential_glued_into_a_proposal_title_is_still_reported() -> None:
+    """The input that bounds the control #336 shipped, written the way it arrives.
+
+    ``theurian propose accept`` scans a migration document's metadata, ``title``
+    included, and refuses at the default ``block`` policy. A title of *rotate
+    staging-sk-<hex40>* is accepted anyway -- not because the title went unscanned,
+    but because the detector reports nothing for it. Recorded as its own case so
+    that the scan wiring and the detector cannot be confused for each other again
+    when this goes red.
+
+    Prose around the run on both sides, because a bare fixture would leave the
+    run's boundaries at the ends of the string, where a lookaround can succeed for
+    reasons that have nothing to do with the text.
+    """
+    findings = scan_text(f"title: rotate {_GLUED_OPENAI} before Friday\n")
+
+    assert [f.family for f in findings] == ["openai-api-key"], (
+        f"a credential in a proposal title is reported as {[f.family for f in findings]}, so "
+        f"`propose accept` passes it at the default `block` policy"
+    )
+
+
+def test_a_credential_glued_into_a_migration_filename_is_still_reported() -> None:
+    """The ULID subtraction must not become a second way to reach the same silence.
+
+    This row of the table reaches the masking branch by a different mechanism than
+    the ones above, and that is exactly why it is here. The run
+    ``<ulid>-staging-sk-<hex40>`` *does* carry upper-case characters -- twenty-odd
+    of them -- but every one belongs to the ULID, which
+    :func:`_looks_like_a_secret` subtracts before it looks at character classes. So
+    the gate sees ``-staging-sk-<hex40>``, refuses it for the missing upper case,
+    and the run is consumed and dropped just as the lower-case ones are.
+
+    A filename is where this shape actually turns up: a migration is
+    ``<ulid>-<slug>.yaml`` and the slug is author-supplied, so the whole name is
+    one candidate run with author text in the middle of it.
+    """
+    run = f"{_SYNTHETIC_ULID}-{_STAGE_PREFIX}{_OPENAI_SHAPED}"
+    assert any(char.isupper() for char in run), (
+        "the fixture no longer carries the upper case that makes this case distinct from "
+        "the lower-case runs above"
+    )
+    assert not any(char.isupper() for char in run.replace(_SYNTHETIC_ULID, "")), (
+        "an upper-case character now survives the ULID subtraction, so the generic family's "
+        "gate may accept this run and this case stops being about masking"
+    )
+
+    findings = scan_text(f"proposal writes {run}.yaml\n")
+
+    assert [f.family for f in findings] == ["openai-api-key"], (
+        f"a credential inside a migration filename is reported as "
+        f"{[f.family for f in findings]}; the ULID subtraction carried the run past the "
+        f"class gate and the pass dropped it"
+    )
+
+
+def test_a_masked_finding_is_located_at_the_credential_not_at_the_run_it_hid_in() -> None:
+    """A finding recovered from inside a run has to point at the credential.
+
+    The obvious way to repair the class is to re-examine a refused candidate, and
+    the obvious way to get *that* wrong is to report the position of the thing that
+    was refused. A reader sent to column 15 finds ``staging-`` and concludes the
+    report is noise; the credential is at column 23. The same holds for the quoted
+    prefix, which would read ``stag...`` -- a locator pointing at the wrong four
+    characters is worse than no locator, because it looks like one.
+
+    Line 3 of a multi-line body, so a repair that reports offsets inside the
+    candidate rather than inside the document fails here rather than in whichever
+    caller renders it.
+    """
+    body = f"---\nsummary: clean\nnotes: rotate {_GLUED_OPENAI} before Friday\n"
+
+    findings = scan_text(body)
+
+    assert [f.family for f in findings] == ["openai-api-key"], (
+        f"the masked credential on line 3 is not reported at all -- {[f.family for f in findings]} "
+        f"-- so there is no position to check; this case is about *where* a recovered finding "
+        f"points, and the one that says it must be recovered at all is "
+        f"test_a_credential_glued_behind_a_lower_case_run_is_still_reported"
+    )
+    (finding,) = findings
+    assert (finding.line, finding.column) == (3, len("notes: rotate ") + len(_STAGE_PREFIX) + 1), (
+        f"the finding claims line {finding.line}, column {finding.column}. The candidate run "
+        f"starts at column {len('notes: rotate ') + 1} and the credential at column "
+        f"{len('notes: rotate ') + len(_STAGE_PREFIX) + 1}; a report at the run's start sends "
+        f"a reader to {_STAGE_PREFIX!r}"
+    )
+    assert finding.redacted == f"{_OPENAI_SHAPED[:REDACTED_PREFIX_CHARS]}{'...'}", (
+        f"the finding quotes {finding.redacted!r}, which is the start of the run rather than "
+        f"of the credential -- the four characters a reader uses to pick this candidate out "
+        f"of a line name the wrong string"
+    )
+
+
+#: A fixed number of masked lines, over the ceiling the test below passes and
+#: independent of it, so the case cannot pass by having its fixture scale with the
+#: number it checks.
+_MASKED_LINES: Final = 5
+
+#: The ceiling under test. A literal rather than :data:`MAX_FINDINGS`, for the
+#: reason :func:`test_the_scan_stops_at_a_fixed_ceiling` records: a fixture and an
+#: expectation that both read the constant pass however high it is raised.
+_CEILING_UNDER_TEST: Final = 3
+
+
+def test_the_ceiling_still_bounds_findings_recovered_from_inside_a_failed_candidate() -> None:
+    """Truncation is what keeps a refusal message from being sized by its input.
+
+    ``max_findings`` bounds the list a caller renders into a terminal and into an
+    ``accept --json`` document, and it also bounds ``scan_text``'s quadratic
+    line-number cost. A repair that recovers extra findings from inside refused
+    candidates adds a second place a finding is appended, and a second place is a
+    second chance to append past the bound -- the loop's ``break`` sits on the
+    first path only.
+
+    Asserted as an exact list rather than a length, so a repair that honours the
+    count while returning the *last* three, or the same finding three times, fails
+    here too.
+    """
+    assert _MASKED_LINES > _CEILING_UNDER_TEST, (
+        "the fixture must carry more masked candidates than the ceiling, or it exercises no "
+        "truncation at all"
+    )
+    crowded = "\n".join(f"key_{n}: {_GLUED_OPENAI}" for n in range(_MASKED_LINES))
+
+    findings = scan_text(crowded, max_findings=_CEILING_UNDER_TEST)
+
+    assert [(f.family, f.line) for f in findings] == [
+        ("openai-api-key", line) for line in (1, 2, 3)
+    ], (
+        f"{len(findings)} findings came back from {_MASKED_LINES} masked candidates with the "
+        f"ceiling at {_CEILING_UNDER_TEST}: {[(f.family, f.line) for f in findings]}"
+    )
+
+
+#: ``risk-<hex40>``. The letters ``sk`` appear inside a word, and the ``-`` after
+#: them is the same delimiter the ``openai-api-key`` family looks for -- so the
+#: only thing between this and a false positive is that ``\b`` requires a
+#: non-word character *before* the ``s``. 45 characters, all lower case and
+#: digits, so it reaches the same refused-candidate branch every case above does.
+_PREFIX_INSIDE_A_WORD: Final = f"risk-{_HEX40}"
+
+
+def test_a_prefix_that_is_part_of_a_word_is_not_reported() -> None:
+    """The false positive the repair must not buy, pinned before the repair exists.
+
+    Re-examining a refused candidate means running the specific families over a
+    substring, and the cheap version of that drops the anchor -- searching for
+    ``sk-`` anywhere inside the run rather than at a word boundary. This is what
+    that costs: every word ending in ``sk`` followed by a hyphen and a long
+    identifier becomes a reported credential, and ``risk-``, ``task-``, ``desk-``
+    and ``disk-`` are all ordinary things to write in a knowledge document.
+
+    With ``block`` as the default policy a false positive refuses acceptances
+    until somebody turns the control off, which costs exactly what a false
+    negative costs. This case is green today and must stay green: it is the bound
+    on the repair, not a target for it.
+    """
+    assert len(_PREFIX_INSIDE_A_WORD) >= _MIN_CANDIDATE_CHARS, (
+        f"{_PREFIX_INSIDE_A_WORD!r} is under the candidate floor, so it is never consumed and "
+        f"never re-examined -- this case would be green without saying anything"
+    )
+    assert "sk-" in _PREFIX_INSIDE_A_WORD, (
+        "the fixture no longer contains the family's own prefix, so it is not the near miss "
+        "it claims to be"
+    )
+
+    findings = scan_text(f"the {_PREFIX_INSIDE_A_WORD} table is unchanged\n")
+
+    assert findings == (), (
+        f"{_PREFIX_INSIDE_A_WORD!r} is reported as "
+        f"{[(f.family, f.redacted) for f in findings]}. `sk` here is the tail of an English "
+        f"word, and the family's leading `\\b` is what tells the two apart -- dropping it to "
+        f"reach inside a candidate run reports every word that ends in those letters."
+    )
+
+
+#: ``stagingsk-<hex40>``: the same credential with the delimiter removed, so there
+#: is no word boundary anywhere in front of the ``sk``. 50 characters, all lower
+#: case and digits, entropy 4.0791 -- over the floor, so the class gate's missing
+#: upper case is what refuses it, exactly as in the reported cases.
+_NO_BOUNDARY_BEFORE_THE_PREFIX: Final = f"staging{_OPENAI_SHAPED}"
+
+
+def test_a_credential_with_no_boundary_before_its_prefix_stays_unreported() -> None:
+    """The residual the repair leaves, recorded as behaviour rather than as a comment.
+
+    Re-examining a refused candidate recovers a credential that sits at a word
+    boundary *inside* the run -- which every delimiter provides, because ``-`` is a
+    non-word character. It recovers nothing where the run has no boundary at all,
+    and it must not: reaching that value means matching ``sk-`` at an arbitrary
+    offset, which is the false positive the case above prices.
+
+    So this is a bound, not a miss to be fixed later. If it goes red, the repair
+    has widened past word boundaries and
+    :func:`test_a_prefix_that_is_part_of_a_word_is_not_reported` is the assertion
+    to read next -- that is a decision somebody takes with both cases in front of
+    them, not a regression to absorb.
+    """
+    assert len(_NO_BOUNDARY_BEFORE_THE_PREFIX) >= _MIN_CANDIDATE_CHARS, (
+        "the fixture is under the candidate floor, so it is never consumed and this case says "
+        "nothing about the re-examination it is bounding"
+    )
+
+    findings = scan_text(f"key: {_NO_BOUNDARY_BEFORE_THE_PREFIX}\n")
+
+    assert findings == (), (
+        f"{_NO_BOUNDARY_BEFORE_THE_PREFIX[:REDACTED_PREFIX_CHARS]}... was reported as "
+        f"{[f.family for f in findings]}. There is no word boundary before the `sk`, so "
+        f"reaching it means matching the family's prefix at an arbitrary offset -- read the "
+        f"false-positive case above before recording this as an improvement."
+    )
+
+
+def test_a_clean_migration_filename_is_still_not_reported() -> None:
+    """The product's own filenames go through the re-examined branch too.
+
+    ``<ulid>-retry-policy`` is 39 candidate-class characters, so the generic family
+    consumes it and the gate refuses it -- which means a repair that re-examines
+    refused candidates runs the specific families over every migration filename
+    this repository writes, on every scan. Nothing may match.
+
+    The measurement behind :data:`NEGATIVES` says all 26 committed migration
+    filenames were reported as secrets before the ULID subtraction existed; this is
+    the same class arriving from the other side, and it is worth its own case
+    because :data:`NEGATIVES` was written when nothing re-examined anything.
+    """
+    filename = f"{_SYNTHETIC_ULID}-retry-policy"
+    assert len(filename) >= _MIN_CANDIDATE_CHARS, (
+        f"{filename!r} is under the candidate floor, so it is never consumed and never "
+        f"re-examined -- this case would be green without exercising the branch"
+    )
+
+    findings = scan_text(f"see {filename}.yaml for the current values\n")
+
+    assert findings == (), (
+        f"a migration filename the product mints itself is reported as "
+        f"{[(f.family, f.redacted) for f in findings]}; with `block` as the default policy "
+        f"that refuses acceptances for a name Theurian wrote"
+    )
+
+
+#: ``STAGING9-sk-<hex40>``: the same gluing, on a run that *passes* the class gate.
+#: Upper case, lower case and a digit all present and 4.1958 bits, so the generic
+#: family accepts what it consumed and reports it -- no candidate is refused, and
+#: nothing is re-examined.
+_GATE_PASSING_RUN: Final = f"STAGING9-{_OPENAI_SHAPED}"
+
+
+def test_a_run_that_clears_the_class_gate_is_reported_once_as_a_high_entropy_token() -> None:
+    """Re-examination belongs to refused candidates only, or every accepted run reports twice.
+
+    This run holds a credential at an internal word boundary exactly as the
+    reported cases do. The difference is that the generic family accepts it, so it
+    is already reported -- and a repair that re-examines every candidate rather
+    than only the refused ones adds a second finding for the same characters, at a
+    second position, under a second family name. Two findings for one value is a
+    refusal message that overstates what it found and a JSON document that
+    double-counts.
+
+    The count is asserted, not just the family, because that is the half a
+    family-only assertion cannot see.
+    """
+    assert round(_entropy(_GATE_PASSING_RUN), 4) == 4.1958, (
+        f"the fixture carries {_entropy(_GATE_PASSING_RUN):.4f} bits, not the 4.1958 recorded "
+        f"beside it; re-measure, and check it still clears the 4.0 floor"
+    )
+    assert all(
+        any(check(char) for char in _GATE_PASSING_RUN)
+        for check in (str.isupper, str.islower, str.isdigit)
+    ), "the fixture no longer carries all three classes, so the gate no longer accepts it"
+
+    findings = scan_text(f"key: {_GATE_PASSING_RUN}\n")
+
+    assert [f.family for f in findings] == [HIGH_ENTROPY], (
+        f"a run that clears the class gate was reported as {[f.family for f in findings]}. "
+        f"Two findings mean a refused-candidate re-examination is running over accepted "
+        f"candidates as well, and one value is being reported twice."
+    )
+
+
+#: ``abc-sk-<hex20>``: the same gluing again, on a run of 27 characters. Under the
+#: candidate floor, so the generic family never matches and never consumes it, and
+#: the specific family is reached at the internal boundary by the ordinary pass.
+#: Reported today -- it is the row of the table above that already works.
+_SUB_FLOOR_GLUED: Final = f"abc-sk-{_HEX40[:20]}"
+
+
+def test_a_glued_credential_in_a_run_too_short_to_consume_is_still_reported() -> None:
+    """The half of the class that already works, pinned before it is repaired around.
+
+    Nothing consumes this run, so the ordinary left-to-right pass reaches the
+    ``openai-api-key`` family at the boundary the ``-`` provides and reports it.
+    That is the behaviour the repair has to leave alone, and the way to lose it is
+    to move the specific families *out* of the top-level alternation and run them
+    only over refused candidates -- every case above would still pass, because
+    those runs are all refused.
+
+    **It does not carry that mutation alone, and the note is here so nobody
+    believes it does.** Measured 2026-08-25: removing the specific families from
+    the alternation reddens 19 cases in this file, three of them pre-existing
+    (``test_each_pattern_family_reports_its_own_shape``,
+    ``test_findings_come_back_in_document_order`` and the reachability guard
+    above). What this case adds over those is the boundary row of the table it
+    belongs to -- a *glued* credential whose run is too short to consume -- and the
+    column on that path, which nothing else pins. 27 characters is short enough
+    that a report at the run's start looks nearly right.
+    """
+    assert len(_SUB_FLOOR_GLUED) < _MIN_CANDIDATE_CHARS, (
+        f"{_SUB_FLOOR_GLUED!r} is {len(_SUB_FLOOR_GLUED)} characters, at or over the "
+        f"{_MIN_CANDIDATE_CHARS}-character floor, so the generic family consumes it after all "
+        f"and this case has become a duplicate of the recovered ones above"
+    )
+    at_the_credential = len("key: abc-") + 1
+
+    findings = scan_text(f"key: {_SUB_FLOOR_GLUED}\n")
+
+    assert [(f.family, f.column) for f in findings] == [("openai-api-key", at_the_credential)], (
+        f"a credential glued into a run too short to be consumed is reported as "
+        f"{[(f.family, f.column) for f in findings]}. This path needs no repair -- if it broke, "
+        f"the specific families have been moved out of the top-level alternation and now run "
+        f"only over refused candidates."
+    )
+
+
 def test_the_fixture_keeps_the_shape_of_a_real_theurian_token() -> None:
     """A stand-in stands in only while it is shaped like the thing it replaces.
 

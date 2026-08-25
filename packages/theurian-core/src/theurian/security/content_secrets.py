@@ -34,7 +34,8 @@ follow from that and are deliberate:
   Every pattern below terminates in a negative lookahead over its own class, so
   the maximal match satisfies it immediately and, at the *end of a run*, no
   alternative is tried.
-* The scan is linear in the body's length. A body reaches this function through
+* The scan is linear in the body's length, and stays linear now that a refused
+  candidate is scanned a second time. A body reaches this function through
   ``read_source_file``, so it is at most ``MAX_SOURCE_FILE_BYTES``; an unbounded
   *backtracking* quantifier over 8 MiB of attacker-chosen text is the cost this
   avoids. The generic family's repetition is genuinely open-ended (``{32,}``) and
@@ -43,6 +44,34 @@ follow from that and are deliberate:
   :data:`_MAX_TOKEN_CHARS`, which bounds the backtracking a run *longer* than that
   cap costs -- at most that many steps to reject at each start, never the
   input-length backtracking a trailing ``\\b`` would incur.
+
+  **The second pass moved that per-start bound from once per run to once per
+  position inside a refused run, and its constant is large.** Measured 2026-08-25
+  on CPython 3.13 (Apple silicon), at the 8 MiB ceiling, single pass then single
+  pass plus rescan:
+
+  =========================================== ========== ==========
+  8 MiB input                                 before     after
+  =========================================== ========== ==========
+  one run of ``a`` (nothing to find inside)      0.279 s    0.801 s
+  254,200 runs of 32 ``a``                       0.471 s    0.871 s
+  one run of ``xoxb-`` repeated                  0.282 s    5.729 s
+  one run of ``sk-`` repeated (worst measured)   0.282 s    8.685 s
+  =========================================== ========== ==========
+
+  The last row is the shape an adversary would pick: ``\\bsk-`` is satisfied at
+  every third character, and each of those starts pays the bounded
+  :data:`_MAX_TOKEN_CHARS` rejection the paragraph above prices. It is a constant
+  factor, not a new complexity class -- the same input at 1, 2, 4 and 8 MiB cost
+  1.083, 1.082, 1.093 and 1.093 seconds per MiB, a spread of 1.0% across three
+  doublings. **Nothing shaped like a real body pays it**: this repository's
+  largest committed knowledge body, 132,811 characters, measured 0.0181 s before
+  and 0.0182 s after, because the cost lands only on runs the heuristic refuses
+  and only where a family's anchor is repeatedly satisfied inside one. The
+  ceiling is 8 MiB and ``propose accept`` is a local, interactive command, so a
+  bounded ~9 s on a body crafted to provoke it is a recorded cost rather than a
+  denial of service; a scan that silently misses a credential behind an ordinary
+  ``staging-`` prefix is the worse trade.
 
 **A finding never carries the secret.** It names the family, where the match
 starts, and at most :data:`REDACTED_PREFIX_CHARS` leading characters. A refusal
@@ -149,18 +178,57 @@ _PATTERN_FAMILIES: Final[tuple[tuple[str, str], ...]] = (
 #: a string nobody recognises three layers up.
 FAMILIES: Final = frozenset(family for family, _ in _PATTERN_FAMILIES)
 
+#: The specific families alone, in declaration order and with their patterns
+#: untouched. Derived from :data:`_PATTERN_FAMILIES` by subtraction rather than
+#: listed a second time, because a family reachable from one pass and not the
+#: other is a detector that reports a credential in one position and not in
+#: another, and nothing about a second literal list would say so.
+_SPECIFIC_FAMILIES: Final[tuple[tuple[str, str], ...]] = tuple(
+    (family, pattern) for family, pattern in _PATTERN_FAMILIES if family != HIGH_ENTROPY
+)
+
+
+def _alternation(families: tuple[tuple[str, str], ...]) -> re.Pattern[str]:
+    """One named-group alternation over ``families``, tried left to right.
+
+    Group names replace ``-`` with ``_`` because a group name must be an
+    identifier; :data:`_FAMILY_OF` maps back. Both scanners are built here rather
+    than spelled out twice so that transliteration and its inverse cannot drift:
+    a family whose group name one of them spelled differently would raise a
+    :class:`KeyError` from :func:`_matched_family` on whichever input reached it
+    first.
+    """
+    return re.compile(
+        "|".join(f"(?P<{family.replace('-', '_')}>{pattern})" for family, pattern in families)
+    )
+
+
 #: One alternation over every family, tried left to right at each position.
 #:
-#: A single pass rather than one pass per family, and that is not only speed: the
+#: One pass rather than one pass per family, and that is not only speed: the
 #: regex engine takes the leftmost match and, among alternatives starting there,
 #: the first that succeeds. So ``ghp_...`` is reported as a GitHub token and not
 #: also as a high-entropy one, with no overlap bookkeeping to get wrong, purely
-#: because the specific families are declared first. Group names replace ``-``
-#: with ``_`` because a group name must be an identifier; :data:`_FAMILY_OF` maps
-#: back.
-_SCANNER: Final = re.compile(
-    "|".join(f"(?P<{family.replace('-', '_')}>{pattern})" for family, pattern in _PATTERN_FAMILIES)
-)
+#: because the specific families are declared first.
+#:
+#: **Leftmost-first is also what hid a credential behind a prefix (#350)**, and
+#: :data:`_SPECIFIC_SCANNER` is the answer to it: at a candidate run's first
+#: character the generic branch matches the *whole* run, ``finditer`` resumes
+#: after what that branch consumed, and so when the heuristic then refuses the
+#: run, no position inside it was ever tried. ``staging-sk-<hex40>`` went
+#: unreported for exactly that reason.
+_SCANNER: Final = _alternation(_PATTERN_FAMILIES)
+
+#: The same alternation with the generic family removed: what :func:`scan_text`
+#: runs *inside* a run whose :func:`_looks_like_a_secret` verdict was ``False``.
+#:
+#: Every pattern keeps its leading ``\\b`` or literal exactly as written, and that
+#: is the whole reason this is a compiled alternation rather than a substring
+#: search for each family's prefix. ``sk-`` occurs inside ``risk-``, ``task-``,
+#: ``desk-`` and ``disk-``; a search that reached it would report every kebab-case
+#: word ending in those two letters, and with ``block`` as the default policy a
+#: false positive costs what a false negative costs.
+_SPECIFIC_SCANNER: Final = _alternation(_SPECIFIC_FAMILIES)
 
 _FAMILY_OF: Final = {family.replace("-", "_"): family for family, _ in _PATTERN_FAMILIES}
 
@@ -236,37 +304,114 @@ def scan_text(text: str, *, max_findings: int = MAX_FINDINGS) -> tuple[SecretFin
             choosing.
 
     Returns:
-        Findings in document order, which is a total order because the scan is
-        a single non-overlapping left-to-right pass. Empty when nothing matched,
-        which is the answer for the overwhelming majority of real bodies.
+        Findings in document order, which is a total order: the outer pass is
+        non-overlapping and left to right, and the findings recovered from inside
+        a refused candidate all sit within the run being visited, in their own
+        left-to-right order. Empty when nothing matched, which is the answer for
+        the overwhelming majority of real bodies.
+
+    **A refused candidate is scanned again before it is dropped (#350).** A
+    credential joined to a lower-case run by a delimiter -- ``staging-sk-<hex40>``,
+    or a migration filename with an author-supplied slug in the middle of it --
+    is one candidate run to the generic family, which consumes it whole and is
+    then refused by :func:`_looks_like_a_secret` for want of an upper-case
+    character. Dropping it there discards the ``sk-`` inside, because the
+    non-overlapping pass never retried a position within what it consumed. So the
+    specific families get their own look at the run, at every position rather
+    than only its first.
+
+    Only *refused* candidates are re-examined. A run that clears the heuristic is
+    already reported as :data:`HIGH_ENTROPY`, and reporting it a second time under
+    an inner family would make one value two findings, at two positions, in a
+    refusal message and in a published ``accept --json`` document.
     """
     findings: list[SecretFinding] = []
     for match in _SCANNER.finditer(text):
         family = _matched_family(match)
-        candidate = match.group()
-        if family == HIGH_ENTROPY and not _looks_like_a_secret(candidate):
-            continue
-        findings.append(
-            SecretFinding(
-                family=family,
-                line=text.count("\n", 0, match.start()) + 1,
-                column=match.start() - (text.rfind("\n", 0, match.start()) + 1) + 1,
-                redacted=f"{candidate[:REDACTED_PREFIX_CHARS]}{_ELISION}",
-            )
-        )
+        if family == HIGH_ENTROPY and not _looks_like_a_secret(match.group()):
+            findings.extend(_families_inside(text, match, room=max_findings - len(findings)))
+        else:
+            findings.append(_finding_at(text, match.start(), family, match.group()))
         if len(findings) >= max_findings:
             break
     return tuple(findings)
 
 
+def _families_inside(text: str, run: re.Match[str], *, room: int) -> list[SecretFinding]:
+    """Specific families inside ``run``, a candidate the entropy heuristic refused.
+
+    ``room`` is how many findings the caller may still take, so the ceiling bounds
+    the *total* rather than the outer pass alone. :func:`scan_text`'s own ``break``
+    cannot do it: it runs once per outer match, and *one* refused run can hold many
+    inner matches. Measured 2026-08-25 -- a single run of ``sk_live_`` plus sixteen
+    characters plus ``-``, repeated forty times, is one 1,000-character candidate
+    the heuristic refuses and holds forty ``stripe-secret-key`` matches, because
+    that family's repetition class excludes ``-`` and so each match ends at a
+    delimiter that leaves ``\\b`` satisfied for the next. Without this bound that
+    body returns forty findings against a published :data:`MAX_FINDINGS` of twenty,
+    each one paying the ``O(position)`` newline count the ceiling exists to cap.
+
+    **Matching the substring is the same as matching that offset in the document,
+    and that is a property of the run rather than a hope.** ``run`` is maximal in
+    :data:`_CANDIDATE_CLASS` (the generic family's lookarounds make it so), so the
+    character before it is outside that class and therefore not a word character:
+    a leading ``\\b`` decides the same way at the substring's first position as it
+    does in the document. Every family's trailing negative lookahead is over a
+    subset of the same class, so it succeeds at the substring's end and equally at
+    the run's end in the document, where the next character is outside the class
+    too.
+
+    What that leaves unreached is a family glued straight onto candidate-class
+    characters with no boundary at all -- ``stagingsk-<hex40>`` reports nothing,
+    where ``staging-sk-<hex40>`` reports an ``openai-api-key``. Reaching it means
+    matching a family's prefix at an arbitrary offset, which reports ``risk-``,
+    ``task-`` and ``disk-`` as credentials. That is the residual, named by its
+    cause and accepted: SEC-11 disclaims completeness, and a control that refuses
+    ordinary kebab-case prose gets switched off.
+    """
+    recovered: list[SecretFinding] = []
+    for inner in _SPECIFIC_SCANNER.finditer(run.group()):
+        if len(recovered) >= room:
+            break
+        recovered.append(
+            _finding_at(text, run.start() + inner.start(), _matched_family(inner), inner.group())
+        )
+    return recovered
+
+
+def _finding_at(text: str, start: int, family: str, matched: str) -> SecretFinding:
+    """One finding for ``matched``, whose first character is at ``start`` in ``text``.
+
+    The offset is absolute, which is what lets a finding recovered from inside a
+    candidate run point at the credential rather than at the run that hid it: a
+    reader sent to the run's start finds ``staging-`` and reads the report as
+    noise. A candidate run holds no ``\\n`` -- it is not in
+    :data:`_CANDIDATE_CLASS` -- so an inner match's line is the run's line and its
+    column is the run's column plus its offset, which is exactly what counting
+    from ``start`` computes without a special case.
+    """
+    return SecretFinding(
+        family=family,
+        line=text.count("\n", 0, start) + 1,
+        column=start - (text.rfind("\n", 0, start) + 1) + 1,
+        redacted=f"{matched[:REDACTED_PREFIX_CHARS]}{_ELISION}",
+    )
+
+
 def _matched_family(match: re.Match[str]) -> str:
-    """Which family ``match`` came from.
+    """Which family ``match`` came from, whichever scanner produced it.
 
     ``lastgroup`` is the name of the group that participated, and exactly one
     can, because the alternation's branches are mutually exclusive at the top
     level and no branch contains a capturing group of its own. ``None`` is
     therefore unreachable, and refusing it is cheaper than a caller discovering
     that a branch grew an inner ``(...)`` and started reporting the wrong name.
+
+    That argument is about how :func:`_alternation` builds a pattern, not about
+    which families went into it, so it holds for :data:`_SPECIFIC_SCANNER`
+    unchanged: dropping a branch from an alternation of mutually exclusive
+    branches leaves them mutually exclusive. :data:`_FAMILY_OF` is built from the
+    full set, so it names every group either scanner can report.
     """
     name = match.lastgroup
     if name is None:  # pragma: no cover - every branch is a named group
@@ -296,6 +441,17 @@ def _looks_like_a_secret(token: str) -> bool:
     committed knowledge bodies themselves were clean. A knowledge document that
     quotes a migration filename is an ordinary thing to write; blocking its
     acceptance by default is how a control gets switched off.
+
+    **Returning ``False`` here now costs a second look rather than silence**, so
+    the corpus that motivated the subtraction is precisely the corpus
+    :data:`_SPECIFIC_SCANNER` runs over: every migration filename is a refused
+    candidate, and a family matching inside one would refuse an acceptance for a
+    name the product minted itself. Re-measured 2026-08-25 with that pass in
+    place, over ``git ls-files .theurian/migrations .theurian/knowledge`` read at
+    ``HEAD`` rather than from the working tree, which holds machine-local notes CI
+    cannot see: zero findings across all 26 migration documents (32,325
+    characters), all 26 migration filenames, all 26 knowledge body paths, and all
+    26 committed body texts (443,608 characters).
 
     The subtraction is best effort, and its cost is a residual an adversary can
     pay rather than nothing. A ULID is upper case and digits only, so an

@@ -62,7 +62,12 @@ from theurian.infrastructure.filesystem.migration_loader import (
     load_migrations,
     validate_migration_document,
 )
-from theurian.security.content_secrets import HIGH_ENTROPY, MAX_FINDINGS, scan_text
+from theurian.security.content_secrets import (
+    _MIN_CANDIDATE_CHARS,
+    HIGH_ENTROPY,
+    MAX_FINDINGS,
+    scan_text,
+)
 from theurian.security.project_config import SecretScanPolicy
 
 pytestmark = pytest.mark.integration
@@ -737,6 +742,75 @@ def test_a_title_quoting_a_migration_filename_is_still_accepted_under_block(
         f"a title quoting a migration filename was reported as a secret: {_rendered(accepted)}"
     )
     assert (paths.migrations / drafted.migration_file.name).exists()
+
+
+#: A lower-case prefix and ``sk-`` followed by forty lower-case hexadecimal
+#: characters -- the shape #350 measured as invisible to the detector, and the
+#: same shape as :data:`_ID_SHAPED_TOKEN` below, which is what #336's own tests
+#: plant. Derived from a fixed seed and split from it for the reasons
+#: :data:`PLANTED_TOKEN` records: not drawn, so the suite does not redden for
+#: nothing, and no credential-shaped literal in the file.
+#:
+#: A seed of its own rather than a reuse, so that re-seeding either fixture cannot
+#: silently change what the other one tests. The *shape* is deliberately shared.
+_GLUED_TOKEN: Final = (
+    "sk-" + hashlib.sha256(b"theurian glued-prefix accept-path fixture (#350)").hexdigest()[:40]
+)
+
+#: The title as somebody rotating a credential would actually write it: a verb, an
+#: environment name, and the retired value pasted on the end. Nothing here
+#: requires knowing anything about the detector -- which is what makes it the
+#: bound on the control rather than an evasion of it.
+_GLUED_TITLE: Final = f"rotate staging-{_GLUED_TOKEN}"
+
+
+def test_a_title_gluing_a_credential_behind_a_stage_prefix_is_refused_under_block(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The bound on the control #336 shipped, held where that control runs (#350).
+
+    ``title`` has been scanned since #336 and this proposal is accepted anyway,
+    because the *detector* reports nothing for it: the candidate run
+    ``staging-sk-<hex40>`` is consumed whole by the generic family, refused by its
+    class gate for want of an upper-case character, and the single non-overlapping
+    pass never retries the word boundary the internal ``-`` provides -- which is
+    where ``openai-api-key`` would have matched. ``test_content_secrets.py`` owns
+    that mechanism. This case owns the consequence, and the consequence is the
+    part that decides whether SEC-11's shipped control holds on a realistic input.
+
+    It is the mirror of
+    :func:`test_a_title_quoting_a_migration_filename_is_still_accepted_under_block`
+    directly above, and **the pair is what closes the class**: a title that merely
+    *quotes* one of Theurian's own identifiers must still be accepted, and a title
+    that *carries* a credential behind a lower-case run must not. Either assertion
+    alone is satisfied by a detector that has failed in the opposite direction --
+    one by a detector that reports nothing, the other by one that reports
+    everything.
+
+    The detector is deliberately **not** asked directly here, unlike the test
+    above. That question belongs to the unit layer and is answered there; asking
+    it here would move this case's red onto a fact the unit tests already own and
+    leave the accept path -- the only thing this file can speak for -- unexercised.
+
+    The family is asserted rather than the bare refusal, because a title can be
+    rejected for reasons that have nothing to do with a credential, and a test
+    that accepted any ``ProposalError`` would go green on one of those.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    assert len(f"staging-{_GLUED_TOKEN}") >= _MIN_CANDIDATE_CHARS, (
+        f"the glued run is under the {_MIN_CANDIDATE_CHARS}-character candidate floor, so the "
+        f"generic family never consumes it and this case has stopped describing #350's class -- "
+        f"a run that short is reported today, and this would pass without exercising anything"
+    )
+    drafted = service.draft(replace(_request(CLEAN_BODY), title=_GLUED_TITLE))
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert "openai-api-key" in str(caught.value), (
+        f"the acceptance was refused, but not for the credential glued into the title: "
+        f"{caught.value}"
+    )
 
 
 # -- the operations `propose` does not write (#336) -------------------------
