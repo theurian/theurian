@@ -607,17 +607,18 @@ Whether a defect takes this route at all is SECURITY.md's question, not this
 document's. An ordinary bug in a released artifact is a public issue and takes
 *Hotfixes* above.
 
-**What this procedure says about GitHub's own behaviour is documented by GitHub
-and not measured here** — no advisory has been exercised on this repository.
-Three claims below rest on that: that CI cannot reach a temporary private fork
-(step 2), that branch protection is not enforced on the advisory's merge
-(step 3), and that the "Report a vulnerability" button is offered only where
+**What this procedure says about GitHub's own behaviour is documented by GitHub;
+where an advisory has since exercised it, the note says so.** Two claims below
+rest on GitHub's documentation alone: that CI cannot reach a temporary private
+fork (step 2), and that the "Report a vulnerability" button is offered only where
 private vulnerability reporting is enabled (step 1). The sources are
 [Collaborating in a temporary private fork](https://docs.github.com/en/code-security/security-advisories/working-with-repository-security-advisories/collaborating-in-a-temporary-private-fork-to-resolve-a-repository-security-vulnerability)
 and [Privately reporting a security vulnerability](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability).
 What this procedure says about *this repository* — its workflows, its branch
-protection — is measured, and step 3 carries the fallback for the one GitHub
-claim that hurts if it is wrong.
+protection — is measured. One assumption here was measured wrong the hard way, on
+a real advisory merge: branch protection **is** enforced on the merge and blocks
+it (step 3), the opposite of what an earlier draft of this document assumed.
+Step 3 records what that means and the two supported ways the merge lands anyway.
 
 1. **Open a draft advisory.** A report that arrived through GitHub's ["Report a
    vulnerability"](https://github.com/theurian/theurian/security/advisories/new)
@@ -687,11 +688,13 @@ claim that hurts if it is wrong.
      step-3 merge is a push, so unlike everything else here it does not run late
      — it never runs at all. A vulnerability fix is exactly where a dependency
      gets bumped.
-   - **Sign, sign off, and write a Conventional Commits subject.** Normally an
-     unsigned commit is refused by `main`'s `required_signatures`, and a missing
-     sign-off or a malformed subject turns `shared.yml`'s `commits` job red.
-     Neither happens here: that job is `if: github.event_name == 'pull_request'`,
-     and GitHub does not enforce branch protection on the step-3 merge.
+   - **Sign, sign off, and write a Conventional Commits subject.** The fork's
+     commits land on `main` as they are, and nothing on `main`'s side will fix
+     them. `shared.yml`'s `commits` job — which checks the sign-off and the
+     subject — is `if: github.event_name == 'pull_request'` and never runs on the
+     step-3 merge push; and the admin bypass that lands the merge (step 3) waives
+     `main`'s `required_signatures` for the same push. Get all three right by hand
+     before you merge.
 
    Write as much of the release into those commits as the fix's line allows: the
    CHANGELOG **Security** entry, the threat-model entry, and the version bump
@@ -710,25 +713,57 @@ claim that hurts if it is wrong.
    fix and a fetchable one, and an approval nobody is waiting for makes the
    window as long as it takes someone to notice.
 
-   Branch protection is not enforced on that merge (documented by GitHub, not
-   measured here). This is what would otherwise apply, measured with
+   **Branch protection *is* enforced on that merge, and its status checks block
+   it.** This was measured on a real advisory merge (2026-08-25), not read off
+   GitHub's documentation. Here is what `main` requires, from
    `gh api repos/theurian/theurian/branches/main/protection`:
 
-   | Setting | Value |
-   | :-- | :-- |
-   | `required_signatures` | `true` |
-   | `required_linear_history` | `true` |
-   | `enforce_admins` | `true` |
-   | `required_status_checks` | `null` — nothing is required, so no check either blocks or clears this merge |
+   | Setting | Value on 2026-08-25 | Bearing on this merge |
+   | :-- | :-- | :-- |
+   | `required_status_checks` | not `null` — seven contexts (`Conventional Commits and DCO`, `Secret scan`, `Dependencies are pinned exactly`, `Dependency licences`, `Dependency review`, `SBOM`, `Detect what changed`), `strict: false` | **this is the blocker.** None can run on the CI-less fork, so none reports for the merge commit, and GitHub refuses the merge: *"N of N required status checks are expected"* |
+   | `required_signatures` | `true` | the fork's commits must already be signed — the bypass below waives this, so nothing on `main`'s side adds it |
+   | `required_linear_history` | `true` | merge commits are refused on `main`; the bypass waives this too |
+   | `enforce_admins` | the bypass lever (see below) | while `true`, a maintainer is bound by every row above; setting it `false` is how the merge lands |
 
-   **If the merge is refused, do not push the fork's branch here.** That is the
-   public branch *Hotfixes* is, and it carries the account of the defect with it.
-   A refusal most likely means the claim above is wrong and
-   `required_linear_history` is rejecting a merge commit. Take the patch out
-   instead: `git format-patch` in the clone, apply it to a branch off `main`,
-   commit it signed and signed off, open an ordinary pull request and merge it as
-   soon as it is green. It is public either way from the moment you first tried,
-   so step 4's window opens at the merge attempt and not at the pull request.
+   `enforce_admins` read `false` on 2026-08-25 — left over from the advisory
+   merge that shipped `0.1.0.dev11`, whose bypass had not been restored. Its
+   enforced value is `true`; the restore step below is what keeps it there.
+
+   **A maintainer lands the merge by turning that lever off and back on.**
+   Setting `enforce_admins` to `false` lifts every row above for administrators;
+   run *Merge pull request(s)*, then restore it to `true` in the same sitting.
+   The window in which an admin is unprotected is the merge itself and no longer.
+   Confirm the restore — a merge that forgets it leaves `main` in the state
+   2026-08-25 was measured in.
+
+   ```sh
+   gh api repos/theurian/theurian/branches/main/protection/enforce_admins            # read: {"enabled":...}
+   gh api -X DELETE repos/theurian/theurian/branches/main/protection/enforce_admins  # bypass: sets false
+   # ... perform the advisory "Merge pull request(s)" ...
+   gh api -X POST repos/theurian/theurian/branches/main/protection/enforce_admins    # restore: sets true
+   ```
+
+   **What stands in for the checks that cannot run.** Nothing on GitHub gates this
+   merge, so the gate is split across it. Before: the four hand-run checks in
+   step 2 — the full local quality gate, `gitleaks git --redact --verbose
+   --exit-code 1 .`, the dependency review, and signing with a valid sign-off and
+   subject — plus the three-reviewer round, all on the fork's branch. After: the
+   push to `main` runs `security.yml`, `shared.yml`, and `core.yml` or
+   `plugin.yml` (see *What runs after the merge* below), which validate the merged
+   state on `main` even though they could not gate the merge itself.
+
+   **If you would rather satisfy the checks than bypass them, take the patch
+   out.** This trades the admin bypass for slightly earlier public exposure — an
+   ordinary branch and pull request describe the defect before the release does —
+   so it fits a HIGH more than a CRITICAL. `git format-patch` in the clone, apply
+   it to a branch off `main`, commit it signed and signed off, open an ordinary
+   pull request and merge it as soon as it is green.
+
+   **Either way, do not push the fork's branch here to force the merge.** That is
+   the public branch *Hotfixes* is, and it carries the account of the defect with
+   it. The fix is public from the moment you first act on it — the bypass merge or
+   the pull request — so step 4's window opens then, not at whichever route
+   finally lands.
 
    **What runs after the merge, and what does not.** The push to `main` runs
    `security.yml` and `shared.yml`, plus `core.yml` or `plugin.yml` as the changed

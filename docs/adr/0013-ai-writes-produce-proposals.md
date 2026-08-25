@@ -176,7 +176,7 @@ it" is precisely the knowledge that gets lost otherwise. Recording it uses the
 > set `migrate validate` calls green and `migrate apply` refuses permanently,
 > with both proposals already consumed — and the documented recovery, deleting
 > a landed migration, is exactly what
-> [`propose.md`](../../plugins/claude-code/commands/propose.md) forbids the
+> [`propose.md`](https://github.com/theurian/theurian/blob/main/plugins/claude-code/commands/propose.md) forbids the
 > drafting agent to do. The new answer is better for one measurable reason: the
 > proposal survives its own rejection.
 > [ADR-0027](0027-accept-validates-before-it-moves.md) carries the mechanism,
