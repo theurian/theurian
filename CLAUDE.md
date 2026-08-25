@@ -248,6 +248,18 @@ that value. This moves "enumerate the families before round one" from a review
 practice to a briefing practice: the families are named when the work is
 assigned, not when it is reviewed.
 
+**An enumerated family is the implementer's to hold, and recurrence burns in.**
+A round-one finding on a family the brief enumerated is an implementation-stage
+failure, not a review success — record it as such. When the same specialist is
+caught on the same family twice, that family is written into the specialist's
+agent definition (`.claude/agents/<specialist>.md`), so every future instance is
+born knowing it. Implementer agents are stateless: recurrence is a defect of the
+definition, not of the instance, and the definition is where learning lives. The
+loop this closes: a reviewer discovers a new family → the standing table; the
+brief selects the applicable ones per change; a repeat against the same
+specialist → that specialist's own definition. Known families sink upstream, and
+review stays aimed at what nobody enumerated.
+
 Do not write these briefs from memory each time — the agent definitions hold the
 standing context; the brief adds only what is specific to this change.
 
