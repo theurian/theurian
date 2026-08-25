@@ -87,8 +87,9 @@ happened, in order:
 4. **Documentation follows** — CHANGELOG (breaking changes named as such), README
    status and roadmap, new ADRs, and every ADR compliance section the milestone
    discharged or newly owes.
-5. **PR** with a description that states what was found and fixed, not only what
-   was built.
+5. **Flip the Draft PR to Ready** — it has been open since the first green
+   commit (see *Early push and Draft PRs*) — with a description that states what
+   was found and fixed, not only what was built.
 6. **CI green**, then squash-merge.
 
 ## Depth is instructed; stopping is not — so instruct it
@@ -553,12 +554,48 @@ its language is the point.
   Committing at the green keeps them together. It also bounds review: rounds four
   to six were handed `git diff main...HEAD`, which showed 7,792 lines of a larger
   change — four production modules and three schemas were untracked, and so
-  invisible to it. An uncommitted tree has no boundary a reviewer can check.
+  invisible to it. An uncommitted tree has no boundary a reviewer can check. The
+  same green also pushes: the branch reaches origin at its first green commit,
+  with a Draft PR open from that moment — see *Early push and Draft PRs*.
 - Never run a real `theurian setup`, `theurian uninstall`, or a detached
   `daemon start` on the user's machine — those are what write `~/.claude.json`
   and register the OS service. `--dry-run` is the form that is safe here, and
   redirecting `HOME` is not what makes it safe: see *Running the CLI on a
   development machine*, which is two rules and not one.
+
+### Early push and Draft PRs
+
+A topic branch is pushed to origin at its **first green commit**, and a **Draft
+PR is opened at the same moment** — not when the work is finished. Every later
+green commit is pushed when it lands. The Draft PR is the visibility surface —
+the state of every lane is on GitHub, not on a local disk — and the crash-safety
+net; CI runs on the Draft from the first push, so the required checks exercise
+the work while it is still in flight.
+
+**Draft → Ready is the review gate.** The three-reviewer round of *The review
+round* runs immediately before the flip, and the PR does not leave Draft until
+the round is green — CRITICAL and HIGH at zero, per *What "green" means*.
+Flipping to Ready *asserts* that the round is green; flip with a PR comment
+recording the round — findings per severity, what was fixed, what was
+consciously deferred and why. Review weight is still set by blast radius; what
+this fixes is *when* the round runs, not how heavy it is. Merge continues to
+gate on the required checks.
+
+**A commit that fixes a review finding records the finding as history.** The
+commit body carries a structured trailer:
+
+```
+Review-Finding: <reviewer> <SEVERITY> — <one-line finding>
+```
+
+for example `Review-Finding: adversarial HIGH — byte-identical body accepted
+under a second item id`. The trailer is deliberately machine-parseable:
+`git log --grep 'Review-Finding:'` reconstructs the review history, and it is
+the form a future review-ingestion surface consumes as governed knowledge.
+
+**Embargoed disclosure work follows the same pattern on the private fork.**
+Nothing — branch, PR, or CHANGELOG hint — touches public origin until the
+advisory ships.
 
 ### Running the CLI on a development machine
 
