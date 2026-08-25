@@ -290,7 +290,7 @@ It is not a false published claim — `_ACCEPT_STEPS` honestly says validate
 may not read, which is what keeps it off CRITICAL. What makes it HIGH rather
 than MEDIUM is the recovery: the only way out is deleting a landed migration
 from `.theurian/migrations/`, and
-[`plugins/claude-code/commands/propose.md`](../../plugins/claude-code/commands/propose.md)
+[`plugins/claude-code/commands/propose.md`](https://github.com/theurian/theurian/blob/main/plugins/claude-code/commands/propose.md)
 forbids exactly that to the documented actor — "Do not write into
 `.theurian/migrations/` or `.theurian/knowledge/` directly". The documented
 agent can reach the state and cannot leave it.
