@@ -24,6 +24,7 @@ import base64
 import hashlib
 import json
 import re
+from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -2302,7 +2303,7 @@ _CONTENT_FILE_PLACEHOLDER: Final = "CONTENT-FILE-PLACEHOLDER"
 
 
 def _a_proposal_whose_migration_carries_a_comment(
-    service: ProposalService, comment: str
+    service: ProposalService, comment: str, *, body: str = CLEAN_BODY
 ) -> DraftedProposal:
     """The ordinary proposal, with ``comment`` prepended to its migration as a YAML comment.
 
@@ -2310,8 +2311,12 @@ def _a_proposal_whose_migration_carries_a_comment(
     way to emit a comment at all -- and that is the whole point of the face: a
     comment exists only in the bytes, so the parsed document the field scan reads
     cannot carry it.
+
+    ``body`` stays clean for every face that is about the comment alone. It is
+    given only by the cross-channel budget test below, which needs one proposal
+    loading *two* channels at once -- the body's bytes and the migration's.
     """
-    drafted = service.draft(_request(CLEAN_BODY))
+    drafted = service.draft(_request(body))
     text = drafted.migration_file.read_text(encoding="utf-8")
     drafted.migration_file.write_text(f"# {comment}\n{text}", encoding="utf-8")
     return drafted
@@ -2901,4 +2906,100 @@ def test_a_field_value_spelled_with_yaml_escapes_is_still_refused_under_block(
     )
     assert PLANTED_TOKEN not in str(caught.value), (
         f"the refusal reproduced the secret it refused: {caught.value}"
+    )
+
+
+#: How far past the ceiling the two-channel budget fixture reaches, and the load
+#: each channel carries. Derived from :data:`MAX_FINDINGS` rather than written as
+#: literals so the fixture follows the constant: the body holds most of the
+#: ceiling and less than all of it, and the comment holds twice the overflow. So
+#: neither channel fills the budget alone, the two together offer
+#: ``MAX_FINDINGS + _BUDGET_OVERFLOW``, and a budget granted per channel reports
+#: exactly that many.
+_BUDGET_OVERFLOW: Final = 5
+_BUDGET_BODY_SECRETS: Final = MAX_FINDINGS - _BUDGET_OVERFLOW
+_BUDGET_COMMENT_SECRETS: Final = 2 * _BUDGET_OVERFLOW
+
+#: One token per line, so each is a separate finding at one location -- the body's
+#: landed path. Distinct tokens rather than one repeated, so nothing can collapse
+#: them (the discipline :func:`_distinct_token` records).
+_BUDGET_BODY: Final = "# Retry policy\n\nThree attempts.\n\n" + "".join(
+    f"    TOKEN_{index}={_distinct_token(('budget body', index))}\n"
+    for index in range(_BUDGET_BODY_SECRETS)
+)
+
+#: The same load in the one channel a comment reaches: the migration's own bytes.
+#: On one line, because a comment is one line and `_a_proposal_whose_migration
+#: _carries_a_comment` writes it as one.
+_BUDGET_COMMENT: Final = " ".join(
+    _distinct_token(("budget comment", index)) for index in range(_BUDGET_COMMENT_SECRETS)
+)
+
+
+def test_the_finding_budget_is_shared_across_channels_not_per_channel(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """One ceiling covers every channel the acceptance lands, never one each (#349).
+
+    The sibling of ``test_the_finding_budget_is_shared_across_all_fields_not_per_field``,
+    one level out. That test drives the *parsed-field* channel alone, so it holds
+    :func:`_findings_in`'s own running total and says nothing about how
+    ``_scan_for_secrets`` composes the five channels around it. A version that
+    called ``_findings_in`` once per channel and concatenated the results keeps
+    every field-level assertion green while publishing up to five times
+    :data:`MAX_FINDINGS` into a refusal message and an ``accept --json``
+    document -- and how many bodies, fields and landed paths a proposal carries
+    is the contributor's number, so a ceiling that resets at a channel boundary
+    is no ceiling.
+
+    The fixture loads two channels and neither one alone: the body carries
+    ``MAX_FINDINGS - _BUDGET_OVERFLOW`` findings and the migration's YAML comment
+    carries ``2 * _BUDGET_OVERFLOW``, which offers twenty-five findings to a
+    twenty-finding budget. Shared, the body spends fifteen and the comment is
+    truncated at the five that are left. Per channel, the two report twenty-five.
+
+    Both guards are asserted before the acceptance, because either channel
+    quietly scanning clean would leave the count at or under the cap and this
+    green with nothing crossed.
+
+    ``warn`` rather than ``block``: a refusal raises before a caller can count
+    anything, so the findings only reach a test through the success result.
+
+    Measured on bf40533 in a prepared mutation tree (2026-08-25), against a
+    ``_scan_for_secrets`` that calls ``_findings_in`` once per channel and
+    concatenates: the other 168 tests in this file all pass under it, and this
+    one reports 25 findings against the 20 cap. Unmutated the split is
+    ``{body: 15, the migration file as written: 5}``.
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+    drafted = _a_proposal_whose_migration_carries_a_comment(
+        service, _BUDGET_COMMENT, body=_BUDGET_BODY
+    )
+    migration_text = drafted.migration_file.read_text(encoding="utf-8")
+    assert len(scan_text(_BUDGET_BODY)) == _BUDGET_BODY_SECRETS, (
+        f"the body offers {len(scan_text(_BUDGET_BODY))} findings, not the "
+        f"{_BUDGET_BODY_SECRETS} this test spends the budget with"
+    )
+    assert len(scan_text(migration_text)) == _BUDGET_COMMENT_SECRETS, (
+        f"the migration's bytes offer {len(scan_text(migration_text))} findings, not the "
+        f"{_BUDGET_COMMENT_SECRETS} that have to outlast what the body already spent"
+    )
+    assert _document_findings(yaml.safe_load(migration_text)) == (), (
+        "the parsed-field channel found something too, so the split asserted below is over three "
+        "channels rather than the two this fixture loads"
+    )
+
+    accepted = service.accept(drafted.proposal_id)
+
+    findings = accepted.secret_scan.findings
+    assert len(findings) == MAX_FINDINGS, (
+        f"the accept-path scan reported {len(findings)} findings over two channels, not the "
+        f"{MAX_FINDINGS} cap -- the budget is granted per channel, which bounds nothing, since "
+        f"the number of channels and the bodies, fields and paths inside them are the input's"
+    )
+    spent = Counter(finding.location for finding in findings)
+    assert sorted(spent.values()) == [_BUDGET_OVERFLOW, _BUDGET_BODY_SECRETS], (
+        f"the {MAX_FINDINGS} findings are not split {_BUDGET_BODY_SECRETS}/{_BUDGET_OVERFLOW} "
+        f"between the two channels but {dict(spent)} -- the second channel was not truncated by "
+        f"what the first had already spent"
     )
