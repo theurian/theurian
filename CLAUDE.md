@@ -579,9 +579,8 @@ is the last step and not the next one. The PR does not leave Draft until the
 round is green — CRITICAL and HIGH at zero, per *What "green" means*.
 Flipping to Ready *asserts* that the round is green; flip with a PR comment
 recording the round — findings per severity, what was fixed, what was
-consciously deferred and why. Review weight is still set by blast radius; what
-this fixes is *when* the round runs, not how heavy it is. Merge continues to
-gate on the required checks.
+consciously deferred and why. What this fixes is *when* the round runs, not how
+heavy it is. Merge continues to gate on the required checks.
 
 **A commit that fixes a review finding records the finding as history.** The
 commit body carries a structured trailer:
