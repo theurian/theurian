@@ -31,12 +31,17 @@ follow from that and are deliberate:
   class rather than ``\\b``. ``\\b`` is asymmetric about the ``-`` that base64url
   ends with, and -- the reason that matters here -- a greedy class followed by
   ``\\b`` backtracks one character at a time over a run this input controls.
-  Every pattern below that ends in a repetition terminates in a negative
-  lookahead over that repetition's own class, so the maximal match satisfies it
-  immediately and, at the *end of a run*, no alternative is tried.
-  ``private-key-block`` is the exception and needs no lookahead: it ends in the
-  literal ``-----``, which is bounded by construction and has nothing to
-  backtrack over.
+  Every pattern below that ends in an *open-ended* repetition terminates in a
+  negative lookahead over exactly that repetition's class, so the maximal match
+  satisfies it immediately and, at the *end of a run*, no alternative is tried.
+  Three sit outside that shape, and none of them can cost more than a bounded
+  number of steps. ``aws-access-key-id`` and ``google-api-key`` repeat a *fixed*
+  count -- ``{16}`` and ``{35}`` -- which leaves no window to retreat through, so
+  it does not matter that the first one's lookahead is a superset of its
+  repetition's class where the second one's equals it. ``private-key-block`` has
+  no trailing lookahead at all, ending in the literal ``-----``; its ``[A-Z ]{0,20}``
+  genuinely does backtrack, by design and by at most twenty steps, which is how
+  ``-----BEGIN RSA PRIVATE KEY-----`` matches at all.
 * The scan is linear in the body's length, and stays linear now that a refused
   candidate is scanned a second time. A body reaches this function through
   ``read_source_file``, so it is at most ``MAX_SOURCE_FILE_BYTES``; an unbounded
@@ -347,6 +352,13 @@ def scan_text(text: str, *, max_findings: int = MAX_FINDINGS) -> tuple[SecretFin
     already reported as :data:`HIGH_ENTROPY`, and reporting it a second time under
     an inner family would make one value two findings, at two positions, in a
     refusal message and in a published ``accept --json`` document.
+
+    **The two passes do not apply the same test.** A match recovered from inside a
+    refused run must also carry an ASCII digit, where a match the outer pass finds
+    need not; :func:`_carries_a_digit` records what that buys and what it costs.
+    Said here because this is the entry point a caller reads, and a caller
+    comparing two findings has no other way to learn that one of them cleared a
+    gate the other never faced.
     """
     findings: list[SecretFinding] = []
     for match in _SCANNER.finditer(text):
@@ -403,10 +415,19 @@ def _families_inside(text: str, run: re.Match[str], *, room: int) -> list[Secret
     Ordinary Japanese prose, under a ``block`` policy, refused for a credential
     that is not there.
 
-    ``endpos`` is doing work too, and not only truncation: it is what lets each
-    family's trailing negative lookahead succeed at the run's end, and what stops
-    a family whose literals reach outside :data:`_CANDIDATE_CLASS` from matching
-    across the run's boundary into text the outer pass will scan on its own.
+    **What ``endpos`` is for is confinement, and nothing else.** It is not what
+    makes the trailing lookaheads succeed: every specific family's lookahead class
+    is a subset of :data:`_CANDIDATE_CLASS` and ``run`` is maximal in that class,
+    so the character at ``run.end()`` is outside every one of them and each
+    lookahead succeeds on the document's own text -- measured 2026-08-25, the
+    rescan returns identical matches with ``endpos`` and without it for a run
+    followed by a space, by a period, and at end of text. What it does is stop the
+    rescan running on to the end of the *document*: without it, the first refused
+    run's rescan reported the second run's credential as well (measured: two
+    findings from one run, the second at another run's offset). That is a
+    duplicate, and it is out of order -- :func:`scan_text` documents a total
+    document order that the outer loop's left-to-right progress is what
+    establishes.
 
     **What this cannot reach, by root cause.** None is a miss to be tuned away
     later; each is a trade with something on the other side.
@@ -421,17 +442,55 @@ def _families_inside(text: str, run: re.Match[str], *, room: int) -> list[Secret
        whose pattern requires spaces. It costs little: a real PEM key's base64
        payload is long, mixed-case and near-uniform, so the generic family reports
        the body even when the header is unreachable.
-    3. *A candidate-class tail longer than* :data:`_MAX_TOKEN_CHARS` *inside one
-       run.* The bounded repetition exhausts before the run's end, the lookahead
-       never succeeds, and the match is lost -- ``sk-<hex40>`` followed by a
-       kebab tail past 255 characters goes unreported, reproduced through the real
-       CLI at the default ``block``. That is the direction the ReDoS budget was
-       already traded in, and the cap is not moved here to buy it back.
-    4. *The rescan is leftmost-greedy and non-overlapping within the run.*
-       ``backup-xoxb-<digits>-sk-<hex40>`` reports one ``slack-token``, and the
-       ``sk-`` credential inside the span that match consumed is not reported
-       separately. Under ``block`` the refusal still fires; under ``warn`` the
-       published list undercounts what the run holds.
+    3. *An inner match must end where its family's trailing lookahead admits, and
+       for two families that is only the run's end.* This is geometry, derivable
+       from :data:`_PATTERN_FAMILIES` and not a property of any input: a family
+       whose lookahead class equals :data:`_CANDIDATE_CLASS` cannot end anywhere
+       inside a maximal run, because every interior position is followed by a
+       character its lookahead forbids. Measured 2026-08-25 over every candidate
+       character, that is ``openai-api-key`` and ``google-api-key``; the other four
+       end at a character their lookahead omits (``-`` for ``aws-access-key-id``,
+       ``github-token`` and ``stripe-secret-key``, ``_`` for ``slack-token``). Two
+       different losses follow from the one cause:
+
+       * ``openai-api-key`` repeats up to :data:`_MAX_TOKEN_CHARS`, so it is lost
+         once the distance from ``sk-`` to the run's end exceeds
+         ``len("sk-") + 255`` = 258. Measured 2026-08-25: a run of 258 characters
+         from ``sk-`` reports, 259 reports nothing.
+       * ``google-api-key`` repeats a *fixed* ``{35}``, so its match ends 39
+         characters after ``AIza`` and its lookahead admits nothing but the run's
+         end. **Any** trailing candidate-class character loses the family --
+         measured for ``x``, ``-`` and ``_`` alike.
+
+       **Losing the family is not always losing the finding**, and the difference
+       is the generic gate. This function only runs on runs
+       :func:`_looks_like_a_secret` refused, so *within its domain* a lost family
+       is silence: both cases above measure ``[]``. Where the gate passes instead,
+       the generic family reports the run and the loss costs precision rather than
+       the finding -- ``AIza<35>-x`` reports ``high-entropy-token``, and through the
+       real CLI at the default ``block`` that proposal is **refused**, not accepted.
+       Silence for ``google-api-key`` therefore needs a run its own characters do
+       not carry past the gate; measured examples are a digit-free key with a letter
+       tail, and a key with a long repetitive or all-lower-case tail, each of which
+       scans to ``[]``.
+
+       Both are pre-existing behaviour, not something the rescan introduced. For
+       ``openai-api-key`` the cap is the ReDoS budget this module's own cost
+       reasoning spends, so it is not moved here. **For ``google-api-key`` that
+       excuse does not apply and should not be offered:** its repetition is fixed,
+       so it consumes no backtracking budget, and the round-two adversarial review
+       measured that narrowing its lookahead to ``(?![0-9A-Za-z])`` costs no new
+       false positives over 9.5M characters and no measurable time. That is a
+       change worth making on its own, deliberately not made in the change that
+       recorded it.
+    4. *A match is leftmost-greedy and non-overlapping, at either pass, so a
+       credential inside a span another match consumed is not reported.* In the
+       rescan, ``backup-xoxb-<digits>-sk-<hex40>`` reports one ``slack-token`` and
+       not the ``sk-`` credential inside it. The outer pass has the same face and
+       had it before this module grew a rescan: ``sk-<hex40>-ghp_<36>`` reports one
+       ``openai-api-key``, and the GitHub token inside the span it consumed is
+       never reported, though it reports on its own. Under ``block`` the refusal
+       still fires; under ``warn`` the published list under-reports.
     5. *The digit gate*, in both directions -- see :func:`_carries_a_digit`.
     """
     recovered: list[SecretFinding] = []
@@ -459,18 +518,28 @@ def _carries_a_digit(matched: str) -> bool:
 
     A digit separates the two populations here. Measured the same day, six of the
     seven declared families' fixtures carry one -- every family that can match
-    inside a candidate run -- and every example above carries none.
-    The one digit-less fixture is ``private-key-block``, which can never match
-    inside a candidate run at all (its pattern requires spaces), so the gate costs
-    that family nothing.
+    inside a candidate run -- and in each example above it is the family's *matched
+    substring* that carries none. The surrounding text is not the test and often
+    does have digits: ``i18n`` and the leading ULID both do, while the substrings
+    ``sk-locale-and-translation-notes`` and ``sk-localisation-notes-for-the-site``
+    do not. The one digit-less fixture is ``private-key-block``, which can never
+    match inside a candidate run at all (its pattern requires spaces), so the gate
+    costs that family nothing.
 
     Both directions cost something, and both are accepted rather than unnoticed:
 
     * A real credential whose recovered match happens to carry no ASCII digit is
-      dropped. Unquantified deliberately -- the 0.065% digit-free rate recorded in
-      ``test_secret_detector.py`` is for a 43-character ``token_urlsafe`` draw and
-      is not this population, so borrowing it would be a measurement that was never
-      taken.
+      dropped, and **the rate is per family rather than one number** -- it falls
+      with the token's length and rises with the share of letters in the issuer's
+      alphabet. Round two's adversarial review simulated 200,000 draws per family
+      against *assumed* issuer alphabets (2026-08-25): about 0.02% for a 48-character
+      alphanumeric OpenAI legacy key, about 1.4% for a 24-character Stripe legacy
+      key, and about 3.6% for a 16-character AWS id under a base32 ``[A-Z2-7]``
+      assumption. The alphabets are assumptions, not published formats, so read
+      these as an order of magnitude: percent-level for the short-token families,
+      negligible for the long ones. (The 0.065% figure in
+      ``test_secret_detector.py`` is a different population -- a 43-character
+      ``token_urlsafe`` draw -- and is not what this gate costs.)
     * A digit-*bearing* English-ish slug still reports: ``...-sk-ingest-primary-
       2026q1`` is a false positive this gate does not catch. Bounded by measurement
       rather than by argument -- zero findings across every committed migration
