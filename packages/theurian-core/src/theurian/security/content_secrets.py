@@ -31,9 +31,12 @@ follow from that and are deliberate:
   class rather than ``\\b``. ``\\b`` is asymmetric about the ``-`` that base64url
   ends with, and -- the reason that matters here -- a greedy class followed by
   ``\\b`` backtracks one character at a time over a run this input controls.
-  Every pattern below terminates in a negative lookahead over its own class, so
-  the maximal match satisfies it immediately and, at the *end of a run*, no
-  alternative is tried.
+  Every pattern below that ends in a repetition terminates in a negative
+  lookahead over that repetition's own class, so the maximal match satisfies it
+  immediately and, at the *end of a run*, no alternative is tried.
+  ``private-key-block`` is the exception and needs no lookahead: it ends in the
+  literal ``-----``, which is bounded by construction and has nothing to
+  backtrack over.
 * The scan is linear in the body's length, and stays linear now that a refused
   candidate is scanned a second time. A body reaches this function through
   ``read_source_file``, so it is at most ``MAX_SOURCE_FILE_BYTES``; an unbounded
@@ -53,25 +56,35 @@ follow from that and are deliberate:
   =========================================== ========== ==========
   8 MiB input                                 before     after
   =========================================== ========== ==========
-  one run of ``a`` (nothing to find inside)      0.279 s    0.801 s
-  254,200 runs of 32 ``a``                       0.471 s    0.871 s
-  one run of ``xoxb-`` repeated                  0.282 s    5.729 s
-  one run of ``sk-`` repeated (worst measured)   0.282 s    8.685 s
+  one run of ``a`` (nothing to find inside)      0.280 s    0.811 s
+  254,200 runs of 32 ``a``                       0.489 s    0.887 s
+  one run of ``xoxb-`` repeated                  0.282 s    5.721 s
+  one run of ``sk-`` repeated (worst measured)   0.287 s    8.678 s
   =========================================== ========== ==========
 
   The last row is the shape an adversary would pick: ``\\bsk-`` is satisfied at
   every third character, and each of those starts pays the bounded
   :data:`_MAX_TOKEN_CHARS` rejection the paragraph above prices. It is a constant
   factor, not a new complexity class -- the same input at 1, 2, 4 and 8 MiB cost
-  1.083, 1.082, 1.093 and 1.093 seconds per MiB, a spread of 1.0% across three
+  1.088, 1.082, 1.090 and 1.088 seconds per MiB, a spread of 0.7% across three
   doublings. **Nothing shaped like a real body pays it**: this repository's
-  largest committed knowledge body, 132,811 characters, measured 0.0181 s before
-  and 0.0182 s after, because the cost lands only on runs the heuristic refuses
+  largest committed knowledge body, 132,811 characters, measured 0.0185 s before
+  and 0.0186 s after, because the cost lands only on runs the heuristic refuses
   and only where a family's anchor is repeatedly satisfied inside one. The
   ceiling is 8 MiB and ``propose accept`` is a local, interactive command, so a
   bounded ~9 s on a body crafted to provoke it is a recorded cost rather than a
   denial of service; a scan that silently misses a credential behind an ordinary
   ``staging-`` prefix is the worse trade.
+
+  **Every figure above is per body, and the accept path multiplies it.**
+  ``proposal_service``'s ``_scan_for_secrets`` calls this once per body file plus
+  once over the migration document's own fields, and neither the schema's
+  ``operations`` array nor the service bounds how many bodies one proposal
+  carries -- so the accept-path total is that per-body cost times the number of
+  bodies. Measured 2026-08-25, eight scans of a 2 MiB body in the worst-case
+  ``sk-`` shape above: 17.36 s. Same reckoning as that row -- a local,
+  interactive command, recorded rather than bounded, and the bound that does
+  exist is ``MAX_SOURCE_FILE_BYTES`` on each body rather than on their number.
 
 **A finding never carries the secret.** It names the family, where the match
 starts, and at most :data:`REDACTED_PREFIX_CHARS` leading characters. A refusal
@@ -125,7 +138,17 @@ _MAX_TOKEN_CHARS: Final = 255
 
 #: The characters a base64url credential is spelled in, as a regex class. Used
 #: for both the candidate itself and for the lookarounds that bound it.
+#:
+#: **ASCII, where ``\\b`` is Unicode-aware.** The two disagree about what precedes
+#: a run in Japanese prose, which is why :func:`_families_inside` bounds a search
+#: over the document instead of matching a slice of it.
 _CANDIDATE_CLASS: Final = r"[A-Za-z0-9_-]"
+
+#: What :func:`_carries_a_digit` counts. Spelled out rather than left to
+#: ``str.isdigit``, which is ``True`` for Devanagari and fullwidth digits: nothing
+#: in :data:`_CANDIDATE_CLASS` reaches it today, and a gate that changes meaning
+#: when that class does is a gate nobody re-reads.
+_ASCII_DIGITS: Final = frozenset("0123456789")
 
 #: How long a run of those characters has to be before it is worth judging. The
 #: floor and the regex's ``{32,}`` are one definition, because the remainder test
@@ -364,44 +387,113 @@ def _families_inside(text: str, run: re.Match[str], *, room: int) -> list[Secret
     the durable pin: the per-run ceiling, and ``room`` being the *remaining* room
     rather than the whole of it.
 
-    **Matching the substring is the same as matching that offset in the document,
-    and that is a property of the run rather than a hope.** ``run`` is maximal in
-    :data:`_CANDIDATE_CLASS` (the generic family's lookarounds make it so), so the
-    character before it is outside that class and therefore not a word character:
-    a leading ``\\b`` decides the same way at the substring's first position as it
-    does in the document. Every family's trailing negative lookahead is over a
-    subset of the same class, so it succeeds at the substring's end and equally at
-    the run's end in the document, where the next character is outside the class
-    too.
+    **The rescan bounds a search over the whole document; it does not match a
+    slice of it, and the difference is a false-positive class.** ``pos`` and
+    ``endpos`` restrict where a match may begin and end while leaving the engine
+    able to read ``text[pos - 1]``, so ``\\b`` and any lookbehind still answer
+    against the *document*. Slicing throws that character away and fabricates a
+    word boundary at position 0 -- and ``\\b`` is Unicode-aware where
+    :data:`_CANDIDATE_CLASS` is ASCII, so a run preceded by a non-ASCII word
+    character has no boundary in the document and gained one in a slice. Measured
+    2026-08-25 on the slicing version: ``監視対象sk-ingest-pipeline-primary-2026q1``
+    reported an ``openai-api-key`` that the same text does not contain. That it is
+    a class rather than one example is the round-one adversarial review's
+    measurement, recorded here as theirs: 1,680 fabricated-boundary matches over
+    7,312 non-ASCII-preceded runs, against none over 5,551 ASCII-preceded ones.
+    Ordinary Japanese prose, under a ``block`` policy, refused for a credential
+    that is not there.
 
-    What that leaves unreached is a family glued straight onto candidate-class
-    characters with no boundary at all -- ``stagingsk-<hex40>`` reports nothing,
-    where ``staging-sk-<hex40>`` reports an ``openai-api-key``. Reaching it means
-    matching a family's prefix at an arbitrary offset, which reports ``risk-``,
-    ``task-`` and ``disk-`` as credentials. That is the residual, named by its
-    cause and accepted: SEC-11 disclaims completeness, and a control that refuses
-    ordinary kebab-case prose gets switched off.
+    ``endpos`` is doing work too, and not only truncation: it is what lets each
+    family's trailing negative lookahead succeed at the run's end, and what stops
+    a family whose literals reach outside :data:`_CANDIDATE_CLASS` from matching
+    across the run's boundary into text the outer pass will scan on its own.
+
+    **What this cannot reach, by root cause.** None is a miss to be tuned away
+    later; each is a trade with something on the other side.
+
+    1. *No word boundary before the family's prefix in the document.* ASCII glue
+       (``stagingsk-<hex40>``) and non-ASCII glue (``証sk-<hex40>``) are one member,
+       not two -- the second is what the fix above correctly stops reporting.
+       Reaching either means matching a prefix at an arbitrary offset, which
+       reports ``risk-``, ``task-`` and ``disk-`` as credentials.
+    2. *A family whose pattern needs characters outside* :data:`_CANDIDATE_CLASS`
+       *can never match inside a run.* Today that is ``private-key-block`` alone,
+       whose pattern requires spaces. It costs little: a real PEM key's base64
+       payload is long, mixed-case and near-uniform, so the generic family reports
+       the body even when the header is unreachable.
+    3. *A candidate-class tail longer than* :data:`_MAX_TOKEN_CHARS` *inside one
+       run.* The bounded repetition exhausts before the run's end, the lookahead
+       never succeeds, and the match is lost -- ``sk-<hex40>`` followed by a
+       kebab tail past 255 characters goes unreported, reproduced through the real
+       CLI at the default ``block``. That is the direction the ReDoS budget was
+       already traded in, and the cap is not moved here to buy it back.
+    4. *The rescan is leftmost-greedy and non-overlapping within the run.*
+       ``backup-xoxb-<digits>-sk-<hex40>`` reports one ``slack-token``, and the
+       ``sk-`` credential inside the span that match consumed is not reported
+       separately. Under ``block`` the refusal still fires; under ``warn`` the
+       published list undercounts what the run holds.
+    5. *The digit gate*, in both directions -- see :func:`_carries_a_digit`.
     """
     recovered: list[SecretFinding] = []
-    for inner in _SPECIFIC_SCANNER.finditer(run.group()):
+    for inner in _SPECIFIC_SCANNER.finditer(text, run.start(), run.end()):
         if len(recovered) >= room:
             break
-        recovered.append(
-            _finding_at(text, run.start() + inner.start(), _matched_family(inner), inner.group())
-        )
+        if not _carries_a_digit(inner.group()):
+            continue
+        recovered.append(_finding_at(text, inner.start(), _matched_family(inner), inner.group()))
     return recovered
+
+
+def _carries_a_digit(matched: str) -> bool:
+    """Whether ``matched`` holds an ASCII digit, which recovered matches must.
+
+    **The rescan reaches inside runs that are mostly English**, and a kebab-case
+    identifier is where its families' prefixes turn up by accident: measured
+    2026-08-25, ``website/src/lib/i18n-sk-locale-and-translation-notes.ts``,
+    ``backlog/task-sk-review-the-ranking-heuristics.md`` and the product's own
+    ``<ulid>-add-sk-localisation-notes-for-the-site.yaml`` were each reported as an
+    ``openai-api-key``. The internal ``-`` is a real document boundary, so the
+    ``pos``-based search above is right to find them and cannot be what refuses
+    them. Under the default ``block`` that refuses a credential-free proposal and
+    tells its author to rotate a secret that does not exist.
+
+    A digit separates the two populations here. Measured the same day, all seven
+    declared families' fixtures carry one and every example above carries none.
+    The one digit-less fixture is ``private-key-block``, which can never match
+    inside a candidate run at all (its pattern requires spaces), so the gate costs
+    that family nothing.
+
+    Both directions cost something, and both are accepted rather than unnoticed:
+
+    * A real credential whose recovered match happens to carry no ASCII digit is
+      dropped. Unquantified deliberately -- the 0.065% digit-free rate recorded in
+      ``test_secret_detector.py`` is for a 43-character ``token_urlsafe`` draw and
+      is not this population, so borrowing it would be a measurement that was never
+      taken.
+    * A digit-*bearing* English-ish slug still reports: ``...-sk-ingest-primary-
+      2026q1`` is a false positive this gate does not catch. Bounded by measurement
+      rather than by argument -- zero findings across every committed migration
+      document, filename, knowledge body and body path (:func:`_looks_like_a_secret`
+      records that sweep).
+
+    **Recovered matches only.** The outer pass is deliberately left alone: it
+    already reports a short top-level ``sk-`` shape such as
+    ``x.sk-locale-and-translation-notes``, and it did so before this module grew a
+    rescan. That is a pre-existing class with its own trade, and quietly changing
+    it here would hide a behaviour change inside a false-positive fix.
+    """
+    return any(char in _ASCII_DIGITS for char in matched)
 
 
 def _finding_at(text: str, start: int, family: str, matched: str) -> SecretFinding:
     """One finding for ``matched``, whose first character is at ``start`` in ``text``.
 
-    The offset is absolute, which is what lets a finding recovered from inside a
+    Both passes hand it a document offset directly -- the rescan searches ``text``
+    under ``pos``/``endpos`` rather than a substring, so there is no run-relative
+    arithmetic to get wrong. That is what lets a finding recovered from inside a
     candidate run point at the credential rather than at the run that hid it: a
     reader sent to the run's start finds ``staging-`` and reads the report as
-    noise. A candidate run holds no ``\\n`` -- it is not in
-    :data:`_CANDIDATE_CLASS` -- so an inner match's line is the run's line and its
-    column is the run's column plus its offset, which is exactly what counting
-    from ``start`` computes without a special case.
+    noise.
     """
     return SecretFinding(
         family=family,
