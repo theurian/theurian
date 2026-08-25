@@ -812,6 +812,15 @@ def _service_path(context: SetupContext) -> str:
 
 
 def probe_daemon_running(context: SetupContext) -> SetupStep:
+    """Whether anything healthy answers on the one address this run probes.
+
+    ``context.health()`` asks ``127.0.0.1:<port>`` and nothing else, so every
+    sentence here names that address. "No daemon is running" was a claim about
+    the whole machine drawn from one probe of one port, and it is wrong in the
+    state operators actually hit: a daemon serving this data directory on
+    *another* port holds ``daemon.lock``, so `doctor` sent the reader to start a
+    second one that ``theurian daemon start`` then refuses as a duplicate (#93).
+    """
     if context.health() is not None:
         return SetupStep(
             step_id=StepId.DAEMON_RUNNING,
@@ -822,7 +831,10 @@ def probe_daemon_running(context: SetupContext) -> SetupStep:
         return SetupStep(
             step_id=StepId.DAEMON_RUNNING,
             status=StepStatus.NOT_APPLICABLE,
-            summary="No daemon is running, and this platform has no service manager.",
+            summary=(
+                f"Nothing is answering on 127.0.0.1:{context.port}, and this platform "
+                f"has no service manager."
+            ),
             detail="Start it with `theurian daemon start --foreground`.",
         )
     return SetupStep(
@@ -859,13 +871,24 @@ def probe_single_instance(context: SetupContext) -> SetupStep:
     Never repairs. Two daemons on one data directory is a state to report, not
     one to resolve by killing something that may belong to another session
     (ADR-0002).
+
+    **The silent arm says outright what it did not look at**, and this step is
+    where that matters most, because duplicate daemons are its whole subject. "No
+    daemon is running, so there is nothing to be duplicated" is exactly the
+    conclusion one silent port does not support: a second daemon serving this
+    data directory on another port holds its lock and answers a different
+    address, and this check never asked (#93).
     """
     health = context.health()
     if health is None:
         return SetupStep(
             step_id=StepId.SINGLE_INSTANCE,
             status=StepStatus.NOT_APPLICABLE,
-            summary="No daemon is running, so there is nothing to be duplicated.",
+            summary=(
+                f"Nothing is answering on 127.0.0.1:{context.port}, so single-instance "
+                f"cannot be assessed from here. A daemon serving this data directory on "
+                f"another port would not be seen by this check."
+            ),
         )
 
     running_dir = str(health.get("dataDir", ""))
@@ -1176,12 +1199,19 @@ def probe_mcp_health(context: SetupContext) -> SetupStep:
     Never critical: a Theurian whose knowledge is built and whose daemon runs is
     useful even if this machine's Claude Code cannot reach it yet, and reporting
     that in ``degraded`` beats halting everything that did work (§6.1).
+
+    The third member of #93's class, and the same evidence as the other two: one
+    call to ``context.health()`` against one address, so the sentence names the
+    address rather than concluding anything about the machine.
     """
     if context.health() is None:
         return SetupStep(
             step_id=StepId.MCP_HEALTH,
             status=StepStatus.NOT_APPLICABLE,
-            summary="No daemon is running, so the MCP endpoint cannot be checked.",
+            summary=(
+                f"Nothing is answering on 127.0.0.1:{context.port}, so the MCP endpoint "
+                f"cannot be checked."
+            ),
         )
     return SetupStep(
         step_id=StepId.MCP_HEALTH,
