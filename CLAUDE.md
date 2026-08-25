@@ -30,8 +30,9 @@ is correct. Splitting implementation from judgement is what makes a round mean
 anything.
 
 What the orchestrator keeps: deciding what to assign, to whom and in what order;
-writing each brief — scope, requirement IDs, ADRs, known-unfinished; **verifying
-returned work by running it, never by reading it**; weighing findings against the
+writing each brief — scope, requirement IDs, ADRs, known-unfinished, and the
+observable families that apply (see *The review round*); **verifying returned
+work by running it, never by reading it**; weighing findings against the
 severity rules below; relaying results to the user.
 
 Two narrow exceptions, both stated in the response when used:
@@ -234,10 +235,8 @@ Each brief must carry, explicitly:
 - the diff scope (`git diff main...HEAD`) and the files that matter
 - the requirement IDs and ADRs the change touches
 - what is *known* to be unfinished, so the reviewer spends its time elsewhere
-- the observable families that apply to this change — chosen from the family
-  table in *A finding is closed by a closure argument, not by a fix*, plus any
-  change-specific ones — so the implementer designs and tests against them
-  *before* round one
+- the observable families the implementation brief enumerated — the claims the
+  implementation says it already covers, handed over to be attacked
 
 **The family list binds the implementer, not the adversarial reviewer.** The
 reviewer receives it as the set of claims the implementation says it already
@@ -250,18 +249,19 @@ assigned, not when it is reviewed.
 
 **An enumerated family is the implementer's to hold, and recurrence burns in.**
 A round-one finding on a family the brief enumerated is an implementation-stage
-failure, not a review success — record it as such. When the same specialist is
-caught on the same family twice, that family is written into the specialist's
-agent definition (`.claude/agents/<specialist>.md`), so every future instance is
-born knowing it. Implementer agents are stateless: recurrence is a defect of the
-definition, not of the instance, and the definition is where learning lives. The
-loop this closes: a reviewer discovers a new family → the standing table; the
-brief selects the applicable ones per change; a repeat against the same
-specialist → that specialist's own definition. Known families sink upstream, and
-review stays aimed at what nobody enumerated.
+failure, not a review success — record it as one in the PR's round comment. When
+the same specialist is caught on the same family twice, that family is written
+into the **implementing** specialist's agent definition
+(`.claude/agents/theurian-{python,tests,docs,mcp,ci}.md` — never a reviewer's),
+so every future instance is born knowing it. Implementer agents are stateless:
+recurrence is a defect of the definition, not of the instance, and the
+definition is where learning lives. The loop this closes: a reviewer discovers
+a new family → the standing table; the brief selects the applicable ones per
+change; a repeat against the same specialist → that specialist's own definition.
+Known families sink upstream, and review stays aimed at what nobody enumerated.
 
-Do not write these briefs from memory each time — the agent definitions hold the
-standing context; the brief adds only what is specific to this change.
+Do not write these review briefs from memory each time — the agent definitions
+hold the standing context; the brief adds only what is specific to this change.
 
 ### Round one is full; later rounds are not
 
