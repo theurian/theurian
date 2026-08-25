@@ -28,7 +28,9 @@ injected by the composition root, and these tests inject
 
 from __future__ import annotations
 
+import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -52,6 +54,10 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 #: loading through the product's own call. Copied rather than probed in place,
 #: so nothing here can write into the repository's own tree.
 SAMPLE_PROJECT = REPO_ROOT / "examples" / "sample-project"
+
+#: The offline CI job runs as root, where `chmod 0o000` denies nothing and a
+#: deny-mode test measures the opposite of what it says.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
 #: Distinctive enough that no assertion passes on a coincidental substring. It
 #: goes in *key* position of an unparseable document, because that is the shape
@@ -234,7 +240,7 @@ def test_a_directory_holding_only_yml_files_reports_the_loaders_own_enumeration(
     assert step.summary == "0 migration(s) parse and validate."
 
 
-# -- Arms that must not read anything ----------------------------------------
+# -- The one arm that reads nothing ------------------------------------------
 
 
 def _must_not_be_called(root: Path) -> MigrationsCheck:
@@ -249,19 +255,105 @@ def test_outside_a_git_repository_nothing_is_loaded(tmp_path: Path) -> None:
     assert step.summary == "Not inside a Git repository."
 
 
-def test_a_project_with_no_migrations_directory_loads_nothing(tmp_path: Path) -> None:
+def test_a_project_with_no_migrations_directory_is_asked_of_the_checker_too(
+    tmp_path: Path,
+) -> None:
     """The state right after `theurian init` in a repository that has none.
 
-    Asserted with a checker that raises rather than by reading the summary
-    alone: "no migrations directory" and "a migrations directory that loads
-    zero" are different sentences, and the difference is whether the step went
-    to the disk. `doctor` runs on every setup, and a load is the most expensive
-    thing on this step's path.
+    The checker *is* called here, and that is the change: an ``is_dir()`` ahead
+    of it was a second discovery predicate the loader does not share, and the
+    three tests below measure where the two disagreed. The wording still splits
+    -- "no migrations directory" and "a migrations directory that loads zero"
+    are different things to be told -- but the split is now made *after* the
+    loader has had its say, so it can only choose between two green sentences.
+
+    The checker asserts it was reached rather than being the stub, or this test
+    would pass for a probe that had kept the gate.
     """
     root = tmp_path / "repo"
     (root / ".theurian").mkdir(parents=True)
+    asked: list[Path] = []
 
-    step = probe_migrations(_context(tmp_path, root, check_migrations=_must_not_be_called))
+    def _recording(checked: Path) -> MigrationsCheck:
+        asked.append(checked)
+        return MigrationsCheck(count=0, failure=None)
 
+    step = probe_migrations(_context(tmp_path, root, check_migrations=_recording))
+
+    assert asked == [root], "the loader, not a second predicate, decides the verdict"
     assert step.status is StepStatus.NOT_APPLICABLE
     assert step.summary == "No migrations directory yet."
+
+
+# -- Where the pre-gate and the loader disagreed ------------------------------
+
+
+def test_a_dangling_migrations_symlink_is_a_refusal_and_not_an_absent_directory(
+    tmp_path: Path,
+) -> None:
+    """Measured: ``not-applicable`` from `doctor`, exit 4 from `migrate validate`.
+
+    ``is_dir()`` follows the link and answers False for a dangling one, so the
+    probe reported "No migrations directory yet." for a tree the loader refuses
+    with ``MigrationsDirectoryUnreadableError``. That is #91's divergence in the
+    one shape #91's own fix reintroduced: `doctor` exits 0 for a project every
+    ``theurian migrate`` stops on.
+    """
+    root = tmp_path / "repo"
+    (root / ".theurian").mkdir(parents=True)
+    ProjectPaths.of(root).migrations.symlink_to(tmp_path / "nowhere")
+
+    step = probe_migrations(_context(tmp_path, root))
+
+    assert step.status is StepStatus.MISSING
+    assert step.summary == f"The migrations in {ProjectPaths.of(root).migrations} do not validate."
+    assert step.detail.startswith("MigrationsDirectoryUnreadableError: ")
+
+
+def test_a_migrations_symlink_loop_is_a_refusal_and_not_an_absent_directory(
+    tmp_path: Path,
+) -> None:
+    """The same split through ``ELOOP`` rather than ``ENOENT``.
+
+    A separate test rather than a parameter of the one above, because the two
+    reach ``is_dir()``'s False through different errnos -- both of which pathlib
+    swallows -- and a fix that special-cased only the dangling link would still
+    call this converged.
+    """
+    root = tmp_path / "repo"
+    (root / ".theurian").mkdir(parents=True)
+    migrations = ProjectPaths.of(root).migrations
+    migrations.symlink_to(migrations)
+
+    step = probe_migrations(_context(tmp_path, root))
+
+    assert step.status is StepStatus.MISSING
+    assert step.summary == f"The migrations in {migrations} do not validate."
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="chmod denies nothing to root")
+def test_a_theurian_directory_that_denies_traversal_is_a_refusal_the_step_reports(
+    tmp_path: Path,
+) -> None:
+    """The third split, and the one the gate did not merely get wrong but *escaped*.
+
+    ``is_dir()`` raises ``PermissionError`` on ``EACCES`` -- pathlib ignores
+    ``ENOENT``, ``ENOTDIR``, ``EBADF`` and ``ELOOP``, and not this -- so the
+    exception was raised *before* the checker ran, outside the
+    ``_MIGRATION_REFUSALS`` net the composition root wraps the load in. It
+    reached the reader through ``SetupService._probe`` as CONFLICTING "Could not
+    check migrations-valid", which stops setup to ask for consent, on a tree
+    ``migrate validate`` simply refuses. Asking the checker first turns it back
+    into the verdict it is.
+    """
+    root = tmp_path / "repo"
+    (root / ".theurian" / "migrations").mkdir(parents=True)
+    (root / ".theurian").chmod(0o000)
+    try:
+        step = probe_migrations(_context(tmp_path, root))
+    finally:
+        (root / ".theurian").chmod(0o700)
+
+    assert step.status is StepStatus.MISSING
+    assert step.summary == f"The migrations in {ProjectPaths.of(root).migrations} do not validate."
+    assert step.detail.startswith("MigrationsDirectoryUnreadableError: ")

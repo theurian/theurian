@@ -1244,9 +1244,37 @@ def probe_migrations(context: SetupContext) -> SetupStep:
     the published JSON Schemas and the application layer does not reach for the
     infrastructure loader (ADR-0003).
 
-    **Neither not-applicable arm calls it.** A load is the most expensive thing
-    on this step's path and `doctor` runs it on every invocation, so a repository
-    with no migrations directory says so without going to the disk.
+    **Static validation only.** These are the checks over the *files*: parse,
+    schema, ``contentFile`` containment, the ``contentSha256`` pins, application
+    order, and the three whole-set guards. FR-K5's history verification -- an
+    already-``APPLIED`` migration edited since the state database recorded its
+    checksum -- is *not* among them. ``migrate validate`` reaches that through
+    ``_require_project``, which opens the previously active state database
+    (``_verify_history``); this step has no project context and opens no
+    database, so a tampered applied migration is invisible here and reported by
+    ``theurian migrate validate`` alone. Issue #366 owns whether `doctor` should
+    reach it.
+
+    **The checker decides the verdict, and nothing is asked ahead of it.** An
+    ``is_dir()`` pre-gate was a second discovery predicate the loader does not
+    share, and the two disagreed wherever a directory entry exists and cannot be
+    read: a dangling ``.theurian/migrations`` symlink and a symlink loop both
+    reported ``not-applicable`` -- "No migrations directory yet." -- while
+    ``migrate validate`` exited 4 on the same tree, and a ``.theurian`` denying
+    traversal made ``is_dir()`` raise ``PermissionError`` *before* the checker
+    ran, so the refusal never reached ``_MIGRATION_REFUSALS`` and the reader got
+    "Could not check migrations-valid" instead (three measured splits). What the
+    gate saved does not pay for that: the whole checker call against a repository
+    with no migrations directory measures ~0.14 ms, the load inside it 0.016 ms,
+    because ``load_migrations`` answers an absent directory with an empty set
+    rather than reading anything.
+
+    The ``is_dir()`` that remains chooses **between two green wordings only** --
+    "No migrations directory yet." against "0 migration(s) parse and validate."
+    -- and it is reached only once the checker has returned without a failure. A
+    disagreement between it and the loader can no longer make `doctor` green
+    where ``migrate validate`` refuses, because every refusal now raises through
+    the checker first.
 
     A refusal quotes the author's own file, and that is not Theurian's to publish
     (O-3, SEC-6): :func:`failure_detail` puts the message on the operator's
@@ -1260,29 +1288,28 @@ def probe_migrations(context: SetupContext) -> SetupStep:
             summary="Not inside a Git repository.",
         )
     paths = ProjectPaths.of(root)
-    if not paths.migrations.is_dir():
+    check = context.check_migrations(root)
+    if check.failure is not None:
+        # MISSING rather than CONFLICTING: there is nothing of the operator's
+        # here to consent past -- setup neither edits migrations nor would if it
+        # were allowed to -- only a file whose author has to fix it.
+        return SetupStep(
+            step_id=StepId.MIGRATIONS_VALID,
+            status=StepStatus.MISSING,
+            summary=f"The migrations in {paths.migrations} do not validate.",
+            action="Fix the file it names; `theurian migrate validate` prints the full refusal.",
+            detail=failure_detail(check.failure, for_publication=context.for_publication),
+        )
+    if check.count == 0 and not paths.migrations.is_dir():
         return SetupStep(
             step_id=StepId.MIGRATIONS_VALID,
             status=StepStatus.NOT_APPLICABLE,
             summary="No migrations directory yet.",
         )
-
-    check = context.check_migrations(root)
-    if check.failure is None:
-        return SetupStep(
-            step_id=StepId.MIGRATIONS_VALID,
-            status=StepStatus.SATISFIED,
-            summary=f"{check.count} migration(s) parse and validate.",
-        )
-    # MISSING rather than CONFLICTING: there is nothing of the operator's here to
-    # consent past -- setup neither edits migrations nor would if it were allowed
-    # to -- only a file whose author has to fix it.
     return SetupStep(
         step_id=StepId.MIGRATIONS_VALID,
-        status=StepStatus.MISSING,
-        summary=f"The migrations in {paths.migrations} do not validate.",
-        action="Fix the file it names; `theurian migrate validate` prints the full refusal.",
-        detail=failure_detail(check.failure, for_publication=context.for_publication),
+        status=StepStatus.SATISFIED,
+        summary=f"{check.count} migration(s) parse and validate.",
     )
 
 
