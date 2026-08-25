@@ -946,9 +946,11 @@ class ProposalService:
           are published on every ``knowledge.search`` and ``knowledge.get``
           result, so a credential in one reaches an agent that never opens a
           body. An ``upsertRevision``'s ``contentFile`` is one of them: its
-          *parsed* value is the one channel that catches a credential in a
-          ``..``-removed path segment or spelled with YAML escapes, which the two
-          path-shaped channels below each miss (#349).
+          *parsed* value is the one channel that catches a credential both in a
+          ``..``-removed path segment *and* spelled with YAML escapes -- the
+          migration bytes below catch a plainly-spelled traversal, the landed
+          path catches an escaped credential in a segment that survives
+          resolution, and only the parsed value sees the two at once (#349).
           :func:`_authored_strings` is the population and why it is that one;
         * **the migration file's own bytes**, which is what lands in
           ``.theurian/migrations/`` verbatim. It covers what no parse survives --
@@ -962,14 +964,18 @@ class ProposalService:
           ``destination.parent.mkdir(parents=True)``, so every component becomes
           a real directory in the tree.
 
-        **No channel subsumes the parsed field values, and none is redundant.** A
-        double-quoted YAML scalar spells any character as ``\\xNN``, so a token
-        can sit in a parsed value -- a metadata field, or a ``contentFile`` --
-        while the bytes hold only three-character runs no family matches; and a
-        body's landed path is the *resolved* one, from which ``..`` can drop the
-        very segment a ``contentFile`` credential sits in, leaving it a subset of
-        the parsed value rather than a superset. Every direction is pinned by
-        tests.
+        **No channel subsumes the parsed field values.** A double-quoted YAML
+        scalar spells any character as ``\\xNN``, so a token can sit in a parsed
+        value -- a metadata field, or a ``contentFile`` -- while the bytes hold
+        only escape runs no family matches. The landed-path channel and the
+        parsed ``contentFile`` are *complementary* rather than one a subset of
+        the other: ``..`` resolution can drop the very segment a credential sits
+        in, while ``.resolve()`` following an in-tree symlink can equally
+        substitute a component the authored string never spelled, so each scans
+        text the other can miss. In the ordinary case their detection overlaps,
+        and the landed-path channel is kept for its distinct *location* -- the
+        resolved tree path a reviewer opens -- rather than for a detection unique
+        to it. Both are pinned by their own tests.
 
         **One token may be reported by more than one channel, and that is the
         choice made here.** A ``contentFile`` naming a credential is reported
@@ -2853,11 +2859,13 @@ def _upsert_bodies(document: Mapping[str, object]) -> Iterable[tuple[str, str | 
 #: ``contentFile`` is *scanned*, not excluded, and its parsed value is why: the
 #: review of #349 found that neither artifact channel beside it covers what that
 #: value does. ``..`` resolution can drop the very path segment a credential sits
-#: in, so the resolved landed path is a strict *subset* of what the author wrote
-#: rather than a superset; and a double-quoted YAML scalar spells any character as
-#: ``\\xNN``, so the migration's raw bytes carry only escape runs no family
-#: matches while the loader parses out the decoded credential. The parsed value is
-#: the one place both are visible, so ``contentFile`` sits in
+#: in, so the resolved landed path is not a superset of what the author wrote --
+#: nor strictly a subset of it, since ``.resolve()`` on an in-tree symlink can
+#: substitute a component the string never spelled; and a double-quoted YAML
+#: scalar spells any character as ``\\xNN``, so the migration's raw bytes carry
+#: only escape runs no family matches while the loader parses out the decoded
+#: credential. The parsed value is the one place both are visible, so
+#: ``contentFile`` sits in
 #: :data:`_AUTHORED_OPERATION_FIELDS`. A secret-shaped path that backs no file
 #: never reaches acceptance: ``_body_moves`` refuses it first.
 #:

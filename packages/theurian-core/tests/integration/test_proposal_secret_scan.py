@@ -40,6 +40,7 @@ from theurian.application.project_service import ProjectPaths, initialize_projec
 from theurian.application.proposal_service import (
     _AT_BODY_CONTENT,
     _AT_BODY_PATH,
+    _AT_MIGRATION_BYTES,
     _AT_MIGRATION_NAME,
     _AUTHORED_ANCHOR_FIELDS,
     _AUTHORED_METADATA_FIELDS,
@@ -3522,4 +3523,54 @@ def test_a_landed_path_finding_is_located_by_the_landed_path_channel(
         f"no finding is located by the landed-path channel -- its literal is blanked or the "
         f"channel's yield is gone, and the field and bytes reports carry no landed-path pointer: "
         f"{sorted(locations)}"
+    )
+
+
+def test_a_body_content_finding_is_located_by_the_body_content_channel(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A body-content finding names *the content of body[N]*, and means it (adversarial MEDIUM).
+
+    The gap the two channel-location tests above left. Every sibling channel
+    literal is pinned by a *hardcoded* string, but ``_AT_BODY_CONTENT`` was only
+    ever asserted through the imported constant
+    (``test_warn_lands_the_body_and_reports_what_it_found``), so blanking it to
+    ``"x"`` moved that expectation with the mutation and survived the whole suite.
+    A location an author cannot forge is the whole point of #360's fixed literal;
+    an unpinned one is a location that says nothing when it is wrong.
+
+    Hardcoded, not the imported ``_AT_BODY_CONTENT``: a test built on the constant
+    reddens for no mutation of it. ``warn`` so the finding rides out on the success
+    result. The index suffix is part of the literal a body-content location wears
+    (:data:`_AT_BODY_PATH` and the metadata channels below carry one; the two name
+    channels do not), so it is asserted with the finding, not stripped off it.
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+
+    accepted = _accept(service, paths, LEAKY_BODY)
+
+    locations = {finding.location for finding in accepted.secret_scan.findings}
+    assert "the content of body[0]" in locations, (
+        f"the leaky body's finding is not located by the body-content channel literal, so a "
+        f"reader cannot tell which artifact to open: {sorted(locations)}"
+    )
+
+
+def test_the_four_base_channel_literals_are_mutually_distinct() -> None:
+    """No artifact channel wears another channel's location literal (adversarial MEDIUM).
+
+    The blanking mutation the test above kills names *nothing*; this kills the
+    sharper one it exposed -- a channel that names *another* channel. Colliding
+    ``_AT_BODY_CONTENT`` with ``_AT_MIGRATION_NAME`` survives every location test,
+    because a body-content location carries a ``[N]`` index suffix: the collided
+    ``"the migration filename[0]"`` is never ``== "the migration filename"``, so
+    ``test_a_body_content_finding_never_spoofs_the_migration_filename_channel``'s
+    ``_AT_MIGRATION_NAME not in locations`` stays green -- which is exactly the
+    HIGH-2 spoof this PR closed, walked back in one edit. Pinned over the constants
+    directly, because a channel wearing another's literal misdirects a reviewer
+    whatever suffix the finding carries.
+    """
+    literals = (_AT_BODY_CONTENT, _AT_BODY_PATH, _AT_MIGRATION_BYTES, _AT_MIGRATION_NAME)
+    assert len(set(literals)) == len(literals), (
+        f"two artifact channels share a location literal, so one spoofs the other: {literals}"
     )
