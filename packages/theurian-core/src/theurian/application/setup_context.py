@@ -19,6 +19,28 @@ from theurian.domain.ports.secret_store import SecretStore
 
 
 @dataclass(frozen=True, slots=True)
+class MigrationsCheck:
+    """What a project's migration set turned out to be, once something read it.
+
+    Two fields rather than a raised exception, because the step reporting this
+    has to publish a verdict for a refusal as well as for a healthy set: a probe
+    that let the failure escape would reach the reader as
+    ``SetupService._probe``'s generic "Could not check migrations-valid" and lose
+    the sentence written for it.
+    """
+
+    #: How many migrations were loaded. The loader's own enumeration, never a
+    #: second count taken beside it -- `doctor` and `theurian migrate validate`
+    #: reporting different numbers for the same directory is the defect #91 is
+    #: about.
+    count: int
+    #: ``None`` when the set loads and passes the static guards `theurian
+    #: migrate validate` runs. Otherwise whatever refused it, so the step can
+    #: publish the type and withhold the message (:func:`failure_detail`).
+    failure: Exception | None
+
+
+@dataclass(frozen=True, slots=True)
 class SetupContext:
     """Everything the steps operate on."""
 
@@ -46,6 +68,14 @@ class SetupContext:
     #: invoke it. A relative name would resolve against launchd's PATH, which is
     #: not the user's.
     executable: str
+    #: Loads and validates a project's migration set, given the repository root.
+    #: Injected from the CLI composition root because the application layer must
+    #: not import the infrastructure loader (ADR-0003) -- the same reasoning as
+    #: :attr:`health`, and for the same reason it is **not defaulted**: a probe
+    #: falling back to "nothing to check" would report ``satisfied`` on every
+    #: machine whose composition root forgot to wire it, which is #91 wearing a
+    #: different hat.
+    check_migrations: Callable[[Path], MigrationsCheck]
     #: True when this run's output is bound for somewhere the operator does not
     #: control: ``doctor --report``, which exists to be pasted into a public
     #: issue.

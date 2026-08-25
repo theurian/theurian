@@ -1084,8 +1084,34 @@ def probe_mcp_health(context: SetupContext) -> SetupStep:
 
 
 def probe_migrations(context: SetupContext) -> SetupStep:
-    """Reports; never repairs. Migrations are Git-tracked authored content, and
-    setup has no business editing them (§6.2 row 16)."""
+    """Runs the static validation `theurian migrate validate` runs; never repairs.
+
+    Migrations are Git-tracked authored content, and setup has no business
+    editing them (§6.2 row 16) -- so no arm here names a path and no arm writes.
+    What changed with #91 is that the step now *opens* them: it counted
+    ``migrations/*.yaml`` and reported ``satisfied`` for any directory at all, so
+    one file of nonsense read as converged while every ``theurian migrate``
+    against that project refused.
+
+    The count is the checker's and never a second enumeration taken beside it.
+    ``glob("*.yaml")`` is not the loader's answer -- a symlinked or unreadable
+    entry is a refusal there rather than a file -- and two commands reporting
+    different numbers for the same directory is the same defect in a quieter
+    form.
+
+    The checker is injected (:attr:`SetupContext.check_migrations`) rather than
+    imported, because loading a migration set means reading YAML off disk against
+    the published JSON Schemas and the application layer does not reach for the
+    infrastructure loader (ADR-0003).
+
+    **Neither not-applicable arm calls it.** A load is the most expensive thing
+    on this step's path and `doctor` runs it on every invocation, so a repository
+    with no migrations directory says so without going to the disk.
+
+    A refusal quotes the author's own file, and that is not Theurian's to publish
+    (O-3, SEC-6): :func:`failure_detail` puts the message on the operator's
+    terminal and the type name in a shared report.
+    """
     root = context.project_root
     if root is None:
         return SetupStep(
@@ -1100,11 +1126,23 @@ def probe_migrations(context: SetupContext) -> SetupStep:
             status=StepStatus.NOT_APPLICABLE,
             summary="No migrations directory yet.",
         )
-    count = len(list(paths.migrations.glob("*.yaml")))
+
+    check = context.check_migrations(root)
+    if check.failure is None:
+        return SetupStep(
+            step_id=StepId.MIGRATIONS_VALID,
+            status=StepStatus.SATISFIED,
+            summary=f"{check.count} migration(s) parse and validate.",
+        )
+    # MISSING rather than CONFLICTING: there is nothing of the operator's here to
+    # consent past -- setup neither edits migrations nor would if it were allowed
+    # to -- only a file whose author has to fix it.
     return SetupStep(
         step_id=StepId.MIGRATIONS_VALID,
-        status=StepStatus.SATISFIED,
-        summary=f"{count} migration(s) found. Run `theurian migrate validate` to check them.",
+        status=StepStatus.MISSING,
+        summary=f"The migrations in {paths.migrations} do not validate.",
+        action="Fix the file it names; `theurian migrate validate` prints the full refusal.",
+        detail=failure_detail(check.failure, for_publication=context.for_publication),
     )
 
 

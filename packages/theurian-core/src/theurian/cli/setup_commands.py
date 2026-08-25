@@ -30,16 +30,28 @@ import platform
 import shutil
 import sys
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 
 import typer
 
 from theurian import __version__
-from theurian.application.setup_context import SetupContext
+from theurian.application.migration_alias_guards import refuse_alias_item_id_collision
+from theurian.application.migration_body_guards import refuse_duplicate_content_files
+from theurian.application.migration_engine import refuse_unenforceable_scope
+from theurian.application.project_service import ProjectPaths
+from theurian.application.setup_context import MigrationsCheck, SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
+from theurian.cli.context import schema_root
 from theurian.daemon.instance import DEFAULT_PORT, probe_health
+from theurian.domain.errors import (
+    InputTooLargeError,
+    MigrationError,
+    PathEscapeError,
+    SchemaUnreadableError,
+)
 from theurian.domain.setup import SetupError, SetupState
 from theurian.infrastructure.claude.mcp_config import ClaudeCodeMcpConfig, ConnectionSpec
+from theurian.infrastructure.filesystem.migration_loader import load_migrations
 from theurian.infrastructure.secrets.file_store import FileSecretStore, default_data_dir
 from theurian.infrastructure.services import detect_manager
 from theurian.security.env_file import TOKEN_KEY
@@ -94,8 +106,55 @@ def build_context(
         health=lambda: probe_health(port=port),
         service=detect_manager(executable=_executable(), home=home),
         executable=_executable(),
+        check_migrations=_check_migrations,
         for_publication=for_publication,
     )
+
+
+#: What `migrate validate` refuses a migration set with, as the roots that cover
+#: it. ``MigrationError`` carries the loader's parse, schema, containment and
+#: ordering refusals along with the three guard errors below it in the hierarchy;
+#: ``PathEscapeError`` carries the depth cap; the other two have their own roots.
+#: Anything outside this set is a bug rather than a verdict about the files, and
+#: it reaches the reader through ``SetupService._probe`` as "Could not check
+#: migrations-valid" -- a conflict, not a claim that the migrations are wrong.
+_MIGRATION_REFUSALS: Final = (
+    MigrationError,
+    PathEscapeError,
+    InputTooLargeError,
+    SchemaUnreadableError,
+)
+
+
+def _check_migrations(root: Path) -> MigrationsCheck:
+    """Load and statically validate a project's migrations, the way `validate` does.
+
+    The composition root's half of #91: the probe reports the verdict, this makes
+    the same call ``cli/context.resolve_context`` makes and then runs the three
+    whole-set guards ``migrate validate`` runs over the loaded set. Anything the
+    two commands can disagree about is a `doctor` that exits 0 for a project
+    where every ``theurian migrate`` refuses.
+
+    The guards are called directly rather than through ``cli/commands``'
+    ``_refuse_*`` wrappers, which ``_fail`` to the terminal and exit: a probe has
+    to come back with a verdict, and a step that terminated the process would
+    take the other eighteen with it.
+
+    **``paths.root``, never the ``root`` that arrived.** ``ProjectPaths.of``
+    resolves symlinks -- macOS ``/var`` is ``/private/var`` -- so handing
+    ``load_migrations`` a resolved migrations directory beside an unresolved
+    project root makes its own containment check raise ``ValueError: ... is not
+    in the subpath``, which is neither a refusal nor a verdict (measured).
+    """
+    paths = ProjectPaths.of(root)
+    try:
+        loaded = load_migrations(paths.root, paths.migrations, schema_root())
+        refuse_unenforceable_scope(loaded.migration_set)
+        refuse_duplicate_content_files(loaded.migration_set)
+        refuse_alias_item_id_collision(loaded.migration_set)
+    except _MIGRATION_REFUSALS as exc:
+        return MigrationsCheck(count=0, failure=exc)
+    return MigrationsCheck(count=len(loaded.migration_set), failure=None)
 
 
 def _executable() -> str:
@@ -168,8 +227,8 @@ def setup_command(
     artifact-integrity, serving-profile, single-instance, project-registered,
     project-layout, gitignore, mcp-health, migrations-valid, initial-index,
     serena-detection. Several of them name the command that does the work
-    instead -- `theurian init`, `theurian project register` -- and setup runs
-    none of them.
+    instead -- `theurian init`, `theurian project register`, `theurian migrate
+    validate` -- and setup runs none of them.
     """
     service = SetupService(build_context(port=port))
     report = service.run(SetupRequest(dry_run=dry_run, approve_conflicts=approve_conflicts))

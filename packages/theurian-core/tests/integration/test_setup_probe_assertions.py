@@ -35,6 +35,7 @@ from typing import Final
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
+from setup_migrations import unchecked_migrations
 
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_steps import (
@@ -64,6 +65,7 @@ def _context(
         health=lambda: None,
         service=FakeService(),
         executable=executable,
+        check_migrations=unchecked_migrations,
     )
 
 

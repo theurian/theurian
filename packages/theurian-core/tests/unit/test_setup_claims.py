@@ -55,6 +55,7 @@ from typing import Final
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
+from setup_migrations import unchecked_migrations
 from typer.testing import CliRunner
 
 from theurian.application import setup_steps
@@ -258,6 +259,7 @@ def _context(tmp_path: pathlib.Path, *, executable: str = "") -> SetupContext:
         health=lambda: None,
         service=FakeService(),
         executable=executable,
+        check_migrations=unchecked_migrations,
     )
 
 
