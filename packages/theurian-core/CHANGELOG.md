@@ -12,6 +12,56 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Security
+
+- **The accept-path secret scan covers the artifacts an acceptance lands, not
+  only the fields it parses**
+  ([#349](https://github.com/theurian/theurian/issues/349), SEC-11, ADR-0027
+  decision 3; T-15 in [the threat model](../../docs/security/threat-model.md)).
+  dev11 widened the scan from the bodies alone to the migration document's
+  author-written field *values*; a credential could still ride in on text those
+  values do not contain. `theurian propose accept` now scans everything the
+  acceptance would land, under the same `security.secretScan` policy — `block`
+  by default, `warn` and `off` unchanged:
+
+  - **the migration file's raw bytes**, which land in `.theurian/migrations/`
+    verbatim — so a YAML **comment** (a rotation note naming the retired value)
+    and every field *as written* are read, not only what a parse keeps;
+  - **the migration filename**, whose slug after the ULID prefix is the
+    contributor's on a hand-authored proposal and appears in no field;
+  - **the parsed `contentFile` value**, now part of the author-written field
+    walk — the one channel that catches a credential that is both `..`-collapsed
+    *and* spelled with YAML `\xNN` escapes, which the byte channel and the
+    landed-path channel each miss on their own;
+  - **each landed body's path** relative to `.theurian/knowledge/`, directory
+    components included, since `accept` makes every component a real directory.
+
+  **A finding never reproduces the value it reports.** Every finding location is
+  a fixed module literal plus an index — never the author's filename, path or
+  body text — so a `block` refusal and an `accept --json` result quote at most
+  the four-character redaction prefix. This closes the last finding-location
+  channel that was still built from scanned text.
+
+  **What this does not do.** The filename channel reaches only two credential
+  families in practice: a migration slug is `[a-z0-9]+(-[a-z0-9]+)*`, so only
+  `openai-api-key` (`sk-`) and `slack-token` (`xox`) can be spelled in one —
+  `aws-access-key-id` and `google-api-key` need an upper-case letter, and
+  `github-token` and `stripe-secret-key` need `_` (measured 2026-08-26 over
+  400,000 legal filenames). The less-restricted body-path channel reaches all
+  five. The detector is still best effort, and Theurian is still not a
+  repository secret scanner. No false positives over the 82 documents of the
+  dogfood migration corpus on any channel, the parsed `contentFile` included.
+
+  **Two residuals, tracked rather than closed.** Refusal *messages* elsewhere on
+  the accept path still echo an author's migration filename, id or `contentFile`
+  verbatim (≈6 sites), and the `accept --json` `bodyFiles` success field prints
+  landed paths at full length — a general name-hygiene channel, pre-existing and
+  non-disclosing, tracked in
+  [#360](https://github.com/theurian/theurian/issues/360). A proposal's
+  `evidence.json` still travels into the pull request unscanned, because
+  `accept` leaves the rest of the proposal directory where it is and instructs
+  committing it ([#361](https://github.com/theurian/theurian/issues/361)).
+
 ## [0.1.0.dev11] - 2026-08-25
 
 ### Added
