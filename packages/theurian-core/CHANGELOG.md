@@ -194,14 +194,21 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   reports nothing now, while the same slug behind an ASCII boundary still does.
   `endpos` does a different job and is not the mirror of `pos`: it truncates the
   right, so a lookahead genuinely cannot see past it, and what it is there for is
-  confinement. Without it the first refused run's rescan runs on to the end of the
-  document and reports a *later* run's credential too, at that run's offset — a
-  duplicate, and out of the document order `scan_text` publishes. The trailing
-  lookaheads succeed at a run's end because the run is maximal in the candidate
-  class, not because `endpos` is there. Only *refused* candidates are re-examined:
-  a run that clears the heuristic is already reported as `high-entropy-token`, and
-  reporting it again under an inner family would make one value two findings at
-  two positions.
+  confinement. It buys two things. Without it the first refused run's rescan runs
+  on to the end of the document and reports a *later* run's credential too, at
+  that run's offset — a duplicate, and out of the document order `scan_text`
+  publishes. And it is what actually holds member 2 below for
+  `private-key-block`, the one family whose *body* leaves the candidate class
+  rather than only its lookahead: a match there can begin inside a run and end
+  past it, so no lookahead argument covers it. On
+  `staging-deployment-secrets-----BEGIN RSA PRIVATE KEY-----`, whose run the gate
+  refuses, the bounded rescan finds nothing while an unbounded one finds a
+  `private-key-block` running from 26 to 57, well past the run that admitted it.
+  The trailing lookaheads themselves succeed at a run's end because the run is
+  maximal in the candidate class, not because `endpos` is there. Only *refused*
+  candidates are re-examined: a run that clears the heuristic is already reported
+  as `high-entropy-token`, and reporting it again under an inner family would make
+  one value two findings at two positions.
 
   **A recovered match must also carry an ASCII digit.** Reaching inside a refused
   run reaches inside text that is mostly English, which is where a family's prefix
@@ -213,7 +220,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   and is refused anyway, because what matched is `sk-locale-and-translation-notes`.
   Six of the seven declared families' fixture credentials carry a digit — every
   family that can match inside a candidate run; the seventh, `private-key-block`,
-  needs spaces and never matches inside a run anyway. The gate applies to
+  needs spaces and never matches within a run anyway. The gate applies to
   *recovered* matches only — the outer pass is left exactly as it was, so this is
   a false-positive fix and not a quiet change to what a top-level match reports.
 
@@ -228,29 +235,47 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   (`証sk-<40 hex>`) are one residual and not two, and reaching either means
   matching a prefix at an arbitrary offset, which reports `risk-`, `task-` and
   `disk-` as credentials. (2) *A family whose pattern needs characters outside the
-  candidate class can never match inside a run* — today only `private-key-block`,
-  which costs little, because a real PEM key's payload is long and mixed-case and
-  the generic family reports it. (3) *An inner match must end where its family's
-  trailing lookahead admits, and for two families that is only the run's end* —
-  geometry, derivable from the patterns and not a property of any input: a family
-  whose lookahead class *equals* the candidate class can never end inside a
-  maximal run, because every interior position is followed by a character its
-  lookahead forbids. Measured over all 64 candidate characters, that is
-  `openai-api-key` and `google-api-key`; the other four end at a `-` or a `_`
-  their lookahead omits. The two lose it differently. `openai-api-key` repeats up
-  to 255, so it is lost once the **distance from `sk-` to the run's end** exceeds
-  `len("sk-") + 255` = 258 — 258 reports, 259 does not, and the credential's own
-  body counts toward that distance exactly as a trailing slug does.
-  `google-api-key` repeats a fixed `{35}`, so **any** glued candidate-class
-  character loses it, with no exhaustion involved. **Losing the family is not
-  always losing the finding:** where the generic gate passes, the run is still
-  reported as `high-entropy-token` and `block` still refuses — `AIza<35>-x`
-  measures exactly that, so what is lost there is precision. Silence needs a run
-  the gate itself refuses, such as a digit-free key with a letter tail or a key
-  with an all-lower-case tail. For `openai-api-key` the cap is the ReDoS budget
-  this module spends elsewhere and is not moved to buy the family back; for
-  `google-api-key` there is no such excuse, since a fixed repetition consumes no
-  backtracking budget and narrowing that lookahead measured free —
+  candidate class can never match within a run* — today only `private-key-block`,
+  whose body leaves the class and which `endpos` is what stops from ending past
+  the run; it costs little, because a real PEM key's payload is long and
+  mixed-case and the generic family reports it. (3) *A credential inside a run is
+  reached only if its family can end where the run lets it, from a distance the
+  family can span* — two independent properties of the patterns, and reading
+  either one alone puts a family in the wrong bucket. **Where a match may end** is
+  the trailing lookahead: one that admits exactly the candidate class leaves only
+  the run's end, which measured over all 64 candidate characters is
+  `openai-api-key` and `google-api-key`; the other four also end at a character
+  their lookahead omits — `-` and `_` for `aws-access-key-id`, `github-token` and
+  `stripe-secret-key`, `_` for `slack-token`. **How far it reaches** is the
+  repetition: a *fixed* count has exactly one end offset — `aws-access-key-id`
+  matches 20 characters and `google-api-key` 39, always — while an *open* one
+  reaches `len(prefix) + 255`, which is 258 for `openai-api-key`, 259 for
+  `github-token`, 260 for `slack-token` and 263 for `stripe-secret-key`. The four
+  quadrants, each measured: *fixed and equal* (`google-api-key`) loses the family
+  to **all 64** glue characters, so any glue at all; *fixed and strict-subset*
+  (`aws-access-key-id`) to **62 of 64**, only `-` and `_` surviving — two
+  characters, not a difference of kind, which is exactly what reading the lookahead
+  column alone got wrong about this family here; *open and equal*
+  (`openai-api-key`) reports at 258 from `sk-` and is silent at 259, the
+  credential's own body spending that distance as readily as a trailing slug; and
+  *open and strict-subset* (`github-token`, `slack-token`, `stripe-secret-key`)
+  needs either an omitted delimiter — which reaches the family through a
+  400-character tail — or the run's end within reach, measured at 259/260,
+  260/261 and 263/264.
+  **Losing the family is not always losing the finding:** where the generic gate
+  passes, the run is still reported as `high-entropy-token` and `block` still
+  refuses, so what is lost is precision — `AIza<35>-x` measures exactly that.
+  Silence needs a run the credential's own characters do not carry past the gate: a
+  *low-entropy* tail, or a run with no digit at all. **Lower case is not the
+  property.** An AWS key followed by twenty-four *identical* lower-case characters
+  scans to nothing — the module records that acceptance landing through the real
+  CLI at the default `block` — while twenty-four *distinct* ones after the same key
+  clear the entropy floor and are reported. For the *open* families the reach is
+  the ReDoS budget this module spends elsewhere and is not moved to buy them back;
+  for the two *fixed* families there is no such excuse, since a fixed count
+  consumes no backtracking budget at all — narrowing `google-api-key`'s lookahead
+  measured free, and would move it into `aws-access-key-id`'s quadrant, from 64
+  killing characters to 62, which is
   [#356](https://github.com/theurian/theurian/issues/356). (4) *A match is
   leftmost-greedy and non-overlapping at either pass, so a credential inside a
   span another match consumed is not reported* — in the rescan,
