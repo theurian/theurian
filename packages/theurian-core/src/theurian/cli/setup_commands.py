@@ -45,6 +45,7 @@ from theurian.cli.context import schema_root
 from theurian.daemon.instance import DEFAULT_PORT, probe_health
 from theurian.domain.errors import (
     InputTooLargeError,
+    IrregularSourceFileError,
     MigrationError,
     PathEscapeError,
     SchemaUnreadableError,
@@ -114,14 +115,26 @@ def build_context(
 #: What `migrate validate` refuses a migration set with, as the roots that cover
 #: it. ``MigrationError`` carries the loader's parse, schema, containment and
 #: ordering refusals along with the three guard errors below it in the hierarchy;
-#: ``PathEscapeError`` carries the depth cap; the other two have their own roots.
-#: Anything outside this set is a bug rather than a verdict about the files, and
-#: it reaches the reader through ``SetupService._probe`` as "Could not check
-#: migrations-valid" -- a conflict, not a claim that the migrations are wrong.
+#: ``PathEscapeError`` carries the depth cap; the other three have their own
+#: roots. Anything outside this set is a bug rather than a verdict about the
+#: files, and it reaches the reader through ``SetupService._probe`` as "Could not
+#: check migrations-valid" -- a conflict, not a claim that the migrations are
+#: wrong.
+#:
+#: **The membership question is "does `migrate validate` refuse on it", never
+#: "does ``load_migrations`` document it".** ``IrregularSourceFileError`` is the
+#: case that separates the two: it is raised by ``read_source_file`` for a
+#: ``contentFile`` that is a FIFO, socket or device (#215), re-raised by the
+#: loader's ``_parse_upsert``, and named in ``cli/commands.py`` as a load-path
+#: refusal -- while ``load_migrations``' own ``Raises`` omitted it. Taking that
+#: docstring as the population left the one symbol uncaught, so `doctor` demanded
+#: consent for "Could not check migrations-valid" on a directory `migrate
+#: validate` simply refuses: #91's divergence surviving inside #91's own fix.
 _MIGRATION_REFUSALS: Final = (
     MigrationError,
     PathEscapeError,
     InputTooLargeError,
+    IrregularSourceFileError,
     SchemaUnreadableError,
 )
 

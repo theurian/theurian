@@ -1163,6 +1163,13 @@ def load_migrations(
             :class:`~theurian.domain.errors.EscapeSite` for why that claim
             cannot be made here.
         InputTooLargeError: If a file exceeds its size limit.
+        IrregularSourceFileError: If an ``upsertRevision`` operation's
+            ``contentFile`` names a file whose ``st_size`` bounds nothing -- a
+            FIFO, a socket, a device (issue #215) -- raised by
+            :func:`~theurian.security.paths.read_source_file` and re-raised by
+            :func:`_parse_upsert` with the migration file as its referrer.
+            Absent from this list until a caller read the list as the population
+            of refusals and left the one symbol uncaught (#91).
         MigrationsDirectoryUnreadableError: If ``migrations_dir`` cannot be
             probed or listed for a reason other than genuinely not existing --
             a parent that denies traversal, the directory itself denying
