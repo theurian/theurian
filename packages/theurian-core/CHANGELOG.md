@@ -182,31 +182,40 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
   **A refused candidate is now searched again with the specific families alone,
   over the document and not over a copy of the run.** The second pass bounds
-  `finditer` with `pos` and `endpos`, which restrict where a match may begin and
-  end while still letting `\b` and every lookaround read the surrounding text. A
-  slice would not: it throws away the character before the run and fabricates a
-  word boundary at its own position 0 — and `\b` is Unicode-aware where the
-  candidate class is ASCII, so a run preceded by a non-ASCII word character has no
-  boundary in the document and gains one in a slice. Measured against the slicing
-  version this branch first carried, ordinary Japanese prose —
+  `finditer` with `pos` and `endpos`. `pos` is what carries the boundary: it
+  restricts where a match may begin while leaving `\b` and any lookbehind reading
+  the character *before* it. A slice does not — it throws that character away and
+  fabricates a word boundary at its own position 0, and `\b` is Unicode-aware
+  where the candidate class is ASCII, so a run preceded by a non-ASCII word
+  character has no boundary in the document and gains one in a slice. Measured
+  against the slicing version this branch first carried, ordinary Japanese prose —
   `監視対象sk-ingest-pipeline-primary-2026q1` — reported an `openai-api-key` the
   text does not contain, refusing a clean proposal under the default `block`. It
   reports nothing now, while the same slug behind an ASCII boundary still does.
-  Only *refused* candidates are re-examined: a run that clears the heuristic is
-  already reported as `high-entropy-token`, and reporting it again under an inner
-  family would make one value two findings at two positions.
+  `endpos` does a different job and is not the mirror of `pos`: it truncates the
+  right, so a lookahead genuinely cannot see past it, and what it is there for is
+  confinement. Without it the first refused run's rescan runs on to the end of the
+  document and reports a *later* run's credential too, at that run's offset — a
+  duplicate, and out of the document order `scan_text` publishes. The trailing
+  lookaheads succeed at a run's end because the run is maximal in the candidate
+  class, not because `endpos` is there. Only *refused* candidates are re-examined:
+  a run that clears the heuristic is already reported as `high-entropy-token`, and
+  reporting it again under an inner family would make one value two findings at
+  two positions.
 
   **A recovered match must also carry an ASCII digit.** Reaching inside a refused
   run reaches inside text that is mostly English, which is where a family's prefix
   turns up by accident: `i18n-sk-locale-and-translation-notes` and
   `task-sk-review-the-ranking-heuristics` were each reported as an
   `openai-api-key`, refusing a proposal that carries no credential and telling its
-  author to rotate a secret that does not exist. Every specific family that can
-  match inside a candidate run has a digit-bearing fixture credential; the one
-  that cannot, `private-key-block`, needs spaces and never matches inside a run
-  anyway. The gate applies to *recovered* matches only — the outer pass is left
-  exactly as it was, so this is a false-positive fix and not a quiet change to
-  what a top-level match reports.
+  author to rotate a secret that does not exist. The test is the family's *matched
+  substring*, not the run around it: the first of those carries a digit in `i18n`
+  and is refused anyway, because what matched is `sk-locale-and-translation-notes`.
+  Six of the seven declared families' fixture credentials carry a digit — every
+  family that can match inside a candidate run; the seventh, `private-key-block`,
+  needs spaces and never matches inside a run anyway. The gate applies to
+  *recovered* matches only — the outer pass is left exactly as it was, so this is
+  a false-positive fix and not a quiet change to what a top-level match reports.
 
   Findings recovered this way are charged against the same `max_findings` ceiling
   as the outer pass, because one refused run can hold many inner matches: forty
@@ -221,28 +230,53 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `disk-` as credentials. (2) *A family whose pattern needs characters outside the
   candidate class can never match inside a run* — today only `private-key-block`,
   which costs little, because a real PEM key's payload is long and mixed-case and
-  the generic family reports it. (3) *A candidate-class tail past the 255-character
-  repetition cap* — the bounded repetition exhausts before the run ends, the
-  trailing lookahead never succeeds, and `sk-<40 hex>` followed by a long kebab
-  tail goes unreported; that is the direction the ReDoS budget was already traded
-  in, and the cap is not moved to buy it back. (4) *The inner pass is
-  leftmost-greedy and non-overlapping* — `backup-xoxb-<digits>-sk-<40 hex>` reports
-  one `slack-token` and not the `sk-` credential inside the span that match
-  consumed; under `block` the refusal still fires, under `warn` the published list
-  undercounts. (5) *The digit gate itself, in both directions* — a real credential
-  whose recovered match happens to carry no digit is dropped, and a digit-bearing
-  English-ish slug (`staging-sk-ingest-pipeline-primary-2026q1`) still reports.
-  This bounds the gate [#336](https://github.com/theurian/theurian/issues/336)
-  widened rather than adding one: the detector is still best effort, and SEC-11
-  still disclaims being a complete secret scanner.
+  the generic family reports it. (3) *An inner match must end where its family's
+  trailing lookahead admits, and for two families that is only the run's end* —
+  geometry, derivable from the patterns and not a property of any input: a family
+  whose lookahead class *equals* the candidate class can never end inside a
+  maximal run, because every interior position is followed by a character its
+  lookahead forbids. Measured over all 64 candidate characters, that is
+  `openai-api-key` and `google-api-key`; the other four end at a `-` or a `_`
+  their lookahead omits. The two lose it differently. `openai-api-key` repeats up
+  to 255, so it is lost once the **distance from `sk-` to the run's end** exceeds
+  `len("sk-") + 255` = 258 — 258 reports, 259 does not, and the credential's own
+  body counts toward that distance exactly as a trailing slug does.
+  `google-api-key` repeats a fixed `{35}`, so **any** glued candidate-class
+  character loses it, with no exhaustion involved. **Losing the family is not
+  always losing the finding:** where the generic gate passes, the run is still
+  reported as `high-entropy-token` and `block` still refuses — `AIza<35>-x`
+  measures exactly that, so what is lost there is precision. Silence needs a run
+  the gate itself refuses, such as a digit-free key with a letter tail or a key
+  with an all-lower-case tail. For `openai-api-key` the cap is the ReDoS budget
+  this module spends elsewhere and is not moved to buy the family back; for
+  `google-api-key` there is no such excuse, since a fixed repetition consumes no
+  backtracking budget and narrowing that lookahead measured free —
+  [#356](https://github.com/theurian/theurian/issues/356). (4) *A match is
+  leftmost-greedy and non-overlapping at either pass, so a credential inside a
+  span another match consumed is not reported* — in the rescan,
+  `backup-xoxb-<digits>-sk-<40 hex>` reports one `slack-token` and not the `sk-`
+  credential inside it; at the outer pass, which had this face before the module
+  grew a rescan, `sk-<40 hex>-ghp_<36>` reports one `openai-api-key` and never the
+  GitHub token inside the span it consumed, though that token reports on its own.
+  Under `block` the refusal still fires; under `warn` the published list
+  under-reports. (5) *The digit gate itself, in both directions* — a real
+  credential whose recovered match carries no ASCII digit is dropped, at a rate
+  that is per family rather than one number, falling with the token's length and
+  rising with the letter share of the issuer's alphabet: simulated against
+  *assumed* alphabets, ≈0.02% for a 48-character alphanumeric key against a few
+  percent for the short-token families. And a digit-*bearing* English-ish slug
+  (`staging-sk-ingest-pipeline-primary-2026q1`) still reports. This bounds the
+  gate [#336](https://github.com/theurian/theurian/issues/336) widened rather than
+  adding one: the detector is still best effort, and SEC-11 still disclaims being
+  a complete secret scanner.
 
   **The second pass is a constant factor, not a new complexity class — and every
   figure below is per body.** Measured 2026-08-25 on CPython 3.13, paired against
   the pre-fix module: the worst input found — `sk-` repeated to the 8 MiB
   `MAX_SOURCE_FILE_BYTES` ceiling, which satisfies that family's `\bsk-` anchor at
   every third character and yields **no findings at all** — costs ≈8.7 s against
-  0.28 s, and the same input at 1, 2, 4 and 8 MiB costs ≈1.08 s per MiB at every
-  size. Nothing shaped like a real body pays it: this repository's largest
+  0.28 s, and the same input at 1, 2, 4 and 8 MiB costs 1.08–1.09 s per MiB at
+  every size. Nothing shaped like a real body pays it: this repository's largest
   committed knowledge body, 132,811 characters, measures 0.018 s either way,
   because the cost lands only on runs the heuristic refuses and only where a
   family's anchor is repeatedly satisfied inside one. **An acceptance is that
