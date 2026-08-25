@@ -343,13 +343,26 @@ def _families_inside(text: str, run: re.Match[str], *, room: int) -> list[Secret
     ``room`` is how many findings the caller may still take, so the ceiling bounds
     the *total* rather than the outer pass alone. :func:`scan_text`'s own ``break``
     cannot do it: it runs once per outer match, and *one* refused run can hold many
-    inner matches. Measured 2026-08-25 -- a single run of ``sk_live_`` plus sixteen
-    characters plus ``-``, repeated forty times, is one 1,000-character candidate
-    the heuristic refuses and holds forty ``stripe-secret-key`` matches, because
-    that family's repetition class excludes ``-`` and so each match ends at a
-    delimiter that leaves ``\\b`` satisfied for the next. Without this bound that
-    body returns forty findings against a published :data:`MAX_FINDINGS` of twenty,
-    each one paying the ``O(position)`` newline count the ceiling exists to cap.
+    inner matches. Measured 2026-08-25 -- ``staging-`` followed by forty repetitions
+    of ``sk_live_``, sixteen characters and ``-`` is a single 1,008-character
+    candidate the class gate refuses, holding forty ``stripe-secret-key`` matches,
+    because that family's repetition class excludes ``-`` so each match ends at a
+    delimiter that leaves ``\\b`` satisfied for the next. It answers twenty findings
+    at the default :data:`MAX_FINDINGS`, each one paying the ``O(position)`` newline
+    count the ceiling exists to cap.
+
+    **The prefix is what routes that run here at all, and without it the input
+    measures something else.** Leftmost-first gives a run's first position to
+    whichever family matches there, and the specific families are declared before
+    the generic one -- so a run *beginning* with ``sk_live_`` is reported by the
+    stripe branch of the top-level alternation directly, and no candidate is ever
+    refused. Measured the same day: the bare repetition does not reach this function
+    once. Something upstream has to deny the specific family its anchor at the run's
+    start before anything arrives here at all.
+    ``test_the_ceiling_bounds_a_single_failed_candidate_that_hides_many_credentials``
+    and ``test_a_finding_taken_before_a_crowded_run_leaves_that_run_less_room`` are
+    the durable pin: the per-run ceiling, and ``room`` being the *remaining* room
+    rather than the whole of it.
 
     **Matching the substring is the same as matching that offset in the document,
     and that is a property of the run rather than a hope.** ``run`` is maximal in
