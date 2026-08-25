@@ -446,14 +446,32 @@ def apply_token(context: SetupContext) -> None:
 
 
 def probe_token_storage(context: SetupContext) -> SetupStep:
-    """Whether anything but the owner can reach the token (SEC-4).
+    """Which permission bits the token file and its directory grant (SEC-4).
 
     The check is ``st_mode & 0o077 == 0`` on the file and on the directory
     holding it. The satisfied summary used to read "stored 0600 inside a 0700
     directory", which is a *different* claim: a 0400 token passes the check and
     falsifies the sentence, and no mode here was ever compared to 0600 at all.
-    That line is what an operator quotes in a security review, so it now states
-    what was measured.
+
+    **The sentence says permission bits, and claims nothing wider.** "Not
+    accessible to other local users" was the same overclaim one step further
+    out, because mode bits are not the only thing that grants access. A macOS
+    ACL overrides them: a 0600 token carrying a ``group:everyone allow read``
+    entry -- inherited from the directory it was created in, or set by hand with
+    ``chmod +a`` -- reported ``satisfied`` under that wording (measured). This
+    probe never asks for an ACL and cannot say what one would grant, so what it
+    publishes is the thing it measured. That line is what an operator quotes in
+    a security review.
+
+    **Two conflicts, and only one of them is an exposed credential.** A
+    world-accessible *file* has been readable, and tightening the mode restores
+    the permissions rather than the secrecy -- so that arm names `theurian auth
+    rotate`. A file whose own bits are clean inside a directory that grants group
+    or other access is a different fact: the directory's mode never made the
+    token's contents readable, so the remedy is to tighten the directory. Both
+    arms shared the rotation sentence, which told an operator to replace a
+    credential nothing had been able to read -- and named the *file's* mode,
+    0600, as the evidence for it.
     """
     path = context.auth_dir / TOKEN_KEY
     if not path.is_file():
@@ -464,7 +482,7 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
             action="Store the token as a 0600 file inside a 0700 directory.",
             paths=(str(path),),
         )
-    if is_world_accessible(path) or is_world_accessible(context.auth_dir):
+    if is_world_accessible(path):
         return SetupStep(
             step_id=StepId.TOKEN_STORAGE,
             status=StepStatus.CONFLICTING,
@@ -475,10 +493,23 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
                 f"with `theurian auth rotate`."
             ),
         )
+    if is_world_accessible(context.auth_dir):
+        return SetupStep(
+            step_id=StepId.TOKEN_STORAGE,
+            status=StepStatus.CONFLICTING,
+            summary="The token's directory grants group or other access.",
+            detail=(
+                f"{context.auth_dir} is mode "
+                f"{context.auth_dir.stat().st_mode & 0o777:04o}; tighten it with "
+                f"`chmod 0700 {context.auth_dir}`. Rotation is not asked for here: "
+                f"the token file's own bits grant nothing to group or other, so the "
+                f"directory's mode never made its contents readable."
+            ),
+        )
     return SetupStep(
         step_id=StepId.TOKEN_STORAGE,
         status=StepStatus.SATISFIED,
-        summary="The token is not accessible to other local users.",
+        summary="No group or other permission bits are set on the token file or its directory.",
     )
 
 
