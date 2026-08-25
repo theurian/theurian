@@ -831,6 +831,64 @@ def test_the_ceiling_bounds_a_single_failed_candidate_that_hides_many_credential
     )
 
 
+#: The family reported *before* the crowded run in the case below, chosen because
+#: it cannot be confused with what the run holds and cannot be swallowed by one.
+#: ``AKIA`` plus sixteen characters is 20 -- under the candidate floor, so no
+#: generic run exists to consume it and the outer pass reports it directly, taking
+#: one of the ceiling's slots before ``_families_inside`` is reached at all.
+_FINDING_BEFORE_THE_RUN: Final = "aws-access-key-id"
+
+
+def test_a_finding_taken_before_a_crowded_run_leaves_that_run_less_room() -> None:
+    """``max_findings`` is a bound on the returned list, not a per-run allowance.
+
+    ``_families_inside`` is passed ``max_findings - len(findings)``, and the
+    subtraction is the whole of what keeps the published contract: the outer
+    ``break`` is checked *after* the extend, so a run allowed the full ceiling
+    appends past it and ``scan_text`` returns more than the caller asked for. A
+    caller sizing a terminal message or an ``accept --json`` document on
+    ``max_findings`` gets a list longer than the number it set.
+
+    The sibling cases cannot see this. The one above sends the run the whole
+    ceiling legitimately, because nothing was taken first; the one before it plants
+    one credential per line, where every run contributes a single finding and the
+    outer break arrives in time. Only a finding *preceding* a crowded run
+    distinguishes the remaining room from the ceiling -- measured 2026-08-25,
+    mutating the subtraction to ``room = max_findings`` returns four findings here
+    for ``max_findings=3`` and leaves every other case in this file green.
+    """
+    assert 1 < _CEILING_UNDER_TEST < _MATCHES_INSIDE_ONE_RUN, (
+        f"the ceiling has to leave room for the run after the first finding is taken, and the "
+        f"run has to hold more than that remainder; at {_CEILING_UNDER_TEST} against "
+        f"{_MATCHES_INSIDE_ONE_RUN} it does not, so the remaining room is never the binding "
+        f"bound and this case stops being about the subtraction"
+    )
+    assert len(_FAMILY_CREDENTIALS[_FINDING_BEFORE_THE_RUN]) < _MIN_CANDIDATE_CHARS, (
+        f"the preceding credential is now at or over the {_MIN_CANDIDATE_CHARS}-character floor, "
+        f"so it is a candidate run in its own right rather than a finding the outer pass reports "
+        f"outright -- how many slots it takes before the crowded run is reached is no longer the "
+        f"one this case counts on"
+    )
+    body = f"key: {_FAMILY_CREDENTIALS[_FINDING_BEFORE_THE_RUN]}\nkey: {_CROWDED_REFUSED_RUN}\n"
+    first_credential_column = len("key: ") + len(_STAGE_PREFIX) + 1
+    stride = len(_FAMILY_CREDENTIALS["stripe-secret-key"]) + len("-")
+
+    findings = scan_text(body, max_findings=_CEILING_UNDER_TEST)
+
+    assert [(f.family, f.line, f.column) for f in findings] == [
+        (_FINDING_BEFORE_THE_RUN, 1, len("key: ") + 1),
+        *(
+            ("stripe-secret-key", 2, first_credential_column + n * stride)
+            for n in range(_CEILING_UNDER_TEST - 1)
+        ),
+    ], (
+        f"{len(findings)} findings came back for max_findings={_CEILING_UNDER_TEST}: "
+        f"{[(f.family, f.line, f.column) for f in findings]}. One finding was taken before the "
+        f"run, so the run may contribute {_CEILING_UNDER_TEST - 1} -- a run handed the whole "
+        f"ceiling instead appends past it, and the outer `break` only notices afterwards."
+    )
+
+
 #: ``risk-<hex40>``. The letters ``sk`` appear inside a word, and the ``-`` after
 #: them is the same delimiter the ``openai-api-key`` family looks for -- so the
 #: only thing between this and a false positive is that ``\b`` requires a
