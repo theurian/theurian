@@ -27,6 +27,7 @@ from pathlib import Path
 from theurian.application.project_service import ProjectPaths
 from theurian.application.setup_context import MigrationsCheck
 from theurian.cli.context import schema_root
+from theurian.cli.setup_commands import _MIGRATION_REFUSALS
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
 
 
@@ -55,10 +56,18 @@ def checked_by_the_loader(root: Path) -> MigrationsCheck:
     ``cli/commands.py`` over the loaded set, and this helper does not. A
     document those refuse but the loader accepts is therefore *not* covered by
     the tests that use this -- see the report accompanying these tests.
+
+    **The refusal net is production's, imported rather than restated.** This
+    caught ``Exception``, which is wider than the ``_MIGRATION_REFUSALS`` the
+    real ``_check_migrations`` catches -- so a family that escapes production
+    and reaches the operator as CONFLICTING "Could not check migrations-valid"
+    came back through the double as an ordinary MISSING verdict, and no test
+    using this could see the difference. That is #91's divergence living inside
+    the fixture built to measure it.
     """
     paths = ProjectPaths.of(root)
     try:
         loaded = load_migrations(paths.root, paths.migrations, schema_root())
-    except Exception as exc:  # what the probe has to report rather than raise
+    except _MIGRATION_REFUSALS as exc:  # what the probe has to report rather than raise
         return MigrationsCheck(count=0, failure=exc)
     return MigrationsCheck(count=len(loaded.migration_set), failure=None)
