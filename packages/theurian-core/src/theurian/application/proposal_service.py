@@ -114,6 +114,30 @@ EVIDENCE_FILE: Final = "evidence.json"
 #: 50,000 files produced a 600 KB error string in 1.5 s before this bound.
 _MAX_NAMES_LISTED: Final = 5
 
+#: Where a secret-scan finding sits when the text it was found in is an artifact
+#: ``accept`` lands rather than a field of the migration document (#349).
+#:
+#: **Fixed literals, because on these channels the scanned text is a name.** A
+#: location built from the migration's filename or from a body's landed path
+#: would be a verbatim second copy of the credential it reports, in the refusal a
+#: terminal prints and in the ``accept --json`` document something logs -- around
+#: the four-character bound :class:`~theurian.security.content_secrets
+#: .SecretFinding` refuses to be constructed past. The same discipline
+#: :func:`_authored_strings` holds for a document key, for the same reason.
+#:
+#: Prose rather than a dotted path, so a reader does not go looking for a field
+#: of the document by that name: none of the three is one. Each is rendered as
+#: ``<location>:<line>:<column>``, and the position is real -- into the migration
+#: file for the bytes, into the name for the two name channels.
+_AT_MIGRATION_BYTES: Final = "the migration file as written"
+_AT_MIGRATION_NAME: Final = "the migration filename"
+
+#: The landed path of one body, indexed by its position among the bodies the
+#: migration lands -- the order its ``contentFile`` operations appear in. Indexed
+#: because a migration may land several and two of them may both be secret-shaped;
+#: by position rather than by the path, which is the thing being reported.
+_AT_BODY_PATH: Final = "the landed path of body"
+
 #: The errnos a ``chmod`` actually cures, for the accept-path read-failure remedy.
 #: An ``EISDIR``/``ENOTDIR``/``ENAMETOOLONG``/``ELOOP`` is the proposal's own input
 #: at fault, not a permission bit, so prescribing ``chmod`` for it over-claims the
@@ -386,30 +410,37 @@ class MovedFile:
 class ProposalSecretFinding:
     """One secret-shaped string the accept-path scan found, and where it sits.
 
-    ``location`` is one of two spellings, because the scan reads two kinds of
-    input (#336):
+    ``location`` is one of three spellings, because the scan reads three kinds of
+    input (#336, #349):
 
-    * **A body**, named by its path *relative to* ``.theurian/knowledge/``. That
-      is the one spelling correct both before and after the move: a proposal
-      mirrors the sub-path its body will occupy, so the same string names the
-      file in either proposal directory and in ``.theurian/knowledge/``. A
-      refusal happens before the move and a warning after it, and neither has to
-      say which it means -- nor which of the two locations the proposal came
-      from, which is why this spelling survived ADR-0028 unchanged while the
-      refusal's own remedy did not.
+    * **A body's content**, named by the body's path *relative to*
+      ``.theurian/knowledge/``. That is the one spelling correct both before and
+      after the move: a proposal mirrors the sub-path its body will occupy, so
+      the same string names the file in either proposal directory and in
+      ``.theurian/knowledge/``. A refusal happens before the move and a warning
+      after it, and neither has to say which it means -- nor which of the two
+      locations the proposal came from, which is why this spelling survived
+      ADR-0028 unchanged while the refusal's own remedy did not.
     * **A field of the migration document**, named by its path inside that
       document -- ``migration.operations[1].metadata.title``. Every segment is a
       literal this module chose (:func:`_authored_strings`), never a key read
       back out of the document, so an untrusted key cannot ride into the message
       this renders.
+    * **An artifact the acceptance lands**, named by a fixed literal for the
+      channel it came from (:data:`_AT_MIGRATION_BYTES`,
+      :data:`_AT_MIGRATION_NAME`, :data:`_AT_BODY_PATH`). Two of those channels
+      scan a *name*, so a location derived from what was found would republish
+      the credential; the literals say why they are literals.
 
-    The two are told apart by shape rather than by a flag, because nothing acts
-    on the difference: both are printed for a human to go and look at.
+    They are told apart by shape rather than by a flag, because nothing acts on
+    the difference: all are printed for a human to go and look at.
 
     ``finding.line``/``finding.column`` are positions **within the scanned
-    text**. For a body that is the position in the file; for a migration field it
-    is the position in that field's own value, because the document is scanned
-    one value at a time (see :func:`_document_findings` for why).
+    text**. For a body or the migration's own bytes that is the position in the
+    file; for a migration field it is the position in that field's own value,
+    because the document is scanned one value at a time (see
+    :func:`_document_findings` for why); for a filename or a landed path it is
+    the position in that name.
     """
 
     location: str
@@ -789,8 +820,9 @@ class ProposalService:
                 locations -- incomplete,
                 could not be fully examined -- including a directory or a file
                 in it the filesystem refuses to list, stat or read -- names a
-                file the security layer refuses, carries a body or a migration
-                field that appears to contain a secret while
+                file the security layer refuses, would land anything that appears
+                to contain a secret -- a body, a migration field, the migration's
+                own bytes, its filename or a body's path -- while
                 ``security.secretScan`` is ``block``, or
                 would leave the project's migration set unable to apply. Both
                 types above are subclasses, so a caller that catches only this
@@ -852,7 +884,9 @@ class ProposalService:
         # the cheaper order: the scan is a regex pass over bytes already in
         # hand, and the rehearsal copies and replays the project's whole
         # migration set.
-        secret_scan = self._scan_for_secrets(location, document, moves)
+        secret_scan = self._scan_for_secrets(
+            location, migration_file, migration_bytes, document, moves
+        )
 
         # Outside the clause above, deliberately: the pre-check reads every
         # landed migration and body, so its faults are not this proposal's and
@@ -870,10 +904,12 @@ class ProposalService:
     def _scan_for_secrets(
         self,
         location: _ProposalLocation,
+        migration_file: Path,
+        migration_bytes: bytes,
         document: Mapping[str, object],
         moves: tuple[_BodyMove, ...],
     ) -> SecretScanResult:
-        """Scan the bodies and the migration's author-written fields, refusing on the policy.
+        """Scan everything the acceptance would land, refusing on the policy.
 
         The control T-15 names, at the point SEC-11 names it: ``accept`` is the
         last place a proposal can be stopped before a human merges it and
@@ -883,15 +919,59 @@ class ProposalService:
         scanner and is not a replacement for one* -- is unchanged by its
         existence.
 
-        **Two inputs, not one.** The bodies, and the migration document's own
-        author-written field *values* (#336) -- not a YAML comment and not the
-        filename a ``contentFile`` points at, which are the artifact-level face
-        #349 tracks. Scanning bodies alone left the wider channel open: a body is
-        reviewed as a file in a pull request, while a title or a source anchor is
-        skimmed -- and both of those are published on every ``knowledge.search``
-        and ``knowledge.get`` result, so a credential there reaches an agent that
-        never opens the body. :func:`_authored_strings` is the population and why
-        it is that one.
+        **The population is what ``accept`` lands, not what it parses** (#349).
+        ``_commit`` writes bytes to paths; a parse is something this method does
+        on the way. Five inputs, in the order they are scanned:
+
+        * **each body's bytes**, the channel since #198 -- the artifact a
+          reviewer actually opens in a pull request;
+        * **the migration document's author-written field values** (#336),
+          skimmed rather than read, and ``title`` and an anchor's ``sourceUri``
+          are published on every ``knowledge.search`` and ``knowledge.get``
+          result, so a credential in one reaches an agent that never opens a
+          body. :func:`_authored_strings` is the population and why it is that
+          one;
+        * **the migration file's own bytes**, which is what lands in
+          ``.theurian/migrations/`` verbatim. It covers what no parse survives --
+          a YAML comment holding the rotation note that names the retired value,
+          and every field *as written*, ``contentFile`` included;
+        * **the migration's filename**, whose slug after the ULID prefix is the
+          contributor's on a hand-authored proposal and appears nowhere in the
+          bytes; and
+        * **each body's landed path** relative to ``.theurian/knowledge/``,
+          directory components included -- ``_commit`` calls
+          ``destination.parent.mkdir(parents=True)``, so every component becomes
+          a real directory in the tree.
+
+        **The raw bytes do not subsume the field values, and neither is
+        redundant.** A double-quoted YAML scalar spells any character as
+        ``\\xNN``, so a token can sit in the parsed value while the bytes hold
+        only three-character runs no family matches; and the landed path is the
+        *resolved* one, which a ``contentFile`` spelled with the same escapes
+        does not put in the bytes either. Both directions are pinned by tests.
+
+        **One token may be reported by more than one channel, and that is the
+        choice made here.** A ``contentFile`` naming a credential is reported
+        twice, once against the migration's bytes and once against the path it
+        resolves to; a field value spelled plainly is reported against the bytes
+        and against the field. Nothing is deduplicated: the channels answer
+        different questions -- what the file says, what its fields mean, what the
+        tree ends up holding -- and each location sends a reviewer somewhere
+        different. Suppressing the duplicate would need a key over the
+        match, and a finding quotes at most
+        :data:`~theurian.security.content_secrets.REDACTED_PREFIX_CHARS`
+        characters of it: two *different* credentials of one family would collide
+        on that key and one would be dropped. A security control that hides a
+        real finding to tidy a report is the wrong trade, and de-duplicating
+        after the fact would spend budget on findings it then discarded, so the
+        ceiling below would stop meaning "we stopped looking here".
+
+        **The cost is one more pass over the migration.** The bytes are already
+        in hand -- no file is re-read -- but the regex pass over them is paid
+        again, bounded by SEC-8's size cap on that one file, on top of the
+        per-field passes. The two name channels are a few dozen characters each.
+        :mod:`theurian.security.content_secrets` prices the per-input scan and
+        records that the accept-path total is the sum over these inputs.
 
         **The policy is read here rather than injected**, unlike every adapter
         this service takes. ADR-0003's reason for injection is that locating
@@ -910,25 +990,31 @@ class ProposalService:
         accepted -- which surfaces the typo on the first acceptance instead of
         on the first one that happens to carry a body.
 
-        **The policy is read before either input is touched**, which is what
-        makes ``off`` mean what it says. There is no per-finding suppression, so
-        a project that hits a false positive in a title has exactly one move; a
-        scan wired ahead of the policy read would leave that project unable to
-        accept anything while reporting the policy as ``off``.
+        **The policy is read before any input is touched**, which is what makes
+        ``off`` mean what it says. There is no per-finding suppression, so a
+        project that hits a false positive in a title -- or in a filename, where
+        every artifact Theurian generates is built around a high-entropy ULID --
+        has exactly one move; a scan wired ahead of the policy read would leave
+        that project unable to accept anything while reporting the policy as
+        ``off``.
 
         Returns:
             The policy that was in force and the findings to report on the
             success result. Findings are non-empty only under ``warn``: ``off``
-            scans nothing and ``block`` raises rather than returning. Body
-            findings come first, then the document's, and both are one list --
-            :meth:`_secret_refusal`'s listing bound applies to the pair rather
-            than to each kind separately.
+            scans nothing and ``block`` raises rather than returning. They arrive
+            in the order the inputs are listed above -- least skimmed first, so a
+            reviewer meets the body before the artifact nobody reads -- and they
+            are one list under one budget: :meth:`_secret_refusal`'s listing
+            bound applies to the whole of it rather than to each channel, and a
+            channel that would take the total past
+            :data:`~theurian.security.content_secrets.MAX_FINDINGS` is truncated
+            silently rather than given a ceiling of its own.
 
         Raises:
-            ProposalError: If the policy is ``block`` and a body or a migration
-                field appears to carry a secret. Raised before anything has been
-                written, so the proposal directory is intact and the change can
-                be corrected rather than re-drafted.
+            ProposalError: If the policy is ``block`` and anything the acceptance
+                would land appears to carry a secret. Raised before anything has
+                been written, so the proposal directory is intact and the change
+                can be corrected rather than re-drafted.
             ProjectConfigError: If ``.theurian/config.yaml`` exists and cannot be
                 read, or states a ``security.secretScan`` value that is not one
                 of the three. Deliberately not translated into a
@@ -943,12 +1029,41 @@ class ProposalService:
         if policy is SecretScanPolicy.OFF:
             return SecretScanResult(policy=policy)
 
+        findings = _findings_in(self._landed_text(migration_file, migration_bytes, document, moves))
+        if policy is SecretScanPolicy.BLOCK and findings:
+            raise self._secret_refusal(location, findings)
+        return SecretScanResult(policy=policy, findings=findings)
+
+    def _landed_text(
+        self,
+        migration_file: Path,
+        migration_bytes: bytes,
+        document: Mapping[str, object],
+        moves: tuple[_BodyMove, ...],
+    ) -> Iterable[tuple[str, str]]:
+        """Every text this acceptance would land, each with where it sits.
+
+        The five channels :meth:`_scan_for_secrets` enumerates, in the order it
+        states. Lazy, so a run that fills the budget in the first channel never
+        decodes the migration a second time.
+
+        **A body's *content* is located by its landed path and a body's *path* is
+        not.** The content finding keeps the spelling it has had since #198 --
+        the reviewer has to be told which file to open, and for content that
+        string is the answer -- and the echo it carries when the path itself is
+        the credential is a recorded residual (#339). The two name channels have
+        no such excuse: what they found *is* the name, so a location built from
+        it would be a verbatim second copy of the credential in a message a
+        terminal prints and ``accept --json`` publishes -- the bound
+        :class:`~theurian.security.content_secrets.SecretFinding` holds on itself
+        at four characters, walked around by the location field. Both are fixed
+        literals of this module's own, the discipline :func:`_authored_strings`
+        records for document keys, and the body-path one carries an index into
+        the bodies this migration lands so two dirty paths stay tellable apart.
+        """
         knowledge = self._paths.knowledge.resolve()
-        findings = tuple(
-            ProposalSecretFinding(
-                location=move.destination.relative_to(knowledge).as_posix(), finding=finding
-            )
-            for move in moves
+        landed = tuple(move.destination.relative_to(knowledge).as_posix() for move in moves)
+        for at, move in zip(landed, moves, strict=True):
             # `errors="replace"` rather than a refusal on undecodable bytes. A
             # body that is not UTF-8 is a fault the rehearsal's loader reports
             # with a better message than this scan could, and refusing here
@@ -956,11 +1071,17 @@ class ProposalService:
             # leaves every ASCII run intact, which is what a credential is; the
             # residual is a secret deliberately split by an undecodable byte,
             # which a best-effort detector does not claim to catch.
-            for finding in scan_text(move.data.decode("utf-8", errors="replace"))
-        ) + _document_findings(document)
-        if policy is SecretScanPolicy.BLOCK and findings:
-            raise self._secret_refusal(location, findings)
-        return SecretScanResult(policy=policy, findings=findings)
+            yield at, move.data.decode("utf-8", errors="replace")
+        yield from _authored_strings(document)
+        # `replace` again, though nothing can reach it today: `_parse_migration`
+        # decodes these same bytes strictly and refuses before the scan runs. It
+        # is written this way so the *scan* is never the thing that reports an
+        # encoding fault -- the caller's message is the better one -- whatever a
+        # later parse decides to tolerate.
+        yield _AT_MIGRATION_BYTES, migration_bytes.decode("utf-8", errors="replace")
+        yield _AT_MIGRATION_NAME, migration_file.name
+        for index, at in enumerate(landed):
+            yield f"{_AT_BODY_PATH}[{index}]", at
 
     def _secret_refusal(
         self, location: _ProposalLocation, findings: tuple[ProposalSecretFinding, ...]
@@ -971,10 +1092,12 @@ class ProposalService:
         constant already records: the count is the contributor's, not ours. The
         detector bounds it again at its own :data:`~theurian.security
         .content_secrets.MAX_FINDINGS`, so this is the second of two ceilings
-        rather than the only one. **``findings`` is the bodies' and the
-        document's together**, so the cap and its deliberate silence about what
-        it dropped apply once, to the pair -- two lists capped separately would
-        publish twice the cap and reveal that the proposal leaked in both.
+        rather than the only one. **``findings`` is every channel's together** --
+        the bodies, the document's fields, the migration's bytes, its filename
+        and each landed path -- so the cap and its deliberate silence about what
+        it dropped apply once, to the whole list. Capped per channel it would
+        publish five times the cap and say which channels the proposal leaked on,
+        which is the contributor's count again in a different shape.
 
         **The remedy says to rotate before it says how to proceed.** A secret
         that reached a proposal directory is in a Git working tree and, if the
@@ -2673,8 +2796,11 @@ def _upsert_bodies(document: Mapping[str, object]) -> Iterable[tuple[str, str | 
 #: ``test_the_allowlist_covers_every_string_field_the_schema_declares`` reddens
 #: if the schema grows a string field this set neither scans nor excludes. What
 #: is covered is the author-written field *values*: a credential in a YAML
-#: comment, or in the filename a ``contentFile`` points at, is the artifact-level
-#: face #349 tracks, not this scan's. Written by level and not per operation
+#: comment, or in a name nothing in the document spells, is read by the
+#: artifact-level channels instead (#349, :meth:`ProposalService._landed_text`),
+#: and the two are not each other's superset -- an escaped ``\\xNN`` scalar hides
+#: a token from the bytes while this walk sees the value it parses to. Written by
+#: level and not per operation
 #: type: ``op`` is untrusted until stage-1 validation, which runs *after* this
 #: scan, so branching on it would let a mislabelled operation pick which fields
 #: get looked at. Reading the union at every operation costs a handful of
@@ -2699,10 +2825,14 @@ def _upsert_bodies(document: Mapping[str, object]) -> Iterable[tuple[str, str | 
 #: * ``op``, ``apiVersion`` and every enum (``kind``, ``status``,
 #:   ``sensitivity``, ``trustLevel``, ``relationType``) admit only a fixed
 #:   vocabulary, none of whose members the detector reports.
-#: * ``contentFile`` is left out because it is a body-file *path*: a credential
-#:   in a filename is filename scanning (#349, out of #336's scope), and a
-#:   secret-shaped path that backs no file is refused by ``_body_moves`` before
-#:   the scan is reached.
+#: * ``contentFile`` is left out because it is a body-file *path*, and what lands
+#:   is the path rather than the string: the *resolved* destination -- leaf and
+#:   every directory component ``_commit`` creates on the way to it -- is scanned
+#:   by the artifact channels (#349), which is strictly more than this walk would
+#:   see, a ``../`` traversal and a ``.`` segment resolved away. Its as-written
+#:   spelling is covered too, by the raw-bytes channel beside them. A
+#:   secret-shaped path that backs no file never reaches either: ``_body_moves``
+#:   refuses it first.
 #:
 #: ``createdAt`` and the date-time metadata fields (``validFrom``, ``validTo``)
 #: are *scanned*, not excluded: their schema ``format: date-time`` is not
@@ -2789,9 +2919,30 @@ def _document_findings(document: Mapping[str, object]) -> tuple[ProposalSecretFi
     silent for the reason ``scan_text`` records -- the refusal is actionable on
     the first finding, and a count past the cap is the input's number to publish,
     not ours.
+
+    The budget is :func:`_findings_in`'s, and this is one *caller* of it rather
+    than the only one: the accept path scans the document's fields and the
+    artifacts it lands under a single budget (#349). What this function keeps is
+    the narrower question -- what the parsed document alone carries -- which is
+    what the allowlist tests ask it.
+    """
+    return _findings_in(_authored_strings(document))
+
+
+def _findings_in(scanned: Iterable[tuple[str, str]]) -> tuple[ProposalSecretFinding, ...]:
+    """Scan each ``(location, text)`` in turn, under one budget for the whole run.
+
+    **One ceiling over every input, never one each.** How many inputs there are
+    is the document's to choose -- a field per operation, a body per
+    ``contentFile``, a path per body -- so a per-input ceiling is no ceiling at
+    all: :data:`~theurian.security.content_secrets.MAX_FINDINGS` bounds what one
+    call publishes into an error message and an ``accept --json`` document, and
+    that bound only means something if it is the sum. The inputs are consumed
+    lazily and in order, so a caller whose budget fills early never computes the
+    text of the channels it would have truncated.
     """
     findings: list[ProposalSecretFinding] = []
-    for at, value in _authored_strings(document):
+    for at, value in scanned:
         # Read before the extend rather than inside it. The budget is a function
         # of a list this statement is about to append to, so computing it in the
         # generator expression would tie its value to when that expression is
