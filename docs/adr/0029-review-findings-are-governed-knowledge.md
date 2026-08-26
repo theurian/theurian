@@ -754,6 +754,253 @@ Owed at implementation, each tied to the lane that will discharge it:
   implementation lane removes the recurrence rule from `CLAUDE.md` in the same CL,
   so the two mechanisms never both run (decision 5).
 
+**Landed in #368 phase-2 slice-1 ([#387](https://github.com/theurian/theurian/issues/387)),
+parse-only — part of two owed items above now has tests.** The origin/main-only
+scoping (the third owed item) is discharged for this offline source:
+`tests/integration/test_git_trailer_source.py` pins the read as the
+fully-qualified `refs/remotes/origin/main`, not `--all`, a shadowing local branch
+or tag, a bare `refs/origin/main`, or a `git replace` tip
+(`test_source_reads_only_origin_main_not_local_branches`,
+`test_all_would_have_leaked_the_local_branch`,
+`test_a_git_replace_on_the_public_tip_is_not_read`, and siblings); the
+URL-verification member D7 records as a stated non-goal stays owed to the serving
+arm. The parse layer of the loss-free mapping (the first owed item) is discharged
+— the two tokens are validated, `findingText` is byte-preserved, and a malformed
+keyed line becomes a rejected record rather than an abort or a silent drop
+(`tests/unit/test_review_finding.py`, and
+`test_git_trailer_source.py::test_live_origin_main_accounts_for_every_trailer_loss_free`
+plus `test_frozen_4c4a784_pins_the_parsed_corpus`). What of those two items stays
+owed: the derived `pullRequest`, `family` and `specialist` fields are `None` this
+slice (D5), so mapping them to the full decision-1 record is future work — and
+every remaining owed item above (a served `findingText`'s safety triple, the
+non-public-path embargo refusal, the taxonomy corpus items, the recurrence query
+and its embargo-cleared count, the reverse `recorded-in` edge set, the
+review-unit view, and the ranked-search T-17a population) is unchanged, because
+this slice serves nothing.
+
+## Amendment 1 — the parser contract (2026-08-26, PR #387, #368 phase-2 slice-1)
+
+> **This is an append-only amendment. The normative decisions above are
+> unchanged.** It records the supplementary decisions taken when the #368
+> phase-2 slice-1 trailer parser ([#387](https://github.com/theurian/theurian/issues/387))
+> met the frozen installed base and round one found four HIGHs against a contract
+> the DoR had left under-specified. Each decision below refines a clause above by
+> pointing back to it and stating the refinement; **none rewrites the clause it
+> refines.** D1–D7 were taken by the orchestrator (consulting the `watchdog`
+> agent) and are recorded here so the implementer has a spec to target before code
+> lands.
+>
+> Every figure below was measured **2026-08-26 against `origin/main` @ `4c4a784`**
+> — the base the phase-2 parser reads — and each names the command that produced
+> it. The `28`/`5-commit` census in the body above was measured against `main` @
+> `e39572c`, an **earlier** commit, and was correct there; see *Re-anchored
+> census* at the end of this amendment.
+
+| Refines | Supplementary decision |
+| :-- | :-- |
+| Decision 2 grammar — where a trailer may appear (and the `git log … \| grep 'Review-Finding:'` population of decision 1, :204) | **D1** — extraction is a column-0 block, **not** git's own trailer parser |
+| Decision 2 `<one-line finding> ::= opaque free text to end of line` (:217) | **D2** — a trailer value is a single physical line; there is **no** continuation |
+| Decision 1 record shape (:95); decision 3 malformed-trailer handling (:254) | **D3** — a malformed column-0 keyed line is a **rejected record**, not a fatal abort and not a silent drop |
+| Decision 1 `commitSha`/FR-S3 provenance anchor (:105) | **D4** — record framing uses **NUL** (`0x00`), not RS (`0x1e`)/US (`0x1f`) |
+| Decision 1 `pullRequest` row (:107) and its trailing-`(#N)` paragraph (:112) | **D5** — `pullRequest` is derived **`None`** in this slice; the subject heuristic is **deleted**, not left dormant |
+| Decision 1/2 block grammar | **D6** — a prose false positive is a **stated non-goal** |
+| Decision 6 embargo closure (:357); Compliance `origin/main` scoping (:707) | **D7** — public history is a **verified authority**, not a mutable local name |
+| Decision 2 `<reviewer>` vocabulary (:214) | **Historical alias** — `code` is a non-normative alias of `code-review` |
+
+### D1 — trailer extraction is a column-0 block, not git's trailer parser
+
+A genuine `Review-Finding:` trailer is **a line beginning at column 0 with the
+exact key, appearing anywhere in the commit body** — it is not restricted to
+git's "last paragraph" trailer block. This refines decision 2's notion of *where*
+a trailer may appear: decision 2 pins the grammar of a trailer line, and D1 pins
+that the parser scans every column-0 keyed line of the body, not only git's
+trailer block.
+
+**Measured justification.** On `origin/main` @ `4c4a784` (measured 2026-08-26),
+`startswith('Review-Finding:')` sees **55 lines across 7 commits**
+(`git log origin/main --format=%b | grep -c '^Review-Finding:'` → 55;
+`git log origin/main --format='%H' | while read h; do … grep -c '^Review-Finding:'; done`
+→ 7 commits), while git's own trailer parser
+(`git log origin/main --format='%(trailers:key=Review-Finding,valueonly=true)'`)
+sees **only 10 lines on 1 commit** (`ae2aea7`) — because git reads only the last
+paragraph, and this repo's commit bodies place the `Review-Finding:` block **ahead
+of** a `Claude-Session:` line, a `---------` divider, and the final
+`Signed-off-by:` paragraph. Adopting git's trailer semantics would **silently drop
+45 of 55 findings (81.8%)**, a direct breach of AC-1 (loss-free) and of decision 2
+(the parser cannot be stricter than the frozen lines it must read).
+
+### D2 — a trailer value is a single physical line
+
+`<one-line finding>` (decision 2, :217) means **exactly one physical line**. There
+is **no folding and no continuation.** An indented or wrapped line following a
+trailer is ordinary body text and is **ignored**, not appended to the finding
+value. The continuation-line decision is therefore *ignore*: values are
+single-line by construction. This dissolves the "folded-trailer silent-drop" face
+raised in round one — there is no multi-line value to drop, because a value never
+spans lines.
+
+### D3 — a malformed column-0 keyed line is a rejected record, not an abort or a drop
+
+A line beginning `Review-Finding:` at column 0 whose value does not satisfy the
+grammar is **captured as a rejected record** — its commit sha, the raw line, and
+the rejection reason — and **surfaced by the load**. It is **not** a fatal abort of
+the whole load, and it is **not** a silent discard. This refines decision 3 (which
+says a token outside the closed vocabulary is "a malformed trailer, not a new
+value") by fixing *what the load does with* such a line, and it refines decision
+1's record-shape: **a load yields accepted findings *and* rejected lines.** The
+per-line `MalformedTrailerError` (raised in `parse_trailer_line`) is the
+classification primitive; the loader **catches it per line and accounts the line
+as rejected**, rather than letting it abort the batch.
+
+**Rationale.** The corpus is signed and append-only, so history cannot be edited.
+A fail-the-whole-load design means **one quoted grammar example in any future
+commit body permanently bricks the entire corpus with no forward fix** — and the
+grammar example `Review-Finding: <reviewer> <SEVERITY> — <one-line finding>`
+literally appears in `../../CLAUDE.md` (the review-history convention) and in this
+ADR (:40, :212). Loss-free (AC-1) is preserved by **accounting** every column-0
+keyed line as accepted-or-rejected, never by aborting. The concrete return shape
+is the implementation's, but the record-shape contract is that a load's result is
+the pair `(accepted findings, rejected lines)`.
+
+### D4 — record framing uses NUL (`0x00`), not RS/US
+
+When the source adapter frames parsed records for a batch read, it uses **`%x00`
+(NUL) field and record separators with `git log -z`**, not RS (`0x1e`)/US
+(`0x1f`). This protects the FR-S3 provenance anchor (decision 1): the framing
+bytes must be ones a commit author **cannot** place in a commit message.
+
+**Measured justification.** git **rejects** a NUL byte in a commit message
+(`error: a NUL byte in commit log message not allowed`, verified 2026-08-26) but
+**permits** RS (`0x1e`) and US (`0x1f`) in commit bodies (round-trip verified: a
+commit authored with those bytes commits and reads back unchanged). The prior
+claim that "both are C0 control characters that do not occur in authored commit
+text" is therefore **false**: a `\x1e`/`\x1f` framing is **forgeable** — a commit
+author can embed those bytes to inject a fabricated record carrying an
+attacker-chosen commit sha, date, subject, and PR number, forging the FR-S3
+provenance anchor (decision 1). NUL is the one byte git forbids in a commit
+message, so `%x00` framing with `git log -z` is the only framing an author cannot
+forge from inside a commit body.
+
+### D5 — `pullRequest` is derived `None` in this slice, and the subject heuristic is deleted
+
+In this parse-only slice `pullRequest` is **`None`**, following the same
+"derived, unset in the parse-only slice" pattern decision 1 already uses for
+`family` and `specialist`. The subject-derivation — decision 1's trailing-`(#N)`
+rule (:112) — is **deleted, not left dormant**, because it is wrong on this repo's
+real history.
+
+**Measured justification.** The trailing `(#N)` on a squash-merge subject is **not
+reliably the PR.** Verified via the GitHub API on 2026-08-26: commit `4c4a784`'s
+subject `… (#226)` names issue **#226** (a *closed issue*, `pull_request == null`;
+the real PR was **#379**), and `ae2aea7`'s subject `… (#368)` names issue **#368**
+(an *open issue*; the real PR was **#382**). Resolving each of the 7 trailer
+commits' trailing token against the API,
+**27 of 55 live findings (49.1%) would publish an issue number as the PR** — the
+two commits `4c4a784` (17 findings) and `ae2aea7` (10 findings) both carry an
+issue-numbered subject. The correct PR number requires the GitHub merge API, which
+AC-3's no-network property structurally excludes from this slice. So `pullRequest`
+is left unset here; the **correct derivation (the GitHub-API / FR-V serving arm)
+is the named future owner**, and the 27/55 measurement is recorded so a later
+slice does not re-derive it from the subject. This refines decision 1's
+`pullRequest` record-shape clause (:107) for the parse-only slice; the trailing-
+`(#N)`-then-cross-check-at-the-API design decision 1 states remains the *serving
+arm's* target, not this slice's.
+
+### D6 — a prose false positive is a stated non-goal
+
+A grammatically valid `Review-Finding:` line appearing at column 0 inside a prose
+paragraph — for example a genuine finding quoted in a commit body, or the grammar
+example that appears in this ADR and in `../../CLAUDE.md` — is **indistinguishable
+from a real trailer by content and is accepted.** The block grammar (D1) accepts
+by **shape** — a column-0 key plus a valid value — not by paragraph membership.
+This is an **accepted limitation**, recorded with its reasoning: the alternative,
+restricting extraction to git's last-paragraph trailer block, loses **82%** of the
+installed base (D1), which is the worse defect. It joins *What this does not close*
+as a stated non-goal.
+
+### D7 — public history is defined by a verified authority, not a mutable local name
+
+The embargo closure (decision 6) must **not** rest on the string `origin/main`.
+The terminating invariant, from the `watchdog` consult, is:
+
+> The source's notion of public history is the set of commits reachable from the
+> **fully-qualified remote-tracking ref** `refs/remotes/origin/main` of a remote
+> **whose URL is verified against the recorded public origin**, read with **object
+> replacement disabled** and inherited **`GIT_*` environment stripped**; and every
+> member the slice does not enforce is recorded as a **stated non-goal with its
+> reasoning.**
+
+**Measured justification.** The short name `origin/main` is shadowed by
+`refs/heads/origin/main`, `refs/tags/origin/main`, and the bare `refs/origin/main`
+(the gitrevisions(7) resolution order tries `refs/<name>`, `refs/tags/<name>`, and
+`refs/heads/<name>` *before* `refs/remotes/<name>`), and by `git replace`.
+Reproduced 2026-08-26: with `refs/remotes/origin/main` at a public commit and
+`refs/heads/origin/main` created at a second "embargoed" commit,
+`git log origin/main` returns the **embargoed** commit (with a
+`refname 'origin/main' is ambiguous` warning), while
+`git log refs/remotes/origin/main` returns the public one. Resting the embargo
+closure on the short name is therefore unsafe.
+
+**What this slice enforces** (each closes a demonstrated channel, all local and
+no-network):
+
+- read the **fully-qualified** `refs/remotes/origin/main`, never the short
+  `origin/main` — closes the ref-shadowing channel above;
+- read with **object replacement disabled** (`--no-replace-objects` /
+  `GIT_NO_REPLACE_OBJECTS`) — closes the `git replace` channel;
+- run the `git` subprocess with inherited **`GIT_*` environment stripped** — closes
+  the env-injected-config channel.
+
+**Stated non-goal for this slice, owed to the serving arm:** verifying
+`remote.origin.url` against a recorded public-origin URL — the "a private-fork
+clone where `origin` *is* the private fork" member. Reasoning: the documented
+embargo workflow (`../contributing/release.md`) merges an advisory fix into public
+`main` through the **private advisory**, never by pointing a working clone's
+`origin` at the fork; and URL-verification belongs with the serving arm that
+carries the recorded public-origin identity, alongside the rest of FR-V's
+GitHub-context path. It is named here as owed, not claimed as enforced.
+
+### Historical alias — `code` normalizes to `code-review`
+
+Decision 2's normative grammar (:214) lists
+`<reviewer> ::= "code-review" | "security" | "adversarial"` — **three canonical
+tokens, and that grammar stands.** The installed base additionally carries a fourth
+spelling, `code`, on frozen history: **9 lines, all on commit `4c4a784`** (measured
+2026-08-26, `git log origin/main --format=%b | grep -c '^Review-Finding: code '`
+→ 9). `code` is recorded as a **historical, non-normative alias** of `code-review`:
+
+- **Producers MUST write `code-review`.** `code` is not a value new trailers may
+  use.
+- **The parser normalizes** the frozen `code` lines to `code-review` and **does not
+  coin new values** — a genuinely unknown reviewer token is still refused (decision
+  3). This keeps the closed vocabulary a *superset* of the installed base, as
+  decision 2 requires (the parser cannot be stricter than the frozen lines), while
+  the normative vocabulary stays exactly the three canonical tokens.
+
+Growing the alias set is the deliberate, recorded act decision 2 calls a grammar
+change; a spelling is added only once it is on public `main`.
+
+### Re-anchored census
+
+Per the project's *anchor counts to commits* rule, the trailer-population figures
+are dated against named commits rather than carried as bare counts. The earlier
+figures were **correct at their own, earlier commit** and are **not** deleted:
+
+| Population | Command | Result | Commit / date |
+| :-- | :-- | :-- | :-- |
+| Trailer lines (body-wide, column 0) | `git log origin/main --format=%b \| grep -c 'Review-Finding:'` | **28** | `main` @ `e39572c`, 2026-08-26 (body figure, :204/:229) |
+| Trailer lines (body-wide, column 0) | `git log origin/main --format=%b \| grep -c '^Review-Finding:'` | **55** | `origin/main` @ `4c4a784`, 2026-08-26 (this slice's base) |
+| Commits carrying ≥ 1 trailer | `git log origin/main --grep 'Review-Finding:' --oneline \| wc -l` | **5** | `main` @ `e39572c`, 2026-08-26 (body figure, :230) |
+| Commits carrying ≥ 1 trailer | column-0 count over `git log origin/main --format='%H'` | **7** | `origin/main` @ `4c4a784`, 2026-08-26 |
+
+The `28`/`5` figures in the Decision and Consequences sections were measured on
+`e39572c`, an ancestor of `4c4a784`, and hold at that commit; the live count at the
+parser's base is `55`/`7`. The code comment
+`packages/theurian-core/src/theurian/domain/review_finding.py` (the `SEPARATOR`
+docstring) carries a third, intermediate figure — "38 lines" — which is likewise an
+earlier measurement now superseded by `55`; correcting that comment to a
+commit-anchored figure is the parser lane's, this amendment being docs-only.
+
 ## Appendix — advisory census (non-normative, dated)
 
 > **This appendix is explicitly non-normative.** It records the disclosure state

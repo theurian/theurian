@@ -240,7 +240,7 @@ NETWORK_CLIENT_SITES = {
 #: Every place in the shipped package that may start another program, in the same
 #: ``(module path under theurian/, the listed name it reaches)`` shape.
 #:
-#: Two modules, and neither takes its command from a document:
+#: Three modules, and none takes its command from a document:
 #:
 #: - ``cli/context.py`` runs ``git rev-parse`` and friends to locate the working
 #:   tree and read the current commit. Fixed argument vectors, no shell, and a
@@ -251,15 +251,28 @@ NETWORK_CLIENT_SITES = {
 #:   launchd and systemd adapters run ``launchctl`` and ``systemctl`` through.
 #:   Adapter-controlled argument vectors, never user input (its own ``noqa: S603``
 #:   says so), and a twenty-second timeout.
+#: - ``infrastructure/git/trailer_source.py`` runs ``git log origin/main`` to read
+#:   ``Review-Finding:`` trailers (ADR-0029). It is *not* a network client: unlike
+#:   ``git fetch``, ``git log`` reads local object storage and the local
+#:   remote-tracking ref without contacting any remote, so it opens no connection
+#:   -- it is on this list only because it spawns a process. Its argument vector is
+#:   four constants (``git log`` + the ``PUBLIC_REF`` module constant + a fixed
+#:   ``--format``); the ref is *pinned*, not a parameter, so nothing a document or
+#:   config carries reaches it, and it cannot be handed a URL or remote. Timeout
+#:   ``GIT_TIMEOUT_SECONDS`` (30s). The pinned ref going red is what
+#:   ``test_source_reads_only_origin_main_not_local_branches`` catches -- swapping
+#:   ``origin/main`` for ``--all`` fails it (verified by mutation).
 #:
-#: A third entry is the change this pin exists to make visible. Milestone 7's
-#: review ingestion has to reach GitHub, and ``gh api`` or ``git fetch`` is the
-#: cheapest way to do it -- a diff that adds no client module, that this file's
-#: network scan reads as clean, and whose destination *does* come from
-#: configuration. That is T-7's repository allowlist becoming load-bearing, so
-#: the change that adds the entry is the change that owes the allowlist.
+#: A GitHub-reaching entry is the change this pin still exists to make visible.
+#: Milestone 7's *remote* review ingestion has to reach GitHub, and ``gh api`` or
+#: ``git fetch`` is the cheapest way to do it -- a diff that adds no client module,
+#: that this file's network scan reads as clean, and whose destination *does* come
+#: from configuration. That is T-7's repository allowlist becoming load-bearing, so
+#: the change that adds *that* entry is the change that owes the allowlist. The
+#: git-history trailer read above is the offline arm and owes no such allowlist.
 PROCESS_SPAWN_SITES = {
     ("cli/context.py", "subprocess"),
+    ("infrastructure/git/trailer_source.py", "subprocess"),
     ("infrastructure/services/runner.py", "subprocess"),
 }
 
