@@ -11,10 +11,14 @@ from __future__ import annotations
 import ast
 import inspect
 import textwrap
+from pathlib import Path
 
 import pytest
+from fakes import FakeReviewFindingSource
 
 from theurian.domain import ports
+from theurian.domain.ports import ReviewFindingSource
+from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
 
 #: The closed set. Growing it requires an ADR, so this list is the enforcement.
 #:
@@ -200,6 +204,30 @@ def test_protocols_are_not_instantiable() -> None:
     for port in ports.ALL_PORTS:
         with pytest.raises(TypeError):
             port()
+
+
+def test_the_git_trailer_source_satisfies_the_review_finding_source_port() -> None:
+    """The concrete git adapter satisfies :class:`ReviewFindingSource` structurally.
+
+    The port is ``@runtime_checkable``, and composition roots verify an adapter at
+    wiring time. This asserts the check passes for the real adapter, so a rename of
+    its ``load_findings`` -- which mypy and the adapter's own tests would not catch,
+    because nothing else calls it by name yet -- fails here instead of silently at a
+    future injection site.
+    """
+    assert isinstance(GitTrailerFindingSource(Path("/nonexistent")), ReviewFindingSource)
+
+
+def test_the_fake_review_finding_source_satisfies_its_port() -> None:
+    """The fake satisfies the same port -- making ``fakes.__init__``'s claim true.
+
+    ``fakes/__init__.py`` states "a conformance test asserts it" for every fake.
+    Until now no test exercised ``FakeReviewFindingSource``, so a renamed
+    ``load_findings`` on the fake passed both mypy and pytest -- the fake could
+    drift from the port it stands in for. This is that conformance check: the fake
+    must satisfy :class:`ReviewFindingSource` structurally, empty and populated.
+    """
+    assert isinstance(FakeReviewFindingSource(), ReviewFindingSource)
 
 
 def test_typing_protocol_is_the_base() -> None:
