@@ -285,8 +285,8 @@ reading the table from an orchestration file.
   | The family-taxonomy knowledge items | **Canonical** | governed knowledge, landed via ADR-0013 |
   | A served search result or a rendered Markdown view | **Index / derived** | rebuildable, never authoritative — FR-V6 scopes Markdown views as derived artifacts only |
 
-  AC-2's two named artifacts — the family-taxonomy items and the parsed finding
-  records — both occupy the **Canonical** layer.
+  Both governed artifacts this decision names — the family-taxonomy items and the
+  parsed finding records — occupy the **Canonical** layer.
 
 **Why the finding record enters Canonical without a propose → accept gate, while
 the taxonomy items go through one.** FR-V4 forbids auto-approving a *candidate*
@@ -580,8 +580,10 @@ Measured now, and reproducible from this ADR:
 - The advisory census the embargo appendix rests on: **5 published, embargo over
   on all** (`gh api "repos/theurian/theurian/security-advisories?per_page=100&state=published"`,
   2026-08-26).
-- The no-code scope of this change: `git diff main...HEAD --stat` shows only paths
-  under `docs/`, and `git diff main...HEAD -- '*.py' '*.schema.json'` is empty.
+- The no-code scope of this change: `git diff origin/main...HEAD --stat` shows only
+  paths under `docs/`, and `git diff origin/main...HEAD -- '*.py' '*.schema.json'`
+  is empty. (`origin/main`, not a possibly-diverged local `main`, to match the rest
+  of this ADR's measurement discipline.)
 
 Owed at implementation, each tied to the lane that will discharge it:
 
@@ -590,7 +592,12 @@ Owed at implementation, each tied to the lane that will discharge it:
   malformed trailer refused — driven by
   [#200](https://github.com/theurian/theurian/issues/200)'s first Git-commit
   parser. A test that feeds the 28 lines through the parser and asserts a total,
-  loss-free mapping.
+  loss-free mapping. "Loss-free" here means **byte-preservation**: some real
+  finding texts embed semi-structured references — for example `(recorded, #64)`
+  in `dd4b991`'s trailers, or a bare `#378` — that carry an FR-K10-shaped typed
+  relation the record does not type. `findingText` preserves these byte-for-byte,
+  so the mapping loses nothing; *extracting* them into typed relations is deferred
+  implementation, not claimed here.
 - **A served `findingText` carries the SEC-15 safety triple** — a test on the
   serving path asserting `contentClassification: untrusted-knowledge`,
   `mayContainInstructions: true`, `executable: false` on a finding result, and a
