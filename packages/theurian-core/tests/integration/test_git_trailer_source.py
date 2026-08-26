@@ -277,6 +277,15 @@ def test_live_origin_main_maps_every_trailer_loss_free() -> None:
     Counts the live population from a raw ``git log`` and asserts a total mapping
     against it, rather than hard-coding the current count -- the number rises with
     every review round, and the test must track it.
+
+    This test is deliberately non-hermetic: it reads whatever ``origin/main`` holds
+    now, which is what makes it the canary ADR-0029 decision 2 wants. It reddens if
+    a novel reviewer or severity spelling lands on public ``main`` that the parser's
+    accepted vocabulary does not yet cover -- exactly how the ``code`` alias
+    surfaced (a merged PR abbreviated ``code-review`` to ``code``). When it reddens
+    the fix is to widen the parser's accepted set (a recorded grammar change), not
+    to loosen this assertion: the parser's vocabulary must stay a superset of the
+    live installed base.
     """
     repo = _repo_root()
     if not _origin_main_present(repo):

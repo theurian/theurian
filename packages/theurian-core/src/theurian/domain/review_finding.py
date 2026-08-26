@@ -11,7 +11,11 @@ adapter that reads git:
 
 - **Only the two tokens are governed.** ``reviewer`` and ``severity`` are a
   closed vocabulary the parser validates; a token outside it is a malformed
-  trailer, never a new value (decision 3). The narrow enums below are minted
+  trailer, never a new value (decision 3). The vocabulary is a *superset* of the
+  emitted installed base, not a subset -- decision 2 forbids the parser being
+  stricter than the frozen lines it must read, so an emitted alias of a known
+  reviewer (``code`` for ``code-review``, see :data:`_REVIEWER_ALIASES`) is
+  normalised rather than refused. The narrow enums below are minted
   *beside* the record on purpose -- ``ReviewCommentCategory`` and
   ``ReviewThreadState`` are a different FR-V2 taxonomy whose values do not
   coincide with the trailer's, so reusing one would couple this vocabulary to a
@@ -58,12 +62,30 @@ class ReviewerToken(StrEnum):
     """The review agent that authored a finding -- a closed vocabulary (decision 2).
 
     Minted here rather than reusing a shared enum: no existing closed vocabulary
-    carries these three values.
+    carries these three values. These are the *canonical* spellings; the installed
+    base also carries the alias ``code`` for :attr:`CODE_REVIEW` (see
+    :data:`_REVIEWER_ALIASES`).
     """
 
     CODE_REVIEW = "code-review"
     SECURITY = "security"
     ADVERSARIAL = "adversarial"
+
+
+#: Non-canonical reviewer spellings the emitted installed base carries, each naming
+#: a reviewer that already exists. ``code`` is the code-review agent, abbreviated in
+#: the trailers of a merged PR (#226, measured 2026-08-26 on ``origin/main``): 9 of
+#: its lines read ``Review-Finding: code ...``. ADR-0029 decision 2 forbids the
+#: parser being stricter than the lines already frozen in signed history, so an
+#: emitted spelling of a *known* reviewer is normalised to its canonical token
+#: rather than refused -- it is ``code-review`` written short, not a new value
+#: (decision 3), so the closed vocabulary is not widened, only its spelling. A
+#: genuinely unknown token is still refused. Growing this map is the deliberate,
+#: recorded act decision 2 calls a grammar change: a spelling is added only once it
+#: is on public ``main``, and the live loss-free test
+#: (``test_live_origin_main_maps_every_trailer_loss_free``) is what forces the
+#: parser's accepted set to stay a superset of the installed base.
+_REVIEWER_ALIASES: Final[dict[str, ReviewerToken]] = {"code": ReviewerToken.CODE_REVIEW}
 
 
 class FindingSeverity(StrEnum):
@@ -159,6 +181,9 @@ class ReviewFinding:
 
 
 def _reviewer(token: str, *, line: str) -> ReviewerToken:
+    canonical = _REVIEWER_ALIASES.get(token)
+    if canonical is not None:
+        return canonical
     try:
         return ReviewerToken(token)
     except ValueError as exc:

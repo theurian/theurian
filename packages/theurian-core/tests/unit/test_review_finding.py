@@ -65,6 +65,22 @@ def test_a_severity_outside_the_four_is_refused(severity_token: str) -> None:
         parse_trailer_line(line)
 
 
+def test_the_code_alias_normalises_to_code_review() -> None:
+    """The installed base's ``code`` spelling is the code-review reviewer.
+
+    ADR-0029 decision 2 forbids the parser being stricter than the frozen lines it
+    must read, and a merged PR (#226) emitted ``Review-Finding: code ...`` for the
+    code-review agent. It is normalised to the canonical token -- not coined as a
+    new value (decision 3) -- so the loss-free mapping (AC-1) can read it while the
+    vocabulary stays closed. A genuinely unknown token is still refused above
+    (``code_review`` with an underscore is not ``code``).
+    """
+    reviewer, severity, text = parse_trailer_line("Review-Finding: code HIGH — a finding")
+    assert reviewer is ReviewerToken.CODE_REVIEW
+    assert severity is FindingSeverity.HIGH
+    assert text == "a finding"
+
+
 def test_a_valid_token_where_a_refused_one_was_parses() -> None:
     """The control: the refusals above are about the token, not the line shape.
 
