@@ -128,7 +128,7 @@ def _registry_reset_remedy(path: Path) -> str:
     )
 
 
-def _entry_root(entry: object) -> Path | None:
+def entry_root(entry: object) -> Path | None:
     """The absolute root a raw registry entry names, or ``None`` if it names none.
 
     One predicate in one place, because two readers partition the same file on
@@ -137,6 +137,12 @@ def _entry_root(entry: object) -> Path | None:
     the ids that do not. A second copy of this test would eventually admit an
     entry ``load`` skips -- or skip one it admits -- and root resolution would go
     back to guessing at the difference.
+
+    Public rather than module-private for a third reader outside this module:
+    ``theurian project status`` decides whether the registry holds *this* root
+    (``_RegistryRead.holds_root``, ``cli/commands.py``), and it has to normalise
+    a ``rootPath`` the same way :meth:`ids_for_root` does or the two commands
+    answer differently about one file.
 
     ``""`` is rejected as firmly as a missing key. ``Path("").resolve()`` is the
     *calling process's* current working directory, so an entry holding it would
@@ -198,7 +204,7 @@ def _unreadable_ids(entries: Mapping[str, object]) -> tuple[str, ...]:
     """The ids whose entries are not usable registrations, sorted.
 
     Two ways to fail and both land here, because both make an entry something no
-    surface can serve: the entry names no root (:func:`_entry_root`), or its key
+    surface can serve: the entry names no root (:func:`entry_root`), or its key
     is not an id anything accepts (:func:`_usable_id`). ``theurian project
     unregister`` is the cure for either, and it is the only cure either has.
 
@@ -210,7 +216,7 @@ def _unreadable_ids(entries: Mapping[str, object]) -> tuple[str, ...]:
         sorted(
             pid
             for pid, entry in entries.items()
-            if _entry_root(entry) is None or not _usable_id(pid)
+            if entry_root(entry) is None or not _usable_id(pid)
         )
     )
 
@@ -1023,7 +1029,7 @@ class ProjectRegistry:
         return {
             project_id: entry
             for project_id, entry in self._raw_entries().items()
-            if _entry_root(entry) is not None and _usable_id(project_id)
+            if entry_root(entry) is not None and _usable_id(project_id)
         }
 
     def unreadable_ids(self) -> tuple[str, ...]:
@@ -1052,7 +1058,7 @@ class ProjectRegistry:
                 consumer accepts.
 
         **Why one rootless entry refuses every root, when :meth:`load` tolerates
-        it.** An entry names no root exactly when :func:`_entry_root` returns
+        it.** An entry names no root exactly when :func:`entry_root` returns
         ``None``. So "is that unreadable entry this directory's registration?"
         has no answer: the field that would settle it is the field that is
         missing. Per-root decidability is not expensive here, it is unavailable,
@@ -1104,9 +1110,7 @@ class ProjectRegistry:
         whose safety argument is harder to check than the refusal it removes.
         """
         entries = self._raw_entries()
-        rootless = tuple(
-            sorted(pid for pid, entry in entries.items() if _entry_root(entry) is None)
-        )
+        rootless = tuple(sorted(pid for pid, entry in entries.items() if entry_root(entry) is None))
         if rootless:
             raise ProjectError(
                 f"Cannot say which project {root.resolve()} belongs to: {self.path} holds "
@@ -1125,7 +1129,7 @@ class ProjectRegistry:
             )
 
         wanted = root.resolve()
-        named = tuple(sorted(pid for pid, entry in entries.items() if _entry_root(entry) == wanted))
+        named = tuple(sorted(pid for pid, entry in entries.items() if entry_root(entry) == wanted))
 
         # Only this root's own entries are consulted, which is what keeps the
         # refusal local: an unusable key elsewhere in the file says nothing about
@@ -1259,7 +1263,7 @@ class ProjectRegistry:
             # unreadable" and "this id is one of the ids `project list` reports
             # as unreadable" have to be the same statement, or the remedy below
             # names an id the user cannot see.
-            registered_root = _entry_root(existing_raw)
+            registered_root = entry_root(existing_raw)
             if registered_root is None:
                 raise ProjectError(
                     f"Project id {project.project_id.value!r} already has an entry in "

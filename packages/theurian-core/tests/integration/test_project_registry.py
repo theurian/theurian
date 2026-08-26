@@ -374,13 +374,22 @@ def test_project_status_reports_the_ambiguity_instead_of_failing(
     the two `project unregister` invocations that resolve the ambiguity are
     named. Fixed defect, formerly recorded here rather than asserted away: the
     remedy now travels into the payload alongside `reason`, at the same exit 0.
+
+    `registered` used to be asserted `False` here, and that was the second face
+    of issue #226: this root is in the file *twice*, both entries readable, and
+    the command reported it as unregistered because the field was answering
+    "did resolution succeed" rather than "does the registry hold this root".
+    The ambiguity is over *which id*, never over whether -- `reason` and
+    `remedy` are what carry it, and they still do.
     """
     code, payload = _in(ambiguously_registered, "project", "status")
 
     assert code == 0
-    assert payload["registered"] is False
+    assert payload["registered"] is True, (
+        "two entries name this root; `False` would deny a registration the file shows twice"
+    )
     assert "more than one project id" in payload["reason"], (
-        "a status that said only `registered: false` would be actively misleading"
+        "a status that said only `registered: true` would hide the ambiguity"
     )
     assert "project unregister" in payload["remedy"], (
         "the two commands that resolve the ambiguity must reach the user who ran "
@@ -852,7 +861,16 @@ def test_status_will_not_call_a_readable_repository_registered_while_another_ent
     `False` would be the guess `ids_for_root` refuses to make, and it is the one
     that misroutes: `resolve_context` reads "never registered" as licence to fall
     back to the id derived from the directory name, which may already belong to a
-    different project. `True` would claim a resolution that did not happen.
+    different project.
+
+    `True` is the answer this is now the boundary against, since issue #226
+    taught `registered` to answer about the registry rather than about
+    resolution -- and a readable entry does name this root. It is still refused,
+    because `payments` names *no* root: nothing rules it out as a second
+    registration of this same directory, so "is this root registered" is
+    incomplete rather than answered, in exactly the way "is this id a key of
+    this file" never is. `_RegistryRead.holds_root` orders the unreadable check
+    ahead of the match for this case, and this is what holds that order.
     """
     _, payload = _in(broken_neighbour, "project", "status")
 

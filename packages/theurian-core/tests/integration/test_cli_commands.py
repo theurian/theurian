@@ -863,6 +863,122 @@ def test_status_says_it_cannot_know_when_the_registry_breaks_between_its_two_rea
     assert payload["stateHash"], "and so does the one every other command compares against"
 
 
+# -- issue #226: `registered` answers about the registry, not about resolution --
+#
+# `project status` reaches `_unresolved_status` whenever `resolve_context`
+# fails, and *why* it failed is mostly nothing to do with registration: an
+# unreadable migrations directory, a malformed migration, a state schema that
+# will not parse. Publishing `registered: false` for all of them made the one
+# command a confused user runs first contradict `project list` in the same
+# breath, and told them to run `project register` for a repository that was
+# already registered.
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_status_keeps_a_registered_project_registered_when_the_context_will_not_resolve(
+    project: Path,
+) -> None:
+    """Issue #226, and the two surfaces that have to answer one fact the same way.
+
+    ``chmod 000 .theurian/migrations`` is a failure of the *project*, not of the
+    registry: the registry is readable, parses, and holds this root. Measured
+    before the fix, ``project status`` published ``registered: false`` while
+    ``project list`` -- run against the same file, in the same test -- listed
+    this very ``rootPath`` at ``count: 1``.
+
+    ``registered`` is asserted ``is True`` rather than truthily, because the
+    whole defect is a field answering a question it never asked: ``None`` would
+    be a different wrong answer here, and a bare ``assert status["registered"]``
+    cannot tell the two apart.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+
+    migrations = project / ".theurian/migrations"
+    migrations.chmod(0o000)
+    try:
+        code, status = _invoke("project", "status")
+        _, listed = _invoke("project", "list")
+    finally:
+        migrations.chmod(0o700)
+
+    assert code == 0, "status must report, not fail, on an unresolved project"
+    assert status["registered"] is True, (
+        "the registry holds this root; a resolution failure elsewhere is not a deregistration"
+    )
+    assert status["reason"], "the resolution failure is still reported, it is just not the answer"
+    assert "indexStale" not in status, (
+        "nothing here read the state pointer, so freshness is unasked rather than false"
+    )
+
+    assert listed["count"] == 1, "the fixture must be registered for this test to mean anything"
+    assert {Path(row["rootPath"]).resolve() for row in listed["projects"]} == {project.resolve()}, (
+        "`project list` and `project status` read the same file and must not disagree about it"
+    )
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_status_says_it_cannot_know_when_the_registry_itself_cannot_be_opened(
+    project: Path, registry_path: Path
+) -> None:
+    """The fence around the fix above: membership is unknown, not denied.
+
+    The tempting shape for "does the registry hold this root" is a scan of the
+    entries that loaded, and that scan answers ``False`` for an empty result --
+    including the empty result a file nobody can open produces. ``registered:
+    false`` there is the same guess this command already refuses to make for a
+    file it cannot parse; this pins the third way a registry goes unreadable,
+    ``EACCES`` at ``open`` rather than a body that is not JSON, which no CLI
+    test reached.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+
+    registry_path.chmod(0o000)
+    try:
+        code, payload = _invoke("project", "status")
+    finally:
+        registry_path.chmod(0o600)
+
+    assert code == 0, "an unreadable registry is a status, not a crash"
+    assert payload["registered"] is None, (
+        "the file cannot be searched, and False would claim it was"
+    )
+    assert "cannot be opened" in payload["reason"]
+    assert "re-register each project with `theurian project register`" in payload["remedy"], (
+        "a `cannot know` with no cure beside it is unactionable"
+    )
+    assert payload["unreadable"] == [], "no ids could be partitioned, and the field stays present"
+
+
+def test_status_does_not_guess_index_freshness_for_a_project_it_never_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``indexStale: false`` was an answer to a question this branch never asks.
+
+    Nothing on the unresolved path reads the active state pointer or computes a
+    state hash -- there is no project to compute one for -- so the hardcoded
+    ``false`` claimed a freshly built index for a directory Theurian had not
+    looked at. Absent rather than ``null``, which is the rule
+    ``statePointerCorrupt`` already follows in this same payload: ``null`` is
+    "asked, and the answer is unknowable" (``registered`` on a broken registry),
+    absence is "never asked".
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
+
+    code, status = _invoke("project", "status")
+
+    assert code == 0
+    assert "indexStale" not in status, "a field nothing computed must not be published as false"
+    assert status["registered"] is False, (
+        "a directory outside a Git working tree is genuinely unregistered, and that answer stays"
+    )
+    assert "not inside a Git repository" in status["reason"], (
+        "and the two unresolved shapes stay distinguishable: this one is not a permission failure"
+    )
+
+
 def test_unregister_does_not_refuse_an_id_for_its_shape(project: Path) -> None:
     """The escape command has to be able to name what broke the registry.
 
