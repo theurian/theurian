@@ -33,10 +33,9 @@ is correct. Splitting implementation from judgement is what makes a round mean
 anything.
 
 What the orchestrator keeps: deciding what to assign, to whom and in what order;
-writing each brief — scope, requirement IDs, ADRs, known-unfinished, and the
-observable families that apply (see *The review round*); **verifying returned
-work by running it, never by reading it**; weighing findings against the
-severity rules below; relaying results to the user.
+writing each brief (see *The assignment brief*); **verifying returned work by
+running it, never by reading it**; weighing findings against the severity rules
+below; relaying results to the user.
 
 Two narrow exceptions, both stated in the response when used:
 
@@ -73,14 +72,41 @@ partition:
    count. Fixes delivered faster than they can be run and reviewed are
    inventory, not progress.
 
+### The assignment brief
+
+**Definition of Ready:** no assignment dispatches until reproduce → measured file
+set → acceptance criteria → fences are written — the first two are *Independence
+is a measured file set*, the last two are here. **INVEST** is the admission test:
+dispatch a unit only when it is Independent (its own measured file set), Small
+(within the cluster cap), and Testable (every AC names a check). The brief is an
+ordered list:
+
+1. **Scope and acceptance criteria.** AC are written before dispatch in EARS
+   constrained syntax: a DON'T is the Unwanted-Behaviour pattern — *If
+   \<condition>, the \<system> shall NOT \<behaviour>* — and a behaviour example
+   is Given-When-Then, each GWT roughly one pytest. Every AC line names its
+   verification: a named test, a measurement, or a search command.
+2. **Do** — the change itself.
+3. **Non-goals** — the scope DON'T. An adjacent finding is box-split into its own
+   issue, never folded in (*A class stops expanding on a budget*).
+4. **Fences** — the operational DON'T. Restate the applicable global fences *in*
+   the brief; reading them once elsewhere measurably does not prevent the act
+   (*Running the CLI on a development machine*).
+5. **Observable families** — the applicable ones enumerated in *The review
+   round*; they bind the implementer.
+6. **Known-unfinished** — so the reviewer spends its time elsewhere.
+
+Draft → Ready then gates on the AC met *and* the round green (*Early push and
+Draft PRs*), not either alone.
+
 ## Milestone definition of done
 
 A milestone is not done when the code works. It is done when all of this has
 happened, in order:
 
-1. **Implement — by assignment, never by the orchestrator** (see above), with the
-   quality gate green after every logical commit — and a commit *each time* it
-   goes green, not at the end (see *Commits and local safety*):
+1. **Implement — by assignment, never by the orchestrator** (see above): scoped
+   tests green per logical commit, a commit *each time* they go green, the full
+   gate once before the Draft PR (see *Commits and local safety*):
    `uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest -q`
 2. **Run it for real.** A scratch script or a real CLI invocation against a
    temporary `HOME` and `THEURIAN_DATA_DIR` — which contains the writes and not
@@ -169,24 +195,33 @@ plus a clean checks list is the merge signal; do not wait for an approval.
 
 ### Review weight is set by blast radius, and the default is light
 
-The full three-reviewer round is the instrument for changes whose failure
-discloses withheld content, corrupts governed state, or falsifies a security
-claim — the write path, the gates, the daemon surface, the threat model. There
-it earns its hour: it has caught four CRITICAL disclosures and one fabricated
-"tests GREEN" report. **Everywhere else, that hour is overhead, and the measured
-cost of spending it everywhere was hours-per-unit-of-work tripling while output
-stayed flat.**
+The full three-authority round — code, security and adversarial in one message —
+is the instrument for changes whose failure discloses withheld content, corrupts
+governed state, or falsifies a security claim: the write path, the gates, the
+daemon surface, the threat model. It runs **synchronously**, before the flip to
+Ready, and there it earns its hour — every one of this project's four CRITICAL
+disclosures and its one fabricated "tests GREEN" report was caught in a sync
+round. **Everywhere else that hour is overhead** — spending it everywhere tripled
+hours-per-unit-of-work while output stayed flat — so outside the top row
+**adversarial review runs async, after merge**: a standing red-team sweep over
+`main`, nightly single-file mutation runs included, whose findings enter the
+filing-time triage like any other. Async adversarial on a *disclosure* surface is
+the one trade that never pays — it swaps a sync hour for an embargo week, six
+GHSAs at days each.
 
 So weigh the review before dispatching it, not after:
 
 | Blast radius of a wrong change | Review weight |
 | :-- | :-- |
-| Disclosure, governed state, security claims, wire contract | Full round — all three, no shortcut |
-| Behaviour a trier runs, but no disclosure surface | Code review, plus adversarial only for the claims table below |
-| Prose, process guidance, CI plumbing, mechanical moves — wrong means "misleading, revertible" | One light pass (code review alone), same day, no round structure |
+| Disclosure, governed state, security claims, wire contract | Full **sync** round — all three, before the flip |
+| Behaviour a trier runs, but no disclosure surface | Code review sync; adversarial async, when the claims table calls it |
+| Prose, process guidance, CI plumbing, mechanical moves — wrong means "misleading, revertible" | One light pass (code review alone), same day, no round |
 
-Light-class issues are harvested 5–10 per PR under one light pass — a sweep is
-one topic, not a carve-out — merging in ~84 minutes where a full round takes a day.
+**Static gates stay sync and strengthen — the ratchet:** every adversarial or
+security finding proposes its own automation (a test, a lint rule, or a CI gate)
+before it closes, so the synchronous surface shrinks monotonically. Light-class
+issues are harvested 5–10 per PR under one light pass — a sweep is one topic, not
+a carve-out — merging in ~84 minutes where a full round takes a day.
 
 The routing table below decides who reviews a *claim*; this table decides how
 much apparatus a *change* gets. When the two disagree, the claims table wins —
@@ -240,9 +275,7 @@ reviewer receives it as the set of claims the implementation says it already
 covers — to attack — and spends the rest of its mandate off-list, because its
 value is the family nobody enumerated. Handing the brief's checklist to the
 reviewer as its scope would converge review on the known families and delete
-that value. This moves "enumerate the families before round one" from a review
-practice to a briefing practice: the families are named when the work is
-assigned, not when it is reviewed.
+that value.
 
 **An enumerated family is the implementer's to hold, and recurrence burns in.**
 A round-one finding on a family the brief enumerated is an implementation-stage
@@ -308,8 +341,7 @@ Before dispatching any round after the first:
   new claim is a new finding. Defer it and file it.
 
 What still comes back is a family nobody had enumerated, and that is the round
-doing its job. If Milestone 6 does not reach its PR in fewer rounds for this,
-delete this section.
+doing its job.
 
 ### A finding is closed by a closure argument, not by a fix
 
@@ -567,9 +599,11 @@ its language is the point.
 
 - Commits: Conventional Commits, signed, with a DCO `Signed-off-by` trailer
   (`git commit -s`). One topic per PR.
-- **A commit is triggered by the quality gate going green, not by the work being
+- **A commit is triggered by its scoped tests going green, not by the work being
   finished** — at that moment, not at the end of a review round and not batched
-  up for the flip to Ready. Milestone 5 held 16,300 uncommitted lines for 28
+  up for the flip to Ready; the full gate runs once before the Draft PR, and a
+  report names the scope it ran — an unqualified "GREEN" means the full gate.
+  Milestone 5 held 16,300 uncommitted lines for 28
   hours; slicing them afterwards took three attempts, and the one that built
   opens with a 13,434-line commit. Size was not the cause: a port signature
   change spread across layers, and a commit that removes an API without moving
@@ -656,9 +690,6 @@ is not "be careful":
   `git checkout -- .gitignore`, which discards every uncommitted change in that
   file. A `git checkout --` did exactly that to an uncommitted fix this
   milestone.
-- **Mutation runs get their own tree.** `tools/mutate.py` copies the checkout
-  with `shutil.copytree` for this reason. Cleaning up a mutation inside the tree
-  you are editing is what puts a `git checkout --` next to live work.
 - **A daemon is gone when the port is free, not when a `kill` returned.** A
   `kill` handed a subshell's pid returns 0 and leaves the daemon running, and
   the survivor answers the *next* run's health probe — that is how a
@@ -671,45 +702,13 @@ is not "be careful":
   lsof -nP -iTCP:7419 -sTCP:LISTEN   # where a run that forgot --port landed
   ```
 
-  The second line is not optional. The survivor this bullet exists to catch
-  usually comes from a run that omitted `--port`, and that survivor is on 7419,
-  which is exactly the port a one-line check aimed at 7420 does not look at.
+  The second line is not optional: the survivor this bullet exists to catch
+  comes from a run that omitted `--port`, and it lands on 7419, not 7420.
 
-  **While no resident daemon exists, anything answering on 7419 is the
-  accident.** Once a resident dogfood daemon owns 7419, that line stops reading
-  "free" and starts reading "the resident one, not mine" — and from that point
-  every command below needs `--port 7420` as well, because each one defaults to
-  7419 and would otherwise describe or act on the resident daemon while reading
-  as if it described the thing under test. Six commands, verified against source
-  and against the released dev7 wheel's `--help` on 2026-08-20:
-
-  | Command | Symbol | Where the 7419 default comes from |
-  | :-- | :-- | :-- |
-  | `setup --dry-run` | `setup_command` | `PortOption = DEFAULT_PORT` |
-  | `doctor` | `doctor_command` | `PortOption = DEFAULT_PORT` |
-  | `uninstall --dry-run` | `uninstall_command` | `PortOption = DEFAULT_PORT` |
-  | `auth rotate` | `auth_rotate` | `DEFAULT_PORT` |
-  | `daemon start` | `daemon_start` | a literal `7419` |
-  | `daemon status` | `daemon_status` | a literal `7419` |
-
-  The first three are in `cli/setup_commands.py`, then `cli/auth_commands.py`,
-  then `cli/commands.py`; `DEFAULT_PORT` is 7419 in `daemon/instance.py`. Named
-  by symbol rather than by line, because a line number rots on the next edit and
-  says nothing when it does. Re-count with
-  `grep -rn 'PortOption\|DEFAULT_PORT\|7419' packages/theurian-core/src/theurian/cli/`
-  rather than trusting this table.
-
-  **`uninstall` is the one that bites**, because this file already mandates
-  `--dry-run` for it: a forgotten `--port` there produces a removal plan for the
-  *resident* daemon that reads exactly like a plan for the dev one.
-
-  **`daemon stop` takes no `--port` at all**, and adding one would not help: it
-  asks the service manager which daemon it owns rather than probing a port
-  (`daemon_stop`; deliberate, ADR-0002 — a PID-based kill can signal an
-  unrelated recycled PID). With a resident daemon registered and a dev daemon on
-  7420, `theurian daemon stop` stops the **resident** one. A dev daemon is
-  started with `--foreground` and stopped with Ctrl-C in the terminal running
-  it, which is what the command's own error remedy says.
+  **A resident dogfood daemon owns 7419, so every dev CLI command defaults to it
+  and needs `--port 7420`; `uninstall` and `daemon stop` bite (the latter takes
+  no `--port` — use `--foreground` + Ctrl-C).** Full detail, table and re-count:
+  [development.md](docs/contributing/development.md#running-the-daemon-on-a-development-machine).
 
 #### Registration: `--dry-run` is the only form to run here
 
