@@ -152,12 +152,18 @@ Still owed, with the milestone that will satisfy it:
   ADR's whole argument rests on, so the gap is at the load-bearing point:
   [#64](https://github.com/theurian/theurian/issues/64) (Milestone 6).
 - **`theurian doctor` does not ask Git what is tracked.** This section said it
-  warns when a derived artifact is tracked. `probe_gitignore` reads
-  `.gitignore` and checks for the string `.theurian/state`; a database committed
-  before the block was added stays committed and the probe reports
-  `SATISFIED`. The check the ADR describes — `git ls-files` over the derived
-  paths — is the one worth having, and is filed with #64 because it is the same
-  guarantee from the other end.
+  warns when a derived artifact is tracked. `probe_gitignore` now judges
+  *managed-block identity* — whether the span between Theurian's markers is
+  byte-for-byte the block `theurian init` writes ([#87](https://github.com/theurian/theurian/issues/87))
+  — which is stricter than the old substring check but still reasons only about
+  `.gitignore` text, never about what Git holds: a database committed before the
+  block was added, or force-added past the ignore with `git add -f`, stays
+  committed and the probe reports `SATISFIED`. Block identity is also blind to
+  anything outside the markers — a later `!.theurian/state/` re-inclusion, or a
+  nested `.theurian/.gitignore` this step never opens — and those residual faces
+  are recorded on #64's body and comment. The check the ADR describes —
+  `git ls-files` over the derived paths — is the one worth having, and is filed
+  with #64 because it is the same guarantee from the other end.
 - **The rebuild-determinism test is over the hash function, not over a
   rebuild.** This section claimed an integration test asserting a second rebuild
   from the same inputs produces an identical state hash.

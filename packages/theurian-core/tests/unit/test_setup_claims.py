@@ -602,13 +602,20 @@ def test_the_cli_docstring_names_the_commands_those_steps_defer_to(
     got its two previous false sentences, so it is probed: every ``theurian``
     subcommand a report-only step offers has to appear in ``--help``.
 
-    **Only ``action`` is read, and two steps name their command in ``summary``
-    instead** -- ``initial-index`` offers ``theurian migrate apply`` there, and
-    ``migrations-valid`` offers ``theurian migrate validate`` once a migrations
-    directory exists. Neither is in ``--help``. Widening this to ``summary``
-    means deciding what a summary that merely mentions a command is promising,
-    and that is a question about the step table rather than about the docstring;
-    recorded here so the omission is a known one.
+    **Only ``action`` is read, and ``initial-index`` names its command
+    ``theurian migrate apply`` in ``summary`` instead** -- and that command is not
+    in ``--help``, so it is the remaining known omission. Widening this to
+    ``summary`` means deciding what a summary that merely mentions a command is
+    promising, and that is a question about the step table rather than about the
+    docstring; recorded here so the omission is a known one.
+
+    ``migrations-valid`` used to be the second such case. As of #91 it no longer
+    names a command in its ``summary``; it offers ``theurian migrate validate`` in
+    its ``action`` on the failure branch, and that command is now in ``--help``
+    (see ``setup_command``'s docstring). This empty-directory fixture never
+    reaches that branch -- ``migrations-valid`` probes ``not-applicable`` with no
+    migrations directory -- so the step contributes nothing to ``offered`` either
+    way, which is why the assertion is unchanged.
     """
     context = _context(tmp_path)
     report_only = set(_report_only_steps())
