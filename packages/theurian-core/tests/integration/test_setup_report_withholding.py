@@ -36,6 +36,7 @@ from typing import Any, Final
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
+from setup_migrations import checked_by_the_loader
 
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
@@ -123,6 +124,11 @@ def _context(tmp_path: Path, *, for_publication: bool = True, **overrides: Any) 
         "health": lambda: None,
         "service": FakeService(),
         "executable": str(executable),
+        # The real loader, for the reason this module gives about every other
+        # adapter here: the file is what is being reported on, and a stub would
+        # make `migrations-valid` a step that reads nothing and therefore has
+        # nothing to withhold.
+        "check_migrations": checked_by_the_loader,
         "for_publication": for_publication,
     }
     return SetupContext(**{**defaults, **overrides})
@@ -628,9 +634,14 @@ def test_redacting_a_run_that_did_not_withhold_is_refused(
 #: Seeds a step publishes today when nothing withholds, so their absence from a
 #: report is a measurement rather than a coincidence.
 #:
-#: The remaining seeds -- the `.gitignore`, the env file, the token file, a
-#: migration's contents, and a foreign server's name in `claude.json` -- are read
-#: by a step that publishes only a path, a count, or a boolean about them.
+#: `migration file` joined them with #91. Until then `migrations-valid` counted
+#: files without opening one, so its seed guarded a step that could not have
+#: published it; the step now loads the set through the same call `theurian
+#: migrate validate` makes, and a refusal quotes the author's own line.
+#:
+#: The remaining seeds -- the `.gitignore`, the env file, the token file, and a
+#: foreign server's name in `claude.json` -- are read by a step that publishes
+#: only a path, a count, or a boolean about them.
 #: Swapping one of those for another string is undetectable, **and that is what
 #: they are for**: they guard a step that does not exist yet, on the files a
 #: future step is most likely to start quoting.
@@ -645,6 +656,7 @@ _OBSERVED_SEEDS: Final = (
     "another daemon's /health",
     "project registry",
     "serving profile",
+    "migration file",
 )
 
 
@@ -737,10 +749,16 @@ def _seed_every_external_source(context: SetupContext) -> tuple[SetupContext, di
     profile.write_text(f"{seeds['serving profile']}\n", encoding="utf-8")
     profile.chmod(0o600)
 
+    # A document that does not *parse*, not one that fails schema validation.
+    # Both refuse, and only the parser quotes the offending line back: a schema
+    # failure names the properties it wanted and echoes nothing of the file, so
+    # the seed would be absent from the published payload for the uninteresting
+    # reason that it was never anywhere near it. The key position is where the
+    # parser's snippet lands (measured).
     migrations = root / ".theurian" / "migrations"
     migrations.mkdir(parents=True, exist_ok=True)
     (migrations / "0001-note.yaml").write_text(
-        f"note: {seeds['migration file']}\n", encoding="utf-8"
+        f"note: {seeds['migration file']}: broken\n", encoding="utf-8"
     )
 
     foreign_directory = f"/opt/{seeds["another daemon's /health"]}"
@@ -794,6 +812,13 @@ def test_no_step_publishes_a_value_it_only_read(tmp_path: Path) -> None:
         "serving-profile",
     ):
         assert statuses[reached] == "conflicting", f"{reached} never read what was seeded"
+    # `migrations-valid` reports a refusal as `missing` rather than
+    # `conflicting` -- there is nothing of the operator's to consent past, only
+    # a file to fix -- so it is asserted separately rather than being quietly
+    # left out of the list above and going unchecked (#91).
+    assert statuses["migrations-valid"] == "missing", (
+        "migrations-valid never loaded the seeded migration"
+    )
 
 
 def test_every_observable_seed_reaches_the_operators_own_output(tmp_path: Path) -> None:

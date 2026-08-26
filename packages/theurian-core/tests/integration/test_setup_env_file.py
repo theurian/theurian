@@ -31,6 +31,7 @@ from typing import Any
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
+from setup_migrations import unchecked_migrations
 
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
@@ -99,6 +100,7 @@ def _context(tmp_path: Path, **overrides: Any) -> SetupContext:
         "health": lambda: {"dataDir": str(data_dir)} if service.started else None,
         "service": service,
         "executable": str(executable),
+        "check_migrations": unchecked_migrations,
     }
     return SetupContext(**{**defaults, **overrides})
 

@@ -21,18 +21,12 @@ from theurian.application.ingestion_service import (
     IngestionService,
     manifest_from,
 )
-from theurian.application.migration_alias_guards import (
-    alias_item_collision_violations,
-    refuse_alias_item_id_collision,
-)
-from theurian.application.migration_body_guards import (
-    duplicate_content_file_violations,
-    refuse_duplicate_content_files,
-)
+from theurian.application.migration_alias_guards import alias_item_collision_violations
+from theurian.application.migration_body_guards import duplicate_content_file_violations
 from theurian.application.migration_engine import (
     MigrationEngine,
     WithdrawalCandidate,
-    refuse_unenforceable_scope,
+    run_static_migration_guards,
     unenforceable_scope_violations,
     verify_no_applied_migration_changed,
 )
@@ -240,6 +234,18 @@ ALIAS_ITEM_COLLISION_REMEDY: Final = (
 )
 
 
+#: Fallback cure for a whole-set guard refusal :func:`_refuse_a_set_a_static_guard_rejects`
+#: has no dedicated branch for -- a *fourth* guard added to
+#: :func:`~theurian.application.migration_engine.run_static_migration_guards` whose
+#: error type this function does not name. Generic on purpose: only the guard that
+#: raised knows the exact fix, so the new error's own ``.remedy`` is preferred when
+#: it carries one, and this is the honest floor when it does not.
+_UNNAMED_GUARD_REFUSAL_REMEDY: Final = (
+    "Fix the migration set the guard refused, then retry. `theurian migrate validate` "
+    "reports what can be checked without touching state."
+)
+
+
 #: Every canonical-state database this project has ever built. Excludes
 #: `theurian-index-*.sqlite`, which lives in the same directory
 #: (`ProjectPaths.state`) but is a different schema entirely.
@@ -309,18 +315,42 @@ def _unenforceable_scope_remedy(
     return UNENFORCEABLE_SCOPE_REMEDY_UNAPPLIED
 
 
-def _refuse_a_body_file_backing_two_revisions(
-    migration_set: MigrationSet, *, as_json: bool
-) -> None:
-    """Report issue #210's whole-set refusal, identically at both call sites.
+def _refuse_a_set_a_static_guard_rejects(context: CommandContext, *, as_json: bool) -> None:
+    """Report whichever whole-set guard refuses, identically at both commands.
 
-    One function rather than a `try`/`except` in each command, so `migrate
-    validate` and `migrate apply` cannot drift apart on a statically decidable
-    rule the way issue #36's class describes -- and so `apply` keeps its own
-    return-statement budget while refusing before `create_database` runs.
+    **The guards are not listed here.** They come from
+    :func:`run_static_migration_guards`, which is the one place that decides
+    which rules are decidable from the migration files alone and in what order.
+    ``migrate validate`` and ``migrate apply`` used to name them -- the scope
+    refusal inline with its own ``try``, the other two through a wrapper each --
+    while ``_check_migrations`` in ``cli/setup_commands.py``, the checker
+    `doctor` consults, kept a third list. Nothing pinned the lists to one
+    another, so a fourth guard would reach some of them and be found missing from
+    the rest only once the two commands disagreed about the same directory:
+    issue #36's class, and the shape #91 already found between `doctor` and
+    `migrate validate`.
+
+    What stays here is the **translation**, which is the CLI's own and not the
+    guards': each refusal keeps the exit code and the remedy this command already
+    published, and ``UnenforceableScopeError``'s remedy is still chosen by
+    whether the offending migration has been applied (issue #63). A probe cannot
+    use any of it -- ``_fail`` exits the process -- which is exactly why the
+    verdict half had to live somewhere both could call.
+
+    One function rather than a ``try``/``except`` in each command, so `apply`
+    keeps its own return-statement budget while refusing before
+    ``create_database`` runs and leaving no state database behind (issue #210,
+    T-21).
     """
     try:
-        refuse_duplicate_content_files(migration_set)
+        run_static_migration_guards(context.loaded.migration_set)
+    except UnenforceableScopeError as exc:
+        _fail(
+            str(exc),
+            remedy=_unenforceable_scope_remedy(exc, context.paths, context.project_id),
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
     except DuplicateContentFileError as exc:
         _fail(
             str(exc),
@@ -328,22 +358,27 @@ def _refuse_a_body_file_backing_two_revisions(
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )
-
-
-def _refuse_an_alias_colliding_with_an_item(migration_set: MigrationSet, *, as_json: bool) -> None:
-    """Report T-21's whole-set refusal identically at `migrate validate` and `apply`.
-
-    One function rather than a `try`/`except` in each command, so the two cannot
-    drift on a statically decidable rule (issue #36's class) -- and so `apply`
-    refuses before `create_database` runs and leaves no state database behind, the
-    way the scope and body-file guards already do.
-    """
-    try:
-        refuse_alias_item_id_collision(migration_set)
     except AliasItemCollisionError as exc:
         _fail(
             str(exc),
             remedy=ALIAS_ITEM_COLLISION_REMEDY,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+    except MigrationError as exc:
+        # Terminal net for the guard set. A *fourth* whole-set guard added to
+        # `run_static_migration_guards` raises a `MigrationError` subclass this
+        # function has no dedicated branch for, and without this it would escape as
+        # a Rich traceback -- exit 1, empty stdout, no `{error, remedy}` document
+        # even under `--json`, the CP-2 shape every branch above exists to avoid.
+        # The three guard errors are each a *direct* `MigrationError` subclass with
+        # no mutual inheritance, so the specific branches above always win for the
+        # three that exist; this catches only a type they do not name. It prefers
+        # the new error's own `.remedy` over the generic pointer, since only the
+        # guard that raised knows the exact fix.
+        _fail(
+            str(exc),
+            remedy=exc.remedy or _UNNAMED_GUARD_REFUSAL_REMEDY,
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )
@@ -1118,19 +1153,7 @@ def migrate_validate(as_json: JsonOption = False) -> None:
     """
     context, _ = _require_project(as_json)
 
-    try:
-        refuse_unenforceable_scope(context.loaded.migration_set)
-    except UnenforceableScopeError as exc:
-        _fail(
-            str(exc),
-            remedy=_unenforceable_scope_remedy(exc, context.paths, context.project_id),
-            as_json=as_json,
-            code=EXIT_STATE_ERROR,
-        )
-        return
-
-    _refuse_a_body_file_backing_two_revisions(context.loaded.migration_set, as_json=as_json)
-    _refuse_an_alias_colliding_with_an_item(context.loaded.migration_set, as_json=as_json)
+    _refuse_a_set_a_static_guard_rejects(context, as_json=as_json)
 
     _emit(
         {
@@ -1153,27 +1176,13 @@ def migrate_apply(as_json: JsonOption = False) -> None:
     """
     context, database = _require_project(as_json)
 
-    try:
-        refuse_unenforceable_scope(context.loaded.migration_set)
-    except UnenforceableScopeError as exc:
-        # Checked before `create_database` below, so a refused apply leaves no
-        # database file behind (issue #63): `migrate validate` already costs
-        # nothing on refusal, and `apply` should not cost more just because it
-        # would otherwise have created state.
-        _fail(
-            str(exc),
-            remedy=_unenforceable_scope_remedy(exc, context.paths, context.project_id),
-            as_json=as_json,
-            code=EXIT_STATE_ERROR,
-        )
-        return
-
-    # `MigrationEngine.apply` refuses these too, but only once a write
-    # transaction is open and `create_database` has already run. Refusing here
-    # as well is what keeps issue #63's property -- a refused apply leaves no
-    # database file behind -- true for these rules too (issue #210, T-21).
-    _refuse_a_body_file_backing_two_revisions(context.loaded.migration_set, as_json=as_json)
-    _refuse_an_alias_colliding_with_an_item(context.loaded.migration_set, as_json=as_json)
+    # Checked before `create_database` below, so a refused apply leaves no
+    # database file behind (issue #63, #210, T-21): `migrate validate` already
+    # costs nothing on refusal, and `apply` should not cost more just because it
+    # would otherwise have created state. `MigrationEngine.apply` runs the same
+    # guards through the same function, but only once a write transaction is open
+    # and `create_database` has already run.
+    _refuse_a_set_a_static_guard_rejects(context, as_json=as_json)
 
     # This installation's record of the state it built, out of the repository
     # tree (ADR-0004, SEC-7). Used twice below: to refuse to *apply into* a

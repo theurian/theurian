@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -30,6 +31,7 @@ import yaml
 from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from typer.testing import CliRunner
 
+from theurian.application import migration_alias_guards, migration_body_guards, migration_engine
 from theurian.application.proposal_service import _AT_BODY_CONTENT
 from theurian.cli import commands, migration_pipeline, propose_commands
 from theurian.cli.main import app
@@ -1320,15 +1322,51 @@ def _referenced_names(function: Any) -> set[str]:
     return seen
 
 
+#: The modules that hold a whole-set static migration guard. Enumerated from
+#: rather than restated, so a fourth module holding a fourth guard would have to
+#: be added here too -- but the guards themselves are discovered, not listed.
+_GUARD_MODULES = (migration_engine, migration_alias_guards, migration_body_guards)
+
+
+def _whole_set_guard_names() -> set[str]:
+    """Every whole-set static migration guard, discovered from its modules.
+
+    The population is the ``refuse_*`` functions that take a ``MigrationSet``,
+    living in the three guard modules -- ``refuse_unenforceable_scope``,
+    ``refuse_alias_item_id_collision``, ``refuse_duplicate_content_files``.
+    Discovering them by shape rather than hard-listing three names is what lets the
+    assertion below catch a *fourth* guard added to a module but wired into neither
+    call path: a subset check of three fixed names is blind to it, because the
+    three it names are still present.
+
+    The ``MigrationSet``-first-parameter filter is load-bearing in both
+    directions. It is not widened to every ``refuse_*`` in the application layer --
+    a CLI-option guard like ``_refuse_stray_options`` takes no ``MigrationSet`` and
+    is not one of these -- and not narrowed to one module, which would drop two of
+    the three. The annotation is a string under ``from __future__ import
+    annotations``, so it is compared as ``"MigrationSet"``.
+    """
+    names: set[str] = set()
+    for module in _GUARD_MODULES:
+        for name, obj in vars(module).items():
+            if not name.startswith("refuse_") or not inspect.isfunction(obj):
+                continue
+            params = list(inspect.signature(obj).parameters.values())
+            if params and params[0].annotation == "MigrationSet":
+                names.add(name)
+    return names
+
+
 def _names_through_local_helpers(function: Any) -> set[str]:
     """Names reachable from ``function``, following helpers defined beside it.
 
-    ``migrate validate`` reaches two of its three whole-set guards through
-    wrappers in its own module (``_refuse_a_body_file_backing_two_revisions``),
-    so a walk that stopped at the command callback would see the wrapper's name
-    and miss the guard's -- and the population comparison below would be between
-    a set of two wrappers and a set of three guards. Only functions defined in
-    the same module are followed, which keeps the closure bounded.
+    ``migrate validate`` reaches the whole-set guards through a wrapper in its
+    own module (``_refuse_a_set_a_static_guard_rejects``, which turns a refusal
+    into an exit code and a remedy), so a walk that stopped at the command
+    callback would see the wrapper's name and miss what it calls. Only functions
+    defined in the same module are followed, which keeps the closure bounded --
+    and is why the walk stops at the application-layer guard set rather than
+    descending into it.
     """
     seen: set[str] = set()
     visited = {function}
@@ -1389,10 +1427,32 @@ def test_the_accept_pre_check_reaches_the_loaders_own_entry_points_and_every_gua
 
     Stage 1 is the schema entry ``draft`` already calls, stage 2 is the loader's
     own read (which is where a declared pin is verified), and stage 3 is the
-    whole-set guards. The guards are compared as a *population* rather than as
-    the three ADR-0027 names: a fourth guard added to ``migrate validate`` and
-    not to the replay is the drift this test exists to catch, and a hard-coded
-    triple would stay green through it.
+    whole-set guards.
+
+    **Stage 3 is asked differently than it used to be, because the thing it was
+    asking about is gone.** This compared two *populations* of ``refuse_*``
+    names, one walked out of ``migrate validate``'s own code and one out of the
+    replay's, and it could do that only because each of them named the guards
+    itself. That hand-listing is what
+    :func:`~theurian.application.migration_engine.run_static_migration_guards`
+    removes: both paths now call one function, so "a fourth guard added to
+    ``migrate validate`` and not to the replay" is not a state the code can be
+    in, and a population comparison between two call sites that no longer list
+    anything would compare two empty sets and pass.
+
+    So the check moves to where the list now lives. Both paths are held to
+    reaching the shared function and to resolving it to the *same object*, and
+    the population check is applied to that function's own body. The residual it
+    still catches is the one that survived the refactor, and it is caught from
+    *both* ends: the population is *discovered* from the guard modules
+    (:func:`_whole_set_guard_names`) rather than hard-listed, so a fourth guard
+    added to a module but wired into ``run_static_migration_guards``' body
+    (:func:`~theurian.application.migration_engine.run_static_migration_guards`)
+    for *neither* path fails here -- it is in the discovered population and not in
+    the function's own names -- and one silently dropped from the set fails too,
+    because the known three are asserted still discoverable. A hard-coded triple
+    ``{a, b, c} <= referenced`` caught only the second of those: a fourth guard
+    added to neither leaves ``{a, b, c}`` intact and passes it.
     """
     wiring = _referenced_names(propose_commands._service)
     replay = migration_pipeline.rehearse_migration_set
@@ -1411,23 +1471,29 @@ def test_the_accept_pre_check_reaches_the_loaders_own_entry_points_and_every_gua
         "stage 2 is a second loader, so a declared pin is verified twice and by two rules"
     )
 
-    validate_guards = {
-        name
-        for name in _names_through_local_helpers(validate_command)
-        if name.startswith("refuse_")
-    }
-    replay_guards = {name for name in _referenced_names(replay) if name.startswith("refuse_")}
+    guards = "run_static_migration_guards"
+    assert guards in _names_through_local_helpers(validate_command), (
+        "migrate validate no longer runs the shared static guard set"
+    )
+    assert guards in _referenced_names(replay), "the replay no longer runs the shared guard set"
+    assert validate_command.__globals__[guards] is replay.__globals__[guards], (
+        "validate and the replay hold two definitions of one guard set"
+    )
 
+    shared = migration_engine.run_static_migration_guards
+    assert validate_command.__globals__[guards] is shared, (
+        "the CLI reaches a guard set that is not the application layer's"
+    )
+    population = _whole_set_guard_names()
     assert {
         "refuse_unenforceable_scope",
         "refuse_duplicate_content_files",
         "refuse_alias_item_id_collision",
-    } <= validate_guards, validate_guards
-    assert validate_guards == replay_guards, "the replay runs a different set of guards"
-    for name in validate_guards:
-        assert validate_command.__globals__[name] is replay.__globals__[name], (
-            f"{name} is defined twice: validate's copy and the replay's"
-        )
+    } <= population, f"the discovery lost a known guard, so it could pass vacuously: {population}"
+    unwired = population - _referenced_names(shared)
+    assert not unwired, (
+        f"a whole-set guard is defined but not run by run_static_migration_guards: {unwired}"
+    )
 
 
 # -- governed metadata (#249) ----------------------------------------------

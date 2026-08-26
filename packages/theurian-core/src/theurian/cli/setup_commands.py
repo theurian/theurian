@@ -35,11 +35,16 @@ from typing import Annotated, Any
 import typer
 
 from theurian import __version__
-from theurian.application.setup_context import SetupContext
+from theurian.application.migration_engine import run_static_migration_guards
+from theurian.application.project_service import ProjectPaths
+from theurian.application.setup_context import MigrationsCheck, SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
+from theurian.cli.context import schema_root
 from theurian.daemon.instance import DEFAULT_PORT, probe_health
+from theurian.domain.errors import TheurianError
 from theurian.domain.setup import SetupError, SetupState
 from theurian.infrastructure.claude.mcp_config import ClaudeCodeMcpConfig, ConnectionSpec
+from theurian.infrastructure.filesystem.migration_loader import load_migrations
 from theurian.infrastructure.secrets.file_store import FileSecretStore, default_data_dir
 from theurian.infrastructure.services import detect_manager
 from theurian.security.env_file import TOKEN_KEY
@@ -94,8 +99,68 @@ def build_context(
         health=lambda: probe_health(port=port),
         service=detect_manager(executable=_executable(), home=home),
         executable=_executable(),
+        check_migrations=_check_migrations,
         for_publication=for_publication,
     )
+
+
+def _check_migrations(root: Path) -> MigrationsCheck:
+    """Load and statically validate a project's migrations, the way `validate` does.
+
+    The composition root's half of #91: the probe reports the verdict, this makes
+    the same call ``cli/context.resolve_context`` makes and then runs the three
+    whole-set guards ``migrate validate`` runs over the loaded set. Anything the
+    two commands can disagree about is a `doctor` that exits 0 for a project
+    where every ``theurian migrate`` refuses.
+
+    The guards are called directly rather than through ``cli/commands``'
+    ``_refuse_a_set_a_static_guard_rejects``, which ``_fail``s to the terminal and
+    exits: a probe has to come back with a verdict, and a step that terminated the
+    process would take the other eighteen with it.
+
+    **``paths.root``, never the ``root`` that arrived.** ``ProjectPaths.of``
+    resolves symlinks -- macOS ``/var`` is ``/private/var`` -- so handing
+    ``load_migrations`` a resolved migrations directory beside an unresolved
+    project root makes its own containment check raise ``ValueError: ... is not
+    in the subpath``, which is neither a refusal nor a verdict (measured).
+    """
+    paths = ProjectPaths.of(root)
+    try:
+        loaded = load_migrations(paths.root, paths.migrations, schema_root())
+        run_static_migration_guards(loaded.migration_set)
+    # `TheurianError`, the whole family, and not a hand-listed tuple built from
+    # ``load_migrations``' ``Raises`` -- that tuple omitted whatever the docstring
+    # forgot, and a trailing-newline ``id`` block scalar raised the
+    # ``InvalidIdentifierError`` it left out (a ``DomainError``, not one of the five
+    # listed), so `doctor` demanded consent for "Could not check migrations-valid"
+    # on a directory `migrate validate` refuses. #91's own divergence, twice.
+    #
+    # This mirrors `migrate validate` exactly: it loads through ``_require_project``
+    # (`cli/commands.py`), whose ``except`` chain *ends* in a terminal ``except
+    # TheurianError``, so the set of errors it refuses on is precisely
+    # ``TheurianError``. Matching that set is what keeps the two from ever
+    # disagreeing about the same directory.
+    #
+    # Folding the whole family in is not too wide, and the reason is that this
+    # ``try`` calls only ``load_migrations`` and ``run_static_migration_guards`` --
+    # neither opens a state database nor calls ``resolve_context``. The
+    # state/history-family ``TheurianError``s (a checksum mismatch, a schema-version
+    # mismatch, a state database that cannot be read) are raised *outside* this
+    # block, so they cannot arise here and cannot be mislabelled as a migration
+    # problem. FR-K5's history verification is the same boundary from the other
+    # side: it runs in ``_require_project``'s ``_verify_history``, which this probe
+    # has no project context to reach, so `migrate validate` can refuse a tampered
+    # applied migration while `doctor`'s migrations-valid stays SATISFIED -- a
+    # *different* class, on the which-checks-run axis rather than this catch-set
+    # axis, tracked at #366 and deliberately not folded in here.
+    #
+    # A non-``TheurianError`` (a real bug, a bare stdlib error) still escapes to
+    # ``SetupService._probe``'s generic net -- "Could not check migrations-valid",
+    # a conflict -- in both this path and `migrate validate`, which is correct: it
+    # is not a verdict about the files.
+    except TheurianError as exc:
+        return MigrationsCheck(count=0, failure=exc)
+    return MigrationsCheck(count=len(loaded.migration_set), failure=None)
 
 
 def _executable() -> str:
@@ -168,8 +233,8 @@ def setup_command(
     artifact-integrity, serving-profile, single-instance, project-registered,
     project-layout, gitignore, mcp-health, migrations-valid, initial-index,
     serena-detection. Several of them name the command that does the work
-    instead -- `theurian init`, `theurian project register` -- and setup runs
-    none of them.
+    instead -- `theurian init`, `theurian project register`, `theurian migrate
+    validate` -- and setup runs none of them.
     """
     service = SetupService(build_context(port=port))
     report = service.run(SetupRequest(dry_run=dry_run, approve_conflicts=approve_conflicts))

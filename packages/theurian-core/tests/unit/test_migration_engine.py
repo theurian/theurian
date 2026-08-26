@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 import pytest
 from fakes import FrozenClock, InMemoryWriter
 
+from theurian.application.migration_alias_guards import refuse_alias_item_id_collision
 from theurian.application.migration_body_guards import (
     duplicate_content_file_violations,
     refuse_duplicate_content_files,
@@ -21,6 +22,7 @@ from theurian.application.migration_engine import (
     MigrationEngine,
     refuse_unenforceable_scope,
     revisions_to_purge,
+    run_static_migration_guards,
     unenforceable_scope_violations,
     verify_no_applied_migration_changed,
 )
@@ -32,6 +34,7 @@ from theurian.domain.enums import (
     TrustLevel,
 )
 from theurian.domain.errors import (
+    AliasItemCollisionError,
     DuplicateContentFileError,
     InvariantViolationError,
     MigrationChecksumMismatchError,
@@ -1686,3 +1689,121 @@ def test_the_refusal_compares_the_full_identity_tuple_not_the_inode_alone() -> N
     with pytest.raises(DuplicateContentFileError):
         refuse_duplicate_content_files(same_device_and_inode)
     assert duplicate_content_file_violations(same_device_and_inode) == (MigrationId(MIG_2),)
+
+
+# -- The static-guard order run_static_migration_guards promises ------------
+#
+# `run_static_migration_guards` calls its three guards in a fixed order, and its
+# docstring calls that order load-bearing: the scope refusal names one migration
+# as wrong, while the body-sharing and alias-collision refusals are statements
+# about the whole set, so reporting the narrower fault first keeps a reader from
+# being sent to a second migration that is not the one to edit. A set that trips
+# two guards at once is what pins the order -- reversing the calls changes which
+# error surfaces, and nothing else does, so the order-reversed mutation survived
+# every test until these.
+
+ITEM_B = ItemId("architecture.other-note")
+REV_B = RevisionId("01K1REVBBB01234567890ABCDE")
+
+
+def _upsert_of(
+    item_id: ItemId, revision_id: RevisionId, body: str, identity: tuple[int, int]
+) -> UpsertRevision:
+    """One ``upsertRevision`` for an arbitrary item, sharing a body identity.
+
+    ``_upsert`` above fixes ``item_id`` to :data:`ITEM`; the alias-collision case
+    below needs a *second* live item, so this takes the id explicitly.
+    ``_metadata()`` defaults keep tenant and ACL at the enforced values, so the
+    only guards a set built from these trips are the ones it is constructed to.
+    """
+    return UpsertRevision(
+        item_id=item_id,
+        revision_id=revision_id,
+        content_file_path="../knowledge/a.md",
+        content_identity=identity,
+        metadata=_metadata(),
+        content_sha256=ContentHash.of_text(body),
+    )
+
+
+def test_the_scope_refusal_is_reported_before_a_duplicate_body() -> None:
+    """Scope precedes duplicate: the narrower fault, named first (the docstring's claim).
+
+    MIG_1 names a foreign tenant *and* shares MIG_2's body file, so the set trips
+    the scope guard and the body-sharing guard at once -- both asserted present
+    below, so the order is the only thing left deciding which surfaces. The
+    docstring promises the scope refusal, which names one migration, ahead of the
+    body-sharing one, which is a statement about the set. Reversing those two calls
+    surfaces ``DuplicateContentFileError`` here instead, so this pins the first
+    edge of the order.
+    """
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(
+                MIG_1,
+                REV_1,
+                BODY_V1,
+                metadata=_metadata(tenant_id="acme-corp"),
+                content_identity=IDENTITY_A,
+            ),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V2,
+                    "../knowledge/a.md",
+                    identity=IDENTITY_A,
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+    with pytest.raises(UnenforceableScopeError):
+        refuse_unenforceable_scope(migrations)
+    with pytest.raises(DuplicateContentFileError):
+        refuse_duplicate_content_files(migrations)
+
+    with pytest.raises(UnenforceableScopeError):
+        run_static_migration_guards(migrations)
+
+
+def test_a_duplicate_body_is_reported_before_an_alias_collision() -> None:
+    """Duplicate precedes alias: the second edge, pinning the whole order.
+
+    One migration shares a body file across two live items *and* aliases a live
+    item id, so it trips the body-sharing guard and the alias-collision guard at
+    once -- both asserted present below. ``run_static_migration_guards`` runs the
+    body-sharing guard second and the alias-collision guard third, so it raises
+    ``DuplicateContentFileError``; reversing those two calls would surface
+    ``AliasItemCollisionError`` instead. Together with the test above this pins
+    scope < duplicate < alias, the whole order the docstring calls load-bearing.
+    """
+    migrations = MigrationSet.ordered(
+        (
+            _migration(
+                MIG_1,
+                CreateItem(
+                    item_id=ITEM,
+                    kind_=KnowledgeKind.ARCHITECTURE,
+                    namespace="backend",
+                    owner="platform-team",
+                ),
+                _upsert_of(ITEM, REV_1, BODY_V1, IDENTITY_A),
+                CreateItem(
+                    item_id=ITEM_B,
+                    kind_=KnowledgeKind.ARCHITECTURE,
+                    namespace="backend",
+                    owner="platform-team",
+                ),
+                _upsert_of(ITEM_B, REV_B, BODY_V2, IDENTITY_A),
+                AddAlias(alias=ITEM, item_id=ITEM_B),
+            ),
+        )
+    )
+    with pytest.raises(DuplicateContentFileError):
+        refuse_duplicate_content_files(migrations)
+    with pytest.raises(AliasItemCollisionError):
+        refuse_alias_item_id_collision(migrations)
+
+    with pytest.raises(DuplicateContentFileError):
+        run_static_migration_guards(migrations)

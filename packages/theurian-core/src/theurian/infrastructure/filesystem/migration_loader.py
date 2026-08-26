@@ -1163,6 +1163,13 @@ def load_migrations(
             :class:`~theurian.domain.errors.EscapeSite` for why that claim
             cannot be made here.
         InputTooLargeError: If a file exceeds its size limit.
+        IrregularSourceFileError: If an ``upsertRevision`` operation's
+            ``contentFile`` names a file whose ``st_size`` bounds nothing -- a
+            FIFO, a socket, a device (issue #215) -- raised by
+            :func:`~theurian.security.paths.read_source_file` and re-raised by
+            :func:`_parse_upsert` with the migration file as its referrer.
+            Absent from this list until a caller read the list as the population
+            of refusals and left the one symbol uncaught (#91).
         MigrationsDirectoryUnreadableError: If ``migrations_dir`` cannot be
             probed or listed for a reason other than genuinely not existing --
             a parent that denies traversal, the directory itself denying
@@ -1180,6 +1187,18 @@ def load_migrations(
             that cannot be resolved offline or resolves without terminating
             (issue #235; translated at the validate seam by
             :func:`_validate_document`, which :func:`_load_one` routes through).
+        InvalidIdentifierError: If any identifier a document names -- its ``id``,
+            a ``dependsOn`` entry, an operation's ``itemId``/``revisionId``/
+            ``specId`` -- fails its format contract when its
+            :mod:`~theurian.domain.identifiers` constructor validates it in
+            ``_load_one``/``_parse_upsert``. A ``DomainError`` (and so a
+            ``TheurianError``), raised *after* schema validation: the schema's
+            ULID ``pattern`` is ``$``-anchored, which Python's ``re`` also
+            matches immediately before a trailing newline, so an ``id: |`` block
+            scalar yielding ``<ULID>\\n`` passes the schema and is refused only by
+            ``MigrationId``'s ``\\Z``-anchored check. Absent from this list until a
+            caller read the list as the population of refusals and left the family
+            uncaught -- the same gap :class:`IrregularSourceFileError` had (#91).
     """
     _refuse_unusable_migrations_directory_symlink(migrations_dir, project_root)
 

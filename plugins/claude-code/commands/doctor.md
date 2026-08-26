@@ -27,7 +27,11 @@ matters, and the exact command that fixes it.
   terminal of the person who ran it and the remedy needs them. Treat its output
   as private: quote from it only what the finding needs, and if a finding
   involves the authentication token, do not print the token or any part of it.
-  Only `--report` withholds, and there is no flag that turns redaction off.
+  It may also quote authored text straight from a repository file: when a
+  project's migrations do not validate, the `migrations-valid` finding carries
+  the refusal message, which echoes the offending migration's own content, so the
+  plain payload is not pre-sanitized. Only `--report` withholds, and there is no
+  flag that turns redaction off.
 - If the user asks for a report to paste into a public issue, use
   `theurian doctor --report --json`. It substitutes the paths Theurian wrote into
   the payload and withholds the values it only read — an MCP entry, a service

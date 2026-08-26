@@ -237,6 +237,41 @@ def refuse_unenforceable_scope(migration_set: MigrationSet) -> None:
                 _refuse_operation_scope(migration.migration_id, operation)
 
 
+def run_static_migration_guards(migration_set: MigrationSet) -> None:
+    """Every whole-set rule decidable from the files alone, in one place, in order.
+
+    Four call sites ran these three guards, each with its own hand-written list:
+    :meth:`MigrationEngine.apply`, ``rehearse_migration_set``, ``migrate
+    validate``/``apply`` in ``cli/commands.py``, and ``_check_migrations`` in
+    ``cli/setup_commands.py`` -- the checker `doctor` consults. Nothing pinned
+    the lists to each other, so a fourth guard would reach some of them and be
+    discovered missing from the rest only when the answers diverged: issue #36's
+    class, and the shape #91 already found once between `doctor` and `migrate
+    validate`.
+
+    The order is load-bearing and not alphabetical. The scope refusal names one
+    migration as wrong, while the other two are statements about the *set*, and
+    reporting the narrower fault first is what keeps a reader from being sent to
+    a second migration that is not the one to edit (see
+    :meth:`MigrationEngine.apply`'s ``Raises``).
+
+    "Static" means decidable from the migration files alone: nothing here opens
+    a state database, so FR-K5's history verification is not among these and is
+    reached by ``migrate validate`` through ``_require_project`` instead.
+
+    Raises:
+        UnenforceableScopeError: A revision names a tenant or ACL group nothing
+            can yet enforce (issue #63).
+        DuplicateContentFileError: Two operations reference one body file
+            (issue #210).
+        AliasItemCollisionError: An ``addAlias`` key equals the id of an item
+            whose final status is not ``deprecated`` (SEC-13, T-21).
+    """
+    refuse_unenforceable_scope(migration_set)
+    refuse_duplicate_content_files(migration_set)
+    refuse_alias_item_id_collision(migration_set)
+
+
 def unenforceable_scope_violations(migration_set: MigrationSet) -> tuple[MigrationId, ...]:
     """Every migration id `refuse_unenforceable_scope` would refuse, without raising.
 
@@ -368,9 +403,7 @@ class MigrationEngine:
                 state database behind.
         """
         plan = self.plan(writer, project_id, migration_set)
-        refuse_unenforceable_scope(migration_set)
-        refuse_duplicate_content_files(migration_set)
-        refuse_alias_item_id_collision(migration_set)
+        run_static_migration_guards(migration_set)
         report = ApplyReport(skipped=list(plan.already_applied))
 
         # The items whose surfaceability or current revision an operation could
@@ -819,6 +852,7 @@ __all__ = [
     "WithdrawalCandidate",
     "refuse_unenforceable_scope",
     "revisions_to_purge",
+    "run_static_migration_guards",
     "unenforceable_scope_violations",
     "verify_no_applied_migration_changed",
 ]

@@ -17,13 +17,14 @@ from typing import Any, override
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
+from setup_migrations import unchecked_migrations
 
-from theurian.application.project_service import ProjectRegistry
-from theurian.application.setup_context import SetupContext
+from theurian.application.project_service import ProjectRegistry, ensure_gitignore
+from theurian.application.setup_context import MigrationsCheck, SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.application.setup_steps import STEPS, Step, probe_project_registered
 from theurian.cli.commands import _emit
-from theurian.domain.project import GITIGNORE_ENTRIES
+from theurian.domain.errors import MigrationError
 from theurian.domain.setup import (
     SetupReport,
     SetupState,
@@ -710,10 +711,17 @@ def test_the_summaries_carry_the_locations_that_removing_paths_took_out(
 #: `_states`, counted off their branches: platform 2, core-present 2 (three
 #: returns, two of them CONFLICTING), artifact-integrity 1, serving-profile 1
 #: (three returns, one reachable here), single-instance 3, project-registered 4,
-#: project-layout 3, gitignore 3, mcp-health 2, migrations-valid 2 (three
-#: returns, two of them NOT_APPLICABLE), initial-index 1 (two summaries, one
-#: status), serena-detection 2. Independently: 31 ``return SetupStep(...)``
-#: statements collapsing onto 26 pairs.
+#: project-layout 3, gitignore 3, mcp-health 2, migrations-valid 3 (four arms,
+#: two of them NOT_APPLICABLE), initial-index 1 (two summaries, one status),
+#: serena-detection 2. Those twelve add to 27.
+#:
+#: This comment used to carry a second, independent count -- "31 ``return
+#: SetupStep(...)`` statements collapsing onto 26 pairs". It is gone rather than
+#: updated: #87 and #91 rewrote ``probe_gitignore`` and ``probe_migrations`` into
+#: a different number of arms, and a hand-counted source total that the next
+#: rewrite will falsify again is prose asserting a measurement nobody re-takes.
+#: The per-step tally above is the derivation, and the assertion below prints
+#: the observed set when it disagrees.
 #:
 #: Two steps have returns no state here can walk, and both are walked elsewhere.
 #: `core-present`'s third -- Core installed without its ``daemon`` extra (#78) --
@@ -736,7 +744,7 @@ def test_the_summaries_carry_the_locations_that_removing_paths_took_out(
 #: survives this, because the `root is None` arm keeps emitting
 #: NOT_APPLICABLE. What catches a probe naming a path is the `paths` assertion
 #: in the loop, not this number.
-ACTIONLESS_STEP_STATUS_PAIRS = 26
+ACTIONLESS_STEP_STATUS_PAIRS = 27
 
 #: Any absolute path. What matters is only that a probe named one.
 _A_NAMED_PATH = "/tmp/a-file-this-step-only-reads"  # noqa: S108 - never opened
@@ -771,10 +779,13 @@ def _converged_repository(base: Path) -> SetupContext:
         ),
         encoding="utf-8",
     )
-    # Every managed entry, not just `.theurian/state/`: `probe_gitignore` reports
-    # `satisfied` only when the whole current block is present, so a stale block
-    # (one missing `.theurian/proposals-local/`) no longer reads as converged.
-    (root / ".gitignore").write_text("\n".join(GITIGNORE_ENTRIES) + "\n", encoding="utf-8")
+    # Written by the function `theurian init` calls, rather than by joining the
+    # entries: since #87 `probe_gitignore` reports `satisfied` only for the
+    # managed block itself, and the bare entries with no markers around them are
+    # a hand-written list it deliberately does not credit. Composing them here
+    # would leave this state reporting MISSING and quietly drop
+    # `gitignore: satisfied` out of the pair count below.
+    ensure_gitignore(root)
     mcp_config = FakeMcpConfig()
     mcp_config.serena = True
     context = _with(base, project_root=root, mcp_config=mcp_config)
@@ -822,6 +833,31 @@ def _initialised_but_empty_repository(base: Path) -> SetupContext:
     return _with(base, project_root=root)
 
 
+def _migrations_that_do_not_validate(base: Path) -> SetupContext:
+    """A repository whose migration set the loader refuses (#91).
+
+    The only state here that walks `probe_migrations`' MISSING arm. Every other
+    one either has no migrations directory or a checker reporting nothing wrong,
+    and an arm no state walks is invisible to the count below -- which is how a
+    mutation naming ``paths=(str(paths.migrations),)`` on it would survive, the
+    same shape as the `probe_migrations` mutation this section's comment already
+    records.
+
+    The refusal is injected rather than produced by writing a broken YAML file,
+    because what this state needs is the *arm*, and the loader is wired in
+    ``tests/integration/test_probe_migrations_validate.py`` where the wiring
+    itself is the subject.
+    """
+    root = _repository(base)
+    (root / ".theurian" / "migrations").mkdir(parents=True, exist_ok=True)
+    refusal = MigrationError("0001-broken.yaml: mapping values are not allowed here")
+    return _with(
+        base,
+        project_root=root,
+        check_migrations=lambda _: MigrationsCheck(count=0, failure=refusal),
+    )
+
+
 def _states(tmp_path: Path) -> dict[str, SetupContext]:
     """One context per shape a report-only step can be probed in."""
     served = _under(tmp_path, "served")
@@ -832,6 +868,9 @@ def _states(tmp_path: Path) -> dict[str, SetupContext]:
             _under(tmp_path, "cold"), project_root=_repository(_under(tmp_path, "cold"))
         ),
         "initialised but empty": _initialised_but_empty_repository(_under(tmp_path, "initialised")),
+        "migrations that do not validate": _migrations_that_do_not_validate(
+            _under(tmp_path, "unvalidated")
+        ),
         "converged inside a repository": _converged_repository(_under(tmp_path, "converged")),
         "conflicted": _conflicted_repository(_under(tmp_path, "conflicted")),
         "a daemon already serving this data directory": _with(
@@ -1472,5 +1511,13 @@ def _with(tmp_path: Path, **overrides: Any) -> SetupContext:
         ),
         "service": service,
         "executable": _installed_executable(tmp_path),
+        # A checker that reads nothing, because no test in this module is about
+        # migration validity and `_converged_repository`'s `0001-initial.yaml`
+        # is an empty file the real loader refuses -- which would make that
+        # state not converged for a reason that has nothing to do with what it
+        # is fixturing. `_migrations_that_do_not_validate` injects a refusal
+        # where the arm is wanted; the loader itself is wired in
+        # `tests/integration/test_probe_migrations_validate.py`.
+        "check_migrations": unchecked_migrations,
     }
     return SetupContext(**{**defaults, **overrides})

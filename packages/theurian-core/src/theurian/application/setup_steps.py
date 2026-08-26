@@ -44,7 +44,9 @@ from theurian.application.project_service import (
     ProjectError,
     ProjectPaths,
     ProjectRegistry,
+    locate_gitignore_block,
     read_active_state,
+    render_gitignore_block,
 )
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_withholding import (
@@ -343,6 +345,25 @@ def probe_artifact_integrity(_: SetupContext) -> SetupStep:
 
 
 def probe_data_directory(context: SetupContext) -> SetupStep:
+    """Whether the data directory is there, is a directory, and is private.
+
+    Three questions, because the summary was published for two. ``exists()`` is
+    true of a *regular file*, and ``is_world_accessible`` answers whatever that
+    file's mode says -- so a 0600 file at this path satisfied a step whose
+    summary reads "exists with private permissions", and ``token``,
+    ``token-storage`` and ``env-file`` then went on to write *inside* it while
+    the run reported CONVERGED.
+
+    The not-a-directory arm goes ahead of the mode check rather than after it. A
+    0666 file answers the world-accessible question true and would be reported
+    as "mode 0666, readable by other users" beside "Tighten it to 0700" -- a
+    remedy that leaves a file at the path with a tidier mode and nothing else
+    fixed.
+
+    CONFLICTING rather than MISSING, because setup replaces nothing it did not
+    create (SEC-18): what is there is somebody's file, and ``missing`` is the
+    status that would have setup act on it.
+    """
     directory = context.data_dir
     if not directory.exists():
         return SetupStep(
@@ -351,6 +372,16 @@ def probe_data_directory(context: SetupContext) -> SetupStep:
             summary=f"{directory} does not exist.",
             action=f"Create {directory} with mode 0700.",
             paths=(str(directory),),
+        )
+    if not directory.is_dir():
+        return SetupStep(
+            step_id=StepId.DATA_DIRECTORY,
+            status=StepStatus.CONFLICTING,
+            summary=f"{directory} exists but is not a directory.",
+            detail=(
+                "Setup never replaces a file it did not create. Move it aside; setup then "
+                "creates the directory with mode 0700."
+            ),
         )
     if is_world_accessible(directory):
         mode = directory.stat().st_mode & 0o777
@@ -415,6 +446,40 @@ def apply_token(context: SetupContext) -> None:
 
 
 def probe_token_storage(context: SetupContext) -> SetupStep:
+    """Which permission bits the token file and its directory grant (SEC-4).
+
+    The check is ``st_mode & 0o077 == 0`` on the file and on the directory
+    holding it. The satisfied summary used to read "stored 0600 inside a 0700
+    directory", which is a *different* claim: a 0400 token passes the check and
+    falsifies the sentence, and no mode here was ever compared to 0600 at all.
+
+    **The sentence says permission bits, and claims nothing wider.** "Not
+    accessible to other local users" was the same overclaim one step further
+    out, because mode bits are not the only thing that grants access. A macOS
+    ACL overrides them: a 0600 token carrying a ``group:everyone allow read``
+    entry -- inherited from the directory it was created in, or set by hand with
+    ``chmod +a`` -- reported ``satisfied`` under that wording (measured). This
+    probe never asks for an ACL and cannot say what one would grant, so what it
+    publishes is the thing it measured. That line is what an operator quotes in
+    a security review.
+
+    **Three conflicts, and two of them are an exposed credential.** A
+    world-accessible *file* has been readable, and tightening the mode restores
+    the permissions rather than the secrecy -- so that arm names `theurian auth
+    rotate`. A file whose own bits are clean inside a *readable* directory is a
+    different fact: the directory's mode never made the token's contents
+    readable, so the remedy is only to tighten the directory, and rotation is not
+    asked for. A *writable* directory is the third case, and it splits from the
+    readable one because ``is_world_accessible`` is ``st_mode & 0o077`` -- which
+    includes the write bits. A directory another user can write is not a listing
+    exposure: they can unlink the token and drop in their own, or plant a symlink
+    the next mint writes the token through (#371). The credential may already have
+    been substituted, and tightening the directory does not undo that -- so this
+    arm asks for `theurian auth rotate` the way the readable-file arm does. The
+    original single directory arm dropped rotation on the write bit too, telling
+    an operator whose 0770 ``auth/`` an attacker could rewrite that nothing needed
+    replacing.
+    """
     path = context.auth_dir / TOKEN_KEY
     if not path.is_file():
         return SetupStep(
@@ -424,7 +489,7 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
             action="Store the token as a 0600 file inside a 0700 directory.",
             paths=(str(path),),
         )
-    if is_world_accessible(path) or is_world_accessible(context.auth_dir):
+    if is_world_accessible(path):
         return SetupStep(
             step_id=StepId.TOKEN_STORAGE,
             status=StepStatus.CONFLICTING,
@@ -435,10 +500,43 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
                 f"with `theurian auth rotate`."
             ),
         )
+    if is_world_accessible(context.auth_dir):
+        directory_mode = context.auth_dir.stat().st_mode & 0o777
+        if directory_mode & 0o022:
+            # The group/other *write* bit, split from the readable case because a
+            # writable directory is a substitution surface, not a listing one: an
+            # attacker who can write `auth/` can unlink the token and replace it,
+            # or plant a symlink the next `apply_token` mints through (#371, the
+            # O_NOFOLLOW write-through mechanism). Tightening the mode does not
+            # undo a swap that may already have happened, so this arm asks for
+            # rotation as well -- the same reason the world-readable-file arm does.
+            return SetupStep(
+                step_id=StepId.TOKEN_STORAGE,
+                status=StepStatus.CONFLICTING,
+                summary="The token's directory is writable by group or other.",
+                detail=(
+                    f"{context.auth_dir} is mode {directory_mode:04o}; tighten it with "
+                    f"`chmod 0700 {context.auth_dir}`. A writable directory lets another "
+                    f"user replace the token file, so rotate it with `theurian auth "
+                    f"rotate` as well -- tightening the mode does not undo a substitution "
+                    f"that may already have happened."
+                ),
+            )
+        return SetupStep(
+            step_id=StepId.TOKEN_STORAGE,
+            status=StepStatus.CONFLICTING,
+            summary="The token's directory grants group or other access.",
+            detail=(
+                f"{context.auth_dir} is mode {directory_mode:04o}; tighten it with "
+                f"`chmod 0700 {context.auth_dir}`. Rotation is not asked for here: "
+                f"the token file's own bits grant nothing to group or other, so the "
+                f"directory's mode never made its contents readable."
+            ),
+        )
     return SetupStep(
         step_id=StepId.TOKEN_STORAGE,
         status=StepStatus.SATISFIED,
-        summary="The token is stored 0600 inside a 0700 directory.",
+        summary="No group or other permission bits are set on the token file or its directory.",
     )
 
 
@@ -772,6 +870,15 @@ def _service_path(context: SetupContext) -> str:
 
 
 def probe_daemon_running(context: SetupContext) -> SetupStep:
+    """Whether anything healthy answers on the one address this run probes.
+
+    ``context.health()`` asks ``127.0.0.1:<port>`` and nothing else, so every
+    sentence here names that address. "No daemon is running" was a claim about
+    the whole machine drawn from one probe of one port, and it is wrong in the
+    state operators actually hit: a daemon serving this data directory on
+    *another* port holds ``daemon.lock``, so `doctor` sent the reader to start a
+    second one that ``theurian daemon start`` then refuses as a duplicate (#93).
+    """
     if context.health() is not None:
         return SetupStep(
             step_id=StepId.DAEMON_RUNNING,
@@ -782,7 +889,10 @@ def probe_daemon_running(context: SetupContext) -> SetupStep:
         return SetupStep(
             step_id=StepId.DAEMON_RUNNING,
             status=StepStatus.NOT_APPLICABLE,
-            summary="No daemon is running, and this platform has no service manager.",
+            summary=(
+                f"Nothing is answering on 127.0.0.1:{context.port}, and this platform "
+                f"has no service manager."
+            ),
             detail="Start it with `theurian daemon start --foreground`.",
         )
     return SetupStep(
@@ -819,13 +929,24 @@ def probe_single_instance(context: SetupContext) -> SetupStep:
     Never repairs. Two daemons on one data directory is a state to report, not
     one to resolve by killing something that may belong to another session
     (ADR-0002).
+
+    **The silent arm says outright what it did not look at**, and this step is
+    where that matters most, because duplicate daemons are its whole subject. "No
+    daemon is running, so there is nothing to be duplicated" is exactly the
+    conclusion one silent port does not support: a second daemon serving this
+    data directory on another port holds its lock and answers a different
+    address, and this check never asked (#93).
     """
     health = context.health()
     if health is None:
         return SetupStep(
             step_id=StepId.SINGLE_INSTANCE,
             status=StepStatus.NOT_APPLICABLE,
-            summary="No daemon is running, so there is nothing to be duplicated.",
+            summary=(
+                f"Nothing is answering on 127.0.0.1:{context.port}, so single-instance "
+                f"cannot be assessed from here. A daemon serving this data directory on "
+                f"another port would not be seen by this check."
+            ),
         )
 
     running_dir = str(health.get("dataDir", ""))
@@ -953,7 +1074,59 @@ def probe_project_layout(context: SetupContext) -> SetupStep:
 
 
 def probe_gitignore(context: SetupContext) -> SetupStep:
-    """Derived artifacts must not be committable (ADR-0004, O-2)."""
+    """Whether the managed block is there and current (ADR-0004, O-2).
+
+    The predicate is **block identity**, not entry presence: exactly one
+    well-formed marker pair, and the span between the markers byte-for-byte the
+    block `theurian init` writes. That is deliberately the same question
+    :func:`ensure_gitignore` answers when it decides whether to rewrite, and it
+    is asked through the same two functions so the two cannot drift.
+
+    Entry presence was the old check, over the whole file, and a substring is not
+    a rule (#87). Two files satisfied it while Git ignored nothing: every entry
+    prefixed with ``!``, which is the syntax for *un*-ignoring, and every entry
+    prefixed with ``# ``, which is the syntax for not writing a rule. Measured
+    against the first, ``git check-ignore .theurian/state/index.db`` exits 1
+    while the step reported ``satisfied`` -- so ADR-0004's derived artifacts and
+    ADR-0028's deliberately machine-local `.theurian/proposals-local/` were
+    committable on a machine `doctor` called converged.
+
+    A third file satisfied it for a reason that is not a disclosure: the managed
+    entries written by hand, with no markers. Those rules do ignore what they
+    name. What is wrong there is the *next* `theurian init`, which finds no block
+    to rewrite, appends its own, and leaves the file carrying two lists that
+    drift apart with nothing to say so -- which is why block identity is a
+    **different question** than "is it ignored", and the step says so in its own
+    sentence.
+
+    **Different, and not strictly stronger.** The residual runs the other way
+    too, because block identity is blind to everything outside the markers. Two
+    inputs are ``satisfied`` here while ``git check-ignore
+    .theurian/state/index.db`` exits 1 (both measured):
+
+    - the current block, followed further down the same file by
+      ``!.theurian/state/`` -- the negation re-includes the directory, and the
+      derived artifacts inside it with it;
+    - the current block alone, beside a nested `.theurian/.gitignore` holding
+      ``!state/`` -- a file this step never opens.
+
+    Recorded rather than closed here, because what settles the actual guarantee
+    is not a wider read of ignore files: it is asking Git what is *tracked*.
+    Issue #64 owns that check -- ``git ls-files`` over the derived artifacts --
+    and it answers "is a derived artifact in the repository" for every way one
+    can get there, negation patterns and a `git add -f` alike.
+
+    HIGH-2 (#49) is the same class one step earlier and stays closed by
+    construction: a stale block -- every project initialised before ADR-0028
+    added `.theurian/proposals-local/` -- is not the rendered block, and the
+    summary names the entry a re-run brings in.
+
+    ``newline=""`` on the read is load-bearing. `ensure_gitignore` reads and
+    writes with it so a CRLF file is not silently rewritten end to end, and it
+    *does* rewrite a CRLF block (measured, ``changed=True``); a universal-newline
+    read here would find the rendered block in what it read and report satisfied
+    for a file every `theurian init` changes.
+    """
     root = context.project_root
     if root is None:
         return SetupStep(
@@ -962,38 +1135,78 @@ def probe_gitignore(context: SetupContext) -> SetupStep:
             summary="Not inside a Git repository.",
         )
     gitignore = root / ".gitignore"
-    exists = gitignore.is_file()
-    contents = gitignore.read_text(encoding="utf-8") if exists else ""
-    # Every entry the current managed block writes, not just `.theurian/state`. A
-    # substring check on one entry read `satisfied` off a *stale* block -- every
-    # project initialised before ADR-0028 added `.theurian/proposals-local/`, so
-    # `theurian propose --local` there wrote a private body to a directory Git did
-    # not ignore while `doctor` reported the ignore step converged (HIGH-2).
-    missing = [entry for entry in GITIGNORE_ENTRIES if entry not in contents]
-    if not missing:
+    if not gitignore.is_file():
+        return _gitignore_missing(
+            f"{gitignore} does not exist, so nothing ignores the derived artifacts."
+        )
+
+    content = gitignore.read_text(encoding="utf-8", newline="")
+    try:
+        span = locate_gitignore_block(content, gitignore)
+    except ProjectError:
+        # The refusal's own text is not published: it names the marker line and
+        # the path, both Theurian's, but the remedy it carries tells the reader
+        # to re-run `theurian init` -- and that command refuses a file in this
+        # state. The action here says what to repair instead.
+        return SetupStep(
+            step_id=StepId.GITIGNORE,
+            status=StepStatus.MISSING,
+            summary=(
+                f"{gitignore}'s Theurian block markers are malformed; "
+                f"`theurian init` refuses the file in this state."
+            ),
+            action="Repair the Theurian block markers by hand, then run `theurian init`.",
+            critical=False,
+        )
+
+    if span is None:
+        return _gitignore_missing(
+            f"{gitignore} has no Theurian block. Rules written by hand are not evaluated here."
+        )
+    return _managed_block_verdict(gitignore, content[span[0] : span[1]])
+
+
+def _managed_block_verdict(gitignore: Path, managed: str) -> SetupStep:
+    """What to say about a well-formed block that is or is not the current one.
+
+    *managed* is the span between the markers, and every question below is asked
+    of it alone -- never of the whole file. An entry below the end marker ignores
+    what it names today and is not in what the next `theurian init` rewrites, so
+    crediting it would report a block as complete that comes back incomplete,
+    leaving the user's own line as the only thing ignoring an ADR-0028 directory
+    in a file they may reasonably tidy.
+    """
+    if managed == render_gitignore_block():
         return SetupStep(
             step_id=StepId.GITIGNORE,
             status=StepStatus.SATISFIED,
-            summary="Derived Theurian artifacts are ignored.",
+            summary=f"{gitignore}'s Theurian block is present and current.",
         )
-    # No `paths`: `init` appends the block, setup only reads the file, and the
-    # file may not be there at all -- which is how a `.gitignore` that was never
-    # created came to be reported as one setup had modified.
-    #
-    # Three summaries for one status, because a file that is absent, one that is
-    # silent, and one whose block is out of date are different things to be told
-    # and the reader acts on them differently. Naming the path is what removing
-    # `paths` has to compensate for; the stale case names the missing entries so
-    # the reader can see what a re-run brings current.
-    stale = exists and len(missing) < len(GITIGNORE_ENTRIES)
-    if stale:
-        summary = (
+    missing = [entry for entry in GITIGNORE_ENTRIES if entry not in managed]
+    if missing:
+        return _gitignore_missing(
             f"{gitignore}'s Theurian block is out of date: it does not ignore {', '.join(missing)}."
         )
-    elif exists:
-        summary = f"{gitignore} has no Theurian block."
-    else:
-        summary = f"{gitignore} does not exist, so nothing ignores the derived artifacts."
+    return _gitignore_missing(
+        f"{gitignore}'s Theurian block differs from the one `theurian init` writes."
+    )
+
+
+def _gitignore_missing(summary: str) -> SetupStep:
+    """One MISSING step, whichever way the block is not the current one.
+
+    Several summaries share the status and the same action, because a file that
+    is absent, one that is silent, one whose block is stale and one whose block
+    was edited are different things to be told and the reader acts on them
+    differently. The malformed-marker arm is MISSING too and deliberately does
+    *not* come through here: `theurian init` refuses a file in that state, so its
+    action is to repair the markers by hand rather than to re-run the command.
+
+    The path is named in every summary: `init` appends the block and setup only
+    ever reads the file, so this step names no ``paths`` -- which is how a
+    `.gitignore` that was never created came to be reported as one setup had
+    modified.
+    """
     return SetupStep(
         step_id=StepId.GITIGNORE,
         status=StepStatus.MISSING,
@@ -1066,12 +1279,19 @@ def probe_mcp_health(context: SetupContext) -> SetupStep:
     Never critical: a Theurian whose knowledge is built and whose daemon runs is
     useful even if this machine's Claude Code cannot reach it yet, and reporting
     that in ``degraded`` beats halting everything that did work (§6.1).
+
+    The third member of #93's class, and the same evidence as the other two: one
+    call to ``context.health()`` against one address, so the sentence names the
+    address rather than concluding anything about the machine.
     """
     if context.health() is None:
         return SetupStep(
             step_id=StepId.MCP_HEALTH,
             status=StepStatus.NOT_APPLICABLE,
-            summary="No daemon is running, so the MCP endpoint cannot be checked.",
+            summary=(
+                f"Nothing is answering on 127.0.0.1:{context.port}, so the MCP endpoint "
+                f"cannot be checked."
+            ),
         )
     return SetupStep(
         step_id=StepId.MCP_HEALTH,
@@ -1084,8 +1304,62 @@ def probe_mcp_health(context: SetupContext) -> SetupStep:
 
 
 def probe_migrations(context: SetupContext) -> SetupStep:
-    """Reports; never repairs. Migrations are Git-tracked authored content, and
-    setup has no business editing them (§6.2 row 16)."""
+    """Runs the static validation `theurian migrate validate` runs; never repairs.
+
+    Migrations are Git-tracked authored content, and setup has no business
+    editing them (§6.2 row 16) -- so no arm here names a path and no arm writes.
+    What changed with #91 is that the step now *opens* them: it counted
+    ``migrations/*.yaml`` and reported ``satisfied`` for any directory at all, so
+    one file of nonsense read as converged while every ``theurian migrate``
+    against that project refused.
+
+    The count is the checker's and never a second enumeration taken beside it.
+    ``glob("*.yaml")`` is not the loader's answer -- a symlinked or unreadable
+    entry is a refusal there rather than a file -- and two commands reporting
+    different numbers for the same directory is the same defect in a quieter
+    form.
+
+    The checker is injected (:attr:`SetupContext.check_migrations`) rather than
+    imported, because loading a migration set means reading YAML off disk against
+    the published JSON Schemas and the application layer does not reach for the
+    infrastructure loader (ADR-0003).
+
+    **Static validation only.** These are the checks over the *files*: parse,
+    schema, ``contentFile`` containment, the ``contentSha256`` pins, application
+    order, and the three whole-set guards. FR-K5's history verification -- an
+    already-``APPLIED`` migration edited since the state database recorded its
+    checksum -- is *not* among them. ``migrate validate`` reaches that through
+    ``_require_project``, which opens the previously active state database
+    (``_verify_history``); this step has no project context and opens no
+    database, so a tampered applied migration is invisible here and reported by
+    ``theurian migrate validate`` alone. Issue #366 owns whether `doctor` should
+    reach it.
+
+    **The checker decides the verdict, and nothing is asked ahead of it.** An
+    ``is_dir()`` pre-gate was a second discovery predicate the loader does not
+    share, and the two disagreed wherever a directory entry exists and cannot be
+    read: a dangling ``.theurian/migrations`` symlink and a symlink loop both
+    reported ``not-applicable`` -- "No migrations directory yet." -- while
+    ``migrate validate`` exited 4 on the same tree, and a ``.theurian`` denying
+    traversal made ``is_dir()`` raise ``PermissionError`` *before* the checker
+    ran, so the refusal never reached ``_MIGRATION_REFUSALS`` and the reader got
+    "Could not check migrations-valid" instead (three measured splits). What the
+    gate saved does not pay for that: the whole checker call against a repository
+    with no migrations directory measures ~0.14 ms, the load inside it 0.016 ms,
+    because ``load_migrations`` answers an absent directory with an empty set
+    rather than reading anything.
+
+    The ``is_dir()`` that remains chooses **between two green wordings only** --
+    "No migrations directory yet." against "0 migration(s) parse and validate."
+    -- and it is reached only once the checker has returned without a failure. A
+    disagreement between it and the loader can no longer make `doctor` green
+    where ``migrate validate`` refuses, because every refusal now raises through
+    the checker first.
+
+    A refusal quotes the author's own file, and that is not Theurian's to publish
+    (O-3, SEC-6): :func:`failure_detail` puts the message on the operator's
+    terminal and the type name in a shared report.
+    """
     root = context.project_root
     if root is None:
         return SetupStep(
@@ -1094,17 +1368,28 @@ def probe_migrations(context: SetupContext) -> SetupStep:
             summary="Not inside a Git repository.",
         )
     paths = ProjectPaths.of(root)
-    if not paths.migrations.is_dir():
+    check = context.check_migrations(root)
+    if check.failure is not None:
+        # MISSING rather than CONFLICTING: there is nothing of the operator's
+        # here to consent past -- setup neither edits migrations nor would if it
+        # were allowed to -- only a file whose author has to fix it.
+        return SetupStep(
+            step_id=StepId.MIGRATIONS_VALID,
+            status=StepStatus.MISSING,
+            summary=f"The migrations in {paths.migrations} do not validate.",
+            action="Fix the file it names; `theurian migrate validate` prints the full refusal.",
+            detail=failure_detail(check.failure, for_publication=context.for_publication),
+        )
+    if check.count == 0 and not paths.migrations.is_dir():
         return SetupStep(
             step_id=StepId.MIGRATIONS_VALID,
             status=StepStatus.NOT_APPLICABLE,
             summary="No migrations directory yet.",
         )
-    count = len(list(paths.migrations.glob("*.yaml")))
     return SetupStep(
         step_id=StepId.MIGRATIONS_VALID,
         status=StepStatus.SATISFIED,
-        summary=f"{count} migration(s) found. Run `theurian migrate validate` to check them.",
+        summary=f"{check.count} migration(s) parse and validate.",
     )
 
 

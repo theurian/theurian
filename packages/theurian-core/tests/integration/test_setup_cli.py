@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
+from setup_migrations import unchecked_migrations
 from typer.testing import CliRunner
 
 from theurian.application.authorization import DEFAULT_CEILING, SERVING_PROFILE_FILENAME
@@ -153,6 +154,7 @@ def _converged_machine(tmp_path: Path) -> SetupContext:
         health=lambda: {"dataDir": str(data_dir)} if service.started else None,
         service=service,
         executable=str(executable),
+        check_migrations=unchecked_migrations,
     )
     report = SetupService(context).run(SetupRequest())
     assert report.state is SetupState.CONVERGED, report.warnings
@@ -456,6 +458,7 @@ def _context_for_anchors(
         health=lambda: None,
         service=None,
         executable=executable,
+        check_migrations=unchecked_migrations,
     )
 
 
