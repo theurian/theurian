@@ -47,9 +47,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `openai-api-key` (`sk-`) and `slack-token` (`xox`) can be spelled in one —
   `aws-access-key-id` and `google-api-key` need an upper-case letter, and
   `github-token` and `stripe-secret-key` need `_` (measured 2026-08-26 over
-  400,000 legal filenames). The less-restricted body-path channel reaches all
-  five. The detector is still best effort, and Theurian is still not a
-  repository secret scanner. No false positives over the 82 documents of the
+  400,000 legal filenames). The less-restricted body-path channel is not so
+  limited — a path component admits upper-case letters, digits and `_`, so every
+  family the slug excludes can be spelled and caught in one (measured 2026-08-26:
+  seven families fire by name, and a `google-api-key` shape is caught as
+  `high-entropy-token` rather than its own family). The detector is still best
+  effort, and Theurian is still not a repository secret scanner. No false positives over the 82 documents of the
   dogfood migration corpus on any channel, the parsed `contentFile` included.
 
   **Two residuals, tracked rather than closed.** Refusal *messages* elsewhere on

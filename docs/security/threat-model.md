@@ -1176,7 +1176,11 @@ slug is free-form). That channel is narrow by construction — a slug is
 (`xox`) can spell a credential in one, while `aws-access-key-id` and
 `google-api-key` need an upper-case letter and `github-token` and
 `stripe-secret-key` need `_` (measured 2026-08-26 over 400,000 legal filenames);
-the less-restricted landed-path channel reaches all five.
+the less-restricted landed-path channel is not so limited — a path component
+admits upper-case letters, digits and `_`, so every family the slug excludes
+(aws, google, github, stripe) can be spelled and caught in one (measured
+2026-08-26: seven families fire by name, and a `google-api-key` shape is caught
+as `high-entropy-token` rather than its own family).
 `commitSha` and `blobSha` are in the allowlist for uniformity and not because
 they can carry anything — but the reason is not the schema pattern. The scan
 runs *before* schema validation, so `^[0-9a-f]{7,64}$` is not what stops a secret
