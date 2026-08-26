@@ -156,7 +156,7 @@ Trailer A —
 | `pullRequest` | `#364` |
 | `date` | `2026-08-26` |
 | `family` (derived) | *An error that fires for one input and not another* — the finding is about a refusal behaving differently on a trailing-newline input |
-| `specialist` (derived) | `theurian-python` — the fix touched the setup command under production Python |
+| `specialist` (derived) | *candidate set* `{theurian-python, theurian-tests, theurian-docs}` — `dd4b991` changed files under production Python, tests, and an ADR (plus a plugin doc outside the current map), so the changed-file ∩ ownership-map rule yields at least three owners; the design keeps the candidates rather than guess which the finding is against (decision 1, *What this does not close* item 7) |
 
 Trailer B —
 `Review-Finding: security HIGH — satisfied summary claims reachability the mode bits do not establish`
@@ -170,7 +170,7 @@ Trailer B —
 | `pullRequest` | `#364` |
 | `date` | `2026-08-26` |
 | `family` (derived) | *A published field* — the `satisfied` summary is a published value asserting a property it does not establish |
-| `specialist` (derived) | `theurian-python` |
+| `specialist` (derived) | *candidate set* `{theurian-python, theurian-tests, theurian-docs}` — same commit as Trailer A (`dd4b991`), so the same multi-owner changed-file set yields the same candidate set; no single attribution |
 
 Trailer C —
 `Review-Finding: code-review HIGH — commit-at-green bullet contradicted push-at-first-green`
@@ -184,12 +184,21 @@ Trailer C —
 | `pullRequest` | `#369` |
 | `date` | `2026-08-26` |
 | `family` (derived) | `unclassified` — a prose self-contradiction is not a disclosure-shaped observable; it maps to no member of the current taxonomy, which is why decision 4 mandates a residual value |
-| `specialist` (derived) | `theurian-docs` — the fix touched documentation |
+| `specialist` (derived) | `unclassified` (residual) — `6c3019c` changed only `.claude/agents/theurian-*-review.md` (reviewer definitions) and `CLAUDE.md` (orchestration), none of which is a row in the work-ownership map, so the changed-file ∩ ownership-map intersection is **empty** → residual, exactly as `family` took `unclassified` above |
 
-Trailer C is the honest case: the observable-family table is a *disclosure*
-taxonomy, and not every review finding is about disclosure. A finding that fits
-none of its members must take a residual `unclassified` value rather than be
-force-fit into a disclosure box. The input population the parser must handle is
+Trailer C is the honest residual case for **both** derived labels, and it is the
+one that shows the rule producing its own output rather than a hand-assigned one.
+Its `family` is `unclassified` because the observable-family table is a
+*disclosure* taxonomy and a prose self-contradiction fits none of its members. Its
+`specialist` is `unclassified` because the fixing commit changed only
+reviewer-agent definitions and `CLAUDE.md`, which no row of the current
+work-ownership map owns — so the changed-file ∩ ownership-map intersection is
+empty. Both derivations are best-effort, and Trailer C is where each honestly
+returns its residual instead of force-fitting a label: `family` is not pushed into
+a disclosure box, and `specialist` is not guessed from a file the map does not
+cover. (That the ownership map does not yet cover orchestration files and reviewer
+definitions is a fair observation; extending it is an implementation question, not
+designed here.) The input population the parser must handle is
 `git log origin/main --format=%b | grep 'Review-Finding:'` → **28 lines**
 (measured 2026-08-26).
 
