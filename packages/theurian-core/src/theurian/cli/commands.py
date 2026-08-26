@@ -234,6 +234,18 @@ ALIAS_ITEM_COLLISION_REMEDY: Final = (
 )
 
 
+#: Fallback cure for a whole-set guard refusal :func:`_refuse_a_set_a_static_guard_rejects`
+#: has no dedicated branch for -- a *fourth* guard added to
+#: :func:`~theurian.application.migration_engine.run_static_migration_guards` whose
+#: error type this function does not name. Generic on purpose: only the guard that
+#: raised knows the exact fix, so the new error's own ``.remedy`` is preferred when
+#: it carries one, and this is the honest floor when it does not.
+_UNNAMED_GUARD_REFUSAL_REMEDY: Final = (
+    "Fix the migration set the guard refused, then retry. `theurian migrate validate` "
+    "reports what can be checked without touching state."
+)
+
+
 #: Every canonical-state database this project has ever built. Excludes
 #: `theurian-index-*.sqlite`, which lives in the same directory
 #: (`ProjectPaths.state`) but is a different schema entirely.
@@ -350,6 +362,23 @@ def _refuse_a_set_a_static_guard_rejects(context: CommandContext, *, as_json: bo
         _fail(
             str(exc),
             remedy=ALIAS_ITEM_COLLISION_REMEDY,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+    except MigrationError as exc:
+        # Terminal net for the guard set. A *fourth* whole-set guard added to
+        # `run_static_migration_guards` raises a `MigrationError` subclass this
+        # function has no dedicated branch for, and without this it would escape as
+        # a Rich traceback -- exit 1, empty stdout, no `{error, remedy}` document
+        # even under `--json`, the CP-2 shape every branch above exists to avoid.
+        # The three guard errors are each a *direct* `MigrationError` subclass with
+        # no mutual inheritance, so the specific branches above always win for the
+        # three that exist; this catches only a type they do not name. It prefers
+        # the new error's own `.remedy` over the generic pointer, since only the
+        # guard that raised knows the exact fix.
+        _fail(
+            str(exc),
+            remedy=exc.remedy or _UNNAMED_GUARD_REFUSAL_REMEDY,
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )

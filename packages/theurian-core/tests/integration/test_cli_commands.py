@@ -26,6 +26,7 @@ from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectError, ProjectRegistry
 from theurian.cli.main import app
+from theurian.domain.errors import MigrationError
 
 pytestmark = pytest.mark.integration
 
@@ -1857,6 +1858,41 @@ def test_validate_and_apply_refuse_an_unenforceable_tenant_identically(project: 
     assert "'local'" in validate_error["remedy"]
     assert "#63" in validate_error["remedy"]
     assert validate_error["remedy"] != "Fix the migration set, then retry."
+
+
+def test_a_fourth_guard_error_reaches_the_json_contract_not_a_traceback(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A guard error the translator has no branch for is still a document, not a crash.
+
+    ``_refuse_a_set_a_static_guard_rejects`` names the three guard errors that
+    exist. A fourth whole-set guard added to ``run_static_migration_guards`` would
+    raise its own ``MigrationError`` subclass, and without a terminal branch that
+    escapes Typer as a Rich traceback -- exit 1, empty stdout, no ``{error,
+    remedy}`` even under ``--json`` (the CP-2 shape every named branch avoids).
+    Simulated by making the shared guard set raise a synthetic subclass; the
+    terminal branch turns it into the same document every named refusal produces,
+    with the generic remedy since the synthetic error carries none of its own.
+    """
+    _invoke("init")
+    _write_migration(project)
+
+    class _FourthGuardError(MigrationError):
+        """A guard error type the translator has never heard of."""
+
+    def _raise(_migration_set: object) -> None:
+        raise _FourthGuardError("a whole-set guard the translator does not name refused")
+
+    monkeypatch.setattr("theurian.cli.commands.run_static_migration_guards", _raise)
+
+    code, payload = _invoke("migrate", "validate")
+
+    assert code == EXIT_STATE_ERROR
+    assert "a whole-set guard the translator does not name refused" in payload["error"]
+    assert payload["remedy"] == (
+        "Fix the migration set the guard refused, then retry. `theurian migrate validate` "
+        "reports what can be checked without touching state."
+    )
 
 
 def test_a_refused_apply_leaves_no_database_file(project: Path) -> None:
