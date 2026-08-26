@@ -8,6 +8,9 @@ The distinction matters because the expensive mistakes are orchestration
 mistakes. A reviewer that finds a CRITICAL is doing its job; an orchestrator that
 receives one and quietly downgrades it is not.
 
+**This file grows net-zero: added lines are paid for by compressing
+elsewhere** — its weight falls on every session and specialist on every load.
+
 ## The orchestrator does not implement
 
 **Claude Code in the main session orchestrates. It does not write the change
@@ -95,11 +98,8 @@ happened, in order:
 
 ## Depth is instructed; stopping is not — so instruct it
 
-The review discipline below makes the orchestrator excellent at *depth*: it
-finds real defects, kills mutations, and names the mechanism behind a closure
-argument. That is the accelerator. What follows is the brake, because a class
-that keeps producing real findings does not stop expanding on its own — and
-Milestones 5 and 6 lost days to that, one class at a time.
+Review discipline makes the orchestrator excellent at *depth*: the accelerator.
+The brake below cost Milestones 5 and 6 days, one class at a time.
 
 ### A class stops expanding on a budget, not on running dry
 
@@ -130,24 +130,17 @@ not, it was never a warm-up.
 
 ### Round three is a defect in the closure argument, not a step
 
-Round one is full (all three reviewers at scope). Round two is for what the fixes
-newly claim. **A third round on the same PR is the exception, not the cadence,
-and reaching it is itself the finding: the round-two closure argument was
-incomplete.** Measured on this project, PR throughput per day held flat once the
-reviewers arrived while the *hours per unit of work tripled* — the cost is not
-the reviewers, it is rounds that do not converge and sessions that stall. Two
+**A third round on the same PR is the exception, not the cadence, and reaching
+it is itself the finding: the round-two closure argument was incomplete.** Two
 enforced rules keep the round count down without weakening round one:
 
-- **Pre-empt round two before dispatching it.** Run the reviewers' own methods
-  first — the adversarial reviewer's is mutation over the suite, the security
-  reviewer's is timing measurement across the changed paths. A finding you
-  surface yourself does not cost a round.
+- **Pre-empt round two before dispatching it** — run the reviewers' own methods
+  first (mutation and timing, below); a finding you surface costs no round.
 - **Round three does not block on anything below the gate.** Entering a third
   round, every finding that is not a reproducible CRITICAL or HIGH is *filed as
   an issue and the PR ships* — it does not earn another cycle. Only a CRITICAL or
   HIGH still open holds the PR, and if one is open after round two the core is
-  hard and that is stated plainly, not chased through a fourth round. A round-4
-  that finds a new family means the closure argument was rebuilt too late.
+  hard and that is stated plainly, not chased through a fourth round.
 
 ### Stalls are flow debt too — keep sessions small
 
@@ -191,6 +184,9 @@ So weigh the review before dispatching it, not after:
 | Disclosure, governed state, security claims, wire contract | Full round — all three, no shortcut |
 | Behaviour a trier runs, but no disclosure surface | Code review, plus adversarial only for the claims table below |
 | Prose, process guidance, CI plumbing, mechanical moves — wrong means "misleading, revertible" | One light pass (code review alone), same day, no round structure |
+
+Light-class issues are harvested in batches: 5–10 per PR under one light pass,
+which merges in ~84 minutes where a full round takes a day.
 
 The routing table below decides who reviews a *claim*; this table decides how
 much apparatus a *change* gets. When the two disagree, the claims table wins —
@@ -291,9 +287,8 @@ inside one; nothing in it is a reason to end a round before its checks have run.
 
 ### Round two onward: run the reviewers' methods before they do
 
-A round ends when CRITICAL and HIGH are zero, not when findings stop. MEDIUM
-takes a recorded decision and LOW takes a line in the PR description; neither
-forces another cycle. Aim at the two that do.
+A round ends when CRITICAL and HIGH are zero, not when findings stop; neither
+MEDIUM nor LOW forces another cycle. Aim at the two that do.
 
 Before dispatching any round after the first:
 
@@ -402,8 +397,7 @@ got it wrong twice, counting symptoms and then counting the wrong method. A
 reader given the key can attack the key; a reader given only the list can attack
 only the number.
 
-Four of Milestone 5's orchestrator claims were false, one of them carried into
-the threat model for two rounds before a reviewer measured it; the
+Four of Milestone 5's orchestrator claims were false; the
 [work log](docs/work-logs/2026-08-03-milestone-5-review-rounds.md) names all
 four. Cost is not the reason to skip the check. Latency is the reason to keep it
 narrow: a check before dispatch serialises assignments this file otherwise
@@ -413,8 +407,7 @@ launches together, so spend it on the rows above and not on every brief.
 go to the source. This is for the node they do not cover.
 
 **A reviewer's claim is a claim.** Independence makes a finding worth acting on;
-it does not make its stated mechanism true, and three times this milestone the
-mechanism was wrong while the finding was real. Before a claim is carried into a
+it does not make its stated mechanism true. Before a claim is carried into a
 brief, check it against what the repository already records — the threat model,
 the ADRs, the docstring of the thing being described. Two independent readers
 can contradict each other, and the orchestrator is the only node that sees both.
@@ -454,6 +447,11 @@ recorded decision.
 | HIGH | Must be zero, or converted to a stated CRITICAL-free design decision with the reasoning recorded in the code or an ADR. |
 | MEDIUM | Each one gets an explicit, recorded decision: fix now, or file an issue naming the milestone that will. Never silently carried. |
 | LOW | Recorded in the PR description. May be deferred without an issue. |
+
+**A finding is triaged the moment it is filed** into one of four dispositions:
+*fix in the open PR*, *next cluster*, *backlog with a named milestone*, or
+*recorded and closed*. A filing with no disposition is inventory manufactured,
+not work discovered — filings outpaced closures 65 to 28 over 2026-08-19..25.
 
 Each reviewer's scale drifts toward its own mandate, so **the orchestrator
 applies the first table, never the reviewer who wrote the finding**, and names
@@ -580,9 +578,11 @@ its language is the point.
   rounds four to six were handed `git diff main...HEAD`, which showed 7,792
   lines of a larger change — four production modules and three schemas were
   untracked, and so invisible to it. An uncommitted tree has no boundary a
-  reviewer can check. The same green also pushes: the branch reaches origin at
-  its first green commit, with a Draft PR open from that moment — see *Early
-  push and Draft PRs*.
+  reviewer can check. The same green pushes to origin and opens a Draft PR — see
+  *Early push and Draft PRs*.
+- A cluster PR ships at its planned scope: reaching the planned commits or 8
+  elapsed hours closes the batch — flip what is green, box-split the rest. A
+  5-commit plan that lands 12 has traded closure latency for review surface.
 - Never run a real `theurian setup`, `theurian uninstall`, or a detached
   `daemon start` on the user's machine — those are what write `~/.claude.json`
   and register the OS service. `--dry-run` is the form that is safe here, and
