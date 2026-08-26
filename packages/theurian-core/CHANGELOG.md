@@ -65,6 +65,28 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `accept` leaves the rest of the proposal directory where it is and instructs
   committing it ([#361](https://github.com/theurian/theurian/issues/361)).
 
+### Documentation
+
+- **`docs/contributing/release.md` no longer claims branch protection is
+  unenforced on the advisory merge.** The `GHSA-97q9-xxfg-33r6` release measured
+  the opposite: `main`'s seven required status checks *are* enforced on the
+  advisory "Merge pull request(s)", and because none of them can run on the
+  CI-less temporary private fork they never report, so they block the merge with
+  *"N of N required status checks are expected"*. The maintainer lands it via an
+  admin bypass — temporarily setting `enforce_admins` to `false`, then restoring
+  it — with the manual gate on the fork before the merge and the push-triggered
+  CI on `main` after it standing in for the checks that cannot run; the
+  `git format-patch` route to an ordinary public pull request stays as the
+  CI-satisfying alternative. The stale settings table, which asserted
+  `required_status_checks: null` and an unenforced merge, is corrected to the
+  values measured with `gh api .../branches/main/protection` on 2026-08-25.
+- **`mkdocs build --strict` builds again, restoring the *Deploy documentation*
+  job on `main`.** ADR-0013 and ADR-0027 linked
+  `plugins/claude-code/commands/propose.md` with a relative path that resolved
+  outside the `docs/` tree, which `--strict` rejects as an unresolved link; both
+  now use the absolute GitHub URL this repository already uses for links to files
+  outside `docs/`.
+
 ## [0.1.0.dev11] - 2026-08-25
 
 ### Added

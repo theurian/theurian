@@ -1,6 +1,6 @@
 ---
 name: theurian-adversarial-review
-description: Adversarial review for Theurian. One of the three mandatory pre-PR reviews. Its job is to break the change and to disprove the code's own claims by running it, not by reading it.
+description: Adversarial review for Theurian. One of the three mandatory pre-Ready reviews. Its job is to break the change and to disprove the code's own claims by running it, not by reading it.
 tools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"]
 model: opus
 ---
