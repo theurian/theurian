@@ -43,7 +43,8 @@ for it; extend the harness and say so in your report rather than starting a
 sixteenth. Two of its choices are load-bearing. It copies the tree instead of
 cutting a `git worktree` from `HEAD`, which would lack this checkout's untracked
 new files — and cleaning a mutation up inside your live tree is what puts a
-`git checkout --` next to uncommitted work. And it selects the whole suite, because narrowing assumes the answer:
+`git checkout --` next to uncommitted work. And it selects the whole suite,
+because narrowing assumes the answer:
 `_matched_characters: drop the OUTER lower()` came back GREEN against the full
 suite, and that GREEN was the finding.
 

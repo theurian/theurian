@@ -78,11 +78,11 @@ partition:
 set → acceptance criteria → fences are written — the first two are *Independence
 is a measured file set*, the last two are here. **INVEST** is the admission test:
 dispatch a unit only when it is Independent (its own measured file set), Small
-(within the cluster cap), and Testable (every AC names a check). The brief is an
-ordered list:
+(within the cluster cap), and Testable (every AC names a check):
 
-1. **Scope and acceptance criteria.** AC are written before dispatch in EARS
-   constrained syntax: a DON'T is the Unwanted-Behaviour pattern — *If
+1. **Scope and acceptance criteria.** Scope names the requirement IDs
+   (FR-*/SEC-*) and ADRs the change touches; AC are written before dispatch in
+   EARS constrained syntax: a DON'T is the Unwanted-Behaviour pattern — *If
    \<condition>, the \<system> shall NOT \<behaviour>* — and a behaviour example
    is Given-When-Then, each GWT roughly one pytest. Every AC line names its
    verification: a named test, a measurement, or a search command.
@@ -113,7 +113,7 @@ happened, in order:
    the service registration, so `setup` runs here only with `--dry-run` (see
    *Running the CLI on a development machine*). Every milestone so far has found
    a defect at this step that no test caught. Reading is not verification.
-3. **Three reviews in parallel** — see below. Loop until green.
+3. **Three reviews in parallel** for a full round — see below. Loop until green.
 4. **Documentation follows** — CHANGELOG (breaking changes named as such), README
    status and roadmap, new ADRs, and every ADR compliance section the milestone
    discharged or newly owes.
@@ -295,7 +295,8 @@ hold the standing context; the brief adds only what is specific to this change.
 
 ### Round one is full; later rounds are not
 
-**Round one gets all three reviewers at full scope.** Nothing it found in
+**Round one gets all three reviewers at full scope** — for a full-round change;
+the blast-radius table above says which. Nothing it found in
 Milestone 5 — extraction oracles, a schema that rejected the product's own
 output, tests that stayed green with the code deleted — was findable by reading.
 
