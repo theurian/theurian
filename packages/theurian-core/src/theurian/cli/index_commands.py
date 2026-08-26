@@ -47,8 +47,7 @@ from theurian.application.project_service import (
     write_active_index_pointer,
 )
 from theurian.cli.index_status_report import (
-    index_schema_version,
-    profile_state,
+    index_staleness,
     remedy_for,
 )
 from theurian.domain.context import RequestContext
@@ -58,7 +57,6 @@ from theurian.domain.state import ActiveState
 from theurian.infrastructure.embedding import HashingEmbedding
 from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
 from theurian.infrastructure.secrets.file_store import default_data_dir
-from theurian.infrastructure.sqlite.index_schema import INDEX_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore, fts5_available
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
 
@@ -398,6 +396,14 @@ def index_status(as_json: JsonOption = False) -> None:
     ``mcp/search.py``'s own note for that fallback says an operator would be told
     *here*. The levels are named on both sides, because that is exactly what the
     fallback withholds from an agent and defers to this terminal.
+
+    The invariant now lives in :func:`~theurian.cli.index_status_report.
+    index_staleness`, and this command re-derives every index-side field it
+    publishes from that one call rather than judging the axes itself.
+    ``theurian project status`` publishes the same verdict as ``indexStale``
+    from the same call, which is what issue #100 is about: two surfaces
+    answering one fact used to compute it twice, and one of them computed it
+    from the wrong file.
     """
     from theurian.cli.commands import _emit, _read_active, _require_project  # noqa: PLC0415 - cycle
 
@@ -408,75 +414,34 @@ def index_status(as_json: JsonOption = False) -> None:
     # or the very deletion this command's remedy asks for -- replaces the
     # pointer, and a raise landing in it would cost the whole payload.
     active = _read_active(paths, as_json)
-    pointer = read_active_index_pointer(paths)
-    published = dict(pointer.payload) if pointer.payload is not None else None
 
     current = str(context.state_hash)
     built = str(active.state_hash) if active else None
-    indexed = (published or {}).get("stateHash")
-
+    # About the state database, not the index, which is why it is computed here
+    # and not inside `index_staleness`: it makes no build stale. This command
+    # publishes it as `knowledgeNotApplied` below and hands it to `remedy_for`,
+    # where it decides that applying must precede any rebuild -- neither of which
+    # is a staleness axis, and both of which belong to the command that owns the
+    # canonical-state half of this payload.
     needs_apply = built != current
-    # An index whose schema this build does not understand is unusable no matter
-    # how fresh its state hash is, and retrieval already falls back for it. Left
-    # out of `stale`, this command would answer "fresh, nothing to do" for the
-    # very file a search had just refused to read.
-    schema = index_schema_version(paths, published)
-    # Chunks are stamped with the project id that built them, so an index built
-    # for another id answers every query with nothing while reporting itself
-    # indexed. A pointer written before this field existed cannot be checked, so
-    # it counts as orphaned: one rebuild makes it verifiable, and claiming
-    # freshness that was never established is what this command exists to avoid.
-    index_project = (published or {}).get("projectId")
-    orphaned = published is not None and index_project != context.project_id.value
-    profile = profile_state(published)
-    # A build whose withdrawal purge failed still holds rows the withdrawal
-    # removed from canonical state, and `knowledge.search` stands it aside whole
-    # rather than serving them (GHSA-97q9-xxfg-33r6). This command must report
-    # what that path refuses, so the taint makes the build stale on its own axis
-    # -- independently of the state-hash comparison, which is `true` here anyway
-    # because a purge follows a migration, but need not be: a taint written
-    # against an otherwise-fresh build must still read stale. Truthiness rather
-    # than `is True` because the pointer is derived and unsigned (SEC-7): any
-    # value a hand edit leaves under the key is read exactly as the serve path's
-    # own `if published.get("purgeFailed")` reads it.
-    purge_failed = bool((published or {}).get("purgeFailed"))
-    stale = (
-        published is None
-        or indexed != current
-        or schema != INDEX_SCHEMA_VERSION
-        or orphaned
-        or profile.stale
-        or purge_failed
-    )
+
+    index = index_staleness(paths, project_id=context.project_id.value, current_state_hash=current)
 
     _emit(
         {
-            "built": published is not None,
-            "indexPointerCorrupt": pointer.unreadable,
-            "indexBuildId": (published or {}).get("indexBuildId"),
-            "indexStateHash": indexed,
+            **index.payload,
             "builtStateHash": built,
             "currentStateHash": current,
             "projectId": context.project_id.value,
-            "indexProjectId": index_project,
-            "indexSchemaVersion": schema,
-            "expectedIndexSchemaVersion": INDEX_SCHEMA_VERSION,
-            "stale": stale,
-            "orphaned": orphaned,
-            # Always present, `false` on a healthy build, so a reader never
-            # branches on the key's absence -- the discipline every other field
-            # here holds to, and what lets a client tell "one migration behind"
-            # (`stale` alone) from "still holds withdrawn rows" (`purgeFailed`).
-            "purgeFailed": purge_failed,
+            "stale": index.stale,
             "knowledgeNotApplied": needs_apply,
-            **profile.payload,
             "remedy": remedy_for(
-                stale=stale,
+                stale=index.stale,
                 needs_apply=needs_apply,
-                orphaned=orphaned,
-                pointer_corrupt=pointer.unreadable,
-                purge_failed=purge_failed,
-                profile_remedy=profile.remedy,
+                orphaned=index.orphaned,
+                pointer_corrupt=index.pointer_corrupt,
+                purge_failed=index.purge_failed,
+                profile_remedy=index.profile_remedy,
             ),
         },
         as_json=as_json,

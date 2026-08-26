@@ -78,7 +78,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   shapes on `reason` — the resolved payload carries `reason` and `remedy` too,
   for an unreadable state pointer or registry (measured: a corrupt
   `.theurian/state/active.json` yields the resolved shape with `reason`,
-  `indexStale: true` and every other resolved field). `root` and `projectId` are
+  `statePointerCorrupt: true` and every other resolved field). `root` and
+  `projectId` are
   the resolved-only keys, so their presence is what tells the shapes apart. Code
   reading `registered` as a boolean must handle `null`, which both branches now
   publish.
@@ -98,7 +99,110 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   instructed a two-valued "registered or not" project summary, which a
   tri-state field cannot be reduced to without inventing an answer.
 
+- **BREAKING — `theurian project status` publishes the index's own staleness as
+  `indexStale`, computed by the same function `theurian index status` publishes
+  `stale` from** ([#100](https://github.com/theurian/theurian/issues/100)).
+
+  **Old behaviour:** `indexStale` was `active is None or active.state_hash !=
+  context.state_hash` — the *canonical* state pointer against the migrations,
+  which asks whether `theurian migrate apply` is up to date. The command never
+  opened `.theurian/state/active-index.json` at all, so every axis the index
+  actually has was invisible to it. Measured through the real CLI: a registered
+  project with its migrations applied and **no index ever built** published
+  `indexStale: false` in the same second `theurian index status` published
+  `built: false, stale: true` with the remedy ``Run `theurian index build`.``
+  Applying a further migration over a published build was the inverted case —
+  the canonical pointer is current again after `apply`, so the field answered
+  `false` at exactly the moment the build fell a migration behind.
+
+  **New behaviour:** `indexStale` is the verdict `index status` reports as
+  `stale`, on every axis it recognises — no published build, a build whose state
+  hash is behind, an index schema this build does not understand, a build
+  stamped with another project's id, a recorded disclosure flavor that is not
+  the one in force, and a withdrawal purge that did not complete. There is one
+  computation (`cli.index_status_report.index_staleness`) and both commands
+  consume it, so the two surfaces cannot drift.
+
+  `theurian index status`'s `--json` payload is unchanged: the same twenty keys
+  with the same values, re-derived from the shared function. Its *rendered*
+  output lists the index-side fields together before the state-side ones now,
+  because that block is one merge; `--json` sorts its keys and is unaffected.
+
+  **What a consumer changes:** nothing syntactically — the key, its type and its
+  location in the resolved payload are the same, and it stays **absent** from
+  the unresolved payload as the entry above records. What changes is which
+  projects it is `true` for. It becomes `true` for a project that has never
+  built an index, and for the pointer-side axes the old expression could not
+  see.
+
+  It flips the other way for a **class**, not for a listed state: the canonical
+  state pointer no longer participates in the verdict at all, so `indexStale`
+  reads `false` wherever `.theurian/state/active.json` disagrees with the
+  migrations while a published build still matches them. Measured, that class
+  has three members — the pointer is **missing**, the pointer is **unreadable**
+  (truncated JSON, raw text and arbitrary bytes each measured; `statePointerCorrupt`
+  reports it), or the pointer parses and **names a different state hash**. In
+  all three the index genuinely is current, and `stateBuilt`,
+  `activeStateHash` and `statePointerCorrupt` beside it are what report the
+  state. A pending `migrate apply` is not in the class and still reads `true`,
+  because the published build's state hash is behind the migrations either way.
+
+  For a missing pointer and for one naming a different hash, `theurian index
+  status` answers the same `stale: false` beside `knowledgeNotApplied: true`,
+  and agreeing with it is the change. For an **unreadable** pointer there is
+  nothing to agree with: `index status` refuses that state outright (exit 1,
+  `{error, remedy}`, no payload), so `project status` is the only surface
+  answering, and it answers about the index while `statePointerCorrupt` answers
+  about the file.
+
+  The old question is still answerable from the same payload and always was —
+  `activeStateHash` against `stateHash`, both published beside it — so no
+  information is lost, which is why no new key was added for it.
+
+  The bundled Claude Code plugin's `scripts/session-start.sh` needs no
+  syntactic edit — it greps for `"indexStale": *true` — but what it says changes
+  in three directions, and only one of them is an improvement.
+
+  It **newly fires**, correctly, for a project that has never built an index and
+  for the pointer-side axes: the advice, run `/theurian:index`, is exactly right
+  there. It **newly goes silent** for the flip class named above — a missing,
+  unreadable or hash-mismatched `active.json` under a build that still matches
+  the migrations — where it used to warn about a stale index. The warning it
+  loses was not about the index in the first place, and nothing in the hook yet
+  reads `statePointerCorrupt` or `activeStateHash`, so those states now pass
+  unremarked. And on the serving-profile axis the warning it prints names a
+  command that cannot run: measured, an unreadable
+  `<data-dir>/auth/serving-profile` makes `indexStale: true`, while `theurian
+  index build` — what `/theurian:index` invokes — refuses on the same file at
+  exit 1, and `project status` publishes no remedy at all for a caller to relay.
+  `theurian index status` is the surface that names the `chmod`.
+
+  All three are [#380](https://github.com/theurian/theurian/issues/380)'s scope:
+  the hook needs to read more of this payload than one boolean before it can say
+  something true in each state.
+
 ### Fixed
+
+- **An over-long `indexBuildId` no longer ends `theurian index status` in a
+  traceback** ([#100](https://github.com/theurian/theurian/issues/100)).
+  `cli.index_status_report.index_schema_version` probed the published build with
+  `Path.is_file()` outside the block that answers for the pointer's contents.
+  `is_file()` swallows only the errnos `pathlib` lists as "this is not a file",
+  and `ENAMETOOLONG` is not among them; `ProjectPaths.index_for` cannot convert
+  it either, because `Path.resolve()` in non-strict mode never stats. Measured
+  through the real CLI on macOS: an `indexBuildId` of 234 characters or more —
+  `theurian-index-<id>.sqlite` past a 255-byte `NAME_MAX` — ended the command in
+  a bare `OSError`, exit 1, empty stdout, none of the `{error, remedy}` shape
+  CP-2 promises; 233 answered. The probe is inside the block now and the build's
+  version reports 0, which is that function's "unknowable" and makes the index
+  stale. The pointer is derived, git-ignored and unsigned (SEC-7), so this is an
+  input any local process can leave behind.
+
+  `theurian project status` reaches the same probe as of the `indexStale` change
+  above, so this release is the first in which it could crash that way and the
+  first in which it cannot. `theurian index gc` and `knowledge.search` reach
+  `ProjectPaths.index_for` by their own routes and still probe outside a guard;
+  [#388](https://github.com/theurian/theurian/issues/388) owns those.
 
 - **A `rootPath` that resolves to the caller's own directory no longer registers
   whichever repository asks**

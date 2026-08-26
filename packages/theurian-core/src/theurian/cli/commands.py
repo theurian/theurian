@@ -56,6 +56,7 @@ from theurian.cli.context import (
     repository_url,
     resolve_context,
 )
+from theurian.cli.index_status_report import index_staleness
 from theurian.cli.migration_pipeline import apply_migration_set
 from theurian.cli.output import escape_terminal_controls
 from theurian.domain.errors import (
@@ -1101,7 +1102,18 @@ def project_status(as_json: JsonOption = False) -> None:
             "stateHash": str(context.state_hash),
             "activeStateHash": None if active is None else str(active.state_hash),
             "stateBuilt": database.exists(),
-            "indexStale": active is None or active.state_hash != context.state_hash,
+            # The index's own verdict, from the one function `theurian index
+            # status` publishes it from (issue #100). It used to be computed
+            # here, from the *canonical* pointer -- `active is None or
+            # active.state_hash != context.state_hash` -- which asks whether
+            # `migrate apply` is up to date and never opened the index pointer
+            # at all. That old question is not lost: it is `activeStateHash`
+            # against `stateHash`, two fields above, both still published.
+            "indexStale": index_staleness(
+                context.paths,
+                project_id=context.project_id.value,
+                current_state_hash=str(context.state_hash),
+            ).stale,
             # `activeStateHash: null` alone cannot say which of two things
             # happened, and the two have opposite cures: `migrate apply` for a
             # project that has never been applied, and *delete this file, then*

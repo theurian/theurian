@@ -24,7 +24,8 @@ from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from migration_fixtures import UNREACHED_BODY_PIN, body_pin
 from typer.testing import CliRunner
 
-from theurian.application.project_service import ProjectError, ProjectRegistry
+from theurian.application.project_service import ProjectError, ProjectPaths, ProjectRegistry
+from theurian.cli.index_status_report import index_staleness
 from theurian.cli.main import app
 from theurian.domain.errors import MigrationError
 
@@ -1199,6 +1200,472 @@ def test_the_resolved_branch_reaches_the_same_null_with_nothing_racing_it(
         "and reaches it without a race"
     )
     assert status["unreadable"] == ["Team One/API"]
+
+
+# -- issue #100: `indexStale` answers about the index -----------------------
+#
+# `project status` computed its own verdict from the *canonical* state pointer
+# -- `active is None or active.state_hash != context.state_hash` -- which is a
+# statement about whether `migrate apply` is up to date, published under a name
+# about the index. It never read `.theurian/state/active-index.json` at all, so
+# every axis `theurian index status` recognises that lives in that file was
+# invisible here: a project that had never built an index reported
+# `indexStale: false` in the same second `index status` reported
+# `built: false, stale: true`.
+#
+# The tests below drive one axis each through the real CLI and assert both
+# halves: the verdict itself, and that the two commands agree on it.
+#
+# Which half is load-bearing differs by test, and the difference is worth
+# recording. Measured against the old expression, the parameterized cases fail
+# on the `indexStale is True` line -- the agreement assertion beside it would
+# hold for any fork of the computation that happened to agree. It is
+# `test_status_agrees_with_index_status_where_the_verdict_moved_the_other_way`
+# that the agreement carries, because there the two verdicts *differ* under the
+# old computation and only the comparison can see it.
+
+#: A second migration over the item :data:`MIGRATION` creates, so applying it
+#: moves the state hash without touching anything the index pointer records.
+#: That is the state-hash axis in its pure form: after `migrate apply` the
+#: canonical pointer is current again, so the *old* computation reported a fresh
+#: index while the published build was one migration behind.
+SECOND_MIGRATION_ID = "01K1BBBBBB01234567890ABCDE"
+SECOND_REVISION_ID = "01K1BBBREV01234567890ABCDE"
+REVISED_BODY = BODY + "\nTokens expire after 15 minutes.\n"
+
+SECOND_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {SECOND_MIGRATION_ID}
+createdAt: 2026-08-02T11:00:00+09:00
+author: engineer@example.com
+description: Give tokens an expiry.
+operations:
+  - op: upsertRevision
+    itemId: architecture.auth-policy
+    revisionId: {SECOND_REVISION_ID}
+    expectedRevision: {REVISION_ID}
+    contentFile: ../knowledge/architecture/auth-policy-v2.md
+    contentSha256: {body_pin(REVISED_BODY)}
+    metadata:
+      title: Authentication policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/auth-policy.md
+"""
+
+
+def _edit_index_pointer(root: Path, **fields: Any) -> None:
+    """Overwrite keys in the published index pointer, in place.
+
+    The pointer is derived, git-ignored and unsigned (SEC-7), so a hand edit is
+    an input the product already has to answer for -- and it is the only way to
+    reach the ``purgeFailed`` and ``orphaned`` axes without staging a failing
+    purge or a project rename around them, neither of which is what these tests
+    are about.
+    """
+    pointer = root / ".theurian/state/active-index.json"
+    pointer.write_text(json.dumps({**json.loads(pointer.read_text()), **fields}, indent=2))
+
+
+def _never_built(_root: Path) -> None:
+    """No pointer at all: `migrate apply` ran, `index build` did not.
+
+    This is the state issue #100 reports, and it is the state the *whole verdict*
+    has to answer -- but it does not exercise the ``published is None`` term on
+    its own. Measured: dropping that term from the disjunction survives this file
+    and ``test_index_fallback`` entirely, because with no pointer ``indexed`` is
+    ``None`` and the schema version is ``None``, so two later terms each carry
+    the state alone. The term stays for readability -- it names the axis in the
+    verdict rather than leaving it inferred from two ``None`` comparisons -- and
+    this note is here so nobody reads the case as pinning it.
+    """
+
+
+def _state_hash_behind(root: Path) -> None:
+    """A published build, then one more migration applied on top of it."""
+    assert _invoke("index", "build")[0] == 0
+    (root / ".theurian/knowledge/architecture/auth-policy-v2.md").write_text(REVISED_BODY)
+    (root / f".theurian/migrations/{SECOND_MIGRATION_ID}-revise.yaml").write_text(SECOND_MIGRATION)
+    assert _invoke("migrate", "apply")[0] == 0
+
+
+def _orphaned(root: Path) -> None:
+    """A published build stamped with another project's id."""
+    assert _invoke("index", "build")[0] == 0
+    _edit_index_pointer(root, projectId="somebody-else")
+
+
+def _purge_failed(root: Path) -> None:
+    """A published build whose withdrawal purge did not complete (GHSA-97q9-xxfg-33r6).
+
+    The state hash is left matching deliberately: the taint has to make the
+    build stale on its own axis, which is the whole point of the field. Every
+    other axis here is clean, so a verdict that misses this one reports a fresh
+    index for a build that still holds withdrawn rows.
+    """
+    assert _invoke("index", "build")[0] == 0
+    _edit_index_pointer(root, purgeFailed=True)
+
+
+def _purge_failed_as_a_truthy_string(root: Path) -> None:
+    """The same taint written as ``"false"``, which is a *truthy* string.
+
+    The pointer is derived and unsigned (SEC-7), so any value a hand edit or a
+    half-written generator leaves under the key is what arrives -- and the
+    verdict reads it the way the serve path's own ``if published.get(
+    "purgeFailed")`` reads it, by truthiness rather than ``is True``. Narrowing
+    it to ``is True`` survives every other test in this file: this is the input
+    that tells the two readings apart, and it is the direction that matters,
+    because the safe answer for an unparseable taint is "stale".
+    """
+    assert _invoke("index", "build")[0] == 0
+    _edit_index_pointer(root, purgeFailed="false")
+
+
+#: The remedy `theurian index build` prints for a build that is simply behind.
+#: The period is load-bearing: the orphaned arm says "Run `theurian index
+#: build`;" and the purge-failed arm "Run `theurian index build` to produce a
+#: clean build", so this string is a substring of neither.
+_PLAIN_REBUILD = "Run `theurian index build`."
+
+#: A phrase from the orphaned arm and from no other.
+_ORPHANED_PHRASE = "different project id"
+
+#: A phrase from the purge-failed arm and from no other -- the same one
+#: ``tests/unit/test_index_status_remedy.py`` holds that arm to.
+_PURGE_FAILED_PHRASE = "the purge that follows a withdrawal did not complete"
+
+
+@pytest.mark.parametrize(
+    ("prepare", "axis", "remedy_phrase"),
+    [
+        pytest.param(_never_built, "no published build", _PLAIN_REBUILD, id="never-built"),
+        pytest.param(
+            _state_hash_behind, "the build's state hash", _PLAIN_REBUILD, id="state-hash-behind"
+        ),
+        pytest.param(_orphaned, "another project's id", _ORPHANED_PHRASE, id="orphaned"),
+        pytest.param(
+            _purge_failed, "a failed withdrawal purge", _PURGE_FAILED_PHRASE, id="purge-failed"
+        ),
+        pytest.param(
+            _purge_failed_as_a_truthy_string,
+            "a taint written as a truthy string",
+            _PURGE_FAILED_PHRASE,
+            id="purge-failed-truthy-string",
+        ),
+    ],
+)
+def test_status_reports_the_index_stale_on_every_axis_index_status_recognises(
+    project: Path, prepare: Any, axis: str, remedy_phrase: str
+) -> None:
+    """Issue #100, AC-5 and AC-6: one staleness verdict, two surfaces.
+
+    ``never-built`` is the reproduction the issue names, and the rest are the
+    axes that live in the index pointer -- a file the old computation never
+    opened. ``state-hash-behind`` is the one that shows *why* reading the
+    canonical pointer instead is not merely narrow but inverted: applying the
+    second migration makes ``active.state_hash == context.state_hash`` again, so
+    the old expression answered ``false`` at the exact moment the published build
+    fell a migration behind.
+
+    Each case asserts the *distinctive* remedy as well as the verdict, and that
+    is not decoration. ``IndexStaleness`` now carries ``orphaned`` and
+    ``purge_failed`` to ``remedy_for`` as fields, and mutants forcing either to
+    ``False`` -- at the dataclass or at the call site -- left the shipped
+    remedies degraded to the plain rebuild while every assertion in this file
+    passed. The phrases above are substrings of one arm each, so a degraded
+    remedy is a failure and not a silence.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0
+    prepare(project)
+
+    code, status = _invoke("project", "status")
+    index_code, index_status = _invoke("index", "status")
+
+    assert code == 0
+    assert index_code == 0
+    assert index_status["stale"] is True, (
+        f"the fixture must make the index stale on {axis} for this test to mean anything"
+    )
+    assert status["indexStale"] is True, (
+        f"`project status` reported a fresh index while `index status` called it stale on {axis}"
+    )
+    assert status["indexStale"] == index_status["stale"], (
+        "both commands answer one fact and must not compute it twice"
+    )
+    assert remedy_phrase in index_status["remedy"], (
+        f"the remedy for {axis} degraded to a message that does not name it: "
+        f"{index_status['remedy']!r}"
+    )
+
+
+def test_status_calls_a_freshly_built_index_fresh(project: Path) -> None:
+    """The fence around the four above: the verdict is not stuck on ``true``.
+
+    Every test in this section drives a stale axis, so a verdict hardcoded to
+    ``true`` -- or one that simply forgot to read the pointer in the other
+    direction -- passes all of them. This is the state where nothing is stale,
+    and both surfaces have to say so.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0
+    assert _invoke("index", "build")[0] == 0
+
+    _, status = _invoke("project", "status")
+    _, index_status = _invoke("index", "status")
+
+    assert index_status["stale"] is False, "the fixture just built the index from current state"
+    assert status["indexStale"] is False, (
+        "a build published from the current state hash is not stale on any axis"
+    )
+
+
+#: An ``indexBuildId`` whose filename no ordinary filesystem will accept.
+#:
+#: ``index_for`` builds ``theurian-index-<id>.sqlite``, so ``NAME_MAX`` (255 on
+#: macOS and on the Linux filesystems CI runs on) is exceeded at 234 characters:
+#: 15 + 234 + 7 = 256. Measured through the real CLI on macOS before the fix --
+#: 200 and 233 answered, 234, 240, 256 and 300 each ended both status commands
+#: in an uncaught ``OSError`` at exit 1 with empty stdout. 300 is used rather
+#: than the boundary so the input stays refused on a filesystem with a slightly
+#: larger limit; the test below skips instead of passing vacuously if some
+#: filesystem accepts it anyway.
+_OVERLONG_BUILD_ID = "A" * 300
+
+
+def test_status_answers_for_a_pointer_naming_a_filename_the_platform_refuses(
+    project: Path, tmp_path: Path
+) -> None:
+    """A pointer that names an unusable filename is a status, not a traceback.
+
+    ``index_schema_version`` (``cli/index_status_report.py``) probed the build
+    with ``path.is_file()`` *outside* its ``try``. ``Path.is_file()`` swallows
+    only the errnos ``pathlib`` lists as "this is not a file", and
+    ``ENAMETOOLONG`` is not among them, so an over-long ``indexBuildId`` in the
+    unsigned, git-ignored pointer (SEC-7) escaped as a bare ``OSError``: exit 1,
+    empty stdout, none of the ``{error, remedy}`` shape CP-2 promises -- from
+    ``theurian project status``, which had answered this at exit 0 before this
+    branch made it read the file at all, *and* from ``theurian index status``,
+    which had crashed this way since the probe was written.
+
+    ``index_for``'s own conversion cannot catch it: ``Path.resolve()`` in
+    non-strict mode never stats, so the name it returns is one the OS has not
+    yet been asked about. Both surfaces now answer, with schema ``0`` -- this
+    function's documented "unknowable" -- which makes the build stale.
+
+    The other two ``index_for`` callers (``index gc``, ``mcp/search``) reach the
+    same probe by their own routes and are issue #388's; nothing here touches
+    them, which is also why this axis is pinned here rather than added to
+    ``test_index_fallback``'s pointer enumeration, where every recipe is driven
+    through the search path as well.
+    """
+    probe = tmp_path / f"theurian-index-{_OVERLONG_BUILD_ID}.sqlite"
+    try:
+        probe.is_file()
+    except OSError:
+        pass
+    else:
+        pytest.skip("this filesystem accepts the name, so there is no refusal to answer for")
+
+    _invoke("init")
+    _invoke("project", "register")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0
+    assert _invoke("index", "build")[0] == 0
+    _edit_index_pointer(project, indexBuildId=_OVERLONG_BUILD_ID)
+
+    code, status = _invoke("project", "status")
+    index_code, index_status = _invoke("index", "status")
+
+    assert code == 0, "a pointer naming an impossible filename is a status, not a crash"
+    assert index_code == 0, "and the same is true of the surface that has always read it"
+    assert status["indexStale"] is True, (
+        "a build whose schema version cannot be established is not one to serve from"
+    )
+    assert index_status["indexSchemaVersion"] == 0, (
+        "0 is this function's `unknowable`, and it must reach the payload rather than an errno"
+    )
+    assert status["indexStale"] == index_status["stale"]
+
+
+def test_status_agrees_with_index_status_where_the_verdict_moved_the_other_way(
+    project: Path,
+) -> None:
+    """One member of the class where the verdict moved the *other* way.
+
+    The class, not a count: the canonical state pointer no longer participates
+    in the verdict, so ``indexStale`` reads ``false`` wherever
+    ``.theurian/state/active.json`` disagrees with the migrations while a
+    published build still matches them. Measured, three members -- the pointer is
+    missing (this test), the pointer is unreadable (the test below, which is the
+    member with no agreement to assert), or the pointer parses and names a
+    different state hash.
+
+    Deleting the pointer leaves the index genuinely current -- it was built from
+    the state hash the migrations still derive -- while canonical state has no
+    pointer at all. The old computation's ``active is None`` made that
+    ``indexStale: true``; the index's own verdict is ``false``, which is what
+    ``theurian index status`` has always answered here (``stale: false`` beside
+    ``knowledgeNotApplied: true``).
+
+    Both are asserted, so this reads as the two surfaces agreeing rather than as
+    a claim that ``false`` is the interesting answer: what the payload says about
+    the *state* is ``activeStateHash`` and ``stateBuilt``, and those still report
+    it.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0
+    assert _invoke("index", "build")[0] == 0
+    (project / ".theurian/state/active.json").unlink()
+
+    _, status = _invoke("project", "status")
+    _, index_status = _invoke("index", "status")
+
+    assert index_status["knowledgeNotApplied"] is True, "the state pointer is gone"
+    assert index_status["stale"] is False, "and the published build is still current"
+    assert status["indexStale"] == index_status["stale"], (
+        "the two surfaces answer one fact, including where the answer moved"
+    )
+    assert status["activeStateHash"] is None, (
+        "the missing state is reported by the fields that are about the state"
+    )
+
+
+def test_status_is_the_only_surface_answering_over_an_unreadable_state_pointer(
+    project: Path,
+) -> None:
+    """The member of that class where there is no agreement to assert.
+
+    ``theurian index status`` reads the canonical pointer through ``_read_active``,
+    which converts an unreadable one into ``{error, remedy}`` and exits 1 -- so
+    it publishes no ``stale`` at all here, and the two surfaces cannot be
+    compared. ``project status`` reads the same file through its own guarded
+    read and keeps its exit-0 contract, which is why it is the only surface
+    answering, and why the CHANGELOG says so rather than claiming agreement it
+    cannot have.
+
+    What it answers is about the *index*, which is current: the state pointer's
+    condition is carried by ``statePointerCorrupt`` and ``reason`` beside it, and
+    both are asserted so that a ``false`` here can never be read as silence about
+    the file.
+
+    Raw text is the spelling used because all four measure the same on this
+    surface except one: a pointer holding a bare JSON array (``[]``) escapes
+    ``read_active_state``'s conversion as a ``TypeError`` from
+    ``ActiveState.from_json``, crashing *both* commands. That is a pre-existing
+    defect of the canonical pointer's reader -- unchanged on this branch, and the
+    twin of the ``active-index.json`` refusal fixed above -- not something this
+    test may quietly depend on.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0
+    assert _invoke("index", "build")[0] == 0
+    (project / ".theurian/state/active.json").write_text("not json at all")
+
+    code, status = _invoke("project", "status")
+    index_code, _ = _invoke("index", "status")
+
+    assert index_code == 1, "the surface that refuses this state must go on refusing it"
+    assert code == 0, "and the surface that answers it must go on answering"
+    assert status["indexStale"] is False, "the published build still matches the migrations"
+    assert status["statePointerCorrupt"] is True, (
+        "the state pointer's condition is not silence -- it is the field named for it"
+    )
+    assert status["reason"], "and the reason travels with it"
+
+
+#: Every key ``theurian index status`` publishes, and the whole of it.
+#:
+#: Frozen for the reason :data:`_PUBLISHED_VALIDATE_KEYS` below is: this payload
+#: is a published contract, and a key appearing or disappearing is a decision
+#: somebody takes here rather than a diff somebody misses. Recorded now because
+#: nothing held it before -- the command's payload was rebuilt out of a shared
+#: function (issue #100), and a refactor that silently dropped a key would have
+#: had nothing to fail against.
+_PUBLISHED_INDEX_STATUS_KEYS = frozenset(
+    {
+        "built",
+        "indexPointerCorrupt",
+        "indexBuildId",
+        "indexStateHash",
+        "indexProjectId",
+        "indexSchemaVersion",
+        "expectedIndexSchemaVersion",
+        "orphaned",
+        "purgeFailed",
+        "servedSensitivities",
+        "indexedSensitivities",
+        "profileMismatch",
+        "profileUnrecorded",
+        "profileUnreadable",
+        "builtStateHash",
+        "currentStateHash",
+        "projectId",
+        "stale",
+        "knowledgeNotApplied",
+        "remedy",
+    }
+)
+
+#: The six ``index_status`` writes itself, beside ``**index.payload``. Everything
+#: else in the set above comes from the shared function.
+_INDEX_STATUS_OWN_KEYS = frozenset(
+    {"builtStateHash", "currentStateHash", "projectId", "stale", "knowledgeNotApplied", "remedy"}
+)
+
+
+def test_index_status_publishes_exactly_the_recorded_key_set(project: Path) -> None:
+    """The contract pin, and the disjointness the merge depends on.
+
+    Two assertions, because the equality alone cannot see the failure that
+    matters. ``index_status`` emits ``{**index.payload, <six literals>}``, and a
+    literal silently wins a collision: if the shared payload ever gained a key
+    named like one of the six, the literal would overwrite it, the count would
+    stay 20, and the key set would still match. The second assertion is what
+    sees it -- 20 keys out means the two sides contributed disjoint sets.
+
+    That is the recorded decision on the merge: it stays a plain expansion in
+    production, and disjointness is held here rather than by defensive code in a
+    status command that must never raise. The shared payload's keys are read
+    from the live function rather than listed again, so a key added there is
+    accounted for automatically and only a *collision* fails.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0
+    assert _invoke("index", "build")[0] == 0
+
+    code, payload = _invoke("index", "status")
+    shared = index_staleness(
+        ProjectPaths.of(project), project_id="demo", current_state_hash="unused-for-key-shape"
+    ).payload
+
+    assert code == 0, f"the fixture must build for this to be about keys: {payload}"
+    assert set(payload) == _PUBLISHED_INDEX_STATUS_KEYS, (
+        f"`theurian index status --json` publishes {sorted(payload)}, and this file records "
+        f"{sorted(_PUBLISHED_INDEX_STATUS_KEYS)}. Adding or removing a key is a contract "
+        f"change; make it here, in the same change that updates the CHANGELOG."
+    )
+    assert len(payload) == len(shared) + len(_INDEX_STATUS_OWN_KEYS), (
+        f"`index_status` merges {len(shared)} shared keys with {len(_INDEX_STATUS_OWN_KEYS)} of "
+        f"its own and published {len(payload)}, so the two sides collide and the literal won "
+        f"silently: {sorted(set(shared) & _INDEX_STATUS_OWN_KEYS)}"
+    )
 
 
 def test_unregister_does_not_refuse_an_id_for_its_shape(project: Path) -> None:
