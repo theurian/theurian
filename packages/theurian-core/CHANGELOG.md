@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.1.0.dev12] - 2026-08-26
+
 ### Fixed
 
 - **`doctor` and `theurian migrate validate` no longer disagree about the same
