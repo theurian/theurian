@@ -30,7 +30,7 @@ import platform
 import shutil
 import sys
 from pathlib import Path
-from typing import Annotated, Any, Final
+from typing import Annotated, Any
 
 import typer
 
@@ -41,13 +41,7 @@ from theurian.application.setup_context import MigrationsCheck, SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.cli.context import schema_root
 from theurian.daemon.instance import DEFAULT_PORT, probe_health
-from theurian.domain.errors import (
-    InputTooLargeError,
-    IrregularSourceFileError,
-    MigrationError,
-    PathEscapeError,
-    SchemaUnreadableError,
-)
+from theurian.domain.errors import TheurianError
 from theurian.domain.setup import SetupError, SetupState
 from theurian.infrastructure.claude.mcp_config import ClaudeCodeMcpConfig, ConnectionSpec
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
@@ -110,33 +104,6 @@ def build_context(
     )
 
 
-#: What `migrate validate` refuses a migration set with, as the roots that cover
-#: it. ``MigrationError`` carries the loader's parse, schema, containment and
-#: ordering refusals along with the three guard errors below it in the hierarchy;
-#: ``PathEscapeError`` carries the depth cap; the other three have their own
-#: roots. Anything outside this set is a bug rather than a verdict about the
-#: files, and it reaches the reader through ``SetupService._probe`` as "Could not
-#: check migrations-valid" -- a conflict, not a claim that the migrations are
-#: wrong.
-#:
-#: **The membership question is "does `migrate validate` refuse on it", never
-#: "does ``load_migrations`` document it".** ``IrregularSourceFileError`` is the
-#: case that separates the two: it is raised by ``read_source_file`` for a
-#: ``contentFile`` that is a FIFO, socket or device (#215), re-raised by the
-#: loader's ``_parse_upsert``, and named in ``cli/commands.py`` as a load-path
-#: refusal -- while ``load_migrations``' own ``Raises`` omitted it. Taking that
-#: docstring as the population left the one symbol uncaught, so `doctor` demanded
-#: consent for "Could not check migrations-valid" on a directory `migrate
-#: validate` simply refuses: #91's divergence surviving inside #91's own fix.
-_MIGRATION_REFUSALS: Final = (
-    MigrationError,
-    PathEscapeError,
-    InputTooLargeError,
-    IrregularSourceFileError,
-    SchemaUnreadableError,
-)
-
-
 def _check_migrations(root: Path) -> MigrationsCheck:
     """Load and statically validate a project's migrations, the way `validate` does.
 
@@ -147,9 +114,9 @@ def _check_migrations(root: Path) -> MigrationsCheck:
     where every ``theurian migrate`` refuses.
 
     The guards are called directly rather than through ``cli/commands``'
-    ``_refuse_*`` wrappers, which ``_fail`` to the terminal and exit: a probe has
-    to come back with a verdict, and a step that terminated the process would
-    take the other eighteen with it.
+    ``_refuse_a_set_a_static_guard_rejects``, which ``_fail``s to the terminal and
+    exits: a probe has to come back with a verdict, and a step that terminated the
+    process would take the other eighteen with it.
 
     **``paths.root``, never the ``root`` that arrived.** ``ProjectPaths.of``
     resolves symlinks -- macOS ``/var`` is ``/private/var`` -- so handing
@@ -161,7 +128,37 @@ def _check_migrations(root: Path) -> MigrationsCheck:
     try:
         loaded = load_migrations(paths.root, paths.migrations, schema_root())
         run_static_migration_guards(loaded.migration_set)
-    except _MIGRATION_REFUSALS as exc:
+    # `TheurianError`, the whole family, and not a hand-listed tuple built from
+    # ``load_migrations``' ``Raises`` -- that tuple omitted whatever the docstring
+    # forgot, and a trailing-newline ``id`` block scalar raised the
+    # ``InvalidIdentifierError`` it left out (a ``DomainError``, not one of the five
+    # listed), so `doctor` demanded consent for "Could not check migrations-valid"
+    # on a directory `migrate validate` refuses. #91's own divergence, twice.
+    #
+    # This mirrors `migrate validate` exactly: it loads through ``_require_project``
+    # (`cli/commands.py`), whose ``except`` chain *ends* in a terminal ``except
+    # TheurianError``, so the set of errors it refuses on is precisely
+    # ``TheurianError``. Matching that set is what keeps the two from ever
+    # disagreeing about the same directory.
+    #
+    # Folding the whole family in is not too wide, and the reason is that this
+    # ``try`` calls only ``load_migrations`` and ``run_static_migration_guards`` --
+    # neither opens a state database nor calls ``resolve_context``. The
+    # state/history-family ``TheurianError``s (a checksum mismatch, a schema-version
+    # mismatch, a state database that cannot be read) are raised *outside* this
+    # block, so they cannot arise here and cannot be mislabelled as a migration
+    # problem. FR-K5's history verification is the same boundary from the other
+    # side: it runs in ``_require_project``'s ``_verify_history``, which this probe
+    # has no project context to reach, so `migrate validate` can refuse a tampered
+    # applied migration while `doctor`'s migrations-valid stays SATISFIED -- a
+    # *different* class, on the which-checks-run axis rather than this catch-set
+    # axis, tracked at #366 and deliberately not folded in here.
+    #
+    # A non-``TheurianError`` (a real bug, a bare stdlib error) still escapes to
+    # ``SetupService._probe``'s generic net -- "Could not check migrations-valid",
+    # a conflict -- in both this path and `migrate validate`, which is correct: it
+    # is not a verdict about the files.
+    except TheurianError as exc:
         return MigrationsCheck(count=0, failure=exc)
     return MigrationsCheck(count=len(loaded.migration_set), failure=None)
 

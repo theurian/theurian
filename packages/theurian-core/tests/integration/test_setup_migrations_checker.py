@@ -35,7 +35,12 @@ from theurian.application.setup_context import SetupContext
 from theurian.application.setup_steps import probe_migrations
 from theurian.cli.context import schema_root
 from theurian.cli.setup_commands import _check_migrations
-from theurian.domain.errors import IrregularSourceFileError, UnenforceableScopeError
+from theurian.domain.errors import (
+    InvalidIdentifierError,
+    IrregularSourceFileError,
+    TheurianError,
+    UnenforceableScopeError,
+)
 from theurian.domain.setup import StepStatus
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
@@ -181,6 +186,80 @@ def test_an_irregular_content_file_is_a_verdict_and_not_a_broken_probe(tmp_path:
     assert step.action == (
         "Fix the file it names; `theurian migrate validate` prints the full refusal."
     )
+
+
+def test_a_trailing_newline_identifier_is_a_verdict_and_not_a_broken_probe(tmp_path: Path) -> None:
+    """A block-scalar ``id``: `migrate validate` refuses, so `doctor` must too (#91).
+
+    An ``id: |`` block scalar yields ``<ULID>\\n``. The schema's ULID ``pattern`` is
+    ``$``-anchored, and Python's ``re`` -- which `jsonschema` uses -- matches ``$``
+    immediately before a trailing newline, so the document *validates*; only
+    ``MigrationId``'s ``\\Z``-anchored check refuses it, raising
+    ``InvalidIdentifierError`` (a ``DomainError``, hence a ``TheurianError``).
+
+    That family was omitted from the old hand-listed catch tuple, so the exception
+    escaped the checker and reached the reader as ``SetupService._probe``'s
+    CONFLICTING "Could not check migrations-valid" -- setup stopping to ask for
+    consent on a directory ``theurian migrate validate`` simply refuses. This is
+    the third instance of #91's class, and it is closed by catching
+    ``TheurianError`` -- exactly the set `migrate validate` refuses on -- rather
+    than a subset built from ``load_migrations``' ``Raises`` docstring.
+
+    The load is asserted to refuse first, so a fixture whose ``id`` never reached
+    the constructor would fail here rather than pass for the wrong reason.
+    """
+    root = _sample(tmp_path)
+    migration = next(iter(sorted(ProjectPaths.of(root).migrations.glob("*.yaml"))))
+    text = migration.read_text(encoding="utf-8")
+    original = "id: 01K1ABCXYZ01234567890ABCDE\n"
+    assert original in text, "the fixture's first migration is the one this mutates"
+    migration.write_text(
+        text.replace(original, "id: |\n  01K1ABCXYZ01234567890ABCDE\n", 1), encoding="utf-8"
+    )
+    with pytest.raises(InvalidIdentifierError):
+        _loaded_count(root)
+
+    check = _check_migrations(root)
+
+    assert isinstance(check.failure, InvalidIdentifierError)
+    assert check.count == 0
+
+    step = probe_migrations(_context(tmp_path, root))
+
+    assert step.status is StepStatus.MISSING, (
+        "an escaped refusal reaches the reader as a conflict, which stops setup for consent"
+    )
+    assert step.summary == f"The migrations in {ProjectPaths.of(root).migrations} do not validate."
+
+
+def test_any_theurian_error_from_the_load_is_a_verdict_not_an_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The class, not the symbol -- which is what closes the next unknown family.
+
+    The trailing-newline case above is one member of the set `migrate validate`
+    refuses on; this pins that the checker catches the whole ``TheurianError``
+    *family*, not a hand-listed subset of it. A ``TheurianError`` subtype a future
+    loader raises -- one no catch list here names -- must come back as a failure
+    rather than escaping to ``SetupService._probe``'s generic net and re-opening
+    #91's divergence, which is precisely how the tuple this replaces was wrong
+    twice (``IrregularSourceFileError``, then ``InvalidIdentifierError``).
+
+    Monkeypatched at the loader the checker actually calls, because the point is
+    the catch clause, not any particular way of provoking it.
+    """
+    root = _sample(tmp_path)
+    sentinel = TheurianError("a loader error no hand-listed catch set names")
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        raise sentinel
+
+    monkeypatch.setattr("theurian.cli.setup_commands.load_migrations", _raise)
+
+    check = _check_migrations(root)
+
+    assert check.failure is sentinel, "the family is caught, not a hand-listed subset of it"
+    assert check.count == 0
 
 
 def test_a_repository_reached_through_a_symlink_is_checked_rather_than_crashing(

@@ -1187,6 +1187,18 @@ def load_migrations(
             that cannot be resolved offline or resolves without terminating
             (issue #235; translated at the validate seam by
             :func:`_validate_document`, which :func:`_load_one` routes through).
+        InvalidIdentifierError: If any identifier a document names -- its ``id``,
+            a ``dependsOn`` entry, an operation's ``itemId``/``revisionId``/
+            ``specId`` -- fails its format contract when its
+            :mod:`~theurian.domain.identifiers` constructor validates it in
+            ``_load_one``/``_parse_upsert``. A ``DomainError`` (and so a
+            ``TheurianError``), raised *after* schema validation: the schema's
+            ULID ``pattern`` is ``$``-anchored, which Python's ``re`` also
+            matches immediately before a trailing newline, so an ``id: |`` block
+            scalar yielding ``<ULID>\\n`` passes the schema and is refused only by
+            ``MigrationId``'s ``\\Z``-anchored check. Absent from this list until a
+            caller read the list as the population of refusals and left the family
+            uncaught -- the same gap :class:`IrregularSourceFileError` had (#91).
     """
     _refuse_unusable_migrations_directory_symlink(migrations_dir, project_root)
 
