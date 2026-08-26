@@ -36,6 +36,8 @@ from theurian.application.setup_steps import probe_migrations
 from theurian.cli.context import schema_root
 from theurian.cli.setup_commands import _check_migrations
 from theurian.domain.errors import (
+    AliasItemCollisionError,
+    DuplicateContentFileError,
     InvalidIdentifierError,
     IrregularSourceFileError,
     TheurianError,
@@ -137,6 +139,72 @@ def test_a_set_the_loader_accepts_and_a_guard_refuses_comes_back_as_a_failure(
     check = _check_migrations(root)
 
     assert isinstance(check.failure, UnenforceableScopeError)
+    assert check.count == 0, "nothing was validated, so there is no number to publish"
+
+
+#: The auth-policy body the first migration pins, and its digest -- reused to
+#: point the second migration's revision at the *same* file, which is what
+#: `refuse_duplicate_content_files` refuses (one file cannot back two revisions).
+_AUTH_POLICY_BODY = "../knowledge/architecture/auth-policy.md"
+_AUTH_POLICY_SHA = "9cfd9b19030da602ea3339ef6f65ac176ce776c0c467a98bf9d11639241dc69f"
+
+
+def test_a_duplicate_content_file_set_is_a_verdict_and_not_a_broken_probe(tmp_path: Path) -> None:
+    """Two revisions backed by one body file: the second whole-set guard refuses it.
+
+    The load is not the whole of `migrate validate`, and the scope test above only
+    proves the *first* guard runs through the real checker. This drives the second
+    (``refuse_duplicate_content_files``, issue #210) the same way: the
+    order-cancellation revision is repointed at the auth-policy body, digest and
+    all, so both revisions resolve to one inode. The loader accepts that -- the
+    pins match the bytes -- and only the whole-set guard stops it, so a checker
+    that ran the load without the guards would call this set healthy.
+    """
+    root = _sample(tmp_path)
+    migrations = sorted(ProjectPaths.of(root).migrations.glob("*.yaml"))
+    second = migrations[1]
+    text = second.read_text(encoding="utf-8")
+    text = text.replace("../knowledge/domain/order-cancellation.md", _AUTH_POLICY_BODY, 1)
+    text = text.replace(
+        "contentSha256: 08bb9731aae7158a5d81796f3218e0f1b34ae2e46053ca71bace1fe9c5e9f1a7",
+        f"contentSha256: {_AUTH_POLICY_SHA}",
+        1,
+    )
+    second.write_text(text, encoding="utf-8")
+    assert _loaded_count(root) >= 2, "the loader still accepts this set; only a guard refuses it"
+
+    check = _check_migrations(root)
+
+    assert isinstance(check.failure, DuplicateContentFileError)
+    assert check.count == 0, "nothing was validated, so there is no number to publish"
+
+
+def test_an_alias_colliding_with_a_live_item_is_a_verdict_and_not_a_broken_probe(
+    tmp_path: Path,
+) -> None:
+    """An addAlias key equal to a live item id: the third whole-set guard refuses it.
+
+    The third guard (``refuse_alias_item_id_collision``, SEC-13/T-21) driven
+    through the real checker. ``architecture.auth-policy`` ends ``approved`` -- a
+    live, non-deprecated item -- and an ``addAlias`` keyed on that id would let a
+    lookup for it resolve through the alias to another item. The schema accepts the
+    op, so the loader accepts the set; only the guard stops it.
+    """
+    root = _sample(tmp_path)
+    migrations = sorted(ProjectPaths.of(root).migrations.glob("*.yaml"))
+    second = migrations[1]
+    second.write_text(
+        second.read_text(encoding="utf-8")
+        + "\n  - op: addAlias\n"
+        + "    alias: architecture.auth-policy\n"
+        + "    itemId: domain.order-cancellation\n",
+        encoding="utf-8",
+    )
+    assert _loaded_count(root) >= 2, "the loader still accepts this set; only a guard refuses it"
+
+    check = _check_migrations(root)
+
+    assert isinstance(check.failure, AliasItemCollisionError)
     assert check.count == 0, "nothing was validated, so there is no number to publish"
 
 
