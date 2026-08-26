@@ -602,6 +602,17 @@ Owed at implementation, each tied to the lane that will discharge it:
   serving path asserting `contentClassification: untrusted-knowledge`,
   `mayContainInstructions: true`, `executable: false` on a finding result, and a
   companion that the check can fail (a result missing the triple is rejected).
+- **The ingestion source is scoped to the public default branch (`origin/main`)
+  only** — a test that the source does not read `--all`, local branches, or
+  non-public remote refs, driven by
+  [#200](https://github.com/theurian/theurian/issues/200)'s parser. The embargo
+  closure (decision 6) rests on this scoping: it holds *because* only public `main`
+  is ingested. But `git log` defaults to the current branch and reads everything
+  under `--all`, so `origin/main` is an implementation choice the mechanism does
+  not inherently guarantee — an implementer wiring `git log --all` (which may
+  include fetched private-fork commits) silently loses the structural protection.
+  This test is the regression that catches it, and it pins the scoping rather than
+  trusting it.
 - **Any future non-public ingestion path refuses an embargoed finding uniformly
   at serve** — owed to *that* path (the FR-V GitHub-API arm that has advisory
   context), not to this source, which structurally holds no embargoed trailer to
