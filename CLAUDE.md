@@ -205,8 +205,10 @@ round. **Everywhere else that hour is overhead** — spending it everywhere trip
 hours-per-unit-of-work while output stayed flat — so outside the top row
 **adversarial review runs async, after merge**: a standing red-team sweep over
 `main`, nightly single-file mutation runs included, whose findings enter the
-filing-time triage like any other. Async adversarial on a *disclosure* surface is
-the one trade that never pays — it swaps a sync hour for an embargo week, six
+filing-time triage like any other (building the sweep and its ratchet is tracked
+in [#378](https://github.com/theurian/theurian/issues/378); until it runs the
+top-row sync round is the guarantee). Async adversarial on a *disclosure* surface
+is the one trade that never pays — it swaps a sync hour for an embargo week, six
 GHSAs at days each.
 
 So weigh the review before dispatching it, not after:
