@@ -24,6 +24,7 @@ import base64
 import hashlib
 import json
 import re
+from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -37,6 +38,10 @@ from jsonschema import Draft202012Validator
 
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
+    _AT_BODY_CONTENT,
+    _AT_BODY_PATH,
+    _AT_MIGRATION_BYTES,
+    _AT_MIGRATION_NAME,
     _AUTHORED_ANCHOR_FIELDS,
     _AUTHORED_METADATA_FIELDS,
     _AUTHORED_MIGRATION_FIELDS,
@@ -53,10 +58,10 @@ from theurian.cli.migration_pipeline import rehearse_migration_set
 from theurian.domain.enums import KnowledgeKind
 from theurian.domain.errors import ProjectConfigError
 from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId, RevisionId, TaskId
-from theurian.domain.knowledge import SourceAnchor
+from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
 from theurian.domain.migration import Migration, current_revision_in
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
-from theurian.domain.proposal import Evidence
+from theurian.domain.proposal import Evidence, is_migration_file_name
 from theurian.domain.values import MARKDOWN
 from theurian.infrastructure.filesystem.migration_loader import (
     load_migrations,
@@ -66,6 +71,7 @@ from theurian.security.content_secrets import (
     _MIN_CANDIDATE_CHARS,
     HIGH_ENTROPY,
     MAX_FINDINGS,
+    SecretFinding,
     scan_text,
 )
 from theurian.security.project_config import SecretScanPolicy
@@ -209,11 +215,14 @@ MIGRATION_FILENAME: Final = "01K3Z8Q9V4MRB7T2XNFCD5HGJW-retry-policy.yaml"
 #: credential there is disclosed to an agent that never reads the body.
 #:
 #: What is absent is of two kinds. The derived half a document cannot carry a
-#: credential in -- ``id``, ``revisionId``, ``contentSha256``, ``contentFile``
-#: and the enum fields, Theurian's own output or a fixed vocabulary, which
+#: credential in -- ``id``, ``revisionId``, ``contentSha256`` and the enum
+#: fields, Theurian's own output or a fixed vocabulary, which
 #: ``test_a_title_quoting_a_migration_filename_is_still_accepted_under_block``
 #: and ``test_a_schema_excluded_field_admits_no_reported_secret`` hold from the
-#: other side. And ``createdAt``, ``contentType``, ``validFrom`` and ``validTo``
+#: other side. ``contentFile`` sits with them here and for a different reason: it
+#: *can* carry one, and what lands is the path rather than the string, so it is
+#: the artifact-level scan's (#349) and not this field walk's.
+#: And ``createdAt``, ``contentType``, ``validFrom`` and ``validTo``
 #: -- *scanned* since #336, but not reachable by a *request* edit: ``createdAt``
 #: is stamped from the clock, ``contentType`` is ``request.content_type``, and
 #: the date fields are never set by ``propose``. Each reaches the document only
@@ -408,9 +417,11 @@ def test_warn_lands_the_body_and_reports_what_it_found(
 
     A ``warn`` that accepted silently would be indistinguishable from ``off`` to
     every caller, and the point of the policy is that a human is told which body
-    to look at before they open the pull request. The finding names the body by
-    the path it has under ``knowledge/`` -- the same relative path it has inside
-    the proposal directory, so the string is right on both sides of the move.
+    carries the finding before they open the pull request. The finding names the
+    body content by a fixed channel literal and an index, not by the body's landed
+    path: when the path is itself the credential, a location built from it would
+    republish the value (#360). The path a reviewer opens stays on the result, in
+    ``bodies[index].destination``.
     """
     _configure(paths, SecretScanPolicy.WARN.value)
 
@@ -419,7 +430,9 @@ def test_warn_lands_the_body_and_reports_what_it_found(
     assert accepted.secret_scan.policy is SecretScanPolicy.WARN
     assert [f.finding.family for f in accepted.secret_scan.findings] == [HIGH_ENTROPY]
     (finding,) = accepted.secret_scan.findings
-    assert finding.location.endswith(".md"), f"the finding names {finding.location!r}"
+    assert finding.location == f"{_AT_BODY_CONTENT}[0]", (
+        f"the body-content finding is not located by its channel literal: {finding.location!r}"
+    )
     assert PLANTED_TOKEN not in finding.describe(), (
         f"a warning reproduces the token it warns about: {finding.describe()!r}"
     )
@@ -1354,6 +1367,12 @@ def test_every_drivable_allowlist_entry_has_a_fixture_that_reaches_it(
     # its own mechanism -- a top-level rewrite -- and would otherwise be the one
     # newly scanned field (#336) with no fixture reaching it.
     reached |= _entries_reached_by(_a_proposal_carrying_a_secret_in_created_at(service))
+    # `contentFile` joined the operation allowlist in #349: its parsed value is
+    # scanned, so a secret-shaped body path reaches `operation.contentFile`
+    # through the field walk, where no metadata or hand-authored plant does.
+    reached |= _entries_reached_by(
+        _a_proposal_whose_body_lands_at(service, f"architecture/{PLANTED_TOKEN}.md")
+    )
 
     expected = _allowlist_population() - set(_UNDRIVABLE)
     assert reached == expected, (
@@ -1712,9 +1731,12 @@ def _schema_string_properties() -> dict[str, Mapping[str, Any]]:
 
 #: Every schema string field that is deliberately *not* scanned, with the
 #: category of its mechanical reason. Each reason is exercised by
-#: :func:`test_a_schema_excluded_field_admits_no_reported_secret` (the schema
-#: rejects a planted secret, and every value it admits is undetectable) or, for
-#: ``contentFile``, by :func:`test_a_secret_shaped_content_file_is_out_of_336_scope`.
+#: :func:`test_a_schema_excluded_field_admits_no_reported_secret`: the schema
+#: rejects a planted secret, and every value it admits is undetectable.
+#:
+#: ``operation.contentFile`` is **not** here: the review of #349 moved it into
+#: :data:`_AUTHORED_OPERATION_FIELDS` (its parsed value carries what its bytes and
+#: its resolved landed path can miss), so it is scanned rather than excluded.
 #:
 #: What is **not** here is the leftover: ``migration.createdAt``,
 #: ``metadata.contentType``, ``metadata.validFrom`` and ``metadata.validTo``.
@@ -1744,11 +1766,6 @@ _EXCLUDED: Final[Mapping[str, tuple[str, str]]] = {
     ),
     "operation.relationType": ("enum", "$defs/relationType, fourteen fixed labels"),
     "operation.status": ("enum", "the specification status enum: draft/active/superseded/retired"),
-    "operation.contentFile": (
-        "scope",
-        "a body-file path; a credential in a filename is filename scanning (#349), out of "
-        "#336's scope, and a secret-shaped path that backs no file is refused before it lands",
-    ),
     "metadata.kind": ("enum", "$defs/kind"),
     "metadata.status": ("enum", "$defs/status, six fixed labels"),
     "metadata.trustLevel": ("enum", "$defs/trustLevel"),
@@ -1895,41 +1912,132 @@ def test_a_schema_excluded_field_admits_no_reported_secret(name: str) -> None:
         raise AssertionError(f"unknown exclusion category for {name}: {category}")
 
 
-def test_a_secret_shaped_content_file_is_out_of_336_scope(
+def test_a_secret_shaped_content_file_is_refused_by_the_artifact_scan(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
-    """``contentFile`` is a body path, so a credential in it is filename scanning (#349).
+    """A secret-shaped ``contentFile`` is refused, and scanned as a parsed field (#336, #349).
 
-    The exclusion of ``contentFile`` from the metadata scan is not "we forgot it":
-    a secret-shaped ``contentFile`` that backs no file is refused by
-    ``_body_moves`` before the scan is even reached, so it never lands. The case
-    that *would* land -- a real body file whose name is a credential -- is
-    filename scanning, tracked as #349 and out of this scan's scope. Either way
-    #336's field scan legitimately does not read it, which is what excluding it
-    from the population asserts.
+    Before the review of #349 the parsed ``contentFile`` was excluded from the
+    field walk and left to the artifact channels. That was a gap: a credential in
+    a ``..``-removed segment or spelled with YAML escapes reaches neither the
+    landed path nor the raw bytes, so ``contentFile`` joined
+    :data:`_AUTHORED_OPERATION_FIELDS`. Here the credential survives resolution,
+    so it is over-determined -- both the field walk and the landed-path channel
+    see it -- which is what lets this assert both halves:
 
-    This depends on #349 by design: were filename scanning added, ``contentFile``
-    would move into that scan's population, not this one's.
+    * the acceptance **is** refused, naming the family, and nothing lands; and
+    * :func:`_document_findings` -- the field walk alone -- now reports the
+      credential, and *only* it, at ``migration.operations[1].contentFile``, so
+      the refusal reaches the field walk rather than only the artifact channels.
+      The ``..``-removed and escaped faces the landed path and the raw bytes miss
+      are pinned separately, by
+      ``test_an_escaped_traversal_content_file_is_refused_under_block``.
+
+    The body is moved to the path the ``contentFile`` names, unlike the version
+    of this test that preceded #349: a ``contentFile`` that backs no file is
+    refused by ``_body_moves`` *before* the scan runs, so a fixture that left the
+    body where ``draft`` put it would never reach the control under test at all.
     """
     assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
-    drafted = service.draft(_request(CLEAN_BODY))
+    tail = f"architecture/{PLANTED_TOKEN}.md"
+    drafted = _a_proposal_whose_body_lands_at(service, tail)
     document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
-    assert isinstance(document, dict)
-    document["operations"][1]["contentFile"] = f"../knowledge/architecture/{PLANTED_TOKEN}.md"
-    drafted.migration_file.write_text(
-        yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert HIGH_ENTROPY in str(caught.value), (
+        f"a credential in contentFile was not what refused the acceptance: {caught.value}"
+    )
+    assert {f.location for f in _document_findings(document)} == {
+        f"migration.operations[{_UPSERT_INDEX}].contentFile"
+    }, (
+        "the field walk did not report the secret-shaped contentFile at its own location; #349 "
+        "moved contentFile into the scanned set"
+    )
+    assert PLANTED_TOKEN not in str(caught.value), (
+        f"the refusal reproduced the credential it refused: {caught.value}"
+    )
+    assert not (paths.migrations / drafted.migration_file.name).exists(), (
+        "the migration landed despite naming a body whose path is a credential"
+    )
+    assert not (paths.knowledge / tail).exists(), "the body landed under a credential-shaped name"
+
+
+def _xnn(value: str) -> str:
+    """``value`` with every character spelled as a ``\\xNN`` YAML escape."""
+    return "".join(f"\\x{ord(character):02x}" for character in value)
+
+
+def _unnnn(value: str) -> str:
+    """``value`` with every character spelled as a ``\\uNNNN`` YAML escape."""
+    return "".join(f"\\u{ord(character):04x}" for character in value)
+
+
+#: The three ways one hand-authored ``contentFile`` can carry a credential in a
+#: path segment that ``..`` then removes -- as plain text, and spelled so the
+#: migration's raw bytes never hold the decoded value. Each parses back to the
+#: same traversal, the ``..`` drops the secret-bearing segment from the landed
+#: path, and the two escaped spellings never reach the raw bytes, so the parsed
+#: ``contentFile`` field walk is the only channel that can see any of them (#349).
+_TRAVERSAL_SEGMENT_SPELLINGS: Final[Mapping[str, str]] = {
+    "plain": PLANTED_TOKEN,
+    "x-escaped": _xnn(PLANTED_TOKEN),
+    "u-escaped": _unnnn(PLANTED_TOKEN),
+}
+
+
+@pytest.mark.parametrize("spelling", list(_TRAVERSAL_SEGMENT_SPELLINGS))
+def test_an_escaped_traversal_content_file_is_refused_under_block(
+    service: ProposalService, paths: ProjectPaths, spelling: str
+) -> None:
+    """A credential in a ``..``-removed ``contentFile`` segment is caught by the field walk (#349).
+
+    The HIGH the review of #349 reproduced: a hand-authored ``contentFile`` naming
+    ``../knowledge/<secret>/../architecture/note.md`` lands its body at
+    ``architecture/note.md`` -- the ``<secret>`` segment collapsed away -- so the
+    landed-path channel never sees it, and when the segment is spelled ``\\xNN`` or
+    ``\\uNNNN`` the migration's raw bytes never hold the decoded value either. The
+    parsed ``contentFile``, now in :data:`_AUTHORED_OPERATION_FIELDS`, is the only
+    channel that carries it, which is why pattern enumeration could not close the
+    class -- three spellings, one field.
+
+    The ``plain`` case is the control: the same traversal, readable, where the raw
+    bytes *do* spell the secret, so it isolates the ``..`` collapse (the landed
+    path is clean under every spelling) from the escape decoding the other two add.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    segment = _TRAVERSAL_SEGMENT_SPELLINGS[spelling]
+    landed_tail = "architecture/note.md"
+    drafted = _a_proposal_whose_body_lands_at(
+        service, landed_tail, spelled=f'"../knowledge/{segment}/../architecture/note.md"'
+    )
+    text = drafted.migration_file.read_text(encoding="utf-8")
+
+    assert PLANTED_TOKEN not in landed_tail, "the fixture leaves the secret in the landed path"
+    if spelling != "plain":
+        assert scan_text(text) == (), (
+            f"the {spelling} contentFile is detectable in the migration's own bytes, so this no "
+            f"longer isolates the parsed-field channel: {scan_text(text)}"
+        )
+    parsed = yaml.safe_load(text)["operations"][_UPSERT_INDEX]["contentFile"]
+    assert parsed.endswith(f"/{PLANTED_TOKEN}/../architecture/note.md"), (
+        f"the contentFile did not parse back to the traversal this case is about: {parsed!r}"
     )
 
     with pytest.raises(ProposalError) as caught:
         service.accept(drafted.proposal_id)
 
-    assert HIGH_ENTROPY not in str(caught.value), (
-        "the metadata scan reported a secret in contentFile; that path is #349's scope, and a "
-        f"reported finding here means the exclusion is wrong: {caught.value}"
+    assert HIGH_ENTROPY in str(caught.value), (
+        f"a credential in a ..-removed contentFile segment was not what refused: {caught.value}"
+    )
+    assert PLANTED_TOKEN not in str(caught.value) and PLANTED_TOKEN not in caught.value.remedy, (
+        f"the refusal reproduced the credential it refused: {caught.value}"
     )
     assert not (paths.migrations / drafted.migration_file.name).exists(), (
-        "a migration naming a non-existent body landed"
+        "the migration landed despite naming a contentFile whose removed segment is a credential"
     )
+    assert not (paths.knowledge / landed_tail).exists(), "the body landed despite the refusal"
 
 
 @pytest.mark.parametrize("value", [_A_HEX64, "abcdef1", "a" * 40, "f" * 64, "0123456789abcdef"])
@@ -2143,7 +2251,7 @@ def test_body_findings_are_listed_before_document_findings(
     and the order is part of the contract: a reviewer reading a ``warn`` result, or
     the capped refusal list, meets the reviewed artefact (the body) before the
     skimmed one (the metadata). A secret in the body and one in the title produce
-    two findings; the body's ``.md`` location must come first. Swapping the
+    two findings; the body-content finding must come first. Swapping the
     concatenation order -- which round one's mutation did and the suite did not
     notice -- puts the metadata finding first.
     """
@@ -2154,7 +2262,7 @@ def test_body_findings_are_listed_before_document_findings(
 
     locations = [finding.location for finding in accepted.secret_scan.findings]
     assert len(locations) >= 2, f"expected a body and a metadata finding, got {locations}"
-    assert locations[0].endswith(".md"), (
+    assert locations[0] == f"{_AT_BODY_CONTENT}[0]", (
         f"the first finding is not the body; body findings must precede the document's: {locations}"
     )
     assert any("title" in location for location in locations[1:]), (
@@ -2200,4 +2308,1269 @@ def test_a_metadata_only_migration_is_still_scanned(
     assert not (paths.migrations / drafted.migration_file.name).exists(), (
         "the migration landed despite carrying a secret -- the document scan was skipped because "
         "no body moved"
+    )
+
+
+# -- the artifacts accept lands, not only the fields it parses (#349) ---------
+#
+# Everything above scans two things: a body's bytes, and the *parsed* value of a
+# field the walker's allowlists name. `accept` does not land parsed values. It
+# lands three artifacts, and each carries author-written characters that no
+# parse survives:
+#
+#   * the migration file's own bytes -- a YAML comment is stripped by
+#     `yaml.safe_load` before the field scan ever sees the document, and a field
+#     *as written* can differ from its parsed value;
+#   * the migration file's *name*, whose slug after the ULID prefix is free-form
+#     on a hand-authored proposal (`_MIGRATION_FILE_NAME` admits any lower-case
+#     kebab run); and
+#   * each body's landed path under `.theurian/knowledge/`, directory components
+#     included -- `_commit` calls `destination.parent.mkdir(parents=True)`, so a
+#     component of a hand-authored `contentFile` becomes a directory in the tree.
+#
+# Measured on 08319af through the real ProposalService at policy `block`
+# (2026-08-25, https://github.com/theurian/theurian/issues/349): all four faces
+# below are accepted with `secretFindings: []` and land -- the comment into
+# `.theurian/migrations/`, the credential-named migration file into the same
+# directory, and the credential-named body (leaf and directory alike) into
+# `.theurian/knowledge/`.
+#
+# `evidence.json` and the proposal directory's own name are deliberately absent:
+# `accept` moves neither, so neither is an artifact this scan can be about.
+
+
+def _hex_tail(seed: bytes, length: int) -> str:
+    """``length`` lower-case hex characters derived from ``seed``.
+
+    Split from its seed for the reason :data:`PLANTED_TOKEN` records: not drawn,
+    so the suite cannot redden for a fixture's luck, and no credential-shaped
+    literal exists in the file.
+    """
+    return hashlib.sha256(seed).hexdigest()[:length]
+
+
+#: The two families a *migration filename* can carry, and why they are the only
+#: two. The slug is `[a-z0-9]+(-[a-z0-9]+)*`, so `aws-access-key-id` and
+#: `google-api-key` (upper-case) and `github-token` and `stripe-secret-key`
+#: (underscore) cannot be spelled in one at all; `openai-api-key` (`sk-`) and
+#: `slack-token` (`xox`) can. Measured 2026-08-25. A body *path* is less
+#: restricted and all five are reachable there, which is why the two channels do
+#: not share a fixture.
+_FILENAME_SECRET: Final = "sk-" + _hex_tail(b"theurian migration-filename fixture (#349)", 40)
+_SECOND_FILENAME_SECRET: Final = "sk-" + _hex_tail(b"theurian second filename fixture (#349)", 40)
+
+#: The same shape for a body leaf. A separate seed per channel so that re-seeding
+#: one fixture cannot silently change what another one tests.
+_LEAF_SECRET: Final = "sk-" + _hex_tail(b"theurian body-leaf fixture (#349)", 40)
+_SECOND_LEAF_SECRET: Final = "sk-" + _hex_tail(b"theurian second body-leaf fixture (#349)", 40)
+
+#: A Slack bot token, for the *directory component* face. Its family's repetition
+#: class admits `-`, so the whole credential is spellable inside one path
+#: component -- which is the point: the leaf beside it (`note.md`) is clean, so a
+#: scan of the leaf alone finds nothing and only the full landed path does.
+_DIRECTORY_SECRET: Final = (
+    "xoxb-"
+    + _hex_tail(b"theurian landed-path fixture (#349)", 10)
+    + "-"
+    + _hex_tail(b"theurian landed-path tail (#349)", 24)
+)
+
+#: The credential a contributor leaves in a YAML comment while rotating one. A
+#: base64url token rather than a prefixed one, because a comment is free text and
+#: this is the shape a paste produces.
+_COMMENT_SECRET: Final = _distinct_token("#349 yaml comment")
+
+#: Where `_migration_document` puts the `upsertRevision` a drafted proposal
+#: carries. Named because every helper below rewrites that operation's
+#: `contentFile`, and an index that silently moved would leave them rewriting
+#: `createItem` -- which has no `contentFile`, so the fixture would land a body
+#: at its drafted path and the test would go green having exercised nothing.
+_UPSERT_INDEX: Final = 1
+
+#: A placeholder for the one scalar a fixture has to write as *text* rather than
+#: through `yaml.safe_dump`, so that a `\x`/`\u` escape survives into the file.
+_CONTENT_FILE_PLACEHOLDER: Final = "CONTENT-FILE-PLACEHOLDER"
+
+
+def _a_proposal_whose_migration_carries_a_comment(
+    service: ProposalService, comment: str, *, body: str = CLEAN_BODY
+) -> DraftedProposal:
+    """The ordinary proposal, with ``comment`` prepended to its migration as a YAML comment.
+
+    Written by text manipulation and not through ``yaml.safe_dump``, which has no
+    way to emit a comment at all -- and that is the whole point of the face: a
+    comment exists only in the bytes, so the parsed document the field scan reads
+    cannot carry it.
+
+    ``body`` stays clean for every face that is about the comment alone. It is
+    given only by the cross-channel budget test below, which needs one proposal
+    loading *two* channels at once -- the body's bytes and the migration's.
+    """
+    drafted = service.draft(_request(body))
+    text = drafted.migration_file.read_text(encoding="utf-8")
+    drafted.migration_file.write_text(f"# {comment}\n{text}", encoding="utf-8")
+    return drafted
+
+
+def _a_proposal_named_for(
+    service: ProposalService, slug: str, *, replacing: RevisionId | None = None
+) -> tuple[DraftedProposal, Path]:
+    """The ordinary proposal, with its migration file renamed ``<its own ULID>-<slug>.yaml``.
+
+    Renamed rather than drafted under that name: ``draft`` derives the slug from
+    the title, and the face is a *committed* proposal directory (ADR-0013 point
+    7) whose file a contributor renamed by hand. The ULID prefix is the
+    proposal's own, so ``_require_filename_matches_id`` -- which runs before the
+    scan and compares the prefix with the document's ``id`` -- still passes and
+    cannot be what refuses.
+
+    Returns the drafted proposal and the renamed file, because
+    ``DraftedProposal.migration_file`` now points at a path that no longer
+    exists.
+
+    ``replacing`` is the revision this one supersedes, which ``draft`` demands of
+    the *second* proposal for an item whose first has already been accepted --
+    the shape the two-acceptance pins below need.
+    """
+    drafted = service.draft(replace(_request(CLEAN_BODY), expected_revision=replacing))
+    renamed = drafted.directory / f"{drafted.migration_id.value}-{slug}.yaml"
+    assert is_migration_file_name(renamed.name), (
+        f"{renamed.name!r} is not a name accept recognises as a migration, so the refusal under "
+        f"test would be 'this proposal holds no migration' rather than anything about a secret"
+    )
+    drafted.migration_file.rename(renamed)
+    return drafted, renamed
+
+
+def _a_proposal_whose_body_lands_at(
+    service: ProposalService,
+    tail: str,
+    *,
+    spelled: str | None = None,
+    replacing: RevisionId | None = None,
+) -> DraftedProposal:
+    """The ordinary proposal, with its one body moved to ``tail`` and the migration repointed.
+
+    ``tail`` is the path relative to ``.theurian/knowledge/``, which is also the
+    sub-path the body occupies inside the proposal directory -- one string for
+    both, exactly as :meth:`ProposalService._body_moves` requires, so the body is
+    found and read and the scan is reached.
+
+    The body's *bytes* are untouched, so the ``contentSha256`` the draft pinned
+    still matches and the rehearsal has nothing of its own to refuse. What
+    changes is only where the file will land.
+
+    ``spelled`` is the literal YAML scalar to write for ``contentFile`` when the
+    test needs the *written* form to differ from the parsed one -- a ``\\x``
+    escape, which ``yaml.safe_dump`` would never produce. When it is ``None`` the
+    ordinary dumped form is used.
+
+    ``replacing`` is the revision this one supersedes, which ``draft`` demands of
+    the *second* proposal for an item whose first has already been accepted --
+    the shape the two-acceptance pins below need.
+    """
+    drafted = service.draft(replace(_request(CLEAN_BODY), expected_revision=replacing))
+    document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    upsert = document["operations"][_UPSERT_INDEX]
+    assert upsert["op"] == "upsertRevision", (
+        f"operations[{_UPSERT_INDEX}] is a {upsert['op']!r}, not the upsertRevision this helper "
+        f"repoints; the body would land at its drafted path and the face would go untested"
+    )
+
+    upsert["contentFile"] = _CONTENT_FILE_PLACEHOLDER if spelled else f"../knowledge/{tail}"
+    text = yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
+    if spelled is not None:
+        text = text.replace(_CONTENT_FILE_PLACEHOLDER, spelled)
+    drafted.migration_file.write_text(text, encoding="utf-8")
+
+    moved = drafted.directory / tail
+    moved.parent.mkdir(parents=True, exist_ok=True)
+    drafted.body_file.rename(moved)
+    return drafted
+
+
+def test_a_secret_in_a_yaml_comment_is_invisible_to_the_parsed_field_scan(
+    service: ProposalService,
+) -> None:
+    """The guard that makes the comment tests below about a *new* channel (#349).
+
+    If the field scan happened to see a comment, every assertion below would hold
+    against the shipped build and this file would report a fix that was never
+    made. It cannot: ``yaml.safe_load`` discards comments before
+    :func:`_document_findings` is handed anything, so the parsed document carries
+    no trace of one. Both halves are asserted -- the detector *does* report the
+    planted value in the file's bytes, and the walker reports nothing for the
+    parsed document -- because either alone is satisfied by a fixture that
+    planted nothing.
+    """
+    drafted = _a_proposal_whose_migration_carries_a_comment(service, _COMMENT_SECRET)
+
+    text = drafted.migration_file.read_text(encoding="utf-8")
+
+    assert [f.family for f in scan_text(text)] == [HIGH_ENTROPY], (
+        f"the detector does not report the planted comment, so a refusal test built on it would "
+        f"not be testing the accept path: {scan_text(text)}"
+    )
+    assert _document_findings(yaml.safe_load(text)) == (), (
+        "the parsed-field scan reports the comment, so these tests would pass without the "
+        "artifact-level scan #349 asks for"
+    )
+
+
+def test_a_secret_in_a_yaml_comment_of_the_migration_is_refused_under_block(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """SEC-11's gate covers the bytes that land, not only the values that parse (#349).
+
+    A comment is where a rotation note goes -- *the old staging value was X* --
+    and it survives acceptance verbatim: ``_commit`` writes the migration's
+    original bytes to ``.theurian/migrations/``, so the comment is in the tree
+    every later ``migrate apply`` reads and in the pull request a human merges.
+    The field scan cannot reach it by construction (the guard above), so this is
+    red until the scan reads the migration's raw bytes.
+
+    Measured on 08319af: this acceptance exits 0 and the comment lands.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    drafted = _a_proposal_whose_migration_carries_a_comment(service, _COMMENT_SECRET)
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert HIGH_ENTROPY in str(caught.value), (
+        f"a secret in a YAML comment was not what refused the acceptance: {caught.value}"
+    )
+    assert not (paths.migrations / drafted.migration_file.name).exists(), (
+        "the migration landed in .theurian/migrations/ despite the refusal -- the comment is now "
+        "in the tree the migration set reads"
+    )
+    assert _COMMENT_SECRET not in str(caught.value), (
+        f"the refusal reproduced the secret it refused: {caught.value}"
+    )
+
+
+def test_a_secret_in_a_yaml_comment_is_reported_under_warn(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """``warn`` has to *say* what it let through, on the new channel as on the old ones.
+
+    A ``warn`` that scanned the bytes and reported nothing would be
+    indistinguishable from ``off`` for the one artifact that lands unparsed. The
+    landed migration is asserted to still hold the comment, so this is the whole
+    of ``warn`` on this channel: it proceeds, and it tells a reviewer to go and
+    look.
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+    drafted = _a_proposal_whose_migration_carries_a_comment(service, _COMMENT_SECRET)
+
+    accepted = service.accept(drafted.proposal_id)
+
+    rendered = _rendered(accepted)
+    assert accepted.secret_scan.policy is SecretScanPolicy.WARN
+    assert HIGH_ENTROPY in rendered, (
+        f"warn reported nothing for a secret in a comment: {rendered!r}"
+    )
+    assert _COMMENT_SECRET not in rendered, (
+        f"a warning reproduces the token it warns about: {rendered!r}"
+    )
+    landed = paths.migrations / drafted.migration_file.name
+    assert _COMMENT_SECRET in landed.read_text(encoding="utf-8"), (
+        "warn refused the acceptance, or landed a migration this fixture did not write"
+    )
+
+
+def test_a_secret_in_the_migration_s_own_filename_is_refused_under_block(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The filename is an artifact too, and its slug is the contributor's (#349).
+
+    ``.theurian/migrations/`` names files ``<ulid>-<slug>.yaml`` and only the
+    ULID is Theurian's: the slug is free-form lower-case kebab on a hand-authored
+    proposal, which is enough to spell an ``openai-api-key``. The name lands in a
+    Git tree, is printed by every ``migrate`` listing, and is quoted in the
+    refusals this very module renders -- and it appears nowhere in the migration's
+    own bytes, so neither the body scan, the field scan nor a raw-bytes scan of
+    the document can see it.
+
+    Measured on 08319af: this acceptance exits 0 and the file lands under that
+    name. The family is asserted rather than the bare refusal, because a
+    hand-renamed migration has other ways to be refused -- a name the pattern
+    does not admit, or a ULID prefix disagreeing with the document's ``id`` --
+    and a test that accepted any ``ProposalError`` would go green on one of them.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    drafted, renamed = _a_proposal_named_for(service, f"staging-{_FILENAME_SECRET}")
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert "openai-api-key" in str(caught.value), (
+        f"a credential in the migration's filename was not what refused the acceptance: "
+        f"{caught.value}"
+    )
+    assert not (paths.migrations / renamed.name).exists(), (
+        "the migration landed in .theurian/migrations/ despite the refusal -- the credential is "
+        "now a filename in the tree the migration set reads"
+    )
+
+
+def test_a_secret_in_a_landed_body_leaf_is_refused_under_block(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A body's landed *name* is as much a landed artifact as its bytes (#349).
+
+    ``contentFile`` decides where the body goes, and a hand-authored one may name
+    anything inside ``.theurian/knowledge/``. The bytes here are the ordinary
+    clean body -- so the body scan that has existed since #198 finds nothing --
+    and the credential is only in the leaf the file lands under.
+
+    Measured on 08319af: this acceptance exits 0 and
+    ``.theurian/knowledge/architecture/staging-sk-<hex40>.md`` is created.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    tail = f"architecture/staging-{_LEAF_SECRET}.md"
+    drafted = _a_proposal_whose_body_lands_at(service, tail)
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert "openai-api-key" in str(caught.value), (
+        f"a credential in the body's landed name was not what refused the acceptance: "
+        f"{caught.value}"
+    )
+    assert not (paths.knowledge / tail).exists(), (
+        "the body landed despite the refusal -- the credential is now a filename under "
+        ".theurian/knowledge/"
+    )
+
+
+def test_a_secret_in_a_landed_body_s_directory_component_is_refused_under_block(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The scanned path is the whole landed path, not the leaf (#349).
+
+    ``_commit`` calls ``destination.parent.mkdir(parents=True)``, so every
+    component of a hand-authored ``contentFile`` becomes a real directory in
+    ``.theurian/knowledge/``. Here the leaf is ``note.md`` -- clean, and clean on
+    its own under the detector (measured 2026-08-25) -- while the directory it
+    lands in is a Slack bot token. An implementation that scanned
+    ``destination.name`` would pass the test above this one and land this
+    credential, which is why the two faces are separate tests rather than a
+    parametrization over one.
+
+    ``slack-token`` and ``openai-api-key`` are also the only two families a
+    *filename* channel can carry, so this case doubles as the second family's
+    accept-path coverage.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    tail = f"{_DIRECTORY_SECRET}/note.md"
+    drafted = _a_proposal_whose_body_lands_at(service, tail)
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert "slack-token" in str(caught.value), (
+        f"a credential in the body's landed *directory* was not what refused the acceptance: "
+        f"{caught.value}"
+    )
+    assert not (paths.knowledge / tail).parent.exists(), (
+        "the directory was created despite the refusal -- the credential is now a directory name "
+        "under .theurian/knowledge/"
+    )
+
+
+def test_a_landed_path_secret_the_migration_bytes_do_not_spell_is_still_refused(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A credential spelled only in an escaped, ``..``-resolved path is still refused (#349).
+
+    The ``b`` of ``xoxb`` is written as the YAML escape ``\\x62`` in a
+    double-quoted scalar, so:
+
+    * the migration's **bytes** spell ``xox\\x62-...``, which the detector does
+      not report (asserted below, so a detector that later did would redden here
+      loudly rather than turn this into a test of nothing); while
+    * both the **parsed** ``contentFile`` and the **landed path** decode to
+      ``xoxb-.../note.md``, a Slack bot token.
+
+    So a raw-bytes scan alone would let it through; it is refused because the
+    value is read as a *decoded* string. **This no longer isolates the landed-path
+    channel.** #349 round 2 put ``contentFile`` in
+    :data:`_AUTHORED_OPERATION_FIELDS`, and the landed path is a subset of the
+    parsed ``contentFile`` (``..`` only ever drops segments), so any secret in the
+    landed path is in the parsed value too -- the field walk catches this fixture
+    as well. The landed-path channel can no longer be isolated by any fixture, and
+    whether it remains worth keeping beside the field walk is a separate question
+    (recorded for the #349 round-2 report).
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    tail = f"{_DIRECTORY_SECRET}/note.md"
+    spelled = f'"../knowledge/{tail.replace("xoxb", "xox\\x62", 1)}"'
+    drafted = _a_proposal_whose_body_lands_at(service, tail, spelled=spelled)
+    text = drafted.migration_file.read_text(encoding="utf-8")
+    assert scan_text(text) == (), (
+        f"the escaped spelling is detectable in the migration's own bytes, so this no longer "
+        f"distinguishes the decoded channels from a raw-bytes scan: {scan_text(text)}"
+    )
+    assert yaml.safe_load(text)["operations"][_UPSERT_INDEX]["contentFile"].endswith(tail), (
+        "the escaped scalar did not parse back to the path the body was moved to; the fixture "
+        "is not describing the face it claims"
+    )
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert "slack-token" in str(caught.value), (
+        f"a credential spelled only in the landed path was not what refused the acceptance: "
+        f"{caught.value}"
+    )
+    assert not (paths.knowledge / tail).parent.exists(), "the directory was created anyway"
+
+
+#: The two name channels, each with two credentials of its own family. Two so the
+#: pins below can tell a *fixed* location from one built out of the name that was
+#: found: a location derived from the name differs between the two runs, a
+#: location naming the channel does not.
+_NAME_CHANNEL_SECRETS: Final[Mapping[str, tuple[str, str]]] = {
+    "migration-filename": (_FILENAME_SECRET, _SECOND_FILENAME_SECRET),
+    "body-path": (_LEAF_SECRET, _SECOND_LEAF_SECRET),
+}
+
+
+def _a_proposal_carrying(
+    service: ProposalService, channel: str, secret: str, *, replacing: RevisionId | None = None
+) -> DraftedProposal:
+    """A proposal whose only credential is in the artifact ``channel`` names."""
+    if channel == "migration-filename":
+        drafted, _renamed = _a_proposal_named_for(service, f"staging-{secret}", replacing=replacing)
+        return drafted
+    return _a_proposal_whose_body_lands_at(
+        service, f"architecture/staging-{secret}.md", replacing=replacing
+    )
+
+
+@pytest.mark.parametrize("channel", list(_NAME_CHANNEL_SECRETS))
+def test_a_name_channel_refusal_never_reproduces_the_name_it_refuses(
+    service: ProposalService, paths: ProjectPaths, channel: str
+) -> None:
+    """A refusal that quotes the offending name is a second copy of the credential (#349).
+
+    The two channels added here are the ones where the *location* of a finding is
+    itself attacker-chosen text. ``SecretFinding`` bounds what a finding may quote
+    of the match to four characters and refuses construction past it, but a
+    location assembled from a filename or a landed path routes straight around
+    that bound: the whole point of the name is that it *is* the credential.
+    ``ProposalSecretFinding.describe`` renders the location into the refusal a
+    terminal prints and into the ``accept --json`` document something logs, and
+    ``_destination_of`` already records the same stance for the sibling path
+    refusals (SEC-7 forbids reflecting an authored ``contentFile``, #233).
+
+    The whole rendered refusal is asserted -- message and remedy together --
+    rather than the finding's fields, because a message assembled anywhere else
+    on the path would satisfy a field-level check and still print the credential.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    secret, _second = _NAME_CHANNEL_SECRETS[channel]
+    drafted = _a_proposal_carrying(service, channel, secret)
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert secret not in str(caught.value), (
+        f"the refusal reproduced the credential it found in the {channel}: {caught.value}"
+    )
+    assert secret not in caught.value.remedy, (
+        f"the remedy reproduced the credential it found in the {channel}: {caught.value.remedy!r}"
+    )
+
+
+@pytest.mark.parametrize("channel", list(_NAME_CHANNEL_SECRETS))
+def test_a_name_channel_finding_locates_by_the_channel_rather_than_by_the_name(
+    service: ProposalService, paths: ProjectPaths, channel: str
+) -> None:
+    """The location of a name-channel finding is a fixed literal, not the name (#349).
+
+    The test above holds that the credential is not echoed; this holds *why* it
+    is not, in the form that survives an implementation change. Two acceptances
+    under ``warn``, in one project, carrying two different credentials in the
+    same channel: a location built from the offending name differs between them,
+    and a location naming the channel -- *the migration's filename*, *the body's
+    landed path* -- is identical. Equality is asserted after non-emptiness, so a
+    build that reports nothing at all (which is 08319af) fails here rather than
+    passing on two empty sets.
+
+    Held as *equal and free of both names* rather than as a spelling, because
+    which literal is used is the implementation's choice. What may not vary is
+    that it is a literal.
+
+    ``warn`` rather than ``block``: a refusal raises before a caller can read the
+    findings, so the location only reaches a test through the success result.
+
+    One item across both acceptances, the second stating the revision it
+    replaces. Two *different* items would let an implementation that located a
+    finding by the item id -- a location that names no credential, and so passes
+    the sibling test above -- fail this one for a reason it is not about.
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+    first_secret, second_secret = _NAME_CHANNEL_SECRETS[channel]
+
+    first_drafted = _a_proposal_carrying(service, channel, first_secret)
+    first = service.accept(first_drafted.proposal_id)
+    second_drafted = _a_proposal_carrying(
+        service, channel, second_secret, replacing=first_drafted.revision_id
+    )
+    second = service.accept(second_drafted.proposal_id)
+
+    first_locations = {finding.location for finding in first.secret_scan.findings}
+    second_locations = {finding.location for finding in second.secret_scan.findings}
+    assert first_locations, f"warn reported nothing for a credential in the {channel}"
+    assert first_locations == second_locations, (
+        f"two credentials in the same {channel} produced different finding locations "
+        f"({sorted(first_locations)} and {sorted(second_locations)}), so a location is built out "
+        f"of the name that was found rather than naming the channel"
+    )
+    for location in first_locations | second_locations:
+        assert first_secret not in location and second_secret not in location, (
+            f"a finding's location is a verbatim copy of the credential it reports: {location!r}"
+        )
+
+
+def _a_leaky_body_landing_at(service: ProposalService, tail: str) -> DraftedProposal:
+    """A proposal whose body is ``LEAKY_BODY`` and whose ``contentFile`` lands it at ``tail``.
+
+    The dirty-body sibling of :func:`_a_proposal_whose_body_lands_at`, which the
+    body-content location tests below need: only a body that carries a secret
+    produces a body-content finding, and only then can that finding's *location*
+    echo the landed path or spoof another channel's literal.
+    """
+    drafted = service.draft(_request(LEAKY_BODY))
+    document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    upsert = document["operations"][_UPSERT_INDEX]
+    assert upsert["op"] == "upsertRevision", (
+        f"operations[{_UPSERT_INDEX}] is a {upsert['op']!r}, not the upsertRevision this repoints"
+    )
+    upsert["contentFile"] = f"../knowledge/{tail}"
+    drafted.migration_file.write_text(
+        yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    moved = drafted.directory / tail
+    moved.parent.mkdir(parents=True, exist_ok=True)
+    drafted.body_file.rename(moved)
+    return drafted
+
+
+def test_a_body_content_finding_never_spoofs_the_migration_filename_channel(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A body-content finding is located by its own literal, never a path an author chose (#360).
+
+    The spoof the review of #349 reproduced: the body-content channel located a
+    finding by the body's landed path, so a body whose content carries a secret,
+    landed at ``.theurian/knowledge/the migration filename``, produced a finding
+    whose location string *equalled* :data:`_AT_MIGRATION_NAME`. The refusal then
+    pointed a maintainer at the (clean) migration filename and its remedy invited
+    turning the scan off -- a misdirection channel an author controls. Located by
+    :data:`_AT_BODY_CONTENT` instead, a body-content finding can never wear another
+    channel's literal.
+
+    ``warn`` rather than ``block``: a refusal raises before a caller can read the
+    findings, so the location only reaches a test through the success result.
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+    drafted = _a_leaky_body_landing_at(service, _AT_MIGRATION_NAME)
+
+    accepted = service.accept(drafted.proposal_id)
+
+    locations = {finding.location for finding in accepted.secret_scan.findings}
+    assert f"{_AT_BODY_CONTENT}[0]" in locations, (
+        f"the leaky body produced no body-content finding at its literal: {sorted(locations)}"
+    )
+    assert _AT_MIGRATION_NAME not in locations, (
+        f"a body-content finding wears the migration-filename channel's literal, spoofing it: "
+        f"{sorted(locations)}"
+    )
+
+
+def test_a_body_content_finding_does_not_echo_a_credential_shaped_landed_path(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """When the landed path is the credential, the refusal must not print it (#360).
+
+    The echo the review of #349 reproduced: the body-content channel located its
+    finding by the landed path, so a dirty body landed at
+    ``architecture/staging-<credential>.md`` produced a finding whose *location*
+    was the full credential -- printed verbatim into the refusal a terminal shows
+    and the ``accept --json`` document logs, walking straight around the
+    four-character bound :class:`~theurian.security.content_secrets.SecretFinding`
+    holds on the match and this PR leans on. The name channels beside it already
+    redact to four characters; located by :data:`_AT_BODY_CONTENT`, so does this.
+
+    ``block`` is the default, so the whole refusal -- message and remedy -- is
+    asserted free of the credential, and a body-content finding located by the
+    literal is asserted present so the case is not vacuous.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    tail = f"architecture/staging-{_LEAF_SECRET}.md"
+    drafted = _a_leaky_body_landing_at(service, tail)
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert f"{_AT_BODY_CONTENT}[0]:" in str(caught.value), (
+        f"no body-content finding located by its literal reached the refusal: {caught.value}"
+    )
+    assert _LEAF_SECRET not in str(caught.value), (
+        f"the refusal echoed the credential from the landed path: {caught.value}"
+    )
+    assert _LEAF_SECRET not in caught.value.remedy, (
+        f"the remedy echoed the credential from the landed path: {caught.value.remedy!r}"
+    )
+    assert not (paths.knowledge / tail).exists(), "the body landed despite the refusal"
+
+
+#: The four faces, as the ``off`` policy has to see them: a builder and the
+#: artifact that must exist afterwards, relative to the project root.
+def _a_comment_face(service: ProposalService) -> tuple[DraftedProposal, str, str]:
+    drafted = _a_proposal_whose_migration_carries_a_comment(service, _COMMENT_SECRET)
+    return drafted, drafted.migration_file.name, ""
+
+
+def _a_filename_face(service: ProposalService) -> tuple[DraftedProposal, str, str]:
+    drafted, renamed = _a_proposal_named_for(service, f"staging-{_FILENAME_SECRET}")
+    return drafted, renamed.name, ""
+
+
+def _a_body_face(service: ProposalService, tail: str) -> tuple[DraftedProposal, str, str]:
+    drafted = _a_proposal_whose_body_lands_at(service, tail)
+    return drafted, drafted.migration_file.name, tail
+
+
+#: Each face as ``off`` has to see it: a builder, and the two artifacts that must
+#: exist afterwards -- the landed migration's name, and the body's tail under
+#: ``.theurian/knowledge/`` where the face has one. Both are named rather than
+#: probed as "some file appeared", because a landed *anything* is satisfied by a
+#: build that renamed or relocated the artifact this face is about.
+_ARTIFACT_FACES: Final[
+    Mapping[str, Callable[[ProposalService], tuple[DraftedProposal, str, str]]]
+] = {
+    "yaml-comment": _a_comment_face,
+    "migration-filename": _a_filename_face,
+    "body-leaf": lambda service: _a_body_face(service, f"architecture/staging-{_LEAF_SECRET}.md"),
+    "body-directory": lambda service: _a_body_face(service, f"{_DIRECTORY_SECRET}/note.md"),
+}
+
+
+@pytest.mark.parametrize("face", list(_ARTIFACT_FACES))
+def test_off_leaves_every_landed_artifact_unscanned(
+    service: ProposalService, paths: ProjectPaths, face: str
+) -> None:
+    """The escape hatch has to cover the new channels too, or it is not one.
+
+    ``block`` is the default and there is no per-finding suppression, so a project
+    that hits a false positive in a filename has exactly one move. An
+    implementation that scanned the artifacts unconditionally -- before the policy
+    is consulted, which is where the cheapest patch puts it -- would leave that
+    project unable to accept anything, and would do it while reporting the policy
+    as ``off``. The sibling of ``test_off_leaves_the_migration_document_unscanned_too``
+    for the three artifact channels.
+    """
+    _configure(paths, SecretScanPolicy.OFF.value)
+    drafted, migration_name, body_tail = _ARTIFACT_FACES[face](service)
+
+    accepted = service.accept(drafted.proposal_id)
+
+    assert accepted.secret_scan.policy is SecretScanPolicy.OFF
+    assert accepted.secret_scan.findings == (), f"off scanned the {face} artifact anyway"
+    assert (paths.migrations / migration_name).exists(), (
+        f"off refused the acceptance, or landed a migration the {face} fixture did not name"
+    )
+    if body_tail:
+        assert (paths.knowledge / body_tail).exists(), (
+            f"the body did not land at the path the {face} fixture named"
+        )
+
+
+def test_an_ordinary_proposal_s_own_artifacts_carry_no_secret_shaped_name(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The false positive that would make this control the first thing switched off (#349).
+
+    Every artifact this scan newly reads is one Theurian *generates*, and all
+    three are built around a ULID: ``<ulid>-<slug>.yaml`` and
+    ``<namespace>/<leaf>.<ulid>.md``. A ULID is high-entropy by construction and
+    the detector only tolerates one because ``_looks_like_a_secret`` subtracts it
+    before judging anything -- so extending the scan to the *names* points that
+    subtraction at strings that are almost entirely ULID. If an ordinary
+    acceptance starts failing, the project turns the scan off and SEC-11's
+    control is gone for the bodies too.
+
+    The fixture's own ids cannot say this: :class:`SeededIdGenerator` mints
+    ``00000000000000000000000002``, twenty-six digits, which no family can match
+    and which would leave this green against a build that reports every real
+    ULID. So the migration id, the revision id, and both artifact names are
+    rewritten to real Crockford base32 ULIDs -- the same shape
+    :data:`MIGRATION_FILENAME` uses, and the shape ``01K1IDX...`` is not.
+
+    ``scan_text`` is asked directly about both names as well, so a future change
+    that made them genuinely detectable fails here loudly rather than turning
+    this into a test of nothing.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    revision = _A_REAL_ULID[:-1] + "X"
+    migration_name = f"{_A_REAL_ULID}-retry-policy.yaml"
+    tail = f"architecture/retry-policy.{revision}.md"
+    assert scan_text(migration_name) == () and scan_text(tail) == (), (
+        f"an ordinary migration name or landed body path is detectable on its own, so this "
+        f"asserts nothing: {scan_text(migration_name)} {scan_text(tail)}"
+    )
+    drafted = _a_proposal_whose_body_lands_at(service, tail)
+    document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
+    document["id"] = _A_REAL_ULID
+    document["operations"][_UPSERT_INDEX]["revisionId"] = revision
+    drafted.migration_file.unlink()
+    (drafted.directory / migration_name).write_text(
+        yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+
+    accepted = service.accept(drafted.proposal_id)
+
+    assert accepted.secret_scan.findings == (), (
+        f"an ordinary proposal's own generated artifact names were reported as secrets: "
+        f"{_rendered(accepted)}"
+    )
+    assert (paths.migrations / migration_name).exists()
+    assert (paths.knowledge / tail).exists()
+
+
+def test_a_field_value_spelled_with_yaml_escapes_is_still_refused_under_block(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The parsed-field scan is not subsumed by a raw-bytes one, and must not be dropped (#349).
+
+    #349 adds a scan of the migration's *bytes*, which reads every field as
+    written and so looks like a superset of the field scan #336 added. It is not.
+    A double-quoted YAML scalar may spell any character as ``\\xNN`` or
+    ``\\uNNNN``: here every character of the token is escaped, so the bytes hold
+    only three-character runs (``x74``, ``x35``, ...) that no family matches --
+    asserted below -- while the value ``migrate apply`` records, and that
+    ``knowledge.search`` and ``knowledge.get`` publish on every result, is the
+    credential itself.
+
+    Green on 08319af and green after the fix. It is here so that the fix cannot
+    simplify the parsed-field walk away in favour of the bytes: delete
+    ``_document_findings`` from ``_scan_for_secrets`` and this is the test that
+    goes red.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    drafted = service.draft(_request(CLEAN_BODY))
+    document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
+    document["operations"][_UPSERT_INDEX]["metadata"]["title"] = "TITLE-PLACEHOLDER"
+    escaped = "".join(f"\\x{ord(character):02x}" for character in PLANTED_TOKEN)
+    text = yaml.safe_dump(document, sort_keys=False, allow_unicode=True).replace(
+        "TITLE-PLACEHOLDER", f'"{escaped}"'
+    )
+    drafted.migration_file.write_text(text, encoding="utf-8")
+    assert scan_text(text) == (), (
+        f"the escaped spelling is detectable in the migration's bytes, so this no longer "
+        f"distinguishes the two channels: {scan_text(text)}"
+    )
+    assert (
+        yaml.safe_load(text)["operations"][_UPSERT_INDEX]["metadata"]["title"] == PLANTED_TOKEN
+    ), (
+        "the escaped title did not parse back to the token; the fixture is not describing the "
+        "face it claims"
+    )
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert "migration.operations[1].metadata.title" in str(caught.value), (
+        f"a token spelled only in escapes was not caught by the parsed-field scan: {caught.value}"
+    )
+    assert PLANTED_TOKEN not in str(caught.value), (
+        f"the refusal reproduced the secret it refused: {caught.value}"
+    )
+
+
+#: How far past the ceiling the two-channel budget fixture reaches, and the load
+#: each channel carries. Derived from :data:`MAX_FINDINGS` rather than written as
+#: literals so the fixture follows the constant: the body holds most of the
+#: ceiling and less than all of it, and the comment holds twice the overflow. So
+#: neither channel fills the budget alone, the two together offer
+#: ``MAX_FINDINGS + _BUDGET_OVERFLOW``, and a budget granted per channel reports
+#: exactly that many.
+_BUDGET_OVERFLOW: Final = 5
+_BUDGET_BODY_SECRETS: Final = MAX_FINDINGS - _BUDGET_OVERFLOW
+_BUDGET_COMMENT_SECRETS: Final = 2 * _BUDGET_OVERFLOW
+
+#: One token per line, so each is a separate finding at one location -- the body's
+#: landed path. Distinct tokens rather than one repeated, so nothing can collapse
+#: them (the discipline :func:`_distinct_token` records).
+_BUDGET_BODY: Final = "# Retry policy\n\nThree attempts.\n\n" + "".join(
+    f"    TOKEN_{index}={_distinct_token(('budget body', index))}\n"
+    for index in range(_BUDGET_BODY_SECRETS)
+)
+
+#: The same load in the one channel a comment reaches: the migration's own bytes.
+#: On one line, because a comment is one line and `_a_proposal_whose_migration
+#: _carries_a_comment` writes it as one.
+_BUDGET_COMMENT: Final = " ".join(
+    _distinct_token(("budget comment", index)) for index in range(_BUDGET_COMMENT_SECRETS)
+)
+
+
+def test_the_finding_budget_is_shared_across_channels_not_per_channel(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """One ceiling covers every channel the acceptance lands, never one each (#349).
+
+    The sibling of ``test_the_finding_budget_is_shared_across_all_fields_not_per_field``,
+    one level out. That test drives the *parsed-field* channel alone, so it holds
+    :func:`_findings_in`'s own running total and says nothing about how
+    ``_scan_for_secrets`` composes the five channels around it. A version that
+    called ``_findings_in`` once per channel and concatenated the results keeps
+    every field-level assertion green while publishing up to five times
+    :data:`MAX_FINDINGS` into a refusal message and an ``accept --json``
+    document -- and how many bodies, fields and landed paths a proposal carries
+    is the contributor's number, so a ceiling that resets at a channel boundary
+    is no ceiling.
+
+    The fixture loads two channels and neither one alone: the body carries
+    ``MAX_FINDINGS - _BUDGET_OVERFLOW`` findings and the migration's YAML comment
+    carries ``2 * _BUDGET_OVERFLOW``, which offers twenty-five findings to a
+    twenty-finding budget. Shared, the body spends fifteen and the comment is
+    truncated at the five that are left. Per channel, the two report twenty-five.
+
+    Both guards are asserted before the acceptance, because either channel
+    quietly scanning clean would leave the count at or under the cap and this
+    green with nothing crossed.
+
+    ``warn`` rather than ``block``: a refusal raises before a caller can count
+    anything, so the findings only reach a test through the success result.
+
+    Measured on bf40533 in a prepared mutation tree (2026-08-25), against a
+    ``_scan_for_secrets`` that calls ``_findings_in`` once per channel and
+    concatenates: the other 168 tests in this file all pass under it, and this
+    one reports 25 findings against the 20 cap. Unmutated the split is
+    ``{body: 15, the migration file as written: 5}``.
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+    drafted = _a_proposal_whose_migration_carries_a_comment(
+        service, _BUDGET_COMMENT, body=_BUDGET_BODY
+    )
+    migration_text = drafted.migration_file.read_text(encoding="utf-8")
+    assert len(scan_text(_BUDGET_BODY)) == _BUDGET_BODY_SECRETS, (
+        f"the body offers {len(scan_text(_BUDGET_BODY))} findings, not the "
+        f"{_BUDGET_BODY_SECRETS} this test spends the budget with"
+    )
+    assert len(scan_text(migration_text)) == _BUDGET_COMMENT_SECRETS, (
+        f"the migration's bytes offer {len(scan_text(migration_text))} findings, not the "
+        f"{_BUDGET_COMMENT_SECRETS} that have to outlast what the body already spent"
+    )
+    assert _document_findings(yaml.safe_load(migration_text)) == (), (
+        "the parsed-field channel found something too, so the split asserted below is over three "
+        "channels rather than the two this fixture loads"
+    )
+
+    accepted = service.accept(drafted.proposal_id)
+
+    findings = accepted.secret_scan.findings
+    assert len(findings) == MAX_FINDINGS, (
+        f"the accept-path scan reported {len(findings)} findings over two channels, not the "
+        f"{MAX_FINDINGS} cap -- the budget is granted per channel, which bounds nothing, since "
+        f"the number of channels and the bodies, fields and paths inside them are the input's"
+    )
+    spent = Counter(finding.location for finding in findings)
+    assert sorted(spent.values()) == [_BUDGET_OVERFLOW, _BUDGET_BODY_SECRETS], (
+        f"the {MAX_FINDINGS} findings are not split {_BUDGET_BODY_SECRETS}/{_BUDGET_OVERFLOW} "
+        f"between the two channels but {dict(spent)} -- the second channel was not truncated by "
+        f"what the first had already spent"
+    )
+
+
+# -- two bodies, and the index that keeps their channels paired (#349) ---------
+#
+# Everything above lands at most one body, so the two body channels only ever
+# report `[0]`, and a suite that never lands two cannot tell the real
+# `_landed_text` from three mutations round one's adversarial pass confirmed
+# survive it (2026-08-25):
+#
+#   * the content index frozen to `[0]`, so two dirty bodies' content collapses
+#     onto one location;
+#   * the landed-path index frozen to `[0]`, the same for the path channel; and
+#   * the landed paths paired to the wrong bodies (the `landed` tuple built over
+#     `reversed(moves)`), so `the landed path of body[0]` names body 1's path.
+#
+# The one test below lands two bodies, each carrying a credential of its *own
+# family* in BOTH its content and its landed path, so a finding's
+# `(location, family)` pair names exactly one plant and a family that has moved
+# off the index it belongs to is a failed assertion. Four families, one per
+# (body, channel), rather than four redacted prefixes: a family is a whole word
+# a mispair cannot half-match, where a four-character prefix of two `sk-` tokens
+# is one character apart.
+
+#: Body 0's content credential -- a base64url `high-entropy-token`, the family a
+#: prose body leaks. Split from its seed for the reason :data:`PLANTED_TOKEN`
+#: records, and measured `high-entropy-token` on its own (2026-08-25).
+_BODY0_CONTENT_SECRET: Final = _distinct_token("#349 two-body content 0")
+
+#: Body 1's content credential -- a `github-token`, a *different* family from body
+#: 0's so the content channel's two findings are told apart by family and not only
+#: by the index under test.
+_BODY1_CONTENT_SECRET: Final = "ghp_" + _hex_tail(b"theurian two-body content 1 (#349)", 36)
+
+#: Body 0's landed-path credential -- an `openai-api-key`, the shape
+#: :data:`_LEAF_SECRET` proves a body leaf can carry.
+_BODY0_PATH_SECRET: Final = "sk-" + _hex_tail(b"theurian two-body path 0 (#349)", 40)
+
+#: Body 1's landed-path credential -- a `slack-token`, the fourth distinct family,
+#: the shape :data:`_DIRECTORY_SECRET` proves a path segment can carry.
+_BODY1_PATH_SECRET: Final = (
+    "xoxb-"
+    + _hex_tail(b"theurian two-body path 1 head (#349)", 10)
+    + "-"
+    + _hex_tail(b"theurian two-body path 1 tail (#349)", 24)
+)
+
+_BODY0_CONTENT: Final = f"# Alpha\n\nThree attempts.\n\n    TOKEN={_BODY0_CONTENT_SECRET}\n"
+_BODY1_CONTENT: Final = f"# Beta\n\nFive seconds.\n\n    GITHUB={_BODY1_CONTENT_SECRET}\n"
+_BODY0_TAIL: Final = f"architecture/staging-{_BODY0_PATH_SECRET}.md"
+_BODY1_TAIL: Final = f"architecture/staging-{_BODY1_PATH_SECRET}.md"
+
+#: The two bodies in order, so the migration operations, the on-disk files and the
+#: expected `(location, family)` pairs are all driven from one source of truth.
+#: Each entry is (itemId, revisionId, contentFile tail, body text, content family,
+#: path family). The revision ids are real Crockford base32 -- no I/L/O/U -- which
+#: the fixture guard enforces; the seeded generator's numeric ids would not be.
+_TWO_BODIES: Final = (
+    (
+        "architecture.alpha-notes",
+        "01K9AAAAAA0000000000000021",
+        _BODY0_TAIL,
+        _BODY0_CONTENT,
+        HIGH_ENTROPY,
+        "openai-api-key",
+    ),
+    (
+        "architecture.beta-notes",
+        "01K9AAAAAA0000000000000022",
+        _BODY1_TAIL,
+        _BODY1_CONTENT,
+        "github-token",
+        "slack-token",
+    ),
+)
+
+
+def _two_body_migration(migration_id: str) -> str:
+    """A migration landing two bodies, each with a distinct credential in its path.
+
+    Hand-authored rather than drafted for the reason ``accept`` reads a committed
+    proposal directory (ADR-0013 point 7): ``propose`` emits one body per
+    proposal, so two upsertRevisions naming two ``contentFile`` paths is a shape
+    only a contributor writes. Mirrors ``_hand_authored_two_body_migration`` in
+    ``test_proposal_service.py`` -- two upsertRevisions, no ``createItem`` (an
+    upsert creates the item), each pinning its body's digest and declaring the
+    ``authored-in-theurian`` label INV-8 requires.
+
+    The ``id`` is quoted because the seeded generator's ids are all digits, which
+    YAML would coerce to an int; the ``contentFile`` is quoted because its value
+    is a credential-shaped path and quoting keeps YAML from guessing at it.
+    """
+    operations = "".join(
+        "- op: upsertRevision\n"
+        f"  itemId: {item_id}\n"
+        f"  revisionId: {revision_id}\n"
+        f'  contentFile: "../knowledge/{tail}"\n'
+        f"  contentSha256: {hashlib.sha256(text.encode()).hexdigest()}\n"
+        "  metadata:\n"
+        f"    title: {item_id.rpartition('.')[2]}\n"
+        "    contentType: text/markdown\n"
+        "    kind: architecture\n"
+        "    namespace: architecture\n"
+        "    status: approved\n"
+        "    owner: platform-team\n"
+        f"    labels: ['{AUTHORED_IN_THEURIAN}']\n"
+        for item_id, revision_id, tail, text, _content_family, _path_family in _TWO_BODIES
+    )
+    return (
+        "apiVersion: theurian.dev/v1\n"
+        f"id: '{migration_id}'\n"
+        "createdAt: '2026-08-02T12:00:00+00:00'\n"
+        "author: platform-team@example.com\n"
+        "operations:\n"
+    ) + operations
+
+
+def _a_two_body_proposal(service: ProposalService) -> DraftedProposal:
+    """The ordinary proposal, rewritten to land the two bodies of :data:`_TWO_BODIES`.
+
+    ``draft`` lays down the directory ``accept`` reads; its migration and body are
+    then replaced with the two-body migration and the two bodies at the sub-paths
+    their ``contentFile`` names, exactly as ``accept`` will find them.
+    """
+    drafted = service.draft(_request(CLEAN_BODY))
+    drafted.migration_file.write_text(
+        _two_body_migration(drafted.migration_id.value), encoding="utf-8"
+    )
+    drafted.body_file.unlink()
+    for _item_id, _revision_id, tail, text, _content_family, _path_family in _TWO_BODIES:
+        body = drafted.directory / tail
+        body.parent.mkdir(parents=True, exist_ok=True)
+        body.write_text(text, encoding="utf-8")
+    return drafted
+
+
+def test_two_bodies_pair_each_channel_finding_with_its_own_index(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """Each body channel's index names the body it came from, with two bodies in hand (#349).
+
+    The adversarial MEDIUM-1 that no single-body test can reach: with one body
+    every ``[index]`` is ``[0]``, so the content index frozen to ``[0]``, the
+    landed-path index frozen to ``[0]``, and the landed paths paired to the wrong
+    bodies all read identically to the real thing. Two bodies tell them apart.
+
+    Each body carries a credential of a *different family* in both its content and
+    its landed path, so the four findings this asserts on --
+    ``the content of body[0]``, ``the content of body[1]``,
+    ``the landed path of body[0]``, ``the landed path of body[1]`` -- each name a
+    unique family. A frozen index drops the ``[1]`` finding; a reversal or a swap
+    puts a family on the wrong index. Either way one of the four
+    ``(location, family)`` pairs is gone.
+
+    Under ``warn`` so the findings ride out on the success result -- ``block``
+    would raise before a caller could read them. The same path credentials are
+    over-reported by the parsed ``contentFile`` field and the migration's bytes;
+    presence of the four body-channel pairs is asserted, never the total, because
+    the double report is by design (``_scan_for_secrets`` records why).
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+    # The plants are what the pairing rests on: each has to be detectable and of
+    # the family this test tells the others apart by, or a missing pair would be
+    # the fixture's fault and not the index's.
+    assert [f.family for f in scan_text(_BODY0_CONTENT)] == [HIGH_ENTROPY]
+    assert [f.family for f in scan_text(_BODY1_CONTENT)] == ["github-token"]
+    assert [f.family for f in scan_text(_BODY0_TAIL)] == ["openai-api-key"]
+    assert [f.family for f in scan_text(_BODY1_TAIL)] == ["slack-token"]
+
+    drafted = _a_two_body_proposal(service)
+    accepted = service.accept(drafted.proposal_id)
+
+    assert accepted.secret_scan.policy is SecretScanPolicy.WARN
+    pairs = {(f.location, f.finding.family) for f in accepted.secret_scan.findings}
+    assert (f"{_AT_BODY_CONTENT}[0]", HIGH_ENTROPY) in pairs, (
+        f"body 0's content credential is not at its own index: {sorted(pairs)}"
+    )
+    assert (f"{_AT_BODY_CONTENT}[1]", "github-token") in pairs, (
+        f"body 1's content credential is not at its own index -- the content index is frozen or "
+        f"the bodies are mispaired: {sorted(pairs)}"
+    )
+    assert (f"{_AT_BODY_PATH}[0]", "openai-api-key") in pairs, (
+        f"body 0's landed-path credential is not at its own index: {sorted(pairs)}"
+    )
+    assert (f"{_AT_BODY_PATH}[1]", "slack-token") in pairs, (
+        f"body 1's landed-path credential is not at its own index -- the path index is frozen to "
+        f"[0] or the landed paths are paired to the wrong bodies: {sorted(pairs)}"
+    )
+
+
+def test_a_replaced_body_s_new_content_is_still_scanned_under_block(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A body that replaces an existing file is scanned like any other (#349, SEC-11).
+
+    The adversarial MEDIUM-2: the content channel iterates every body move, and
+    skipping the ones whose destination already exists (``move.replaced``) survives
+    the suite, because nothing lands a replacement carrying a *new* credential.
+    Here one does. The destination pre-exists as a stray file no landed revision
+    pins -- so ``_refuse_if_a_replacement_breaks_an_existing_pin`` waves it through
+    (``test_accept_replaces_an_unpinned_file_at_the_destination`` in
+    ``test_proposal_service.py`` proves a *clean* replacement of exactly this shape
+    is accepted) -- and the replacing body's bytes carry the secret.
+
+    So the only thing that can refuse this acceptance is the content scan, and the
+    family assertion says it was: skip the replaced body and the credential lands
+    in ``.theurian/knowledge/`` while the accept exits clean. The secret is in the
+    body's bytes alone -- the body lands at its drafted ULID path, which is clean --
+    so no other channel covers for a content scan that skipped it.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    drafted = service.draft(_request(LEAKY_BODY))
+    # Make the destination pre-exist, so this body is a replacement. The file is
+    # unpinned -- no landed migration reads it -- so the replacement is legitimate
+    # and the only remaining reason to refuse is the secret in the replacing bytes.
+    drafted.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    drafted.body_destination.write_text("stale, pinned by nothing\n", encoding="utf-8")
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert HIGH_ENTROPY in str(caught.value), (
+        f"a replaced body's new content was not what refused the acceptance -- the content scan "
+        f"skipped it because its destination already existed: {caught.value}"
+    )
+    assert drafted.body_destination.read_text(encoding="utf-8") == "stale, pinned by nothing\n", (
+        "the replacing body landed despite the refusal -- the credential overwrote the file that "
+        "was there"
+    )
+
+
+def test_off_touches_no_input_before_the_policy_is_read(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``off`` does not scan and discard; it never scans (#349, adversarial MEDIUM-3).
+
+    ``off`` returning an empty finding list is satisfied two ways: the policy read
+    gates the scan (the real code), or the scan runs and its findings are thrown
+    away. The observable result is identical -- an empty list either way -- so
+    moving the ``off`` early-return to *after* the scan survives the suite.
+
+    What tells them apart is whether the detector was ever asked. This records
+    every call to ``scan_text`` -- the one function ``_findings_in`` drives per
+    channel -- and asserts it was called zero times. The body carries a credential,
+    so a scan that ran would have something to find and something to record;
+    ``calls`` staying empty is the proof that ``off`` reads the policy before it
+    touches a single input, which is what makes the escape hatch an escape hatch
+    (``_scan_for_secrets`` records why per-finding suppression is not offered).
+    """
+    _configure(paths, SecretScanPolicy.OFF.value)
+    calls: list[str] = []
+
+    def recording_scan_text(
+        text: str, *, max_findings: int = MAX_FINDINGS
+    ) -> tuple[SecretFinding, ...]:
+        calls.append(text)
+        return scan_text(text, max_findings=max_findings)
+
+    # Patched by dotted path -- the name `_findings_in` looks up in its own module
+    # globals -- rather than through the module object, so the accept path's scan
+    # is the recorded one wherever it reads the name.
+    monkeypatch.setattr("theurian.application.proposal_service.scan_text", recording_scan_text)
+
+    accepted = _accept(service, paths, LEAKY_BODY)
+
+    assert accepted.secret_scan.policy is SecretScanPolicy.OFF
+    assert calls == [], (
+        "off scanned inputs and discarded the findings; the policy read must gate the scan, or "
+        f"`off` pays the scan it promises not to run: {len(calls)} call(s)"
+    )
+    assert PLANTED_TOKEN in accepted.bodies[0].destination.read_text(encoding="utf-8"), (
+        "off refused, or landed a body this fixture did not write"
+    )
+
+
+def test_a_migration_bytes_finding_is_located_by_the_migration_bytes_channel(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A migration-bytes finding names *the migration file as written*, and means it (#349).
+
+    The adversarial MEDIUM-5: a channel's location literal carries the reviewer's
+    only pointer to where to look, and blanking ``_AT_MIGRATION_BYTES`` to ``"x"``
+    survives the suite -- the comment tests above assert the family is reported and
+    the migration does not land, never the *location* the finding wears.
+
+    A YAML comment is the one input only the migration's raw bytes reach
+    (``test_a_secret_in_a_yaml_comment_is_invisible_to_the_parsed_field_scan``
+    proves the parsed field walk cannot), so under ``warn`` the sole finding is the
+    bytes channel's, and its location is asserted to be the literal string --
+    **hardcoded, not the imported ``_AT_MIGRATION_BYTES``**: the mutation this
+    kills blanks that constant, and a test importing it would move with the
+    mutation and never redden. If the literal is deliberately reworded, this is the
+    test that should change with it.
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+    drafted = _a_proposal_whose_migration_carries_a_comment(service, _COMMENT_SECRET)
+
+    accepted = service.accept(drafted.proposal_id)
+
+    locations = {finding.location for finding in accepted.secret_scan.findings}
+    assert "the migration file as written" in locations, (
+        f"the comment finding is not located by the migration-bytes channel literal, so a reader "
+        f"cannot tell which artifact to open: {sorted(locations)}"
+    )
+
+
+def test_a_landed_path_finding_is_located_by_the_landed_path_channel(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A landed-path finding names *the landed path of body[N]*, its one distinct value (#349).
+
+    Two mutations survive the suite together: blanking ``_AT_BODY_PATH`` to
+    ``"x"``, and dropping the landed-path channel's ``yield`` outright. The second
+    survives because #349 moved ``contentFile`` into the scanned field set, so the
+    parsed field and the migration's bytes now report every credential the landed
+    path does -- the landed-path channel's *only* remaining value is its distinct
+    location, and a test that asserts a refusal or a family cannot see it go.
+
+    So this pins the location and nothing else. The credential is over-reported --
+    it is in the parsed ``contentFile`` and in the bytes too -- so **presence** of
+    ``the landed path of body[0]`` is asserted, not that it is the only finding.
+    The literal is **hardcoded, not built from the imported ``_AT_BODY_PATH``**:
+    blanking that constant would move an imported expectation with it. Under
+    ``warn`` so the finding rides out on the success result.
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+    tail = f"architecture/staging-{_LEAF_SECRET}.md"
+    drafted = _a_proposal_whose_body_lands_at(service, tail)
+
+    accepted = service.accept(drafted.proposal_id)
+
+    locations = {finding.location for finding in accepted.secret_scan.findings}
+    assert "the landed path of body[0]" in locations, (
+        f"no finding is located by the landed-path channel -- its literal is blanked or the "
+        f"channel's yield is gone, and the field and bytes reports carry no landed-path pointer: "
+        f"{sorted(locations)}"
+    )
+
+
+def test_a_body_content_finding_is_located_by_the_body_content_channel(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A body-content finding names *the content of body[N]*, and means it (adversarial MEDIUM).
+
+    The gap the two channel-location tests above left. Every sibling channel
+    literal is pinned by a *hardcoded* string, but ``_AT_BODY_CONTENT`` was only
+    ever asserted through the imported constant
+    (``test_warn_lands_the_body_and_reports_what_it_found``), so blanking it to
+    ``"x"`` moved that expectation with the mutation and survived the whole suite.
+    A location an author cannot forge is the whole point of #360's fixed literal;
+    an unpinned one is a location that says nothing when it is wrong.
+
+    Hardcoded, not the imported ``_AT_BODY_CONTENT``: a test built on the constant
+    reddens for no mutation of it. ``warn`` so the finding rides out on the success
+    result. The index suffix is part of the literal a body-content location wears
+    (:data:`_AT_BODY_PATH` and the metadata channels below carry one; the two name
+    channels do not), so it is asserted with the finding, not stripped off it.
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+
+    accepted = _accept(service, paths, LEAKY_BODY)
+
+    locations = {finding.location for finding in accepted.secret_scan.findings}
+    assert "the content of body[0]" in locations, (
+        f"the leaky body's finding is not located by the body-content channel literal, so a "
+        f"reader cannot tell which artifact to open: {sorted(locations)}"
+    )
+
+
+def test_the_four_base_channel_literals_are_mutually_distinct() -> None:
+    """No artifact channel wears another channel's location literal (adversarial MEDIUM).
+
+    The blanking mutation the test above kills names *nothing*; this kills the
+    sharper one it exposed -- a channel that names *another* channel. Colliding
+    ``_AT_BODY_CONTENT`` with ``_AT_MIGRATION_NAME`` survives every location test,
+    because a body-content location carries a ``[N]`` index suffix: the collided
+    ``"the migration filename[0]"`` is never ``== "the migration filename"``, so
+    ``test_a_body_content_finding_never_spoofs_the_migration_filename_channel``'s
+    ``_AT_MIGRATION_NAME not in locations`` stays green -- which is exactly the
+    HIGH-2 spoof this PR closed, walked back in one edit. Pinned over the constants
+    directly, because a channel wearing another's literal misdirects a reviewer
+    whatever suffix the finding carries.
+    """
+    literals = (_AT_BODY_CONTENT, _AT_BODY_PATH, _AT_MIGRATION_BYTES, _AT_MIGRATION_NAME)
+    assert len(set(literals)) == len(literals), (
+        f"two artifact channels share a location literal, so one spoofs the other: {literals}"
     )

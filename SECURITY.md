@@ -467,15 +467,18 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   commitSha, blobSha. The sharp ones are the title and the anchor fields a
   result publishes verbatim — provider, sourceUri, repository, commitSha,
   filePath — because a credential in one reaches an agent that never opens the
-  body; externalId and blobSha are scanned but not published, and the migration
-  filename is not re-derived from the title at accept, so it is not covered
-  here. **What it does not read** is a YAML comment or the migration and body
-  filenames — the artifact-level face, tracked in
-  [#349](https://github.com/theurian/theurian/issues/349) — and, inside the
-  document, the fields where a mechanism already bars a reported secret: the
+  body; externalId and blobSha are scanned but not published. Since
+  [#349](https://github.com/theurian/theurian/issues/349) the scan also reads the
+  artifacts an acceptance lands, not only the fields it parses: the migration
+  file's raw bytes, so a YAML **comment** and every field as written are covered;
+  the migration filename, whose lower-case-kebab slug can spell only two
+  credential families in practice (`sk-` and `xox`; the others need an upper-case
+  letter or `_`); each landed body path; and the parsed `contentFile` value, now
+  one of the document fields above. **What it does not read**, inside the
+  document, is the fields where a mechanism already bars a reported secret: the
   ULID- and `contentSha256`-shaped identifiers, which the detector's class gate
-  cannot fire on; the fixed vocabularies (`kind`, `status`, `op` and the other
-  enums); and `contentFile`, a path whose secret-in-filename face is #349. The
+  cannot fire on; and the fixed vocabularies (`kind`, `status`, `op` and the
+  other enums). The
   date fields land nothing themselves, but a committed secret in one was
   reproduced verbatim by the rehearsal's date parse, so scanning pre-empts that
   with a redacted refusal under `block`. A proposal's

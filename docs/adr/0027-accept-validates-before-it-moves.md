@@ -474,6 +474,40 @@ one of its recorded residuals.
 > the canonical tree, so it is tracked with the draft-time advisory
 > ([#330](https://github.com/theurian/theurian/issues/330)).
 
+> **Further amended in Milestone 7, by the artifact-scan CL
+> ([#349](https://github.com/theurian/theurian/issues/349)). The paragraphs above
+> record the metadata amendment's own boundary — "the artifact level: a YAML
+> comment, and the migration and body filenames, are unscanned" — and that
+> boundary no longer holds.**
+>
+> The metadata amendment scanned the document's author-written string *values*
+> and named what it did not reach: a YAML comment, the migration and body
+> filenames, and the parsed `contentFile`. #349 reads all of them. The scan now
+> covers everything the acceptance lands, not only what it parses — the migration
+> file's raw bytes (so a comment and every field as written), the migration
+> filename, each landed body path, and `contentFile`'s parsed value, which moved
+> into `_authored_strings` because it is the one channel that catches a credential
+> both `..`-collapsed *and* YAML-escaped, where the byte and path channels each
+> miss. What implementing it revealed is that a finding's *location* was the last
+> place a credential could still be republished: the body-content channel located
+> itself by the very landed path that was the secret, walking around the
+> four-character redaction bound the detector holds on the match. Every location
+> is now a fixed module literal plus an index, so no refusal and no `accept
+> --json` result reproduces more than that prefix — which is the better answer
+> because the bound now holds on every channel, not just the field walk. Two
+> residuals stay open, named as their own faces rather than folded in: the
+> general name hygiene of refusal *messages* elsewhere on the accept path, which
+> still echo an author's filename, id or `contentFile` verbatim
+> ([#360](https://github.com/theurian/theurian/issues/360)), and a proposal's
+> `evidence.json`, which `accept` still leaves in the directory it tells the
+> author to commit ([#361](https://github.com/theurian/theurian/issues/361)). The
+> filename channel is narrow by construction — a lower-case-kebab slug can spell
+> only `sk-` and `xox`, two of the detector's eight families — but the
+> less-restricted landed-path channel is not so limited: a path component admits
+> upper-case letters, digits and `_`, so every family the slug excludes can be
+> spelled and caught in one. T-15 stays High: this widens the one gate
+> of three that was already covered.
+
 **This is the first code in `src/` that reads `.theurian/config.yaml`.** Nothing
 reads it today — `infrastructure/github/__init__.py` mentions the filename in a
 docstring and that is the whole of it, which is the state
@@ -784,6 +818,55 @@ are in `tests/integration/test_proposal_secret_scan.py`:
   `^[0-9a-f]{7,64}$` there, and the detector's class gate cannot fire on lower-case
   hex — no credential family it recognises can be spelled in it.
 
+Landed in Milestone 7 with decision 3's artifact-level completion
+([#349](https://github.com/theurian/theurian/issues/349)) — the metadata
+amendment above owed the artifact level as its own face, and this discharges it.
+The scan now reads everything an acceptance lands, not only what it parses, and
+no finding location is built from scanned text. All in
+`tests/integration/test_proposal_secret_scan.py`:
+
+- **The migration file's raw bytes**, covering a YAML comment and every field as
+  written:
+  `::test_a_secret_in_a_yaml_comment_of_the_migration_is_refused_under_block` and
+  `::test_a_secret_in_a_yaml_comment_is_reported_under_warn`, with
+  `::test_a_secret_in_a_yaml_comment_is_invisible_to_the_parsed_field_scan` as the
+  guard that the comment is a *new* channel and not already caught by the field
+  walk.
+- **The migration filename**:
+  `::test_a_secret_in_the_migration_s_own_filename_is_refused_under_block`. Only
+  two credential families can be spelled in a lower-case-kebab slug (`sk-` and
+  `xox`), which is why the fixture is `sk-`-shaped; the less-restricted
+  landed-path channel is not so limited, since a path component admits upper-case
+  letters, digits and `_` (measured 2026-08-26: seven families fire by name, and
+  a `google-api-key` shape is caught as `high-entropy-token`).
+- **Each landed body path**, directory components included:
+  `::test_a_secret_in_a_landed_body_leaf_is_refused_under_block`,
+  `::test_a_secret_in_a_landed_body_s_directory_component_is_refused_under_block`,
+  and
+  `::test_a_landed_path_secret_the_migration_bytes_do_not_spell_is_still_refused`
+  as the guard that the landed-path and byte channels are complementary rather
+  than one a subset of the other.
+- **The parsed `contentFile` value**, moved into the field walk:
+  `::test_a_secret_shaped_content_file_is_refused_by_the_artifact_scan` and
+  `::test_an_escaped_traversal_content_file_is_refused_under_block` — the HIGH the
+  review of #349 reproduced, a credential both `..`-collapsed and YAML-escaped
+  that only the parsed value catches.
+- **No finding location reproduces the value it reports**:
+  `::test_a_name_channel_refusal_never_reproduces_the_name_it_refuses`,
+  `::test_a_name_channel_finding_locates_by_the_channel_rather_than_by_the_name`,
+  `::test_a_body_content_finding_does_not_echo_a_credential_shaped_landed_path` and
+  `::test_a_body_content_finding_never_spoofs_the_migration_filename_channel` — the
+  last two close the review finding that the body-content channel located itself
+  by the very landed path that was the credential.
+- **One listing budget over every channel**, not one each:
+  `::test_the_finding_budget_is_shared_across_channels_not_per_channel`; and the
+  escape hatch covers the new channels too —
+  `::test_off_touches_no_input_before_the_policy_is_read` and
+  `::test_off_leaves_every_landed_artifact_unscanned`.
+- **The false positive that would switch the control off**:
+  `::test_an_ordinary_proposal_s_own_artifacts_carry_no_secret_shaped_name` — a
+  generated proposal's ULID-shaped names carry no reported secret on any channel.
+
 Still owed, with the issue that will satisfy it:
 
 - **Ingest-time and index-time secret scanning**
@@ -791,15 +874,24 @@ Still owed, with the issue that will satisfy it:
   records content that is already approved and no scan runs there. T-15's
   control is approval-time, so this is a second and distinct control; it was out
   of #316's scope, and it is what T-15's grade is re-read against.
+- **Name hygiene in refusal messages**
+  ([#360](https://github.com/theurian/theurian/issues/360)). The scan's own
+  finding locations never reproduce the value (the `#349` entry above), but
+  several refusal messages elsewhere on the accept path — and the `accept --json`
+  `bodyFiles` success field — still echo an author's migration filename, id,
+  `contentFile` or landed path verbatim. A different root cause from the scan,
+  pre-existing, and disclosing no content the caller may not already read.
 - **Draft-time scanning as an advisory, and `evidence.json` with it**
-  ([#330](https://github.com/theurian/theurian/issues/330)). Refusing at `draft`
-  would tell an author sooner, but `accept` is the gate, so a draft-time scan is
-  a convenience rather than a control. `evidence.json` belongs to the same item
-  and not to the one above: `accept` moves the migration document and the bodies
-  it names and leaves the rest of the proposal directory alone (ADR-0013 point
-  7), so the evidence file is committed with the pull request and never becomes
-  part of an approved revision — a control over it is a control over something
-  this gate does not land.
+  ([#330](https://github.com/theurian/theurian/issues/330);
+  [#361](https://github.com/theurian/theurian/issues/361) for the accept-lands-it
+  face). Refusing at `draft` would tell an author sooner, but `accept` is the
+  gate, so a draft-time scan is a convenience rather than a control.
+  `evidence.json` belongs to the same item and not to the one above: `accept`
+  moves the migration document and the bodies it names and leaves the rest of the
+  proposal directory alone (ADR-0013 point 7), so the evidence file is committed
+  with the pull request and never becomes part of an approved revision — a control
+  over it is a control over something this gate does not land, which is the face
+  #361 tracks specifically.
 - **Concurrency between two `accept` invocations** (decision 2's third
   residue), which belongs with the write path's single-writer work
   ([ADR-0018](0018-single-writer-synchronous-in-m1.md)). The accept path's file
