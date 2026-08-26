@@ -98,6 +98,59 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   instructed a two-valued "registered or not" project summary, which a
   tri-state field cannot be reduced to without inventing an answer.
 
+- **BREAKING — `theurian project status` publishes the index's own staleness as
+  `indexStale`, computed by the same function `theurian index status` publishes
+  `stale` from** ([#100](https://github.com/theurian/theurian/issues/100)).
+
+  **Old behaviour:** `indexStale` was `active is None or active.state_hash !=
+  context.state_hash` — the *canonical* state pointer against the migrations,
+  which asks whether `theurian migrate apply` is up to date. The command never
+  opened `.theurian/state/active-index.json` at all, so every axis the index
+  actually has was invisible to it. Measured through the real CLI: a registered
+  project with its migrations applied and **no index ever built** published
+  `indexStale: false` in the same second `theurian index status` published
+  `built: false, stale: true` with the remedy ``Run `theurian index build`.``
+  Applying a further migration over a published build was the inverted case —
+  the canonical pointer is current again after `apply`, so the field answered
+  `false` at exactly the moment the build fell a migration behind.
+
+  **New behaviour:** `indexStale` is the verdict `index status` reports as
+  `stale`, on every axis it recognises — no published build, a build whose state
+  hash is behind, an index schema this build does not understand, a build
+  stamped with another project's id, a recorded disclosure flavor that is not
+  the one in force, and a withdrawal purge that did not complete. There is one
+  computation (`cli.index_status_report.index_staleness`) and both commands
+  consume it, so the two surfaces cannot drift.
+
+  `theurian index status`'s `--json` payload is unchanged: the same twenty keys
+  with the same values, re-derived from the shared function. Its *rendered*
+  output lists the index-side fields together before the state-side ones now,
+  because that block is one merge; `--json` sorts its keys and is unaffected.
+
+  **What a consumer changes:** nothing syntactically — the key, its type and its
+  location in the resolved payload are the same, and it stays **absent** from
+  the unresolved payload as the entry above records. What changes is which
+  projects it is `true` for. It becomes `true` for a project that has never
+  built an index, and for the pointer-side axes the old expression could not
+  see. Measured, it flips the other way in exactly one state: a project whose
+  `.theurian/state/active.json` is gone while a published build still matches
+  the migrations on disk now reads `false`, because the index genuinely is
+  current — `stateBuilt`, `activeStateHash` and `statePointerCorrupt` beside it
+  are what report the missing state, and `theurian index status` has always
+  answered that state `stale: false` with `knowledgeNotApplied: true`. Agreeing
+  with it is the change. A pending `migrate apply` still reads `true`, because
+  the published build's state hash is behind the migrations either way.
+
+  The old question is still answerable from the same payload and always was —
+  `activeStateHash` against `stateHash`, both published beside it — so no
+  information is lost, which is why no new key was added for it.
+
+  The bundled Claude Code plugin's `scripts/session-start.sh` needs no edit: it
+  greps for `"indexStale": *true` and now also fires for a project that has
+  never built an index, where its advice — run `/theurian:index` — is exactly
+  right. [#380](https://github.com/theurian/theurian/issues/380) owns the
+  deeper hook work.
+
 ### Fixed
 
 - **A `rootPath` that resolves to the caller's own directory no longer registers

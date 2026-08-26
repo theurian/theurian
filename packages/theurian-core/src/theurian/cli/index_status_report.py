@@ -4,13 +4,22 @@ Split out of :mod:`theurian.cli.index_commands`, which holds the command itself
 and stays the module ``tests/unit/test_resolve_context_call_sites.py`` pins
 ``index_status`` to. What moved here is everything the command *derives* before
 it emits: the published build's schema version, this deployment's disclosure
-flavor against the build's, and which single command to name.
+flavor against the build's, which single command to name -- and, since issue
+#100, the staleness verdict itself, which ``theurian project status`` publishes
+as ``indexStale`` from :func:`index_staleness` rather than deriving a second
+answer of its own.
 
 One rule governs all of them and is worth stating once rather than three times:
 **a helper here never raises.** Every input is derived, git-ignored and unsigned
 (SEC-7) or is a file an operator can chmod out from under the process, and a
 status command that ends in a traceback is a status command at the one moment it
 was needed. Each answers with a value that says what could not be established.
+
+This is a CLI module and not an application one because the verdict is composed
+out of concrete adapters -- the deployment's serving profile under
+:func:`default_data_dir`, and :class:`SqliteIndexStore` over the published build
+-- which only a composition root may name (ADR-0003). Both consumers are CLI
+commands, so the shared computation lives at the layer they share.
 """
 
 from __future__ import annotations
@@ -26,9 +35,13 @@ from theurian.application.authorization import (
     load_serving_profile,
     recorded_flavor_verdict,
 )
-from theurian.application.project_service import INDEX_POINTER_REMEDY
+from theurian.application.project_service import (
+    INDEX_POINTER_REMEDY,
+    read_active_index_pointer,
+)
 from theurian.domain.errors import TheurianError
 from theurian.infrastructure.secrets.file_store import default_data_dir
+from theurian.infrastructure.sqlite.index_schema import INDEX_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 
 if TYPE_CHECKING:
@@ -114,6 +127,119 @@ def _decoded_flavor(recorded: object) -> list[str] | None:
     """
     levels = decode_sensitivities(recorded)
     return None if levels is None else encode_sensitivities(levels)
+
+
+@dataclass(frozen=True, slots=True)
+class IndexStaleness:
+    """Whether the published index build may still be served, and what decided it.
+
+    One computation, two commands (issue #100). ``theurian index status``
+    publishes the whole breakdown; ``theurian project status`` publishes the
+    verdict alone, as ``indexStale``.
+
+    Until this record existed the second derived its own answer from the
+    *canonical* state pointer -- ``active is None or active.state_hash !=
+    context.state_hash``, which asks whether ``migrate apply`` is up to date --
+    under a name about the index, and never opened ``active-index.json`` at all.
+    A project that had never built an index was told ``indexStale: false`` in the
+    same second ``index status`` told it ``built: false, stale: true``; and once
+    a further migration was applied over a published build the canonical pointer
+    was current again, so the old expression answered ``false`` at exactly the
+    moment the build fell behind.
+    """
+
+    #: The verdict both commands publish. ``True`` when the published build
+    #: cannot be served as it stands, on any axis below.
+    stale: bool
+    #: The keys ``index status`` publishes about the index itself, ready to
+    #: merge. Not what ``project status`` reports -- it takes ``stale`` alone.
+    payload: dict[str, Any]
+    #: The four axes :func:`remedy_for` needs. Typed fields rather than lookups
+    #: into ``payload`` above, so the caller names what it is passing instead of
+    #: reading its own published dictionary back out.
+    pointer_corrupt: bool
+    orphaned: bool
+    purge_failed: bool
+    #: What to run when the serving profile itself cannot be read, or ``""``.
+    profile_remedy: str
+
+
+def index_staleness(
+    paths: ProjectPaths, *, project_id: str, current_state_hash: str
+) -> IndexStaleness:
+    """Judge the published index build against the knowledge as it is now.
+
+    **The invariant that governs every axis: whatever the ranked path refuses,
+    this reports as stale.** Each one below is a state ``knowledge.search``
+    stands the build aside for, so a verdict missing one would answer "fresh,
+    nothing to do" about a file a search had just declined to read.
+
+    Never raises, per this module's rule. Every input is a derived, git-ignored,
+    unsigned file (SEC-7): the pointer read distinguishes its own failures
+    without throwing, the schema probe answers 0 for anything it cannot
+    interpret, and an unreadable serving profile becomes a stale verdict with its
+    own remedy.
+
+    ``needs_apply`` -- whether canonical state is itself behind the migrations --
+    is deliberately *not* an axis here. It is a fact about the state database,
+    not about the index, and it enters only :func:`remedy_for`'s ordering, where
+    it decides that applying must precede any rebuild. Folding it in is the
+    conflation issue #100 is about, running the other way.
+    """
+    pointer = read_active_index_pointer(paths)
+    published = dict(pointer.payload) if pointer.payload is not None else None
+    indexed = (published or {}).get("stateHash")
+    # An index whose schema this build does not understand is unusable no matter
+    # how fresh its state hash is, and retrieval already falls back for it.
+    schema = index_schema_version(paths, published)
+    # Chunks are stamped with the project id that built them, so an index built
+    # for another id answers every query with nothing while reporting itself
+    # indexed. A pointer written before this field existed cannot be checked, so
+    # it counts as orphaned: one rebuild makes it verifiable, and claiming
+    # freshness that was never established is what this exists to avoid.
+    index_project = (published or {}).get("projectId")
+    orphaned = published is not None and index_project != project_id
+    profile = profile_state(published)
+    # A build whose withdrawal purge failed still holds rows the withdrawal
+    # removed from canonical state, and `knowledge.search` stands it aside whole
+    # rather than serving them (GHSA-97q9-xxfg-33r6). Its own axis, independently
+    # of the state-hash comparison -- which is `true` here anyway because a purge
+    # follows a migration, but need not be: a taint written against an otherwise
+    # fresh build must still read stale. Truthiness rather than `is True` because
+    # the pointer is unsigned (SEC-7): any value a hand edit leaves under the key
+    # is read exactly as the serve path's own `if published.get("purgeFailed")`
+    # reads it.
+    purge_failed = bool((published or {}).get("purgeFailed"))
+    return IndexStaleness(
+        stale=(
+            published is None
+            or indexed != current_state_hash
+            or schema != INDEX_SCHEMA_VERSION
+            or orphaned
+            or profile.stale
+            or purge_failed
+        ),
+        payload={
+            "built": published is not None,
+            "indexPointerCorrupt": pointer.unreadable,
+            "indexBuildId": (published or {}).get("indexBuildId"),
+            "indexStateHash": indexed,
+            "indexProjectId": index_project,
+            "indexSchemaVersion": schema,
+            "expectedIndexSchemaVersion": INDEX_SCHEMA_VERSION,
+            "orphaned": orphaned,
+            # Always present, `false` on a healthy build, so a reader never
+            # branches on the key's absence -- the discipline every other field
+            # here holds to, and what lets a client tell "one migration behind"
+            # (`stale` alone) from "still holds withdrawn rows" (`purgeFailed`).
+            "purgeFailed": purge_failed,
+            **profile.payload,
+        },
+        pointer_corrupt=pointer.unreadable,
+        orphaned=orphaned,
+        purge_failed=purge_failed,
+        profile_remedy=profile.remedy,
+    )
 
 
 def index_schema_version(paths: ProjectPaths, published: dict[str, Any] | None) -> int | None:

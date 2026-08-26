@@ -1201,6 +1201,205 @@ def test_the_resolved_branch_reaches_the_same_null_with_nothing_racing_it(
     assert status["unreadable"] == ["Team One/API"]
 
 
+# -- issue #100: `indexStale` answers about the index -----------------------
+#
+# `project status` computed its own verdict from the *canonical* state pointer
+# -- `active is None or active.state_hash != context.state_hash` -- which is a
+# statement about whether `migrate apply` is up to date, published under a name
+# about the index. It never read `.theurian/state/active-index.json` at all, so
+# every axis `theurian index status` recognises that lives in that file was
+# invisible here: a project that had never built an index reported
+# `indexStale: false` in the same second `index status` reported
+# `built: false, stale: true`.
+#
+# The tests below drive one axis each through the real CLI and assert both
+# halves: the verdict itself, and that the two commands agree on it. The
+# agreement assertion is the one that outlives this fix -- it goes red for any
+# later change that gives either surface a verdict of its own.
+
+#: A second migration over the item :data:`MIGRATION` creates, so applying it
+#: moves the state hash without touching anything the index pointer records.
+#: That is the state-hash axis in its pure form: after `migrate apply` the
+#: canonical pointer is current again, so the *old* computation reported a fresh
+#: index while the published build was one migration behind.
+SECOND_MIGRATION_ID = "01K1BBBBBB01234567890ABCDE"
+SECOND_REVISION_ID = "01K1BBBREV01234567890ABCDE"
+REVISED_BODY = BODY + "\nTokens expire after 15 minutes.\n"
+
+SECOND_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {SECOND_MIGRATION_ID}
+createdAt: 2026-08-02T11:00:00+09:00
+author: engineer@example.com
+description: Give tokens an expiry.
+operations:
+  - op: upsertRevision
+    itemId: architecture.auth-policy
+    revisionId: {SECOND_REVISION_ID}
+    expectedRevision: {REVISION_ID}
+    contentFile: ../knowledge/architecture/auth-policy-v2.md
+    contentSha256: {body_pin(REVISED_BODY)}
+    metadata:
+      title: Authentication policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/auth-policy.md
+"""
+
+
+def _edit_index_pointer(root: Path, **fields: Any) -> None:
+    """Overwrite keys in the published index pointer, in place.
+
+    The pointer is derived, git-ignored and unsigned (SEC-7), so a hand edit is
+    an input the product already has to answer for -- and it is the only way to
+    reach the ``purgeFailed`` and ``orphaned`` axes without staging a failing
+    purge or a project rename around them, neither of which is what these tests
+    are about.
+    """
+    pointer = root / ".theurian/state/active-index.json"
+    pointer.write_text(json.dumps({**json.loads(pointer.read_text()), **fields}, indent=2))
+
+
+def _never_built(_root: Path) -> None:
+    """The axis with no pointer at all: `migrate apply` ran, `index build` did not."""
+
+
+def _state_hash_behind(root: Path) -> None:
+    """A published build, then one more migration applied on top of it."""
+    assert _invoke("index", "build")[0] == 0
+    (root / ".theurian/knowledge/architecture/auth-policy-v2.md").write_text(REVISED_BODY)
+    (root / f".theurian/migrations/{SECOND_MIGRATION_ID}-revise.yaml").write_text(SECOND_MIGRATION)
+    assert _invoke("migrate", "apply")[0] == 0
+
+
+def _orphaned(root: Path) -> None:
+    """A published build stamped with another project's id."""
+    assert _invoke("index", "build")[0] == 0
+    _edit_index_pointer(root, projectId="somebody-else")
+
+
+def _purge_failed(root: Path) -> None:
+    """A published build whose withdrawal purge did not complete (GHSA-97q9-xxfg-33r6).
+
+    The state hash is left matching deliberately: the taint has to make the
+    build stale on its own axis, which is the whole point of the field. Every
+    other axis here is clean, so a verdict that misses this one reports a fresh
+    index for a build that still holds withdrawn rows.
+    """
+    assert _invoke("index", "build")[0] == 0
+    _edit_index_pointer(root, purgeFailed=True)
+
+
+@pytest.mark.parametrize(
+    ("prepare", "axis"),
+    [
+        pytest.param(_never_built, "no published build", id="never-built"),
+        pytest.param(_state_hash_behind, "the build's state hash", id="state-hash-behind"),
+        pytest.param(_orphaned, "another project's id", id="orphaned"),
+        pytest.param(_purge_failed, "a failed withdrawal purge", id="purge-failed"),
+    ],
+)
+def test_status_reports_the_index_stale_on_every_axis_index_status_recognises(
+    project: Path, prepare: Any, axis: str
+) -> None:
+    """Issue #100, AC-5 and AC-6: one staleness verdict, two surfaces.
+
+    ``never-built`` is the reproduction the issue names, and the other three are
+    the axes that live in the index pointer -- a file the old computation never
+    opened. ``state-hash-behind`` is the one that shows *why* reading the
+    canonical pointer instead is not merely narrow but inverted: applying the
+    second migration makes ``active.state_hash == context.state_hash`` again, so
+    the old expression answered ``false`` at the exact moment the published build
+    fell a migration behind.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0
+    prepare(project)
+
+    code, status = _invoke("project", "status")
+    index_code, index_status = _invoke("index", "status")
+
+    assert code == 0
+    assert index_code == 0
+    assert index_status["stale"] is True, (
+        f"the fixture must make the index stale on {axis} for this test to mean anything"
+    )
+    assert status["indexStale"] is True, (
+        f"`project status` reported a fresh index while `index status` called it stale on {axis}"
+    )
+    assert status["indexStale"] == index_status["stale"], (
+        "both commands answer one fact and must not compute it twice"
+    )
+
+
+def test_status_calls_a_freshly_built_index_fresh(project: Path) -> None:
+    """The fence around the four above: the verdict is not stuck on ``true``.
+
+    Every test in this section drives a stale axis, so a verdict hardcoded to
+    ``true`` -- or one that simply forgot to read the pointer in the other
+    direction -- passes all of them. This is the state where nothing is stale,
+    and both surfaces have to say so.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0
+    assert _invoke("index", "build")[0] == 0
+
+    _, status = _invoke("project", "status")
+    _, index_status = _invoke("index", "status")
+
+    assert index_status["stale"] is False, "the fixture just built the index from current state"
+    assert status["indexStale"] is False, (
+        "a build published from the current state hash is not stale on any axis"
+    )
+
+
+def test_status_agrees_with_index_status_where_the_verdict_moved_the_other_way(
+    project: Path,
+) -> None:
+    """The one state where reading the index pointer answers ``false`` and the
+    canonical pointer answered ``true``, pinned because the CHANGELOG claims it.
+
+    Deleting ``.theurian/state/active.json`` under a published build leaves the
+    index genuinely current -- it was built from the state hash the migrations
+    still derive -- while canonical state has no pointer at all. The old
+    computation's ``active is None`` made that ``indexStale: true``; the index's
+    own verdict is ``false``, which is what ``theurian index status`` has always
+    answered here (``stale: false`` beside ``knowledgeNotApplied: true``).
+
+    Both are asserted, so this reads as the two surfaces agreeing rather than as
+    a claim that ``false`` is the interesting answer: what the payload says about
+    the *state* is ``activeStateHash`` and ``stateBuilt``, and those still report
+    it.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0
+    assert _invoke("index", "build")[0] == 0
+    (project / ".theurian/state/active.json").unlink()
+
+    _, status = _invoke("project", "status")
+    _, index_status = _invoke("index", "status")
+
+    assert index_status["knowledgeNotApplied"] is True, "the state pointer is gone"
+    assert index_status["stale"] is False, "and the published build is still current"
+    assert status["indexStale"] == index_status["stale"], (
+        "the two surfaces answer one fact, including where the answer moved"
+    )
+    assert status["activeStateHash"] is None, (
+        "the missing state is reported by the fields that are about the state"
+    )
+
+
 def test_unregister_does_not_refuse_an_id_for_its_shape(project: Path) -> None:
     """The escape command has to be able to name what broke the registry.
 
