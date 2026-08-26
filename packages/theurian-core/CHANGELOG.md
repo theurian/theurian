@@ -12,6 +12,64 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`doctor` and `theurian migrate validate` no longer disagree about the same
+  migrations directory**
+  ([#91](https://github.com/theurian/theurian/issues/91)). The `migrations-valid`
+  step counted `migrations/*.yaml` and reported `satisfied` for any directory at
+  all, so a project whose migrations did not parse or validate read as converged
+  while every `theurian migrate` against it refused. The step now runs the same
+  static validation `theurian migrate validate` runs — parse, schema conformance,
+  `contentFile` containment, the `contentSha256` pins, application order, and the
+  whole-set guards — and a directory that fails any of them now reports `missing`
+  (not `satisfied`), naming the file to fix. History verification — an
+  already-applied migration edited since the state database recorded its checksum
+  — is still out of scope for `doctor` and reported by `theurian migrate validate`
+  alone ([#366](https://github.com/theurian/theurian/issues/366)).
+
+- **The `gitignore` step judges the managed block `theurian init` writes, not a
+  substring** ([#87](https://github.com/theurian/theurian/issues/87)). A
+  `.gitignore` whose Theurian entries were negated (`!.theurian/state/`) or
+  commented out (`# .theurian/state/`) satisfied the old check while Git ignored
+  nothing, so `doctor` called a machine converged on which derived artifacts — and
+  ADR-0028's machine-local `.theurian/proposals-local/` — were committable. The
+  step now reports `satisfied` only when exactly one well-formed managed block is
+  present and its span matches, byte for byte, what `theurian init` writes; an
+  absent, silent, stale, edited, or marker-malformed block now reports `missing`.
+  This does not yet catch a re-inclusion further down the file
+  (`!.theurian/state/` below the block) or a nested `.theurian/.gitignore`; the
+  `git ls-files` tracked-artifact check that would
+  ([#64](https://github.com/theurian/theurian/issues/64)) is still owed.
+
+- **A non-directory at the data directory is reported, not treated as private**
+  ([#87](https://github.com/theurian/theurian/issues/87)). A regular file at the
+  data-directory path satisfied the data-directory step whenever its mode was
+  tight, and `token`, `token-storage` and `env-file` then wrote inside a path that
+  is not a directory. It now reports `conflicting`: setup replaces nothing it did
+  not create, so the remedy is to move the file aside.
+
+- **`token-storage` claims only the permission bits it measured, and asks for
+  rotation when the token directory is writable**
+  ([#87](https://github.com/theurian/theurian/issues/87)). Its `satisfied` summary
+  read "stored 0600 inside a 0700 directory", which was never what the check
+  measured — a 0400 token passed it — and "not accessible to other local users"
+  overclaimed past what mode bits decide, since a macOS ACL can widen a 0600 file.
+  The summary now states only that no group or other permission bits are set on
+  the token file or its directory. A group- or other-*writable* `auth/` directory
+  is now `conflicting` and asks for `theurian auth rotate` as well as a `chmod`,
+  because another user who can write the directory can replace the token file; the
+  old single directory arm dropped rotation on the write bit.
+
+- **The "No daemon is running" summaries are scoped to the port actually probed**
+  ([#93](https://github.com/theurian/theurian/issues/93)). `doctor` probes one
+  address, `127.0.0.1:<port>`, and reported "No daemon is running" for the whole
+  machine from it — so a daemon serving the same data directory on another port
+  was described as absent, and the reader was sent to start a second one that
+  `theurian daemon start` then refuses as a duplicate. The three affected
+  summaries (`daemon-running`, `single-instance`, `mcp-health`) now name the
+  address observed and say what they did not look at.
+
 ### Documentation
 
 - **`docs/contributing/release.md` no longer claims branch protection is
