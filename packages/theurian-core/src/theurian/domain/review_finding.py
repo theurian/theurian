@@ -195,14 +195,22 @@ class ReviewFinding:
 
 @dataclass(frozen=True, slots=True)
 class RejectedTrailer:
-    """A column-0 ``Review-Finding:`` line whose value failed the grammar (D3).
+    """A ``Review-Finding:`` line, or a whole record, that could not become a finding (D3).
 
     Captured rather than raised or dropped: the corpus is signed and append-only,
     so history cannot be edited, and a fail-the-whole-load design would let a
     single quoted grammar example in any future commit body permanently brick the
     entire corpus with no forward fix (ADR-0029 Amendment 1, D3). Carries enough to
-    locate the line -- the commit it is on, the raw line verbatim, and why it was
+    locate the failure -- the commit it is on, the raw text verbatim, and why it was
     refused -- without pretending it is a finding.
+
+    Two kinds land here. A **grammar** rejection is a column-0 ``Review-Finding:``
+    line whose value failed the grammar; its ``raw_line`` is that trailer line. A
+    **metadata** rejection is a whole record whose committer date git emitted
+    outside ``datetime``'s range (a crafted year >= 10000): the record cannot carry
+    a valid date -- a published, order-bearing field -- so its trailers are skipped
+    and the record is accounted once, with ``raw_line`` the offending ``%cI`` value.
+    In both cases ``commit_sha`` is git's own ``%H`` (D4), never author-forgeable.
     """
 
     commit_sha: str
@@ -214,12 +222,14 @@ class RejectedTrailer:
 class FindingLoad:
     """The total result of a load: accepted findings and rejected keyed lines (D3).
 
-    **The accounting invariant (AC-1, loss-free):** every column-0
-    ``Review-Finding:`` line in the read history appears in exactly one of the two
-    tuples. A line is never silently dropped, and a single malformed line never
-    aborts the batch -- it is accounted as :class:`RejectedTrailer` while every
-    well-formed sibling still loads. This is what makes "loss-free" hold under a
-    corpus that cannot be edited.
+    **The accounting invariant (AC-1, loss-free):** the load never aborts, and no
+    record is silently dropped. Every column-0 ``Review-Finding:`` line on a record
+    with a valid committer date appears in exactly one of the two tuples; a record
+    whose committer date is unrepresentable (a crafted year >= 10000) is accounted
+    as a single record-level :class:`RejectedTrailer`, its trailers skipped rather
+    than lost. A single malformed line, and a single crafted date, each stay one
+    :class:`RejectedTrailer` while every well-formed sibling still loads -- which is
+    what makes "loss-free" hold under a corpus that cannot be edited.
     """
 
     accepted: tuple[ReviewFinding, ...]

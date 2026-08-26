@@ -429,6 +429,84 @@ def test_a_keyed_but_malformed_trailer_is_rejected_not_raised(tmp_path: Path) ->
     assert "reviewer-x" in load.rejected[0].reason
 
 
+def test_a_far_future_committer_date_is_rejected_not_fatal(tmp_path: Path) -> None:
+    """A committer date git emits beyond ``datetime``'s range rejects the record, never aborts.
+
+    git emits a committer date of year >= 10000 for a crafted ``GIT_COMMITTER_DATE``
+    (``@253402387200`` -> ``10000-01-02T00:00:00Z``), which ``datetime.fromisoformat``
+    cannot parse. That parse runs for *every* record before any trailer is read, so
+    an uncaught ``ValueError`` there would brick the entire corpus -- even a
+    trailer-less commit does it -- falsifying D3's "never a fatal abort." The
+    far-future record must be accounted as rejected (its ``%cI`` the offending
+    value) while every valid finding still loads. The date is *not* clamped or
+    sentinelled, because it is the total-order sort key and a published field.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(
+        clone,
+        "fix: valid one (#1)",
+        "Review-Finding: security HIGH — first valid",
+        when="2026-01-01T00:00:00",
+    )
+    # A trailer-less commit whose committer date git emits as year 10000. Even with
+    # no trailer, the record's date parse alone would abort the load before the fix.
+    _commit_split_date(
+        clone,
+        "chore: a far-future commit with no trailer",
+        author_when="2026-02-01T00:00:00+00:00",
+        committer_when="@253402387200 +0000",
+    )
+    _commit(
+        clone,
+        "fix: valid two (#2)",
+        "Review-Finding: adversarial LOW — second valid",
+        when="2026-03-01T00:00:00",
+    )
+    _publish(clone)
+
+    load = GitTrailerFindingSource(clone).load_findings()  # must not raise
+
+    assert [f.finding_text for f in load.accepted] == ["first valid", "second valid"]
+    # The far-future record is accounted, not silently dropped and not fatal.
+    assert len(load.rejected) == 1
+    rejected = load.rejected[0]
+    assert "10000" in rejected.reason
+    assert "committer date" in rejected.reason
+    assert re.fullmatch(r"[0-9a-f]{40}", rejected.commit_sha)  # sha is git's own %H (D4)
+
+
+def test_a_far_future_record_with_a_trailer_skips_it_but_keeps_siblings(tmp_path: Path) -> None:
+    """A crafted-date record's own trailer is skipped, and its valid siblings load.
+
+    A record whose committer date is unrepresentable cannot carry a valid finding
+    date, so its trailer is skipped rather than accepted with a fabricated date --
+    but that single crafted record must not cost the corpus its well-formed
+    siblings. Exactly one record-level rejection is recorded for it.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(
+        clone,
+        "fix: valid (#1)",
+        "Review-Finding: security HIGH — a valid finding",
+        when="2026-01-01T00:00:00",
+    )
+    _commit_split_date(
+        clone,
+        "fix: far-future with a trailer (#2)",
+        "Review-Finding: adversarial CRITICAL — must not be accepted with a fake date",
+        author_when="2026-02-01T00:00:00+00:00",
+        committer_when="@253402387200 +0000",
+    )
+    _publish(clone)
+
+    load = GitTrailerFindingSource(clone).load_findings()
+
+    assert [f.finding_text for f in load.accepted] == ["a valid finding"]
+    assert "must not be accepted" not in [f.finding_text for f in load.accepted]
+    assert len(load.rejected) == 1
+    assert "10000" in load.rejected[0].reason
+
+
 def test_a_quoted_grammar_example_is_rejected_and_siblings_still_load(tmp_path: Path) -> None:
     """D3: a quoted grammar example cannot brick the corpus; it is one rejected line.
 

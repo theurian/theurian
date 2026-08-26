@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Final, final
@@ -188,16 +189,23 @@ class GitTrailerFindingSource:
         begin with the key, so it is ignored rather than folded in.
 
         **The load is loss-free by accounting, not by aborting** (AC-1, D3): every
-        column-0 keyed line is either an accepted :class:`ReviewFinding` or a
-        :class:`RejectedTrailer` (its value failed the grammar). A malformed line is
-        captured, never silently dropped and never a fatal abort -- so one quoted
-        grammar example in a future commit body cannot brick the whole corpus.
+        column-0 keyed line whose record has a valid committer date is either an
+        accepted :class:`ReviewFinding` or a :class:`RejectedTrailer` (its value
+        failed the grammar); and a record whose committer date git emitted outside
+        ``datetime``'s range is accounted as a single record-level
+        :class:`RejectedTrailer`, its trailers skipped rather than parsed. A
+        malformed line, and a whole record with an unrepresentable date, are both
+        captured -- never silently dropped and never a fatal abort -- so neither one
+        quoted grammar example nor one crafted committer date can brick the corpus.
 
-        Both tuples are in the same total order -- the sort key ``(commit date,
-        commit sha, position within the commit)`` -- so two runs over the same
-        history produce byte-identical sequences (AC-6): the commit sha alone is
-        already total (a position disambiguates lines sharing a commit), and the
-        date leads it only to make the order chronological.
+        The accepted tuple is in total order ``(commit date, commit sha, position
+        within the commit)`` -- the sha alone is already total (a position
+        disambiguates lines sharing a commit) and the date leads it only to make the
+        order chronological. The rejected tuple is ordered ``(commit sha, position)``
+        *without* the date, because a record rejected precisely *because* its date is
+        unrepresentable has no date to sort on; that key is still total and
+        deterministic, so two runs over the same history produce byte-identical
+        sequences (AC-6).
 
         Raises:
             GitHistoryUnavailableError: If ``git`` cannot run or
@@ -207,18 +215,37 @@ class GitTrailerFindingSource:
         """
         records = _split_records(self._git_log(), self._repo_root)
         accepted: list[tuple[tuple[datetime, str, int], ReviewFinding]] = []
-        rejected: list[tuple[tuple[datetime, str, int], RejectedTrailer]] = []
-        for sha, committed_at, commit_body in records:
-            for position, line in enumerate(commit_body.split("\n")):
+        rejected: list[tuple[tuple[str, int], RejectedTrailer]] = []
+        for record in records:
+            committed_at = record.committed_at
+            if committed_at is None:
+                # A committer date git emitted outside datetime's range (year >=
+                # 10000) cannot become a valid ReviewFinding, and its parse runs
+                # before any trailer -- so letting the ValueError escape would abort
+                # the whole load, even for a trailer-less commit (D3). Account the
+                # record as one rejected entry and keep loading its siblings; its
+                # sha is git's own %H (D4), never author-forgeable.
+                reason = (
+                    f"unparseable committer date {record.date_iso!r} "
+                    "(year exceeds datetime.max, so the record cannot be a finding)"
+                )
+                rejected.append(
+                    ((record.sha, 0), RejectedTrailer(record.sha, record.date_iso, reason))
+                )
+                continue
+            for position, line in enumerate(record.body.split("\n")):
                 if not line.startswith(TRAILER_KEY):
                     continue
-                key = (committed_at, sha, position)
                 try:
-                    finding = finding_from_trailer(line, commit_sha=sha, committed_at=committed_at)
+                    finding = finding_from_trailer(
+                        line, commit_sha=record.sha, committed_at=committed_at
+                    )
                 except MalformedTrailerError as exc:
-                    rejected.append((key, RejectedTrailer(sha, exc.line, exc.reason)))
+                    rejected.append(
+                        ((record.sha, position), RejectedTrailer(record.sha, exc.line, exc.reason))
+                    )
                 else:
-                    accepted.append((key, finding))
+                    accepted.append(((committed_at, record.sha, position), finding))
         accepted.sort(key=lambda item: item[0])
         rejected.sort(key=lambda item: item[0])
         return FindingLoad(
@@ -278,14 +305,57 @@ class GitTrailerFindingSource:
         return env
 
 
-def _split_records(stdout: str, repo_root: Path) -> list[tuple[str, datetime, str]]:
-    """Split a ``git log -z`` stream into whole (sha, date, body) records.
+@dataclass(frozen=True, slots=True)
+class _Record:
+    """One framed ``git log -z`` record: its sha, body, and committer date.
+
+    ``committed_at`` is ``None`` exactly when git emitted a committer date this
+    runtime cannot represent -- a year >= 10000, which a crafted
+    ``GIT_COMMITTER_DATE`` (``@253402387200`` -> ``10000-01-02T00:00:00Z``)
+    produces but ``datetime.max`` (year 9999) cannot hold. The parse runs for every
+    record *before* any trailer is read, so a raised ``ValueError`` there would
+    abort the whole load -- even for a trailer-less commit -- defeating the D3
+    "never a fatal abort" invariant. Marking the date unrepresentable instead lets
+    the caller account the record as rejected and keep going. ``date_iso`` keeps
+    git's raw ``%cI`` verbatim so the rejection can name the value that failed; the
+    date is never fabricated to fill the gap, because it is a published field and
+    the finding's total-order sort key -- a record without a valid one cannot be a
+    valid finding.
+    """
+
+    sha: str
+    body: str
+    date_iso: str
+    committed_at: datetime | None
+
+
+def _parse_committer_date(date_iso: str) -> datetime | None:
+    """git's ``%cI`` as an aware datetime, or ``None`` when it is unrepresentable.
+
+    ``datetime.fromisoformat`` raises ``ValueError`` on a year >= 10000, which git
+    will emit for a crafted ``GIT_COMMITTER_DATE``. Returning ``None`` rather than
+    raising lets the caller account that record as rejected and keep loading the
+    rest (D3); a ``None`` is never replaced by a sentinel date, because the
+    committer date is the finding's total-order sort key and a published field.
+    """
+    try:
+        return datetime.fromisoformat(date_iso)
+    except ValueError:
+        return None
+
+
+def _split_records(stdout: str, repo_root: Path) -> list[_Record]:
+    """Split a ``git log -z`` stream into whole records, each date parsed.
 
     The stream is every record's fields joined by NUL with each record
     NUL-terminated (D4), so it partitions into an exact multiple of
     :data:`_FIELDS_PER_RECORD` tokens. Because NUL cannot occur in a commit
     message, no field -- the multi-line body included -- can hold the separator, so
     the split is exact and needs no rejoining.
+
+    Each record's committer date is parsed here; a date git emitted outside
+    ``datetime``'s range is carried as ``committed_at=None`` (see :class:`_Record`)
+    rather than raised, so one crafted commit cannot abort the whole load.
 
     Raises:
         GitOutputFramingError: if the stream does not partition into whole records
@@ -306,8 +376,15 @@ def _split_records(stdout: str, repo_root: Path) -> list[tuple[str, datetime, st
             f"git log -z stream has {len(tokens)} NUL-delimited fields, "
             f"not a multiple of {_FIELDS_PER_RECORD}",
         )
-    records: list[tuple[str, datetime, str]] = []
+    records: list[_Record] = []
     for start in range(0, len(tokens), _FIELDS_PER_RECORD):
         sha, date_iso, body = tokens[start : start + _FIELDS_PER_RECORD]
-        records.append((sha, datetime.fromisoformat(date_iso), body))
+        records.append(
+            _Record(
+                sha=sha,
+                body=body,
+                date_iso=date_iso,
+                committed_at=_parse_committer_date(date_iso),
+            )
+        )
     return records
