@@ -42,19 +42,29 @@ _SEE_THE_VALUES: Final = "run `theurian doctor` without --report to see them"
 #: Ceiling, in characters, on what :func:`failure_detail` returns for the
 #: operator's own terminal.
 #:
-#: **A dependency's habits are not a limit this project has recorded.**
-#: ``SetupService._probe`` catches ``Exception``, so the string is whatever the
-#: raising library chose to build and nothing in Theurian bounded it. The widest
-#: channel in practice is a migration refusal, and it is short only because
-#: PyYAML truncates its own snippet -- a syntax error 5,000 characters into one
-#: line renders at 169 (measured 2026-08-26, PyYAML 6). That is an
-#: implementation detail, revisable in any release of somebody else's package,
-#: and a channel whose width is decided elsewhere is a channel Theurian has not
-#: decided about.
+#: **The bound exists for the probes a dependency's habits *do* decide the width
+#: of.** ``SetupService._probe`` catches ``Exception``, so a probe outside the
+#: migrations family -- ``load_serving_profile``, the project-registry read, any
+#: arbitrary library raise -- carries whatever string that library chose to
+#: build, and nothing in Theurian bounded it. A width decided elsewhere is a
+#: width Theurian has not decided about, and that is the channel this constant
+#: closes.
 #:
-#: 2,000 is an order of magnitude above every message measured on these paths and
-#: well below what buries a terminal. It bounds the whole returned string, type
-#: name and marker included, so the guarantee is the one the name states.
+#: **It is not headroom over the migrations family, which bounds itself.** The
+#: widest migration refusal is a schema-validation one -- ``_schema_rejection``
+#: in the loader, wrapped as a ``MigrationError`` by ``_load_one`` -- and its
+#: author-written echo is already capped by Theurian's *own*
+#: :data:`~theurian.infrastructure.filesystem.migration_loader.MAX_ECHOED_VALUE`
+#: (1,000; issue #289). A migration whose ``operations[0]`` carries a
+#: 5,000-character unexpected field renders that refusal at 1,324 characters
+#: (measured 2026-08-26); a PyYAML *syntax* error -- the case that genuinely is
+#: short only because the parser truncates its own snippet -- is narrower still,
+#: at 308. So 2,000 is about 1.5x the widest migrations message, not the order of
+#: magnitude an earlier note claimed: the real slack is over the *unbounded*
+#: probes above, where no upstream constant of Theurian's applies.
+#:
+#: It bounds the whole returned string, type name and marker included, so the
+#: guarantee is the one the name states.
 MAX_FAILURE_DETAIL_CHARS: Final = 2_000
 
 #: Put in place of what was cut, so a bounded message cannot be read as a
