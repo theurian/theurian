@@ -30,6 +30,7 @@ import yaml
 from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from typer.testing import CliRunner
 
+from theurian.application.proposal_service import _AT_BODY_CONTENT
 from theurian.cli import commands, migration_pipeline, propose_commands
 from theurian.cli.main import app
 from theurian.cli.propose_commands import _ACCEPT_STEPS, _DRAFT_STEPS
@@ -2080,20 +2081,22 @@ def test_a_warned_acceptance_renders_a_finding_a_person_can_act_on(project: Path
 
     So the line is pinned in the shape every compiler and linter emits, and the
     absence of a ``repr`` is pinned with it -- a mapping would satisfy "contains
-    the family" and fail here.
+    the family" and fail here. The body-content finding names its channel by a
+    fixed literal and an index rather than by the landed path (#360): the path a
+    reviewer opens is on the result's ``bodyFiles``, rendered above this line, so
+    ``the content of body[0]`` and ``bodyFiles[0]`` are the same body.
     """
-    rendered, drafted = _warned_accept(project)
+    rendered, _drafted = _warned_accept(project)
 
     line = next(
         stripped
         for raw in rendered.stdout.splitlines()
-        if (stripped := raw.strip()).startswith("- architecture/")
+        if (stripped := raw.strip()).startswith(f"- {_AT_BODY_CONTENT}[0]:")
     )
     assert re.fullmatch(
-        rf"- architecture/retry-policy\.{drafted['revisionId']}\.md:5:24: "
-        rf"high-entropy-token \(\S{{4}}\.\.\.\)",
+        rf"- {re.escape(_AT_BODY_CONTENT)}\[0\]:5:24: high-entropy-token \(\S{{4}}\.\.\.\)",
         line,
-    ), f"the finding does not render as `<body>:<line>:<column>: <family> (<prefix>)`: {line!r}"
+    ), f"the finding does not render as `<location>:<line>:<column>: <family> (<prefix>)`: {line!r}"
     assert "{'body'" not in rendered.stdout, (
         f"a finding reaches the terminal as a Python mapping repr:\n{rendered.stdout}"
     )
@@ -2127,6 +2130,80 @@ def test_a_warned_acceptance_publishes_the_policy_beside_the_findings(project: P
     # The report is a locator, never a second copy of what it reports.
     assert _leaky_body().split("=")[-1].strip() not in json.dumps(payload), (
         "the accept payload reproduces the token it is warning about"
+    )
+
+
+#: A credential in the one shape a *migration filename* can carry. The slug after
+#: the ULID is lower-case kebab, which spells an ``openai-api-key`` and nothing
+#: needing an upper-case letter or an underscore. Derived rather than drawn and
+#: split from its seed, for the reason :data:`_PLANTED_TOKEN` records.
+_FILENAME_TOKEN = (
+    "sk-" + hashlib.sha256(b"propose-cli migration-filename fixture (#349)").hexdigest()[:40]
+)
+
+
+def test_accept_refuses_a_credential_in_the_migration_filename_without_echoing_it(
+    project: Path,
+) -> None:
+    """The #349 name channels reach a terminal through ``accept``, and must not carry the name.
+
+    The service-level tests pin a name-channel finding's *location* -- a fixed
+    literal rather than the offending name -- but they hold it on the object the
+    service returns. What a caller, a CI log and a pull request actually see is
+    what ``propose accept --json`` writes, assembled by the CLI out of the error
+    and its remedy, and nothing pinned that for the two channels whose location is
+    attacker-chosen text. A build that located the finding by the filename would
+    satisfy every service-level assertion about the finding and still print the
+    credential here.
+
+    So the whole of both streams is asserted rather than a field of the published
+    document: a credential echoed by a progress step, a warning line or a
+    traceback sits outside any field a payload check reads, and this is the
+    surface #349's own refusal is rendered onto.
+
+    The channel is named as well as redacted, because a refusal that says only
+    "this proposal appears to carry a secret" sends the author to grep four
+    artifacts. The filename is the one place they would not think to look -- it is
+    not in the migration's bytes at all.
+
+    No config file is written, so ``block`` is what an absent key selects and the
+    acceptance is refused. The ULID prefix is kept, so
+    ``_require_filename_matches_id`` -- which runs before the scan -- is not what
+    refuses.
+
+    Two mutations, both measured on bf40533 in prepared trees (2026-08-25).
+    Locating the finding by the name it found -- ``yield migration_file.name,
+    migration_file.name`` -- publishes the whole credential into the ``error``
+    field of this document, and this is the only test in this file that catches
+    it (1 failed, 70 passed). Renaming the channel's literal to one that does not
+    say which artifact fails this test and, across the *whole* suite, nothing
+    else (1 failed, 3929 passed). That second one is why the spelling is held
+    here rather than imported: the literal may be reworded, but only to another
+    that names the filename, and this assertion is what forces that decision to
+    be made rather than dropped.
+    """
+    _, drafted = _draft(project)
+    directory = project / ".theurian/proposals" / drafted["proposalId"]
+    (directory / drafted["migrationFile"]).rename(
+        directory / f"{drafted['migrationId']}-staging-{_FILENAME_TOKEN}.yaml"
+    )
+
+    code, escaped, stream = _accept_catching(drafted["proposalId"])
+
+    assert escaped is None, f"an exception escaped instead of a document: {escaped!r}"
+    assert code != 0, f"a credential in the migration filename was accepted: {stream}"
+    assert "openai-api-key" in stream, (
+        f"a credential in the migration filename was not what refused the acceptance: {stream}"
+    )
+    # Asserted before the channel is named, because it is the headline: a build
+    # that located the finding by the filename fails both, and the disclosure is
+    # the one a reader has to meet first.
+    assert _FILENAME_TOKEN not in stream, (
+        "the published refusal reproduces the credential it found in the migration filename, at "
+        f"offset {stream.find(_FILENAME_TOKEN)} of {len(stream)} characters"
+    )
+    assert "the migration filename" in stream, (
+        f"the refusal does not name the channel the credential was found in: {stream}"
     )
 
 

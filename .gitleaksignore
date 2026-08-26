@@ -1,0 +1,10 @@
+# gitleaks false-positive suppressions, one exact fingerprint per line
+# (`<commit>:<path>:<rule>:<line>`, as gitleaks prints it). Fingerprint-scoped on
+# purpose: the `generic-api-key` rule stays at full strength everywhere else, and
+# a suppression names the one line it forgives rather than the rule.
+#
+# `_AUTH_POLICY_SHA` is the SHA-256 digest of an auth-policy body file, reused in
+# the duplicate-contentFile refusal test to point two revisions at the same file.
+# It is a content digest, not a credential; gitleaks' generic-api-key rule trips
+# on its 64-hex entropy.
+59a50ca72320ae0477f709f9fa67d2454a364a7e:packages/theurian-core/tests/integration/test_setup_migrations_checker.py:generic-api-key:149

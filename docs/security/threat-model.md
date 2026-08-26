@@ -1129,21 +1129,23 @@ and the product says so** — Theurian is not a repository secret scanner and is
 not a replacement for one, which is the stance SECURITY.md published before this
 control existed and still publishes.
 
-**Two inputs, and between them they cover the author-written *bytes* the
-acceptance moves into the canonical tree — not every byte of the files it
-writes.** A body is scanned whole. The migration document is scanned field by
-field, over an allowlist of its author-written string *values*: the migration's
-own `author`, `createdAt` and `description`; on every operation the free text
-and the names an author chooses (`reason`, `note`, `alias`, `specId`,
-`sourceUri`, `format`, `description`, `sourceItemId`, `targetItemId`,
-`supersededBy`, `itemId`, `namespace`, `owner`); a revision's `title`,
-`namespace`, `owner`, `tenantId`, `aclGroup`, `contentType`, `validFrom`,
-`validTo`, `labels` and `scope.paths`; and every string of a source anchor
-(`provider`, `sourceUri`, `filePath`, `repository`, `externalId`, `commitSha`,
-`blobSha`), wherever an anchor appears. What it does not read is the artifact
-level — a YAML comment, and the migration and body filenames — tracked as its
-own face in [#349](https://github.com/theurian/theurian/issues/349). The sharp
-ones are the title and the anchor fields a result publishes verbatim on every
+**The scan covers the author-written *bytes* the acceptance moves into the
+canonical tree, and the artifacts it lands them as**
+([#349](https://github.com/theurian/theurian/issues/349)). Five channels. A body
+is scanned whole. The migration document is scanned field by field, over an
+allowlist of its author-written string *values*: the migration's own `author`,
+`createdAt` and `description`; on every operation the free text and the names an
+author chooses (`reason`, `note`, `alias`, `specId`, `sourceUri`, `format`,
+`description`, `sourceItemId`, `targetItemId`, `supersededBy`, `itemId`,
+`namespace`, `owner`); a revision's `title`, `namespace`, `owner`, `tenantId`,
+`aclGroup`, `contentType`, `validFrom`, `validTo`, `labels`, `scope.paths` and
+`contentFile`; and every string of a source anchor (`provider`, `sourceUri`,
+`filePath`, `repository`, `externalId`, `commitSha`, `blobSha`), wherever an
+anchor appears. With them it reads the artifact level a parse does not keep — the
+migration file's raw bytes (so a YAML comment, and every field as written), the
+migration filename, and each landed body path — which was #349's own face and is
+now closed by it. The sharp ones are the title and the anchor fields a result
+publishes verbatim on every
 `knowledge.search` and `knowledge.get` result — `provider`, `sourceUri`,
 `repository`, `commitSha`, `filePath` (`mcp/results.py`, verified 2026-08-24
 against #198's round-two security review) — because a credential in one reaches
@@ -1160,12 +1162,25 @@ subtracts each derived field only where a mechanism already bars a *reported*
 secret: the ULID- and `^[0-9a-f]{64}$`-shaped identifiers (`id`,
 `revisionId`, `expectedRevision`, `dependsOn`, `contentSha256`), which the
 detector's class gate cannot fire on; the fixed vocabularies (`op`, `kind`,
-`status`, `trustLevel`, `sensitivity` and the other enums and consts); and
-`contentFile`, a path whose secret-in-filename face is the artifact-level one
-(#349). It does **not** subtract the migration filename by any coverage
-argument: the slug is not re-derived from the title at accept
+`status`, `trustLevel`, `sensitivity` and the other enums and consts).
+`contentFile` is no longer in that subtraction: its *parsed* value is scanned
+(#349), because it is the one channel that catches a credential both
+`..`-collapsed *and* spelled with YAML escapes — the migration bytes catch a
+plainly-spelled traversal, the landed path catches an escaped credential in a
+segment that survives resolution, and only the parsed value sees the two at
+once. The migration filename is scanned as its own channel too, rather than left
+to the title's coverage: the slug is not re-derived from the title at accept
 (`_require_filename_matches_id` checks only the ULID prefix, and a hand-authored
-slug is free-form), so the filename is #349's face and not the title's.
+slug is free-form). That channel is narrow by construction — a slug is
+`[a-z0-9]+(-[a-z0-9]+)*`, so only `openai-api-key` (`sk-`) and `slack-token`
+(`xox`) can spell a credential in one, while `aws-access-key-id` and
+`google-api-key` need an upper-case letter and `github-token` and
+`stripe-secret-key` need `_` (measured 2026-08-26 over 400,000 legal filenames);
+the less-restricted landed-path channel is not so limited — a path component
+admits upper-case letters, digits and `_`, so every family the slug excludes
+(aws, google, github, stripe) can be spelled and caught in one (measured
+2026-08-26: seven families fire by name, and a `google-api-key` shape is caught
+as `high-entropy-token` rather than its own family).
 `commitSha` and `blobSha` are in the allowlist for uniformity and not because
 they can carry anything — but the reason is not the schema pattern. The scan
 runs *before* schema validation, so `^[0-9a-f]{7,64}$` is not what stops a secret
@@ -1220,26 +1235,33 @@ a separate point:*
 
 - **A proposal's `evidence.json` is not scanned.** `accept` moves the migration
   document and the bodies it names, and leaves the rest of the proposal
-  directory where it is (ADR-0013 point 7), so `evidence.json` is committed with
-  the pull request but never becomes part of an approved revision. Scanning it
-  is a draft-time control over an artifact `accept` does not land, which is why
-  it is tracked with the draft-time advisory
-  ([#330](https://github.com/theurian/theurian/issues/330)) rather than here.
-- **The artifact level is not read** — a YAML comment, and the migration and
-  body filenames a `contentFile` points at. The filename is not re-derived from
-  the title at accept, so scanning the title does not cover it; both are tracked
-  in [#349](https://github.com/theurian/theurian/issues/349).
+  directory where it is (ADR-0013 point 7), so `evidence.json` travels into the
+  pull request unscanned and never becomes part of an approved revision. That it
+  rides into the PR this way is tracked as
+  [#361](https://github.com/theurian/theurian/issues/361); scanning it at draft
+  time is a separate control, tracked with the draft-time advisory
+  ([#330](https://github.com/theurian/theurian/issues/330)).
+- **Refusal *messages* on the accept path still echo an author's name.** The
+  artifact level [#349](https://github.com/theurian/theurian/issues/349) opened
+  — a YAML comment, the migration filename, and each landed body path — is now
+  scanned, so the scan itself no longer leaves that face open. What remains is a
+  different root cause: several refusal messages on the accept path, and the
+  `accept --json` `bodyFiles` success field, print an author's migration
+  filename, id, `contentFile` or landed path verbatim rather than by a fixed
+  literal. It is general name hygiene, pre-existing, and discloses no content the
+  caller may not already read — tracked in
+  [#360](https://github.com/theurian/theurian/issues/360).
 - **Inside the migration document, the derived half is not read**, each field
   excluded by a mechanism rather than by choice: the ULID- and
   `^[0-9a-f]{64}$`-shaped identifiers (`id`, `revisionId`,
   `expectedRevision`, `dependsOn`, `contentSha256`), which the detector's class
-  gate cannot fire on; the fixed vocabularies (`op`, `kind`, `status`,
-  `trustLevel`, `sensitivity` and the other enums); and `contentFile`, a path
-  whose secret-in-filename face is the artifact-level one above. It is a
-  deliberate bound and not a channel — those values are Theurian's own output or
-  a closed vocabulary. This list no longer includes `createdAt`, `contentType`,
-  `validFrom` or `validTo`: those are scanned
-  ([#336](https://github.com/theurian/theurian/issues/336)).
+  gate cannot fire on; and the fixed vocabularies (`op`, `kind`, `status`,
+  `trustLevel`, `sensitivity` and the other enums). It is a deliberate bound and
+  not a channel — those values are Theurian's own output or a closed vocabulary.
+  This list no longer includes `createdAt`, `contentType`, `validFrom`,
+  `validTo` or `contentFile`: those are scanned
+  ([#336](https://github.com/theurian/theurian/issues/336),
+  [#349](https://github.com/theurian/theurian/issues/349)).
 - **`theurian ingest` runs no scan**, and neither does index building. Ingest
   records a manifest of content that is already approved, so scanning there is a
   different control at a different point in the lifecycle — a real one, and out

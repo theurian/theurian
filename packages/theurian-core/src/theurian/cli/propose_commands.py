@@ -381,8 +381,8 @@ def propose_accept(
     bytes and choosing silently would accept one while the author was reading
     the other.
 
-    **What is checked before anything moves**: that no body would land a secret,
-    and that the project's migration set, with this proposal in it, still
+    **What is checked before anything moves**: that nothing it would land carries
+    a secret, and that the project's migration set, with this proposal in it, still
     survives the pipeline ``theurian migrate apply`` runs -- the published
     schema, the whole-set guards, and a dry replay against a throwaway store
     that catches the invariants only applying can check, a revision's source
@@ -391,8 +391,10 @@ def propose_accept(
     left exactly as it was, so the change can be corrected and accepted rather
     than re-drafted from nothing (ADR-0027, #307).
 
-    **Secret scanning** (SEC-11) runs over the bodies and the migration
-    document's author-written field values first, under the policy
+    **Secret scanning** (SEC-11) runs first, over everything the acceptance
+    would land: the bodies, the migration document's author-written field
+    values, the migration file's own bytes -- a YAML comment included -- its
+    filename, and the path each body lands at. Under the policy
     ``security.secretScan`` selects in ``.theurian/config.yaml``: ``block``,
     which is also what an absent key or an absent file selects, refuses the
     acceptance; ``warn`` proceeds and reports what it found on the result;
@@ -415,7 +417,9 @@ def propose_accept(
     proposal locations, a draft interrupted before its migration was
     written, a proposal directory or a file in it the filesystem refuses to list,
     examine or read, a contentFile the filesystem cannot resolve or the security
-    layer refuses, a body that appears to carry a secret while the policy is
+    layer refuses, anything it would land -- a body, a migration field, the
+    migration's own bytes, its filename or a body's path -- that appears to carry a
+    secret while the policy is
     ``block``, a ``.theurian/config.yaml`` that cannot be read or names a
     ``security.secretScan`` value this build does not recognise, or a migration
     that does not satisfy the schema or would not apply; 2 the id is not a ULID; 4 the
@@ -556,13 +560,15 @@ def propose_accept(
 # every compiler and linter emits, so a `--json` consumer can still split it and
 # a human can paste it into an editor.
 #
-# A location is either a body path or a field of the migration document (#336).
-# The body path is a contributor's -- it comes from the migration's
-# `contentFile` -- so it reaches the human sink through
-# `_render`/`escape_terminal_controls` like every other string this command
-# publishes, and reaches the JSON sink escaped by `json.dumps`. A field location
-# is built from literals in `proposal_service.py` and carries no contributor
-# text at all.
+# A finding location is one of a fixed set of channels (#336, #349): a body's
+# content or its landed path, a field of the migration document, the migration's
+# own bytes, or its filename. Every one is built from literals in
+# `proposal_service.py` -- a channel name with an integer index, or a document
+# field path assembled from module literals -- and carries no contributor or
+# scanned text, so none can smuggle author-controlled characters through the
+# human sink (`_render`/`escape_terminal_controls`) or the JSON sink
+# (`json.dumps`). #360 tracks the same discipline for the refusal *messages*
+# elsewhere on the accept path.
 
 
 #: What a caller does next, and the one thing about it that surprises people:
@@ -607,8 +613,9 @@ _LOCAL_ACCEPT_FIRST_STEP: Final = (
 #: :meth:`~theurian.application.proposal_service.ProposalService._secret_refusal`'s
 #: rotate advice, in the tense the landed case needs: the value is already in
 #: ``.theurian/knowledge/`` or ``.theurian/migrations/`` rather than still in the
-#: proposal. It names no single file, because a finding is in a body *or* in the
-#: migration's own fields (#336) and only ``secretFindings`` knows which.
+#: proposal. It names no single file, because a finding may sit in a body, a
+#: migration field, the migration's own bytes, its filename or a body's path
+#: (#336, #349) and only ``secretFindings`` knows which.
 _ROTATE_ADVICE_STEP: Final = (
     "The secret scan flagged something this acceptance landed (security.secretScan is `warn`, "
     "so it proceeded). Treat each flagged value as exposed and rotate it -- it is now in the "

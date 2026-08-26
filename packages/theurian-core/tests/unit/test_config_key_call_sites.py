@@ -473,9 +473,16 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # that can pin a false claim: the first holds that the date fields are
             # *scanned* -- the round-two false claim was that they were excluded --
             # and the second holds a concrete excluded field with its mechanism.
+            # #349 moved `contentFile` into the scanned set -- its parsed value is a
+            # document field now, so it is no longer the concrete excluded field
+            # this pins. The ULID/`contentSha256` identifiers are, since their
+            # class gate cannot fire; that is a claim #349 does not change.
             "provider, sourceUri, repository, filePath, externalId, commitSha, blobSha",
             "`contentType` and the `createdAt`/`validFrom`/`validTo` dates",
-            "`contentFile`, a path whose secret-in-filename face is #349",
+            (
+                "the ULID- and `contentSha256`-shaped identifiers, which the "
+                "detector's class gate cannot fire on"
+            ),
             "`evidence.json` is not scanned",
             "Theurian does not scan ingested content for secrets",
             "Theurian is not one and is not a replacement for one",
