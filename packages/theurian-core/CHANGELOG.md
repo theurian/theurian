@@ -78,7 +78,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   shapes on `reason` — the resolved payload carries `reason` and `remedy` too,
   for an unreadable state pointer or registry (measured: a corrupt
   `.theurian/state/active.json` yields the resolved shape with `reason`,
-  `indexStale: true` and every other resolved field). `root` and `projectId` are
+  `statePointerCorrupt: true` and every other resolved field). `root` and
+  `projectId` are
   the resolved-only keys, so their presence is what tells the shapes apart. Code
   reading `registered` as a boolean must handle `null`, which both branches now
   publish.
@@ -132,14 +133,27 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   the unresolved payload as the entry above records. What changes is which
   projects it is `true` for. It becomes `true` for a project that has never
   built an index, and for the pointer-side axes the old expression could not
-  see. Measured, it flips the other way in exactly one state: a project whose
-  `.theurian/state/active.json` is gone while a published build still matches
-  the migrations on disk now reads `false`, because the index genuinely is
-  current — `stateBuilt`, `activeStateHash` and `statePointerCorrupt` beside it
-  are what report the missing state, and `theurian index status` has always
-  answered that state `stale: false` with `knowledgeNotApplied: true`. Agreeing
-  with it is the change. A pending `migrate apply` still reads `true`, because
-  the published build's state hash is behind the migrations either way.
+  see.
+
+  It flips the other way for a **class**, not for a listed state: the canonical
+  state pointer no longer participates in the verdict at all, so `indexStale`
+  reads `false` wherever `.theurian/state/active.json` disagrees with the
+  migrations while a published build still matches them. Measured, that class
+  has three members — the pointer is **missing**, the pointer is **unreadable**
+  (truncated JSON, raw text and arbitrary bytes each measured; `statePointerCorrupt`
+  reports it), or the pointer parses and **names a different state hash**. In
+  all three the index genuinely is current, and `stateBuilt`,
+  `activeStateHash` and `statePointerCorrupt` beside it are what report the
+  state. A pending `migrate apply` is not in the class and still reads `true`,
+  because the published build's state hash is behind the migrations either way.
+
+  For a missing pointer and for one naming a different hash, `theurian index
+  status` answers the same `stale: false` beside `knowledgeNotApplied: true`,
+  and agreeing with it is the change. For an **unreadable** pointer there is
+  nothing to agree with: `index status` refuses that state outright (exit 1,
+  `{error, remedy}`, no payload), so `project status` is the only surface
+  answering, and it answers about the index while `statePointerCorrupt` answers
+  about the file.
 
   The old question is still answerable from the same payload and always was —
   `activeStateHash` against `stateHash`, both published beside it — so no

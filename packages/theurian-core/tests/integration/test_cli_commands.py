@@ -1433,15 +1433,22 @@ def test_status_answers_for_a_pointer_naming_a_filename_the_platform_refuses(
 def test_status_agrees_with_index_status_where_the_verdict_moved_the_other_way(
     project: Path,
 ) -> None:
-    """The one state where reading the index pointer answers ``false`` and the
-    canonical pointer answered ``true``, pinned because the CHANGELOG claims it.
+    """One member of the class where the verdict moved the *other* way.
 
-    Deleting ``.theurian/state/active.json`` under a published build leaves the
-    index genuinely current -- it was built from the state hash the migrations
-    still derive -- while canonical state has no pointer at all. The old
-    computation's ``active is None`` made that ``indexStale: true``; the index's
-    own verdict is ``false``, which is what ``theurian index status`` has always
-    answered here (``stale: false`` beside ``knowledgeNotApplied: true``).
+    The class, not a count: the canonical state pointer no longer participates
+    in the verdict, so ``indexStale`` reads ``false`` wherever
+    ``.theurian/state/active.json`` disagrees with the migrations while a
+    published build still matches them. Measured, three members -- the pointer is
+    missing (this test), the pointer is unreadable (the test below, which is the
+    member with no agreement to assert), or the pointer parses and names a
+    different state hash.
+
+    Deleting the pointer leaves the index genuinely current -- it was built from
+    the state hash the migrations still derive -- while canonical state has no
+    pointer at all. The old computation's ``active is None`` made that
+    ``indexStale: true``; the index's own verdict is ``false``, which is what
+    ``theurian index status`` has always answered here (``stale: false`` beside
+    ``knowledgeNotApplied: true``).
 
     Both are asserted, so this reads as the two surfaces agreeing rather than as
     a claim that ``false`` is the interesting answer: what the payload says about
@@ -1466,6 +1473,51 @@ def test_status_agrees_with_index_status_where_the_verdict_moved_the_other_way(
     assert status["activeStateHash"] is None, (
         "the missing state is reported by the fields that are about the state"
     )
+
+
+def test_status_is_the_only_surface_answering_over_an_unreadable_state_pointer(
+    project: Path,
+) -> None:
+    """The member of that class where there is no agreement to assert.
+
+    ``theurian index status`` reads the canonical pointer through ``_read_active``,
+    which converts an unreadable one into ``{error, remedy}`` and exits 1 -- so
+    it publishes no ``stale`` at all here, and the two surfaces cannot be
+    compared. ``project status`` reads the same file through its own guarded
+    read and keeps its exit-0 contract, which is why it is the only surface
+    answering, and why the CHANGELOG says so rather than claiming agreement it
+    cannot have.
+
+    What it answers is about the *index*, which is current: the state pointer's
+    condition is carried by ``statePointerCorrupt`` and ``reason`` beside it, and
+    both are asserted so that a ``false`` here can never be read as silence about
+    the file.
+
+    Raw text is the spelling used because all four measure the same on this
+    surface except one: a pointer holding a bare JSON array (``[]``) escapes
+    ``read_active_state``'s conversion as a ``TypeError`` from
+    ``ActiveState.from_json``, crashing *both* commands. That is a pre-existing
+    defect of the canonical pointer's reader -- unchanged on this branch, and the
+    twin of the ``active-index.json`` refusal fixed above -- not something this
+    test may quietly depend on.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0
+    assert _invoke("index", "build")[0] == 0
+    (project / ".theurian/state/active.json").write_text("not json at all")
+
+    code, status = _invoke("project", "status")
+    index_code, _ = _invoke("index", "status")
+
+    assert index_code == 1, "the surface that refuses this state must go on refusing it"
+    assert code == 0, "and the surface that answers it must go on answering"
+    assert status["indexStale"] is False, "the published build still matches the migrations"
+    assert status["statePointerCorrupt"] is True, (
+        "the state pointer's condition is not silence -- it is the field named for it"
+    )
+    assert status["reason"], "and the reason travels with it"
 
 
 def test_unregister_does_not_refuse_an_id_for_its_shape(project: Path) -> None:
