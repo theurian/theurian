@@ -185,8 +185,8 @@ So weigh the review before dispatching it, not after:
 | Behaviour a trier runs, but no disclosure surface | Code review, plus adversarial only for the claims table below |
 | Prose, process guidance, CI plumbing, mechanical moves — wrong means "misleading, revertible" | One light pass (code review alone), same day, no round structure |
 
-Light-class issues are harvested in batches: 5–10 per PR under one light pass,
-which merges in ~84 minutes where a full round takes a day.
+Light-class issues are harvested 5–10 per PR under one light pass — a sweep is
+one topic, not a carve-out — merging in ~84 minutes where a full round takes a day.
 
 The routing table below decides who reviews a *claim*; this table decides how
 much apparatus a *change* gets. When the two disagree, the claims table wins —
