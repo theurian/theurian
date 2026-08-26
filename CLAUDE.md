@@ -715,11 +715,12 @@ is not "be careful":
   omitted `--port`, and such a run lands on 7419, not 7420 — so no output from
   either line means free. **Once a resident dogfood daemon owns 7419**, that
   line stops reading "free" and starts reading "the resident one, not mine", so
-  only the first line answers "is the thing under test gone". From that point
-  the six commands that take `--port` (`setup`, `doctor`, `uninstall`,
-  `auth rotate`, `daemon start`, `daemon status`) each need `--port 7420`, or
-  they describe or act on the resident daemon while reading as if they described
-  the thing under test. `uninstall` is the one that bites, since `--dry-run` is
+  only the first line answers "is the thing under test gone". Either way the six
+  commands that take `--port` (`setup`, `doctor`, `uninstall`, `auth rotate`,
+  `daemon start`, `daemon status`) each need `--port 7420`; once a resident
+  daemon owns 7419, omitting it no longer merely muddies the check — the command
+  describes or acts on the resident daemon while reading as if it described the
+  thing under test. `uninstall` is the one that bites, since `--dry-run` is
   mandated for it; `daemon stop` takes no `--port` at all, so a dev daemon is
   started with `--foreground` and stopped with Ctrl-C in its terminal. Full
   detail, table and re-count:

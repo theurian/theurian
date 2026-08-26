@@ -159,16 +159,17 @@ To test locally, point a marketplace at your checkout:
 
 ## Running the daemon on a development machine
 
-The `--port 7420` convention exists to keep a dev run clear of the maintainer
-machine's resident dogfood daemon; an environment without one can use the default
-`7419` directly.
+The `--port 7420` convention below is for runs on the maintainer machine, which
+keeps a resident dogfood daemon on the default `7419`. A contributor machine
+without one has nothing to avoid, but the same convention keeps a stray run
+detectable, so these instructions assume it.
 
-Dev-time daemon runs take `--port 7420`, leaving the default `7419` for a
-resident dogfood daemon. While no resident daemon exists, anything answering on
-7419 is an accident; once one owns 7419, every CLI command below defaults to it,
-so a dev invocation must pass `--port 7420` or it will describe — or act on — the
-resident daemon instead. Six commands default to 7419 (verified against source
-and the released dev7 wheel's `--help`, 2026-08-20):
+On the maintainer machine, dev-time daemon runs take `--port 7420`, leaving the
+default `7419` for the resident dogfood daemon. While no resident daemon exists,
+anything answering on 7419 is an accident; once one owns 7419, every CLI command
+below defaults to it, so a dev invocation must pass `--port 7420` or it will
+describe — or act on — the resident daemon instead. Six commands default to 7419
+(verified against source and the released dev7 wheel's `--help`, 2026-08-20):
 
 | Command | Symbol | Where the 7419 default comes from |
 | :-- | :-- | :-- |

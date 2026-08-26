@@ -20,7 +20,8 @@ confirm it fails, and revert.** Report that you did it. If a test survives its
 subject being broken, the test is wrong, not the mutation.
 
 **Mutation runs get their own tree.** `tools/mutate.py` copies the checkout;
-never break-and-revert inside a tree another agent is editing.
+never break-and-revert inside a tree another agent is editing, and never clean a
+mutation up with `git checkout --` in a tree holding uncommitted work.
 
 Watch for assertions that hold regardless of the implementation:
 
