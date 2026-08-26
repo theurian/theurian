@@ -24,7 +24,8 @@ from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from migration_fixtures import UNREACHED_BODY_PIN, body_pin
 from typer.testing import CliRunner
 
-from theurian.application.project_service import ProjectError, ProjectRegistry
+from theurian.application.project_service import ProjectError, ProjectPaths, ProjectRegistry
+from theurian.cli.index_status_report import index_staleness
 from theurian.cli.main import app
 from theurian.domain.errors import MigrationError
 
@@ -1295,27 +1296,74 @@ def _purge_failed(root: Path) -> None:
     _edit_index_pointer(root, purgeFailed=True)
 
 
+def _purge_failed_as_a_truthy_string(root: Path) -> None:
+    """The same taint written as ``"false"``, which is a *truthy* string.
+
+    The pointer is derived and unsigned (SEC-7), so any value a hand edit or a
+    half-written generator leaves under the key is what arrives -- and the
+    verdict reads it the way the serve path's own ``if published.get(
+    "purgeFailed")`` reads it, by truthiness rather than ``is True``. Narrowing
+    it to ``is True`` survives every other test in this file: this is the input
+    that tells the two readings apart, and it is the direction that matters,
+    because the safe answer for an unparseable taint is "stale".
+    """
+    assert _invoke("index", "build")[0] == 0
+    _edit_index_pointer(root, purgeFailed="false")
+
+
+#: The remedy `theurian index build` prints for a build that is simply behind.
+#: The period is load-bearing: the orphaned arm says "Run `theurian index
+#: build`;" and the purge-failed arm "Run `theurian index build` to produce a
+#: clean build", so this string is a substring of neither.
+_PLAIN_REBUILD = "Run `theurian index build`."
+
+#: A phrase from the orphaned arm and from no other.
+_ORPHANED_PHRASE = "different project id"
+
+#: A phrase from the purge-failed arm and from no other -- the same one
+#: ``tests/unit/test_index_status_remedy.py`` holds that arm to.
+_PURGE_FAILED_PHRASE = "the purge that follows a withdrawal did not complete"
+
+
 @pytest.mark.parametrize(
-    ("prepare", "axis"),
+    ("prepare", "axis", "remedy_phrase"),
     [
-        pytest.param(_never_built, "no published build", id="never-built"),
-        pytest.param(_state_hash_behind, "the build's state hash", id="state-hash-behind"),
-        pytest.param(_orphaned, "another project's id", id="orphaned"),
-        pytest.param(_purge_failed, "a failed withdrawal purge", id="purge-failed"),
+        pytest.param(_never_built, "no published build", _PLAIN_REBUILD, id="never-built"),
+        pytest.param(
+            _state_hash_behind, "the build's state hash", _PLAIN_REBUILD, id="state-hash-behind"
+        ),
+        pytest.param(_orphaned, "another project's id", _ORPHANED_PHRASE, id="orphaned"),
+        pytest.param(
+            _purge_failed, "a failed withdrawal purge", _PURGE_FAILED_PHRASE, id="purge-failed"
+        ),
+        pytest.param(
+            _purge_failed_as_a_truthy_string,
+            "a taint written as a truthy string",
+            _PURGE_FAILED_PHRASE,
+            id="purge-failed-truthy-string",
+        ),
     ],
 )
 def test_status_reports_the_index_stale_on_every_axis_index_status_recognises(
-    project: Path, prepare: Any, axis: str
+    project: Path, prepare: Any, axis: str, remedy_phrase: str
 ) -> None:
     """Issue #100, AC-5 and AC-6: one staleness verdict, two surfaces.
 
-    ``never-built`` is the reproduction the issue names, and the other three are
-    the axes that live in the index pointer -- a file the old computation never
+    ``never-built`` is the reproduction the issue names, and the rest are the
+    axes that live in the index pointer -- a file the old computation never
     opened. ``state-hash-behind`` is the one that shows *why* reading the
     canonical pointer instead is not merely narrow but inverted: applying the
     second migration makes ``active.state_hash == context.state_hash`` again, so
     the old expression answered ``false`` at the exact moment the published build
     fell a migration behind.
+
+    Each case asserts the *distinctive* remedy as well as the verdict, and that
+    is not decoration. ``IndexStaleness`` now carries ``orphaned`` and
+    ``purge_failed`` to ``remedy_for`` as fields, and mutants forcing either to
+    ``False`` -- at the dataclass or at the call site -- left the shipped
+    remedies degraded to the plain rebuild while every assertion in this file
+    passed. The phrases above are substrings of one arm each, so a degraded
+    remedy is a failure and not a silence.
     """
     _invoke("init")
     _invoke("project", "register")
@@ -1336,6 +1384,10 @@ def test_status_reports_the_index_stale_on_every_axis_index_status_recognises(
     )
     assert status["indexStale"] == index_status["stale"], (
         "both commands answer one fact and must not compute it twice"
+    )
+    assert remedy_phrase in index_status["remedy"], (
+        f"the remedy for {axis} degraded to a message that does not name it: "
+        f"{index_status['remedy']!r}"
     )
 
 
@@ -1518,6 +1570,86 @@ def test_status_is_the_only_surface_answering_over_an_unreadable_state_pointer(
         "the state pointer's condition is not silence -- it is the field named for it"
     )
     assert status["reason"], "and the reason travels with it"
+
+
+#: Every key ``theurian index status`` publishes, and the whole of it.
+#:
+#: Frozen for the reason :data:`_PUBLISHED_VALIDATE_KEYS` below is: this payload
+#: is a published contract, and a key appearing or disappearing is a decision
+#: somebody takes here rather than a diff somebody misses. Recorded now because
+#: nothing held it before -- the command's payload was rebuilt out of a shared
+#: function (issue #100), and a refactor that silently dropped a key would have
+#: had nothing to fail against.
+_PUBLISHED_INDEX_STATUS_KEYS = frozenset(
+    {
+        "built",
+        "indexPointerCorrupt",
+        "indexBuildId",
+        "indexStateHash",
+        "indexProjectId",
+        "indexSchemaVersion",
+        "expectedIndexSchemaVersion",
+        "orphaned",
+        "purgeFailed",
+        "servedSensitivities",
+        "indexedSensitivities",
+        "profileMismatch",
+        "profileUnrecorded",
+        "profileUnreadable",
+        "builtStateHash",
+        "currentStateHash",
+        "projectId",
+        "stale",
+        "knowledgeNotApplied",
+        "remedy",
+    }
+)
+
+#: The six ``index_status`` writes itself, beside ``**index.payload``. Everything
+#: else in the set above comes from the shared function.
+_INDEX_STATUS_OWN_KEYS = frozenset(
+    {"builtStateHash", "currentStateHash", "projectId", "stale", "knowledgeNotApplied", "remedy"}
+)
+
+
+def test_index_status_publishes_exactly_the_recorded_key_set(project: Path) -> None:
+    """The contract pin, and the disjointness the merge depends on.
+
+    Two assertions, because the equality alone cannot see the failure that
+    matters. ``index_status`` emits ``{**index.payload, <six literals>}``, and a
+    literal silently wins a collision: if the shared payload ever gained a key
+    named like one of the six, the literal would overwrite it, the count would
+    stay 20, and the key set would still match. The second assertion is what
+    sees it -- 20 keys out means the two sides contributed disjoint sets.
+
+    That is the recorded decision on the merge: it stays a plain expansion in
+    production, and disjointness is held here rather than by defensive code in a
+    status command that must never raise. The shared payload's keys are read
+    from the live function rather than listed again, so a key added there is
+    accounted for automatically and only a *collision* fails.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0
+    assert _invoke("index", "build")[0] == 0
+
+    code, payload = _invoke("index", "status")
+    shared = index_staleness(
+        ProjectPaths.of(project), project_id="demo", current_state_hash="unused-for-key-shape"
+    ).payload
+
+    assert code == 0, f"the fixture must build for this to be about keys: {payload}"
+    assert set(payload) == _PUBLISHED_INDEX_STATUS_KEYS, (
+        f"`theurian index status --json` publishes {sorted(payload)}, and this file records "
+        f"{sorted(_PUBLISHED_INDEX_STATUS_KEYS)}. Adding or removing a key is a contract "
+        f"change; make it here, in the same change that updates the CHANGELOG."
+    )
+    assert len(payload) == len(shared) + len(_INDEX_STATUS_OWN_KEYS), (
+        f"`index_status` merges {len(shared)} shared keys with {len(_INDEX_STATUS_OWN_KEYS)} of "
+        f"its own and published {len(payload)}, so the two sides collide and the literal won "
+        f"silently: {sorted(set(shared) & _INDEX_STATUS_OWN_KEYS)}"
+    )
 
 
 def test_unregister_does_not_refuse_an_id_for_its_shape(project: Path) -> None:
