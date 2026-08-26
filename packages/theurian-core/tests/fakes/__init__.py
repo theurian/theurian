@@ -6,6 +6,7 @@ Protocol and a conformance test asserts it.
 """
 
 from fakes.clock import FrozenClock
+from fakes.finding_source import FakeReviewFindingSource
 from fakes.ids import SeededIdGenerator
 from fakes.pages import truncating, whole
 from fakes.setup import FakeMcpConfig, FakeService
@@ -13,6 +14,7 @@ from fakes.store import InMemoryWriter
 
 __all__ = [
     "FakeMcpConfig",
+    "FakeReviewFindingSource",
     "FakeService",
     "FrozenClock",
     "InMemoryWriter",

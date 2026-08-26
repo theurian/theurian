@@ -1,0 +1,246 @@
+"""Review findings parsed from ``Review-Finding:`` commit trailers (ADR-0029).
+
+A finding is a *pre-classified, human-authored review record*: a reviewer and a
+severity drawn from closed vocabularies, plus a one-line summary a human wrote
+into a signed commit. It needs no LLM promotion gate to become structured
+(ADR-0029 decision 1, FR-V5), which is what makes it the git-native floor of the
+FR-V review-ingestion family.
+
+Three properties are load-bearing and are enforced here rather than left to the
+adapter that reads git:
+
+- **Only the two tokens are governed.** ``reviewer`` and ``severity`` are a
+  closed vocabulary the parser validates; a token outside it is a malformed
+  trailer, never a new value (decision 3). The narrow enums below are minted
+  *beside* the record on purpose -- ``ReviewCommentCategory`` and
+  ``ReviewThreadState`` are a different FR-V2 taxonomy whose values do not
+  coincide with the trailer's, so reusing one would couple this vocabulary to a
+  consumer that drifts independently.
+- **The finding text is untrusted content** (decision 3): it is authored commit
+  free text, byte-preserved verbatim, and the record types it as opaque. It is
+  never parsed for structure -- in particular ``family`` and ``specialist`` are
+  *derived* in a later slice, never read out of the text, which is why a text
+  literally containing ``family=X`` still leaves that field unset (decision 1).
+- **Provenance is a ``SourceAnchor``** (FR-S3): ``provider`` is fixed ``git`` and
+  ``commit_sha`` pins the commit the trailer was read from, so the record reaches
+  an immutable object rather than a mutable branch.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import StrEnum
+from typing import Final
+
+from theurian.domain.errors import DomainError
+from theurian.domain.knowledge import SourceAnchor
+
+#: The trailer key. A body line that does not begin with it is not a finding.
+TRAILER_KEY: Final = "Review-Finding:"
+
+#: The separator between the two governed tokens and the free-text finding:
+#: SPACE, EM DASH (U+2014), SPACE. Pinned as a wire contract (ADR-0029 decision
+#: 2) -- 38 lines are already frozen in signed history, so a change to it is a
+#: breaking change with a migration cost, not a parser convenience.
+SEPARATOR: Final = " — "
+
+#: The PR number GitHub appends when it squash-merges is the *trailing* ``(#N)``.
+#: A non-trailing ``(#N)`` is an issue reference, not the PR (decision 1's
+#: MEDIUM-2 fix): six of the last forty subjects on ``main`` carry two, e.g.
+#: ``... (#349) (#363)`` where ``#349`` is the issue and ``#363`` the PR. The
+#: ``$`` anchors to the trailing token so a first-match cannot take the issue.
+_TRAILING_PR: Final = re.compile(r"\(#(\d+)\)\s*$")
+
+
+class ReviewerToken(StrEnum):
+    """The review agent that authored a finding -- a closed vocabulary (decision 2).
+
+    Minted here rather than reusing a shared enum: no existing closed vocabulary
+    carries these three values.
+    """
+
+    CODE_REVIEW = "code-review"
+    SECURITY = "security"
+    ADVERSARIAL = "adversarial"
+
+
+class FindingSeverity(StrEnum):
+    """A finding's severity -- the four-value scale (decision 2).
+
+    The values are the uppercase tokens the trailer carries, so
+    ``FindingSeverity(token)`` validates the wire form directly.
+    """
+
+    CRITICAL = "CRITICAL"
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
+class MalformedTrailerError(DomainError):
+    """A ``Review-Finding:`` trailer does not satisfy the normative grammar.
+
+    Raised rather than coerced: a first token that is not one of the three
+    reviewers, or a second that is not one of the four severities, is a malformed
+    trailer and never a new value (ADR-0029 decision 3). Refusing keeps the
+    governed vocabulary closed, which is the property the trust boundary rests on.
+
+    Carries the offending line and the reason so a reader can locate it, and a
+    remedy naming the grammar. The line is a committed trailer frozen in signed
+    history, so the remedy names the shape the parser expects rather than an edit
+    to history that cannot be made.
+    """
+
+    def __init__(self, line: str, reason: str) -> None:
+        self.line = line
+        self.reason = reason
+        self.remedy = (
+            "A Review-Finding trailer is "
+            "'Review-Finding: <reviewer> — <SEVERITY> — <finding>' with "
+            "reviewer one of code-review/security/adversarial, severity one of "
+            "CRITICAL/HIGH/MEDIUM/LOW, and the separator a spaced em dash."
+        )
+        super().__init__(f"Malformed Review-Finding trailer ({reason}): {line!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewFinding:
+    """A canonical review finding parsed from one commit trailer (decision 1).
+
+    The mapping from trailer to record is total: every element the grammar
+    carries maps to a named field, and the two fields the trailer does *not*
+    carry -- ``family`` and ``specialist`` -- are derived in a later slice and
+    left unset here rather than guessed from the untrusted text.
+    """
+
+    reviewer: ReviewerToken
+    severity: FindingSeverity
+    #: Untrusted authored content (decision 3), byte-preserved from the trailer.
+    finding_text: str
+    #: Provenance (FR-S3): ``provider == "git"`` and a non-null ``commit_sha``.
+    anchor: SourceAnchor
+    #: The trailing ``(#N)`` on the squash-merge subject, or ``None`` when the
+    #: subject carries no trailing PR token (e.g. a non-squash commit).
+    pull_request: int | None
+    #: The commit date, timezone-aware so a validity window is never silently
+    #: shifted by a missing offset (the DTZ discipline this codebase enforces).
+    date: datetime
+    #: Derived by classification in a later slice (decision 4); never parsed from
+    #: ``finding_text``. Unset in the parse-only slice.
+    family: str | None = field(default=None)
+    #: Derived from the fix commit's changed-file set in a later slice; never
+    #: parsed from ``finding_text``. Unset in the parse-only slice.
+    specialist: str | None = field(default=None)
+
+    def __post_init__(self) -> None:
+        if self.anchor.provider != "git":
+            raise DomainError(f"ReviewFinding provenance must be git, got {self.anchor.provider!r}")
+        if self.anchor.commit_sha is None:
+            raise DomainError("ReviewFinding must anchor to a commit, but commit_sha is missing")
+        if not self.finding_text:
+            raise DomainError("ReviewFinding.finding_text must not be empty")
+        if self.date.tzinfo is None:
+            raise DomainError("ReviewFinding.date must be timezone-aware")
+
+    @property
+    def provider(self) -> str:
+        """The fixed ``git`` provider, read through the anchor (decision 1)."""
+        return self.anchor.provider
+
+    @property
+    def commit_sha(self) -> str:
+        """The commit the trailer was parsed from (decision 1)."""
+        sha = self.anchor.commit_sha
+        if sha is None:  # pragma: no cover - forbidden by __post_init__
+            raise DomainError("ReviewFinding anchor lost its commit sha")
+        return sha
+
+
+def _reviewer(token: str, *, line: str) -> ReviewerToken:
+    try:
+        return ReviewerToken(token)
+    except ValueError as exc:
+        expected = ", ".join(r.value for r in ReviewerToken)
+        raise MalformedTrailerError(
+            line, f"unknown reviewer {token!r}; expected one of {expected}"
+        ) from exc
+
+
+def _severity(token: str, *, line: str) -> FindingSeverity:
+    try:
+        return FindingSeverity(token)
+    except ValueError as exc:
+        expected = ", ".join(s.value for s in FindingSeverity)
+        raise MalformedTrailerError(
+            line, f"unknown severity {token!r}; expected one of {expected}"
+        ) from exc
+
+
+def parse_trailer_line(line: str) -> tuple[ReviewerToken, FindingSeverity, str]:
+    """Split one trailer line into its governed tokens and its opaque text.
+
+    The remainder after the *first* separator is the finding text, returned
+    byte-for-byte: a finding that itself contains a spaced em dash keeps it,
+    because the split is on the first occurrence only (decision 2, the finding is
+    opaque free text to end of line).
+
+    Raises:
+        MalformedTrailerError: if the key is absent, the separator is missing, the
+            prefix is not exactly two space-separated tokens, either token is
+            outside its closed vocabulary, or the finding text is empty.
+    """
+    if not line.startswith(TRAILER_KEY):
+        raise MalformedTrailerError(line, "does not begin with the Review-Finding key")
+    remainder = line[len(TRAILER_KEY) :]
+    # Exactly one ASCII space follows the key by the grammar; consume it without
+    # stripping, so nothing in the finding text is lost.
+    if remainder.startswith(" "):
+        remainder = remainder[1:]
+
+    prefix, sep, finding_text = remainder.partition(SEPARATOR)
+    if not sep:
+        raise MalformedTrailerError(line, "missing the ' — ' separator (space, em dash, space)")
+    if not finding_text:
+        raise MalformedTrailerError(line, "carries no finding text after the separator")
+
+    tokens = prefix.split(" ")
+    if len(tokens) != 2:  # noqa: PLR2004 - the grammar is <reviewer> SP <SEVERITY>
+        raise MalformedTrailerError(
+            line, f"expected '<reviewer> <SEVERITY>' before the separator, got {prefix!r}"
+        )
+    return _reviewer(tokens[0], line=line), _severity(tokens[1], line=line), finding_text
+
+
+def pull_request_from_subject(subject: str) -> int | None:
+    """The PR number from a squash-merge subject's *trailing* ``(#N)``.
+
+    Returns ``None`` when the subject carries no trailing PR token. A ``(#N)``
+    that is not the last token is an issue reference and is deliberately ignored,
+    so ``... (#349) (#363)`` yields ``363`` (the PR), never ``349`` (the issue).
+    """
+    match = _TRAILING_PR.search(subject)
+    return int(match.group(1)) if match else None
+
+
+def finding_from_trailer(
+    line: str, *, commit_sha: str, committed_at: datetime, subject: str
+) -> ReviewFinding:
+    """Assemble a :class:`ReviewFinding` from a trailer line and its commit context.
+
+    Pure: the git I/O that produces ``commit_sha``, ``committed_at`` and
+    ``subject`` lives in the infrastructure adapter, so the whole grammar and
+    derivation is unit-testable without a repository. ``family`` and
+    ``specialist`` are left unset -- they are derived later, never read from
+    ``line`` (decision 1).
+    """
+    reviewer, severity, finding_text = parse_trailer_line(line)
+    return ReviewFinding(
+        reviewer=reviewer,
+        severity=severity,
+        finding_text=finding_text,
+        anchor=SourceAnchor(provider="git", source_uri=commit_sha, commit_sha=commit_sha),
+        pull_request=pull_request_from_subject(subject),
+        date=committed_at,
+    )

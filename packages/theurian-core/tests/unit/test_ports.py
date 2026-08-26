@@ -32,6 +32,13 @@ from theurian.domain import ports
 #: stops a port being added without an ADR; it does nothing about a port that
 #: exists, is imported by the application layer, and is absent from the list --
 #: for which every check here is silently vacuous rather than failing.
+#:
+#: ``ReviewFindingSource`` was added by ADR-0029: the FR-S1 Git-commit-metadata
+#: arm reads ``Review-Finding:`` trailers into canonical records. It is a genuine
+#: new abstraction rather than a registration -- the ``SourceParser`` port maps
+#: one file to one document by media type and cannot express a ``git log`` read
+#: that yields many findings across many commits -- so it lands with its driving
+#: ADR, exactly the deliberate-decision path this list gates.
 EXPECTED_PORTS = frozenset(
     {
         "AuthorizationProvider",
@@ -43,6 +50,7 @@ EXPECTED_PORTS = frozenset(
         "IndexStore",
         "ObjectStore",
         "RerankingProvider",
+        "ReviewFindingSource",
         "ReviewProvider",
         "SecretStore",
         "SourceParser",
