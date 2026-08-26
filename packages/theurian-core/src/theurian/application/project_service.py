@@ -144,9 +144,20 @@ def entry_root(entry: object) -> Path | None:
     a ``rootPath`` the same way :meth:`ids_for_root` does or the two commands
     answer differently about one file.
 
-    ``""`` is rejected as firmly as a missing key. ``Path("").resolve()`` is the
-    *calling process's* current working directory, so an entry holding it would
-    match whichever directory a command happened to run from.
+    **A relative ``rootPath`` is rejected as firmly as a missing key, and ``""``
+    is only its shortest spelling.** ``Path("").resolve()`` is the *calling
+    process's* current working directory -- and so is ``Path(".").resolve()``,
+    ``Path("./").resolve()`` and ``Path("demo/../.").resolve()``, none of which
+    the blank test caught. An entry holding one matches whichever directory a
+    command happened to run from: measured against a registry hand-edited to
+    ``"rootPath": "."``, two unrelated repositories both reported
+    ``registered: true`` under that single entry's id, each answering as a
+    project it had nothing to do with -- :meth:`id_for_root`'s misrouting,
+    arriving through the file rather than through the directory-name fallback.
+    Nothing legitimate is refused by this: ``register`` writes
+    ``str(context.paths.root)`` and :class:`Project` rejects a ``root_path``
+    that is not absolute at construction, so a relative one can only be a hand
+    edit.
 
     **Resolved here rather than by each caller, which is the third way an entry
     can name no root.** ``Path.resolve`` raises ``ValueError`` on an embedded NUL
@@ -165,8 +176,13 @@ def entry_root(entry: object) -> Path | None:
     root_path = entry.get("rootPath")
     if not isinstance(root_path, str) or not root_path.strip():
         return None
+    candidate = Path(root_path)
+    # Before `resolve()`, which is what would silently supply the missing half
+    # from the working directory rather than refusing.
+    if not candidate.is_absolute():
+        return None
     try:
-        return Path(root_path).resolve()
+        return candidate.resolve()
     except (ValueError, OSError):
         return None
 

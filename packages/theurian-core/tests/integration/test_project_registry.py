@@ -1002,7 +1002,7 @@ async def test_the_daemon_keeps_serving_a_readable_project_beside_a_broken_entry
 
 
 def test_every_id_in_the_file_is_either_loaded_or_reported_unreadable(machine: Path) -> None:
-    """The invariant behind folding the predicate into ``_entry_root_path``.
+    """The invariant behind folding the predicate into ``entry_root``.
 
     `load` and `unreadable_ids` partition the same file, and the two sets have
     to be exact complements in both directions. An id in neither is a project
@@ -1017,6 +1017,12 @@ def test_every_id_in_the_file_is_either_loaded_or_reported_unreadable(machine: P
     written to the file in deliberately unsorted order, because `unreadable_ids`
     reaches a command the user retypes and JSON-file order would read
     differently on two machines holding the same registry.
+
+    The last two shapes are the ones `entry_root` handles after it has decided
+    the field is a non-empty string, and both were claimed by the docstring's
+    "every shape a hand edit leaves" without being written here: a path the
+    platform refuses to turn into one (an embedded NUL), and a path that is
+    merely relative. Deleting either guard used to leave this test green.
     """
     registry = ProjectRegistry.default(machine / "datadir")
     registry.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1030,6 +1036,8 @@ def test_every_id_in_the_file_is_either_loaded_or_reported_unreadable(machine: P
         "entry-is-a-string": str(machine),
         "entry-is-a-list": [str(machine)],
         "entry-is-null": None,
+        "nul-in-root": {"rootPath": f"{machine}/\x00nul"},
+        "relative-root": {"rootPath": "."},
         "another-readable": {"rootPath": str(machine / "team-two" / "api")},
     }
     registry.path.write_text(json.dumps(raw), encoding="utf-8")
@@ -1044,9 +1052,47 @@ def test_every_id_in_the_file_is_either_loaded_or_reported_unreadable(machine: P
         "entry-is-a-list",
         "entry-is-a-string",
         "entry-is-null",
+        "nul-in-root",
         "null-root",
         "numeric-root",
+        "relative-root",
         "zebra-no-root-key",
     ), "reported in a stable order, and every shape a hand edit leaves is one of them"
     assert loaded.isdisjoint(unreadable), "no id is both listed and named for deletion"
     assert loaded | set(unreadable) == set(raw), "no id disappears from both surfaces"
+
+
+def test_a_relative_root_path_does_not_register_whichever_directory_asks(machine: Path) -> None:
+    """The defect `entry_root`'s rejection of ``""`` names, reached by a second road.
+
+    ``Path("").resolve()`` is the calling process's working directory, and so is
+    ``Path(".").resolve()`` -- the docstring rejected the first spelling and let
+    the second through. Measured before the guard: a single hand-edited
+    ``"rootPath": "."`` made *every* repository on the machine report
+    ``registered: true`` under that one entry's id, each one answering as a
+    project it has nothing to do with. That is `id_for_root`'s misrouting
+    arriving through the registry file itself.
+
+    Two unrelated working trees are used rather than one, because a single repo
+    cannot tell "this entry matches me" from "this entry matches whoever asks".
+    """
+    registry = ProjectRegistry.default(machine / "datadir")
+    registry.path.parent.mkdir(parents=True, exist_ok=True)
+    registry.path.write_text(
+        json.dumps({"ghost": {"rootPath": ".", "defaultBranch": "main"}}), encoding="utf-8"
+    )
+    first = _repo(machine, "team-one")
+    second = _repo(machine, "team-two")
+
+    for root in (first, second):
+        _, status = _in(root, "project", "status")
+        assert status["registered"] is None, (
+            f"{root} is not registered, and an entry that names no root cannot say it is"
+        )
+        # `.get`, because the entry being unreadable is what makes `ids_for_root`
+        # refuse, so this is the unresolved payload and carries no `projectId` at
+        # all. Either way the id must not be handed over.
+        assert status.get("projectId") != "ghost", "nor may it hand over another entry's id"
+
+    _, listed = _in(first, "project", "list")
+    assert listed["unreadable"] == ["ghost"], "the entry to remove is named, not silently dropped"
