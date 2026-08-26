@@ -80,6 +80,33 @@ def test_the_code_alias_normalises_to_code_review() -> None:
     assert text == "a finding"
 
 
+@pytest.mark.parametrize(
+    "token",
+    [
+        "codex",  # shares the 'code' prefix; a prefix/substring match would widen
+        "codereview",  # a substring superset; must not match by containment
+        "Code",  # a case variant; a case-fold alias would widen
+        "CODE",  # a case variant; a case-fold alias would widen
+        "code-reviewer",  # a plausible-but-wrong spelling of the reviewer
+        " code",  # leading space; the alias is the exact token, not a stripped one
+        "code ",  # trailing space; likewise
+        "\u0441ode",  # Cyrillic ES (U+0441) for the 'c': a homoglyph, a different token
+    ],
+)
+def test_the_code_alias_does_not_widen_acceptance(token: str) -> None:
+    """The ``code`` alias is one exact token, not a family of near-spellings.
+
+    Decision 2 admits the *exact* historical spelling ``code`` as a normalised
+    alias of ``code-review``; it does not open a case-insensitive, prefix, or
+    substring match. Each token here is one edit away from ``code`` and must still
+    be refused -- otherwise the closed vocabulary the trust boundary rests on
+    (decision 3) would have widened silently. This is the refuse edge that pins the
+    alias next to the accept edge above.
+    """
+    with pytest.raises(MalformedTrailerError):
+        parse_trailer_line(f"Review-Finding: {token} HIGH — text")
+
+
 def test_a_valid_token_where_a_refused_one_was_parses() -> None:
     """The control: the refusals above are about the token, not the line shape.
 
@@ -109,6 +136,19 @@ def test_a_valid_token_where_a_refused_one_was_parses() -> None:
 def test_structurally_malformed_lines_are_refused(line: str) -> None:
     with pytest.raises(MalformedTrailerError):
         parse_trailer_line(line)
+
+
+def test_a_double_space_after_the_key_is_malformed() -> None:
+    """Exactly one ASCII space follows the key; a second space is not consumed.
+
+    The parser consumes a single space after the key rather than left-stripping,
+    so a doubled space leaves an empty first token and the two-token prefix check
+    rejects the line. Pinning single-consume (not ``lstrip``) matters because the
+    finding text is byte-preserved: a left-strip that reached past the key is the
+    kind of quiet whitespace coercion the loss-free mapping (AC-1) forbids.
+    """
+    with pytest.raises(MalformedTrailerError):
+        parse_trailer_line("Review-Finding:  security HIGH — text")
 
 
 # --- AC-5: family/specialist are derived, never parsed ---------------------
@@ -151,6 +191,30 @@ def test_finding_text_preserves_trailing_and_internal_bytes() -> None:
 
 
 # --- the record's construction invariants (decision 1) ---------------------
+
+
+@pytest.mark.parametrize(
+    "sha",
+    [
+        "0123456789abcdef0123456789abcdef01234567",
+        "fedcba9876543210fedcba9876543210fedcba98",
+    ],
+)
+def test_the_source_uri_is_the_commit_sha_not_a_constant(sha: str) -> None:
+    """FR-S3: the anchor's ``source_uri`` is *this* commit's sha, not a fixed literal.
+
+    Two distinct shas are asserted so a mutation that pinned ``source_uri`` to any
+    constant (``"git"``, the empty-guarded key, an unrelated string) fails on at
+    least one -- the field is required to vary with the commit, not merely to be
+    present.
+    """
+    finding = finding_from_trailer(
+        "Review-Finding: security HIGH — a finding",
+        commit_sha=sha,
+        committed_at=_WHEN,
+    )
+    assert finding.anchor.source_uri == sha
+    assert finding.anchor.commit_sha == sha
 
 
 def test_a_finding_carries_provider_git_and_the_commit_sha() -> None:
