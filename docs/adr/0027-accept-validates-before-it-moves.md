@@ -502,8 +502,10 @@ one of its recorded residuals.
 > `evidence.json`, which `accept` still leaves in the directory it tells the
 > author to commit ([#361](https://github.com/theurian/theurian/issues/361)). The
 > filename channel is narrow by construction — a lower-case-kebab slug can spell
-> only `sk-` and `xox`, two of the five families — but the less-restricted
-> landed-path channel reaches all five. T-15 stays High: this widens the one gate
+> only `sk-` and `xox`, two of the detector's eight families — but the
+> less-restricted landed-path channel is not so limited: a path component admits
+> upper-case letters, digits and `_`, so every family the slug excludes can be
+> spelled and caught in one. T-15 stays High: this widens the one gate
 > of three that was already covered.
 
 **This is the first code in `src/` that reads `.theurian/config.yaml`.** Nothing
@@ -834,7 +836,9 @@ no finding location is built from scanned text. All in
   `::test_a_secret_in_the_migration_s_own_filename_is_refused_under_block`. Only
   two credential families can be spelled in a lower-case-kebab slug (`sk-` and
   `xox`), which is why the fixture is `sk-`-shaped; the less-restricted
-  landed-path channel reaches all five.
+  landed-path channel is not so limited, since a path component admits upper-case
+  letters, digits and `_` (measured 2026-08-26: seven families fire by name, and
+  a `google-api-key` shape is caught as `high-entropy-token`).
 - **Each landed body path**, directory components included:
   `::test_a_secret_in_a_landed_body_leaf_is_refused_under_block`,
   `::test_a_secret_in_a_landed_body_s_directory_component_is_refused_under_block`,
