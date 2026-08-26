@@ -487,19 +487,22 @@ class _RegistryRead:
     def failure_fields(self) -> dict[str, str]:
         """Why the registry could not be read and what cures it, or nothing.
 
-        Emitted beside a ``registered`` of ``None``, never alone: a payload that
-        says "cannot know" without saying why is a status a user cannot act on.
+        On the resolved branch of ``project status``, its only caller, this is
+        emitted beside a ``registered`` of ``None`` and never alone: a payload
+        that says "cannot know" without saying why is a status a user cannot act
+        on.
+
+        **The unresolved branch does not reach it**, so that pairing is a
+        property of one branch rather than of the field.
+        :func:`_unresolved_status` publishes ``exc``'s own ``reason`` and
+        ``remedy``, and a ``registered: null`` there arrives with the
+        *resolution* failure's prose beside it and nothing about the registry --
+        which is the gap, recorded rather than closed here because the cure is a
+        payload change and this is a docstring: issue #381.
 
         Not the only reason ``registered`` can be ``None`` -- see
         :meth:`holds_root`, whose other case is explained by the ``unreadable``
         list instead.
-
-        Not reached on the unresolved branch at all, despite the first
-        paragraph: :func:`_unresolved_status` publishes ``exc``'s own ``reason``
-        and ``remedy``, so a ``registered: null`` caused by an unreadable
-        registry arrives there with the *resolution* failure's prose beside it
-        and no hint about the registry. Recorded rather than fixed here, because
-        the cure is a payload change and this is a docstring: issue #381.
         """
         if self.failure is None:
             return {}
@@ -970,10 +973,12 @@ def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
     state pointer was read and no state hash was computed, and emitting either
     field would answer a question this branch never asked -- the same reason
     ``registered`` refuses to be ``False`` above. ``indexStale: false`` was
-    published for years and said "your index is up to date" about a directory
-    Theurian had not looked at; the two spellings are not interchangeable here,
-    because ``null`` is this payload's "asked, and the answer is unknowable"
-    (``registered`` on a registry nobody can read) and absence is "never asked".
+    published from Milestone 1 (introduced in ``5513d84``, 2026-08-02) until
+    ``2789ef9``, in every core release up to and including 0.1.0.dev11, and it
+    said "your index is up to date" about a directory Theurian had not looked
+    at. The two spellings are not interchangeable here, because ``null`` is this
+    payload's "asked, and the answer is unknowable" (``registered`` on a
+    registry nobody can read) and absence is "never asked".
     """
     payload: dict[str, Any] = {"registered": False, "reason": str(exc)}
     if exc.remedy:
@@ -998,9 +1003,13 @@ def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
         payload["registered"] = read.holds_root(root)
     # Stays a list even when the file did not parse, because a caller that
     # iterates it must not have to branch first. That the set of ids is *unknown*
-    # rather than empty is carried by `registered: None` and by `reason`, which
-    # is the registry's own refusal here: `resolve_context` consults the registry
-    # before it loads migrations, so a file-level failure is what raised above.
+    # rather than empty is carried by `registered: None`.
+    #
+    # Not by `reason`, which is `exc`'s and need not be about the registry at
+    # all: `resolve_context` loads and validates the migrations *before* it asks
+    # the registry which project this root is, so a broken migration raises first
+    # and this payload pairs a `registered: null` with migration prose. Issue
+    # #381 owns closing that; nothing here may be read as though it were closed.
     payload["unreadable"] = list(read.unreadable)
     return payload
 

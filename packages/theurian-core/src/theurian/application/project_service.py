@@ -131,18 +131,20 @@ def _registry_reset_remedy(path: Path) -> str:
 def entry_root(entry: object) -> Path | None:
     """The absolute root a raw registry entry names, or ``None`` if it names none.
 
-    One predicate in one place, because two readers partition the same file on
-    it and must never disagree: :meth:`ProjectRegistry.load`, which keeps the
-    entries that pass, and :meth:`ProjectRegistry.unreadable_ids`, which reports
-    the ids that do not. A second copy of this test would eventually admit an
-    entry ``load`` skips -- or skip one it admits -- and root resolution would go
-    back to guessing at the difference.
+    One predicate in one place, because readers that partition the same file on
+    it must never disagree: :meth:`ProjectRegistry.load` keeps the entries that
+    pass and :meth:`ProjectRegistry.unreadable_ids` reports the ids that do not,
+    so a second copy of this test would eventually admit an entry ``load`` skips
+    -- or skip one it admits -- and root resolution would go back to guessing at
+    the difference.
 
-    Public rather than module-private for a third reader outside this module:
-    ``theurian project status`` decides whether the registry holds *this* root
-    (``_RegistryRead.holds_root``, ``cli/commands.py``), and it has to normalise
-    a ``rootPath`` the same way :meth:`ids_for_root` does or the two commands
-    answer differently about one file.
+    Six call sites in five readers, measured with ``git grep -n 'entry_root('``
+    against ``ce14b6e``: those two, :meth:`ids_for_root` (twice, once per
+    refusal), :meth:`register`, and -- outside this module, which is why this is
+    public rather than module-private -- ``_RegistryRead.holds_root`` in
+    ``cli/commands.py``, where ``theurian project status`` decides whether the
+    registry holds *this* root. Re-count rather than trusting the number; it
+    rots on the next caller.
 
     **A relative ``rootPath`` is rejected as firmly as a missing key, and ``""``
     is only its shortest spelling.** ``Path("").resolve()`` is the *calling
