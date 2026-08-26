@@ -80,3 +80,11 @@ built state" for a project that had one. Reading is not verification.
 
 Never leave the working tree modified beyond the change you were asked for, and
 never commit unless asked.
+
+When you do commit, the scope is `[a-z-]+` — lowercase letters and hyphens only.
+The CI Conventional-Commits gate rejects a digit or `#` in the scope, so an
+issue or ADR number goes in the subject text or body, never the scope
+(`fix(mcp): … #382 …`, not `fix(#382): …`). Type is one of
+`feat|fix|refactor|docs|test|chore|perf|ci|build|revert`. Verify before pushing:
+pipe `git rev-list origin/main..HEAD --no-merges` subjects through that pattern —
+do not wait for the PR check.
