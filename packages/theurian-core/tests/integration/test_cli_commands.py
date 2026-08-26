@@ -1118,6 +1118,51 @@ def test_status_cannot_say_while_an_unusable_key_holds_an_entry_for_another_root
     assert status["unreadable"] == ["Team One/API"], "and the entry to remove is named"
 
 
+def test_the_resolved_branch_reaches_the_same_null_with_nothing_racing_it(
+    project: Path, registry_path: Path, tmp_path: Path
+) -> None:
+    """The same registry, one line lighter, and it is the *resolved* branch.
+
+    The claim this pins was made in a commit body and was wrong: that a resolved
+    payload can only meet an unreadable entry through the race between
+    ``resolve_context``'s registry read and this command's own, because
+    ``ids_for_root`` refuses on any unreadable entry. It does not refuse on this
+    one. It raises for an entry naming *no* root, and for an unusable id among
+    the entries naming *this* root -- and an unusable key over an absolute
+    ``rootPath`` pointing somewhere else is neither. ``unreadable_ids`` still
+    reports it, because ``load`` cannot hand out a key no consumer accepts.
+
+    So the resolved branch reaches ``registered: null`` deterministically, with
+    nothing racing anything, and this state is what proves it: the payload is
+    unmistakably the resolved shape -- ``projectId`` and ``root`` present and
+    correct -- while membership is withheld. Dropping the broader refusal would
+    make this ``true``, which is why it is asserted on this branch and not only
+    on the unresolved one above.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    entry = json.loads(registry_path.read_text())["demo"]
+    registry_path.write_text(
+        json.dumps(
+            {
+                "demo": entry,
+                "Team One/API": {"rootPath": str(tmp_path / "elsewhere"), "defaultBranch": "main"},
+            }
+        )
+    )
+
+    code, status = _invoke("project", "status")
+
+    assert code == 0
+    assert status["projectId"] == "demo", "this is the resolved payload, not the unresolved one"
+    assert "root" in status, "and it carries the resolved-only keys that say so"
+    assert status["registered"] is None, (
+        "the resolved branch withholds membership for the reason the unresolved one does, "
+        "and reaches it without a race"
+    )
+    assert status["unreadable"] == ["Team One/API"]
+
+
 def test_unregister_does_not_refuse_an_id_for_its_shape(project: Path) -> None:
     """The escape command has to be able to name what broke the registry.
 

@@ -518,8 +518,16 @@ class _RegistryRead:
         """Whether any entry registers this root, or ``None`` where it cannot say.
 
         **The single rule behind every ``registered`` field ``project status``
-        emits, on both of its branches.** It replaced a pair of id-keyed
-        answers, and each was wrong in its own direction.
+        emits from inside a Git working tree, on both of its branches.** Outside
+        one this is never called: :func:`_unresolved_status` short-circuits on
+        ``find_git_root`` and publishes the literal ``False`` it initialised the
+        payload with, because a directory in no working tree is not a project
+        whatever the registry says, and no entry could be about it -- so even a
+        registry that does not parse leaves that ``False`` standing. Every rule
+        below is a rule about the in-tree case.
+
+        It replaced a pair of id-keyed answers, and each was wrong in its own
+        direction.
 
         The unresolved branch asked "is *anything* registered?" -- there is no id
         to ask about when ``resolve_context`` has failed -- and a healthy
@@ -543,22 +551,42 @@ class _RegistryRead:
         ``Path(...).resolve()`` here: two surfaces deriving one fact separately
         is how they come to disagree about it.
 
-        **An unreadable entry overrules a match.** An entry ``load`` skips names
-        no root to compare against, so it cannot be ruled out as a *second*
-        registration of this same directory -- and answering ``True`` would
-        settle a question the missing field was the only thing that could have
-        settled. That is the refusal :meth:`ProjectRegistry.ids_for_root` makes,
-        for the same reason, and it is why it refuses every root rather than only
-        the plausible ones. An id-keyed rule had no equivalent: "is this id a key
-        of this file" stays decidable whatever else is wrong.
+        **An unreadable entry overrules a match**, of either kind
+        :meth:`ProjectRegistry.unreadable_ids` reports. One that names no root
+        cannot be compared against this one, so it cannot be ruled out as a
+        *second* registration of this same directory, and answering ``True``
+        would settle a question the missing field was the only thing that could
+        have settled -- the refusal :meth:`ProjectRegistry.ids_for_root` makes,
+        for the same reason, and why it refuses every root rather than only the
+        plausible ones. One keyed by an id no consumer accepts *does* name a
+        root, and this is deliberately broader there: ``ids_for_root`` can see
+        that such an entry belongs to some other directory, while
+        :attr:`entries` holds what ``load`` kept and ``load`` kept neither kind,
+        so there is nothing here to reason from. "Cannot say" about a partly
+        illegible registry is the conservative direction, and :attr:`unreadable`
+        names the entry to remove. An id-keyed rule had no equivalent of any of
+        this: "is this id a key of this file" stays decidable whatever else is
+        wrong.
 
-        Broader than that refusal in one case, deliberately: an entry keyed by
-        an id no consumer accepts is unreadable while still naming a root, so
-        ``ids_for_root`` can see that it belongs to some *other* directory and
-        this cannot -- :attr:`entries` holds what ``load`` kept, and ``load``
-        kept neither kind. "Cannot say" about a registry that is partly
-        illegible is the conservative direction, and :attr:`unreadable` names
-        the entry to remove.
+        **What that costs the resolved branch, which is more than a race.** A
+        commit body on this branch claimed a resolved payload could only meet an
+        unreadable entry through the window between ``resolve_context``'s
+        registry read and this command's own, since ``ids_for_root`` refuses on
+        any unreadable entry. It does not refuse on the second kind: an unusable
+        key over an absolute ``rootPath`` naming another directory is neither
+        rootless nor an unusable id among the entries naming *this* root, so
+        resolution succeeds and this returns ``None`` deterministically, with
+        ``projectId`` and ``root`` beside it. That is the design above, not an
+        accident, and it is pinned by
+        ``test_the_resolved_branch_reaches_the_same_null_with_nothing_racing_it``.
+
+        The race is real as well, and it does not only degrade toward ``None``:
+        a registration landing mid-window yields ``True`` here beside a
+        ``projectId`` derived before it existed. Both are the same property
+        stated once -- **this answers about the registry as of its own read,
+        while ``projectId`` and ``root`` describe resolution time** -- and the
+        two instants are not reconciled, deliberately: making them one read is a
+        change to ``resolve_context``'s contract, not to this method.
         """
         if self.failure is not None:
             return None
@@ -930,8 +958,8 @@ def _pointer_failure_fields(failure: TheurianError | None) -> dict[str, str]:
 
     The shape :attr:`_RegistryRead.failure_fields` uses, for the other file this
     command reads. Kept as a function rather than a second dataclass because the
-    pointer read has no equivalent of ``holds`` -- there is one value to lose and
-    no membership question to answer about it.
+    pointer read has no equivalent of :meth:`_RegistryRead.holds_root` -- there
+    is one value to lose and no membership question to answer about it.
     """
     if failure is None:
         return {}
@@ -1002,14 +1030,21 @@ def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
     if root is not None:
         payload["registered"] = read.holds_root(root)
     # Stays a list even when the file did not parse, because a caller that
-    # iterates it must not have to branch first. That the set of ids is *unknown*
-    # rather than empty is carried by `registered: None`.
+    # iterates it must not have to branch first. Inside a working tree, that the
+    # set of ids is *unknown* rather than empty is then carried by `registered:
+    # None` -- and only inside one: the branch above short-circuits outside a
+    # tree, so a corrupt registry there publishes an empty `unreadable` beside a
+    # literal `registered: false` and nothing in this payload says the file could
+    # not be read. That combination is honest about the directory (no entry could
+    # be about it) and silent about the file, and `theurian project list` is the
+    # surface that reports the file.
     #
-    # Not by `reason`, which is `exc`'s and need not be about the registry at
-    # all: `resolve_context` loads and validates the migrations *before* it asks
-    # the registry which project this root is, so a broken migration raises first
-    # and this payload pairs a `registered: null` with migration prose. Issue
-    # #381 owns closing that; nothing here may be read as though it were closed.
+    # `reason` does not carry it either: `reason` is `exc`'s and need not be
+    # about the registry at all, since `resolve_context` loads and validates the
+    # migrations *before* it asks the registry which project this root is, so a
+    # broken migration raises first and this payload pairs a `registered: null`
+    # with migration prose. Issue #381 owns closing that; nothing here may be
+    # read as though it were closed.
     payload["unreadable"] = list(read.unreadable)
     return payload
 
