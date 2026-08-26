@@ -146,7 +146,7 @@ def test_a_set_the_loader_accepts_and_a_guard_refuses_comes_back_as_a_failure(
 #: point the second migration's revision at the *same* file, which is what
 #: `refuse_duplicate_content_files` refuses (one file cannot back two revisions).
 _AUTH_POLICY_BODY = "../knowledge/architecture/auth-policy.md"
-_AUTH_POLICY_SHA = "9cfd9b19030da602ea3339ef6f65ac176ce776c0c467a98bf9d11639241dc69f"
+_AUTH_POLICY_SHA = "9cfd9b19030da602ea3339ef6f65ac176ce776c0c467a98bf9d11639241dc69f"  # gitleaks:allow - SHA-256 of a test content file, not a credential
 
 
 def test_a_duplicate_content_file_set_is_a_verdict_and_not_a_broken_probe(tmp_path: Path) -> None:
