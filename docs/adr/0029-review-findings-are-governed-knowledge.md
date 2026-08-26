@@ -287,7 +287,16 @@ is replaced by a **recurrence query over the ingested finding records**, keyed o
 **(family, specialist)**.
 
 - **Key:** `(family, specialist)`. **Input population:** the finding records of
-  decision 1.
+  decision 1 **that the embargo boundary (decision 6) allowed to be served** — the
+  count is computed over embargo-cleared (served) rows only. This is load-bearing
+  because the count `N` is itself a served value: a `(family, specialist)`
+  aggregate is a *statistic over rows the caller may not see*, so if a withheld
+  finding could move `N`, the aggregate would leak that finding's existence even
+  while decision 6 refused its content. Restricting the population to served rows
+  is what keeps `N` from varying with a withheld finding. On this ADR's source the
+  restriction is a no-op — only public `main` is ingested, so every ingested row
+  is already servable — but it is stated normatively so the property survives any
+  future non-public ingestion path.
 - **Given** N prior findings against specialist X on family Y, **When** a brief
   for X touches family Y, **Then** the query surfaces those prior findings at
   assignment time — the same knowledge the manual burn-in wrote into the agent
@@ -428,39 +437,81 @@ GHSA must not make this decision stale.
    one the finding is *against* is left to the implementation, which may keep all
    candidates rather than guess.
 
-## Closure argument: the served-finding path is not a disclosure channel
+## Closure argument: neither serving surface is a disclosure channel
 
-This ADR designs a future serving surface, so the disclosure families from the
-review-round table bind its closure argument. **Serving a review finding
-discloses nothing the caller may not already read**, and here is why, family by
-family:
+This ADR designs **two** future serving surfaces, so the disclosure families from
+the review-round table bind its closure argument on **both**:
 
-- **Another tool reaching withheld content.** A finding's `findingText` is a
-  human one-line *summary* authored into a public commit on `main`; it is not the
-  vulnerable pre-fix content. The `recorded-in` relation points at the fixing
-  commit, whose *post-fix* state is public and whose *pre-fix* vulnerable content
-  is fenced by the embargo policy (decision 6) and, structurally, never lands on
-  public `main`. So neither the text nor the relation reaches a body or field the
-  caller may not read.
-- **A published field varying with withheld content.** Every field of a finding
-  record — `reviewer`, `severity`, `findingText`, `commitSha`, `pullRequest`,
-  `date`, and the derived `family`/`specialist` — is a function of the **public
-  trailer plus public commit metadata**. None is computed from the still-withheld
-  pre-fix content, so no served field can vary with content the caller cannot
-  read.
-- **An error distinguishing embargoed-exists from does-not-exist.** Decision 6's
-  refusal is uniform: an embargoed finding and a nonexistent one produce the same
-  answer, so the serving path does not leak the existence of an embargoed finding.
-- **Authored text as an injection carrier (T-3).** `findingText` is served under
-  the SEC-15 safety triple (decision 3), so an instruction hidden in a finding's
-  text rides inside a result marked `mayContainInstructions: true`, exactly as a
-  knowledge body does.
+- **S1 — the per-record serve** of a finding record (decision 1): its fields
+  reach a caller.
+- **S2 — the recurrence aggregate** (decision 5): a `(family, specialist)` count
+  `N` reaches a caller.
 
-The single sentence that holds all four: **a finding record is a pure function of
-public git history — the trailers are on public `main`, the fix commits are
-public — and the only content that is withheld is the pre-fix vulnerable state,
-which the embargo policy and the private-fork discipline keep out of the source
-this path ingests.**
+A field-by-field argument over S1 alone does not close the design, because it
+never reaches S2's aggregate — an aggregate is a *statistic over rows the caller
+may not see*, family #4, and that family is where the earlier "every field of a
+record is a function of public metadata" argument fell short. So the eight
+observable families are evaluated over both surfaces below, each line marked with
+the surface it touches or the reason it is N/A for a read-only record derived from
+public git metadata:
+
+1. **A published field.** *(S1)* Every field of a finding record — `reviewer`,
+   `severity`, `findingText`, `commitSha`, `pullRequest`, `date`, and the derived
+   `family`/`specialist` — is a function of **public inputs only** (the public
+   trailer plus public commit metadata). None is computed from still-withheld
+   pre-fix content, so no served field varies with content the caller cannot read.
+2. **Which rows, or which part of a row, reached a field.** *(S1 + assignment-time
+   retrieval)* The record has no excerpt-selection or candidate-displacement step:
+   it publishes named fields verbatim, so there is no "which part of a row" choice
+   to leak. Which *findings* a decision-5 brief query returns is drawn from the
+   served/embargo-cleared population only, so a withheld finding cannot take a
+   candidate slot in the returned set.
+3. **A duration.** *(N/A, with reason)* The design specifies no path whose latency
+   varies with withheld content: the source is a batch parse of public git history
+   and no served value's timing is documented to depend on a withheld row. A
+   future serving path that adds a per-query timing surface inherits the T-17-class
+   timing residual on that path, not on this record.
+4. **A statistic over rows the caller may not see.** *(S2)* The recurrence count
+   `N` is this family. It is closed by restricting the recurrence population to
+   embargo-cleared (served) rows (decision 5), so `N` cannot vary with a withheld
+   finding's existence.
+5. **An error that fires for one input and not another.** *(owed to the future
+   non-public path)* On this ADR's source, structurally no embargoed finding
+   exists to refuse (only public `main` is ingested), so the "embargoed-exists vs
+   does-not-exist" distinction cannot arise here. The uniform-refusal requirement
+   that removes it is owed to any future non-public ingestion path (decision 6).
+6. **A resource the query consumes.** *(N/A, with reason)* Serving a parsed record,
+   or an aggregate over served rows, from public git metadata consumes no per-query
+   resource whose magnitude reveals a withheld row — there is none in the source to
+   reveal.
+7. **Another tool reaching the same content.** *(S1)* A finding's `findingText` is
+   a human one-line *summary* authored into a public commit on `main`; it is not
+   the pre-fix vulnerable content. The `recorded-in` relation points at the fixing
+   commit, whose *post-fix* state is public and whose *pre-fix* vulnerable content
+   never lands on public `main` (decision 6). So neither the text nor the relation,
+   reached through any tool, discloses a body or field the caller may not read.
+8. **State, lifecycle, and concurrency artefacts.** *(N/A, deferred to the store's
+   controls)* This ADR designs no index files, active pointer, or rebuild
+   concurrency of its own: the parsed records are Canonical (decision 4) and any
+   served or index artefact is rebuildable-derived (ADR-0010), inheriting the
+   store's existing lifecycle controls. ADR-0022 governs the search/rebuild race,
+   not this ADR.
+
+Beyond the eight, **authored text as an injection carrier (T-3)**: `findingText` is
+served under the SEC-15 safety triple (decision 3), so an instruction hidden in a
+finding's text rides inside a result marked `mayContainInstructions: true`, exactly
+as a knowledge body does. This is a not-executed guarantee, not a not-disclosed one.
+
+**The closure, stated as one query against two corpora.** Take a finding corpus
+that holds a withheld row — an embargoed finding, or one otherwise withheld — and
+a corpus that never held it. **The two must produce identical responses on every
+serving surface the design defines — the per-record read (S1) and the recurrence
+aggregate (S2) — evaluated at all eight families above.** The refutable one-liner
+that carries it: **every published field and every published count is a function of
+embargo-cleared (served) rows only**, so a withheld row changes no response on any
+surface. This is stronger than "every field of a record is a function of public
+metadata": that argument never reached the aggregate, and the aggregate is exactly
+where the statistic family bites.
 
 ## Alternatives considered
 
@@ -518,6 +569,9 @@ Owed at implementation, each tied to the lane that will discharge it:
 - **The recurrence query surfaces prior findings by (family, specialist)** — a
   test driving the Given-When-Then of decision 5 over a fixture of finding
   records.
+- **The recurrence count is computed over embargo-cleared rows only** — a test
+  that a withheld finding does not move the `(family, specialist)` count `N`
+  (decision 5), so the aggregate cannot leak a withheld finding's existence.
 - **The manual burn-in is retired by the CL that ships the query** — the
   implementation lane removes the recurrence rule from `CLAUDE.md` in the same CL,
   so the two mechanisms never both run (decision 5).
