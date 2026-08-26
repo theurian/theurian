@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import shlex
 from collections.abc import Mapping
@@ -128,19 +129,68 @@ def _registry_reset_remedy(path: Path) -> str:
     )
 
 
-def _entry_root(entry: object) -> Path | None:
+def entry_root(entry: object) -> Path | None:
     """The absolute root a raw registry entry names, or ``None`` if it names none.
 
-    One predicate in one place, because two readers partition the same file on
-    it and must never disagree: :meth:`ProjectRegistry.load`, which keeps the
-    entries that pass, and :meth:`ProjectRegistry.unreadable_ids`, which reports
-    the ids that do not. A second copy of this test would eventually admit an
-    entry ``load`` skips -- or skip one it admits -- and root resolution would go
-    back to guessing at the difference.
+    One predicate in one place, because readers that partition the same file on
+    it must never disagree: :meth:`ProjectRegistry.load` keeps the entries that
+    pass and :meth:`ProjectRegistry.unreadable_ids` reports the ids that do not,
+    so a second copy of this test would eventually admit an entry ``load`` skips
+    -- or skip one it admits -- and root resolution would go back to guessing at
+    the difference.
 
-    ``""`` is rejected as firmly as a missing key. ``Path("").resolve()`` is the
-    *calling process's* current working directory, so an entry holding it would
-    match whichever directory a command happened to run from.
+    Six call sites in five readers as of ``67a781d``: those two,
+    :meth:`ids_for_root` twice -- once for the rootless refusal, once for the
+    match set its second refusal filters -- :meth:`register`, and, outside this
+    module and the reason this is public rather than module-private,
+    ``_RegistryRead.holds_root`` in ``cli/commands.py``, where ``theurian
+    project status`` decides whether the registry holds *this* root. Re-count
+    rather than trusting the number; it rots on the next caller::
+
+        git grep -nE 'entry_root\\(' -- packages/theurian-core/src \\
+            | grep -v 'def entry_root'
+
+    The escaped parenthesis is load-bearing: it keeps this very line out of the
+    result, which an unescaped pattern counts as a seventh site.
+
+    **The property under all of it is that the answer must not depend on where
+    the command was run.** An entry naming a root is a claim about a directory;
+    an entry whose ``rootPath`` resolves to the *caller's* directory is a claim
+    about whoever asks, and one such entry answers for every repository on the
+    machine at once. Two spellings reach that, and both are refused before
+    ``resolve()`` -- the call that would otherwise supply the missing half from
+    the working directory rather than refusing:
+
+    *Not absolute.* ``Path("").resolve()`` is the calling process's working
+    directory, and so are ``Path(".")``, ``Path("./")``, ``Path("demo/../.")``
+    and plain ``Path("demo/sub")``, none of which the old blank-string test
+    caught. Measured against a registry hand-edited to ``"rootPath": "."``, two
+    unrelated repositories both reported ``registered: true`` under that single
+    entry's id -- :meth:`id_for_root`'s misrouting, arriving through the file
+    rather than through the directory-name fallback.
+
+    *Absolute, and still the caller's directory.* On Linux ``/proc/self/cwd`` is
+    a symlink to exactly that, so it passes an absolute-spelling test and lands
+    on the same defect; measured in a Linux container, one such entry made every
+    repository report ``registered: true`` under its id. The whole
+    ``/proc/self`` family is per-process this way and macOS has no member of it,
+    which is why this is keyed on the *spelling* rather than probed: a guard
+    that only fires on the platform nobody develops on is a guard nobody's tests
+    reach. The first component of the lexically normalised path is what is
+    tested, so ``//proc/self/cwd`` and ``/tmp/../proc/self/cwd`` are refused
+    too, while ``/procession`` is not.
+
+    That guard is lexical and therefore bounded: a symlink on disk pointing into
+    ``/proc`` would still resolve there, and no test of the string can see it.
+    Deciding that would mean resolving first, which is the operation that
+    produces the cwd-valued answer in the first place. The threat this predicate
+    is sized for is a hand edit of the registry file, and against a hand edit the
+    spelling is the whole attack surface.
+
+    Nothing legitimate is refused by either: ``register`` writes
+    ``str(context.paths.root)``, :class:`Project` rejects a ``root_path`` that is
+    not absolute at construction, and a Git working tree does not live under
+    ``/proc``.
 
     **Resolved here rather than by each caller, which is the third way an entry
     can name no root.** ``Path.resolve`` raises ``ValueError`` on an embedded NUL
@@ -157,10 +207,20 @@ def _entry_root(entry: object) -> Path | None:
     if not isinstance(entry, dict):
         return None
     root_path = entry.get("rootPath")
-    if not isinstance(root_path, str) or not root_path.strip():
+    if not isinstance(root_path, str):
+        return None
+    candidate = Path(root_path)
+    # `""` and `"   "` need no test of their own: neither is absolute.
+    if not candidate.is_absolute():
+        return None
+    # Normalised first, so the component test cannot be walked around with a
+    # `..` or a second leading slash. `posixpath` rather than `os.path` because
+    # the stored form is a POSIX absolute path on every platform.
+    normalised = PurePosixPath(posixpath.normpath(root_path))
+    if normalised.parts[1:2] == ("proc",):
         return None
     try:
-        return Path(root_path).resolve()
+        return candidate.resolve()
     except (ValueError, OSError):
         return None
 
@@ -198,7 +258,7 @@ def _unreadable_ids(entries: Mapping[str, object]) -> tuple[str, ...]:
     """The ids whose entries are not usable registrations, sorted.
 
     Two ways to fail and both land here, because both make an entry something no
-    surface can serve: the entry names no root (:func:`_entry_root`), or its key
+    surface can serve: the entry names no root (:func:`entry_root`), or its key
     is not an id anything accepts (:func:`_usable_id`). ``theurian project
     unregister`` is the cure for either, and it is the only cure either has.
 
@@ -210,7 +270,7 @@ def _unreadable_ids(entries: Mapping[str, object]) -> tuple[str, ...]:
         sorted(
             pid
             for pid, entry in entries.items()
-            if _entry_root(entry) is None or not _usable_id(pid)
+            if entry_root(entry) is None or not _usable_id(pid)
         )
     )
 
@@ -1023,7 +1083,7 @@ class ProjectRegistry:
         return {
             project_id: entry
             for project_id, entry in self._raw_entries().items()
-            if _entry_root(entry) is not None and _usable_id(project_id)
+            if entry_root(entry) is not None and _usable_id(project_id)
         }
 
     def unreadable_ids(self) -> tuple[str, ...]:
@@ -1052,7 +1112,7 @@ class ProjectRegistry:
                 consumer accepts.
 
         **Why one rootless entry refuses every root, when :meth:`load` tolerates
-        it.** An entry names no root exactly when :func:`_entry_root` returns
+        it.** An entry names no root exactly when :func:`entry_root` returns
         ``None``. So "is that unreadable entry this directory's registration?"
         has no answer: the field that would settle it is the field that is
         missing. Per-root decidability is not expensive here, it is unavailable,
@@ -1104,9 +1164,7 @@ class ProjectRegistry:
         whose safety argument is harder to check than the refusal it removes.
         """
         entries = self._raw_entries()
-        rootless = tuple(
-            sorted(pid for pid, entry in entries.items() if _entry_root(entry) is None)
-        )
+        rootless = tuple(sorted(pid for pid, entry in entries.items() if entry_root(entry) is None))
         if rootless:
             raise ProjectError(
                 f"Cannot say which project {root.resolve()} belongs to: {self.path} holds "
@@ -1125,7 +1183,7 @@ class ProjectRegistry:
             )
 
         wanted = root.resolve()
-        named = tuple(sorted(pid for pid, entry in entries.items() if _entry_root(entry) == wanted))
+        named = tuple(sorted(pid for pid, entry in entries.items() if entry_root(entry) == wanted))
 
         # Only this root's own entries are consulted, which is what keeps the
         # refusal local: an unusable key elsewhere in the file says nothing about
@@ -1259,7 +1317,7 @@ class ProjectRegistry:
             # unreadable" and "this id is one of the ids `project list` reports
             # as unreadable" have to be the same statement, or the remedy below
             # names an id the user cannot see.
-            registered_root = _entry_root(existing_raw)
+            registered_root = entry_root(existing_raw)
             if registered_root is None:
                 raise ProjectError(
                     f"Project id {project.project_id.value!r} already has an entry in "

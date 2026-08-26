@@ -21,7 +21,9 @@ theurian migrate status --json
 Present a compact summary:
 
 - daemon: running or not, PID, version, endpoint
-- project: registered or not, project id, current state hash
+- project: registered, not registered, or — when `registered` is `null` — that
+  the registry could not be read, naming the ids under `unreadable`; plus the
+  project id and current state hash
 - index: active build, whether it is stale, whether a build is in progress
 - migrations: applied count, pending count, any checksum mismatch
 

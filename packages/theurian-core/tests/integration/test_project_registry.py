@@ -374,13 +374,22 @@ def test_project_status_reports_the_ambiguity_instead_of_failing(
     the two `project unregister` invocations that resolve the ambiguity are
     named. Fixed defect, formerly recorded here rather than asserted away: the
     remedy now travels into the payload alongside `reason`, at the same exit 0.
+
+    `registered` used to be asserted `False` here, and that was the second face
+    of issue #226: this root is in the file *twice*, both entries readable, and
+    the command reported it as unregistered because the field was answering
+    "did resolution succeed" rather than "does the registry hold this root".
+    The ambiguity is over *which id*, never over whether -- `reason` and
+    `remedy` are what carry it, and they still do.
     """
     code, payload = _in(ambiguously_registered, "project", "status")
 
     assert code == 0
-    assert payload["registered"] is False
+    assert payload["registered"] is True, (
+        "two entries name this root; `False` would deny a registration the file shows twice"
+    )
     assert "more than one project id" in payload["reason"], (
-        "a status that said only `registered: false` would be actively misleading"
+        "a status that said only `registered: true` would hide the ambiguity"
     )
     assert "project unregister" in payload["remedy"], (
         "the two commands that resolve the ambiguity must reach the user who ran "
@@ -428,13 +437,28 @@ def test_a_registered_repository_resolves_to_its_registered_id_without_the_flag(
 def test_an_unregistered_repository_falls_back_to_its_directory_name(machine: Path) -> None:
     """The registry answers for registered projects only. Before registration
     there is nothing to look up, and the directory name is still the proposal a
-    user is offered."""
-    fresh = _repo(machine, "team-three", name="payments")
+    user is offered.
+
+    The neighbour is registered first and the directory name deliberately
+    collides -- ``_repo``'s default, "two teams, one directory name: the
+    collision is the point". This test used to stand alone at
+    ``name="payments"``, where the fallback id matched no registry key and every
+    possible membership rule agreed by accident. With the collision in place
+    they separate: the fallback id ``api`` *is* a key, held by ``team-one``,
+    while nothing registers ``team-two``'s root. Judging membership by that id
+    answered ``True`` for an unregistered repository, disagreeing with
+    ``project list``, ``project register`` and ``setup`` about the same file.
+    """
+    _in(_repo(machine, "team-one"), "project", "register")
+    fresh = _repo(machine, "team-two")
 
     _, status = _in(fresh, "project", "status")
 
-    assert status["projectId"] == "payments"
-    assert status["registered"] is False
+    assert status["projectId"] == "api", "the derived default is still what a user is offered"
+    assert Path(status["root"]) == fresh.resolve(), "and it is offered for *this* root"
+    assert status["registered"] is False, (
+        "nothing names this root; the id it would take is another team's registration"
+    )
 
 
 def test_re_registering_the_same_root_stays_idempotent(machine: Path) -> None:
@@ -852,7 +876,16 @@ def test_status_will_not_call_a_readable_repository_registered_while_another_ent
     `False` would be the guess `ids_for_root` refuses to make, and it is the one
     that misroutes: `resolve_context` reads "never registered" as licence to fall
     back to the id derived from the directory name, which may already belong to a
-    different project. `True` would claim a resolution that did not happen.
+    different project.
+
+    `True` is the answer this is now the boundary against, since issue #226
+    taught `registered` to answer about the registry rather than about
+    resolution -- and a readable entry does name this root. It is still refused,
+    because `payments` names *no* root: nothing rules it out as a second
+    registration of this same directory, so "is this root registered" is
+    incomplete rather than answered, in exactly the way "is this id a key of
+    this file" never is. `_RegistryRead.holds_root` orders the unreadable check
+    ahead of the match for this case, and this is what holds that order.
     """
     _, payload = _in(broken_neighbour, "project", "status")
 
@@ -969,7 +1002,7 @@ async def test_the_daemon_keeps_serving_a_readable_project_beside_a_broken_entry
 
 
 def test_every_id_in_the_file_is_either_loaded_or_reported_unreadable(machine: Path) -> None:
-    """The invariant behind folding the predicate into ``_entry_root_path``.
+    """The invariant behind folding the predicate into ``entry_root``.
 
     `load` and `unreadable_ids` partition the same file, and the two sets have
     to be exact complements in both directions. An id in neither is a project
@@ -984,6 +1017,30 @@ def test_every_id_in_the_file_is_either_loaded_or_reported_unreadable(machine: P
     written to the file in deliberately unsorted order, because `unreadable_ids`
     reaches a command the user retypes and JSON-file order would read
     differently on two machines holding the same registry.
+
+    The last four shapes are the ones `entry_root` handles after it has decided
+    the field is a non-empty string, and all four were claimed by the
+    docstring's "every shape a hand edit leaves" without being written here: a
+    path the platform refuses to turn into one (an embedded NUL); a relative
+    path spelled with a leading dot and one spelled without, which a guard
+    narrowed to `startswith(".")` would let through; and an absolute path under
+    the per-process `/proc` namespace, which resolves to the caller's own
+    working directory on Linux. Deleting any of those guards used to leave this
+    test green.
+
+    `/proc/self/cwd` is asserted on every platform, macOS included. The guard is
+    a test on the *spelling*, not a probe of the filesystem, so what is pinned
+    here holds wherever the suite runs -- and the platform where it matters is
+    not the one this is usually run on, which is exactly why it must not be
+    skipped away.
+
+    It appears three times because a one-line spelling test has two ways round
+    it, and both resolve to the same place on Linux: a second leading slash,
+    which `PurePosixPath` keeps as a distinct root so `is_relative_to("/proc")`
+    reads `False`, and a `..` that arrives at `/proc` from somewhere else. The
+    guard normalises before testing the first component, and only these rows say
+    so -- with `/proc/self/cwd` alone, reverting to the simpler predicate is
+    green.
     """
     registry = ProjectRegistry.default(machine / "datadir")
     registry.path.parent.mkdir(parents=True, exist_ok=True)
@@ -997,6 +1054,12 @@ def test_every_id_in_the_file_is_either_loaded_or_reported_unreadable(machine: P
         "entry-is-a-string": str(machine),
         "entry-is-a-list": [str(machine)],
         "entry-is-null": None,
+        "nul-in-root": {"rootPath": f"{machine}/\x00nul"},
+        "relative-root": {"rootPath": "."},
+        "bare-relative-root": {"rootPath": "demo/sub"},
+        "per-process-root": {"rootPath": "/proc/self/cwd"},
+        "per-process-root-double-slash": {"rootPath": "//proc/self/cwd"},
+        "per-process-root-via-dotdot": {"rootPath": "/tmp/../proc/self/cwd"},  # noqa: S108
         "another-readable": {"rootPath": str(machine / "team-two" / "api")},
     }
     registry.path.write_text(json.dumps(raw), encoding="utf-8")
@@ -1006,14 +1069,56 @@ def test_every_id_in_the_file_is_either_loaded_or_reported_unreadable(machine: P
 
     assert loaded == {"readable", "another-readable"}
     assert unreadable == (
+        "bare-relative-root",
         "blank-root",
         "empty-root",
         "entry-is-a-list",
         "entry-is-a-string",
         "entry-is-null",
+        "nul-in-root",
         "null-root",
         "numeric-root",
+        "per-process-root",
+        "per-process-root-double-slash",
+        "per-process-root-via-dotdot",
+        "relative-root",
         "zebra-no-root-key",
     ), "reported in a stable order, and every shape a hand edit leaves is one of them"
     assert loaded.isdisjoint(unreadable), "no id is both listed and named for deletion"
     assert loaded | set(unreadable) == set(raw), "no id disappears from both surfaces"
+
+
+def test_a_relative_root_path_does_not_register_whichever_directory_asks(machine: Path) -> None:
+    """The defect `entry_root`'s rejection of ``""`` names, reached by a second road.
+
+    ``Path("").resolve()`` is the calling process's working directory, and so is
+    ``Path(".").resolve()`` -- the docstring rejected the first spelling and let
+    the second through. Measured before the guard: a single hand-edited
+    ``"rootPath": "."`` made *every* repository on the machine report
+    ``registered: true`` under that one entry's id, each one answering as a
+    project it has nothing to do with. That is `id_for_root`'s misrouting
+    arriving through the registry file itself.
+
+    Two unrelated working trees are used rather than one, because a single repo
+    cannot tell "this entry matches me" from "this entry matches whoever asks".
+    """
+    registry = ProjectRegistry.default(machine / "datadir")
+    registry.path.parent.mkdir(parents=True, exist_ok=True)
+    registry.path.write_text(
+        json.dumps({"ghost": {"rootPath": ".", "defaultBranch": "main"}}), encoding="utf-8"
+    )
+    first = _repo(machine, "team-one")
+    second = _repo(machine, "team-two")
+
+    for root in (first, second):
+        _, status = _in(root, "project", "status")
+        assert status["registered"] is None, (
+            f"{root} is not registered, and an entry that names no root cannot say it is"
+        )
+        # `.get`, because the entry being unreadable is what makes `ids_for_root`
+        # refuse, so this is the unresolved payload and carries no `projectId` at
+        # all. Either way the id must not be handed over.
+        assert status.get("projectId") != "ghost", "nor may it hand over another entry's id"
+
+    _, listed = _in(first, "project", "list")
+    assert listed["unreadable"] == ["ghost"], "the entry to remove is named, not silently dropped"

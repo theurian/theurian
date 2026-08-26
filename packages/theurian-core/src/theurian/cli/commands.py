@@ -35,6 +35,7 @@ from theurian.application.project_service import (
     BuildProvenance,
     ProjectPaths,
     ensure_gitignore,
+    entry_root,
     initialize_project,
     read_active_index,
     read_active_state,
@@ -486,11 +487,22 @@ class _RegistryRead:
     def failure_fields(self) -> dict[str, str]:
         """Why the registry could not be read and what cures it, or nothing.
 
-        Emitted beside a ``registered`` of ``None``, never alone: a payload that
-        says "cannot know" without saying why is a status a user cannot act on.
+        On the resolved branch of ``project status``, its only caller, this is
+        emitted beside a ``registered`` of ``None`` and never alone: a payload
+        that says "cannot know" without saying why is a status a user cannot act
+        on.
 
-        Not the only reason ``registered`` can be ``None`` -- see :meth:`holds`,
-        whose other case is explained by the ``unreadable`` list instead.
+        **The unresolved branch does not reach it**, so that pairing is a
+        property of one branch rather than of the field.
+        :func:`_unresolved_status` publishes ``exc``'s own ``reason`` and
+        ``remedy``, and a ``registered: null`` there arrives with the
+        *resolution* failure's prose beside it and nothing about the registry --
+        which is the gap, recorded rather than closed here because the cure is a
+        payload change and this is a docstring: issue #381.
+
+        Not the only reason ``registered`` can be ``None`` -- see
+        :meth:`holds_root`, whose other case is explained by the ``unreadable``
+        list instead.
         """
         if self.failure is None:
             return {}
@@ -502,39 +514,86 @@ class _RegistryRead:
             ),
         }
 
-    def holds(self, project_id: str | None) -> bool | None:
-        """Whether this id is registered, or ``None`` where the file cannot say.
+    def holds_root(self, root: Path) -> bool | None:
+        """Whether any entry registers this root, or ``None`` where it cannot say.
 
         **The single rule behind every ``registered`` field ``project status``
-        emits, because its two branches disagreed.** The unresolved branch
-        answered ``None`` whenever the registry held anything it could not read;
-        the resolved branch consulted only :attr:`failure` and so answered
-        ``False`` for an id whose *own* entry had become unreadable between
-        ``resolve_context``'s read and this one -- the exact guess
-        :meth:`ProjectRegistry.ids_for_root` refuses to make, made by the other
-        half of the same command.
+        emits from inside a Git working tree, on both of its branches.** Outside
+        one this is never called: :func:`_unresolved_status` short-circuits on
+        ``find_git_root`` and publishes the literal ``False`` it initialised the
+        payload with, because a directory in no working tree is not a project
+        whatever the registry says, and no entry could be about it -- so even a
+        registry that does not parse leaves that ``False`` standing. Every rule
+        below is a rule about the in-tree case.
 
-        ``None`` for an unknown id is the unresolved-status case: with no id to
-        look up there is nothing to check membership of, so any entry the file
-        holds and :meth:`ProjectRegistry.load` skips leaves the question open.
+        It replaced a pair of id-keyed answers, and each was wrong in its own
+        direction.
 
-        Deliberately not "``None`` whenever anything is unreadable". An id
-        present in :attr:`entries` is registered whatever some *other* entry
-        looks like, and answering "cannot know" about something known is its own
-        false report.
+        The unresolved branch asked "is *anything* registered?" -- there is no id
+        to ask about when ``resolve_context`` has failed -- and a healthy
+        registry answers that ``False``. Since that failure is usually nothing to
+        do with registration (an unreadable ``.theurian/migrations``, a malformed
+        migration, a state schema that will not parse), the command contradicted
+        ``project list`` about the same file in the same breath and told a user
+        to run ``project register`` in a repository already registered.
+
+        The resolved branch asked about ``context.project_id``, which is only a
+        *proposal*: with no registry entry for the root, ``resolve_context``
+        falls back to the directory name. Two teams checking out ``api`` were
+        enough -- an unregistered ``team-two/api`` reported ``registered: true``
+        off ``team-one``'s entry. That is the misrouting
+        :meth:`ProjectRegistry.ids_for_root` exists to refuse, arrived at by the
+        one field that was not asking it. Both issue #226.
+
+        The root is normalised through :func:`entry_root`, the predicate
+        :meth:`ProjectRegistry.load` and :meth:`ProjectRegistry.ids_for_root`
+        already partition the file on, rather than by a second
+        ``Path(...).resolve()`` here: two surfaces deriving one fact separately
+        is how they come to disagree about it.
+
+        **An unreadable entry overrules a match**, of either kind
+        :meth:`ProjectRegistry.unreadable_ids` reports. One that names no root
+        cannot be compared against this one, so it cannot be ruled out as a
+        *second* registration of this same directory, and answering ``True``
+        would settle a question the missing field was the only thing that could
+        have settled -- the refusal :meth:`ProjectRegistry.ids_for_root` makes,
+        for the same reason, and why it refuses every root rather than only the
+        plausible ones. One keyed by an id no consumer accepts *does* name a
+        root, and this is deliberately broader there: ``ids_for_root`` can see
+        that such an entry belongs to some other directory, while
+        :attr:`entries` holds what ``load`` kept and ``load`` kept neither kind,
+        so there is nothing here to reason from. "Cannot say" about a partly
+        illegible registry is the conservative direction, and :attr:`unreadable`
+        names the entry to remove. An id-keyed rule had no equivalent of any of
+        this: "is this id a key of this file" stays decidable whatever else is
+        wrong.
+
+        **What that costs the resolved branch, which is more than a race.** A
+        commit body on this branch claimed a resolved payload could only meet an
+        unreadable entry through the window between ``resolve_context``'s
+        registry read and this command's own, since ``ids_for_root`` refuses on
+        any unreadable entry. It does not refuse on the second kind: an unusable
+        key over an absolute ``rootPath`` naming another directory is neither
+        rootless nor an unusable id among the entries naming *this* root, so
+        resolution succeeds and this returns ``None`` deterministically, with
+        ``projectId`` and ``root`` beside it. That is the design above, not an
+        accident, and it is pinned by
+        ``test_the_resolved_branch_reaches_the_same_null_with_nothing_racing_it``.
+
+        The race is real as well, and it does not only degrade toward ``None``:
+        a registration landing mid-window yields ``True`` here beside a
+        ``projectId`` derived before it existed. Both are the same property
+        stated once -- **this answers about the registry as of its own read,
+        while ``projectId`` and ``root`` describe resolution time** -- and the
+        two instants are not reconciled, deliberately: making them one read is a
+        change to ``resolve_context``'s contract, not to this method.
         """
         if self.failure is not None:
             return None
-        if project_id is None:
-            return None if self.unreadable else False
-        if project_id in self.entries:
-            return True
-        # Absent from `entries` is not absent from the *file*: `load` skips an
-        # entry that names no root path, and its id is still a key. `False` here
-        # would tell a user their project is unregistered while `project
-        # register` refuses to reuse the id and `project unregister` can still
-        # remove it.
-        return None if project_id in self.unreadable else False
+        if self.unreadable:
+            return None
+        wanted = root.resolve()
+        return any(entry_root(entry) == wanted for entry in self.entries.values())
 
 
 def _read_registry() -> _RegistryRead:
@@ -899,8 +958,8 @@ def _pointer_failure_fields(failure: TheurianError | None) -> dict[str, str]:
 
     The shape :attr:`_RegistryRead.failure_fields` uses, for the other file this
     command reads. Kept as a function rather than a second dataclass because the
-    pointer read has no equivalent of ``holds`` -- there is one value to lose and
-    no membership question to answer about it.
+    pointer read has no equivalent of :meth:`_RegistryRead.holds_root` -- there
+    is one value to lose and no membership question to answer about it.
     """
     if failure is None:
         return {}
@@ -937,22 +996,29 @@ def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
     siblings reached this payload with `reason` but no `remedy`, narrower than
     every other command surfacing the same exception (issue #205).
 
-    ``statePointerCorrupt`` is deliberately absent here rather than ``false``.
-    Nothing on this branch has resolved a project, so no state pointer was
-    looked at, and emitting the field would answer a question this branch never
-    asked -- the same reason ``registered`` refuses to be ``False`` above.
+    ``statePointerCorrupt`` and ``indexStale`` are deliberately absent here
+    rather than ``false``. Nothing on this branch has resolved a project, so no
+    state pointer was read and no state hash was computed, and emitting either
+    field would answer a question this branch never asked -- the same reason
+    ``registered`` refuses to be ``False`` above. ``indexStale: false`` was
+    published from Milestone 1 (introduced in ``5513d84``, 2026-08-02) until
+    ``2789ef9``, in every core release up to and including 0.1.0.dev11, and it
+    said "your index is up to date" about a directory Theurian had not looked
+    at. The two spellings are not interchangeable here, because ``null`` is this
+    payload's "asked, and the answer is unknowable" (``registered`` on a
+    registry nobody can read) and absence is "never asked".
     """
-    payload: dict[str, Any] = {"registered": False, "reason": str(exc), "indexStale": False}
+    payload: dict[str, Any] = {"registered": False, "reason": str(exc)}
     if exc.remedy:
         payload["remedy"] = exc.remedy
 
     # `resolve_context` never got as far as asking the registry whether this root
-    # is registered -- for any reason, a broken migration included -- while the
-    # registry cannot answer for itself either: it holds an entry that cannot be
-    # read, or it does not parse at all. `registered: False` would then be the
-    # same guess `ids_for_root` refuses to make: an unreadable entry names no
-    # root, so there is no way to tell whether it is *this* directory's own, and
-    # a file that does not parse does not even have entries to ask about.
+    # is registered -- for any reason, a broken migration included -- so the
+    # question is put to the registry directly, keyed by root because there is no
+    # id to key it by. Asking "is anything registered at all?" instead was issue
+    # #226: a readable registry holding this very root answered `False`, so a
+    # `chmod 000 .theurian/migrations` deregistered the project as far as this
+    # payload was concerned, while `theurian project list` went on listing it.
     #
     # `find_git_root` is checked apart from the registry so a plain "not inside a
     # Git repository" -- which has nothing to do with the registry -- keeps its
@@ -960,13 +1026,25 @@ def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
     # possibly be about it. That directory is not a project whatever the registry
     # says, and `theurian project list` is the surface that reports the file.
     read = _read_registry()
-    if find_git_root(Path.cwd()) is not None:
-        payload["registered"] = read.holds(None)
+    root = find_git_root(Path.cwd())
+    if root is not None:
+        payload["registered"] = read.holds_root(root)
     # Stays a list even when the file did not parse, because a caller that
-    # iterates it must not have to branch first. That the set of ids is *unknown*
-    # rather than empty is carried by `registered: None` and by `reason`, which
-    # is the registry's own refusal here: `resolve_context` consults the registry
-    # before it loads migrations, so a file-level failure is what raised above.
+    # iterates it must not have to branch first. Inside a working tree, that the
+    # set of ids is *unknown* rather than empty is then carried by `registered:
+    # None` -- and only inside one: the branch above short-circuits outside a
+    # tree, so a corrupt registry there publishes an empty `unreadable` beside a
+    # literal `registered: false` and nothing in this payload says the file could
+    # not be read. That combination is honest about the directory (no entry could
+    # be about it) and silent about the file, and `theurian project list` is the
+    # surface that reports the file.
+    #
+    # `reason` does not carry it either: `reason` is `exc`'s and need not be
+    # about the registry at all, since `resolve_context` loads and validates the
+    # migrations *before* it asks the registry which project this root is, so a
+    # broken migration raises first and this payload pairs a `registered: null`
+    # with migration prose. Issue #381 owns closing that; nothing here may be
+    # read as though it were closed.
     payload["unreadable"] = list(read.unreadable)
     return payload
 
@@ -1006,11 +1084,19 @@ def project_status(as_json: JsonOption = False) -> None:
         {
             "projectId": context.project_id.value,
             "root": str(context.paths.root),
+            # Keyed by the root published on the line above, never by the id
+            # beside it: `context.project_id` is `resolve_context`'s *proposal*,
+            # and for an unregistered repository that proposal is the directory
+            # name. Two teams checking out `api` made this field report
+            # `team-one`'s registration as `team-two`'s -- `true` for a root no
+            # entry names, while `project list`, `project register` and `setup`
+            # all answered by root and said unregistered (issue #226).
+            #
             # `None` is this command's "cannot know", and both branches now get
-            # it from `holds` rather than each deciding for itself -- which is
-            # how the resolved one came to answer `False` where the unresolved
+            # it from `holds_root` rather than each deciding for itself -- which
+            # is how the resolved one came to answer `False` where the unresolved
             # one answered `None` for the same file.
-            "registered": read.holds(context.project_id.value),
+            "registered": read.holds_root(context.paths.root),
             "initialized": context.paths.knowledge_dir.is_dir(),
             "stateHash": str(context.state_hash),
             "activeStateHash": None if active is None else str(active.state_hash),
