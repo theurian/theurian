@@ -591,9 +591,9 @@ permanently.
 The dividing line is direction of travel: text that lives in the repository or
 instructs an agent is English; text delivered to a person as a report follows
 the reader's language (professional register for a teammate; Japanese cat-speech
-in conversation with this project's maintainer). A brief looks like scratch, which is exactly why it needs naming — it
-gets quoted in reports, pasted into issues, and read by whoever debugs the
-orchestration later.
+in conversation with this project's maintainer). A brief looks like scratch,
+which is exactly why it needs naming — it gets quoted in reports, pasted into
+issues, and read by whoever debugs the orchestration later.
 
 **Non-English text as *data* is correct and must not be translated.** The rule
 governs prose, not examples. `署名付きトークンを持つ` in ADR-0023, the CHANGELOG
