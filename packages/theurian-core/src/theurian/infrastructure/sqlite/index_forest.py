@@ -38,8 +38,11 @@ title, must never widen what a caller may read:
   leaf's own chunk row. An ancestor title therefore carries no content from
   a scope the leaf is not in, and a *withheld* leaf contributes no result and so
   no path -- its ancestors' titles never reach the wire. The title's build-time
-  staleness is the recorded T-17a/#130 residual, the same one every excerpt
-  carries, not a new channel.
+  staleness is the recorded T-17a residual, the same one every excerpt carries,
+  not a new channel. Labelled ``T-17a/#130`` here until 2026-08-26: #130 was a
+  different fault -- a revision's body edited on disk *after* the migration that
+  pinned it was applied -- refused at load since ADR-0027 decision 1, so it can
+  no longer put drifted text into a build at all.
 """
 
 from __future__ import annotations

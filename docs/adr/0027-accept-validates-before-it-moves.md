@@ -69,7 +69,7 @@ than a judgement:
 | Measured 2026-08-23, `main` @ `68e8a0b` | Result |
 | :-- | :-- |
 | Does the generator ever emit an unpinned revision? | No. `ProposalService.draft` computes `ContentHash.of_bytes(body_bytes)` for the body it is about to write and passes it into `_migration_document` on every path (`application/proposal_service.py`). There is no branch that omits it. |
-| Does the loader verify a declared pin? | Yes, on every load. `_parse_operation` re-reads the resolved body, hashes the bytes it read, and raises `MigrationError` when a declared `contentSha256` disagrees (`infrastructure/filesystem/migration_loader.py`). |
+| Does the loader verify a declared pin? | Yes, on every load. `_parse_upsert` re-reads the resolved body, hashes the bytes it read, and raises `MigrationError` when a declared `contentSha256` disagrees (`infrastructure/filesystem/migration_loader.py`). **This row named `_parse_operation` as written; corrected 2026-08-26.** That function is the 14-way dispatcher and does none of this work — it delegates to `_parse_upsert`, which is where the body is read, hashed and refused. The row's answer is unchanged; only the symbol was wrong, and a symbol a reader cannot find is not a citation. |
 | How many real migration documents would have to be edited? | **Zero.** 28 migration documents are tracked in this repository — 26 in the dogfood corpus under `.theurian/migrations/`, 2 under `examples/sample-project/` — and each carries a `contentSha256` on each of its `upsertRevision` operations. The live dogfood project's working tree holds 82 (the 26 tracked plus 56 machine-local operator notes); all 82 pin. |
 
 The population key for the third row, so it can be attacked rather than
@@ -692,6 +692,27 @@ Landed in Milestone 7 with decision 1 (`contentSha256` required):
   `tests/unit/test_migration_loader_required_pin.py::test_a_revision_that_declares_no_body_pin_is_refused_at_load`,
   with `::test_the_same_revision_loads_once_it_pins_its_body` as the control
   that the refusal is the missing pin and not the fixture.
+- **The *mismatched* pin, added 2026-08-26 and not owed at design time.** The
+  bullet above covers a pin that is *absent*. The Context table's other half —
+  the loader verifies a declared pin on every load — was carried as settled
+  fact with nothing driving it, and that is what made it worth adding late.
+  Measured 2026-08-26, the refusal's own message ("The body file changed after
+  the migration was written.") occurred exactly once in the repository, in the
+  loader that raises it, and nowhere under `tests/`: every adjacent body-pin
+  test enters through `propose accept` or a freshly authored `migrate
+  validate`, and none re-applies over drift, so the guard would have survived
+  its own deletion. It is now driven at the CLI layer by
+  `tests/integration/test_cli_commands.py::test_a_body_edited_after_apply_is_refused_when_apply_is_re_run`
+  and `::test_a_body_edited_after_apply_is_refused_by_validate_as_well`. Both
+  assert the two digests by value rather than that a mismatch was merely
+  reported — a refusal naming neither side tells an author nothing about which
+  half to correct — and the second exists so `apply` and `validate` cannot
+  disagree about whether a drifted project is well-formed, the divergence #63
+  recorded for the scope guard. This is the guard
+  [#130](https://github.com/theurian/theurian/issues/130) reported missing: on
+  the pre-decision-1 code a body edited in place after its migration was
+  applied re-applied at exit 0, while the canonical store and every index built
+  from it went on serving the line the working tree no longer held.
 - The "zero edit cost" measurement is now a standing check rather than a
   measurement: `tests/unit/test_dogfood_corpus_governance.py::test_every_committed_migration_matches_the_published_migration_schema`
   walks the tracked corpus against the tightened schema, and

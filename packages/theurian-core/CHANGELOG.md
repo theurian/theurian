@@ -231,6 +231,51 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   working tree does not live under `/proc` — so this can only reject a hand
   edit.
 
+### Documentation
+
+- **The `stale` field's description no longer claims a stale index returns
+  fewer results but never wrong ones**
+  ([#130](https://github.com/theurian/theurian/issues/130)). ADR-0008 decision
+  8's Milestone 6 amendment ruled that sentence false in its general form and
+  forbade importing it anywhere, then counted the population with an
+  exact-phrase key — which cannot see a rephrasing. The site it missed is the
+  one a client actually reads: `schemas/mcp/retrieval-metadata.schema.json`,
+  which ships inside the wheel at `theurian/schemas`, ended that field's
+  description with "A stale index returns fewer results, never wrong ones". It
+  now states what staleness does cost — knowledge added since the build is
+  missing, and the build's own ranking statistics still move hit order and which
+  passage of a document is excerpted (T-17a) — and what it does not: the
+  authority of what does come back, because every hit is re-resolved through the
+  canonical store, which drops one whose item is gone, whose status or
+  classification has moved, or whose revision has been superseded. **No
+  property, type, required entry or `$id` moved, so `protocolVersion` stays
+  `theurian/v1`** and no client needs a change. The claim's two other
+  unqualified sites are handled in place: the docstring of
+  `test_a_superseded_revision_is_not_served_from_a_stale_index` is limited to
+  the supersede face that test exercises, and the `[0.1.0.dev0]` entry below is
+  left as written, being history that is true of the supersede fix it describes.
+
+- **The threat model records why that claim now holds for same-revision body
+  drift, and two stale labels are corrected.** Issue #130 — a revision's body
+  file edited in place after the migration that pinned it was applied, which on
+  2026-08-10 re-applied at exit 0 while the canonical store and every index went
+  on serving the removed line — is refused at load, because `contentSha256` is
+  schema-required on every `upsertRevision` and re-hashed against the bytes on
+  disk (ADR-0027 decision 1); refused again at `accept`, through the same loader
+  entry points; and unreachable from any read path, which serves the `body`
+  column rather than the file. `docs/security/threat-model.md` records the
+  disposition beside T-17a, named by its own root cause rather than folded into
+  it, together with the residual it leaves: the working-tree file disagrees with
+  canonical until the operator acts on the exit-4 refusal, while everything
+  served still matches canonical. `docs/architecture/raptor.md` and
+  `infrastructure/sqlite/index_forest.py` drop `#130` from the `T-17a/#130`
+  staleness label they attached to every `raptorPath` title — what a title still
+  carries is T-17a's build-time staleness alone. ADR-0027's Context table named
+  the dispatcher `_parse_operation` where `_parse_upsert` does the reading,
+  hashing and refusing, and its Compliance section now names the two tests that
+  drive the mismatched-pin refusal, a guard that ADR carried as settled fact
+  with no test reaching it.
+
 ## [0.1.0.dev12] - 2026-08-26
 
 ### Fixed

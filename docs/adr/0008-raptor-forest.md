@@ -838,6 +838,54 @@ flowchart TB
 >    > `retrieval-result.schema.json` now declares `raptorPath` and the `summary`
 >    > `foundBy` value. The full suite is `tests/integration/test_forest_retrieval.py`;
 >    > the threat model's T-10 and T-3 restate the closure.
+>    >
+>    > **The population above was counted with a key that could not see the family,
+>    > and the count was wrong. Corrected 2026-08-26 against `e7e62e3`; the sentence
+>    > above stays as written.** "`rg -n "fewer results rather than wrong"` returns
+>    > two hits" is true of that key and false of the claim. The key is an exact
+>    > phrase, and **an exact-phrase key cannot see a rephrasing of the claim it is
+>    > counting.** What it could not see was the live wire contract: the `stale`
+>    > field's description in `schemas/mcp/retrieval-metadata.schema.json` ended "A
+>    > stale index returns fewer results, never wrong ones" — this decision's
+>    > forbidden general form, in the one place an MCP client actually reads. It was
+>    > written on 2026-08-05 (`21e1ba9`) and so was already standing when the
+>    > amendment ruled against it five days later (`379e197`).
+>    >
+>    > **The durable key is the claim's meaning, and no single pattern is it.** What
+>    > works is a wider match plus a read of every hit: `git grep "wrong ones"`
+>    > catches both wordings, and each hit is then classified by whether it
+>    > *asserts* the general form, merely *cites* it, or states it of a *mechanism*.
+>    > Three sites assert it, and all three are now disposed of. The docstring of
+>    > `tests/integration/test_mcp_tools.py`'s superseded-revision test — the
+>    > sentence the general form was read out of — is anchored in `6c327af`: limited
+>    > to the supersede face that test exercises, naming what the general form does
+>    > not cover and where the closure is recorded. `packages/theurian-core/CHANGELOG.md`'s
+>    > `[0.1.0.dev0]` line is unchanged, per this amendment's own decision; it is
+>    > history, and read in its own context — a Fixed entry about the supersede face
+>    > — it is true of what it describes. The schema description is rewritten in
+>    > `e7e62e3` to say what staleness does cost (knowledge added since the build is
+>    > missing, and the build's own ranking statistics still move hit order and
+>    > which passage is excerpted — T-17a) and what it does not (the authority of
+>    > what does come back, re-resolved through the canonical store). No property,
+>    > type or required entry moved, so `protocolVersion` stays `theurian/v1`.
+>    >
+>    > **A fourth site is what shows the meaning key is the right one**, because no
+>    > phrase key reaches it: `README.md`'s "A stale index answers with less, never
+>    > with more" shares no wording with either form, so only reading finds it. It
+>    > needed no change — it qualifies itself in place, naming search ranking as
+>    > where the equality stopped holding in the paragraph immediately below it. Two
+>    > further hits state the claim of a *mechanism* rather than of a stale index in
+>    > general, and are true as written: `application/visibility.py`'s "the three
+>    > checks below are the difference", and
+>    > `test_index_fallback.py::test_a_stale_index_is_still_used_rather_than_abandoned`'s
+>    > FR-R5 re-resolution. Both are named here so the next reader does not re-open
+>    > them.
+>    >
+>    > The other falsifier this decision named — issue #130's same-revision body
+>    > drift — has since closed at the write path, so it no longer holds the general
+>    > form open. Its disposition, the three legs that close it and the residual
+>    > they leave are recorded under T-17a in
+>    > [`docs/security/threat-model.md`](../security/threat-model.md).
 >
 > 9. **Withdrawal re-derives each affected tree from its surviving rows.
 >    Node-local recompute is rejected, and so is delete-only.**

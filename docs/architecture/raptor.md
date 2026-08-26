@@ -533,9 +533,14 @@ scope the leaf is not in
 `test_a_withheld_documents_text_never_enters_a_surfaced_items_raptor_path`).
 That guarantee is about scope, not freshness: a `title`, like any `excerpt`, is
 index text and can lag the canonical store between builds — the build-time
-staleness residual (T-17a, [#130](https://github.com/theurian/theurian/issues/130))
-that `retrieval-result.schema.json` and `index_forest.py` already attach to every
-title.
+staleness residual (T-17a) that `retrieval-result.schema.json` and
+`index_forest.py` already attach to every title. That residual was labelled
+`T-17a/#130` here until 2026-08-26.
+[#130](https://github.com/theurian/theurian/issues/130) was a different fault —
+a revision's body edited on disk *after* the migration that pinned it was
+applied — and it is refused at load since ADR-0027 decision 1, so it can no
+longer put drifted text into a build at all. What a `title` still carries is
+T-17a's staleness alone.
 
 ## Replaceable
 
