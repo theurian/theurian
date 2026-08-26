@@ -547,7 +547,9 @@ def test_status_outside_a_repository_reports_unregistered(
 
     code, status = _invoke("project", "status")
     assert code == 0, "status must report, not fail, outside a project"
-    assert not status["registered"]
+    assert status["registered"] is False, (
+        "`not` cannot tell `False` from `None`, and this field publishes all three"
+    )
 
 
 @pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
@@ -963,6 +965,11 @@ def test_status_does_not_guess_index_freshness_for_a_project_it_never_resolved(
     ``statePointerCorrupt`` already follows in this same payload: ``null`` is
     "asked, and the answer is unknowable" (``registered`` on a broken registry),
     absence is "never asked".
+
+    Its ``registered`` assertion pins the short-circuit, not the membership
+    rule: outside a Git working tree ``find_git_root`` is ``None`` and
+    ``_unresolved_status`` never calls ``holds_root`` at all. The three tests
+    below are what hold that rule.
     """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
@@ -977,6 +984,138 @@ def test_status_does_not_guess_index_freshness_for_a_project_it_never_resolved(
     assert "not inside a Git repository" in status["reason"], (
         "and the two unresolved shapes stay distinguishable: this one is not a permission failure"
     )
+
+
+# -- what `holds_root` actually keys on ------------------------------------
+#
+# The tests above all run in a repository that is either registered or in no
+# registry at all, so a rule reading "does the registry hold *anything*" passes
+# every one of them. Measured: replacing the membership scan with
+# `bool(self.entries)` survived this whole file, and so did keying it on
+# `Path.cwd()` instead of the Git root. Each test below is aimed at one of
+# those, and a broken migration is what fails resolution -- not a `chmod`,
+# which the CI job running as root cannot be refused by.
+
+
+def test_status_does_not_borrow_a_neighbours_registration_for_an_unregistered_root(
+    project: Path, registry_path: Path, tmp_path: Path
+) -> None:
+    """Membership is about *this* root, and a populated registry is not a match.
+
+    The neighbour is readable and well-formed -- nothing here is ambiguous --
+    so `unreadable` is empty and the only thing standing between this
+    repository and a `true` is the root comparison itself.
+    """
+    _invoke("init")
+    registry_path.write_text(
+        json.dumps(
+            {"neighbour": {"rootPath": str(tmp_path / "elsewhere"), "defaultBranch": "main"}}
+        )
+    )
+    _write_malformed_yaml_migration(project)
+
+    code, status = _invoke("project", "status")
+
+    assert code == 0
+    assert status["registered"] is False, (
+        "another root's entry is not this root's registration, however readable it is"
+    )
+    assert status["unreadable"] == [], "the neighbour is well-formed; nothing here is ambiguous"
+
+
+def test_status_answers_for_the_repository_not_the_directory_it_was_run_from(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A registration names the working-tree root, and `status` runs anywhere in it.
+
+    `_unresolved_status` asks `find_git_root` and must pass *that* to the
+    membership check. Keying it on `Path.cwd()` instead is invisible from the
+    repository root, where the two are the same path, and reports a registered
+    project as unregistered from any subdirectory -- which is where a developer
+    actually stands.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_malformed_yaml_migration(project)
+    nested = project / "src" / "deep"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+
+    code, status = _invoke("project", "status")
+
+    assert code == 0
+    assert status["registered"] is True, (
+        "the registry names the working-tree root, and this is inside it"
+    )
+
+
+def test_status_matches_a_registered_root_written_in_a_non_normal_form(
+    project: Path, registry_path: Path
+) -> None:
+    """The comparison normalises both sides, and a hand edit is why it has to.
+
+    The registry lives in the user's home directory and the product's own
+    remedies tell people to edit it, so `rootPath` arrives in whatever absolute
+    spelling they typed -- here with a `/..` and a trailing `/.` that name
+    exactly this root. `entry_root` resolves it, the same way
+    `ProjectRegistry.load` and `ids_for_root` do; a raw string comparison
+    against `str(root)` would call this repository unregistered while
+    `project list` went on listing it.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    entry = json.loads(registry_path.read_text())["demo"]
+    non_normal = f"{project.parent}/./{project.name}/../{project.name}/."
+    assert non_normal != str(project.resolve()), "the fixture must not be normal already"
+    registry_path.write_text(json.dumps({"demo": {**entry, "rootPath": non_normal}}))
+    _write_malformed_yaml_migration(project)
+
+    code, status = _invoke("project", "status")
+
+    assert code == 0
+    assert status["unreadable"] == [], "an absolute path that resolves is a readable entry"
+    assert status["registered"] is True, "the entry names this root, spelled the long way round"
+
+
+def test_status_cannot_say_while_an_unusable_key_holds_an_entry_for_another_root(
+    project: Path, registry_path: Path, tmp_path: Path
+) -> None:
+    """The deliberately broader `null`, kept -- and now pinned rather than assumed.
+
+    `ProjectRegistry.ids_for_root` could answer here: the offending entry names
+    a root, and it is not this one, so the id-shape defect is somebody else's
+    problem. `_RegistryRead` cannot see that -- `entries` holds what `load`
+    kept, and `load` keeps neither a rootless entry nor one under a key no
+    consumer accepts -- so it refuses for the whole file rather than reasoning
+    about an entry it does not have.
+
+    That is a choice, not an oversight (`holds_root`'s docstring records it),
+    and the conservative direction: "cannot say" about a registry that is partly
+    illegible, with `unreadable` naming the entry to remove. Pinned so that
+    narrowing it later is a decision somebody takes rather than a diff nobody
+    notices.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    entry = json.loads(registry_path.read_text())["demo"]
+    registry_path.write_text(
+        json.dumps(
+            {
+                "demo": entry,
+                "Team One/API": {"rootPath": str(tmp_path / "elsewhere"), "defaultBranch": "main"},
+            }
+        )
+    )
+    _write_malformed_yaml_migration(project)
+
+    code, status = _invoke("project", "status")
+
+    assert code == 0
+    assert status["registered"] is None, (
+        "a readable entry names this root, and the answer is still withheld while the file "
+        "holds an entry this reader cannot attribute"
+    )
+    assert status["unreadable"] == ["Team One/API"], "and the entry to remove is named"
 
 
 def test_unregister_does_not_refuse_an_id_for_its_shape(project: Path) -> None:
