@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import shlex
 from collections.abc import Mapping
@@ -138,28 +139,58 @@ def entry_root(entry: object) -> Path | None:
     -- or skip one it admits -- and root resolution would go back to guessing at
     the difference.
 
-    Six call sites in five readers, measured with ``git grep -n 'entry_root('``
-    against ``ce14b6e``: those two, :meth:`ids_for_root` (twice, once per
-    refusal), :meth:`register`, and -- outside this module, which is why this is
-    public rather than module-private -- ``_RegistryRead.holds_root`` in
-    ``cli/commands.py``, where ``theurian project status`` decides whether the
-    registry holds *this* root. Re-count rather than trusting the number; it
-    rots on the next caller.
+    Six call sites in five readers as of ``67a781d``: those two,
+    :meth:`ids_for_root` twice -- once for the rootless refusal, once for the
+    match set its second refusal filters -- :meth:`register`, and, outside this
+    module and the reason this is public rather than module-private,
+    ``_RegistryRead.holds_root`` in ``cli/commands.py``, where ``theurian
+    project status`` decides whether the registry holds *this* root. Re-count
+    rather than trusting the number; it rots on the next caller::
 
-    **A relative ``rootPath`` is rejected as firmly as a missing key, and ``""``
-    is only its shortest spelling.** ``Path("").resolve()`` is the *calling
-    process's* current working directory -- and so is ``Path(".").resolve()``,
-    ``Path("./").resolve()`` and ``Path("demo/../.").resolve()``, none of which
-    the blank test caught. An entry holding one matches whichever directory a
-    command happened to run from: measured against a registry hand-edited to
-    ``"rootPath": "."``, two unrelated repositories both reported
-    ``registered: true`` under that single entry's id, each answering as a
-    project it had nothing to do with -- :meth:`id_for_root`'s misrouting,
-    arriving through the file rather than through the directory-name fallback.
-    Nothing legitimate is refused by this: ``register`` writes
-    ``str(context.paths.root)`` and :class:`Project` rejects a ``root_path``
-    that is not absolute at construction, so a relative one can only be a hand
-    edit.
+        git grep -nE 'entry_root\\(' -- packages/theurian-core/src \\
+            | grep -v 'def entry_root'
+
+    The escaped parenthesis is load-bearing: it keeps this very line out of the
+    result, which an unescaped pattern counts as a seventh site.
+
+    **The property under all of it is that the answer must not depend on where
+    the command was run.** An entry naming a root is a claim about a directory;
+    an entry whose ``rootPath`` resolves to the *caller's* directory is a claim
+    about whoever asks, and one such entry answers for every repository on the
+    machine at once. Two spellings reach that, and both are refused before
+    ``resolve()`` -- the call that would otherwise supply the missing half from
+    the working directory rather than refusing:
+
+    *Not absolute.* ``Path("").resolve()`` is the calling process's working
+    directory, and so are ``Path(".")``, ``Path("./")``, ``Path("demo/../.")``
+    and plain ``Path("demo/sub")``, none of which the old blank-string test
+    caught. Measured against a registry hand-edited to ``"rootPath": "."``, two
+    unrelated repositories both reported ``registered: true`` under that single
+    entry's id -- :meth:`id_for_root`'s misrouting, arriving through the file
+    rather than through the directory-name fallback.
+
+    *Absolute, and still the caller's directory.* On Linux ``/proc/self/cwd`` is
+    a symlink to exactly that, so it passes an absolute-spelling test and lands
+    on the same defect; measured in a Linux container, one such entry made every
+    repository report ``registered: true`` under its id. The whole
+    ``/proc/self`` family is per-process this way and macOS has no member of it,
+    which is why this is keyed on the *spelling* rather than probed: a guard
+    that only fires on the platform nobody develops on is a guard nobody's tests
+    reach. The first component of the lexically normalised path is what is
+    tested, so ``//proc/self/cwd`` and ``/tmp/../proc/self/cwd`` are refused
+    too, while ``/procession`` is not.
+
+    That guard is lexical and therefore bounded: a symlink on disk pointing into
+    ``/proc`` would still resolve there, and no test of the string can see it.
+    Deciding that would mean resolving first, which is the operation that
+    produces the cwd-valued answer in the first place. The threat this predicate
+    is sized for is a hand edit of the registry file, and against a hand edit the
+    spelling is the whole attack surface.
+
+    Nothing legitimate is refused by either: ``register`` writes
+    ``str(context.paths.root)``, :class:`Project` rejects a ``root_path`` that is
+    not absolute at construction, and a Git working tree does not live under
+    ``/proc``.
 
     **Resolved here rather than by each caller, which is the third way an entry
     can name no root.** ``Path.resolve`` raises ``ValueError`` on an embedded NUL
@@ -176,12 +207,17 @@ def entry_root(entry: object) -> Path | None:
     if not isinstance(entry, dict):
         return None
     root_path = entry.get("rootPath")
-    if not isinstance(root_path, str) or not root_path.strip():
+    if not isinstance(root_path, str):
         return None
     candidate = Path(root_path)
-    # Before `resolve()`, which is what would silently supply the missing half
-    # from the working directory rather than refusing.
+    # `""` and `"   "` need no test of their own: neither is absolute.
     if not candidate.is_absolute():
+        return None
+    # Normalised first, so the component test cannot be walked around with a
+    # `..` or a second leading slash. `posixpath` rather than `os.path` because
+    # the stored form is a POSIX absolute path on every platform.
+    normalised = PurePosixPath(posixpath.normpath(root_path))
+    if normalised.parts[1:2] == ("proc",):
         return None
     try:
         return candidate.resolve()

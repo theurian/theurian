@@ -1018,11 +1018,29 @@ def test_every_id_in_the_file_is_either_loaded_or_reported_unreadable(machine: P
     reaches a command the user retypes and JSON-file order would read
     differently on two machines holding the same registry.
 
-    The last two shapes are the ones `entry_root` handles after it has decided
-    the field is a non-empty string, and both were claimed by the docstring's
-    "every shape a hand edit leaves" without being written here: a path the
-    platform refuses to turn into one (an embedded NUL), and a path that is
-    merely relative. Deleting either guard used to leave this test green.
+    The last four shapes are the ones `entry_root` handles after it has decided
+    the field is a non-empty string, and all four were claimed by the
+    docstring's "every shape a hand edit leaves" without being written here: a
+    path the platform refuses to turn into one (an embedded NUL); a relative
+    path spelled with a leading dot and one spelled without, which a guard
+    narrowed to `startswith(".")` would let through; and an absolute path under
+    the per-process `/proc` namespace, which resolves to the caller's own
+    working directory on Linux. Deleting any of those guards used to leave this
+    test green.
+
+    `/proc/self/cwd` is asserted on every platform, macOS included. The guard is
+    a test on the *spelling*, not a probe of the filesystem, so what is pinned
+    here holds wherever the suite runs -- and the platform where it matters is
+    not the one this is usually run on, which is exactly why it must not be
+    skipped away.
+
+    It appears three times because a one-line spelling test has two ways round
+    it, and both resolve to the same place on Linux: a second leading slash,
+    which `PurePosixPath` keeps as a distinct root so `is_relative_to("/proc")`
+    reads `False`, and a `..` that arrives at `/proc` from somewhere else. The
+    guard normalises before testing the first component, and only these rows say
+    so -- with `/proc/self/cwd` alone, reverting to the simpler predicate is
+    green.
     """
     registry = ProjectRegistry.default(machine / "datadir")
     registry.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1038,6 +1056,10 @@ def test_every_id_in_the_file_is_either_loaded_or_reported_unreadable(machine: P
         "entry-is-null": None,
         "nul-in-root": {"rootPath": f"{machine}/\x00nul"},
         "relative-root": {"rootPath": "."},
+        "bare-relative-root": {"rootPath": "demo/sub"},
+        "per-process-root": {"rootPath": "/proc/self/cwd"},
+        "per-process-root-double-slash": {"rootPath": "//proc/self/cwd"},
+        "per-process-root-via-dotdot": {"rootPath": "/tmp/../proc/self/cwd"},  # noqa: S108
         "another-readable": {"rootPath": str(machine / "team-two" / "api")},
     }
     registry.path.write_text(json.dumps(raw), encoding="utf-8")
@@ -1047,6 +1069,7 @@ def test_every_id_in_the_file_is_either_loaded_or_reported_unreadable(machine: P
 
     assert loaded == {"readable", "another-readable"}
     assert unreadable == (
+        "bare-relative-root",
         "blank-root",
         "empty-root",
         "entry-is-a-list",
@@ -1055,6 +1078,9 @@ def test_every_id_in_the_file_is_either_loaded_or_reported_unreadable(machine: P
         "nul-in-root",
         "null-root",
         "numeric-root",
+        "per-process-root",
+        "per-process-root-double-slash",
+        "per-process-root-via-dotdot",
         "relative-root",
         "zebra-no-root-key",
     ), "reported in a stable order, and every shape a hand edit leaves is one of them"
