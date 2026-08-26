@@ -45,8 +45,9 @@ TRAILER_KEY: Final = "Review-Finding:"
 
 #: The separator between the two governed tokens and the free-text finding:
 #: SPACE, EM DASH (U+2014), SPACE. Pinned as a wire contract (ADR-0029 decision
-#: 2) -- 38 lines are already frozen in signed history, so a change to it is a
-#: breaking change with a migration cost, not a parser convenience.
+#: 2) -- 55 lines across 7 commits are already frozen in signed history (measured
+#: 2026-08-26 on ``origin/main`` @ ``4c4a784``), so a change to it is a breaking
+#: change with a migration cost, not a parser convenience.
 SEPARATOR: Final = " — "
 
 
@@ -98,10 +99,14 @@ class FindingSeverity(StrEnum):
 class MalformedTrailerError(DomainError):
     """A ``Review-Finding:`` trailer does not satisfy the normative grammar.
 
-    Raised rather than coerced: a first token that is not one of the three
-    reviewers, or a second that is not one of the four severities, is a malformed
-    trailer and never a new value (ADR-0029 decision 3). Refusing keeps the
-    governed vocabulary closed, which is the property the trust boundary rests on.
+    Raised rather than coerced: the parser refuses any first token that is neither
+    a canonical reviewer ``{code-review, security, adversarial}`` nor a registered
+    historical alias (``code`` -> ``code-review``, ADR-0029 Amendment 1's alias
+    note), and any second token that is not one of the four severities. Refusing an
+    *unknown* token -- rather than coining it -- keeps the governed vocabulary
+    closed, which is the property the trust boundary rests on (decision 3); the
+    alias set is a deliberate, recorded superset of the frozen installed base, not
+    a loosening of that closure.
 
     Carries the offending line and the reason so a reader can locate it, and a
     remedy naming the grammar. The line is a committed trailer frozen in signed
@@ -112,11 +117,14 @@ class MalformedTrailerError(DomainError):
     def __init__(self, line: str, reason: str) -> None:
         self.line = line
         self.reason = reason
+        # The reviewer and SEVERITY are SPACE-separated; the single spaced em dash
+        # separates SEVERITY from the finding. An earlier remedy put an em dash
+        # between reviewer and SEVERITY too -- a shape the parser itself rejects.
         self.remedy = (
             "A Review-Finding trailer is "
-            "'Review-Finding: <reviewer> — <SEVERITY> — <finding>' with "
+            "'Review-Finding: <reviewer> <SEVERITY> — <finding>' with "
             "reviewer one of code-review/security/adversarial, severity one of "
-            "CRITICAL/HIGH/MEDIUM/LOW, and the separator a spaced em dash."
+            "CRITICAL/HIGH/MEDIUM/LOW, and a spaced em dash before the finding."
         )
         super().__init__(f"Malformed Review-Finding trailer ({reason}): {line!r}")
 
