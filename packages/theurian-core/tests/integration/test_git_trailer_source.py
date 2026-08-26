@@ -33,9 +33,12 @@ from theurian.domain.review_finding import (
     ReviewerToken,
 )
 from theurian.infrastructure.git.trailer_source import (
+    _NUL,
     GitHistoryUnavailableError,
+    GitOutputFramingError,
     GitTrailerFindingSource,
     _decode_git_output,
+    _split_records,
 )
 
 pytestmark = pytest.mark.integration
@@ -909,3 +912,118 @@ def test_live_origin_main_accounts_for_every_trailer_loss_free() -> None:
         assert finding.pull_request is None
         assert finding.family is None
         assert finding.specialist is None
+
+
+# --- _split_records directly: framing branches and metadata rejection --------
+#
+# `_split_records` is exercised end-to-end above, but its framing branches (the
+# terminator-variant `pop`, the framing-error raise) never fire on this adapter's
+# separator-semantics `format:` output, so they would survive their own deletion
+# without these direct drivers. The metadata-rejection path (a year-10000 date) is
+# also pinned here at the split boundary where the mark is set.
+
+
+def _record_stream(*fields: str) -> str:
+    """Join raw fields with the adapter's real NUL separator (separator semantics).
+
+    A well-formed n-record stream is exactly ``3n`` fields joined by ``3n - 1``
+    NULs -- git's ``--format=format:`` output, which separates rather than
+    terminates records (no trailing NUL).
+    """
+    return _NUL.join(fields)
+
+
+def test_split_records_normal_separator_stream_yields_whole_records(tmp_path: Path) -> None:
+    """A ``3n``-token separator stream (real ``format:`` output) yields n parsed records.
+
+    Each record's committer date parses to an aware datetime, and an empty final
+    body is a legitimate field under separator semantics -- not a dropped terminator.
+    """
+    stream = _record_stream(
+        "a" * 40,
+        "2026-01-01T00:00:00+00:00",
+        "Review-Finding: security HIGH — one",
+        "b" * 40,
+        "2026-02-01T00:00:00+00:00",
+        "",
+    )
+    records = _split_records(stream, tmp_path)
+    assert [r.sha for r in records] == ["a" * 40, "b" * 40]
+    assert records[0].committed_at == datetime(2026, 1, 1, tzinfo=UTC)
+    assert records[1].committed_at == datetime(2026, 2, 1, tzinfo=UTC)
+    assert records[1].body == ""  # a legitimate empty final field, not a terminator artefact
+
+
+def test_split_records_tolerates_a_terminator_variant_trailing_empty_token(tmp_path: Path) -> None:
+    """A ``3n+1`` stream with a trailing empty token (a terminator ``-z``) drops exactly it.
+
+    Drives the defensive ``tokens.pop()`` branch: a git whose ``-z`` *terminates*
+    records would append one NUL after the last, leaving a trailing empty token. The
+    split must still yield n whole records rather than raise -- so the branch that
+    never fires on real ``format:`` output no longer survives its own deletion.
+    """
+    normal = _record_stream(
+        "a" * 40,
+        "2026-01-01T00:00:00+00:00",
+        "one",
+        "b" * 40,
+        "2026-02-01T00:00:00+00:00",
+        "two",
+    )
+    records = _split_records(normal + _NUL, tmp_path)  # the terminator variant's trailing NUL
+    assert [r.sha for r in records] == ["a" * 40, "b" * 40]
+    assert [r.body for r in records] == ["one", "two"]
+
+
+def test_split_records_rejects_a_misframed_3n_plus_1_stream(tmp_path: Path) -> None:
+    """A ``3n+1`` stream whose extra token is *non-empty* is genuinely mis-framed and refused.
+
+    Unlike the terminator variant (a trailing *empty* token), a non-empty extra
+    token cannot be a record boundary, so ``tokens.pop()`` must not fire and the
+    framing guard must raise ``GitOutputFramingError`` with a remedy -- driving the
+    raise branch that is otherwise dead against real output.
+    """
+    stream = _record_stream(
+        "a" * 40, "2026-01-01T00:00:00+00:00", "body", "a dangling non-empty token"
+    )
+    with pytest.raises(GitOutputFramingError) as caught:
+        _split_records(stream, tmp_path)
+    assert caught.value.remedy  # a remedy, not a bare stack trace
+    assert "4" in str(caught.value)  # the offending field count is reported
+
+
+def test_split_records_rejects_a_3n_plus_2_stream(tmp_path: Path) -> None:
+    """A ``3n+2`` stream partitions into no whole record and is refused.
+
+    ``% width == 2``, so the terminator-drop branch (which fires only at ``% width
+    == 1``) never touches it and the framing guard raises.
+    """
+    stream = _record_stream(
+        "a" * 40, "2026-01-01T00:00:00+00:00", "body", "b" * 40, "2026-02-01T00:00:00+00:00"
+    )
+    with pytest.raises(GitOutputFramingError):
+        _split_records(stream, tmp_path)
+
+
+def test_split_records_marks_a_year_10000_date_unrepresentable(tmp_path: Path) -> None:
+    """A record whose committer date is year 10000 is carried with ``committed_at=None``.
+
+    This is the metadata-rejection signal ``load_findings`` accounts as a rejected
+    record. ``_split_records`` does not raise on it; it marks the date
+    unrepresentable and preserves the raw ``%cI`` verbatim for the rejection reason.
+    """
+    stream = _record_stream("a" * 40, "10000-01-02T00:00:00Z", "Review-Finding: security HIGH — x")
+    (record,) = _split_records(stream, tmp_path)
+    assert record.committed_at is None
+    assert record.date_iso == "10000-01-02T00:00:00Z"
+    assert record.sha == "a" * 40
+
+
+def test_split_records_empty_stream_yields_no_records(tmp_path: Path) -> None:
+    """An empty stdout partitions to zero records via the pop branch, not a framing error.
+
+    ``"".split(NUL)`` is a single empty token; the terminator-drop branch removes it
+    (``1 % 3 == 1`` and it is empty), leaving zero tokens and zero records rather
+    than a spurious ``GitOutputFramingError``.
+    """
+    assert _split_records("", tmp_path) == []
