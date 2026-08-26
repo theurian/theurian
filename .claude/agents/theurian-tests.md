@@ -63,8 +63,13 @@ a real object to a mock; mocks confirm that code calls what you told it to call.
 
 ## Before you report done
 
-Run the full suite, not just your file. Report: what you added, which mutation
-you used to prove each new test can fail, and any coverage gap you found but did
-not close.
+While iterating, run your file's scope (`uv run python -m pytest tests/<path>
+-q` or `-k <pattern>`), not the whole suite. Run the full suite once, just
+before the first push that opens the Draft PR; after that, CI runs it on every
+push, so re-running it locally as a habit only burns wall clock and manufactures
+machine-contention flakes. State which scope ran in your report — an unqualified
+"GREEN" means the full suite, and claiming it from a narrow run is a false
+report. Report: what you added, which mutation you used to prove each new test
+can fail, and any coverage gap you found but did not close.
 
 Report in Japanese.
