@@ -56,6 +56,24 @@ def test_a_message_under_the_bound_reaches_the_terminal_intact() -> None:
     assert "truncated" not in detail
 
 
+def test_a_message_exactly_at_the_bound_is_not_cut() -> None:
+    """The boundary itself, where ``<= MAX_FAILURE_DETAIL_CHARS`` and ``<`` diverge.
+
+    A detail exactly ``MAX_FAILURE_DETAIL_CHARS`` long is inside the bound and must
+    reach the terminal whole. Without this case the ``<=`` -> ``<`` mutation
+    survives the suite: the under-bound control above passes at one below the
+    limit, and the over-bound case passes far above it, so the one length where the
+    comparison's own boundary lives goes unmeasured.
+    """
+    message = "m" * (MAX_FAILURE_DETAIL_CHARS - len("_VerboseError: "))
+
+    detail = failure_detail(_VerboseError(message), for_publication=False)
+
+    assert len(detail) == MAX_FAILURE_DETAIL_CHARS
+    assert detail == f"_VerboseError: {message}"
+    assert "truncated" not in detail
+
+
 def test_a_message_past_the_bound_is_cut_and_says_so() -> None:
     """The bound is on the whole detail, which is what the constant's name claims.
 
