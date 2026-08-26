@@ -184,7 +184,7 @@ Trailer C —
 | `pullRequest` | `#369` |
 | `date` | `2026-08-26` |
 | `family` (derived) | `unclassified` — a prose self-contradiction is not a disclosure-shaped observable; it maps to no member of the current taxonomy, which is why decision 4 mandates a residual value |
-| `specialist` (derived) | `unclassified` (residual) — `6c3019c` changed only `.claude/agents/theurian-*-review.md` (reviewer definitions) and `CLAUDE.md` (orchestration), none of which is a row in the work-ownership map, so the changed-file ∩ ownership-map intersection is **empty** → residual, exactly as `family` took `unclassified` above |
+| `specialist` (derived) | `unclassified` (residual) — `6c3019c` changed only `.claude/agents/theurian-*-review.md` (reviewer definitions) and `CLAUDE.md` (orchestration), none of which is owned by an *implementer* specialist — the map's only reviewer row (*Review → the three reviewers*) names reviewers, not an implementer owner the recurrence query keys on — so the changed-file ∩ ownership-map intersection over implementer owners is **empty** → residual, exactly as `family` took `unclassified` above |
 
 Trailer C is the honest residual case for **both** derived labels, and it is the
 one that shows the rule producing its own output rather than a hand-assigned one.
@@ -192,8 +192,10 @@ Its `family` is `unclassified` because the observable-family table is a
 *disclosure* taxonomy and a prose self-contradiction fits none of its members. Its
 `specialist` is `unclassified` because the fixing commit changed only
 reviewer-agent definitions and `CLAUDE.md`, which no row of the current
-work-ownership map owns — so the changed-file ∩ ownership-map intersection is
-empty. Both derivations are best-effort, and Trailer C is where each honestly
+work-ownership map owns — the map's reviewer row (*Review → the three reviewers*)
+is not an implementer owner the recurrence query keys on — so the changed-file ∩
+ownership-map intersection over implementer owners is empty. Both derivations are
+best-effort, and Trailer C is where each honestly
 returns its residual instead of force-fitting a label: `family` is not pushed into
 a disclosure box, and `specialist` is not guessed from a file the map does not
 cover. (That the ownership map does not yet cover orchestration files and reviewer
