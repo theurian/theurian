@@ -104,10 +104,22 @@ does **not** carry are marked *derived* rather than left blank.
 | `findingText` | the free-text remainder after the ` — ` separator | trailer text | **untrusted** authored content (decision 3) |
 | `commitSha` | the commit the trailer was parsed from | `SourceAnchor.commitSha` (FR-S3) | trusted Git metadata |
 | `provider` | `git` | `SourceAnchor.provider` (FR-S3) | fixed |
-| `pullRequest` | the PR number the fix merged under | derived from the squash-merge subject's `(#N)`, cross-checked against the GitHub merge API when the API arm is present | trusted Git/GitHub metadata |
+| `pullRequest` | the PR number the fix merged under | the **trailing** `(#N)` on the squash-merge subject (see the note below), cross-checked against the GitHub merge API when the API arm is present | trusted Git/GitHub metadata |
 | `date` | the commit date | Git commit metadata | trusted Git metadata |
 | `family` | one member of the observable-family taxonomy, or a residual `unclassified` | **derived** by classification (FR-V2), *not parsed from `findingText`* | derived label (decision 4) |
 | `specialist` | one owner from the work-ownership map | **derived** from the fixing commit's changed-file set intersected with the ownership map, *not parsed from `findingText`* | derived label |
+
+**`pullRequest` is the *trailing* `(#N)`, byte-precisely.** GitHub appends the PR
+number as a trailing `(#N)` when it squash-merges, so the PR number is the **last**
+`(#N)` on the subject line, not the first. This distinction is load-bearing on
+this repo's real history: measured 2026-08-26, **6 of the last 40 subjects on
+`main` carry two `(#N)`** (`git log origin/main --format='%s' -40 | grep -cE
+'\(#[0-9]+\).*\(#[0-9]+\)'` → 6), for example
+`fix(security): scan what accept lands … (#349) (#363)`, where `#349` is the
+*issue* reference and the trailing `#363` is the PR. A naive first-match would
+extract the issue number as `pullRequest`. The git-native rule is therefore **the
+trailing token**; the GitHub-API arm, when present, cross-checks it against the
+merge metadata.
 
 **`family` and `specialist` are derived, not parsed, and that is the load-bearing
 choice.** The one-line finding text does not carry them — a reviewer writes
