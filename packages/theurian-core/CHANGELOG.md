@@ -12,6 +12,47 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — `theurian project status` publishes `registered` about the
+  registry rather than about whether the project resolved, and stops guessing
+  `indexStale`** ([#226](https://github.com/theurian/theurian/issues/226)).
+
+  **Old behaviour:** every failure to resolve the project — an unreadable
+  `.theurian/migrations`, a malformed migration, a state schema that will not
+  parse — published `registered: false`, because the payload asked the registry
+  "is *anything* registered?" and a healthy registry answers that no. So a
+  registered project with `chmod 000 .theurian/migrations` reported
+  `registered: false` while `theurian project list`, reading the same file in the
+  same second, listed its `rootPath` at `count: 1`; and a root the registry held
+  under *two* ids — named twice, both entries readable — reported
+  `registered: false` as well. The same payload published a hardcoded
+  `indexStale: false`, claiming a fresh index for a directory nothing had looked
+  at.
+
+  **New behaviour:** `registered` is `true` when the registry holds this root,
+  `null` when the registry cannot say, and `false` only when a readable registry
+  genuinely lacks it. The two cases above are now `true`. `null` is unchanged in
+  meaning and in reach — a file that does not parse, one that cannot be opened,
+  or one holding an entry that names no root and so cannot be ruled out as a
+  second registration of this same directory — and a directory outside a Git
+  working tree still reports `false`, because no entry could be about it.
+  `indexStale` is now **absent** from the unresolved payload rather than `false`
+  or `null`: nothing on that branch reads the active state pointer or computes a
+  state hash, and this payload already spells that distinction — `null` is
+  "asked, and the answer is unknowable", absence is "never asked", which is why
+  `statePointerCorrupt` has always been absent there. The resolved payload is
+  untouched and still publishes `indexStale` as a boolean.
+
+  **What a consumer changes:** code indexing `payload["indexStale"]`
+  unconditionally must use `.get()` or branch on `reason`, which is the field
+  that distinguishes the two payload shapes. Code reading `registered` as a
+  boolean must handle `null` on this branch as it already had to on the resolved
+  one. The bundled Claude Code plugin's session-start hook needs no edit — it
+  greps for `"registered": *false` and `"indexStale": *true` — but its behaviour
+  changes with the values: it no longer tells a user to register a repository
+  that the registry already holds.
+
 ### Fixed
 
 - **`doctor` and `theurian migrate validate` no longer disagree about the same
