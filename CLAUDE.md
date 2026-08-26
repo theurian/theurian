@@ -33,9 +33,9 @@ is correct. Splitting implementation from judgement is what makes a round mean
 anything.
 
 What the orchestrator keeps: deciding what to assign, to whom and in what order;
-writing each brief (see *The assignment brief*); **verifying returned work by
-running it, never by reading it**; weighing findings against the severity rules
-below; relaying results to the user.
+writing each brief — assignment (*The assignment brief*) and review (*The review
+round*); **verifying returned work by running it, never by reading it**; weighing
+findings against the severity rules below; relaying results to the user.
 
 Two narrow exceptions, both stated in the response when used:
 
@@ -76,9 +76,9 @@ partition:
 
 **Definition of Ready:** no assignment dispatches until reproduce → measured file
 set → acceptance criteria → fences are written — the first two are *Independence
-is a measured file set*, the last two are here. **INVEST** is the admission test:
-dispatch a unit only when it is Independent (its own measured file set), Small
-(within the cluster cap), and Testable (every AC names a check):
+is a measured file set, not an issue title*, the last two are here. **INVEST** is
+the admission test: dispatch a unit only when it is Independent (its own measured
+file set), Small (within the cluster cap), and Testable (every AC names a check):
 
 1. **Scope and acceptance criteria.** Scope names the requirement IDs
    (FR-*/SEC-*) and ADRs the change touches; AC are written before dispatch in
@@ -88,7 +88,8 @@ dispatch a unit only when it is Independent (its own measured file set), Small
    verification: a named test, a measurement, or a search command.
 2. **Do** — the change itself.
 3. **Non-goals** — the scope DON'T. An adjacent finding is box-split into its own
-   issue, never folded in (*A class stops expanding on a budget*).
+   issue, never folded in (*A class stops expanding on a budget, not on running
+   dry*).
 4. **Fences** — the operational DON'T. Restate the applicable global fences *in*
    the brief; reading them once elsewhere measurably does not prevent the act
    (*Running the CLI on a development machine*).
@@ -106,7 +107,7 @@ happened, in order:
 
 1. **Implement — by assignment, never by the orchestrator** (see above): scoped
    tests green per logical commit, a commit *each time* they go green, the full
-   gate once before the Draft PR (see *Commits and local safety*):
+   gate once before the Draft PR opens (see *Commits and local safety*):
    `uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest -q`
 2. **Run it for real.** A scratch script or a real CLI invocation against a
    temporary `HOME` and `THEURIAN_DATA_DIR` — which contains the writes and not
@@ -205,18 +206,20 @@ round. **Everywhere else that hour is overhead** — spending it everywhere trip
 hours-per-unit-of-work while output stayed flat — so outside the top row
 **adversarial review runs async, after merge**: a standing red-team sweep over
 `main`, nightly single-file mutation runs included, whose findings enter the
-filing-time triage like any other (building the sweep and its ratchet is tracked
-in [#378](https://github.com/theurian/theurian/issues/378); until it runs the
-top-row sync round is the guarantee). Async adversarial on a *disclosure* surface
-is the one trade that never pays — it swaps a sync hour for an embargo week, six
-GHSAs at days each.
+filing-time triage like any other. Building that sweep and its ratchet is tracked
+in [#378](https://github.com/theurian/theurian/issues/378), and until it runs the
+**middle** row is the one left uncovered — the top row is sync either way. So
+while #378 is open, a middle-row change whose claim the routing table sends to
+the adversarial reviewer gets that review **sync**, or the PR says the claim went
+unattacked. Async adversarial on a *disclosure* surface is the one trade that
+never pays — it swaps a sync hour for an embargo week, six GHSAs at days each.
 
 So weigh the review before dispatching it, not after:
 
 | Blast radius of a wrong change | Review weight |
 | :-- | :-- |
 | Disclosure, governed state, security claims, wire contract | Full **sync** round — all three, before the flip |
-| Behaviour a trier runs, but no disclosure surface | Code review sync; adversarial async, when the claims table calls it |
+| Behaviour a trier runs, but no disclosure surface | Code review sync; adversarial async, when the claims table calls it. The async sweep is not built yet ([#378](https://github.com/theurian/theurian/issues/378)) — until it runs, dispatch that adversarial review sync, or record in the PR that the claim went unattacked |
 | Prose, process guidance, CI plumbing, mechanical moves — wrong means "misleading, revertible" | One light pass (code review alone), same day, no round |
 
 **Static gates stay sync and strengthen — the ratchet:** every adversarial or
@@ -604,10 +607,10 @@ its language is the point.
   (`git commit -s`). One topic per PR.
 - **A commit is triggered by its scoped tests going green, not by the work being
   finished** — at that moment, not at the end of a review round and not batched
-  up for the flip to Ready; the full gate runs once before the Draft PR, and a
-  report names the scope it ran — an unqualified "GREEN" means the full gate.
-  Milestone 5 held 16,300 uncommitted lines for 28
-  hours; slicing them afterwards took three attempts, and the one that built
+  up for the flip to Ready; the full gate runs once before the Draft PR opens,
+  and a report names the scope it ran — an unqualified "GREEN" means the full
+  gate. Milestone 5 held 16,300 uncommitted lines for 28 hours; slicing them
+  afterwards took three attempts, and the one that built
   opens with a 13,434-line commit. Size was not the cause: a port signature
   change spread across layers, and a commit that removes an API without moving
   its consumers does not build — once they have landed separately, no ordering
@@ -693,24 +696,33 @@ is not "be careful":
   `git checkout -- .gitignore`, which discards every uncommitted change in that
   file. A `git checkout --` did exactly that to an uncommitted fix this
   milestone.
+- **Mutation runs get their own tree.** `tools/mutate.py` copies the checkout;
+  never clean a mutation up inside the tree you are editing.
 - **A daemon is gone when the port is free, not when a `kill` returned.** A
   `kill` handed a subshell's pid returns 0 and leaves the daemon running, and
   the survivor answers the *next* run's health probe — that is how a
   `daemon-running` step read `satisfied` in a measurement that needed `missing`.
-  **Dev-time daemon runs take `--port 7420`, and the check is two lines** — no
-  output from either means free:
+  **Dev-time daemon runs take `--port 7420`, and the check is two lines:**
 
   ```sh
   lsof -nP -iTCP:7420 -sTCP:LISTEN   # the thing under test
   lsof -nP -iTCP:7419 -sTCP:LISTEN   # where a run that forgot --port landed
   ```
 
-  The second line is not optional: the survivor this bullet exists to catch
-  comes from a run that omitted `--port`, and it lands on 7419, not 7420.
-
-  **A resident dogfood daemon owns 7419, so every dev CLI command defaults to it
-  and needs `--port 7420`; `uninstall` and `daemon stop` bite (the latter takes
-  no `--port` — use `--foreground` + Ctrl-C).** Full detail, table and re-count:
+  The second line is not optional, and what it means depends on whether a
+  resident daemon exists. **While none does, anything answering on 7419 is the
+  accident** — the survivor this bullet exists to catch comes from a run that
+  omitted `--port`, and such a run lands on 7419, not 7420 — so no output from
+  either line means free. **Once a resident dogfood daemon owns 7419**, that
+  line stops reading "free" and starts reading "the resident one, not mine", so
+  only the first line answers "is the thing under test gone". From that point
+  the six commands that take `--port` (`setup`, `doctor`, `uninstall`,
+  `auth rotate`, `daemon start`, `daemon status`) each need `--port 7420`, or
+  they describe or act on the resident daemon while reading as if they described
+  the thing under test. `uninstall` is the one that bites, since `--dry-run` is
+  mandated for it; `daemon stop` takes no `--port` at all, so a dev daemon is
+  started with `--foreground` and stopped with Ctrl-C in its terminal. Full
+  detail, table and re-count:
   [development.md](docs/contributing/development.md#running-the-daemon-on-a-development-machine).
 
 #### Registration: `--dry-run` is the only form to run here

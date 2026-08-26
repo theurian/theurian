@@ -19,6 +19,9 @@ So: after writing a test for behaviour X, **break X in the source, run the test,
 confirm it fails, and revert.** Report that you did it. If a test survives its
 subject being broken, the test is wrong, not the mutation.
 
+**Mutation runs get their own tree.** `tools/mutate.py` copies the checkout;
+never break-and-revert inside a tree another agent is editing.
+
 Watch for assertions that hold regardless of the implementation:
 
 - `assert count >= 0` on a quantity that cannot be negative
