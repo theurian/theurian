@@ -490,9 +490,16 @@ class _RegistryRead:
         Emitted beside a ``registered`` of ``None``, never alone: a payload that
         says "cannot know" without saying why is a status a user cannot act on.
 
-        Not the only reason ``registered`` can be ``None`` -- see :meth:`holds`
-        and :meth:`holds_root`, whose other case is explained by the
-        ``unreadable`` list instead.
+        Not the only reason ``registered`` can be ``None`` -- see
+        :meth:`holds_root`, whose other case is explained by the ``unreadable``
+        list instead.
+
+        Not reached on the unresolved branch at all, despite the first
+        paragraph: :func:`_unresolved_status` publishes ``exc``'s own ``reason``
+        and ``remedy``, so a ``registered: null`` caused by an unreadable
+        registry arrives there with the *resolution* failure's prose beside it
+        and no hint about the registry. Recorded rather than fixed here, because
+        the cure is a payload change and this is a docstring: issue #381.
         """
         if self.failure is None:
             return {}
@@ -504,50 +511,28 @@ class _RegistryRead:
             ),
         }
 
-    def holds(self, project_id: str) -> bool | None:
-        """Whether this id is registered, or ``None`` where the file cannot say.
-
-        **One of the two rules behind every ``registered`` field ``project
-        status`` emits, because its two branches disagreed.** The resolved
-        branch consulted only :attr:`failure` and so answered ``False`` for an
-        id whose *own* entry had become unreadable between ``resolve_context``'s
-        read and this one -- the exact guess
-        :meth:`ProjectRegistry.ids_for_root` refuses to make, made by the other
-        half of the same command.
-
-        The unresolved branch has no id to ask about and asks
-        :meth:`holds_root` instead. It used to pass ``None`` here, and the
-        answer to "is *nothing* registered?" was the whole of issue #226: on a
-        healthy registry it is ``False``, which the payload published as "this
-        repository is not registered" for a repository the very same file held.
-
-        Deliberately not "``None`` whenever anything is unreadable". An id
-        present in :attr:`entries` is registered whatever some *other* entry
-        looks like, and answering "cannot know" about something known is its own
-        false report.
-        """
-        if self.failure is not None:
-            return None
-        if project_id in self.entries:
-            return True
-        # Absent from `entries` is not absent from the *file*: `load` skips an
-        # entry that names no root path, and its id is still a key. `False` here
-        # would tell a user their project is unregistered while `project
-        # register` refuses to reuse the id and `project unregister` can still
-        # remove it.
-        return None if project_id in self.unreadable else False
-
     def holds_root(self, root: Path) -> bool | None:
         """Whether any entry registers this root, or ``None`` where it cannot say.
 
-        :meth:`holds`'s question asked the other way round, for the branch that
-        has no id to ask about. ``project status`` reaches it whenever
-        ``resolve_context`` fails, and *why* it failed is usually nothing to do
-        with registration -- an unreadable ``.theurian/migrations``, a malformed
-        migration, a state schema that will not parse. Answering ``False`` for
-        all of them made this command contradict ``project list`` about the same
-        file in the same breath, and told a user to run ``project register`` in a
-        repository that was already registered (issue #226).
+        **The single rule behind every ``registered`` field ``project status``
+        emits, on both of its branches.** It replaced a pair of id-keyed
+        answers, and each was wrong in its own direction.
+
+        The unresolved branch asked "is *anything* registered?" -- there is no id
+        to ask about when ``resolve_context`` has failed -- and a healthy
+        registry answers that ``False``. Since that failure is usually nothing to
+        do with registration (an unreadable ``.theurian/migrations``, a malformed
+        migration, a state schema that will not parse), the command contradicted
+        ``project list`` about the same file in the same breath and told a user
+        to run ``project register`` in a repository already registered.
+
+        The resolved branch asked about ``context.project_id``, which is only a
+        *proposal*: with no registry entry for the root, ``resolve_context``
+        falls back to the directory name. Two teams checking out ``api`` were
+        enough -- an unregistered ``team-two/api`` reported ``registered: true``
+        off ``team-one``'s entry. That is the misrouting
+        :meth:`ProjectRegistry.ids_for_root` exists to refuse, arrived at by the
+        one field that was not asking it. Both issue #226.
 
         The root is normalised through :func:`entry_root`, the predicate
         :meth:`ProjectRegistry.load` and :meth:`ProjectRegistry.ids_for_root`
@@ -555,16 +540,14 @@ class _RegistryRead:
         ``Path(...).resolve()`` here: two surfaces deriving one fact separately
         is how they come to disagree about it.
 
-        **An unreadable entry overrules a match, which is where this parts
-        company with :meth:`holds`.** There, a match wins over any other broken
-        entry, because "is this id a key of this file" stays decidable whatever
-        else is wrong. Here it does not: an entry `load` skips names no root to
-        compare against, so it cannot be ruled out as a *second* registration of
-        this same directory -- and answering ``True`` would settle a question
-        the missing field was the only thing that could have settled. That is
-        the refusal :meth:`ProjectRegistry.ids_for_root` makes, for the same
-        reason, and it is why it refuses every root rather than only the
-        plausible ones.
+        **An unreadable entry overrules a match.** An entry ``load`` skips names
+        no root to compare against, so it cannot be ruled out as a *second*
+        registration of this same directory -- and answering ``True`` would
+        settle a question the missing field was the only thing that could have
+        settled. That is the refusal :meth:`ProjectRegistry.ids_for_root` makes,
+        for the same reason, and it is why it refuses every root rather than only
+        the plausible ones. An id-keyed rule had no equivalent: "is this id a key
+        of this file" stays decidable whatever else is wrong.
 
         Broader than that refusal in one case, deliberately: an entry keyed by
         an id no consumer accepts is unreadable while still naming a root, so
@@ -1057,11 +1040,19 @@ def project_status(as_json: JsonOption = False) -> None:
         {
             "projectId": context.project_id.value,
             "root": str(context.paths.root),
+            # Keyed by the root published on the line above, never by the id
+            # beside it: `context.project_id` is `resolve_context`'s *proposal*,
+            # and for an unregistered repository that proposal is the directory
+            # name. Two teams checking out `api` made this field report
+            # `team-one`'s registration as `team-two`'s -- `true` for a root no
+            # entry names, while `project list`, `project register` and `setup`
+            # all answered by root and said unregistered (issue #226).
+            #
             # `None` is this command's "cannot know", and both branches now get
-            # it from `holds` rather than each deciding for itself -- which is
-            # how the resolved one came to answer `False` where the unresolved
+            # it from `holds_root` rather than each deciding for itself -- which
+            # is how the resolved one came to answer `False` where the unresolved
             # one answered `None` for the same file.
-            "registered": read.holds(context.project_id.value),
+            "registered": read.holds_root(context.paths.root),
             "initialized": context.paths.knowledge_dir.is_dir(),
             "stateHash": str(context.state_hash),
             "activeStateHash": None if active is None else str(active.state_hash),

@@ -437,13 +437,28 @@ def test_a_registered_repository_resolves_to_its_registered_id_without_the_flag(
 def test_an_unregistered_repository_falls_back_to_its_directory_name(machine: Path) -> None:
     """The registry answers for registered projects only. Before registration
     there is nothing to look up, and the directory name is still the proposal a
-    user is offered."""
-    fresh = _repo(machine, "team-three", name="payments")
+    user is offered.
+
+    The neighbour is registered first and the directory name deliberately
+    collides -- ``_repo``'s default, "two teams, one directory name: the
+    collision is the point". This test used to stand alone at
+    ``name="payments"``, where the fallback id matched no registry key and every
+    possible membership rule agreed by accident. With the collision in place
+    they separate: the fallback id ``api`` *is* a key, held by ``team-one``,
+    while nothing registers ``team-two``'s root. Judging membership by that id
+    answered ``True`` for an unregistered repository, disagreeing with
+    ``project list``, ``project register`` and ``setup`` about the same file.
+    """
+    _in(_repo(machine, "team-one"), "project", "register")
+    fresh = _repo(machine, "team-two")
 
     _, status = _in(fresh, "project", "status")
 
-    assert status["projectId"] == "payments"
-    assert status["registered"] is False
+    assert status["projectId"] == "api", "the derived default is still what a user is offered"
+    assert Path(status["root"]) == fresh.resolve(), "and it is offered for *this* root"
+    assert status["registered"] is False, (
+        "nothing names this root; the id it would take is another team's registration"
+    )
 
 
 def test_re_registering_the_same_root_stays_idempotent(machine: Path) -> None:
