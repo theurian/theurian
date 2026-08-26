@@ -305,28 +305,41 @@ writing the brief. It does not block the assignment, reassign the work, or fail 
 gate. The orchestrator reads the evidence and decides, exactly as it reads a
 search result today.
 
-### 6. The serving path never surfaces an embargoed finding
+### 6. This source holds no embargoed finding; the serving-layer rule is owed to any path that could
 
-**If a finding references a security advisory whose GHSA is not yet published, the
-serving path SHALL NOT serve that finding.** This is stated as **policy**, not as
-a list of advisory IDs, because its job is to hold for *future, unpublished*
-advisories — an ID list would be stale the moment the next advisory is drafted.
+**This ADR's git-history source ingests only public `main`.** Embargoed
+disclosure work lives on the private fork until its advisory ships (the project's
+embargo discipline), so nothing — branch, trailer, or CHANGELOG hint — reaches
+public `main` before publication. Public git-history ingestion therefore
+*structurally* excludes embargoed trailers: there is no embargoed
+`Review-Finding:` line on public `main` to ingest, and so none to serve. **On this
+source the embargo protection is structural, and it is the only mechanism there
+is** — the source cannot do better, because it has no way to check an advisory's
+state.
 
-- The refusal SHALL be **uniform**: the serving path must not distinguish "an
-  embargoed finding exists and is withheld" from "no such finding exists". A
-  distinguishable refusal is itself a disclosure channel — it tells the caller an
-  embargoed finding exists — and this closes the "error distinguishing
-  embargoed-exists from does-not-exist" family named in the closure argument
-  below.
-- There is a **structural backstop, and the policy holds regardless of it.**
-  Embargoed disclosure work lives on the private fork until its advisory ships
-  (the project's embargo rule), so nothing — branch, trailer, or CHANGELOG hint —
-  reaches public `main` before publication. Public git-history ingestion
-  therefore *structurally* excludes embargoed trailers: there is no embargoed
-  `Review-Finding:` line on public `main` to ingest. The policy is stated anyway,
-  for defense in depth, so that a finding that reaches the store through any
-  future path — a private-fork ingestion, a manual seed — is still fenced by a
-  rule at the serving layer and not only by where the branch lived.
+**Why this source cannot enforce a serving-layer embargo rule.** The finding
+record (decision 1) carries no advisory-reference or embargo-state field, and this
+ADR bounds its source to an offline `git log` that works with no network and no
+token (Context). Resolving whether a GHSA is published needs the GitHub
+advisories API, which this source explicitly excludes. A serving-layer rule of the
+form "never serve a finding whose advisory is unpublished" therefore **has no
+predicate it can evaluate on this source**: none of the 28 emitted trailers
+carries a `GHSA`, `CVE`, or advisory token to key on. Claiming the source enforces
+such a rule "regardless of" the structural constraint would be asserting a control
+the design cannot run — so this ADR does not claim it. The protection here is
+100% structural.
+
+**The serving-layer embargo rule is a requirement that binds any FUTURE
+non-public ingestion path** — a private-fork ingestion, a manual seed — that could
+carry an embargoed finding into the store. Its enforcement is **deferred to the
+path that has advisory context**: the FR-V GitHub-API arm can mark a finding
+`securityRelated` at ingestion time, where the advisory state is available, and
+then refuse it **uniformly** at serve — the refusal must not distinguish "an
+embargoed finding exists and is withheld" from "no such finding exists", or the
+refusal is itself a disclosure channel. That ingestion-time-marking-then-uniform-
+refusal mechanism is **owed future work for the path that has the advisory
+context, not something this offline source can or does enforce.** It is named
+here as owed, not claimed as holding.
 
 The dated census of which advisories are currently published is in the
 **non-normative appendix**, kept out of the normative text on purpose: a future
@@ -376,9 +389,11 @@ GHSA must not make this decision stale.
   candidate generation) is untouched. This ADR is the narrow, git-native floor of
   FR-V; the broader ingestion stays FR-V's, and the two share the finding record
   and the safety triple but not the source.
-- The embargo policy is a no-op on public `main` today, by the structural
-  backstop. It exists for the path that does not go through public `main`, and
-  costs nothing when no such path is in use.
+- On this ADR's source the embargo rule is a no-op **by construction, not by
+  luck**: the source ingests only public `main`, which structurally holds no
+  embargoed trailer, so there is nothing to refuse. That is correct-by-design, not
+  a gap. The serving-layer embargo rule is owed to any future non-public ingestion
+  path (decision 6), and costs this source nothing because no such path feeds it.
 - FR-T6 contradiction reporting between review knowledge and current specs
   becomes *possible* once findings are served corpus items, but it is not
   designed here — it is a downstream capability the served corpus enables.
@@ -491,9 +506,12 @@ Owed at implementation, each tied to the lane that will discharge it:
   serving path asserting `contentClassification: untrusted-knowledge`,
   `mayContainInstructions: true`, `executable: false` on a finding result, and a
   companion that the check can fail (a result missing the triple is rejected).
-- **The embargo boundary refuses uniformly** — a test that a finding tied to an
-  unpublished advisory is not served, and that its refusal is
-  indistinguishable from the "no such finding" response.
+- **Any future non-public ingestion path refuses an embargoed finding uniformly
+  at serve** — owed to *that* path (the FR-V GitHub-API arm that has advisory
+  context), not to this source, which structurally holds no embargoed trailer to
+  serve (decision 6). A test that a finding marked `securityRelated` for an
+  unpublished advisory is not served, and that its refusal is indistinguishable
+  from the "no such finding" response.
 - **The family-taxonomy items land through propose → guard → accept** — a
   corpus-governance test that the seeded taxonomy items are governed knowledge
   (ADR-0013), not written by fiat.
