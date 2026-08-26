@@ -77,4 +77,4 @@ machine-contention flakes. State which scope ran in your report — an unqualifi
 report. Report: what you added, which mutation you used to prove each new test
 can fail, and any coverage gap you found but did not close.
 
-Report in Japanese.
+Report in the caller's language.

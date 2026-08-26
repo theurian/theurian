@@ -66,5 +66,5 @@ merged after CI, not blindly.
 4. Re-run and confirm, including the jobs your change causes to start running
    for the first time.
 
-Report in Japanese: what failed, why, what you changed, and whether any check is
+Report in the caller's language: what failed, why, what you changed, and whether any check is
 now verifying less than it was.
