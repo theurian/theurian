@@ -63,8 +63,9 @@ a real object to a mock; mocks confirm that code calls what you told it to call.
 
 ## Before you report done
 
-While iterating, run your file's scope (`uv run python -m pytest tests/<path>
--q` or `-k <pattern>`), not the whole suite. Run the full suite once, just
+While iterating, run your file's scope (`uv run python -m pytest
+packages/theurian-core/tests/<path> -q` or `-k <pattern>`), not the whole
+suite. Run the full suite once, just
 before the first push that opens the Draft PR; after that, CI runs it on every
 push, so re-running it locally as a habit only burns wall clock and manufactures
 machine-contention flakes. State which scope ran in your report — an unqualified

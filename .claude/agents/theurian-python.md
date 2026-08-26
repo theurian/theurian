@@ -17,8 +17,8 @@ uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pyt
 
 **Scope while iterating; run the full gate once, before the Draft PR opens.**
 The command above is the *full* gate. While iterating, run the narrowest
-relevant scope instead — `uv run python -m pytest tests/<path> -q` or `-k
-<pattern>` — and a commit needs that scope green, not the full suite. Run the
+relevant scope instead — `uv run python -m pytest packages/theurian-core/tests/<path> -q`
+or `-k <pattern>` — and a commit needs that scope green, not the full suite. Run the
 full gate once, just before the first push that opens the Draft PR. After that,
 CI runs the full suite on every push, so re-running it locally as a habit only
 burns wall clock and manufactures machine-contention flakes. Every report states
