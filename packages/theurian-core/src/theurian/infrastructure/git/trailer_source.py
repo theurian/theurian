@@ -110,9 +110,13 @@ GIT_TIMEOUT_SECONDS: Final = 30.0
 #: (round-trip verified), so an RS/US framing is **forgeable**: an author could
 #: embed those bytes to inject a fabricated record carrying an attacker-chosen sha,
 #: date, subject and PR number, forging the FR-S3 provenance anchor. With ``git
-#: log -z`` the fields of each record are joined by NUL and each record is
-#: NUL-terminated, so the whole stream partitions unambiguously into fixed-width
-#: records that no commit content can reshape.
+#: log -z`` and the explicit ``format:`` prefix (:data:`_FORMAT`) the fields of
+#: each record are joined by NUL and records are NUL-*separated* -- ``format:`` is
+#: *separator* semantics, not the *terminator* semantics of ``tformat:`` or a bare
+#: format string, so there is no trailing NUL after the last record and a
+#: well-formed stream is exactly ``_FIELDS_PER_RECORD * n`` tokens (verified
+#: 2026-08-27). Either way NUL cannot occur in a field, so the stream partitions
+#: unambiguously into fixed-width records that no commit content can reshape.
 #: The literal byte that separates records in ``git log -z`` output -- this is what
 #: the *stdout* is split on. Distinct from :data:`_FORMAT`'s ``%x00`` placeholders,
 #: which are the text git expands into these bytes: an actual NUL in the argv would
@@ -270,7 +274,7 @@ class GitTrailerFindingSource:
             "--no-optional-locks",
             "--no-replace-objects",
             "log",
-            "-z",  # NUL-terminate each record (D4); pairs with the %x00 field seps
+            "-z",  # NUL-separate records (D4; `format:` separates, not terminates)
             PUBLIC_REF,
             f"--format={_FORMAT}",
         ]
@@ -372,9 +376,11 @@ def _parse_committer_date(date_iso: str) -> datetime | None:
 def _split_records(stdout: str, repo_root: Path) -> list[_Record]:
     """Split a ``git log -z`` stream into whole records, each date parsed.
 
-    The stream is every record's fields joined by NUL with each record
-    NUL-terminated (D4), so it partitions into an exact multiple of
-    :data:`_FIELDS_PER_RECORD` tokens. Because NUL cannot occur in a commit
+    The stream is every record's fields joined by NUL with records NUL-*separated*
+    (D4): ``--format=format:`` gives *separator* semantics, not the *terminator*
+    semantics of ``tformat:`` or a bare format string, so there is no trailing NUL
+    after the last record and a well-formed stream is exactly
+    :data:`_FIELDS_PER_RECORD` * n tokens. Because NUL cannot occur in a commit
     message, no field -- the multi-line body included -- can hold the separator, so
     the split is exact and needs no rejoining.
 
@@ -389,12 +395,19 @@ def _split_records(stdout: str, repo_root: Path) -> list[_Record]:
             failure).
     """
     tokens = stdout.split(_NUL)
-    # `git log -z` terminates the final record with a NUL, so a well-formed stream
-    # has one trailing empty token. Drop exactly that one, and only when the count
-    # says it is the terminator (``% width == 1``), so an empty final body -- a
-    # legitimate last field -- is never mistaken for it.
+    # Defensive, not the normal path: this adapter's `format:` separates records
+    # (no trailing NUL), so real output is exactly `_FIELDS_PER_RECORD * n` tokens
+    # and this branch does not fire. It is here only to tolerate a `-z` that
+    # *terminates* records instead (`tformat:`, or a future git default), which
+    # would leave one trailing empty token. Drop exactly that one, and only when the
+    # count says it is the terminator (`% width == 1`), so an empty final body -- a
+    # legitimate last field under separator semantics -- is never mistaken for it.
     if len(tokens) % _FIELDS_PER_RECORD == 1 and tokens[-1] == "":
         tokens.pop()
+    # Also defensive: separator output is always `3n`, so this refuses only a
+    # genuinely mis-framed stream (a git whose `-z` framing differs from both the
+    # separator and terminator shapes above). Commit-4's tests drive both branches
+    # so neither is dead code that would survive its own deletion.
     if len(tokens) % _FIELDS_PER_RECORD != 0:
         raise GitOutputFramingError(
             repo_root,
