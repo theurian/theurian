@@ -475,44 +475,99 @@ GHSA must not make this decision stale.
    one the finding is *against* is left to the implementation, which may keep all
    candidates rather than guess.
 
-## Closure argument: neither serving surface is a disclosure channel
+## Closure argument: no serving surface is a disclosure channel
 
-This ADR designs **two** future serving surfaces, so the disclosure families from
-the review-round table bind its closure argument on **both**:
+**The invariant is stated once, at the store, over every surface — not surface by
+surface.** A field-by-field argument over the per-record read does not close the
+design, because findings are served through more than one surface, and
+enumerating surfaces one at a time always leaves one out: an earlier draft of this
+argument named only the per-record read and the recurrence aggregate and missed
+the reverse relation graph and the review-unit view below. So the closure is not a
+per-surface checklist. It is a single property of the **population every surface
+derives from**.
 
-- **S1 — the per-record serve** of a finding record (decision 1): its fields
-  reach a caller.
+**The served population is per-caller.** A finding row that is withheld from a
+caller is **excluded from that caller's served population**. A row is withheld
+either because its advisory is embargoed (decision 6) *or* because the caller may
+not read it under any other withholding dimension — SEC-13 cross-project
+isolation, a sensitivity label, or a draft/rejected lifecycle status. The served
+population is therefore the embargo-cleared rows intersected with the rows this
+caller may read. On this ADR's source those other dimensions **degenerate**: the
+source ingests only public `main`, single-origin, and a finding record carries no
+sensitivity label and no draft/rejected status, so here *served = embargo-cleared*.
+That degeneration is a property of this source, named so it is not mistaken for
+the invariant — a future store that aggregates multi-project findings or attaches
+sensitivity restores the dimensions, and the per-caller filter is then the store's
+serving controls' to apply, the same deferral family #8 makes for lifecycle.
+
+**The invariant, over all surfaces and all value kinds.** Every value any serving
+surface publishes — a **field**, a **count**, an **edge** (or edge-set
+cardinality), or a **view member** — is a function of the caller's served
+population *only*. A withheld row contributes to no response on **any** surface.
+The surfaces the design defines today are instances of this, not the extent of it
+(including, but not limited to):
+
+- **S1 — the per-record read** (decision 1): a finding's fields;
 - **S2 — the recurrence aggregate** (decision 5): a `(family, specialist)` count
-  `N` reaches a caller.
+  `N`;
+- **Relation-graph traversal in either direction** (FR-K10, decision 1): the typed
+  `recorded-in` edges from a finding to its commit, PR, and issue, *and the
+  reverse* — "which findings `recorded-in` commit C?", "which findings relate to
+  issue #I?". A reverse query returns an **edge set** whose membership and
+  cardinality are a statistic over the findings sharing that node, and co-location
+  is the *standard* shape of this data, not an edge case: measured 2026-08-26,
+  `dd4b991` (#364) carries **17** `Review-Finding:` trailers on one commit/PR node,
+  `e39572c` **5**, `6c3019c` **3**
+  (`git log -1 --format=%b <sha> | grep -c 'Review-Finding:'`). A withheld finding
+  sharing a node with a served one must appear in neither that node's edge set nor
+  its cardinality;
+- **The FR-V6 review-unit (PR-level) Markdown view** (decision 4): its **members**
+  are the findings it lists — the same co-location enumeration as the reverse
+  relation query;
+- **Taxonomy search** (decision 4): the family corpus items are seeded from
+  `CLAUDE.md` static prose, independent of any finding, so they produce identical
+  responses across the two corpora below by construction;
+- **and any serving surface a future implementation adds.**
 
-A field-by-field argument over S1 alone does not close the design, because it
-never reaches S2's aggregate — an aggregate is a *statistic over rows the caller
-may not see*, family #4, and that family is where the earlier "every field of a
-record is a function of public metadata" argument fell short. So the eight
-observable families are evaluated over both surfaces below, each line marked with
-the surface it touches or the reason it is N/A for a read-only record derived from
-public git metadata:
+**Why the universal quantifier holds for a surface not yet built.** The exclusion
+is enforced **at the population the store serves from**, not surface by surface. A
+withheld row is not in the population any surface derives from, so no surface — the
+reverse relation traversal, the review-unit view, or one added next year — can
+expose its edge or its membership: there is no row there to expose. This is what
+makes "any future surface" safe *by construction*, rather than by remembering to
+patch each new surface as it lands, which is the failure a per-surface enumeration
+keeps reopening.
+
+The eight observable families from the review-round table are the checklist this
+population-level invariant must survive; each is marked with the surface it touches
+or the reason it is N/A for a read-only record derived from public git metadata:
 
 1. **A published field.** *(S1)* Every field of a finding record — `reviewer`,
    `severity`, `findingText`, `commitSha`, `pullRequest`, `date`, and the derived
    `family`/`specialist` — is a function of **public inputs only** (the public
    trailer plus public commit metadata). None is computed from still-withheld
    pre-fix content, so no served field varies with content the caller cannot read.
-2. **Which rows, or which part of a row, reached a field.** *(S1 + assignment-time
-   retrieval)* The record has no excerpt-selection or candidate-displacement step:
-   it publishes named fields verbatim, so there is no "which part of a row" choice
-   to leak. Which *findings* a decision-5 brief query returns is drawn from the
-   served/embargo-cleared population only, so a withheld finding cannot take a
-   candidate slot in the returned set.
+2. **Which rows, or which part of a row, reached a field.** *(S1, assignment-time
+   retrieval, reverse relation traversal, review-unit view)* The record has no
+   excerpt-selection or candidate-displacement step: it publishes named fields
+   verbatim, so there is no "which part of a row" choice to leak. Which *rows*
+   reach a response — the findings a decision-5 brief query returns, the edge set a
+   reverse `recorded-in` query returns for a shared commit/PR/issue node, and the
+   members a review-unit view lists — are all drawn from the caller's served
+   population only, so a withheld finding cannot take a slot in any returned set,
+   edge set, or view.
 3. **A duration.** *(N/A, with reason)* The design specifies no path whose latency
    varies with withheld content: the source is a batch parse of public git history
    and no served value's timing is documented to depend on a withheld row. A
    future serving path that adds a per-query timing surface inherits the T-17-class
    timing residual on that path, not on this record.
-4. **A statistic over rows the caller may not see.** *(S2)* The recurrence count
-   `N` is this family. It is closed by restricting the recurrence population to
-   embargo-cleared (served) rows (decision 5), so `N` cannot vary with a withheld
-   finding's existence.
+4. **A statistic over rows the caller may not see.** *(S2, reverse-relation
+   edge-set cardinality)* The recurrence count `N` is the leading case of this
+   family, and the cardinality of a reverse `recorded-in` edge set — how many
+   findings share a commit, PR, or issue node — is the same family on the relation
+   graph. Both are closed the same way: the population is restricted to the caller's
+   served rows (decision 5, and the served-population definition above), so neither
+   `N` nor an edge-set cardinality can vary with a withheld finding's existence.
 5. **An error that fires for one input and not another.** *(owed to the future
    non-public path)* On this ADR's source, structurally no embargoed finding
    exists to refuse (only public `main` is ingested), so the "embargoed-exists vs
@@ -522,12 +577,13 @@ public git metadata:
    or an aggregate over served rows, from public git metadata consumes no per-query
    resource whose magnitude reveals a withheld row — there is none in the source to
    reveal.
-7. **Another tool reaching the same content.** *(S1)* A finding's `findingText` is
-   a human one-line *summary* authored into a public commit on `main`; it is not
-   the pre-fix vulnerable content. The `recorded-in` relation points at the fixing
-   commit, whose *post-fix* state is public and whose *pre-fix* vulnerable content
-   never lands on public `main` (decision 6). So neither the text nor the relation,
-   reached through any tool, discloses a body or field the caller may not read.
+7. **Another tool reaching the same content.** *(S1, relation graph)* A finding's
+   `findingText` is a human one-line *summary* authored into a public commit on
+   `main`; it is not the pre-fix vulnerable content. The `recorded-in` relation
+   points at the fixing commit, whose *post-fix* state is public and whose *pre-fix*
+   vulnerable content never lands on public `main` (decision 6). So neither the text
+   nor the relation, reached through any tool, discloses a body or field the caller
+   may not read.
 8. **State, lifecycle, and concurrency artefacts.** *(N/A, deferred to the store's
    controls)* This ADR designs no index files, active pointer, or rebuild
    concurrency of its own: the parsed records are Canonical (decision 4) and any
@@ -541,15 +597,19 @@ finding's text rides inside a result marked `mayContainInstructions: true`, exac
 as a knowledge body does. This is a not-executed guarantee, not a not-disclosed one.
 
 **The closure, stated as one query against two corpora.** Take a finding corpus
-that holds a withheld row — an embargoed finding, or one otherwise withheld — and
-a corpus that never held it. **The two must produce identical responses on every
-serving surface the design defines — the per-record read (S1) and the recurrence
-aggregate (S2) — evaluated at all eight families above.** The refutable one-liner
-that carries it: **every published field and every published count is a function of
-embargo-cleared (served) rows only**, so a withheld row changes no response on any
-surface. This is stronger than "every field of a record is a function of public
-metadata": that argument never reached the aggregate, and the aggregate is exactly
-where the statistic family bites.
+that holds a withheld row — an embargoed finding, or one withheld under any other
+dimension above — and a corpus that never held it. **The two must produce
+identical responses on every serving surface, evaluated at all eight families
+above** — the per-record read (S1), the recurrence aggregate (S2), relation-graph
+traversal in either direction, the review-unit view, taxonomy search, and any
+surface added later. The refutable one-liner that carries it: **every published
+field, count, edge, and view member is a function of the served
+(withholding-cleared) rows only**, so a withheld row changes no response on any
+surface. This is stronger than both "every field of a record is a function of
+public metadata" (which never reached the aggregate) and a two-surface enumeration
+(which never reached the relation graph or the view): the property is stated over
+the population every surface derives from, so it binds surfaces the design has not
+yet named.
 
 ## Alternatives considered
 
