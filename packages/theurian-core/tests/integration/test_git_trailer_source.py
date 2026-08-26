@@ -153,7 +153,7 @@ def test_each_finding_anchors_to_its_commit(tmp_path: Path) -> None:
     assert finding.provider == "git"
     assert finding.anchor.commit_sha == sha
     assert finding.commit_sha == sha
-    assert finding.pull_request == 7
+    assert finding.pull_request is None  # derived None in this slice (D5)
 
 
 # --- AC-6: a total, stable order; two runs are byte-identical ---------------
@@ -259,18 +259,6 @@ def _remainder(trailer_line: str) -> str:
     return body.split(SEPARATOR, 1)[1]
 
 
-def _trailing_pr(subject: str) -> int | None:
-    """The trailing ``(#N)``, computed independently of the domain helper."""
-    stripped = subject.rstrip()
-    if not stripped.endswith(")"):
-        return None
-    open_paren = stripped.rfind("(#")
-    if open_paren == -1:
-        return None
-    token = stripped[open_paren + 2 : -1]
-    return int(token) if token.isdigit() else None
-
-
 def test_live_origin_main_maps_every_trailer_loss_free() -> None:
     """AC-1: one record per live trailer, byte-identical text, all fields set.
 
@@ -304,8 +292,9 @@ def test_live_origin_main_maps_every_trailer_loss_free() -> None:
         _remainder(ln) for ln in trailer_lines
     )
 
-    # Every decision-1 field is populated; family/specialist stay derived (None).
-    subjects: dict[str, str] = {}
+    # The governed fields are populated; the derived fields stay unset in this
+    # slice -- family/specialist (never parsed from the text) and pull_request
+    # (never guessed from the subject, D5).
     for finding in findings:
         assert isinstance(finding.reviewer, ReviewerToken)
         assert isinstance(finding.severity, FindingSeverity)
@@ -315,11 +304,4 @@ def test_live_origin_main_maps_every_trailer_loss_free() -> None:
         assert finding.date.tzinfo is not None
         assert finding.family is None
         assert finding.specialist is None
-        subjects.setdefault(finding.commit_sha, "")
-
-    # pullRequest cross-checks against each commit's own trailing (#N),
-    # computed by an independent helper so the adapter's rule is really tested.
-    for sha in subjects:
-        subjects[sha] = _git(repo, "log", "-1", "--format=%s", sha).strip()
-    for finding in findings:
-        assert finding.pull_request == _trailing_pr(subjects[finding.commit_sha])
+        assert finding.pull_request is None

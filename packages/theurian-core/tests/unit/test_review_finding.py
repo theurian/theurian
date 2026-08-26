@@ -1,9 +1,9 @@
 """The trailer grammar and the finding record (ADR-0029 decisions 1-3).
 
-Pure-domain tests: the grammar, the trust boundary (family/specialist derived,
-not parsed), and the trailing-``(#N)`` PR rule, none of which needs a git
-repository. The git adapter's scoping and loss-free mapping are exercised against
-real repositories in ``tests/integration/test_git_trailer_source.py``.
+Pure-domain tests: the grammar and the trust boundary (pull_request/family/
+specialist derived, not parsed), none of which needs a git repository. The git
+adapter's scoping and loss-free mapping are exercised against real repositories in
+``tests/integration/test_git_trailer_source.py``.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from theurian.domain.review_finding import (
     ReviewFinding,
     finding_from_trailer,
     parse_trailer_line,
-    pull_request_from_subject,
 )
 
 _WHEN = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
@@ -128,10 +127,10 @@ def test_family_and_specialist_are_never_parsed_from_the_text() -> None:
         f"Review-Finding: code-review MEDIUM — {text}",
         commit_sha=_SHA,
         committed_at=_WHEN,
-        subject="fix: something (#1)",
     )
     assert finding.family is None
     assert finding.specialist is None
+    assert finding.pull_request is None
     assert finding.finding_text == text
 
 
@@ -149,24 +148,6 @@ def test_finding_text_preserves_trailing_and_internal_bytes() -> None:
     text = "byte-identical body accepted under a second item id (recorded, #64)  "
     _, _, parsed = parse_trailer_line(f"Review-Finding: adversarial HIGH — {text}")
     assert parsed == text
-
-
-# --- the trailing (#N) PR rule (decision 1, MEDIUM-2) ----------------------
-
-
-@pytest.mark.parametrize(
-    ("subject", "expected"),
-    [
-        ("docs: add ADR-0029 (#368)", 368),
-        ("fix(security): scan what accept lands (#349) (#363)", 363),  # issue then PR
-        ("fix(security): scan what accept lands (#349) (#363) ", 363),  # trailing space
-        ("chore: no pr reference here", None),
-        ("feat: mentions (#349) mid-subject only", None),  # not trailing -> not the PR
-        ("feat: three refs (#1) (#2) (#3)", 3),
-    ],
-)
-def test_pull_request_is_the_trailing_reference(subject: str, expected: int | None) -> None:
-    assert pull_request_from_subject(subject) == expected
 
 
 # --- the record's construction invariants (decision 1) ---------------------

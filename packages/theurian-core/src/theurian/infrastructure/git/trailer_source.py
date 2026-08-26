@@ -111,12 +111,13 @@ GIT_TIMEOUT_SECONDS: Final = 30.0
 #: be rejected by ``subprocess`` ("embedded null byte"), so the format carries the
 #: escape and only the output carries the byte.
 _NUL: Final = "\x00"
-_FORMAT: Final = "format:%H%x00%cI%x00%s%x00%b"
+_FORMAT: Final = "format:%H%x00%cI%x00%b"
 
-#: sha, committer-date, subject, body. Exactly four -- not "at least four" as under
-#: the old US framing, because no field can contain the NUL separator, so the
-#: stream splits into an exact multiple of this width.
-_FIELDS_PER_RECORD: Final = 4
+#: sha, committer-date, body. Exactly three -- not "at least three" -- because no
+#: field can contain the NUL separator, so the stream splits into an exact multiple
+#: of this width. The subject is deliberately not read: it was only the source of
+#: the deleted ``pull_request`` heuristic (D5), and nothing else needs it.
+_FIELDS_PER_RECORD: Final = 3
 
 
 class GitHistoryUnavailableError(TheurianError):
@@ -191,13 +192,11 @@ class GitTrailerFindingSource:
         """
         records = _split_records(self._git_log(), self._repo_root)
         collected: list[tuple[tuple[datetime, str, int], ReviewFinding]] = []
-        for sha, committed_at, subject, commit_body in records:
+        for sha, committed_at, commit_body in records:
             for position, line in enumerate(commit_body.split("\n")):
                 if not line.startswith(TRAILER_KEY):
                     continue
-                finding = finding_from_trailer(
-                    line, commit_sha=sha, committed_at=committed_at, subject=subject
-                )
+                finding = finding_from_trailer(line, commit_sha=sha, committed_at=committed_at)
                 collected.append(((committed_at, sha, position), finding))
         collected.sort(key=lambda item: item[0])
         return tuple(finding for _, finding in collected)
@@ -254,14 +253,14 @@ class GitTrailerFindingSource:
         return env
 
 
-def _split_records(stdout: str, repo_root: Path) -> list[tuple[str, datetime, str, str]]:
-    """Split a ``git log -z`` stream into whole (sha, date, subject, body) records.
+def _split_records(stdout: str, repo_root: Path) -> list[tuple[str, datetime, str]]:
+    """Split a ``git log -z`` stream into whole (sha, date, body) records.
 
     The stream is every record's fields joined by NUL with each record
     NUL-terminated (D4), so it partitions into an exact multiple of
     :data:`_FIELDS_PER_RECORD` tokens. Because NUL cannot occur in a commit
-    message, no field -- subject or multi-line body included -- can hold the
-    separator, so the split is exact and needs no rejoining.
+    message, no field -- the multi-line body included -- can hold the separator, so
+    the split is exact and needs no rejoining.
 
     Raises:
         GitOutputFramingError: if the stream does not partition into whole records
@@ -273,7 +272,7 @@ def _split_records(stdout: str, repo_root: Path) -> list[tuple[str, datetime, st
     # `git log -z` terminates the final record with a NUL, so a well-formed stream
     # has one trailing empty token. Drop exactly that one, and only when the count
     # says it is the terminator (``% width == 1``), so an empty final body -- a
-    # legitimate 4th field -- is never mistaken for it.
+    # legitimate last field -- is never mistaken for it.
     if len(tokens) % _FIELDS_PER_RECORD == 1 and tokens[-1] == "":
         tokens.pop()
     if len(tokens) % _FIELDS_PER_RECORD != 0:
@@ -282,8 +281,8 @@ def _split_records(stdout: str, repo_root: Path) -> list[tuple[str, datetime, st
             f"git log -z stream has {len(tokens)} NUL-delimited fields, "
             f"not a multiple of {_FIELDS_PER_RECORD}",
         )
-    records: list[tuple[str, datetime, str, str]] = []
+    records: list[tuple[str, datetime, str]] = []
     for start in range(0, len(tokens), _FIELDS_PER_RECORD):
-        sha, date_iso, subject, body = tokens[start : start + _FIELDS_PER_RECORD]
-        records.append((sha, datetime.fromisoformat(date_iso), subject, body))
+        sha, date_iso, body = tokens[start : start + _FIELDS_PER_RECORD]
+        records.append((sha, datetime.fromisoformat(date_iso), body))
     return records

@@ -32,7 +32,6 @@ adapter that reads git:
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -49,13 +48,6 @@ TRAILER_KEY: Final = "Review-Finding:"
 #: 2) -- 38 lines are already frozen in signed history, so a change to it is a
 #: breaking change with a migration cost, not a parser convenience.
 SEPARATOR: Final = " — "
-
-#: The PR number GitHub appends when it squash-merges is the *trailing* ``(#N)``.
-#: A non-trailing ``(#N)`` is an issue reference, not the PR (decision 1's
-#: MEDIUM-2 fix): six of the last forty subjects on ``main`` carry two, e.g.
-#: ``... (#349) (#363)`` where ``#349`` is the issue and ``#363`` the PR. The
-#: ``$`` anchors to the trailing token so a first-match cannot take the issue.
-_TRAILING_PR: Final = re.compile(r"\(#(\d+)\)\s*$")
 
 
 class ReviewerToken(StrEnum):
@@ -74,8 +66,10 @@ class ReviewerToken(StrEnum):
 
 #: Non-canonical reviewer spellings the emitted installed base carries, each naming
 #: a reviewer that already exists. ``code`` is the code-review agent, abbreviated in
-#: the trailers of a merged PR (#226, measured 2026-08-26 on ``origin/main``): 9 of
-#: its lines read ``Review-Finding: code ...``. ADR-0029 decision 2 forbids the
+#: the trailers of one commit (``4c4a784``, merged by PR #379; measured 2026-08-26
+#: on ``origin/main``): 9 of its lines read ``Review-Finding: code ...`` -- the
+#: ``(#226)`` in that commit's subject is the *issue* it closed, not the PR.
+#: ADR-0029 decision 2 forbids the
 #: parser being stricter than the lines already frozen in signed history, so an
 #: emitted spelling of a *known* reviewer is normalised to its canonical token
 #: rather than refused -- it is ``code-review`` written short, not a new value
@@ -132,9 +126,11 @@ class ReviewFinding:
     """A canonical review finding parsed from one commit trailer (decision 1).
 
     The mapping from trailer to record is total: every element the grammar
-    carries maps to a named field, and the two fields the trailer does *not*
-    carry -- ``family`` and ``specialist`` -- are derived in a later slice and
-    left unset here rather than guessed from the untrusted text.
+    carries maps to a named field, and the three fields the trailer does *not*
+    carry -- ``pull_request``, ``family`` and ``specialist`` -- are derived in a
+    later slice and left unset here rather than guessed. ``family`` and
+    ``specialist`` would be guessed from the untrusted text; ``pull_request``
+    would be guessed from the subject, which is unreliable (see the field below).
     """
 
     reviewer: ReviewerToken
@@ -143,8 +139,17 @@ class ReviewFinding:
     finding_text: str
     #: Provenance (FR-S3): ``provider == "git"`` and a non-null ``commit_sha``.
     anchor: SourceAnchor
-    #: The trailing ``(#N)`` on the squash-merge subject, or ``None`` when the
-    #: subject carries no trailing PR token (e.g. a non-squash commit).
+    #: Derived, and ``None`` in this parse-only slice (ADR-0029 Amendment 1, D5).
+    #: The trailing ``(#N)`` on a squash-merge subject is *not* reliably the PR: a
+    #: subject often ends in the *issue* it closed. Measured 2026-08-26 on
+    #: ``4c4a784``, resolving each trailer commit's trailing token against the
+    #: GitHub API, **27 of 55 live findings (49.1%) would publish an issue number
+    #: as the PR** -- ``4c4a784``'s ``(#226)`` is issue #226 (real PR #379) and
+    #: ``ae2aea7``'s ``(#368)`` is issue #368 (real PR #382). The correct PR needs
+    #: the GitHub merge API, which AC-3's no-network property excludes from this
+    #: slice, so the derivation is left to the FR-V serving arm that has that
+    #: context. This measurement is recorded here so no later slice re-derives the
+    #: PR from the subject; the subject heuristic was deleted, not left dormant.
     pull_request: int | None
     #: The commit date, timezone-aware so a validity window is never silently
     #: shifted by a missing offset (the DTZ discipline this codebase enforces).
@@ -238,27 +243,15 @@ def parse_trailer_line(line: str) -> tuple[ReviewerToken, FindingSeverity, str]:
     return _reviewer(tokens[0], line=line), _severity(tokens[1], line=line), finding_text
 
 
-def pull_request_from_subject(subject: str) -> int | None:
-    """The PR number from a squash-merge subject's *trailing* ``(#N)``.
-
-    Returns ``None`` when the subject carries no trailing PR token. A ``(#N)``
-    that is not the last token is an issue reference and is deliberately ignored,
-    so ``... (#349) (#363)`` yields ``363`` (the PR), never ``349`` (the issue).
-    """
-    match = _TRAILING_PR.search(subject)
-    return int(match.group(1)) if match else None
-
-
-def finding_from_trailer(
-    line: str, *, commit_sha: str, committed_at: datetime, subject: str
-) -> ReviewFinding:
+def finding_from_trailer(line: str, *, commit_sha: str, committed_at: datetime) -> ReviewFinding:
     """Assemble a :class:`ReviewFinding` from a trailer line and its commit context.
 
-    Pure: the git I/O that produces ``commit_sha``, ``committed_at`` and
-    ``subject`` lives in the infrastructure adapter, so the whole grammar and
-    derivation is unit-testable without a repository. ``family`` and
-    ``specialist`` are left unset -- they are derived later, never read from
-    ``line`` (decision 1).
+    Pure: the git I/O that produces ``commit_sha`` and ``committed_at`` lives in
+    the infrastructure adapter, so the whole grammar is unit-testable without a
+    repository. ``pull_request``, ``family`` and ``specialist`` are left unset --
+    they are derived in a later slice, never read from ``line`` (decision 1) and,
+    for ``pull_request``, never guessed from the subject (D5): the subject is not
+    passed in, so no code path can re-introduce the deleted heuristic.
     """
     reviewer, severity, finding_text = parse_trailer_line(line)
     return ReviewFinding(
@@ -266,6 +259,6 @@ def finding_from_trailer(
         severity=severity,
         finding_text=finding_text,
         anchor=SourceAnchor(provider="git", source_uri=commit_sha, commit_sha=commit_sha),
-        pull_request=pull_request_from_subject(subject),
+        pull_request=None,
         date=committed_at,
     )
