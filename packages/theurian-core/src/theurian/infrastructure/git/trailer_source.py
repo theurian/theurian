@@ -94,18 +94,29 @@ _INHERITED_GIT_OVERRIDES: Final = frozenset(
 #: is generous for a full-history read that is still local and I/O-cheap.
 GIT_TIMEOUT_SECONDS: Final = 30.0
 
-#: Record and field separators. ``git log`` emits one record per commit, each
-#: opened by RS (0x1e) and its fields joined by US (0x1f); ``%b`` (the body)
-#: carries newlines of its own, so a newline-delimited format could not be
-#: reassembled. Both are C0 control characters that do not occur in authored
-#: commit text, so they partition the stream unambiguously.
-_RS: Final = "\x1e"
-_US: Final = "\x1f"
-_FORMAT: Final = f"format:{_RS}%H{_US}%cI{_US}%s{_US}%b"
+#: The field/record separator (ADR-0029 Amendment 1, D4). NUL is the one byte
+#: git **forbids** in a commit message (verified 2026-08-26:
+#: ``error: a NUL byte in commit log message not allowed``), so an author cannot
+#: place it in a subject or body -- which is exactly why the framing bytes must be
+#: NUL and not RS (0x1e)/US (0x1f). RS/US are *permitted* in a commit body
+#: (round-trip verified), so an RS/US framing is **forgeable**: an author could
+#: embed those bytes to inject a fabricated record carrying an attacker-chosen sha,
+#: date, subject and PR number, forging the FR-S3 provenance anchor. With ``git
+#: log -z`` the fields of each record are joined by NUL and each record is
+#: NUL-terminated, so the whole stream partitions unambiguously into fixed-width
+#: records that no commit content can reshape.
+#: The literal byte that separates records in ``git log -z`` output -- this is what
+#: the *stdout* is split on. Distinct from :data:`_FORMAT`'s ``%x00`` placeholders,
+#: which are the text git expands into these bytes: an actual NUL in the argv would
+#: be rejected by ``subprocess`` ("embedded null byte"), so the format carries the
+#: escape and only the output carries the byte.
+_NUL: Final = "\x00"
+_FORMAT: Final = "format:%H%x00%cI%x00%s%x00%b"
 
-#: sha, committer-date, subject, body -- four fields before the body may itself
-#: hold a US byte, which is why the body is rejoined rather than indexed.
-_MIN_FIELDS: Final = 4
+#: sha, committer-date, subject, body. Exactly four -- not "at least four" as under
+#: the old US framing, because no field can contain the NUL separator, so the
+#: stream splits into an exact multiple of this width.
+_FIELDS_PER_RECORD: Final = 4
 
 
 class GitHistoryUnavailableError(TheurianError):
@@ -127,9 +138,32 @@ class GitHistoryUnavailableError(TheurianError):
         super().__init__(f"Cannot read {PUBLIC_REF} history in {str(repo_root)!r}: {reason}")
 
 
+class GitOutputFramingError(TheurianError):
+    """``git log -z`` produced output the NUL framing could not partition.
+
+    Distinct from :class:`GitHistoryUnavailableError` (history unreachable) and
+    from a malformed trailer (the grammar failed): here ``git`` ran and the ref
+    resolved, but the byte stream did not split into an exact multiple of
+    :data:`_FIELDS_PER_RECORD` NUL-delimited fields. Because NUL cannot occur in a
+    commit message (D4), this is not an author-forgeable condition and should not
+    arise in practice; it signals a git version or invocation whose ``-z`` framing
+    differs from the one this adapter is written against, so the remedy names that
+    rather than a fetch or a trailer edit.
+    """
+
+    def __init__(self, repo_root: Path, reason: str) -> None:
+        self.repo_root = repo_root
+        self.reason = reason
+        self.remedy = (
+            f"git log -z output in {str(repo_root)!r} was not NUL-framed as expected; "
+            "report this with the installed git version, as it indicates a framing mismatch."
+        )
+        super().__init__(f"Corrupt git log framing in {str(repo_root)!r}: {reason}")
+
+
 @final
 class GitTrailerFindingSource:
-    """Reads ``Review-Finding:`` trailers from ``origin/main`` into findings.
+    """Reads ``Review-Finding:`` trailers from public history into findings.
 
     Satisfies :class:`~theurian.domain.ports.ReviewFindingSource` structurally.
     """
@@ -138,7 +172,7 @@ class GitTrailerFindingSource:
         self._repo_root = repo_root
 
     def load_findings(self) -> tuple[ReviewFinding, ...]:
-        """Every ``Review-Finding:`` trailer on ``origin/main``, in a total order.
+        """Every ``Review-Finding:`` trailer on public history, in a total order.
 
         A keyed line becomes a record or the load fails; there is no silent drop,
         so the mapping is loss-free (AC-1). The order is a total sort key --
@@ -148,17 +182,16 @@ class GitTrailerFindingSource:
         commit), and the date leads it only to make the order chronological.
 
         Raises:
-            GitHistoryUnavailableError: If ``git`` cannot run or ``origin/main``
-                does not resolve.
+            GitHistoryUnavailableError: If ``git`` cannot run or
+                ``refs/remotes/origin/main`` does not resolve.
+            GitOutputFramingError: If the ``git log -z`` stream does not partition
+                into whole NUL-delimited records.
             MalformedTrailerError: If a line carrying the trailer key does not
                 satisfy the grammar.
         """
-        body = self._git_log()
+        records = _split_records(self._git_log(), self._repo_root)
         collected: list[tuple[tuple[datetime, str, int], ReviewFinding]] = []
-        for record in body.split(_RS):
-            if not record:
-                continue
-            sha, committed_at, subject, commit_body = _split_record(record)
+        for sha, committed_at, subject, commit_body in records:
             for position, line in enumerate(commit_body.split("\n")):
                 if not line.startswith(TRAILER_KEY):
                     continue
@@ -182,6 +215,7 @@ class GitTrailerFindingSource:
             "--no-optional-locks",
             "--no-replace-objects",
             "log",
+            "-z",  # NUL-terminate each record (D4); pairs with the %x00 field seps
             PUBLIC_REF,
             f"--format={_FORMAT}",
         ]
@@ -220,18 +254,36 @@ class GitTrailerFindingSource:
         return env
 
 
-def _split_record(record: str) -> tuple[str, datetime, str, str]:
-    """Split one git-log record into sha, committer date, subject, and body.
+def _split_records(stdout: str, repo_root: Path) -> list[tuple[str, datetime, str, str]]:
+    """Split a ``git log -z`` stream into whole (sha, date, subject, body) records.
 
-    The body is rejoined on ``_US`` rather than indexed, so a body that itself
-    carried the separator byte would still reassemble whole.
+    The stream is every record's fields joined by NUL with each record
+    NUL-terminated (D4), so it partitions into an exact multiple of
+    :data:`_FIELDS_PER_RECORD` tokens. Because NUL cannot occur in a commit
+    message, no field -- subject or multi-line body included -- can hold the
+    separator, so the split is exact and needs no rejoining.
+
+    Raises:
+        GitOutputFramingError: if the stream does not partition into whole records
+            (real ``repo_root``, and a framing-specific remedy -- not the fetch
+            remedy of :class:`GitHistoryUnavailableError`, which is a different
+            failure).
     """
-    fields = record.split(_US)
-    if len(fields) < _MIN_FIELDS:
-        raise GitHistoryUnavailableError(
-            Path(),
-            f"git log record has {len(fields)} fields, expected at least {_MIN_FIELDS}",
+    tokens = stdout.split(_NUL)
+    # `git log -z` terminates the final record with a NUL, so a well-formed stream
+    # has one trailing empty token. Drop exactly that one, and only when the count
+    # says it is the terminator (``% width == 1``), so an empty final body -- a
+    # legitimate 4th field -- is never mistaken for it.
+    if len(tokens) % _FIELDS_PER_RECORD == 1 and tokens[-1] == "":
+        tokens.pop()
+    if len(tokens) % _FIELDS_PER_RECORD != 0:
+        raise GitOutputFramingError(
+            repo_root,
+            f"git log -z stream has {len(tokens)} NUL-delimited fields, "
+            f"not a multiple of {_FIELDS_PER_RECORD}",
         )
-    sha, date_iso, subject = fields[0], fields[1], fields[2]
-    body = _US.join(fields[3:])
-    return sha, datetime.fromisoformat(date_iso), subject, body
+    records: list[tuple[str, datetime, str, str]] = []
+    for start in range(0, len(tokens), _FIELDS_PER_RECORD):
+        sha, date_iso, subject, body = tokens[start : start + _FIELDS_PER_RECORD]
+        records.append((sha, datetime.fromisoformat(date_iso), subject, body))
+    return records
