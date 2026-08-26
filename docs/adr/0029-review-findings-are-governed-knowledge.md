@@ -267,6 +267,23 @@ reading the table from an orchestration file.
   AC-2's two named artifacts — the family-taxonomy items and the parsed finding
   records — both occupy the **Canonical** layer.
 
+**Why the finding record enters Canonical without a propose → accept gate, while
+the taxonomy items go through one.** FR-V4 forbids auto-approving a *candidate*
+("approval is a human act recorded as a migration",
+`docs/architecture/requirements-analysis.md`), and FR-I3 routes *AI writes* to
+proposal files rather than into approved state. Neither governs the finding
+record. The record is a normalized read of **human-authored, signed git-commit
+metadata that already exists in history** — it is not an AI write (no model
+produces it; FR-I3's subject is AI writes) and not an LLM `KnowledgeCandidate`
+awaiting human promotion (FR-V4/FR-V3's subject is model-generated candidates).
+Ingesting it is the same class of act as any FR-S1 source ingestion: a read of an
+existing source into the Canonical record of truth, carrying a `SourceAnchor`
+(FR-S3). The human accept gate already fired — when the maintainer authored and
+signed the commit whose trailer is now read — so FR-V4/FR-I3's approval gate does
+not apply a second time. The **family-taxonomy items** are the opposite case:
+they are *new* authored knowledge, so they land through propose → guard → accept
+per ADR-0013, as the first bullet of this decision states.
+
 The current membership of the table is **8 families** (measured 2026-08-26:
 `sed -n '/| Family | What it looked like/,/^\s*$/p' CLAUDE.md` lists eight body
 rows — a published field; which rows or which part of a row reached a field; a
