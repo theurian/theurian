@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from theurian.domain.review_finding import ReviewFinding
+from theurian.domain.review_finding import FindingLoad
 
 
 @runtime_checkable
@@ -32,15 +32,19 @@ class ReviewFindingSource(Protocol):
     resolved, in a deterministic, total order (decision 1, AC-6).
     """
 
-    def load_findings(self) -> tuple[ReviewFinding, ...]:
-        """Every finding the source resolves, in a stable, total order.
+    def load_findings(self) -> FindingLoad:
+        """Every keyed line the source resolves, accepted or rejected (D3).
 
-        A line carrying the trailer key is a finding or the load fails, never a
-        silent drop, so the mapping stays loss-free (AC-1).
+        The result is the pair ``(accepted findings, rejected lines)``: every
+        column-0 keyed line is accounted in exactly one tuple, never silently
+        dropped and never a fatal abort, so the mapping stays loss-free (AC-1). A
+        malformed line is captured as a :class:`~theurian.domain.review_finding.RejectedTrailer`
+        rather than raised, both tuples in a stable total order (AC-6).
 
         Raises:
-            MalformedTrailerError: If a line carrying the trailer key does not
-                satisfy the grammar. A source that reads external state may also
-                raise its own error when that state is unreachable.
+            An adapter that reads external state may raise its own error when that
+            state is unreachable (the git adapter raises
+            ``GitHistoryUnavailableError`` / ``GitOutputFramingError``); a malformed
+            trailer is *not* one of those -- it is a rejected record, not an error.
         """
         ...

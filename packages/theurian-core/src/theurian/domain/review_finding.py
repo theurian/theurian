@@ -185,6 +185,39 @@ class ReviewFinding:
         return sha
 
 
+@dataclass(frozen=True, slots=True)
+class RejectedTrailer:
+    """A column-0 ``Review-Finding:`` line whose value failed the grammar (D3).
+
+    Captured rather than raised or dropped: the corpus is signed and append-only,
+    so history cannot be edited, and a fail-the-whole-load design would let a
+    single quoted grammar example in any future commit body permanently brick the
+    entire corpus with no forward fix (ADR-0029 Amendment 1, D3). Carries enough to
+    locate the line -- the commit it is on, the raw line verbatim, and why it was
+    refused -- without pretending it is a finding.
+    """
+
+    commit_sha: str
+    raw_line: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class FindingLoad:
+    """The total result of a load: accepted findings and rejected keyed lines (D3).
+
+    **The accounting invariant (AC-1, loss-free):** every column-0
+    ``Review-Finding:`` line in the read history appears in exactly one of the two
+    tuples. A line is never silently dropped, and a single malformed line never
+    aborts the batch -- it is accounted as :class:`RejectedTrailer` while every
+    well-formed sibling still loads. This is what makes "loss-free" hold under a
+    corpus that cannot be edited.
+    """
+
+    accepted: tuple[ReviewFinding, ...]
+    rejected: tuple[RejectedTrailer, ...]
+
+
 def _reviewer(token: str, *, line: str) -> ReviewerToken:
     canonical = _REVIEWER_ALIASES.get(token)
     if canonical is not None:
@@ -211,7 +244,9 @@ def _severity(token: str, *, line: str) -> FindingSeverity:
 def parse_trailer_line(line: str) -> tuple[ReviewerToken, FindingSeverity, str]:
     """Split one trailer line into its governed tokens and its opaque text.
 
-    The remainder after the *first* separator is the finding text, returned
+    A trailer value is exactly one physical line (ADR-0029 Amendment 1, D2): there
+    is no folding and no continuation. The caller passes a single line, and the
+    remainder after the *first* separator is the finding text, returned
     byte-for-byte: a finding that itself contains a spaced em dash keeps it,
     because the split is on the first occurrence only (decision 2, the finding is
     opaque free text to end of line).

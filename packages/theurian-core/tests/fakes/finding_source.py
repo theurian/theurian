@@ -11,15 +11,20 @@ from __future__ import annotations
 
 from typing import final
 
-from theurian.domain.review_finding import ReviewFinding
+from theurian.domain.review_finding import FindingLoad, RejectedTrailer, ReviewFinding
 
 
 @final
 class FakeReviewFindingSource:
-    """Replays a preset finding tuple, in the order it was given."""
+    """Replays preset accepted findings and rejected lines (D3), in the given order."""
 
-    def __init__(self, findings: tuple[ReviewFinding, ...] = ()) -> None:
+    def __init__(
+        self,
+        findings: tuple[ReviewFinding, ...] = (),
+        rejected: tuple[RejectedTrailer, ...] = (),
+    ) -> None:
         self._findings = findings
+        self._rejected = rejected
 
-    def load_findings(self) -> tuple[ReviewFinding, ...]:
-        return self._findings
+    def load_findings(self) -> FindingLoad:
+        return FindingLoad(accepted=self._findings, rejected=self._rejected)

@@ -19,7 +19,6 @@ from theurian.domain.review_finding import (
     SEPARATOR,
     TRAILER_KEY,
     FindingSeverity,
-    MalformedTrailerError,
     ReviewerToken,
 )
 from theurian.infrastructure.git.trailer_source import (
@@ -115,7 +114,7 @@ def test_source_reads_only_origin_main_not_local_branches(tmp_path: Path) -> Non
     # Deliberately NOT published. Leave HEAD on the embargo branch to prove the
     # adapter pins origin/main rather than reading the current branch.
 
-    findings = GitTrailerFindingSource(clone).load_findings()
+    findings = GitTrailerFindingSource(clone).load_findings().accepted
     texts = [f.finding_text for f in findings]
     assert "a public finding" in texts
     assert "an embargoed finding" not in texts
@@ -148,7 +147,7 @@ def test_each_finding_anchors_to_its_commit(tmp_path: Path) -> None:
     sha = _commit(clone, "fix: a change (#7)", "Review-Finding: adversarial MEDIUM — a finding")
     _publish(clone)
 
-    (finding,) = GitTrailerFindingSource(clone).load_findings()
+    (finding,) = GitTrailerFindingSource(clone).load_findings().accepted
     assert finding.anchor.provider == "git"
     assert finding.provider == "git"
     assert finding.anchor.commit_sha == sha
@@ -182,9 +181,9 @@ def test_two_runs_produce_a_byte_identical_sequence(tmp_path: Path) -> None:
     source = GitTrailerFindingSource(clone)
     first = source.load_findings()
     second = source.load_findings()
-    assert first == second  # byte-identical sequence across runs
-    assert [f.commit_sha for f in first] == [older, newer]  # oldest-first total order
-    assert [f.finding_text for f in first] == ["older", "newer"]
+    assert first == second  # byte-identical result across runs
+    assert [f.commit_sha for f in first.accepted] == [older, newer]  # oldest-first total order
+    assert [f.finding_text for f in first.accepted] == ["older", "newer"]
 
 
 def test_multiple_trailers_on_one_commit_all_map_in_body_order(tmp_path: Path) -> None:
@@ -204,7 +203,7 @@ def test_multiple_trailers_on_one_commit_all_map_in_body_order(tmp_path: Path) -
     )
     _publish(clone)
 
-    findings = GitTrailerFindingSource(clone).load_findings()
+    findings = GitTrailerFindingSource(clone).load_findings().accepted
     assert [f.finding_text for f in findings] == ["first", "second", "third"]
     assert {f.commit_sha for f in findings} == {sha}
 
@@ -212,18 +211,23 @@ def test_multiple_trailers_on_one_commit_all_map_in_body_order(tmp_path: Path) -
 # --- no silent drop, and an unreachable ref is an error --------------------
 
 
-def test_a_keyed_but_malformed_trailer_fails_the_load(tmp_path: Path) -> None:
-    """A line carrying the key but not the grammar is refused, never dropped.
+def test_a_keyed_but_malformed_trailer_is_rejected_not_raised(tmp_path: Path) -> None:
+    """A keyed line failing the grammar is captured as rejected, not fatal (D3).
 
-    The loss-free guarantee (AC-1) forbids silently skipping a keyed line, so a
-    malformed one surfaces as an error rather than a missing record.
+    The loss-free guarantee (AC-1) forbids silently skipping a keyed line; D3 also
+    forbids aborting the whole load on one, since the corpus is append-only. So a
+    malformed line lands in ``rejected`` while a well-formed sibling still loads.
     """
     _origin, clone = _origin_and_clone(tmp_path)
+    _commit(clone, "fix: good (#2)", "Review-Finding: security HIGH — a valid finding")
     _commit(clone, "fix: bad trailer (#3)", "Review-Finding: reviewer-x HIGH — text")
     _publish(clone)
 
-    with pytest.raises(MalformedTrailerError):
-        GitTrailerFindingSource(clone).load_findings()
+    load = GitTrailerFindingSource(clone).load_findings()
+    assert [f.finding_text for f in load.accepted] == ["a valid finding"]
+    assert len(load.rejected) == 1
+    assert load.rejected[0].raw_line == "Review-Finding: reviewer-x HIGH — text"
+    assert "reviewer-x" in load.rejected[0].reason
 
 
 def test_a_missing_public_ref_raises(tmp_path: Path) -> None:
@@ -279,18 +283,24 @@ def test_live_origin_main_maps_every_trailer_loss_free() -> None:
     if not _origin_main_present(repo):
         pytest.skip("origin/main is not present in this checkout")
 
-    findings = GitTrailerFindingSource(repo).load_findings()
+    load = GitTrailerFindingSource(repo).load_findings()
+    findings = load.accepted
 
     raw = _git(repo, "log", "origin/main", "--format=%b")
     trailer_lines = [ln for ln in raw.split("\n") if ln.startswith(TRAILER_KEY)]
 
-    # Total mapping: one record per keyed line, and there really are some.
-    assert len(findings) == len(trailer_lines) > 0
+    # Total accounting (D3, AC-1): every keyed line is accepted or rejected, none
+    # dropped, and there really are some.
+    assert len(load.accepted) + len(load.rejected) == len(trailer_lines) > 0
 
-    # Byte-identity of the opaque remainder, as a multiset.
-    assert Counter(f.finding_text for f in findings) == Counter(
-        _remainder(ln) for ln in trailer_lines
-    )
+    # On the current all-valid corpus nothing is rejected, so the accepted
+    # remainders must match the keyed lines byte-for-byte as a multiset. Guarded so
+    # a future malformed line lands the corpus in ``rejected`` without reddening
+    # this loss-free canary.
+    if not load.rejected:
+        assert Counter(f.finding_text for f in findings) == Counter(
+            _remainder(ln) for ln in trailer_lines
+        )
 
     # The governed fields are populated; the derived fields stay unset in this
     # slice -- family/specialist (never parsed from the text) and pull_request

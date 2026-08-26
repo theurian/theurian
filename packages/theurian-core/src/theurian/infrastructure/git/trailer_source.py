@@ -49,6 +49,9 @@ from typing import Final, final
 from theurian.domain.errors import TheurianError
 from theurian.domain.review_finding import (
     TRAILER_KEY,
+    FindingLoad,
+    MalformedTrailerError,
+    RejectedTrailer,
     ReviewFinding,
     finding_from_trailer,
 )
@@ -172,34 +175,56 @@ class GitTrailerFindingSource:
     def __init__(self, repo_root: Path) -> None:
         self._repo_root = repo_root
 
-    def load_findings(self) -> tuple[ReviewFinding, ...]:
-        """Every ``Review-Finding:`` trailer on public history, in a total order.
+    def load_findings(self) -> FindingLoad:
+        """Every ``Review-Finding:`` trailer on public history, accepted or rejected.
 
-        A keyed line becomes a record or the load fails; there is no silent drop,
-        so the mapping is loss-free (AC-1). The order is a total sort key --
-        ``(commit date, commit sha, position within the commit)`` -- so two runs
-        over the same history produce a byte-identical sequence (AC-6): the commit
-        sha alone is already total (a position disambiguates trailers sharing a
-        commit), and the date leads it only to make the order chronological.
+        **Extraction is a column-0 block, not git's own trailer parser** (D1): a
+        genuine trailer is a line beginning at column 0 with the exact key,
+        appearing anywhere in the commit body -- git's ``%(trailers)`` reads only
+        the last paragraph and would drop the ~82% of this repo's trailers that sit
+        ahead of the ``Signed-off-by:`` paragraph. **A trailer value is a single
+        physical line** (D2): each ``split("\\n")`` line is one value, and an
+        indented or wrapped continuation line is ordinary body text that does not
+        begin with the key, so it is ignored rather than folded in.
+
+        **The load is loss-free by accounting, not by aborting** (AC-1, D3): every
+        column-0 keyed line is either an accepted :class:`ReviewFinding` or a
+        :class:`RejectedTrailer` (its value failed the grammar). A malformed line is
+        captured, never silently dropped and never a fatal abort -- so one quoted
+        grammar example in a future commit body cannot brick the whole corpus.
+
+        Both tuples are in the same total order -- the sort key ``(commit date,
+        commit sha, position within the commit)`` -- so two runs over the same
+        history produce byte-identical sequences (AC-6): the commit sha alone is
+        already total (a position disambiguates lines sharing a commit), and the
+        date leads it only to make the order chronological.
 
         Raises:
             GitHistoryUnavailableError: If ``git`` cannot run or
                 ``refs/remotes/origin/main`` does not resolve.
             GitOutputFramingError: If the ``git log -z`` stream does not partition
                 into whole NUL-delimited records.
-            MalformedTrailerError: If a line carrying the trailer key does not
-                satisfy the grammar.
         """
         records = _split_records(self._git_log(), self._repo_root)
-        collected: list[tuple[tuple[datetime, str, int], ReviewFinding]] = []
+        accepted: list[tuple[tuple[datetime, str, int], ReviewFinding]] = []
+        rejected: list[tuple[tuple[datetime, str, int], RejectedTrailer]] = []
         for sha, committed_at, commit_body in records:
             for position, line in enumerate(commit_body.split("\n")):
                 if not line.startswith(TRAILER_KEY):
                     continue
-                finding = finding_from_trailer(line, commit_sha=sha, committed_at=committed_at)
-                collected.append(((committed_at, sha, position), finding))
-        collected.sort(key=lambda item: item[0])
-        return tuple(finding for _, finding in collected)
+                key = (committed_at, sha, position)
+                try:
+                    finding = finding_from_trailer(line, commit_sha=sha, committed_at=committed_at)
+                except MalformedTrailerError as exc:
+                    rejected.append((key, RejectedTrailer(sha, exc.line, exc.reason)))
+                else:
+                    accepted.append((key, finding))
+        accepted.sort(key=lambda item: item[0])
+        rejected.sort(key=lambda item: item[0])
+        return FindingLoad(
+            accepted=tuple(finding for _, finding in accepted),
+            rejected=tuple(entry for _, entry in rejected),
+        )
 
     def _git_log(self) -> str:
         # Top-level options (before ``log``) harden the read (ADR-0029 D7):
