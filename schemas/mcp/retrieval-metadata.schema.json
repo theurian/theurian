@@ -51,7 +51,7 @@
     },
     "stale": {
       "type": ["boolean", "null"],
-      "description": "Whether the index that answered was built from an earlier knowledge state than the one in the database. Null on the unranked path, where there is no index to compare.\n\nQuery-independent by construction, which is what makes it safe: it is the same for every query against this project at this moment, so it can be reported without saying that *this* query matched something withheld. A stale index returns fewer results, never wrong ones."
+      "description": "Whether the index that answered was built from an earlier knowledge state than the one in the database. Null on the unranked path, where there is no index to compare.\n\nQuery-independent by construction, which is what makes it safe: it is the same for every query against this project at this moment, so it can be reported without saying that *this* query matched something withheld. What staleness costs is which results come back and in what order: knowledge added since the build is missing, and the build's own ranking statistics still move hit order and which passage of a document is excerpted (T-17a). It does not extend to the authority of what does come back — every hit is resolved back through the canonical store, which drops one whose item is gone, whose status or classification has moved, or whose revision has been superseded, rather than serving what the build pinned (`CanonicalVisibility._may_surface`)."
     },
     "staleAgainst": {
       "enum": ["builtState", null],
