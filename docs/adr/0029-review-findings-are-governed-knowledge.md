@@ -495,8 +495,11 @@ not read it under any other withholding dimension — SEC-13 cross-project
 isolation, a sensitivity label, or a draft/rejected lifecycle status. The served
 population is therefore the embargo-cleared rows intersected with the rows this
 caller may read. On this ADR's source those other dimensions **degenerate**: the
-source ingests only public `main`, single-origin, and a finding record carries no
-sensitivity label and no draft/rejected status, so here *served = embargo-cleared*.
+source ingests only public `main`, and a finding record carries no sensitivity
+label and no draft/rejected status. SEC-13's isolation does not vanish — the
+standard `chunks.project_id` project filter still runs; it simply **narrows to one
+project**, because this source's findings all belong to a single project — so here
+*served = embargo-cleared*.
 That degeneration is a property of this source, named so it is not mistaken for
 the invariant — a future store that aggregates multi-project findings or attaches
 sensitivity restores the dimensions, and the per-caller filter is then the store's
@@ -531,14 +534,43 @@ The surfaces the design defines today are instances of this, not the extent of i
   responses across the two corpora below by construction;
 - **and any serving surface a future implementation adds.**
 
-**Why the universal quantifier holds for a surface not yet built.** The exclusion
-is enforced **at the population the store serves from**, not surface by surface. A
-withheld row is not in the population any surface derives from, so no surface — the
-reverse relation traversal, the review-unit view, or one added next year — can
-expose its edge or its membership: there is no row there to expose. This is what
-makes "any future surface" safe *by construction*, rather than by remembering to
-patch each new surface as it lands, which is the failure a per-surface enumeration
-keeps reopening.
+**Why the universal quantifier holds for a surface not yet built.** The
+served-population invariant states *what* must hold — every published value is a
+function of the caller's served population — but the store does not discharge it
+with one result-set filter, because a result-set filter is provably insufficient
+on two surfaces this project has taken CRITICALs on. It discharges the invariant
+through a **per-surface control applied over the served population**, and the kind
+of value the surface publishes chooses the control:
+
+- the **retrieval scope filter** (project/status/sensitivity) for the per-record
+  read (S1) and the recurrence aggregate (S2) — a WHERE predicate over the served
+  rows, evaluated at query time;
+- the **T-17a withdrawal→purge** for any *ranked-search* surface, because a surface
+  that publishes `fusedScore` (`mcp/search.py`) prices it over FTS5/BM25
+  **collection statistics computed at index-build time over the physical index
+  population** (`cli/index_commands.py`), not the query-time result set.
+  Restricting the result population does not clean those statistics, and a
+  tombstone does not move them either (established in Milestone 6); excluding a
+  withheld finding from a ranked surface is therefore a **physical purge**
+  (threat-model T-17a), not a filter;
+- the **per-edge `_relation_is_visible` authority gate** (`mcp/tools.py`) for
+  relation edges, because a population filter does not secure an edge: T-21
+  (GHSA-vx8x) published a `rejected` item's rejection `note` onto an approved item
+  through a `contradicts` edge, and closing it needed a per-endpoint authority read
+  of *each* end by the id it literally names — not a wider or narrower population.
+  (A `recorded-in` edge's endpoints are a commit sha, not a `KnowledgeItem`, so
+  `_relation_is_visible` fails closed on them today; a future surface serving that
+  edge owes its own per-edge gate.)
+
+So the universal quantifier holds not because one filter covers every surface, but
+because the invariant is enforced **at the served population by whichever control
+that surface's value kind requires**. This is a weaker, more honest claim than
+"one filter suffices": a surface is safe only once its control is applied over the
+served population — the store already provides these controls for the surfaces it
+serves, and a **new surface owes its own**. That owed discharge, not a property a
+future surface inherits for free, is the failure a per-surface enumeration keeps
+reopening; naming the control per value kind is what keeps "any future surface"
+from being read as safe by remembering to patch each new surface as it lands.
 
 The eight observable families from the review-round table are the checklist this
 population-level invariant must survive; each is marked with the surface it touches
@@ -564,12 +596,20 @@ or the reason it is N/A for a read-only record derived from public git metadata:
    future serving path that adds a per-query timing surface inherits the T-17-class
    timing residual on that path, not on this record.
 4. **A statistic over rows the caller may not see.** *(S2, reverse-relation
-   edge-set cardinality)* The recurrence count `N` is the leading case of this
-   family, and the cardinality of a reverse `recorded-in` edge set — how many
-   findings share a commit, PR, or issue node — is the same family on the relation
-   graph. Both are closed the same way: the population is restricted to the caller's
-   served rows (decision 5, and the served-population definition above), so neither
-   `N` nor an edge-set cardinality can vary with a withheld finding's existence.
+   edge-set cardinality, ranked-search collection statistics)* The recurrence count
+   `N` is the leading case of this family, and the cardinality of a reverse
+   `recorded-in` edge set — how many findings share a commit, PR, or issue node — is
+   the same family on the relation graph. Both are evaluated at query time, and both
+   are closed by restricting the population to the caller's served rows (decision 5,
+   and the served-population definition above), so neither `N` nor an edge-set
+   cardinality can vary with a withheld finding's existence. A **third** instance is
+   not closed that way: a finding served through *ranked search* carries a
+   `fusedScore` priced over FTS5/BM25 collection statistics computed at
+   **index-build time over the physical index population**, so a result-set filter
+   does not exclude a withheld finding from it. Its control is the **T-17a
+   withdrawal→purge** (the enforcement paragraph above) — a physical purge, because
+   a tombstone does not move collection statistics — so its served population is the
+   purged physical index, not a filtered result set.
 5. **An error that fires for one input and not another.** *(owed to the future
    non-public path)* On this ADR's source, structurally no embargoed finding
    exists to refuse (only public `main` is ingested), so the "embargoed-exists vs
@@ -690,6 +730,26 @@ Owed at implementation, each tied to the lane that will discharge it:
 - **The recurrence count is computed over embargo-cleared rows only** — a test
   that a withheld finding does not move the `(family, specialist)` count `N`
   (decision 5), so the aggregate cannot leak a withheld finding's existence.
+- **A reverse `recorded-in` edge set excludes withheld findings** — a test that a
+  withheld finding sharing a commit, PR, or issue node with a served one moves
+  neither that node's reverse `recorded-in` **edge set** nor its **cardinality**
+  (family 4). Enforced by the per-edge `_relation_is_visible` authority gate, not a
+  population filter (the enforcement paragraph in the closure), so this is driven by
+  [#200](https://github.com/theurian/theurian/issues/200)'s relation surface over
+  the store's existing `_relation_is_visible` control.
+- **An FR-V6 review-unit view lists only served findings** — a test that a withheld
+  finding does not appear in the **members** of a rendered PR-level Markdown view
+  (decision 4, FR-V6), the same co-location enumeration as the reverse relation
+  query. Driven by [#200](https://github.com/theurian/theurian/issues/200)'s view
+  renderer.
+- **A ranked-search surface over findings ranks the T-17a-purged population** — a
+  test that a withheld finding left in the physical index does not move a visible
+  finding's `fusedScore` or rank (family 4): the served population for a ranked
+  surface is the **withdrawal→purged** index population (threat-model T-17a), not a
+  result-set filter, so the response is byte-identical to a build that never held
+  the withheld finding — a tombstone would not move the collection statistics.
+  Driven by the store's existing T-17a withdrawal→purge control, exercised over a
+  findings corpus by [#200](https://github.com/theurian/theurian/issues/200).
 - **The manual burn-in is retired by the CL that ships the query** — the
   implementation lane removes the recurrence rule from `CLAUDE.md` in the same CL,
   so the two mechanisms never both run (decision 5).
