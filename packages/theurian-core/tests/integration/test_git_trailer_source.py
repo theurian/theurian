@@ -35,6 +35,7 @@ from theurian.domain.review_finding import (
 from theurian.infrastructure.git.trailer_source import (
     GitHistoryUnavailableError,
     GitTrailerFindingSource,
+    _decode_git_output,
 )
 
 pytestmark = pytest.mark.integration
@@ -377,6 +378,47 @@ def test_a_repo_local_show_signature_does_not_corrupt_the_parse(tmp_path: Path) 
     (finding,) = GitTrailerFindingSource(clone).load_findings().accepted
     assert finding.finding_text == "a public finding"
     assert finding.reviewer is ReviewerToken.SECURITY
+
+
+def test_git_config_parameters_is_stripped_so_the_output_stays_utf8(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D7 completeness: an inherited ``GIT_CONFIG_PARAMETERS`` must not redirect config.
+
+    ``GIT_CONFIG_PARAMETERS`` injects config as if by ``-c`` -- a vector the
+    ``GIT_CONFIG{,_COUNT,_GLOBAL,_SYSTEM}`` strip did not cover. An inherited
+    ``i18n.logOutputEncoding=UTF-16`` makes ``git log`` emit UTF-16, so the
+    adapter's ``stdout.decode("utf-8")`` would raise an uncaught
+    ``UnicodeDecodeError`` and crash the whole load. The adapter now strips
+    ``GIT_CONFIG_PARAMETERS`` with the rest of the ``GIT_*`` overrides, so the
+    finding reads cleanly whatever config the ambient environment tried to inject.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(clone, "fix: utf8 (#1)", "Review-Finding: security HIGH — a public finding")
+    _publish(clone)
+
+    # Set only now, after every fixture ``_git`` call, so it reaches the adapter's
+    # child ``git`` and nothing else -- mirroring the injected-GIT_DIR test.
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'i18n.logOutputEncoding=UTF-16'")
+
+    (finding,) = GitTrailerFindingSource(clone).load_findings().accepted
+    assert finding.finding_text == "a public finding"
+    assert finding.reviewer is ReviewerToken.SECURITY
+
+
+def test_non_utf8_git_output_is_a_history_error_not_an_uncaught_decode(tmp_path: Path) -> None:
+    """Invalid UTF-8 from ``git`` becomes a typed error with a remedy, not a raw crash.
+
+    Defense in depth for the decode: stripping ``GIT_CONFIG_PARAMETERS`` closes the
+    known UTF-16 vector, but any residual non-UTF-8 output (a repo-level
+    ``i18n.logOutputEncoding``, an unconvertible commit ``encoding`` header) must
+    still degrade to a :class:`GitHistoryUnavailableError` carrying a remedy, never
+    an uncaught ``UnicodeDecodeError``. This also removes the stdout/stderr decode
+    asymmetry -- stderr already decodes with ``errors="replace"``.
+    """
+    with pytest.raises(GitHistoryUnavailableError) as caught:
+        _decode_git_output(b"\xff\xfe\x00R\x00e\x00v", tmp_path)
+    assert caught.value.remedy  # a non-empty remedy, not a bare stack trace
 
 
 # --- D4: NUL framing, not forgeable RS/US ----------------------------------

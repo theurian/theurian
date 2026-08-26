@@ -73,9 +73,12 @@ PUBLIC_REF: Final = "refs/remotes/origin/main"
 #: ``GIT_OBJECT_DIRECTORY``, ``GIT_ALTERNATE_OBJECT_DIRECTORIES``, ``GIT_COMMON_DIR``,
 #: ``GIT_INDEX_FILE``, ``GIT_CEILING_DIRECTORIES``); *ref resolution and replacement*
 #: (``GIT_NAMESPACE``, ``GIT_REPLACE_REF_BASE``); and *config injection*
-#: (``GIT_CONFIG`` and the ``GIT_CONFIG_{COUNT,GLOBAL,SYSTEM}`` trio). Defined here
-#: rather than imported from ``tools/`` or the test tree (which keep their own copy
-#: for a different read) so the adapter owns its own contract.
+#: (``GIT_CONFIG``, the ``GIT_CONFIG_{COUNT,GLOBAL,SYSTEM}`` trio, and
+#: ``GIT_CONFIG_PARAMETERS`` -- the last injects config as if by ``-c``, so an
+#: inherited ``i18n.logOutputEncoding=UTF-16`` there would make ``git log`` emit
+#: non-UTF-8 and break the parse). Defined here rather than imported from ``tools/``
+#: or the test tree (which keep their own copy for a different read) so the adapter
+#: owns its own contract.
 _INHERITED_GIT_OVERRIDES: Final = frozenset(
     {
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -84,6 +87,7 @@ _INHERITED_GIT_OVERRIDES: Final = frozenset(
         "GIT_CONFIG",
         "GIT_CONFIG_COUNT",
         "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_PARAMETERS",
         "GIT_CONFIG_SYSTEM",
         "GIT_DIR",
         "GIT_INDEX_FILE",
@@ -284,7 +288,7 @@ class GitTrailerFindingSource:
         if completed.returncode != 0:
             reason = completed.stderr.decode("utf-8", errors="replace").strip() or "git log failed"
             raise GitHistoryUnavailableError(self._repo_root, reason)
-        return completed.stdout.decode("utf-8")
+        return _decode_git_output(completed.stdout, self._repo_root)
 
     @staticmethod
     def _child_env() -> dict[str, str]:
@@ -303,6 +307,27 @@ class GitTrailerFindingSource:
         }
         env["GIT_NO_REPLACE_OBJECTS"] = "1"
         return env
+
+
+def _decode_git_output(raw: bytes, repo_root: Path) -> str:
+    """Decode ``git log``'s stdout as UTF-8, or fail with a remedy -- never a raw crash.
+
+    The finding text carries an em-dash separator and other non-ASCII, so the
+    stream is decoded as UTF-8 explicitly rather than under the process locale, to
+    preserve the byte-exact mapping AC-1 depends on. A decode failure means ``git``
+    emitted a non-UTF-8 encoding -- a repo-level ``i18n.logOutputEncoding`` or an
+    unconvertible commit ``encoding`` header, the ``GIT_CONFIG_PARAMETERS`` vector
+    being already stripped (see :data:`_INHERITED_GIT_OVERRIDES`). It is contained
+    as a :class:`GitHistoryUnavailableError` -- the adapter never obtained readable
+    history -- rather than surfaced as an uncaught ``UnicodeDecodeError``, which also
+    matches stderr's decode (``errors="replace"``) instead of leaving stdout strict.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise GitHistoryUnavailableError(
+            repo_root, f"git log output was not valid UTF-8 ({exc})"
+        ) from exc
 
 
 @dataclass(frozen=True, slots=True)
