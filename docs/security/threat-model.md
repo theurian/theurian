@@ -2398,7 +2398,11 @@ index text, stale against the canonical store between builds — the T-17a/#130
 residual (T-17a's order and excerpt movement, #130's same-revision content
 drift) — not a new channel *while the purge succeeds*. See the
 GHSA-97q9-xxfg-33r6 correction below for the purge-*failed* case, where it was a
-new channel and is now closed.
+new channel and is now closed. **#130's half of that pairing has since closed at
+the write path**, so what a `title` still carries is T-17a's build-time staleness
+alone: a body edited after the migration that pinned it was applied is refused at
+load and cannot become index text at all (T-17a below, where the three legs and
+the residual they leave are recorded).
 
 Withdrawal already reaches the forest, and Milestone 6's builder was the first
 thing to hand that traversal a graph it did not write itself: a purge deletes
@@ -4074,6 +4078,54 @@ the dense path, which T-6 enumerates as the second member of that class.
 > holding withdrawn rows would leak — rather than a leak the shipped product still
 > has. The alarm that goes RED on the pre-trigger wiring is the closure test named
 > above.
+>
+> **The claim this entry is read beside — that a stale index returns fewer results
+> rather than wrong ones — had a second falsifier, and it is now closed at the
+> write path rather than here.** ADR-0008 decision 8's amendment named two reasons
+> the sentence is false in its general form: T-17a's order and excerpt movement,
+> above, and [#130](https://github.com/theurian/theurian/issues/130) — a revision's
+> body file edited in place *after* the migration that pinned it was applied. The
+> 2026-08-10 report measured that landing on a plain `theurian migrate apply` at
+> exit 0, with the canonical store and every index built from it going on serving a
+> line the working tree no longer contained. **It is a different class from this
+> entry's, named by its root cause: *the body on disk drifted from what the
+> migration pinned* — a write-path fault — where T-17a is *the index still holds
+> the withdrawn rows*.** Three legs close it, each re-verified against `a3540ff` on
+> 2026-08-26:
+>
+> 1. **Refused at load.** `contentSha256` is schema-required on every
+>    `upsertRevision` (ADR-0027 decision 1;
+>    `schemas/migrations/migration.schema.json`) and re-hashed against the bytes on
+>    disk each time the loader reads a body
+>    (`infrastructure/filesystem/migration_loader.py::_parse_upsert`), so re-running
+>    `migrate apply` over the drift exits 4 naming both digests instead of
+>    reporting success, and `migrate validate` refuses identically rather than
+>    calling the project well-formed. Driven by
+>    `tests/integration/test_cli_commands.py::test_a_body_edited_after_apply_is_refused_when_apply_is_re_run`
+>    and `::test_a_body_edited_after_apply_is_refused_by_validate_as_well`. The
+>    guard was reached by no test before those two — measured 2026-08-26, its
+>    message occurred once in the repository, in the loader that raises it — so it
+>    would have survived its own deletion.
+> 2. **Refused at `accept`.** The same drift arriving through a proposal is refused
+>    at that layer, with the proposal directory left intact (ADR-0027 decision 2;
+>    `tests/integration/test_proposal_service.py::test_a_pin_that_does_not_match_its_own_body_is_refused_with_the_proposal_intact`).
+> 3. **No read path reads the file.** A revision's bytes are a `body` column of
+>    `knowledge_revisions`, bound once at apply (`infrastructure/sqlite/store.py`);
+>    `knowledge.get`, the ranked paths and the unranked scan all read the store and
+>    the build derived from it, never the live `contentFile` — `mcp/`, `retrieval/`
+>    and `application/retrieval_service.py` name no content file at all. An edit
+>    that has not landed therefore cannot reach a caller while it sits on disk.
+>
+> **The residual is in the working tree, not in a response.** Between the edit and
+> the operator acting on the exit-4 refusal, the file on disk disagrees with the
+> canonical store and with any index built from it. Everything *served* still
+> matches canonical, because the edit never landed, so this is an authoring-state
+> divergence the operator has been told about — not a disclosure, and not a case of
+> the index answering with something canonical does not hold. The supersede face
+> was never open: a new `revisionId` is dropped by the visibility anchor
+> (`CanonicalVisibility._may_surface`), which is what
+> `tests/integration/test_mcp_tools.py::test_a_superseded_revision_is_not_served_from_a_stale_index`
+> holds, and its docstring now says that face is the whole of what it holds.
 >
 > **Everything below is the record of why this was accepted for Milestone 5 and
 > what twice proved its bound wrong. It is kept because the reasoning is the

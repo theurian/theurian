@@ -3473,7 +3473,25 @@ async def test_a_superseded_revision_is_not_served_from_a_stale_index(
     check a stale index keeps answering with the very text the team just
     retracted — and labels it with the new revision's `approved` status.
 
-    A stale index therefore returns fewer results rather than wrong ones.
+    A stale index therefore returns fewer results rather than wrong ones —
+    of the supersede face this test exercises, which is the whole of what it
+    holds. Read as a general property of a stale index the sentence is false,
+    and ADR-0008 decision 8's Milestone 6 amendment says so by name: it covers
+    neither T-17a's order and excerpt movement, nor the same-revision body
+    drift issue #130 reported. This is the sentence that general form was read
+    out of, so it is anchored here rather than left bare.
+
+    #130's face is closed as of Milestone 7, at the write path and not here: a
+    body edited in place after the migration that pinned it was applied can no
+    longer land, because `contentSha256` is schema-required on every
+    `upsertRevision` (ADR-0027 decision 1) and re-hashed against the bytes on
+    disk each time the loader reads a body (`migration_loader._parse_upsert`),
+    so `migrate apply` and `migrate validate` both exit 4 over the drift
+    (`test_cli_commands.py`,
+    `::test_a_body_edited_after_apply_is_refused_when_apply_is_re_run` and
+    `::test_a_body_edited_after_apply_is_refused_by_validate_as_well`). The
+    disposition, its three legs and the residual it leaves are recorded under
+    T-17a in `docs/security/threat-model.md`.
     """
     root = Path(indexed.load()["demo"]["rootPath"])
     replacement = "# Authentication policy\n\nThe key now lives in the secret store.\n"
