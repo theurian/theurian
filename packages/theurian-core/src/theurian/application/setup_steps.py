@@ -463,15 +463,22 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
     publishes is the thing it measured. That line is what an operator quotes in
     a security review.
 
-    **Two conflicts, and only one of them is an exposed credential.** A
+    **Three conflicts, and two of them are an exposed credential.** A
     world-accessible *file* has been readable, and tightening the mode restores
     the permissions rather than the secrecy -- so that arm names `theurian auth
-    rotate`. A file whose own bits are clean inside a directory that grants group
-    or other access is a different fact: the directory's mode never made the
-    token's contents readable, so the remedy is to tighten the directory. Both
-    arms shared the rotation sentence, which told an operator to replace a
-    credential nothing had been able to read -- and named the *file's* mode,
-    0600, as the evidence for it.
+    rotate`. A file whose own bits are clean inside a *readable* directory is a
+    different fact: the directory's mode never made the token's contents
+    readable, so the remedy is only to tighten the directory, and rotation is not
+    asked for. A *writable* directory is the third case, and it splits from the
+    readable one because ``is_world_accessible`` is ``st_mode & 0o077`` -- which
+    includes the write bits. A directory another user can write is not a listing
+    exposure: they can unlink the token and drop in their own, or plant a symlink
+    the next mint writes the token through (#371). The credential may already have
+    been substituted, and tightening the directory does not undo that -- so this
+    arm asks for `theurian auth rotate` the way the readable-file arm does. The
+    original single directory arm dropped rotation on the write bit too, telling
+    an operator whose 0770 ``auth/`` an attacker could rewrite that nothing needed
+    replacing.
     """
     path = context.auth_dir / TOKEN_KEY
     if not path.is_file():
@@ -494,13 +501,33 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
             ),
         )
     if is_world_accessible(context.auth_dir):
+        directory_mode = context.auth_dir.stat().st_mode & 0o777
+        if directory_mode & 0o022:
+            # The group/other *write* bit, split from the readable case because a
+            # writable directory is a substitution surface, not a listing one: an
+            # attacker who can write `auth/` can unlink the token and replace it,
+            # or plant a symlink the next `apply_token` mints through (#371, the
+            # O_NOFOLLOW write-through mechanism). Tightening the mode does not
+            # undo a swap that may already have happened, so this arm asks for
+            # rotation as well -- the same reason the world-readable-file arm does.
+            return SetupStep(
+                step_id=StepId.TOKEN_STORAGE,
+                status=StepStatus.CONFLICTING,
+                summary="The token's directory is writable by group or other.",
+                detail=(
+                    f"{context.auth_dir} is mode {directory_mode:04o}; tighten it with "
+                    f"`chmod 0700 {context.auth_dir}`. A writable directory lets another "
+                    f"user replace the token file, so rotate it with `theurian auth "
+                    f"rotate` as well -- tightening the mode does not undo a substitution "
+                    f"that may already have happened."
+                ),
+            )
         return SetupStep(
             step_id=StepId.TOKEN_STORAGE,
             status=StepStatus.CONFLICTING,
             summary="The token's directory grants group or other access.",
             detail=(
-                f"{context.auth_dir} is mode "
-                f"{context.auth_dir.stat().st_mode & 0o777:04o}; tighten it with "
+                f"{context.auth_dir} is mode {directory_mode:04o}; tighten it with "
                 f"`chmod 0700 {context.auth_dir}`. Rotation is not asked for here: "
                 f"the token file's own bits grant nothing to group or other, so the "
                 f"directory's mode never made its contents readable."

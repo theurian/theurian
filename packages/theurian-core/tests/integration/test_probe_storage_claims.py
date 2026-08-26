@@ -278,9 +278,54 @@ def test_a_private_token_inside_a_readable_directory_is_a_conflict_about_the_dir
     assert step.summary == "The token's directory grants group or other access."
     assert f"{data_dir / 'auth'} is mode 0750;" in step.detail
     assert f"`chmod 0700 {data_dir / 'auth'}`" in step.detail
-    assert "rotate" not in step.detail.replace("Rotation is not asked for here", ""), (
-        "the file's own bits denied the read, so nothing was exposed to rotate"
+    assert "rotate" not in step.detail, (
+        "the file's own bits denied the read, and a read-only directory cannot "
+        "substitute the token, so nothing was exposed to rotate"
     )
+
+
+def test_a_group_writable_directory_demands_rotation_not_only_a_chmod(tmp_path: Path) -> None:
+    """0770: a writable directory is a substitution surface, not a listing one.
+
+    ``is_world_accessible`` is ``st_mode & 0o077``, which includes the *write*
+    bits, so the single directory arm treated a group-writable 0770 ``auth/``
+    exactly like a readable 0750 one and dropped the rotation demand. But another
+    user who can write the directory can unlink the token and drop in their own,
+    or plant a symlink the next mint writes the token through (#371) -- so the
+    credential may already have been substituted, and a ``chmod`` does not undo
+    that. Rotation is asked for here, the way the world-readable-file arm asks for
+    it.
+    """
+    data_dir = tmp_path / "data"
+    _stored_token(data_dir, token_mode=0o600, directory_mode=0o770)
+
+    step = probe_token_storage(_context(tmp_path, data_dir))
+
+    assert step.status is StepStatus.CONFLICTING
+    assert step.summary == "The token's directory is writable by group or other."
+    assert f"{data_dir / 'auth'} is mode 0770;" in step.detail
+    assert f"`chmod 0700 {data_dir / 'auth'}`" in step.detail
+    assert "`theurian auth rotate`" in step.detail, (
+        "a writable directory may already have let the token be replaced"
+    )
+
+
+def test_a_world_writable_directory_also_demands_rotation(tmp_path: Path) -> None:
+    """0777: the other-write bit reaches the same arm as the group-write bit.
+
+    ``& 0o022`` catches group *and* other write, so a world-writable directory is
+    the same substitution surface and asks for rotation the same way -- a read-
+    only test on the group bit alone would leave the other bit unpinned.
+    """
+    data_dir = tmp_path / "data"
+    _stored_token(data_dir, token_mode=0o600, directory_mode=0o777)
+
+    step = probe_token_storage(_context(tmp_path, data_dir))
+
+    assert step.status is StepStatus.CONFLICTING
+    assert step.summary == "The token's directory is writable by group or other."
+    assert f"{data_dir / 'auth'} is mode 0777;" in step.detail
+    assert "`theurian auth rotate`" in step.detail
 
 
 def test_the_file_is_reported_before_the_directory_when_both_are_open(tmp_path: Path) -> None:
