@@ -159,11 +159,27 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `activeStateHash` against `stateHash`, both published beside it — so no
   information is lost, which is why no new key was added for it.
 
-  The bundled Claude Code plugin's `scripts/session-start.sh` needs no edit: it
-  greps for `"indexStale": *true` and now also fires for a project that has
-  never built an index, where its advice — run `/theurian:index` — is exactly
-  right. [#380](https://github.com/theurian/theurian/issues/380) owns the
-  deeper hook work.
+  The bundled Claude Code plugin's `scripts/session-start.sh` needs no
+  syntactic edit — it greps for `"indexStale": *true` — but what it says changes
+  in three directions, and only one of them is an improvement.
+
+  It **newly fires**, correctly, for a project that has never built an index and
+  for the pointer-side axes: the advice, run `/theurian:index`, is exactly right
+  there. It **newly goes silent** for the flip class named above — a missing,
+  unreadable or hash-mismatched `active.json` under a build that still matches
+  the migrations — where it used to warn about a stale index. The warning it
+  loses was not about the index in the first place, and nothing in the hook yet
+  reads `statePointerCorrupt` or `activeStateHash`, so those states now pass
+  unremarked. And on the serving-profile axis the warning it prints names a
+  command that cannot run: measured, an unreadable
+  `<data-dir>/auth/serving-profile` makes `indexStale: true`, while `theurian
+  index build` — what `/theurian:index` invokes — refuses on the same file at
+  exit 1, and `project status` publishes no remedy at all for a caller to relay.
+  `theurian index status` is the surface that names the `chmod`.
+
+  All three are [#380](https://github.com/theurian/theurian/issues/380)'s scope:
+  the hook needs to read more of this payload than one boolean before it can say
+  something true in each state.
 
 ### Fixed
 

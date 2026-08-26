@@ -418,8 +418,11 @@ def index_status(as_json: JsonOption = False) -> None:
     current = str(context.state_hash)
     built = str(active.state_hash) if active else None
     # About the state database, not the index, which is why it is computed here
-    # and not inside `index_staleness`: it makes no build stale, and it only
-    # orders the remedy, where applying must precede any rebuild.
+    # and not inside `index_staleness`: it makes no build stale. This command
+    # publishes it as `knowledgeNotApplied` below and hands it to `remedy_for`,
+    # where it decides that applying must precede any rebuild -- neither of which
+    # is a staleness axis, and both of which belong to the command that owns the
+    # canonical-state half of this payload.
     needs_apply = built != current
 
     index = index_staleness(paths, project_id=context.project_id.value, current_state_hash=current)

@@ -1214,9 +1214,15 @@ def test_the_resolved_branch_reaches_the_same_null_with_nothing_racing_it(
 # `built: false, stale: true`.
 #
 # The tests below drive one axis each through the real CLI and assert both
-# halves: the verdict itself, and that the two commands agree on it. The
-# agreement assertion is the one that outlives this fix -- it goes red for any
-# later change that gives either surface a verdict of its own.
+# halves: the verdict itself, and that the two commands agree on it.
+#
+# Which half is load-bearing differs by test, and the difference is worth
+# recording. Measured against the old expression, the parameterized cases fail
+# on the `indexStale is True` line -- the agreement assertion beside it would
+# hold for any fork of the computation that happened to agree. It is
+# `test_status_agrees_with_index_status_where_the_verdict_moved_the_other_way`
+# that the agreement carries, because there the two verdicts *differ* under the
+# old computation and only the comparison can see it.
 
 #: A second migration over the item :data:`MIGRATION` creates, so applying it
 #: moves the state hash without touching anything the index pointer records.
@@ -1267,7 +1273,17 @@ def _edit_index_pointer(root: Path, **fields: Any) -> None:
 
 
 def _never_built(_root: Path) -> None:
-    """The axis with no pointer at all: `migrate apply` ran, `index build` did not."""
+    """No pointer at all: `migrate apply` ran, `index build` did not.
+
+    This is the state issue #100 reports, and it is the state the *whole verdict*
+    has to answer -- but it does not exercise the ``published is None`` term on
+    its own. Measured: dropping that term from the disjunction survives this file
+    and ``test_index_fallback`` entirely, because with no pointer ``indexed`` is
+    ``None`` and the schema version is ``None``, so two later terms each carry
+    the state alone. The term stays for readability -- it names the axis in the
+    verdict rather than leaving it inferred from two ``None`` comparisons -- and
+    this note is here so nobody reads the case as pinning it.
+    """
 
 
 def _state_hash_behind(root: Path) -> None:

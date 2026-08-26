@@ -181,10 +181,11 @@ def index_staleness(
     own remedy.
 
     ``needs_apply`` -- whether canonical state is itself behind the migrations --
-    is deliberately *not* an axis here. It is a fact about the state database,
-    not about the index, and it enters only :func:`remedy_for`'s ordering, where
-    it decides that applying must precede any rebuild. Folding it in is the
-    conflation issue #100 is about, running the other way.
+    is deliberately *not* an axis here. It is a fact about the state database and
+    not about the index, so it makes no build stale; ``index status`` computes it
+    itself, publishes it as ``knowledgeNotApplied`` and hands it to
+    :func:`remedy_for`, where it decides that applying must precede any rebuild.
+    Folding it in is the conflation issue #100 is about, running the other way.
     """
     pointer = read_active_index_pointer(paths)
     published = dict(pointer.payload) if pointer.payload is not None else None
