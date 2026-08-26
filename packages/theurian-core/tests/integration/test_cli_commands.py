@@ -1362,6 +1362,74 @@ def test_status_calls_a_freshly_built_index_fresh(project: Path) -> None:
     )
 
 
+#: An ``indexBuildId`` whose filename no ordinary filesystem will accept.
+#:
+#: ``index_for`` builds ``theurian-index-<id>.sqlite``, so ``NAME_MAX`` (255 on
+#: macOS and on the Linux filesystems CI runs on) is exceeded at 234 characters:
+#: 15 + 234 + 7 = 256. Measured through the real CLI on macOS before the fix --
+#: 200 and 233 answered, 234, 240, 256 and 300 each ended both status commands
+#: in an uncaught ``OSError`` at exit 1 with empty stdout. 300 is used rather
+#: than the boundary so the input stays refused on a filesystem with a slightly
+#: larger limit; the test below skips instead of passing vacuously if some
+#: filesystem accepts it anyway.
+_OVERLONG_BUILD_ID = "A" * 300
+
+
+def test_status_answers_for_a_pointer_naming_a_filename_the_platform_refuses(
+    project: Path, tmp_path: Path
+) -> None:
+    """A pointer that names an unusable filename is a status, not a traceback.
+
+    ``index_schema_version`` (``cli/index_status_report.py``) probed the build
+    with ``path.is_file()`` *outside* its ``try``. ``Path.is_file()`` swallows
+    only the errnos ``pathlib`` lists as "this is not a file", and
+    ``ENAMETOOLONG`` is not among them, so an over-long ``indexBuildId`` in the
+    unsigned, git-ignored pointer (SEC-7) escaped as a bare ``OSError``: exit 1,
+    empty stdout, none of the ``{error, remedy}`` shape CP-2 promises -- from
+    ``theurian project status``, which had answered this at exit 0 before this
+    branch made it read the file at all, *and* from ``theurian index status``,
+    which had crashed this way since the probe was written.
+
+    ``index_for``'s own conversion cannot catch it: ``Path.resolve()`` in
+    non-strict mode never stats, so the name it returns is one the OS has not
+    yet been asked about. Both surfaces now answer, with schema ``0`` -- this
+    function's documented "unknowable" -- which makes the build stale.
+
+    The other two ``index_for`` callers (``index gc``, ``mcp/search``) reach the
+    same probe by their own routes and are issue #388's; nothing here touches
+    them, which is also why this axis is pinned here rather than added to
+    ``test_index_fallback``'s pointer enumeration, where every recipe is driven
+    through the search path as well.
+    """
+    probe = tmp_path / f"theurian-index-{_OVERLONG_BUILD_ID}.sqlite"
+    try:
+        probe.is_file()
+    except OSError:
+        pass
+    else:
+        pytest.skip("this filesystem accepts the name, so there is no refusal to answer for")
+
+    _invoke("init")
+    _invoke("project", "register")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0
+    assert _invoke("index", "build")[0] == 0
+    _edit_index_pointer(project, indexBuildId=_OVERLONG_BUILD_ID)
+
+    code, status = _invoke("project", "status")
+    index_code, index_status = _invoke("index", "status")
+
+    assert code == 0, "a pointer naming an impossible filename is a status, not a crash"
+    assert index_code == 0, "and the same is true of the surface that has always read it"
+    assert status["indexStale"] is True, (
+        "a build whose schema version cannot be established is not one to serve from"
+    )
+    assert index_status["indexSchemaVersion"] == 0, (
+        "0 is this function's `unknowable`, and it must reach the payload rather than an errno"
+    )
+    assert status["indexStale"] == index_status["stale"]
+
+
 def test_status_agrees_with_index_status_where_the_verdict_moved_the_other_way(
     project: Path,
 ) -> None:

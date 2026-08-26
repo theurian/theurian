@@ -153,6 +153,27 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed
 
+- **An over-long `indexBuildId` no longer ends `theurian index status` in a
+  traceback** ([#100](https://github.com/theurian/theurian/issues/100)).
+  `cli.index_status_report.index_schema_version` probed the published build with
+  `Path.is_file()` outside the block that answers for the pointer's contents.
+  `is_file()` swallows only the errnos `pathlib` lists as "this is not a file",
+  and `ENAMETOOLONG` is not among them; `ProjectPaths.index_for` cannot convert
+  it either, because `Path.resolve()` in non-strict mode never stats. Measured
+  through the real CLI on macOS: an `indexBuildId` of 234 characters or more —
+  `theurian-index-<id>.sqlite` past a 255-byte `NAME_MAX` — ended the command in
+  a bare `OSError`, exit 1, empty stdout, none of the `{error, remedy}` shape
+  CP-2 promises; 233 answered. The probe is inside the block now and the build's
+  version reports 0, which is that function's "unknowable" and makes the index
+  stale. The pointer is derived, git-ignored and unsigned (SEC-7), so this is an
+  input any local process can leave behind.
+
+  `theurian project status` reaches the same probe as of the `indexStale` change
+  above, so this release is the first in which it could crash that way and the
+  first in which it cannot. `theurian index gc` and `knowledge.search` reach
+  `ProjectPaths.index_for` by their own routes and still probe outside a guard;
+  [#388](https://github.com/theurian/theurian/issues/388) owns those.
+
 - **A `rootPath` that resolves to the caller's own directory no longer registers
   whichever repository asks**
   ([#226](https://github.com/theurian/theurian/issues/226)). An entry was

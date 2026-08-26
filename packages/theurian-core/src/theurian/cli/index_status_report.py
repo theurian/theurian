@@ -248,14 +248,28 @@ def index_schema_version(paths: ProjectPaths, published: dict[str, Any] | None) 
     A pointer naming a path outside the project, or a file that has since been
     deleted, is a status to report rather than a command to fail -- so both
     answer 0, which is "unknowable" and not "version zero".
+
+    **The ``is_file()`` probe is inside the ``try``, and that is the whole
+    guard.** ``Path.is_file()`` swallows only the errnos ``pathlib`` lists as
+    "this is not a file", and ``ENAMETOOLONG`` is not among them; ``index_for``
+    cannot convert it either, because ``Path.resolve()`` in non-strict mode
+    never stats, so it hands back a name the OS has not been asked about yet.
+    Measured through the real CLI: an ``indexBuildId`` of 234 characters or more
+    -- 15 + 234 + 7 exceeds a 255-byte ``NAME_MAX`` -- ended ``theurian index
+    status`` *and* ``theurian project status`` in a bare ``OSError`` at exit 1
+    with empty stdout, from a pointer that is derived, git-ignored and unsigned
+    (SEC-7) and so is whatever a local process left behind. 233 answered.
+    ``OSError`` is caught beside ``TheurianError`` rather than narrowed to one
+    errno: every one of them means the same thing here, which is that this
+    file's version could not be established.
     """
     if published is None:
         return None
     try:
         path = paths.index_for(str(published.get("indexBuildId", "")))
-    except TheurianError:
+        return SqliteIndexStore(path).schema_version() if path.is_file() else 0
+    except (TheurianError, OSError):
         return 0
-    return SqliteIndexStore(path).schema_version() if path.is_file() else 0
 
 
 def remedy_for(  # noqa: PLR0911, PLR0913 - one keyword per axis, one return per named remedy
