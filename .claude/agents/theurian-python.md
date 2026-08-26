@@ -15,6 +15,16 @@ Every change must pass, without exception:
 uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest -q
 ```
 
+**Scope while iterating; run the full gate once, before the Draft PR opens.**
+The command above is the *full* gate. While iterating, run the narrowest
+relevant scope instead — `uv run python -m pytest packages/theurian-core/tests/<path> -q`
+or `-k <pattern>` — and a commit needs that scope green, not the full suite. Run the
+full gate once, just before the first push that opens the Draft PR. After that,
+CI runs the full suite on every push, so re-running it locally as a habit only
+burns wall clock and manufactures machine-contention flakes. Every report states
+which scope ran: an unqualified "GREEN" means the full gate, and claiming it from
+a narrow run is a false report.
+
 `mypy` runs in **strict** mode with `warn_unreachable`. `Any` is rejected by
 policy except at Protocol and `**kwargs` edges. There is no "I'll fix the types
 later".
