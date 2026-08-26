@@ -12,6 +12,32 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **Review-Finding trailer ingestion, parse-only**
+  ([#368](https://github.com/theurian/theurian/issues/368), ADR-0029). A
+  `ReviewFinding` canonical record, a `ReviewFindingSource` port, and a
+  `GitTrailerFindingSource` adapter that reads `Review-Finding:` commit trailers
+  from the public default branch into structured finding records. `reviewer` and
+  `severity` are validated against their closed vocabularies; the free-text
+  finding is kept byte-for-byte; a keyed line that does not parse is captured as
+  a rejected record with its reason, rather than aborting the whole load or being
+  silently dropped — one quoted grammar example in a future commit body must not
+  brick a signed, append-only corpus. The frozen `code` spelling on existing
+  history normalises to `code-review`, and no new reviewer token is coined.
+
+  **This is foundational, not a user-facing feature.** It produces records and
+  nothing else: no store write, no serving path, and no MCP or CLI surface reads
+  or emits a finding, so there is no command to run and `system.capabilities`
+  still reports `reviewIngestion: false`. The derived `pullRequest`, `family` and
+  `specialist` fields are `None` in this slice; deriving them, serving a finding's
+  text under the untrusted-content safety triple, the recurrence query, and the
+  family-taxonomy corpus items are the later lanes ADR-0029 names. The source
+  reads the fully-qualified `refs/remotes/origin/main` — not the ambiguous short
+  name a shadowing local branch, tag, or `git replace` can hijack — with object
+  replacement disabled and inherited `GIT_*` stripped, and stays offline: it
+  spawns `git log` over local objects and opens no network connection.
+
 ### Changed
 
 - **BREAKING — `theurian project status` publishes `registered` about the

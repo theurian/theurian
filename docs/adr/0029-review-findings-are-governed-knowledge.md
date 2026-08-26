@@ -754,6 +754,30 @@ Owed at implementation, each tied to the lane that will discharge it:
   implementation lane removes the recurrence rule from `CLAUDE.md` in the same CL,
   so the two mechanisms never both run (decision 5).
 
+**Landed in #368 phase-2 slice-1 ([#387](https://github.com/theurian/theurian/issues/387)),
+parse-only — part of two owed items above now has tests.** The origin/main-only
+scoping (the third owed item) is discharged for this offline source:
+`tests/integration/test_git_trailer_source.py` pins the read as the
+fully-qualified `refs/remotes/origin/main`, not `--all`, a shadowing local branch
+or tag, a bare `refs/origin/main`, or a `git replace` tip
+(`test_source_reads_only_origin_main_not_local_branches`,
+`test_all_would_have_leaked_the_local_branch`,
+`test_a_git_replace_on_the_public_tip_is_not_read`, and siblings); the
+URL-verification member D7 records as a stated non-goal stays owed to the serving
+arm. The parse layer of the loss-free mapping (the first owed item) is discharged
+— the two tokens are validated, `findingText` is byte-preserved, and a malformed
+keyed line becomes a rejected record rather than an abort or a silent drop
+(`tests/unit/test_review_finding.py`, and
+`test_git_trailer_source.py::test_live_origin_main_accounts_for_every_trailer_loss_free`
+plus `test_frozen_4c4a784_pins_the_parsed_corpus`). What of those two items stays
+owed: the derived `pullRequest`, `family` and `specialist` fields are `None` this
+slice (D5), so mapping them to the full decision-1 record is future work — and
+every remaining owed item above (a served `findingText`'s safety triple, the
+non-public-path embargo refusal, the taxonomy corpus items, the recurrence query
+and its embargo-cleared count, the reverse `recorded-in` edge set, the
+review-unit view, and the ranked-search T-17a population) is unchanged, because
+this slice serves nothing.
+
 ## Amendment 1 — the parser contract (2026-08-26, PR #387, #368 phase-2 slice-1)
 
 > **This is an append-only amendment. The normative decisions above are
