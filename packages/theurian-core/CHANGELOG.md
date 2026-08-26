@@ -18,25 +18,44 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   registry rather than about whether the project resolved, and stops guessing
   `indexStale`** ([#226](https://github.com/theurian/theurian/issues/226)).
 
-  **Old behaviour:** every failure to resolve the project — an unreadable
-  `.theurian/migrations`, a malformed migration, a state schema that will not
-  parse — published `registered: false`, because the payload asked the registry
-  "is *anything* registered?" and a healthy registry answers that no. So a
+  **Old behaviour:** the field answered about *resolution*, on both of the
+  command's branches, and each was wrong in its own direction.
+
+  When resolution failed — an unreadable `.theurian/migrations`, a malformed
+  migration, a state schema that will not parse — the payload asked the registry
+  "is *anything* registered?", which a healthy registry answers *no*. So a
   registered project with `chmod 000 .theurian/migrations` reported
   `registered: false` while `theurian project list`, reading the same file in the
   same second, listed its `rootPath` at `count: 1`; and a root the registry held
   under *two* ids — named twice, both entries readable — reported
-  `registered: false` as well. The same payload published a hardcoded
-  `indexStale: false`, claiming a fresh index for a directory nothing had looked
-  at.
+  `registered: false` as well.
 
-  **New behaviour:** `registered` is `true` when the registry holds this root,
-  `null` when the registry cannot say, and `false` only when a readable registry
-  genuinely lacks it. The two cases above are now `true`. `null` is unchanged in
-  meaning and in reach — a file that does not parse, one that cannot be opened,
-  or one holding an entry that names no root and so cannot be ruled out as a
-  second registration of this same directory — and a directory outside a Git
-  working tree still reports `false`, because no entry could be about it.
+  When resolution succeeded, the field answered about `projectId`, which for an
+  unregistered repository is only the directory name. Two teams checking out
+  `api` was enough: with `team-one/api` registered, `theurian project status` in
+  an unregistered `team-two/api` reported `registered: true, projectId: api` off
+  the neighbour's entry, while `project list`, `project register` and `setup`
+  all answered by root and said unregistered.
+
+  The unresolved payload also published a hardcoded `indexStale: false`,
+  claiming a fresh index for a directory nothing had looked at.
+
+  **New behaviour:** one rule on both branches, keyed on the working-tree root.
+  `registered` is `true` when the registry holds this root, `null` when the
+  registry cannot say, and `false` only when a readable registry genuinely
+  lacks it — a directory outside a Git working tree included, since no entry
+  could be about it. All three cases above change: the first two to `true`, the
+  neighbour-collision to `false`.
+
+  `null` is unchanged in meaning; its reach is the file's *legibility*, which is
+  broader than "does not parse". It is published whenever the registry cannot be
+  read as a whole (it does not parse, or it cannot be opened) **or** it holds
+  any entry that `ProjectRegistry.load` skips — one naming no root, and one
+  keyed by an id no consumer accepts, *even when that entry names a different
+  directory*. A skipped entry names no root to be compared against, so it cannot
+  be ruled out as a second registration of this one; the `unreadable` list names
+  the entries to remove with `theurian project unregister`.
+
   `indexStale` is now **absent** from the unresolved payload rather than `false`
   or `null`: nothing on that branch reads the active state pointer or computes a
   state hash, and this payload already spells that distinction — `null` is
@@ -45,15 +64,38 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   untouched and still publishes `indexStale` as a boolean.
 
   **What a consumer changes:** code indexing `payload["indexStale"]`
-  unconditionally must use `.get()` or branch on `reason`, which is the field
-  that distinguishes the two payload shapes. Code reading `registered` as a
-  boolean must handle `null` on this branch as it already had to on the resolved
-  one. The bundled Claude Code plugin's session-start hook needs no edit — it
-  greps for `"registered": *false` and `"indexStale": *true` — but its behaviour
-  changes with the values: it no longer tells a user to register a repository
-  that the registry already holds.
+  unconditionally must use `.get()`. Do **not** discriminate the two payload
+  shapes on `reason` — the resolved payload carries `reason` and `remedy` too,
+  for an unreadable state pointer or registry (measured: a corrupt
+  `.theurian/state/active.json` yields the resolved shape with `reason`,
+  `indexStale: true` and every other resolved field). `root` and `projectId` are
+  the resolved-only keys, so their presence is what tells the shapes apart. Code
+  reading `registered` as a boolean must handle `null`, which both branches now
+  publish.
+
+  Two bundled Claude Code plugin surfaces read this payload.
+  `scripts/session-start.sh` needs no syntactic edit — it greps for
+  `"registered": *false` and `"indexStale": *true`, and both simply stop matching
+  — but it is now silent where it used to advise, which
+  [#380](https://github.com/theurian/theurian/issues/380) tracks.
+  `commands/status.md` instructs a two-valued "project: registered or not"
+  summary and needs rewording for a tri-state field.
 
 ### Fixed
+
+- **A relative `rootPath` in the registry no longer registers whichever
+  directory asks** ([#226](https://github.com/theurian/theurian/issues/226)).
+  An entry was rejected as naming no root when its `rootPath` was `""`, because
+  `Path("").resolve()` is the calling process's working directory — but
+  `Path(".").resolve()` is the same directory, and `"./"` and `"demo/../."` with
+  it. Measured against a registry hand-edited to a single `"rootPath": "."`, two
+  unrelated working trees both reported `registered: true` under that one
+  entry's id, each answering as a project it had nothing to do with. A
+  `rootPath` that is not absolute is now unreadable like a missing one: named
+  under `unreadable`, removable with `theurian project unregister`. No entry
+  Theurian writes is affected — `project register` writes an absolute path and
+  `Project` rejects anything else at construction — so this can only reject a
+  hand edit.
 
 - **`doctor` and `theurian migrate validate` no longer disagree about the same
   migrations directory**
