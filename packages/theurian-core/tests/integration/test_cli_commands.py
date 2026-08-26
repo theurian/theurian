@@ -1049,6 +1049,44 @@ def test_status_answers_for_the_repository_not_the_directory_it_was_run_from(
     )
 
 
+def test_a_vendored_checkout_is_not_registered_by_the_repository_around_it(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The test above says "inside the tree counts". This says where that stops.
+
+    ``find_git_root`` answers with the *innermost* working tree, so a vendored
+    or submodule checkout at ``<registered>/vendor/inner`` is its own project and
+    nothing registers it. A membership test that accepted an ancestor -- reading
+    "is this root under a registered one" instead of "is this root registered" --
+    would satisfy the subdirectory test above just as well, and it survived the
+    whole suite until this existed.
+
+    It is the same defect issue #226 is about, reached from the other side: a
+    directory answering as a project it is not, this time the enclosing
+    repository rather than a name-colliding neighbour. Vendoring a dependency is
+    an ordinary thing to do, so this is not an exotic input.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    inner = project / "vendor" / "inner"
+    inner.mkdir(parents=True)
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=inner, check=True, capture_output=True)  # noqa: S603
+    _write_malformed_yaml_migration(project)
+    monkeypatch.chdir(inner)
+
+    code, status = _invoke("project", "status")
+
+    assert code == 0
+    assert status["registered"] is False, (
+        "the entry names the outer root; being underneath it is not being it"
+    )
+
+
 def test_status_matches_a_registered_root_written_in_a_non_normal_form(
     project: Path, registry_path: Path
 ) -> None:
