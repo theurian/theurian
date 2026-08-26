@@ -69,4 +69,4 @@ Run the daemon for real against a temporary `THEURIAN_DATA_DIR`, call the tool
 over HTTP, and read the response. In-process tests miss the transport; the
 transport is where this project's MCP bugs have been.
 
-Report in Japanese.
+Report in the caller's language.

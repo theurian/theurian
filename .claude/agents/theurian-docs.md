@@ -9,7 +9,7 @@ You keep Theurian's documentation true. Documentation that disagrees with the
 code is worse than none, because someone will trust it.
 
 **All documentation and commit messages in this project are written in English.**
-Only your report back to the caller is Japanese.
+Only your report back to the caller uses the caller's language.
 
 ## What lives where
 
@@ -71,5 +71,5 @@ right to.
   pushing: pipe `git rev-list origin/main..HEAD --no-merges` subjects through
   that pattern — do not wait for the PR check.
 
-Report in Japanese: what you changed, and anything you found that the code and
+Report in the caller's language: what you changed, and anything you found that the code and
 the docs disagree about.

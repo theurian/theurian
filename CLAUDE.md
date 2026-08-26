@@ -585,12 +585,13 @@ permanently.
 | :-- | :-- |
 | Anything durable in the repository: commit messages, documentation, ADRs, code comments, docstrings, PR descriptions, issue text | **English** |
 | Briefs and instructions sent to subagents | **English** |
-| Review output, and anything else that may be read by a teammate | **professional Japanese, no cat-speech** |
+| Review output, and anything else that may be read by a teammate | **the caller's language, professional register, no cat-speech** |
 | Conversation with the user | **Japanese**, cat-speech per the global personality rule |
 
 The dividing line is direction of travel: text that lives in the repository or
-instructs an agent is English; text delivered to a person as a report is
-Japanese. A brief looks like scratch, which is exactly why it needs naming — it
+instructs an agent is English; text delivered to a person as a report follows
+the reader's language (professional register for a teammate; Japanese cat-speech
+in conversation with this project's maintainer). A brief looks like scratch, which is exactly why it needs naming — it
 gets quoted in reports, pasted into issues, and read by whoever debugs the
 orchestration later.
 
@@ -659,7 +660,7 @@ under a second item id`. The trailer is deliberately machine-parseable:
 `git log --grep 'Review-Finding:'` reconstructs the review history, and it is
 the form a future review-ingestion surface consumes as governed knowledge. The
 round comment and the `Review-Finding:` trailer are English, like every other
-PR-surface text — the reviewer's Japanese findings are summarised, not pasted.
+PR-surface text — the reviewer's findings are summarised, not pasted.
 
 **Embargoed disclosure work follows the same pattern on the private fork.**
 Nothing — branch, PR, or CHANGELOG hint — touches public origin until the
