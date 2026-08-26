@@ -127,6 +127,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   working tree does not live under `/proc` — so this can only reject a hand
   edit.
 
+## [0.1.0.dev12] - 2026-08-26
+
+### Fixed
+
 - **`doctor` and `theurian migrate validate` no longer disagree about the same
   migrations directory**
   ([#91](https://github.com/theurian/theurian/issues/91)). The `migrations-valid`

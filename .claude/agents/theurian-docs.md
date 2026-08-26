@@ -63,6 +63,13 @@ right to.
 - `uv run ruff format --check .` (it formats Python inside Markdown fences too)
 - Check every relative link you wrote resolves
 - Run every command you added to a document
+- Commit scope is `[a-z-]+` — lowercase letters and hyphens only. The CI
+  Conventional-Commits gate rejects a digit or `#` in the scope, so an issue or
+  ADR number goes in the subject text or body, never the scope
+  (`docs(adr): … ADR-0029 …`, not `docs(adr-0029): …`). Type is one of
+  `feat|fix|refactor|docs|test|chore|perf|ci|build|revert`. Verify before
+  pushing: pipe `git rev-list origin/main..HEAD --no-merges` subjects through
+  that pattern — do not wait for the PR check.
 
 Report in Japanese: what you changed, and anything you found that the code and
 the docs disagree about.
