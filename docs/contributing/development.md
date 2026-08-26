@@ -157,6 +157,44 @@ To test locally, point a marketplace at your checkout:
 /plugin marketplace add /path/to/theurian/plugins
 ```
 
+## Running the daemon on a development machine
+
+The `--port 7420` convention below is for runs on the maintainer machine, which
+keeps a resident dogfood daemon on the default `7419`. A contributor machine
+without one has nothing to avoid, but the same convention keeps a stray run
+detectable, so these instructions assume it.
+
+On the maintainer machine, dev-time daemon runs take `--port 7420`, leaving the
+default `7419` for the resident dogfood daemon. While no resident daemon exists,
+anything answering on 7419 is an accident; once one owns 7419, every CLI command
+below defaults to it, so a dev invocation must pass `--port 7420` or it will
+describe — or act on — the resident daemon instead. Six commands default to 7419
+(verified against source and the released dev7 wheel's `--help`, 2026-08-20):
+
+| Command | Symbol | Where the 7419 default comes from |
+| :-- | :-- | :-- |
+| `setup --dry-run` | `setup_command` | `PortOption = DEFAULT_PORT` |
+| `doctor` | `doctor_command` | `PortOption = DEFAULT_PORT` |
+| `uninstall --dry-run` | `uninstall_command` | `PortOption = DEFAULT_PORT` |
+| `auth rotate` | `auth_rotate` | `DEFAULT_PORT` |
+| `daemon start` | `daemon_start` | a literal `7419` |
+| `daemon status` | `daemon_status` | a literal `7419` |
+
+The first three are in `cli/setup_commands.py`, then `cli/auth_commands.py`, then
+`cli/commands.py`; `DEFAULT_PORT` is `7419` in `daemon/instance.py`. Named by
+symbol, not line, because a line number rots on the next edit. Re-count with
+`grep -rn 'PortOption\|DEFAULT_PORT\|7419' packages/theurian-core/src/theurian/cli/`
+rather than trusting this table.
+
+`uninstall` is the one that bites: with `--dry-run` mandated for it, a forgotten
+`--port` produces a removal plan for the *resident* daemon that reads exactly
+like a plan for the dev one. `daemon stop` takes no `--port` at all, and adding
+one would not help — it asks the service manager which daemon it owns rather than
+probing a port ([ADR-0002](../adr/0002-single-local-daemon-over-streamable-http.md);
+a PID-based kill can signal an unrelated recycled PID). So `theurian daemon stop`
+stops the **resident** daemon; a dev daemon is started with `--foreground` and
+stopped with Ctrl-C in its terminal.
+
 ## Dependencies
 
 Every dependency is pinned with `==`, `uv.lock` is committed, and CI runs
