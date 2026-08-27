@@ -152,15 +152,15 @@ _MAX_NAMES_LISTED: Final = 5
 #: holds one resident copy per *distinct* incoming body -- up to
 #: ``cap * MAX_SOURCE_FILE_BYTES``. But :meth:`ProposalService._commit`, further
 #: down the same call, holds a *second* set simultaneously: for every move that
-#: replaces an existing destination, ``restored`` carries
-#: ``move.destination.read_bytes()`` -- the prior body being overwritten -- kept
-#: resident so a failed write can roll it back. Both lists can be full at once
-#: (a migration whose every operation replaces an existing body), so the true
-#: worst-case peak is ``2 * cap * MAX_SOURCE_FILE_BYTES``, not the one-channel
-#: figure this docstring stated before #306's round-one review measured the
-#: gap: 499 replace-mode operations at 1 MiB each peaked at ~1051 MiB against a
-#: create-mode run's ~542 MiB for the same count, roughly double, exactly what
-#: the two-channel formula predicts.
+#: replaces an existing destination, ``restored`` carries the destination's
+#: prior bytes -- read through the same size-capped path as every other
+#: accept-path read (#400) -- kept resident so a failed write can roll it back.
+#: Both lists can be full at once (a migration whose every operation replaces an
+#: existing body), so the true worst-case peak is ``2 * cap * MAX_SOURCE_FILE_BYTES``,
+#: not the one-channel figure this docstring stated before #306's round-one
+#: review measured the gap: 499 replace-mode operations at 1 MiB each peaked at
+#: ~1051 MiB against a create-mode run's ~542 MiB for the same count, roughly
+#: double, exactly what the two-channel formula predicts.
 #:
 #: **Why 250, not the sibling precedent's 500 or 5,000.** ``openapi.py``'s
 #: ``MAX_OPERATIONS`` bounds records that come from the document already being
@@ -178,13 +178,20 @@ _MAX_NAMES_LISTED: Final = 5
 #: ``upsertRevision``). 250 is ~50x that observed maximum and rejects nothing
 #: a real migration in this codebase has ever produced.
 #:
-#: **What this bound does not cover.** The ``restored`` reads above are bounded
-#: to at most :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` per entry
-#: only for a destination an *earlier accepted proposal* landed through this
-#: same path -- every write this service performs goes through the size-capped
-#: read path. A destination file that reached its size some other way (written
-#: directly, outside ``accept``) is read here uncapped by ``move.destination.read_bytes()``;
-#: that gap is tracked separately (#400) and is not closed by this cap.
+#: **What this bound does not cover, and what closes it (#400).** This cap
+#: bounds the *count* of operations, not the size of any one destination the
+#: ``restored`` reads in :meth:`ProposalService._commit` hold resident. Until
+#: #400, that read was a raw ``Path.read_bytes()``, bounded by
+#: ``MAX_SOURCE_FILE_BYTES`` only for a destination an *earlier accepted
+#: proposal* had itself landed through this same size-capped path -- a
+#: destination that reached its size some other way (written directly to
+#: ``.theurian/knowledge/``, exactly what a ``git clone`` delivers) was read
+#: uncapped, so a single replace operation on an oversized committed body held
+#: the whole of it resident regardless of this cap. ``_commit`` now reads every
+#: replaced destination through
+#: :func:`~theurian.security.paths.read_source_file`, the same path every
+#: other accept-path read takes, so the two-channel peak this bound assumes is
+#: unconditional rather than depending on how each destination came to exist.
 MAX_UPSERT_OPERATIONS: Final = 250
 
 #: Where a secret-scan finding sits when the text it was found in is an artifact
@@ -2352,14 +2359,21 @@ class ProposalService:
         (:class:`UpsertRevision`), and this guard only ever iterates the loaded
         set. ``None`` is therefore the in-memory case the loader never produces;
         for it the bytes now at ``destination`` -- the file the operation was
-        already matched to read (:meth:`_operation_reads`) -- are hashed instead.
-        That read sits inside :meth:`accept`'s examination-phase ``except
-        OSError``, so a filesystem refusal to read it becomes a CP-2
-        ``ProposalError``, not a raw escape.
+        already matched to read (:meth:`_operation_reads`) -- are hashed instead,
+        through :func:`~theurian.security.paths.read_source_file` rather than a
+        raw read, so this fallback stays bounded by SEC-8's cap the same way
+        every other accept-path read is (#400). That read sits inside
+        :meth:`accept`'s examination-phase ``except OSError``, so a filesystem
+        refusal to read it becomes a CP-2 ``ProposalError``, not a raw escape --
+        an oversized ``destination`` is the one fault that clause does not
+        translate, because :class:`~theurian.domain.errors.InputTooLargeError`
+        is not an ``OSError``; it propagates as itself, the same choice made for
+        every other size-cap refusal on this path.
         """
         landed = operation.content_sha256
         if landed is None:  # pragma: no cover - loader always sets it
-            landed = ContentHash.of_bytes(destination.read_bytes())
+            relative = PurePosixPath(destination.relative_to(self._paths.root))
+            landed = ContentHash.of_bytes(read_source_file(self._paths.root, relative))
         return incoming.value == landed.value
 
     def _operation_reads(
@@ -2426,6 +2440,63 @@ class ProposalService:
         absent), and the examination clause in :meth:`accept` deliberately does
         not span this method, so nothing translated it (CP-2). The rollback set
         is empty when the ``mkdir`` runs, so folding it in changes no rollback.
+
+        **"Exactly as they were" is a claim about bytes, not about the
+        directories that hold them.** :func:`_roll_back` restores every
+        written destination's content byte-identically -- unlinking what it
+        created, rewriting what it replaced -- but it never removes a
+        directory ``mkdir(parents=True, exist_ok=True)`` created for a
+        destination's parent. A refusal on the first operation to name a new
+        namespace therefore leaves that namespace's now-empty directory behind
+        in ``.theurian/knowledge/``, even though no file it would have held
+        survives. Harmless and pre-existing -- the same residue the
+        ``OSError`` and :class:`MigrationNameTakenError` rollbacks already
+        leave, not new with the ``InputTooLargeError``/
+        :class:`~theurian.domain.errors.IrregularSourceFileError`/
+        :class:`~theurian.domain.errors.PathEscapeError` clause below -- and
+        not closed here.
+
+        **The restored-body read is size-capped, not raw** (#400, the per-entry
+        face of #306's class). A destination this replaces may have reached its
+        size some way other than through this service -- a body committed
+        directly to ``.theurian/knowledge/``, which a ``git clone`` delivers
+        exactly as large as the repository holds it, with no cap of
+        :func:`~theurian.security.paths.read_source_file`'s ever having run
+        over it. A raw ``Path.read_bytes()`` here would hold that whole
+        replaced destination resident to build the rollback snapshot, whatever
+        its size -- a channel :data:`MAX_UPSERT_OPERATIONS` does not bound,
+        because that cap counts operations and this cost is spent by *one*.
+        Routing the read through :func:`~theurian.security.paths.read_source_file`
+        closes it the same way every other accept-path read is bounded: a
+        destination over :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES`
+        is refused before its bytes are read at all, so the replacement is
+        never accepted rather than accepted and then held resident. The raise
+        is left untranslated -- :class:`~theurian.domain.errors.InputTooLargeError`
+        already carries its own remedy, the same choice :meth:`accept` makes
+        for the identical raise on the *incoming* body -- but it still needs
+        this method's own rollback first, because a destination read this deep
+        in the loop can follow writes already made for earlier moves in the
+        same call; the writes route through the same failure branch as an
+        ``OSError`` would, without being one.
+
+        **The restored read attaches a referrer, the same as every other
+        caller that can reach this refusal** (see
+        :class:`~theurian.domain.errors.IrregularSourceFileError`'s own
+        enumeration). Left bare, a replaced destination swapped for a FIFO
+        between the size-cap fix landing and this one raised
+        :class:`~theurian.domain.errors.IrregularSourceFileError` with no
+        ``referrer`` at all, so ``accept`` published "The referenced file is a
+        named pipe (FIFO), not a regular file" naming no path -- the identical
+        CP-2 shape :meth:`_read_within_project` was fixed to stop. ``relative``
+        is safe to attach: it is Theurian's own project-relative construction
+        from ``move.destination``, resolved and proved contained by
+        :meth:`_destination_of` before ``_commit`` ever runs, never an
+        author-controlled string. :class:`~theurian.domain.errors.InputTooLargeError`
+        needs no matching clause -- its constructor takes no path at all, the
+        same as every other size-cap raise on this path -- and an unattached
+        :class:`~theurian.domain.errors.PathEscapeError` here stays generic
+        rather than wrong, the same choice :meth:`_read_within_project` already
+        makes for it.
         """
         created: list[Path] = []
         restored: list[tuple[Path, bytes]] = []
@@ -2434,7 +2505,14 @@ class ProposalService:
             for move in moves:
                 move.destination.parent.mkdir(parents=True, exist_ok=True)
                 if move.replaced:
-                    restored.append((move.destination, move.destination.read_bytes()))
+                    relative = PurePosixPath(move.destination.relative_to(self._paths.root))
+                    try:
+                        restored_bytes = read_source_file(self._paths.root, relative)
+                    except IrregularSourceFileError as exc:
+                        raise IrregularSourceFileError(
+                            exc.shape, referrer=relative.as_posix()
+                        ) from exc
+                    restored.append((move.destination, restored_bytes))
                 else:
                     created.append(move.destination)
                 _write_file(move.destination, move.data, exclusive=False)
@@ -2449,6 +2527,17 @@ class ProposalService:
                 ) from exc
             created.append(migration_destination)
         except MigrationNameTakenError:
+            _roll_back(created, restored)
+            raise
+        except (InputTooLargeError, IrregularSourceFileError, PathEscapeError):
+            # Not an `OSError`: these are `SecurityError`s (CP-2's third
+            # category alongside the translated `OSError` and the reraised
+            # `MigrationNameTakenError`), so they need their own clause to
+            # reach the rollback -- without one they would propagate past it
+            # and leave whatever this loop had already written in place, the
+            # exact half-written tree this method's docstring promises never
+            # happens. Left untranslated on purpose: see the size-cap note
+            # above.
             _roll_back(created, restored)
             raise
         except OSError as exc:

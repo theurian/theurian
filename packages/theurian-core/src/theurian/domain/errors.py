@@ -892,28 +892,65 @@ class IrregularSourceFileError(SecurityError):
     division of labour :class:`MigrationContentUnreadableError` and
     :class:`PathEscapeError` already use on this load path.
 
-    **Every caller that can reach this refusal either attaches one or names the
-    file some other way**, and the four are enumerated rather than summarised,
-    because "a caller attaches it" was written while only one did and the accept
-    path published a refusal naming no path at all::
+    **Every caller that can reach this refusal either attaches one, names the
+    file by context, or cannot reach it at all**, and all eight
+    :func:`read_source_file` call sites in this build are enumerated rather
+    than summarised, because "a caller attaches it" was written while only one
+    did and the accept path published a refusal naming no path at all::
 
-        grep -rn "read_source_file" packages/theurian-core/src/theurian/
+        grep -rn "read_source_file(" packages/theurian-core/src/theurian/
+
+    Attaches a referrer:
 
     * ``migration_loader.py::_parse_upsert`` -- attaches the migration file
       ``iterdir()`` returned, never the value its ``contentFile`` holds.
     * ``application/proposal_service.py::_read_within_project`` -- attaches the
       project-relative path it built itself, for all three files the accept path
       reads (the migration, ``evidence.json``, and each body).
+    * ``application/proposal_service.py::_commit`` -- attaches the
+      project-relative destination it built itself, for the prior body a
+      replace operation overwrites (#400). Until this attachment landed, a
+      replaced destination swapped for a FIFO between the size-cap fix and this
+      one made ``accept`` publish the identical unreferred refusal
+      ``_read_within_project`` was fixed to stop.
+    * ``cli/migration_pipeline.py::_materialize`` -- attaches the
+      project-relative path it was handed, for a *landed* file the ADR-0027
+      rehearsal every ``accept`` runs copies into its throwaway target. The
+      same unreferred shape as ``_commit``, on the other half of the union:
+      ``_commit`` reads the incoming/replace side, this reads the landed side,
+      and both route through :func:`read_source_file` for the identical
+      reason (SEC-7, SEC-8).
+
+    Cannot reach this refusal in production, so needs no referrer:
+
+    * ``application/proposal_service.py::_reads_identical_bytes`` -- its read
+      only runs when a loaded operation's ``content_sha256`` is ``None``, and
+      the loader always sets it
+      (:class:`~theurian.domain.migration.UpsertRevision`'s sole production
+      constructor), so the branch is defensive and unreached -- the identical
+      shape ``_load_one`` below.
     * ``migration_loader.py::_load_one`` -- cannot reach this refusal at all:
       ``load_migrations`` filters entries through ``_entry_is_migration_file``'s
       ``S_ISREG`` check first, pinned by ``test_load_migrations_skips_a_fifo_and
       _a_directory_both_named_dot_yaml``.
-    * ``application/ingestion_service.py::_ingest_one`` -- attaches nothing and
-      needs nothing: it records the refusal as a ``ParseFailure`` against the
-      ``relative`` path it already holds. In practice the read is not reached
-      either, because ``_discover``'s ``is_file()`` drops a non-regular file
-      before it -- silently, which is issue #327's own subject and not this
-      class's.
+
+    Names the file by context, independent of what the exception itself carries:
+
+    * ``security/project_config.py::_read_document`` -- always reads the one
+      fixed path ``PROJECT_CONFIG_FILE`` names, so it needs no referrer to say
+      which file: this class is a :class:`TheurianError`, caught by
+      ``except (OSError, TheurianError)`` and turned into ``_unreadable(exc)``,
+      whose message reads ``f"{PROJECT_CONFIG_FILE} is present but could not be
+      read: {reason}."`` -- naming the file by the constant, not by anything
+      the exception attaches.
+    * ``application/ingestion_service.py::_ingest_one`` -- its own ``except
+      (PathEscapeError, InputTooLargeError)`` does not include this class, but
+      its caller's does: ``ingest``'s enclosing ``except TheurianError`` records
+      the refusal as a ``ParseFailure`` against the ``relative`` path the walk
+      already holds, independent of what the exception carries. In practice
+      unreached, because ``_discover``'s ``is_file()`` drops a non-regular file
+      before ``_ingest_one`` runs (a narrow TOCTOU aside) -- silently, which is
+      issue #327's own subject and not this class's.
     """
 
     def __init__(self, shape: str, *, referrer: str | None = None) -> None:

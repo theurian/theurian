@@ -3249,6 +3249,161 @@ def test_the_operation_cap_holds_the_two_channel_memory_ceiling() -> None:
     )
 
 
+def test_accept_refuses_an_oversized_replaced_destination_without_reading_it_whole(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#400: the per-entry face of #306's class -- ``_commit``'s restored read was raw.
+
+    #306 bounds how many operations one migration may declare, not the size of
+    any *one* destination a replace operation overwrites. A body committed
+    directly to ``.theurian/knowledge/`` -- exactly what a ``git clone``
+    delivers -- can be arbitrarily large: landing it through Git never routes
+    it through ``MAX_SOURCE_FILE_BYTES``. Before this fix, ``_commit`` read
+    such a destination with a raw ``Path.read_bytes()`` to build the rollback
+    snapshot, so a proposal whose own incoming body is small and otherwise
+    valid still forced the whole of an oversized *committed* destination
+    resident -- one replace operation, independent of the operation-count cap
+    entirely.
+
+    The destination is planted just over the cap (not gigabytes), so the test
+    stays fast; what this pins is that the refusal fires at all -- SEC-8's
+    check reads ``stat().st_size`` before any byte of the file is read
+    (:func:`~theurian.security.paths.read_source_file`), so a refusal here
+    proves the oversized bytes were never read into memory, not merely that
+    they were read and then rejected.
+    """
+    drafted = service.draft(_request())
+    drafted.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    oversized = b"x" * (MAX_SOURCE_FILE_BYTES + 1024 * 1024)  # ~1 MiB over SEC-8's cap
+    drafted.body_destination.write_bytes(oversized)
+
+    with pytest.raises(InputTooLargeError, match="source file size") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert caught.value.remedy, "the refusal must name a remedy"
+    # Refused before anything moved: the committed destination is untouched,
+    # the proposal's own sources survive, and nothing landed in migrations/.
+    assert drafted.body_destination.read_bytes() == oversized
+    assert drafted.migration_file.exists(), "a refused accept leaves the proposal intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
+def test_a_mid_loop_oversized_replacement_rolls_back_an_earlier_write_too(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#400: the new size-cap raise rolls back like any other mid-commit failure.
+
+    Two replace operations in one migration, processed in document order: the
+    first destination is small and legitimate, so ``_commit`` writes it and
+    stages its prior bytes in ``restored``; the second destination is the
+    oversized committed body the size cap must refuse. The refusal fires while
+    reading the *second* move -- :meth:`ProposalService._commit`'s rollback
+    must still undo the *first* move's already-landed write, or its own
+    "either everything lands or nothing changed" promise would be broken by
+    the very fault this cap exists to catch. Modelled on
+    ``test_two_content_files_sharing_a_leaf_name_do_not_collide`` for the
+    two-body layout.
+    """
+    drafted = service.draft(_request())
+    revisions = (
+        ("alpha", "01K9AAAAAA0000000000000001", "A\n"),
+        ("beta", "01K9AAAAAA0000000000000002", "B\n"),
+    )
+    migration = _hand_authored_two_body_migration(drafted.migration_id.value, revisions)
+    drafted.migration_file.write_text(migration, encoding="utf-8")
+    drafted.body_file.unlink()
+    for namespace, _revision_id, text in revisions:
+        body = drafted.directory / namespace / "notes.md"
+        body.parent.mkdir(parents=True, exist_ok=True)
+        body.write_text(text, encoding="utf-8")
+
+    # Alpha (processed first) already sits at a small, legitimate destination;
+    # beta (processed second) sits at an oversized one -- the committed body
+    # the size cap must refuse before it is read.
+    alpha_destination = paths.knowledge / "alpha" / "notes.md"
+    beta_destination = paths.knowledge / "beta" / "notes.md"
+    alpha_destination.parent.mkdir(parents=True, exist_ok=True)
+    beta_destination.parent.mkdir(parents=True, exist_ok=True)
+    alpha_destination.write_text("stale alpha\n", encoding="utf-8")
+    oversized = b"x" * (MAX_SOURCE_FILE_BYTES + 1024 * 1024)
+    beta_destination.write_bytes(oversized)
+
+    with pytest.raises(InputTooLargeError):
+        service.accept(drafted.proposal_id)
+
+    assert alpha_destination.read_text() == "stale alpha\n", (
+        "the earlier move's write must be rolled back, not left holding the incoming body"
+    )
+    assert beta_destination.read_bytes() == oversized, "the refused destination is untouched"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_a_mid_loop_irregular_replacement_rolls_back_an_earlier_write_too(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#400's other sibling: a FIFO destination, not an oversized one.
+
+    ``_commit``'s rollback clause -- ``except (InputTooLargeError,
+    IrregularSourceFileError, PathEscapeError)`` -- exists for all three
+    members of that family, and only the oversized member had a driving test
+    until now; dropping ``IrregularSourceFileError`` from that tuple survives
+    the suite. Modelled on
+    ``test_a_mid_loop_oversized_replacement_rolls_back_an_earlier_write_too``:
+    two replace operations, processed in document order -- the first
+    destination is small and legitimate, so ``_commit`` writes it and stages
+    its prior bytes in ``restored``; the second is a FIFO, the shape whose
+    ``st_size`` bounds nothing
+    (:class:`~theurian.domain.errors.IrregularSourceFileError`, issue #215).
+    ``read_source_file`` refuses it from ``stat()`` alone, before ``open()`` is
+    ever called, so this never blocks and needs no interruptible-timer guard,
+    unlike the FIFO test above that opens one.
+
+    Also pins this round's HIGH fix: the restored read used to re-raise
+    ``IrregularSourceFileError`` bare, so ``accept`` published "The referenced
+    file is a named pipe (FIFO), not a regular file" naming no path at all. The
+    project-relative destination must now appear in the message, or a caller
+    has no way to tell which of the migration's several ``contentFile``
+    entries was refused.
+    """
+    drafted = service.draft(_request())
+    revisions = (
+        ("alpha", "01K9AAAAAA0000000000000001", "A\n"),
+        ("beta", "01K9AAAAAA0000000000000002", "B\n"),
+    )
+    migration = _hand_authored_two_body_migration(drafted.migration_id.value, revisions)
+    drafted.migration_file.write_text(migration, encoding="utf-8")
+    drafted.body_file.unlink()
+    for namespace, _revision_id, text in revisions:
+        body = drafted.directory / namespace / "notes.md"
+        body.parent.mkdir(parents=True, exist_ok=True)
+        body.write_text(text, encoding="utf-8")
+
+    # Alpha (processed first) is a small, legitimate replaced destination;
+    # beta (processed second) is a FIFO -- the irregular shape `_commit`'s
+    # restored read must refuse before reading a byte of it.
+    alpha_destination = paths.knowledge / "alpha" / "notes.md"
+    beta_destination = paths.knowledge / "beta" / "notes.md"
+    alpha_destination.parent.mkdir(parents=True, exist_ok=True)
+    beta_destination.parent.mkdir(parents=True, exist_ok=True)
+    alpha_destination.write_text("stale alpha\n", encoding="utf-8")
+    os.mkfifo(beta_destination)
+
+    with pytest.raises(IrregularSourceFileError) as caught:
+        service.accept(drafted.proposal_id)
+
+    beta_relative = beta_destination.relative_to(paths.root).as_posix()
+    assert beta_relative in str(caught.value), (
+        f"the refusal must name {beta_relative!r}, or a caller cannot tell which "
+        "contentFile it refused"
+    )
+    assert alpha_destination.read_text() == "stale alpha\n", (
+        "the earlier move's write must be rolled back, not left holding the incoming body"
+    )
+    assert beta_destination.is_fifo(), "the refused destination is untouched"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
 def test_a_pin_that_does_not_match_its_own_body_is_refused_with_the_proposal_intact(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
@@ -3383,6 +3538,74 @@ def test_the_replay_removes_the_throwaway_tree_it_staged_the_union_in(
     assert all(path.is_relative_to(system_temp) for path in staged), staged
     assert not [path for path in staged if path.exists()], "a replay target was left behind"
     assert list(system_temp.iterdir()) == [], "the replay left residue in the temporary root"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_a_rehearsal_read_of_an_irregular_landed_file_names_it(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_materialize`` reads the *landed* set too, and must name what it refuses.
+
+    #400 fixed ``_commit``'s own restored-body read to attach a referrer to
+    ``IrregularSourceFileError`` -- the incoming/replace side of the accept
+    path. ``_materialize`` (``cli/migration_pipeline.py``) reads the *landed*
+    side of the same union through the identical ``read_source_file`` call, for
+    the ADR-0027 rehearsal every ``accept`` runs before it writes anything, and
+    until this fix let the same refusal propagate bare.
+
+    **Why landing a FIFO by hand does not reach this code.** The loader itself
+    already names an irregular *landed* file safely: ``_landed_files`` reads the
+    approved set through the injected port, which re-parses every operation
+    (``_parse_upsert``) and refuses there, with a referrer, before
+    ``_materialize`` ever runs. Driven instead through the examine-to-move
+    window ``_materialize``'s own docstring records: the landed body is still a
+    regular file when the loader verifies it, and is swapped for a FIFO in the
+    gap between that verification and the rehearsal's own read of it -- the
+    same seam ``test_the_replay_removes_the_throwaway_tree_it_staged_the_union_in``
+    above wraps ``_materialize`` to reach.
+
+    The refusal that reaches ``accept`` is :class:`ApprovedSetUnusableError`,
+    not the raw :class:`~theurian.domain.errors.IrregularSourceFileError`:
+    ``_refuse_unless_the_union_applies`` translates every ``TheurianError`` the
+    rehearsal raises, and a landed-set fault re-rehearses the landed set alone
+    to attribute it correctly (:meth:`ProposalService._union_refusal`). What
+    this test pins is that the *landed path* still appears in that translated
+    message, not that the type is left untranslated -- unlike ``_commit``'s own
+    clause, which the docstring there records leaves it deliberately raw.
+    """
+    from theurian.cli import migration_pipeline as pipeline
+
+    first = service.draft(_request())
+    second = service.draft(_request(item_id=ItemId("architecture.other"), body=BODY))
+    # Landed by hand: the loader's own eager verification (`_landed_files`)
+    # must see a regular file and pass, or the refusal this test drives would
+    # come from `_parse_upsert` instead of from the fix under test.
+    shutil.copy(first.migration_file, paths.migrations / first.migration_file.name)
+    first.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(first.body_file, first.body_destination)
+    shutil.rmtree(first.directory)
+
+    real_materialize = pipeline._materialize
+
+    def spy(candidate: CandidateMigrationSet, target: Path) -> Path:
+        # `_union_refusal` re-rehearses the landed set alone to attribute the
+        # fault, so `_materialize` runs twice; swapping only when the
+        # destination is not already a FIFO keeps the second call a no-op.
+        if not first.body_destination.is_fifo():
+            first.body_destination.unlink()
+            os.mkfifo(first.body_destination)
+        return real_materialize(candidate, target)
+
+    monkeypatch.setattr(pipeline, "_materialize", spy)
+
+    with pytest.raises(ApprovedSetUnusableError) as caught:
+        service.accept(second.proposal_id)
+
+    landed_relative = first.body_destination.relative_to(paths.root).as_posix()
+    assert landed_relative in str(caught.value), (
+        f"the refusal must name {landed_relative!r}, or a reader has no way to tell which "
+        "landed file the rehearsal refused"
+    )
 
 
 # -- stage 1's second half, and the faults it must not claim -----------------

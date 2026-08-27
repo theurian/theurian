@@ -975,6 +975,87 @@ which is why `_unresolvable` publishes them at all (SEC-13); those ids and the
 unreadable list are the daemon's own registry contents, not caller input, so they
 need no bound. What was unbounded was the amplification, not the audience.
 
+**Controls on `propose accept`'s body-materialisation cost**
+([#306](https://github.com/theurian/theurian/issues/306),
+[#400](https://github.com/theurian/theurian/issues/400)). The controls above
+bound what parsing and querying spend; `accept` spends memory on a third axis
+— the bodies a migration's own operations name, both the ones it *brings* and
+the ones a replace operation *overwrites* — and until these fixes landed
+nothing bounded it. `_body_moves` read one full copy of every operation's
+named `contentFile` into memory, with no cap on operation count and no dedup
+for two operations naming the same file, and a schema refusal fired only
+after that read had already happened. `_commit`'s rollback snapshot of a
+*replaced* destination read it with a raw `Path.read_bytes()`, uncapped
+whenever that destination had reached its size some way other than through
+this service — a body committed directly to `.theurian/knowledge/`, exactly
+what a `git clone` delivers.
+
+| Bound | Symbol |
+| :-- | :-- |
+| max operations in one migration document, refused on the raw parsed document before `_body_moves` reads a single body | `application/proposal_service.py::MAX_UPSERT_OPERATIONS` (250) |
+| a source body is read at most once however many operations name it, so resident memory tracks distinct bodies rather than operations — keyed on `(st_dev, st_ino)` inode identity, not the path string, which a case-insensitive or NFC/NFD-normalising filesystem can alias | `application/proposal_service.py::_body_moves` |
+| a *replaced* destination's rollback-snapshot read is bounded the same way every other accept-path read is, rather than a raw, uncapped read | `application/proposal_service.py::_commit`, routed through `security/paths.py::read_source_file` (#400) |
+
+**#306, the incoming/count face.** Measured: 1,000 operations naming one
+shared 512 KB body held 583 MB resident before the fix, against 65 MB after,
+flat as operation count grows past the cap; the unfixed run also missed a
+120-second budget and was SIGKILLed — a latency DoS alongside the memory one
+— while the fixed path refuses an over-cap proposal in about 2 seconds.
+
+**Why 250, not the openapi precedent's 5,000.**
+`parsers/openapi.py::MAX_OPERATIONS` bounds records that are already inside
+the document being read, so its worst case is capped by that document's own
+byte limit (`MAX_YAML_BYTES`, 4 MiB). `MAX_UPSERT_OPERATIONS` bounds
+operations that each *name a separate file* — up to `MAX_SOURCE_FILE_BYTES`
+(8 MiB) apiece, outside the migration document's own cap — so it needed its
+own ceiling rather than borrowing that one.
+
+**The bound is two channels, not one.** `_commit` holds a second set of bytes
+resident alongside the incoming `moves`: for every operation that replaces an
+existing destination, `restored` carries the prior body — kept for rollback —
+at the same time as the incoming bytes are held in `moves`. Both can be full
+together, so the worst-case peak is
+`2 × MAX_UPSERT_OPERATIONS × MAX_SOURCE_FILE_BYTES` ≈ 3.9 GiB, not the
+single-channel `250 × 8 MiB` a reader might otherwise infer from the cap
+alone — which is why the cap tightened from an initially-chosen 500. This
+repository's largest legitimate migration is 5 operations, so 250 leaves
+roughly 50× headroom over what a real migration here has ever declared.
+Pinned against a 4 GiB ceiling by
+`test_the_operation_cap_holds_the_two_channel_memory_ceiling`.
+
+**#400, the replaced/per-entry face, closed too.** `MAX_UPSERT_OPERATIONS`
+bounds the *count* of operations, not the size of any *one* destination a
+replace operation overwrites. Until #400, `_commit`'s rollback-snapshot read
+of that destination was a raw `Path.read_bytes()`, uncapped for a destination
+that had reached its size outside this service — so a single valid proposal
+replacing an oversized committed body forced the whole of it resident,
+independent of the operation-count cap entirely. `_commit` now reads a
+replaced destination through `read_source_file`, the same size-capped path
+every other accept-path read already takes: a destination over
+`MAX_SOURCE_FILE_BYTES` is refused before a byte of it is read, and a new
+rollback clause restores whatever the same `accept` call had already written
+before re-raising. Measured against a 256 MiB replaced destination:
+**+257.3 MiB** resident before the fix (the replacement succeeded, the whole
+file held in memory) against **+1.3 MiB** after (refused before reading) —
+the boundary is exact, 8 MiB accepted, 8 MiB + 1 byte refused. Pinned by
+`test_accept_refuses_an_oversized_replaced_destination_without_reading_it_whole`
+and the mid-loop rollback it drives,
+`test_a_mid_loop_oversized_replacement_rolls_back_an_earlier_write_too`.
+
+**A refusal reached through either read used to name no file at all.**
+`_commit`'s restored-destination read and the ADR-0027 rehearsal's landed-set
+read (`cli/migration_pipeline.py::_materialize`) now both attach a
+project-relative `referrer` to `IrregularSourceFileError` — left bare, a
+replaced or landed file swapped for a FIFO, socket or device in the window
+between an earlier check and this read propagated the refusal naming no path,
+the same shape `ProposalService._read_within_project` was already fixed to
+stop for the incoming side. `domain/errors.py`'s `IrregularSourceFileError`
+docstring enumerates all eight `read_source_file` call sites in this build
+against that claim. Pinned by
+`test_a_mid_loop_irregular_replacement_rolls_back_an_earlier_write_too` and
+`test_a_rehearsal_read_of_an_irregular_landed_file_names_it`, all four tests
+in `tests/integration/test_proposal_service.py`.
+
 Recorded under T-6 rather than as its own entry: resource exhaustion is one
 threat, and splitting it by which stage the load enters would leave a reader
 asking "can someone burn this daemon's CPU" to find two places.
@@ -5116,7 +5197,7 @@ fix.
 | T-3 | Prompt injection via knowledge | T/E | High | SEC-15, SEC-16 |
 | T-4 | Path traversal | I | Critical | SEC-7 |
 | T-5 | Symlink escape | I | Critical | SEC-7 |
-| T-6 | Resource exhaustion, at parse and at query | D | Medium | SEC-8 |
+| T-6 | Resource exhaustion, at parse, at query, and at `accept` | D | Medium | SEC-8 |
 | T-7 | SSRF via external URL | I | Medium | SEC-10 — `$ref` recorded-never-fetched only; scheme allowlist, private-network rejection and repository allowlist owed with M7 ([#129](https://github.com/theurian/theurian/issues/129)) |
 | T-8 | Token in a config file | I | High | SEC-5 |
 | T-9 | Token in a log | I | High | SEC-6 |
