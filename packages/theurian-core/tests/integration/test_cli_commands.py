@@ -81,6 +81,43 @@ operations:
           sourceUri: git://demo/auth-policy.md
 """
 
+#: A second, independent migration over its own item, so #116's delete-detection
+#: test can remove *one* applied migration and leave a non-empty set behind --
+#: the realistic tampering, not the degenerate "delete the only migration" case.
+#: Named apart from :data:`SECOND_MIGRATION` below, which revises the *same* item
+#: and would collide as a module constant.
+RATE_LIMIT_MIGRATION_ID = "01K1CCCCCC01234567890ABCDE"
+RATE_LIMIT_REVISION_ID = "01K1CCCREV01234567890ABCDE"
+RATE_LIMIT_BODY = "# Rate limiting\n\nEvery endpoint carries a request budget.\n"
+
+RATE_LIMIT_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {RATE_LIMIT_MIGRATION_ID}
+createdAt: 2026-08-02T10:05:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.rate-limit
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.rate-limit
+    revisionId: {RATE_LIMIT_REVISION_ID}
+    contentFile: ../knowledge/architecture/rate-limit.md
+    contentSha256: {body_pin(RATE_LIMIT_BODY)}
+    metadata:
+      title: Rate limiting
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/rate-limit.md
+"""
+
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
@@ -112,6 +149,16 @@ def _invoke(*args: str) -> tuple[int, dict[str, Any]]:
 def _write_migration(root: Path, migration: str = MIGRATION, body: str = BODY) -> None:
     (root / ".theurian/knowledge/architecture/auth-policy.md").write_text(body)
     (root / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml").write_text(migration)
+
+
+#: The path #116's test deletes -- a module constant so the write and the unlink
+#: cannot drift on the filename spelling.
+RATE_LIMIT_MIGRATION_PATH = f".theurian/migrations/{RATE_LIMIT_MIGRATION_ID}-add-rate-limit.yaml"
+
+
+def _write_rate_limit_migration(root: Path) -> None:
+    (root / ".theurian/knowledge/architecture/rate-limit.md").write_text(RATE_LIMIT_BODY)
+    (root / RATE_LIMIT_MIGRATION_PATH).write_text(RATE_LIMIT_MIGRATION)
 
 
 # -- issue #205: a contentFile that does not resolve ------------------------
@@ -1840,6 +1887,145 @@ def test_editing_an_applied_migration_is_fatal(project: Path) -> None:
     code, error = _invoke("migrate", "status")
     assert code == EXIT_STATE_ERROR
     assert "never be edited" in error["error"]
+
+
+def test_deleting_an_applied_migration_is_fatal(project: Path) -> None:
+    """FR-K5 (#116): removal is the one tampering the checksum trail cannot see.
+
+    The forward checksum check binds only files that still exist, so deleting an
+    applied migration -- the strongest tampering -- passed silently while its
+    canonical rows stayed in the store (issue #116). The reverse check refuses
+    it, symmetric with `test_editing_an_applied_migration_is_fatal` above, and
+    names the deleted migration so the operator can restore it (AC-2).
+
+    Checked at ``validate``, ``apply`` *and* ``status``, the three commands that
+    resolve a project through ``_verify_history``: an evidence guard that fired
+    at one and not the others would let a caller route around it by reaching for
+    a different command, the same divergence issue #63 recorded for the scope
+    guard.
+    """
+    _invoke("init")
+    _write_migration(project)
+    _write_rate_limit_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0, "both migrations must apply cleanly first"
+
+    (project / RATE_LIMIT_MIGRATION_PATH).unlink()
+
+    for command in ("validate", "apply", "status"):
+        code, error = _invoke("migrate", command)
+        assert code == EXIT_STATE_ERROR, (
+            f"`migrate {command}` did not refuse a deleted applied migration (#116)"
+        )
+        assert RATE_LIMIT_MIGRATION_ID in error["error"], (
+            f"`migrate {command}` refused without naming the deleted migration (AC-2)"
+        )
+        assert "never be deleted" in error["error"]
+        assert error["remedy"], f"`migrate {command}` named no remedy to restore it"
+
+
+def test_apply_is_unaffected_when_no_applied_migration_was_deleted(project: Path) -> None:
+    """AC-3: the honest path -- adding a new migration on top -- still applies.
+
+    Guards the reverse check against over-refusal: a *pending* migration is
+    recorded nowhere yet, so it is present-in-set-but-absent-from-history, the
+    opposite direction the delete check must not confuse for tampering. Adding
+    one shifts the state hash (ADR-0016) and routes to a fresh database, so both
+    migrations replay there -- exit 0, and the new migration among the applied.
+    """
+    _invoke("init")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0
+
+    _write_rate_limit_migration(project)
+    code, applied = _invoke("migrate", "apply")
+    assert code == 0, "applying a newly added migration is honest, not tampering"
+    assert applied["applied"] == [MIGRATION_ID, RATE_LIMIT_MIGRATION_ID]
+
+
+# -- issue #130: a body edited after the migration that pinned it was applied --
+
+#: Issue #130's reproduction, and deliberately a *removal*: the body loses the
+#: one sentence that made it findable. Removal is the face that matters, because
+#: a stale index goes on answering with a line the working tree no longer
+#: contains -- disclosure of withdrawn content, not merely a wrong answer.
+#: `_write_migration` pins `BODY`, so writing this afterwards is what puts the
+#: declared digest and the bytes on disk out of step.
+_BODY_WITH_ITS_ONE_CLAIM_REMOVED = "# Authentication policy\n\n"
+
+
+def test_a_body_edited_after_apply_is_refused_when_apply_is_re_run(project: Path) -> None:
+    """Issue #130's reproduction, driven at the layer that refuses it today.
+
+    The 2026-08-10 report: edit a revision's body file in place, re-run plain
+    ``migrate apply``, get exit 0 -- and the canonical store, plus every index
+    built from it, keeps serving the removed line. What killed that
+    reproduction is ``contentSha256`` becoming schema-required on every
+    ``upsertRevision`` (ADR-0027 decision 1) and re-verified against the bytes
+    on disk each time the loader re-reads a body (``_parse_upsert``): the
+    re-apply now refuses instead of silently confirming a state nothing on disk
+    supports.
+
+    **No test drove that refusal.** Measured 2026-08-26, the sentence asserted
+    below occurred exactly once in the repository -- in the loader that raises
+    it -- and nowhere in ``tests/``. The adjacent pin tests all enter through
+    ``propose accept`` or ``migrate validate``; none re-applies. A guard that no
+    test reaches survives its own deletion, and this one guards the difference
+    between "fewer results" and "withdrawn content still served".
+    """
+    _invoke("init")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0, "the drift must start from a cleanly applied state"
+
+    body = project / ".theurian/knowledge/architecture/auth-policy.md"
+    body.write_text(_BODY_WITH_ITS_ONE_CLAIM_REMOVED)
+
+    code, error = _invoke("migrate", "apply")
+
+    assert code == EXIT_STATE_ERROR, "a re-apply over a drifted body must not report success"
+    # Both digests by value, not merely "a mismatch was reported": a refusal
+    # naming neither side tells an author nothing about which half to correct,
+    # and an equality-only check would pass on two identically wrong strings.
+    assert body_pin(_BODY_WITH_ITS_ONE_CLAIM_REMOVED)[:12] in error["error"], (
+        "the refusal must name the digest of the bytes actually on disk"
+    )
+    assert body_pin(BODY)[:12] in error["error"], (
+        "and the digest the applied migration pinned, which is what it no longer matches"
+    )
+    assert "The body file changed after the migration was written." in error["error"], (
+        "the diagnosis is the operator-facing half: which of the two files moved"
+    )
+    # The referrer, so the remedy points at a file the author can open. Both
+    # halves: the migration that carries the stale pin, and the body it names.
+    assert f"{MIGRATION_ID}-add-auth-policy.yaml" in error["error"]
+    assert "../knowledge/architecture/auth-policy.md" in error["error"]
+
+
+def test_a_body_edited_after_apply_is_refused_by_validate_as_well(project: Path) -> None:
+    """The same drift, through the command an operator reaches for first.
+
+    ``migrate validate`` is documented as reporting what can be checked without
+    touching state, so an author who has been told a re-apply refuses will run
+    it to find out why. If it passed while ``apply`` refused, the two commands
+    would disagree about whether the project is well-formed -- the divergence
+    issue #63 recorded for the scope guard, here on the body pin.
+
+    Pinned against known values rather than against ``apply``'s output: two
+    commands agreeing by both falling back to the same wrong text would satisfy
+    an equality-only check.
+    """
+    _invoke("init")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0, "the drift must start from a cleanly applied state"
+
+    body = project / ".theurian/knowledge/architecture/auth-policy.md"
+    body.write_text(_BODY_WITH_ITS_ONE_CLAIM_REMOVED)
+
+    code, error = _invoke("migrate", "validate")
+
+    assert code == EXIT_STATE_ERROR, "validate must not call a drifted project well-formed"
+    assert body_pin(_BODY_WITH_ITS_ONE_CLAIM_REMOVED)[:12] in error["error"]
+    assert body_pin(BODY)[:12] in error["error"]
+    assert "The body file changed after the migration was written." in error["error"]
 
 
 def test_a_revision_conflict_is_reported_not_merged(project: Path) -> None:
