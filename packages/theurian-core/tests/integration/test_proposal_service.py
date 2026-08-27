@@ -15,7 +15,7 @@ import sys
 import tempfile
 from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path
-from typing import Final
+from typing import Final, NoReturn
 
 import pytest
 import yaml
@@ -26,6 +26,7 @@ from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
     _PERMISSION_ERRNOS,
+    MAX_UPSERT_OPERATIONS,
     ApprovedSetUnusableError,
     CandidateMigrationSet,
     ChangeAlreadyInPlaceError,
@@ -35,6 +36,7 @@ from theurian.application.proposal_service import (
     ProposalRequest,
     ProposalService,
     _evidence_failure_reason,
+    _refuse_past_the_operation_cap,
     _require_filename_matches_id,
 )
 from theurian.cli.migration_pipeline import rehearse_migration_set
@@ -3083,6 +3085,168 @@ def test_two_operations_naming_one_body_are_refused_with_the_proposal_intact(
     assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
     assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
     assert not drafted.body_destination.exists()
+
+
+# -- #306: the operation-count cap and the shared-body dedup ---------------
+
+
+def test_accept_refuses_a_proposal_past_the_operation_cap(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-5 (#306): past ``MAX_UPSERT_OPERATIONS``, ``accept`` refuses before any body is read.
+
+    ``_body_moves`` is monkeypatched to raise the instant it is *called* --
+    not merely when its generator is driven -- so this proves the cap fires
+    before line 869's ``moves = tuple(self._body_moves(...))``, not only that
+    the migration is eventually refused. The padding operations carry no
+    ``contentFile`` at all, which is itself part of the proof: nothing about
+    them needs to resolve to a real file, because the cap has to refuse before
+    anything tries to.
+    """
+    drafted = service.draft(_request())
+    document = _document(drafted.migration_file)
+    operations = document["operations"]
+    assert isinstance(operations, list)
+    padding = [{"op": "noop", "n": i} for i in range(MAX_UPSERT_OPERATIONS + 1 - len(operations))]
+    padded = {**document, "operations": [*operations, *padding]}
+    drafted.migration_file.write_text(yaml.safe_dump(padded, sort_keys=False), encoding="utf-8")
+    before = _contents(drafted.directory)
+
+    def _must_not_run(
+        _self: ProposalService, _directory: Path, _document: Mapping[str, object]
+    ) -> NoReturn:
+        raise AssertionError("_body_moves ran after the operation cap should have refused")
+
+    monkeypatch.setattr(ProposalService, "_body_moves", _must_not_run)
+
+    with pytest.raises(ProposalError, match="operations") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert str(MAX_UPSERT_OPERATIONS) in str(caught.value)
+    assert caught.value.remedy, "the refusal must name a remedy"
+    assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
+def test_accept_reads_a_shared_content_file_once(service: ProposalService) -> None:
+    """AC-6 (#306): N operations naming ONE ``contentFile`` share a single resident read.
+
+    Drives ``_body_moves`` directly at a count well above
+    ``MAX_UPSERT_OPERATIONS`` -- the dedup this pins is a property of
+    ``_body_moves`` itself, independent of the operation-count cap AC-5 pins,
+    so calling it directly (bypassing ``accept``'s cap) proves the mechanism
+    holds on its own rather than being confused for the cap's effect.
+    """
+    drafted = service.draft(_request())
+    document = _document(drafted.migration_file)
+    operations = document["operations"]
+    assert isinstance(operations, list)
+    base = _upsert(drafted.migration_file)
+    extra = MAX_UPSERT_OPERATIONS + 250
+    clones = [dict(base) for _ in range(extra)]
+    padded = {**document, "operations": [*operations, *clones]}
+
+    moves = list(service._body_moves(drafted.directory, padded))
+
+    upsert_moves = [move for move in moves if move.destination == drafted.body_destination]
+    assert len(upsert_moves) == extra + 1, "one _BodyMove per operation naming the body"
+    distinct_reads = {id(move.data) for move in upsert_moves}
+    assert len(distinct_reads) == 1, "every operation naming one contentFile must share one read"
+    assert upsert_moves[0].data == BODY.encode("utf-8")
+
+
+def test_body_moves_dedups_two_content_files_sharing_one_inode(service: ProposalService) -> None:
+    """FIX 2 (#306): two DIFFERENT ``contentFile`` values reaching one physical
+    file share the single read AC-6 pins for one *repeated* value.
+
+    Before this fix ``_body_moves``'s dedup cache was keyed on the resolved
+    source path *string*. Two ``contentFile`` entries naming the same inode
+    through two different spellings -- APFS/NTFS case-folding is the class
+    the review measured (verified on Darwin) -- each resolve to a *different*
+    string and so each missed the cache, holding two resident copies of one
+    physical file. A hardlink reproduces the identical class -- one inode,
+    two path strings -- without depending on filesystem case-folding, so this
+    proof holds on every platform the CI matrix runs. Keying the cache on
+    ``(st_dev, st_ino)`` instead collapses both onto the single read the
+    first triggers.
+    """
+    drafted = service.draft(_request())
+    document = _document(drafted.migration_file)
+    operations = document["operations"]
+    assert isinstance(operations, list)
+    base = _upsert(drafted.migration_file)
+
+    alias_source = drafted.body_file.parent / "alias.md"
+    os.link(drafted.body_file, alias_source)
+    assert alias_source.stat().st_ino == drafted.body_file.stat().st_ino, (
+        "the hardlink must share the inode"
+    )
+    alias_content_file = drafted.content_file.rsplit("/", 1)[0] + "/alias.md"
+    assert alias_content_file != drafted.content_file
+
+    clone = dict(base)
+    clone["contentFile"] = alias_content_file
+    padded = {**document, "operations": [*operations, clone]}
+
+    moves = list(service._body_moves(drafted.directory, padded))
+
+    assert len(moves) == 2, "one _BodyMove per operation, even though they share an inode"
+    destinations = {move.destination for move in moves}
+    assert destinations == {drafted.body_destination, drafted.body_destination.parent / "alias.md"}
+    assert moves[0].data is moves[1].data, (
+        "two content files naming one inode must share the one resident read"
+    )
+    assert moves[0].data == BODY.encode("utf-8")
+
+
+def test_the_operation_cap_boundary_is_inclusive() -> None:
+    """FIX 3 (#306): pins the ``<=`` boundary AT the constant, independent of AC-5.
+
+    AC-5 (``test_accept_refuses_a_proposal_past_the_operation_cap``) drives the
+    cap through ``accept()`` with a document one operation over the limit --
+    it proves the cap fires before ``_body_moves`` runs, but it does not by
+    itself distinguish ``<=`` from ``<``: a mutant narrowing the check to
+    ``<`` (an effective cap one below the constant) still refuses "one over"
+    and AC-5 stays green. This calls ``_refuse_past_the_operation_cap``
+    directly at the exact boundary on both sides: a document of exactly
+    ``MAX_UPSERT_OPERATIONS`` operations must NOT be refused by the cap (it
+    may still be refused later, by schema or replay, for reasons this test
+    does not touch), and one operation past it MUST be.
+    """
+    at_cap = {"operations": [{"op": "noop"}] * MAX_UPSERT_OPERATIONS}
+
+    _refuse_past_the_operation_cap(at_cap)  # must not raise
+
+    past_cap = {"operations": [{"op": "noop"}] * (MAX_UPSERT_OPERATIONS + 1)}
+    with pytest.raises(ProposalError, match=str(MAX_UPSERT_OPERATIONS)) as caught:
+        _refuse_past_the_operation_cap(past_cap)
+    assert caught.value.remedy, "the refusal must name a remedy"
+
+
+def test_the_operation_cap_holds_the_two_channel_memory_ceiling() -> None:
+    """FIX 3 amendment (#306): pins the cap VALUE, not only the ``<=`` logic above.
+
+    The boundary test pins the comparison operator but not the constant
+    itself: with ``MAX_UPSERT_OPERATIONS`` loosened to, say, 5,000, that test
+    would still pass at 5,000/5,001 -- it has no opinion on what the number
+    should *be*. The real cost claim -- the two-channel peak
+    ``_commit`` can hold resident (the incoming ``moves`` bytes and, for every
+    replaced body, the ``restored`` destination bytes kept for rollback; see
+    ``MAX_UPSERT_OPERATIONS``'s docstring) -- is only proven at real memory
+    scale by the e2e ``AC-7`` proof, which CI's ``-m "not e2e"`` jobs exclude.
+    This recomputes that same bound from the LIVE constants and pins it
+    against the 4 GiB ceiling the constant's own docstring targets, so a
+    constant change that breaks the ceiling goes red here, in the CI-run
+    suite, rather than only in the excluded e2e job.
+    """
+    two_channel_peak_bytes = MAX_UPSERT_OPERATIONS * 2 * MAX_SOURCE_FILE_BYTES
+    four_gib = 4 * 1024**3
+    assert two_channel_peak_bytes <= four_gib, (
+        f"MAX_UPSERT_OPERATIONS={MAX_UPSERT_OPERATIONS} admits a two-channel peak of "
+        f"{two_channel_peak_bytes} bytes (moves + restored, each up to "
+        f"MAX_SOURCE_FILE_BYTES={MAX_SOURCE_FILE_BYTES} per operation), past the "
+        f"{four_gib}-byte ceiling MAX_UPSERT_OPERATIONS's own docstring claims"
+    )
 
 
 def test_a_pin_that_does_not_match_its_own_body_is_refused_with_the_proposal_intact(

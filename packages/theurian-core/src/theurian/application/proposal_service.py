@@ -116,6 +116,77 @@ EVIDENCE_FILE: Final = "evidence.json"
 #: 50,000 files produced a 600 KB error string in 1.5 s before this bound.
 _MAX_NAMES_LISTED: Final = 5
 
+#: How many entries ``operations`` may hold before ``accept`` refuses the
+#: migration outright, checked against the raw parsed document -- before
+#: :meth:`ProposalService._body_moves` reads a single body (#306).
+#:
+#: **Why a count, not only a size.** The migration file itself is already
+#: bounded (``MAX_YAML_BYTES``, 4 MiB), but nothing bounded how many
+#: operations that budget can spend. ``_operation_count`` runs on the raw
+#: parsed document, before any per-entry shape is checked -- so the cheapest
+#: entry that keeps ``operations`` a list is a bare scalar list item, four
+#: bytes (``"- x\n"``), and 4 MiB of those is well past a million: the
+#: largest such document that still fits the byte cap parses to 1,048,573
+#: entries, measured directly rather than estimated from a "typical" entry
+#: size a document under this check need not use. A schema-valid
+#: ``upsertRevision`` may instead name a *distinct* ``contentFile`` up to
+#: :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` (8 MiB) -- a
+#: separate file the migration only points at, so the migration's own byte
+#: cap says nothing about it -- and :meth:`ProposalService._body_moves`
+#: read every one of them into memory before ADR-0027's schema check ever
+#: ran (measured on main: a shared 512 KB body held resident once per
+#: naming operation, 1120 MB resident at 2,000 operations with no cap in
+#: sight). Counting operations is what a byte cap on the migration file
+#: cannot do, because the cost this bounds is spent reading *other* files a
+#: dozen bytes are enough to name.
+#:
+#: **Why every operation, not only ``upsertRevision``.** A ``createItem`` or
+#: a malformed entry carries no body, but it still costs O(1) work at every
+#: later stage this document reaches -- the schema check, the ``migrate
+#: apply`` replay, the secret scan's field walk (#336) -- so bounding only
+#: the body-bearing subset would leave those stages unbounded by an
+#: operations array padded with cheap entries. The cap is on
+#: ``len(document["operations"])``, full stop.
+#:
+#: **Why the bound is two channels, not one.** ``moves = tuple(self._body_moves(...))``
+#: holds one resident copy per *distinct* incoming body -- up to
+#: ``cap * MAX_SOURCE_FILE_BYTES``. But :meth:`ProposalService._commit`, further
+#: down the same call, holds a *second* set simultaneously: for every move that
+#: replaces an existing destination, ``restored`` carries
+#: ``move.destination.read_bytes()`` -- the prior body being overwritten -- kept
+#: resident so a failed write can roll it back. Both lists can be full at once
+#: (a migration whose every operation replaces an existing body), so the true
+#: worst-case peak is ``2 * cap * MAX_SOURCE_FILE_BYTES``, not the one-channel
+#: figure this docstring stated before #306's round-one review measured the
+#: gap: 499 replace-mode operations at 1 MiB each peaked at ~1051 MiB against a
+#: create-mode run's ~542 MiB for the same count, roughly double, exactly what
+#: the two-channel formula predicts.
+#:
+#: **Why 250, not the sibling precedent's 500 or 5,000.** ``openapi.py``'s
+#: ``MAX_OPERATIONS`` bounds records that come from the document already being
+#: read, so its worst case is bounded by that same document's own byte cap --
+#: it is not the precedent for this bound, whose worst case is spent on
+#: *separate* files the document only names. 5,000 would admit
+#: ``2 * 5,000 * 8 MiB`` = ~78 GiB; 500 would still admit ~7.8 GiB. 250 keeps
+#: the two-channel peak at ``2 * 250 * 8 MiB`` = ~3.9 GiB, a pure memory
+#: ceiling this project can defend on its own terms, independent of any other
+#: constant's value. It leaves enormous headroom over what this repository's
+#: own migrations ever declare: the largest legitimate migration checked in
+#: anywhere in this repo is 5 operations (the sample project's
+#: ``add-order-cancellation``); every other migration here is 1-2, and
+#: ``ProposalService.draft`` always emits exactly two (``createItem`` and
+#: ``upsertRevision``). 250 is ~50x that observed maximum and rejects nothing
+#: a real migration in this codebase has ever produced.
+#:
+#: **What this bound does not cover.** The ``restored`` reads above are bounded
+#: to at most :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` per entry
+#: only for a destination an *earlier accepted proposal* landed through this
+#: same path -- every write this service performs goes through the size-capped
+#: read path. A destination file that reached its size some other way (written
+#: directly, outside ``accept``) is read here uncapped by ``move.destination.read_bytes()``;
+#: that gap is tracked separately (#400) and is not closed by this cap.
+MAX_UPSERT_OPERATIONS: Final = 250
+
 #: Where a secret-scan finding sits when the text it was found in is an artifact
 #: ``accept`` lands rather than a field of the migration document (#349).
 #:
@@ -746,6 +817,17 @@ class ProposalService:
         precedence: the two directories can hold different bytes, and choosing
         silently is the ambiguity class this project has already paid for.
 
+        **The operation count is checked before a single body is read** (#306,
+        SEC-8): a migration past :data:`MAX_UPSERT_OPERATIONS` is refused on
+        the raw parsed document, ahead of ``moves = tuple(self._body_moves(...))``
+        below. A schema check placed after that line would still be correct
+        about *whether* to accept, but the memory this bounds is spent reading
+        bodies, and that spend happens the moment ``_body_moves`` runs -- a
+        refusal that arrives after it is too late to have prevented it. Two
+        operations that name the *same* ``contentFile`` also read it at most
+        once, in :meth:`_body_moves` itself, so resident memory tracks distinct
+        bodies rather than operations naming them.
+
         **Before anything moves, the union of the landed migration set and this
         proposal is put through the pipeline ``migrate apply`` runs. If it does
         not survive, ``accept`` refuses and consumes nothing** (ADR-0027 decision
@@ -836,7 +918,8 @@ class ProposalService:
                 locations -- incomplete,
                 could not be fully examined -- including a directory or a file
                 in it the filesystem refuses to list, stat or read -- names a
-                file the security layer refuses, would land anything that appears
+                file the security layer refuses, declares more operations than
+                :data:`MAX_UPSERT_OPERATIONS`, would land anything that appears
                 to contain a secret -- a body, a migration field, the migration's
                 own bytes, its filename or a body's path -- while
                 ``security.secretScan`` is ``block``, or
@@ -865,6 +948,7 @@ class ProposalService:
             # nothing holds.
             self._refuse_if_migration_present(destination, document)
             _require_filename_matches_id(migration_file, document)
+            _refuse_past_the_operation_cap(document)
 
             moves = tuple(self._body_moves(directory, document))
             self._refuse_if_a_replacement_breaks_an_existing_pin(moves)
@@ -1992,11 +2076,38 @@ class ProposalService:
         ``.theurian/knowledge/``. The body is then found in the proposal
         directory at the **same sub-path** it will occupy under ``knowledge/``,
         not by its leaf name: two content files that differ only in namespace
-        share a leaf, and a leaf lookup found one file for both. The source is
-        read through the security layer here, once, so the bytes written later
-        are the bytes that were checked.
+        share a leaf, and a leaf lookup found one file for both.
+
+        **A source is read through the security layer at most once, however
+        many operations name it** (#306, SEC-8). Two operations that declare
+        the same ``contentFile`` -- an in-place re-declare (ADR-0024 decision
+        5) or a cross-item reuse that :meth:`_refuse_if_a_replacement_breaks_an_existing_pin`
+        or the schema-and-replay check later refuses -- resolve to the same
+        ``source`` file, so the second and every later one reuse the bytes the
+        first read rather than reading them again: resident memory tracks the
+        number of *distinct* bodies a proposal names, not the number of
+        operations that name them. Every ``_BodyMove`` this yields still
+        carries its own operation's ``revision_id``/``item_id``, because the
+        guards downstream judge each declaration on its own, byte-shared or
+        not.
+
+        **Keyed on the source's ``(st_dev, st_ino)``, never the resolved path
+        string.** A case-insensitive, case-preserving filesystem (APFS, NTFS)
+        and Unicode normalization (NFC vs NFD) both reach one physical file by
+        more than one spelling, and ``Path`` equality is a string comparison
+        that does not fold either: two ``contentFile`` entries differing only
+        in case (``X.md`` vs ``x.md``) resolve to two distinct path strings
+        naming the *same* inode, so a string-keyed cache read it twice and
+        held two resident copies of one file -- the identical class
+        :meth:`_refuse_if_a_replacement_breaks_an_existing_pin` already keys
+        on inode identity to avoid, for the same reason (verified on Darwin).
+        ``source.stat()`` is called once per operation -- one extra syscall
+        beyond the existence check above it -- and its result supplies both
+        halves of the identity key, so no second ``stat`` is needed to read
+        ``st_ino`` after ``st_dev``.
         """
         knowledge = self._paths.knowledge.resolve()
+        read: dict[tuple[int, int], bytes] = {}
         for content_file, revision_id, item_id in _upsert_bodies(document):
             destination = self._destination_of(content_file)
             tail = destination.relative_to(knowledge)
@@ -2007,7 +2118,12 @@ class ProposalService:
                     f"{_names([tail.as_posix()])} is not in the proposal directory.",
                     remedy="Restore the body file, or draft the proposal again.",
                 )
-            data = self._read_within_project(source)
+            info = source.stat()
+            identity = (info.st_dev, info.st_ino)
+            data = read.get(identity)
+            if data is None:
+                data = self._read_within_project(source)
+                read[identity] = data
             yield _BodyMove(
                 source=source,
                 destination=destination,
@@ -2658,6 +2774,40 @@ def _require_filename_matches_id(migration_file: Path, document: Mapping[str, ob
         f"The migration file is named for {prefix} but its id is {inner!r}; the "
         "filename ULID must equal the migration id.",
         remedy="Rename the file to <id>-<slug>.yaml, or correct the id inside it.",
+    )
+
+
+def _operation_count(document: Mapping[str, object]) -> int:
+    """How many entries ``operations`` holds, or 0 when the field is not a list.
+
+    A document whose ``operations`` is missing or the wrong shape is left for
+    the schema check that runs later (:meth:`ProposalService._refuse_unless_the_union_applies`)
+    to refuse on its own terms; this only has to answer the counting question
+    without raising on a shape the rest of the pipeline already rejects.
+    """
+    operations = document.get("operations")
+    return len(operations) if isinstance(operations, list) else 0
+
+
+def _refuse_past_the_operation_cap(document: Mapping[str, object]) -> None:
+    """Refuse a migration declaring more than :data:`MAX_UPSERT_OPERATIONS`.
+
+    Called on the raw parsed document, before :meth:`ProposalService._body_moves`
+    reads anything (#306, SEC-8): the cost this bounds is spent reading bodies,
+    one per operation naming a ``contentFile``, and that spend happens the
+    instant ``_body_moves`` runs -- so the count has to be checked before that
+    call, not after. See :data:`MAX_UPSERT_OPERATIONS` for why the count is
+    checked at all and why 250 is where it sits.
+    """
+    count = _operation_count(document)
+    if count <= MAX_UPSERT_OPERATIONS:
+        return
+    raise ProposalError(
+        f"This migration declares {count} operations, more than the "
+        f"{MAX_UPSERT_OPERATIONS} `accept` will examine in one proposal.",
+        remedy=(
+            f"Split the proposal into migrations of {MAX_UPSERT_OPERATIONS} operations or fewer."
+        ),
     )
 
 
