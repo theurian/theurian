@@ -2441,6 +2441,21 @@ class ProposalService:
         not span this method, so nothing translated it (CP-2). The rollback set
         is empty when the ``mkdir`` runs, so folding it in changes no rollback.
 
+        **"Exactly as they were" is a claim about bytes, not about the
+        directories that hold them.** :func:`_roll_back` restores every
+        written destination's content byte-identically -- unlinking what it
+        created, rewriting what it replaced -- but it never removes a
+        directory ``mkdir(parents=True, exist_ok=True)`` created for a
+        destination's parent. A refusal on the first operation to name a new
+        namespace therefore leaves that namespace's now-empty directory behind
+        in ``.theurian/knowledge/``, even though no file it would have held
+        survives. Harmless and pre-existing -- the same residue the
+        ``OSError`` and :class:`MigrationNameTakenError` rollbacks already
+        leave, not new with the ``InputTooLargeError``/
+        :class:`~theurian.domain.errors.IrregularSourceFileError`/
+        :class:`~theurian.domain.errors.PathEscapeError` clause below -- and
+        not closed here.
+
         **The restored-body read is size-capped, not raw** (#400, the per-entry
         face of #306's class). A destination this replaces may have reached its
         size some way other than through this service -- a body committed
