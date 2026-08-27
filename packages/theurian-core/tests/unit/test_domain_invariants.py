@@ -194,6 +194,52 @@ def test_valid_to_must_follow_valid_from() -> None:
         ValidityPeriod(valid_from=NOW, valid_to=NOW - timedelta(days=1))
 
 
+def test_valid_to_must_follow_valid_from_by_instant_not_by_offset() -> None:
+    """#117: this guard is what a caller relies on once the SQL ``CHECK`` is gone.
+
+    ``knowledge_revisions.CHECK (valid_to > valid_from)`` compared stored ISO
+    strings as TEXT and was dropped in schema version 4 because that comparison
+    disagrees with instant order across differing UTC offsets. The direction
+    that matters here is the one a TEXT check gets *wrong the other way*:
+    ``2031-01-01T05:00:00+09:00`` (the instant 2030-12-31T20:00Z) sorts after
+    ``2031-01-01T00:00:00+00:00`` (2031-01-01T00:00Z) as a string, even though
+    it names an instant four hours *earlier*. A lexicographic check would have
+    let this window through; ``ValidityPeriod`` compares the aware ``datetime``s
+    themselves and refuses it, which is what makes it safe for the schema to
+    stop checking at all.
+    """
+    with pytest.raises(InvariantViolationError, match="must be after"):
+        ValidityPeriod(
+            valid_from=datetime.fromisoformat("2031-01-01T00:00:00+00:00"),
+            valid_to=datetime.fromisoformat("2031-01-01T05:00:00+09:00"),
+        )
+
+
+def test_valid_to_equal_to_valid_from_is_rejected() -> None:
+    """The dropped SQL ``CHECK`` was strict (``valid_to > valid_from``, not
+    ``>=``), and INV-4 must refuse the equal-instant boundary exactly as
+    strictly or the schema's removal quietly loosened what a window may be.
+    Nothing pinned this before: mutating ``ValidityPeriod.__post_init__``'s
+    ``self.valid_to <= self.valid_from`` to ``<`` survived the whole suite,
+    because every other test in this module compares two genuinely distinct
+    instants.
+
+    Two shapes, because "equal" can arrive either way a caller might write it:
+    the identical ``datetime`` twice, and two different UTC offsets that happen
+    to name the same instant -- the same case ``test_valid_to_must_follow_
+    valid_from_by_instant_not_by_offset`` above exercises for a *different*
+    instant, applied here to the boundary where the two collapse to one.
+    """
+    with pytest.raises(InvariantViolationError, match="must be after"):
+        ValidityPeriod(valid_from=NOW, valid_to=NOW)
+
+    with pytest.raises(InvariantViolationError, match="must be after"):
+        ValidityPeriod(
+            valid_from=datetime.fromisoformat("2031-01-01T00:00:00+00:00"),
+            valid_to=datetime.fromisoformat("2031-01-01T09:00:00+09:00"),
+        )
+
+
 def test_naive_datetimes_are_rejected() -> None:
     with pytest.raises(InvariantViolationError, match="timezone-aware"):
         ValidityPeriod(valid_from=datetime(2026, 8, 1))  # noqa: DTZ001

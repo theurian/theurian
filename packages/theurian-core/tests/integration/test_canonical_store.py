@@ -495,6 +495,80 @@ def test_a_read_connection_cannot_write(database: Path) -> None:
         connection.close()
 
 
+def test_a_state_database_written_at_version_three_is_refused(database: Path) -> None:
+    """Version 3 specifically -- the version every pre-#117-fix state database carries.
+
+    Not a relative check against ``SCHEMA_VERSION - 1``: this pins the literal 3
+    because that is the version a build stamped before ``knowledge_revisions``'
+    ``CHECK (valid_to > valid_from)`` was dropped, and the closure for #117 rests
+    on this refusal exactly as the revision-reuse fix's did on the version-1
+    refusal above. A state database an affected build derived may hold rows this
+    build's own writer would refuse to append under the same schema (the CHECK
+    is gone, but the writer never depended on it -- see the domain proof at
+    ``test_valid_from_and_valid_to_are_written_only_through_validityperiod`` in
+    ``tests/unit/``); the closure holds only because such a file is refused and
+    rebuilt from the Git-tracked migrations rather than read in place, and the
+    ``SCHEMA_VERSION`` bump to 4 is the mechanism that forces the rebuild. So
+    reverting ``SCHEMA_VERSION`` to 3 -- which a version-agnostic
+    ``== SCHEMA_VERSION`` check cannot see -- would make ``open_read_connection``
+    accept a database this build's DDL no longer matches, and this test is what
+    goes RED when it does.
+    """
+    with closing(sqlite3.connect(database)) as raw, raw:
+        raw.execute("UPDATE schema_metadata SET schema_version = 3")
+
+    with pytest.raises(SchemaVersionMismatchError) as exc:
+        open_read_connection(database)
+
+    assert exc.value.found == 3
+    assert "rebuild" in str(exc.value).lower()
+
+
+# -- #117: the CHECK is gone; INV-4 owns the window's ordering --------------
+
+
+def test_a_mixed_offset_window_the_domain_accepts_applies_without_a_check_violation(
+    database: Path, lock: Path
+) -> None:
+    """A domain-valid window the dropped SQL ``CHECK`` used to refuse (#117).
+
+    ``valid_from``/``valid_to`` are stored as ``datetime.isoformat()`` verbatim --
+    the author's own offset, never normalised to UTC -- so the ``CHECK`` this
+    schema version drops used to compare them as TEXT. A window whose
+    ``valid_to`` is genuinely *later* in instant terms can still sort earlier
+    lexicographically: ``2031-01-01T00:00:00+00:00`` (the instant
+    2031-01-01T00:00Z) is nine hours after ``2031-01-01T00:00:00+09:00`` (the
+    instant 2030-12-31T15:00Z), and yet ``'...+00:00' < '...+09:00'`` as
+    strings. ``ValidityPeriod.__post_init__`` (INV-4) accepts this window -- it
+    compares aware ``datetime``\\s, which order by instant -- so before the
+    ``CHECK`` was dropped, ``append_revision`` raised ``sqlite3.IntegrityError``
+    for a window the domain had already approved: reproduced by running this
+    test against the schema this commit replaces, where it fails with exactly
+    that exception rather than the assertions below.
+    """
+    revision = replace(
+        _revision(),
+        validity=ValidityPeriod(
+            valid_from=datetime.fromisoformat("2031-01-01T00:00:00+09:00"),
+            valid_to=datetime.fromisoformat("2031-01-01T00:00:00+00:00"),
+        ),
+    )
+
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        writer.append_revision(revision)
+        writer.put_item(_item().with_revision(revision))
+
+    with SqliteCanonicalStore(database) as store:
+        loaded = store.get_revision(RequestContext(project_id=PROJECT), REV_1)
+
+    assert loaded is not None
+    assert loaded.validity.valid_to == revision.validity.valid_to, (
+        "the window round-tripped through a store that no longer refuses it"
+    )
+
+
 # -- Relations and aliases -------------------------------------------------
 
 

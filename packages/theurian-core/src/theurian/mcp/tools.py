@@ -225,7 +225,7 @@ def _integrity_signal(
 
     ``expected_surfaceable is None`` -- no row for this project in
     `project_integrity` -- is damage too, not "not recorded". Every database this
-    build can open declares schema version 3 or is refused unread, and every
+    build can open declares schema version 4 or is refused unread, and every
     apply that creates a database or applies a migration records the count, so a
     readable database with no record has lost one.
 

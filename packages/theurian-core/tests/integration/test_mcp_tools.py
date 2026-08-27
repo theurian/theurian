@@ -7861,7 +7861,7 @@ async def test_a_missing_integrity_record_is_damage_and_not_silence(
     database was written before the record existed, or it has lost one -- and the
     detector may only treat it as the second because `is_supported` refuses every
     older file outright -- exact match, so versions 1 and 2 alike (ADR-0017,
-    `SCHEMA_VERSION` 3). Reading `None` as healthy is the tempting mutation, and
+    `SCHEMA_VERSION` 4). Reading `None` as healthy is the tempting mutation, and
     it is what this goes RED against.
 
     Nothing else is touched: the migration operands are equal, the live
