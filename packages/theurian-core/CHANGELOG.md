@@ -12,6 +12,39 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **Review-Finding trailer landing store, still no serving surface**
+  ([#368](https://github.com/theurian/theurian/issues/368), ADR-0029). A
+  `ReviewFindingStore` port, a `SqliteReviewFindingStore` adapter, and a
+  standalone `FindingsBuilder` land slice-1's parsed `Review-Finding:` trailers
+  in a `theurian-findings-<id>.sqlite` file under `.theurian/state/` — a
+  Canonical-layer artifact (ADR-0029 decision 4), rebuilt from empty on every
+  run rather than migrated in place. The new `theurian findings build` command
+  runs the rebuild and reports counts and a parser-grammar stamp — `findings`,
+  `rejected`, `parserStamp`, `storePath` — never a finding's own text. Two
+  rebuilds over unchanged history leave a logically identical store; a rebuild
+  after history grows converges to the new full set with nothing lost or
+  duplicated; a malformed trailer lands in its own table, byte-preserved and
+  never re-parsed into a finding; and a deleted store rebuilds identically from
+  git, so losing the file is a cache miss, not data loss (ADR-0004). **The write
+  is not yet atomic against a concurrent reader** — unlike `index build`'s
+  working-name-then-`os.replace` discipline, this rebuild unlinks the live file
+  and writes the replacement in place, so a reader racing a build can observe a
+  missing file or a partially written one; tracked as
+  [#404](https://github.com/theurian/theurian/issues/404), and not yet a defect
+  because this slice ships no reader.
+
+  **This is still not a served capability.** `system.capabilities` keeps
+  reporting `reviewIngestion: false`, and nothing a caller reaches can serve a
+  finding: no MCP tool, no CLI read command, and no module under `mcp/`,
+  `daemon/`, or the retrieval/CLI-content path imports the store or names its
+  tables — asserted structurally over the whole shipped package, not a
+  hand-picked list. The derived `pullRequest`, `family` and `specialist` fields
+  stay `None`; a served finding's SEC-15 safety triple, the recurrence query,
+  the family-taxonomy corpus items, and the relation/view surfaces are the later
+  lanes ADR-0029 still owes.
+
 ## [0.1.0.dev13] - 2026-08-27
 
 ### Added
