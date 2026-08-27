@@ -560,9 +560,13 @@ def test_external_refs_path_build_is_linear() -> None:
     and the depth never exceeds 2.
 
     Measured on 68e8a0b (pre-fix), in-process against ``_external_refs``
-    directly: n=240,000 (a ~3.25 MB document) took ~1.28 s. The 0.5 s bound sits
-    below that and well above the tuple-path build's own measured cost
-    (~0.04 s), so it fails on the defect rather than on a slow machine.
+    directly: n=240,000 (a ~3.25 MB document) took ~1.28 s. Round-one adversarial
+    review (LOW) found the original 0.5 s bound too thin a margin: only ~2.5x
+    the reverted-bug cost, so a machine 2.5-3x faster than the one it was
+    measured on could pass the bug. The fixed code measures ~0.037 s here
+    (2026-08-27); 0.2 s sits comfortably above that -- roughly 5.5x margin --
+    while staying well below what even a fast machine would see for the
+    reverted quadratic cost.
     """
     n = 240_000
     document: dict[str, Any] = {"openapi": "3.1.0", "x" * n: {str(i): 0 for i in range(n)}}
@@ -573,7 +577,7 @@ def test_external_refs_path_build_is_linear() -> None:
 
     assert walk.found == (), "no $ref anywhere in this document"
     assert walk.truncations == (), "neither cap fires on this shape"
-    assert elapsed < 0.5, f"the long-key/wide-fan-out shape took {elapsed:.2f}s"
+    assert elapsed < 0.2, f"the long-key/wide-fan-out shape took {elapsed:.2f}s"
 
 
 def test_openapi_accepts_json_as_well_as_yaml() -> None:
