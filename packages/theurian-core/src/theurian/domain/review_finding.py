@@ -32,6 +32,7 @@ adapter that reads git:
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -94,6 +95,47 @@ class FindingSeverity(StrEnum):
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
     LOW = "LOW"
+
+
+def _compute_parser_stamp() -> str:
+    """A content hash over every literal the trailer grammar is defined by.
+
+    The identity of the grammar this parser enforces, in one string. It exists so
+    a *derived* store of parsed findings can record which grammar produced its rows
+    and detect -- structurally, not by a hand-bumped integer -- that a later parser
+    would read the same history differently and its file must be rebuilt (ADR-0029
+    decision 2 calls a change to any of these a grammar change).
+
+    Derived rather than hand-maintained because every element below is a thing an
+    edit to the grammar *changes*: the key, the separator, the two closed
+    vocabularies, and the alias map (adding an alias is the recorded grammar change
+    of decision 2). Hashing all five means the stamp cannot silently stay equal
+    across a grammar change the way a forgotten manual bump would -- the
+    forcing-function property the derived index/state schema versions rely on, moved
+    from a human's discipline onto the constants themselves.
+
+    Deterministic: the vocabularies and the alias map are serialized in sorted
+    order, so the stamp is a pure function of the grammar and not of dict or set
+    iteration order (no ``hash()``, no unordered iteration reaching an output).
+    """
+    material = "\n".join(
+        [
+            f"key={TRAILER_KEY}",
+            f"separator={SEPARATOR}",
+            "reviewers=" + ",".join(sorted(token.value for token in ReviewerToken)),
+            "aliases="
+            + ",".join(f"{raw}->{token.value}" for raw, token in sorted(_REVIEWER_ALIASES.items())),
+            "severities=" + ",".join(sorted(severity.value for severity in FindingSeverity)),
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+#: The current trailer-grammar identity (see :func:`_compute_parser_stamp`). A
+#: derived store records this beside its schema version; a stored value that no
+#: longer equals this one means the file was parsed by a superseded grammar and is
+#: rebuilt wholesale from git history rather than read in place (ADR-0029, AC-4).
+PARSER_STAMP: Final = _compute_parser_stamp()
 
 
 class MalformedTrailerError(DomainError):

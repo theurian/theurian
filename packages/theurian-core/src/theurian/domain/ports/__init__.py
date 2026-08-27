@@ -36,6 +36,7 @@ from theurian.domain.ports.index_store import IndexStore
 from theurian.domain.ports.object_store import ObjectStore
 from theurian.domain.ports.reranking import RerankingProvider, ScoredCandidate
 from theurian.domain.ports.review_finding_source import ReviewFindingSource
+from theurian.domain.ports.review_finding_store import ReviewFindingStore
 from theurian.domain.ports.review_provider import ReviewProvider
 from theurian.domain.ports.secret_store import SecretStore
 from theurian.domain.ports.source_parser import NormalizedDocument, SourceParser
@@ -55,6 +56,7 @@ ALL_PORTS: tuple[type, ...] = (
     ObjectStore,
     RerankingProvider,
     ReviewFindingSource,
+    ReviewFindingStore,
     ReviewProvider,
     SecretStore,
     SourceParser,
@@ -76,6 +78,7 @@ __all__ = [
     "ObjectStore",
     "RerankingProvider",
     "ReviewFindingSource",
+    "ReviewFindingStore",
     "ReviewProvider",
     "ScoredCandidate",
     "SecretStore",
