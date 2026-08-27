@@ -8,6 +8,14 @@ pushed to ``refs/remotes/origin/main`` -- read through the *real*
 path, not a fake of it, while their oracle is the source's own load rather than a
 re-derivation of the store's algorithm.
 
+**Hermetic means every git invocation ignores the developer's real
+configuration.** ``_git`` pins ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` to
+``os.devnull`` for every call, including ``init`` and ``clone``, not only the
+identity-bearing ``commit``. Without it, every call here merged ``**os.environ``
+and nothing else, so a developer's real ``~/.gitconfig`` with
+``commit.gpgsign = true`` made this file's own fixture commits sign with their
+live key -- a passphrase or hardware-token prompt with no test invoking one.
+
 Three acceptance criteria live here, none pinned to a live count (the corpus
 grows), all against a repo authored in the test:
 
@@ -24,6 +32,7 @@ grows), all against a repo authored in the test:
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections import Counter
 from pathlib import Path
@@ -50,19 +59,31 @@ _RejectedContent = tuple[str, str, str]
 
 
 def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    """Run one git command as this fixture's isolated actor.
+
+    ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` are pinned to ``os.devnull`` for
+    every call here, not only the identity-bearing ``commit`` -- ``init`` and
+    ``clone`` read global config too (a ``core.hooksPath`` or a clone template
+    would otherwise run under the developer's real settings). Applied after
+    ``env`` is merged, so it cannot be overridden by a caller that forgets it;
+    the same pattern ``tests/integration/test_propose_cli.py`` and
+    ``tests/unit/test_command_population.py`` use for the identical reason.
+    """
     result = subprocess.run(  # noqa: S603
         ["git", *args],  # noqa: S607 - git resolved via PATH, args are test-controlled
         cwd=root,
         check=True,
         capture_output=True,
-        env=env,
+        env={
+            **(env if env is not None else os.environ),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        },
     )
     return result.stdout.decode("utf-8")
 
 
 def _identity_env(when: str) -> dict[str, str]:
-    import os
-
     return {
         **os.environ,
         "GIT_AUTHOR_NAME": "Tester",

@@ -17,6 +17,15 @@ builds one for the standalone builder -- through the real Typer CLI
 (:mod:`typer.testing`), never through :class:`FindingsBuilder` directly. No
 ``theurian init`` runs in the fixture: ``findings build`` needs no ``.theurian``
 to exist, and its absence is itself load-bearing for one test below.
+
+**Hermetic means every git invocation ignores the developer's real
+configuration, not only the ones that set a commit identity.** ``_git`` pins
+``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` to ``os.devnull`` for every call --
+``init`` and ``clone`` read global config too, not only ``commit`` -- because a
+round-two review measured that without it, every fixture commit merged
+``**os.environ`` and nothing else, so a developer's real ``~/.gitconfig`` with
+``commit.gpgsign = true`` made this file's own commits sign with their live
+key: a passphrase or hardware-token prompt with no test invoking one.
 """
 
 from __future__ import annotations
@@ -59,12 +68,26 @@ _NEEDS_SYMLINKS = pytest.mark.skipif(
 
 
 def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    """Run one git command as this fixture's isolated actor.
+
+    ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` are pinned to ``os.devnull`` for
+    every call here, not only the identity-bearing ``commit`` -- ``init`` and
+    ``clone`` read global config too (a ``core.hooksPath`` or a clone template
+    would otherwise run under the developer's real settings). Applied after
+    ``env`` is merged, so it cannot be overridden by a caller that forgets it;
+    the same pattern ``tests/integration/test_propose_cli.py`` and
+    ``tests/unit/test_command_population.py`` use for the identical reason.
+    """
     result = subprocess.run(  # noqa: S603
         ["git", *args],  # noqa: S607 - git resolved via PATH, args are test-controlled
         cwd=root,
         check=True,
         capture_output=True,
-        env=env,
+        env={
+            **(env if env is not None else os.environ),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        },
     )
     return result.stdout.decode("utf-8")
 
