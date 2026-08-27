@@ -13,14 +13,25 @@ of its Git-tracked YAML migrations (``infrastructure/sqlite/schema.py``). That i
 why AC-6 holds: a deleted store rebuilds identically from git.
 
 **Populated ONLY by rebuild-from-git in this slice; it adds no authority beyond
-git history.** :meth:`replace_all` is the one write, and its sole caller is the
-standalone rebuild service, which feeds it a :class:`FindingLoad` it got from the
-git source. There is deliberately no append-one, no arbitrary-write, and no
-serving read: a write path that admits findings *not* sourced from git, and any
-query-by-content or retrieval-shaped read, are future lanes (ADR-0029's
-serving/deriving arm). The two ends of that boundary are held structurally --
-there is nothing here to write an off-git finding *with*, and nothing here to
-*serve* one *from*.
+git history *as a matter of who actually calls it*.** :meth:`replace_all` is the
+one write, and its sole *shipped* caller is the standalone rebuild service, which
+feeds it a :class:`FindingLoad` it got from the git source. There is deliberately
+no append-one and no serving read: a query-by-content or retrieval-shaped read is
+a future lane (ADR-0029's serving/deriving arm). That end of the boundary is held
+structurally -- there is nothing here to *serve* a finding *from*.
+
+The write end is **not** structurally closed the same way: :meth:`replace_all`
+takes a :class:`FindingLoad` built from public domain types
+(:class:`~theurian.domain.review_finding.ReviewFinding`,
+:class:`~theurian.domain.knowledge.SourceAnchor`), and neither this port nor its
+adapter verifies that a given ``commit_sha`` names a commit that actually exists
+in this repository's history -- a caller can construct a ``ReviewFinding`` with a
+fabricated sha and provider ``"git"`` and land it via ``replace_all`` (measured).
+What holds today is narrower and behavioural, not structural: exactly one shipped
+caller reaches this method, and it writes only what
+:class:`~theurian.domain.ports.review_finding_source.ReviewFindingSource` returned
+from a real git read. A future writer that skips the git source is a change this
+port's type signature does not prevent.
 
 The one read this port exposes, :meth:`dump`, is a whole-table verification dump
 in a fixed total order: not a query (no content predicate, no ranking, no
@@ -72,6 +83,14 @@ class StoredRejection:
     ``raw_line`` is **inert bytes at rest**: author-controlled, untrusted commit
     text (ADR-0029 D3), byte-preserved verbatim and never re-parsed or interpreted
     by the store or its builder. A later reader must not "helpfully" parse it.
+
+    ``reason`` is untrusted too, not product-generated: the parser builds it by
+    interpolating the offending token straight from the line (``f"unknown
+    reviewer {token!r}"``, ``f"...got {prefix!r}"``), so it carries arbitrary-length
+    author-controlled Unicode, repr-escaped to one token but not otherwise bounded
+    or sanitized. A serving-slice implementer must not conclude this field is safe
+    to render or index without the same untrusted-content discipline ``raw_line``
+    already carries (SEC-15).
     """
 
     commit_sha: str
@@ -144,8 +163,11 @@ class ReviewFindingStore(Protocol):
     def is_current(self) -> bool:
         """Whether this store's stamp matches the build that would rebuild it now.
 
-        ``False`` for a missing, stale-schema, or stale-parser store -- the signal
-        a caller acts on to rebuild wholesale (AC-4).
+        ``False`` for a missing, stale-schema, or stale-parser store. The signal
+        exists for the consumer that arrives with the serving slice: this phase-2
+        slice ships no such consumer, and its one writer (``findings build``)
+        rebuilds wholesale on every run regardless of staleness, so no shipped
+        path calls this today.
         """
         ...
 

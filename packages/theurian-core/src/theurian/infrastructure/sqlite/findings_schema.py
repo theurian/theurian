@@ -20,17 +20,25 @@ wholesale by replaying the git source -- exactly as the canonical state database
 reconstructible by replaying its Git-tracked YAML migrations (``schema.py``). A
 deleted store therefore rebuilds identically (AC-6).
 
-**The version is a forcing function, like the index's.** A store written under an
-earlier :data:`FINDINGS_SCHEMA_VERSION`, or by an earlier trailer grammar (its
-recorded ``parser_stamp`` no longer equal to
-:data:`~theurian.domain.review_finding.PARSER_STAMP`), is not read in place: it is
-detected as stale and rebuilt wholesale from git. There is no in-place migration
-for a file that costs one ``git log`` to recreate (ADR-0004).
+**The version is a forcing function, like the index's -- for the consumer that
+checks it.** A store written under an earlier :data:`FINDINGS_SCHEMA_VERSION`, or
+by an earlier trailer grammar (its recorded ``parser_stamp`` no longer equal to
+:data:`~theurian.domain.review_finding.PARSER_STAMP`), is *detectable* as stale
+via :meth:`~theurian.domain.ports.review_finding_store.ReviewFindingStore.is_current`.
+There is no in-place migration for a file that costs one ``git log`` to
+recreate (ADR-0004) -- but this phase-2 slice ships no consumer that reads that
+signal: its one writer, ``findings build``, rebuilds wholesale on every run
+regardless of staleness, so nothing here is served stale today because nothing
+here is served at all. The detection is real; the rebuild-on-detection path is
+owed to the serving slice that arrives later.
 
 **No FTS, no triggers, no serving apparatus.** Three plain tables and nothing that
 scores or ranks. A findings *search* is a later slice with its own disclosure
 round; this schema deliberately carries none of the retrieval machinery
-``index_schema.py`` does, so there is nothing here a serving path could reach.
+``index_schema.py`` does. That absence of machinery is not, by itself, what stands
+between a caller and a finding -- the schema cannot refuse a query issued against
+it. The guarantee that nothing *reaches* this schema at all is enforced by
+``tests/unit/test_findings_store_is_unreachable.py`` (AC-7), not by this file.
 """
 
 from __future__ import annotations
@@ -91,6 +99,12 @@ CREATE TABLE findings (
 -- `raw_line` is INERT bytes at rest: author-controlled, untrusted commit text,
 -- byte-preserved verbatim and NEVER re-parsed or interpreted -- not by the store,
 -- not by the builder, not by a later reader. A finding is never derived from it.
+--
+-- `reason` is untrusted too, not product-generated: the parser builds it by
+-- interpolating the offending token straight from the line (repr-escaped, one
+-- token), so it carries arbitrary-length author-controlled Unicode. A later
+-- reader must give it the same untrusted-content handling `raw_line` gets
+-- (SEC-15), not treat it as safe because it reads like a diagnostic message.
 CREATE TABLE rejected_trailers (
     commit_sha  TEXT    NOT NULL,
     position    INTEGER NOT NULL,

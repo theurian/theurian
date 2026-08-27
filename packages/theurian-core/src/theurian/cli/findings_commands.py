@@ -8,6 +8,13 @@ git source and the SQLite store (ADR-0003).
 git history -- and reports counts. It returns **no finding content**. There is no
 serving here; a findings search is a later slice with its own disclosure round, so
 this command is the write boundary and nothing on it hands a caller a finding.
+
+**A premise this slice inherits, recorded here rather than left implicit:** on a
+clone of the private fork used for embargoed disclosure work, ``origin/main`` *is*
+that fork's own main, so an embargoed trailer already committed there lands in
+this command's local artifact same as any other -- unchanged reach, since the same
+bytes already sit readable in ``.git`` on that clone, but a premise the findings
+*serving* slice must revisit before it decides what ``origin`` is trusted to mean.
 """
 
 from __future__ import annotations

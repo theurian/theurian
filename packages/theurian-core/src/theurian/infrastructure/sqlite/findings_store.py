@@ -12,10 +12,13 @@ is the only mutation. It rebuilds the file from empty every time -- deleting any
 prior file first -- so the schema is always current after a rebuild (a stale
 :data:`~theurian.infrastructure.sqlite.findings_schema.FINDINGS_SCHEMA_VERSION`
 cannot survive one), the rows are exactly the load's, and two rebuilds over one
-load leave a logically identical store (AC-2). Its sole caller feeds it a
-``FindingLoad`` a git source resolved; this adapter adds no authority beyond git
-history and exposes no path to write a finding that did not come from a signed
-commit.
+load leave a logically identical store (AC-2). Its sole *shipped* caller feeds it
+a ``FindingLoad`` a git source resolved -- but that is a fact about who calls it,
+not a structural guarantee this adapter enforces: :meth:`replace_all` accepts any
+``FindingLoad``, including one built from a fabricated ``commit_sha``, because
+neither this adapter nor its port verifies commit provenance (see
+:class:`~theurian.domain.ports.review_finding_store.ReviewFindingStore`'s port
+docstring for the measured detail).
 
 **No serving read.** The reads are two metadata lookups and one whole-table
 verification dump in a fixed order -- never a query-by-content. A findings search
@@ -166,6 +169,18 @@ class SqliteReviewFindingStore:
         as a raw traceback past every ``TheurianError`` handler above this adapter
         (the same shape ``project_service.index_for`` converts ``(ValueError,
         OSError)`` for). Both ``OSError`` and ``sqlite3.Error`` convert here.
+
+        **Not yet atomic across a reader.** ``index build`` writes under a
+        ``.building`` working name and calls ``os.replace`` into the completed
+        name only once the build is whole (``cli/index_commands.py``), so a
+        concurrent reader never observes a partially written index file. This
+        method instead
+        unlinks the live path and writes the replacement in place, so a reader
+        that opens the file mid-``replace_all`` can observe a missing file or a
+        file with the new schema but not yet all its rows. Deliberately not fixed
+        here -- this slice ships no reader that races a build (AC-7: nothing
+        serves from this store yet) -- and adopting the same working-name
+        discipline is tracked as its own follow-up issue rather than folded in.
         """
         finding_rows = _finding_rows(load.accepted)
         rejected_rows = _rejected_rows(load.rejected)
@@ -173,7 +188,12 @@ class SqliteReviewFindingStore:
 
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            # Wholesale: start from no file, so no earlier schema or row can survive.
+            # Wholesale: unlink the main file first, so no earlier schema or row in
+            # it can survive. This does not remove a `-wal`/`-shm` sibling left by a
+            # killed prior connection -- `sqlite3.connect` below recreates and
+            # reconciles those itself, so no row from them resurfaces (measured);
+            # the invariant is "no earlier schema or row reachable from this
+            # connection", not "no earlier bytes anywhere on disk".
             self._path.unlink(missing_ok=True)
             with closing(sqlite3.connect(self._path)) as connection:
                 for pragma in CONNECTION_PRAGMAS:
@@ -228,9 +248,16 @@ class SqliteReviewFindingStore:
     def is_current(self) -> bool:
         """Whether the recorded stamp matches the build that would rebuild it now.
 
-        ``False`` for a missing, stale-schema, or stale-parser store -- the signal
-        the rebuild path acts on (AC-4). The parser stamp and the schema version are
-        independent forcing functions; either mismatch is staleness.
+        ``False`` for a missing, stale-schema, or stale-parser store. The parser
+        stamp and the schema version are independent forcing functions; either
+        mismatch is staleness. The signal exists for the consumer that arrives with
+        the serving slice: **no shipped caller reads it today** (verified over the
+        shipped package, 2026-08-28 -- the only production call to
+        :meth:`is_current`, :meth:`stamp`, or :meth:`dump` is this method's own use
+        of :meth:`stamp` below). The one shipped writer, ``findings build``,
+        rebuilds wholesale on every run regardless of staleness -- strictly
+        stronger than staleness-checking, not weaker -- so nothing in this slice
+        needs this signal to decide whether to rebuild.
         """
         recorded = self.stamp()
         return (
