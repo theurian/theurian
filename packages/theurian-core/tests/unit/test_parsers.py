@@ -7,6 +7,7 @@ Parsers are where untrusted input enters the system, and where the promise that
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import PurePosixPath
 from typing import Any, cast
@@ -106,6 +107,80 @@ def test_max_fences_bounds_the_record_not_the_scan() -> None:
     fences = _structured(document)["codeFences"]
 
     assert len(fences) == MAX_FENCES
+
+
+# -- codeFences differential oracle (issue #331, round-one MEDIUM) --------
+#
+# #331's own review measured the line-scan rewrite byte-identical to the regex
+# it replaced over an 800k-document fuzz corpus, but nothing pinned
+# ``line``/``characters`` directly: a mutation that offsets either by any
+# constant currently survives the full suite. This oracle is the pre-#331
+# ``_fences`` body, verbatim, so the two extractions are compared against each
+# other rather than against hand-computed numbers a copy-paste of the
+# implementation would also get wrong.
+
+_OLD_FENCE = re.compile(r"^```([A-Za-z0-9_+-]*)[ \t]*$(.*?)^```[ \t]*$", re.MULTILINE | re.DOTALL)
+
+
+def _oracle_fences(body: str) -> list[dict[str, Any]]:
+    """The pre-#331 ``_fences`` extraction, kept as an independent check."""
+    fences: list[dict[str, Any]] = []
+    for match in _OLD_FENCE.finditer(body):
+        if len(fences) >= MAX_FENCES:
+            break
+        fences.append(
+            {
+                "language": match.group(1) or None,
+                "line": body.count("\n", 0, match.start()) + 1,
+                "characters": len(match.group(2)),
+            }
+        )
+    return fences
+
+
+def _closed_fences(count: int) -> str:
+    """``count`` distinct, closed, language-tagged fences -- for the
+    ``MAX_FENCES`` boundary cases, where what matters is whether the cap and
+    the oracle agree on which ones survive it."""
+    return "".join(f"```lang{i}\nbody{i}\n```\n" for i in range(count))
+
+
+_FENCE_DIFFERENTIAL_CASES: dict[str, str] = {
+    "tilde-blocks-are-not-fences": "~~~python\nx = 1\n~~~\n",
+    "crlf-line-endings": "```python\r\nx = 1\r\n```\r\n",
+    "four-space-indented-fence": "    ```python\n    x = 1\n    ```\n",
+    "closer-with-trailing-content": "```python\nx = 1\n```extra\n",
+    "two-backtick-run": "``\nx\n``\n",
+    "four-backtick-run": "````\nx\n````\n",
+    "nested-opener-looking-lines": "```outer\n```inner\nx\n```\n```\n",
+    "unterminated-final-fence": "```python\nno closer\n",
+    "empty-language": "```\nx\n```\n",
+    "no-trailing-newline": "```python\nx = 1\n```",
+    "multi-line-body": "```python\nline1\nline2\nline3\n```\n",
+    "language-tagged-fence": "```json\n{}\n```\n",
+    "max_fences_minus_one_closed": _closed_fences(MAX_FENCES - 1),
+    "max_fences_plus_one_closed": _closed_fences(MAX_FENCES + 1),
+}
+
+
+@pytest.mark.parametrize(
+    ("case", "body"),
+    list(_FENCE_DIFFERENTIAL_CASES.items()),
+    ids=list(_FENCE_DIFFERENTIAL_CASES),
+)
+def test_code_fences_match_the_pre_331_regex_oracle(case: str, body: str) -> None:
+    """The line-scan rewrite (#331) must match what it replaced exactly, not
+    only on language: round one (code and adversarial review, MEDIUM) found
+    that a mutation offsetting ``line`` or ``characters`` by any constant
+    currently survives the full suite. Each case here is a shape #331's own
+    800k-document fuzz run does not specifically target: CRLF, indentation, a
+    malformed closer, degenerate backtick runs, overlapping opener-looking
+    lines, truncation at both sides of ``MAX_FENCES``, and the ordinary shapes
+    besides -- compared field-for-field against an independent oracle rather
+    than against hardcoded numbers.
+    """
+    document = _markdown(body)
+    assert _structured(document)["codeFences"] == _oracle_fences(body), case
 
 
 def test_markdown_title_comes_from_the_first_heading() -> None:
