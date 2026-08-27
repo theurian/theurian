@@ -219,3 +219,82 @@ def test_rejected_raw_line_is_inert_even_when_it_looks_like_a_valid_finding(
     assert dump.findings == ()
     assert len(dump.rejected) == 1
     assert dump.rejected[0].raw_line == poison
+
+
+def test_a_rebuild_with_new_content_leaves_no_stale_rows(tmp_path: Path) -> None:
+    """AC-2/AC-6: ``replace_all`` is wholesale -- a prior load's rows do not survive.
+
+    Idempotency (rebuild the *same* load twice) cannot see a non-wholesale replace:
+    the same rows land either way. The property that a *superseded* row is gone is
+    only visible when the second rebuild carries *different* content. So the store
+    is rebuilt over load A, then over a disjoint load B, and the dump is asserted to
+    equal B exactly -- no finding from A, no rejected row from A. If ``replace_all``
+    ever cleared incrementally (an upsert, an append, a DELETE the mutation drops)
+    a stale row from A would surface here; wholesale-from-empty is what this pins.
+    """
+    store = _store(tmp_path)
+    load_a = FindingLoad(
+        accepted=(
+            _finding(_sha("a"), text="A first on a"),
+            _finding(_sha("a"), text="A second on a"),
+        ),
+        rejected=(RejectedTrailer(_sha("c"), "Review-Finding: A bogus", "A reason"),),
+    )
+    load_b = FindingLoad(
+        accepted=(_finding(_sha("b"), text="B only on b"),),
+        rejected=(),
+    )
+
+    store.replace_all(load_a)
+    store.replace_all(load_b)
+    dump = store.dump()
+
+    # Exactly load B: nothing from A survived the second rebuild.
+    assert [f.finding_text for f in dump.findings] == ["B only on b"]
+    assert [f.commit_sha for f in dump.findings] == [_sha("b")]
+    assert dump.rejected == ()
+    # Not vacuous -- load A really did land rows the wholesale rebuild had to clear.
+    store.replace_all(load_a)
+    assert len(store.dump().findings) == 2
+    assert len(store.dump().rejected) == 1
+
+
+def test_dump_orders_by_commit_then_position(tmp_path: Path) -> None:
+    """The dump's fixed total order is ``(commit_sha, position)``, not insertion order.
+
+    The port promises a fixed total order so two dumps of the same logical content
+    compare equal (AC-2/AC-6). That promise is the ``ORDER BY commit_sha, position``
+    in :meth:`dump`; without it a dump returns rows in insertion (rowid) order,
+    which is *not* sorted here on purpose. The load is authored with commit ``b``'s
+    rows inserted *before* commit ``a``'s, so insertion order (b, b, a, a) differs
+    from the required order (a, a, b, b): a dropped or reversed ``ORDER BY`` returns
+    the wrong sequence and this fails. Both tables are checked, since both order.
+    """
+    store = _store(tmp_path)
+    # Insertion order is b, b, a, a -- the opposite of the (commit_sha, position)
+    # order the dump must impose, so rowid order and sorted order diverge.
+    load = FindingLoad(
+        accepted=(
+            _finding(_sha("b"), text="b0"),
+            _finding(_sha("b"), text="b1"),
+            _finding(_sha("a"), text="a0"),
+            _finding(_sha("a"), text="a1"),
+        ),
+        rejected=(
+            RejectedTrailer(_sha("b"), "b-rejected-0", "r"),
+            RejectedTrailer(_sha("a"), "a-rejected-0", "r"),
+        ),
+    )
+
+    store.replace_all(load)
+    dump = store.dump()
+
+    assert [(f.commit_sha, f.position) for f in dump.findings] == [
+        (_sha("a"), 0),
+        (_sha("a"), 1),
+        (_sha("b"), 0),
+        (_sha("b"), 1),
+    ]
+    # The text rides with its key, so a mis-order would carry the wrong content too.
+    assert [f.finding_text for f in dump.findings] == ["a0", "a1", "b0", "b1"]
+    assert [r.commit_sha for r in dump.rejected] == [_sha("a"), _sha("b")]
