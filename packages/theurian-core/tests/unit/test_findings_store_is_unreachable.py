@@ -10,20 +10,39 @@ store at all.
 
 Like ``test_network_call_sites.py`` (T-7), that absence is enforced here by nothing
 else, so it is asserted outright -- structurally, over the shipped source, in two
-prongs each blind to what the other catches:
+prongs each blind to what the other catches.
+
+**How the scanned population is assembled matters as much as the scan itself.**
+:data:`SERVING_MODULES` is not one hand-written list a human must remember to
+extend every time a file is added. ``mcp/`` and ``daemon/`` are walked wholesale
+(every ``.py`` file under either, at any depth, via :func:`_walk_python_modules`)
+-- neither directory carries the findings write path, so nothing in either needs
+excluding, and a brand-new file under either is scanned automatically with no
+list to fall out of date. ``application/`` and ``cli/`` do carry the write path
+(``application/findings_builder.py``, ``cli/findings_commands.py``), so those two
+stay hand-picked instead -- and :func:`test_every_application_and_cli_module_is_classified`
+is the completeness guard for that choice: it forces a NEW ``application/`` or
+``cli/`` file into one of three named buckets (serving, write path, or
+acknowledged non-serving) before it can pass, rather than letting it default to
+"not in any list, so not scanned, unnoticed". ``infrastructure/sqlite/store.py``
+-- the canonical-store adapter every read tool imports, reached by ``mcp/tools.py``
+for ``knowledge.get`` -- is in the hand-picked remainder too, closing the specific
+gap a round-one review measured: a store reference added to it evaded every prior
+check because it was in neither the walked directories nor the old list.
 
 **Prong (a) -- no serving-layer module imports the store [AST].** Every module in
-the explicitly-named :data:`SERVING_MODULES` set is parsed and its imports are
-scanned; none may reach the store port, the store adapter, or the standalone
-builder. This catches a store reference added anywhere in the serving layer,
-including on a path no test drives -- but it reads *imports*, so a serving module
-that reached the store's SQLite *table* directly, importing nothing, would slip
-past it. Prong (b) is the half that sees that.
+the assembled :data:`SERVING_MODULES` set is parsed and its imports are scanned;
+none may reach the store port, the store adapter, or the standalone builder. This
+catches a store reference added anywhere under the walked directories or the
+hand-picked remainder, including on a path no test drives -- but it reads
+*imports*, so a serving module that reached the store's SQLite *table* directly,
+importing nothing, would slip past it. Prong (b) is the half that sees that.
 
 **Prong (b) -- the store's tables never appear in a serving module, and no
 registered tool serves a finding [grep + AST].** The distinctive table and
 artifact tokens (``findings_metadata``, ``rejected_trailers``, ``theurian-findings``,
-the ``findings`` table SQL) are grepped out of every serving module -- the arm
+the ``findings`` table SQL, matched loosely enough to catch a quoted or
+schema-qualified table name) are grepped out of every serving module -- the arm
 that catches a raw ``SELECT ... FROM findings`` an import scan cannot see. And the
 MCP tool registry in ``mcp/tools.py`` is parsed for every ``@server.tool(name=...)``
 it registers, pinned to the known read-only set, and asserted to expose no tool
@@ -42,6 +61,22 @@ asserts they really do -- which is the guard that proves the import scan fires
 against real repository files at all, not only against snippets. The boundary is:
 serving RETURNS finding content to a caller; the write path REBUILDS the store and
 returns none.
+
+**What neither prong covers, named rather than left implicit.** A reach built by
+string concatenation -- a table name or filename assembled at runtime from split
+pieces rather than written as one literal, for example ``"find" + "ings"`` -- evades
+both the AST import scan and the grep tokens, since neither looks for anything but
+a literal match on a real module or table name. Closing that residual needs a
+store-level universal invariant over every value kind a disclosure could ride on,
+not another string pattern here -- it is owed to the slice-3 review-ingestion
+serving lane, not fixed in this file. Separately, the
+runtime bytecode arm in ``tests/integration/test_findings_tool_registry.py`` walks
+a *tool's own* code object and its nested consts (a comprehension, a closure
+defined inline), but not a *named helper function* the tool calls out to: a tool
+that called a module-level helper which itself referenced a store symbol would
+show only the helper's name in the tool's own ``co_names``, not the symbol the
+helper's code references one hop away -- a one-hop transitivity gap, also owed to
+the same later lane rather than fixed by walking further here.
 
 Pure in the sense the T-7 structural arms are: every check parses ``.py`` files as
 text or as an AST. Nothing here opens a database, a socket, or a temporary
@@ -67,13 +102,37 @@ pytestmark = pytest.mark.unit
 #: directory the product does not run against, passing whatever the source did.
 SRC = pathlib.Path(theurian.__file__).resolve().parent
 
-#: The SERVING layer, named explicitly from the architecture rather than inferred
-#: from a directory walk, because the boundary is a judgement about *what returns
-#: finding content to a caller*, not about where a file sits. A serving path takes
-#: a caller's request and answers it with knowledge; the write/maintenance path
-#: rebuilds a derived artifact and answers with counts.
+#: Directories walked wholesale rather than named file-by-file. Neither ``mcp/``
+#: nor ``daemon/`` carries the findings write path -- that lives only in
+#: ``application/findings_builder.py`` and ``cli/findings_commands.py`` (see
+#: :data:`WRITE_PATH_MODULES`) -- so nothing under either needs excluding, and a
+#: NEW file placed under either is scanned with no list a human must remember to
+#: extend. :func:`test_the_directory_walk_picks_up_a_new_file_under_a_walked_directory`
+#: guards the walk itself against silently stopping to see a new file.
+_WALKED_SERVING_DIRS: tuple[str, ...] = ("mcp", "daemon")
+
+
+def _walk_python_modules(root: pathlib.Path, directory: str) -> tuple[str, ...]:
+    """Every ``.py`` file under ``root/directory``, as a ``directory/name.py`` string.
+
+    Sorted so the result -- and so :data:`SERVING_MODULES` -- is deterministic
+    across filesystems and Python versions that iterate :meth:`pathlib.Path.rglob`
+    in different orders. ``root`` is a parameter rather than a closure over
+    :data:`SRC` directly, so a test can point this at a synthetic tree and prove a
+    freshly added file is picked up, instead of trusting the walk by inspection.
+    """
+    base = root / directory
+    return tuple(str(path.relative_to(root)) for path in sorted(base.rglob("*.py")))
+
+
+#: The SERVING layer -- a judgement about *what returns finding content to a
+#: caller*, not about where a file sits. A serving path takes a caller's request
+#: and answers it with knowledge; the write/maintenance path rebuilds a derived
+#: artifact and answers with counts.
 #:
-#: - ``mcp/`` -- the whole daemon tool surface a client speaks to.
+#: - ``mcp/``, ``daemon/`` -- walked wholesale (see :data:`_WALKED_SERVING_DIRS`):
+#:   the whole daemon tool surface a client speaks to, and the process that builds
+#:   and runs it.
 #: - ``application/retrieval_service.py``, ``application/visibility.py`` -- the
 #:   retrieval and gate the tools call.
 #: - ``cli/commands.py`` -- the content-returning CLI (the knowledge read/search
@@ -81,17 +140,28 @@ SRC = pathlib.Path(theurian.__file__).resolve().parent
 #: - the index read-side -- ``index_store.py``, ``index_query.py``,
 #:   ``index_scan.py``, ``index_forest.py`` -- what a search reads its candidates
 #:   from.
+#: - ``store.py`` -- the canonical-store adapter every read tool imports
+#:   (``mcp/tools.py`` reaches ``SqliteCanonicalStore`` through it for
+#:   ``knowledge.get``); not itself under ``mcp/``/``daemon/``, so the walk above
+#:   does not reach it, and not one of the four ``index_*`` modules either.
 #:
-#: NOT here, deliberately: ``cli/findings_commands.py`` and
-#: ``application/findings_builder.py`` are the write path (see the module
-#: docstring), and ``application/project_service.py`` owns the *path* helper
-#: ``findings_for`` for both build and serve, so it names the artifact without
-#: serving it.
+#: ``application/`` and ``cli/`` are hand-picked rather than walked, unlike
+#: ``mcp/``/``daemon/``: the findings write path lives in both
+#: (``application/findings_builder.py``, ``cli/findings_commands.py``), so a walk
+#: would need to exclude exactly those two anyway, at which point it buys nothing
+#: over naming the serving members directly. The cost of hand-picking is that a
+#: NEW file in either directory is invisible to this set until someone adds it --
+#: :func:`test_every_application_and_cli_module_is_classified` is the
+#: completeness guard for that gap: it fails the moment a new ``application/`` or
+#: ``cli/`` file is neither here, nor in :data:`WRITE_PATH_MODULES`, nor in
+#: :data:`_APPLICATION_NON_SERVING_MODULES` / :data:`_CLI_NON_SERVING_MODULES`,
+#: forcing a human classification rather than a silent default to "not scanned".
+#: ``application/project_service.py`` owns the *path* helper ``findings_for`` for
+#: both build and serve, so it names the artifact without serving it -- it is one
+#: of the acknowledged non-serving members, not measured to be unreachable.
 SERVING_MODULES: tuple[str, ...] = (
-    "mcp/__init__.py",
-    "mcp/tools.py",
-    "mcp/search.py",
-    "mcp/results.py",
+    *_walk_python_modules(SRC, "mcp"),
+    *_walk_python_modules(SRC, "daemon"),
     "application/retrieval_service.py",
     "application/visibility.py",
     "cli/commands.py",
@@ -99,6 +169,7 @@ SERVING_MODULES: tuple[str, ...] = (
     "infrastructure/sqlite/index_query.py",
     "infrastructure/sqlite/index_scan.py",
     "infrastructure/sqlite/index_forest.py",
+    "infrastructure/sqlite/store.py",
 )
 
 #: The write/maintenance path that *legitimately* reaches the store. Excluded from
@@ -107,6 +178,52 @@ SERVING_MODULES: tuple[str, ...] = (
 WRITE_PATH_MODULES: tuple[str, ...] = (
     "cli/findings_commands.py",
     "application/findings_builder.py",
+)
+
+#: Every other ``.py`` file directly under ``application/``: neither serving
+#: content the way ``retrieval_service.py``/``visibility.py`` do, nor the
+#: findings write path. Named explicitly, alongside :data:`SERVING_MODULES`'s own
+#: hand-picked entries for this directory, so the completeness test below
+#: (``test_every_application_and_cli_module_is_classified``) can assert the three
+#: buckets are exhaustive over the real directory listing. Membership here is an
+#: acknowledgement, not a measurement: it is not a claim that any of these files
+#: were checked for a store reference, only that a human has sorted them into
+#: "not serving, not the write path" and a future addition must be sorted the
+#: same way before this test passes again.
+_APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
+    {
+        "__init__.py",
+        "authorization.py",
+        "forest_builder.py",
+        "index_builder.py",
+        "ingestion_service.py",
+        "migration_alias_guards.py",
+        "migration_body_guards.py",
+        "migration_engine.py",
+        "project_service.py",
+        "proposal_service.py",
+        "setup_context.py",
+        "setup_service.py",
+        "setup_steps.py",
+        "setup_withholding.py",
+        "withdrawal_purge.py",
+    }
+)
+
+#: The ``cli/`` twin of :data:`_APPLICATION_NON_SERVING_MODULES`.
+_CLI_NON_SERVING_MODULES: frozenset[str] = frozenset(
+    {
+        "__init__.py",
+        "auth_commands.py",
+        "context.py",
+        "index_commands.py",
+        "index_status_report.py",
+        "main.py",
+        "migration_pipeline.py",
+        "output.py",
+        "propose_commands.py",
+        "setup_commands.py",
+    }
 )
 
 #: A store *module* is named by any of these as a dotted-path component. The three
@@ -340,6 +457,99 @@ def test_the_write_path_modules_do_reach_the_store() -> None:
     )
 
 
+def test_the_directory_walk_picks_up_a_new_file_under_a_walked_directory(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Guards :func:`_walk_python_modules`: the reason ``mcp/``/``daemon/`` need no list.
+
+    A round-one review found the previous, hand-written :data:`SERVING_MODULES`
+    missed ``daemon/`` entirely: a new ``Route`` serving a finding, added to
+    ``daemon/server.py``, passed the whole suite because nothing scanned that
+    directory. Deriving the population by walk instead of by list is the fix; this
+    is the guard the guard needs -- the same reason :data:`_SCANNER_CASES` exists
+    for :func:`_store_references` -- because a walk that silently stopped
+    descending, or silently stopped seeing a freshly written file, would make
+    :data:`SERVING_MODULES` shrink with no test noticing until a real evasion
+    landed. Built against a synthetic tree rather than :data:`SRC`, so a file can
+    actually be added and observed, including one nested a directory deep --
+    proving the walk is recursive, not only one level, in case ``mcp/`` or
+    ``daemon/`` ever grows a subpackage.
+    """
+    (tmp_path / "mcp").mkdir()
+    (tmp_path / "mcp" / "existing.py").write_text("x = 1\n")
+    (tmp_path / "mcp" / "nested").mkdir()
+    (tmp_path / "mcp" / "nested" / "deeper.py").write_text("y = 2\n")
+    (tmp_path / "daemon").mkdir()
+    (tmp_path / "daemon" / "server.py").write_text("z = 3\n")
+
+    found_mcp = _walk_python_modules(tmp_path, "mcp")
+    found_daemon = _walk_python_modules(tmp_path, "daemon")
+
+    assert found_mcp == ("mcp/existing.py", "mcp/nested/deeper.py")
+    assert found_daemon == ("daemon/server.py",)
+
+    # A file added *after* the first walk is still picked up by a fresh walk --
+    # the property SERVING_MODULES relies on: nothing here is cached across a
+    # source edit, because the module executes this walk again on every import.
+    (tmp_path / "mcp" / "just_added.py").write_text("w = 4\n")
+    assert _walk_python_modules(tmp_path, "mcp") == (
+        "mcp/existing.py",
+        "mcp/just_added.py",
+        "mcp/nested/deeper.py",
+    )
+
+
+#: Every ``.py`` file directly under ``application/`` and ``cli/`` in the shipped
+#: package, read fresh from disk rather than hand-counted -- the population
+#: :func:`test_every_application_and_cli_module_is_classified` checks the three
+#: named buckets against.
+def _directory_module_names(directory: str) -> set[str]:
+    return {path.name for path in (SRC / directory).glob("*.py")}
+
+
+def test_every_application_and_cli_module_is_classified() -> None:
+    """Completeness guard: a new ``application/`` or ``cli/`` file must be sorted, not defaulted in.
+
+    :data:`SERVING_MODULES` hand-picks these two directories' members rather than
+    walking them (``mcp/``/``daemon/`` are walked instead -- see their own comment
+    -- because the findings write path lives in both of these two and a walk would
+    need the same exclusion a hand-picked list already is). A hand-picked list
+    silently stops being exhaustive the moment a new file lands and nobody updates
+    it, so the three named buckets -- serving, write path, and the acknowledged
+    non-serving rest -- are asserted to equal the real directory listing. A new,
+    unclassified file makes this fail, forcing the same "decide before it can
+    pass" a reviewer already gets from :data:`KNOWN_TOOL_NAMES` and from
+    :data:`SERVING_MODULES` itself for ``mcp/``/``daemon/``.
+
+    This equality is a completeness check on classification, not a claim that
+    the acknowledged non-serving members were scanned for a store reference --
+    only :data:`SERVING_MODULES` and :data:`WRITE_PATH_MODULES` are.
+    """
+
+    def _relative(prefix: str, modules: tuple[str, ...]) -> set[str]:
+        return {module[len(prefix) :] for module in modules if module.startswith(prefix)}
+
+    serving_application = _relative("application/", SERVING_MODULES)
+    serving_cli = _relative("cli/", SERVING_MODULES)
+    write_application = _relative("application/", WRITE_PATH_MODULES)
+    write_cli = _relative("cli/", WRITE_PATH_MODULES)
+
+    application_accounted = (
+        serving_application | write_application | _APPLICATION_NON_SERVING_MODULES
+    )
+    cli_accounted = serving_cli | write_cli | _CLI_NON_SERVING_MODULES
+
+    assert application_accounted == _directory_module_names("application"), (
+        "a file under application/ is neither serving, write-path, nor named "
+        "non-serving -- classify it (does it return finding content?) before this "
+        "can pass"
+    )
+    assert cli_accounted == _directory_module_names("cli"), (
+        "a file under cli/ is neither serving, write-path, nor named non-serving "
+        "-- classify it (does it return finding content?) before this can pass"
+    )
+
+
 # -- Prong (b) grep: the tables an import scan cannot see --------------------
 
 #: The store's distinctive artifact tokens: the two side tables, the file-name
@@ -355,8 +565,15 @@ STORE_ARTIFACT_TOKENS: tuple[str, ...] = (
 #: The ``findings`` table reached by SQL. Case-sensitive on the uppercase SQL
 #: keyword so it matches ``FROM findings`` / ``INSERT INTO findings`` / ``CREATE
 #: TABLE findings`` and does not fire on lowercase prose like "...history into
-#: findings." in a docstring.
-_FINDINGS_TABLE_SQL = re.compile(r"(?:FROM|INTO|UPDATE|JOIN)\s+findings\b|CREATE TABLE findings\b")
+#: findings." in a docstring. The table name may be double-quoted, single-quoted,
+#: bracket-quoted, or schema-qualified (``main.findings``) -- all valid SQLite
+#: spellings of the same table that a bare ``findings\b`` match misses. Measured:
+#: a round-one review found ``FROM "findings"`` and ``FROM main.findings`` both
+#: slipped past the earlier, unquoted-only pattern.
+_FINDINGS_TABLE_SQL = re.compile(
+    r'(?:FROM|INTO|UPDATE|JOIN)\s+["\'\[]?(?:\w+\.)?findings\b'
+    r'|CREATE TABLE ["\'\[]?(?:\w+\.)?findings\b'
+)
 
 
 def _store_table_hits(source: str) -> list[str]:
@@ -416,6 +633,65 @@ def test_the_table_grep_detects_the_store_tables_in_the_adapter() -> None:
     assert "CREATE TABLE findings" in " ".join(_store_table_hits(schema)) or bool(
         _FINDINGS_TABLE_SQL.search(schema)
     ), "the findings-table DDL is no longer detected in the schema"
+
+
+#: Forms the SQL pattern must catch, each a real SQLite spelling of the
+#: ``findings`` table a hand-written query could use instead of the bare,
+#: unquoted form the earlier pattern only saw. ``FROM "findings"`` and ``FROM
+#: main.findings`` are the two a round-one review measured as misses.
+_SQL_TABLE_FORMS_THAT_MUST_MATCH: tuple[str, ...] = (
+    "SELECT finding_text FROM findings",
+    'SELECT finding_text FROM "findings"',
+    "SELECT finding_text FROM 'findings'",
+    "SELECT finding_text FROM [findings]",
+    "SELECT finding_text FROM main.findings",
+    'INSERT INTO "findings" (commit_sha) VALUES (?)',
+    "UPDATE main.findings SET finding_text = ?",
+    "CREATE TABLE main.findings (commit_sha TEXT)",
+)
+
+#: Forms the pattern must NOT match -- the false-positive guard for the
+#: broadened pattern, mirroring the negative half of :data:`_SCANNER_CASES` for
+#: the import scanner. ``findings_metadata`` is a distinct token (caught by
+#: :data:`STORE_ARTIFACT_TOKENS` instead), not a spelling of the ``findings``
+#: table this pattern targets.
+_SQL_TABLE_FORMS_THAT_MUST_NOT_MATCH: tuple[str, ...] = (
+    "...history into findings.",
+    "# a CRITICAL finding recorded in review round 1",
+    "FROM the findings table",
+    "SELECT * FROM findings_metadata",
+)
+
+
+@pytest.mark.parametrize("snippet", _SQL_TABLE_FORMS_THAT_MUST_MATCH)
+def test_the_sql_table_pattern_matches_quoted_and_schema_qualified_forms(snippet: str) -> None:
+    """Guards the broadened prong-(b) pattern against the two measured misses.
+
+    A round-one review found the earlier, unquoted-only pattern let a serving
+    module reach the store through ``FROM "findings"`` or ``FROM main.findings``
+    -- both valid SQLite, neither containing the bare ``findings`` token the old
+    pattern required immediately after the keyword. Quoted (double, single,
+    bracket) and schema-qualified forms are asserted here so a future edit that
+    narrows the pattern back down is caught before it ships, not discovered by
+    the next mutation run.
+    """
+    assert _FINDINGS_TABLE_SQL.search(snippet), f"the SQL table pattern did not match {snippet!r}"
+
+
+@pytest.mark.parametrize("snippet", _SQL_TABLE_FORMS_THAT_MUST_NOT_MATCH)
+def test_the_sql_table_pattern_does_not_false_positive_on_prose_or_other_tables(
+    snippet: str,
+) -> None:
+    """The broadened pattern stays as narrow as the one it replaces.
+
+    Widening the pattern to catch quoted and qualified forms must not also start
+    matching prose about review findings, or a different table whose name merely
+    starts with ``findings`` -- either would make the serving scan noisy, forcing
+    a reviewer to explain away a false positive instead of trusting the scan.
+    """
+    assert not _FINDINGS_TABLE_SQL.search(snippet), (
+        f"the SQL table pattern false-positived on {snippet!r}"
+    )
 
 
 # -- Prong (b) AST: the MCP tool registry serves no finding ------------------
