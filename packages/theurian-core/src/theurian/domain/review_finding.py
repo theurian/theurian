@@ -98,21 +98,40 @@ class FindingSeverity(StrEnum):
 
 
 def _compute_parser_stamp() -> str:
-    """A content hash over every literal the trailer grammar is defined by.
+    """A content hash over the five closed-vocabulary literals decision 2 names.
 
-    The identity of the grammar this parser enforces, in one string. It exists so
-    a *derived* store of parsed findings can record which grammar produced its rows
-    and detect -- structurally, not by a hand-bumped integer -- that a later parser
-    would read the same history differently and its file must be rebuilt (ADR-0029
-    decision 2 calls a change to any of these a grammar change).
+    **What this covers, exactly.** The five things ADR-0029 decision 2 calls a
+    "grammar change": the trailer key (:data:`TRAILER_KEY`), the separator
+    (:data:`SEPARATOR`), the two closed vocabularies (:class:`ReviewerToken`,
+    :class:`FindingSeverity`), and the alias map (:data:`_REVIEWER_ALIASES`).
+    Changing any of those five -- adding an alias, widening a vocabulary, changing
+    the key or the separator -- moves the stamp, so a derived store built under the
+    old set is detected as stale and rebuilt (AC-4).
 
-    Derived rather than hand-maintained because every element below is a thing an
-    edit to the grammar *changes*: the key, the separator, the two closed
-    vocabularies, and the alias map (adding an alias is the recorded grammar change
-    of decision 2). Hashing all five means the stamp cannot silently stay equal
-    across a grammar change the way a forgotten manual bump would -- the
-    forcing-function property the derived index/state schema versions rely on, moved
-    from a human's discipline onto the constants themselves.
+    **What this does NOT cover: the parser's mechanics.** The single space consumed
+    after the key, the ``<reviewer> <SEVERITY>`` two-token split on the prefix
+    (both in :func:`parse_trailer_line`), and the column-0 extraction rule that
+    decides which body line even reaches this parser
+    (``infrastructure/git/trailer_source.py``) are not hashed. Widening any of
+    those -- tolerating a TAB after the key, accepting an indented trailer line,
+    folding a continuation -- changes the accepted set while all five hashed
+    literals stay byte-identical, so the stamp does not move and a store built
+    under the old mechanics reads as current under the new ones (demonstrated by
+    adversarial review). Binding mechanics into the stamp is a real fix, filed as
+    its own follow-up issue rather than folded in here; until it lands, a mechanics
+    change owes a manual
+    :data:`~theurian.infrastructure.sqlite.findings_schema.FINDINGS_SCHEMA_VERSION`
+    bump -- the same manual discipline ``INDEX_SCHEMA_VERSION`` already relies on
+    for whatever its own forcing function does not reach.
+
+    Derived rather than hand-maintained for the five literals it does cover,
+    because each is a thing an edit to the *vocabulary* changes: the key, the
+    separator, the two closed vocabularies, and the alias map (adding an alias is
+    the recorded grammar change of decision 2). Hashing all five means the stamp
+    cannot silently stay equal across a vocabulary change the way a forgotten
+    manual bump would -- the forcing-function property the derived index/state
+    schema versions rely on, moved from a human's discipline onto the constants
+    themselves, for this one slice of the grammar.
 
     Deterministic: the vocabularies and the alias map are serialized in sorted
     order, so the stamp is a pure function of the grammar and not of dict or set
