@@ -3154,6 +3154,50 @@ def test_accept_reads_a_shared_content_file_once(service: ProposalService) -> No
     assert upsert_moves[0].data == BODY.encode("utf-8")
 
 
+def test_body_moves_dedups_two_content_files_sharing_one_inode(service: ProposalService) -> None:
+    """FIX 2 (#306): two DIFFERENT ``contentFile`` values reaching one physical
+    file share the single read AC-6 pins for one *repeated* value.
+
+    Before this fix ``_body_moves``'s dedup cache was keyed on the resolved
+    source path *string*. Two ``contentFile`` entries naming the same inode
+    through two different spellings -- APFS/NTFS case-folding is the class
+    the review measured (verified on Darwin) -- each resolve to a *different*
+    string and so each missed the cache, holding two resident copies of one
+    physical file. A hardlink reproduces the identical class -- one inode,
+    two path strings -- without depending on filesystem case-folding, so this
+    proof holds on every platform the CI matrix runs. Keying the cache on
+    ``(st_dev, st_ino)`` instead collapses both onto the single read the
+    first triggers.
+    """
+    drafted = service.draft(_request())
+    document = _document(drafted.migration_file)
+    operations = document["operations"]
+    assert isinstance(operations, list)
+    base = _upsert(drafted.migration_file)
+
+    alias_source = drafted.body_file.parent / "alias.md"
+    os.link(drafted.body_file, alias_source)
+    assert alias_source.stat().st_ino == drafted.body_file.stat().st_ino, (
+        "the hardlink must share the inode"
+    )
+    alias_content_file = drafted.content_file.rsplit("/", 1)[0] + "/alias.md"
+    assert alias_content_file != drafted.content_file
+
+    clone = dict(base)
+    clone["contentFile"] = alias_content_file
+    padded = {**document, "operations": [*operations, clone]}
+
+    moves = list(service._body_moves(drafted.directory, padded))
+
+    assert len(moves) == 2, "one _BodyMove per operation, even though they share an inode"
+    destinations = {move.destination for move in moves}
+    assert destinations == {drafted.body_destination, drafted.body_destination.parent / "alias.md"}
+    assert moves[0].data is moves[1].data, (
+        "two content files naming one inode must share the one resident read"
+    )
+    assert moves[0].data == BODY.encode("utf-8")
+
+
 def test_a_pin_that_does_not_match_its_own_body_is_refused_with_the_proposal_intact(
     service: ProposalService, paths: ProjectPaths
 ) -> None:

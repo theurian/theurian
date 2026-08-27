@@ -2079,16 +2079,31 @@ class ProposalService:
         the same ``contentFile`` -- an in-place re-declare (ADR-0024 decision
         5) or a cross-item reuse that :meth:`_refuse_if_a_replacement_breaks_an_existing_pin`
         or the schema-and-replay check later refuses -- resolve to the same
-        ``source`` path, so the second and every later one reuse the bytes the
+        ``source`` file, so the second and every later one reuse the bytes the
         first read rather than reading them again: resident memory tracks the
         number of *distinct* bodies a proposal names, not the number of
         operations that name them. Every ``_BodyMove`` this yields still
         carries its own operation's ``revision_id``/``item_id``, because the
         guards downstream judge each declaration on its own, byte-shared or
         not.
+
+        **Keyed on the source's ``(st_dev, st_ino)``, never the resolved path
+        string.** A case-insensitive, case-preserving filesystem (APFS, NTFS)
+        and Unicode normalization (NFC vs NFD) both reach one physical file by
+        more than one spelling, and ``Path`` equality is a string comparison
+        that does not fold either: two ``contentFile`` entries differing only
+        in case (``X.md`` vs ``x.md``) resolve to two distinct path strings
+        naming the *same* inode, so a string-keyed cache read it twice and
+        held two resident copies of one file -- the identical class
+        :meth:`_refuse_if_a_replacement_breaks_an_existing_pin` already keys
+        on inode identity to avoid, for the same reason (verified on Darwin).
+        ``source.stat()`` is called once per operation -- one extra syscall
+        beyond the existence check above it -- and its result supplies both
+        halves of the identity key, so no second ``stat`` is needed to read
+        ``st_ino`` after ``st_dev``.
         """
         knowledge = self._paths.knowledge.resolve()
-        read: dict[Path, bytes] = {}
+        read: dict[tuple[int, int], bytes] = {}
         for content_file, revision_id, item_id in _upsert_bodies(document):
             destination = self._destination_of(content_file)
             tail = destination.relative_to(knowledge)
@@ -2099,10 +2114,12 @@ class ProposalService:
                     f"{_names([tail.as_posix()])} is not in the proposal directory.",
                     remedy="Restore the body file, or draft the proposal again.",
                 )
-            data = read.get(source)
+            info = source.stat()
+            identity = (info.st_dev, info.st_ino)
+            data = read.get(identity)
             if data is None:
                 data = self._read_within_project(source)
-                read[source] = data
+                read[identity] = data
             yield _BodyMove(
                 source=source,
                 destination=destination,
