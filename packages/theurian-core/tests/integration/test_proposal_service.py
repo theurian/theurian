@@ -3249,6 +3249,95 @@ def test_the_operation_cap_holds_the_two_channel_memory_ceiling() -> None:
     )
 
 
+def test_accept_refuses_an_oversized_replaced_destination_without_reading_it_whole(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#400: the per-entry face of #306's class -- ``_commit``'s restored read was raw.
+
+    #306 bounds how many operations one migration may declare, not the size of
+    any *one* destination a replace operation overwrites. A body committed
+    directly to ``.theurian/knowledge/`` -- exactly what a ``git clone``
+    delivers -- can be arbitrarily large: landing it through Git never routes
+    it through ``MAX_SOURCE_FILE_BYTES``. Before this fix, ``_commit`` read
+    such a destination with a raw ``Path.read_bytes()`` to build the rollback
+    snapshot, so a proposal whose own incoming body is small and otherwise
+    valid still forced the whole of an oversized *committed* destination
+    resident -- one replace operation, independent of the operation-count cap
+    entirely.
+
+    The destination is planted just over the cap (not gigabytes), so the test
+    stays fast; what this pins is that the refusal fires at all -- SEC-8's
+    check reads ``stat().st_size`` before any byte of the file is read
+    (:func:`~theurian.security.paths.read_source_file`), so a refusal here
+    proves the oversized bytes were never read into memory, not merely that
+    they were read and then rejected.
+    """
+    drafted = service.draft(_request())
+    drafted.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    oversized = b"x" * (MAX_SOURCE_FILE_BYTES + 1024 * 1024)  # ~1 MiB over SEC-8's cap
+    drafted.body_destination.write_bytes(oversized)
+
+    with pytest.raises(InputTooLargeError, match="source file size") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert caught.value.remedy, "the refusal must name a remedy"
+    # Refused before anything moved: the committed destination is untouched,
+    # the proposal's own sources survive, and nothing landed in migrations/.
+    assert drafted.body_destination.read_bytes() == oversized
+    assert drafted.migration_file.exists(), "a refused accept leaves the proposal intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
+def test_a_mid_loop_oversized_replacement_rolls_back_an_earlier_write_too(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#400: the new size-cap raise rolls back like any other mid-commit failure.
+
+    Two replace operations in one migration, processed in document order: the
+    first destination is small and legitimate, so ``_commit`` writes it and
+    stages its prior bytes in ``restored``; the second destination is the
+    oversized committed body the size cap must refuse. The refusal fires while
+    reading the *second* move -- :meth:`ProposalService._commit`'s rollback
+    must still undo the *first* move's already-landed write, or its own
+    "either everything lands or nothing changed" promise would be broken by
+    the very fault this cap exists to catch. Modelled on
+    ``test_two_content_files_sharing_a_leaf_name_do_not_collide`` for the
+    two-body layout.
+    """
+    drafted = service.draft(_request())
+    revisions = (
+        ("alpha", "01K9AAAAAA0000000000000001", "A\n"),
+        ("beta", "01K9AAAAAA0000000000000002", "B\n"),
+    )
+    migration = _hand_authored_two_body_migration(drafted.migration_id.value, revisions)
+    drafted.migration_file.write_text(migration, encoding="utf-8")
+    drafted.body_file.unlink()
+    for namespace, _revision_id, text in revisions:
+        body = drafted.directory / namespace / "notes.md"
+        body.parent.mkdir(parents=True, exist_ok=True)
+        body.write_text(text, encoding="utf-8")
+
+    # Alpha (processed first) already sits at a small, legitimate destination;
+    # beta (processed second) sits at an oversized one -- the committed body
+    # the size cap must refuse before it is read.
+    alpha_destination = paths.knowledge / "alpha" / "notes.md"
+    beta_destination = paths.knowledge / "beta" / "notes.md"
+    alpha_destination.parent.mkdir(parents=True, exist_ok=True)
+    beta_destination.parent.mkdir(parents=True, exist_ok=True)
+    alpha_destination.write_text("stale alpha\n", encoding="utf-8")
+    oversized = b"x" * (MAX_SOURCE_FILE_BYTES + 1024 * 1024)
+    beta_destination.write_bytes(oversized)
+
+    with pytest.raises(InputTooLargeError):
+        service.accept(drafted.proposal_id)
+
+    assert alpha_destination.read_text() == "stale alpha\n", (
+        "the earlier move's write must be rolled back, not left holding the incoming body"
+    )
+    assert beta_destination.read_bytes() == oversized, "the refused destination is untouched"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
 def test_a_pin_that_does_not_match_its_own_body_is_refused_with_the_proposal_intact(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
