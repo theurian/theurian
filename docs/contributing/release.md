@@ -48,6 +48,12 @@ Update `packages/theurian-core/pyproject.toml` and `__version__`, then move the
 `[Unreleased]` section of `packages/theurian-core/CHANGELOG.md` under the new
 version with a date.
 
+After the move, leave `[Unreleased]`'s body empty or exactly `Nothing yet.` —
+those are the only two states the release guard (§5, step 2) accepts. Anything
+else left there fails the tag, because it means something shipped in this
+release without ever being moved into the section the release notes are
+generated from.
+
 Write the changelog for someone deciding whether to upgrade. "Fixed a bug" tells
 them nothing; "index builds no longer publish a partially built RAPTOR tree when
 cancelled mid-build" tells them whether they were affected.
