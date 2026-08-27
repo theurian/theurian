@@ -408,36 +408,42 @@ def test_deleting_an_applied_migration_is_detected() -> None:
     names it.
     """
     remaining = MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
-    recorded = {
-        MigrationId(MIG_1): remaining.migrations[0].checksum.value,
-        MigrationId(MIG_2): ContentHash.of_text("gone").value,
-    }
+    applied = (
+        (MigrationId(MIG_1), remaining.migrations[0].checksum.value),
+        (MigrationId(MIG_2), ContentHash.of_text("gone").value),
+    )
 
     # The forward check is blind to it: MIG_2 is not among the files it iterates.
-    verify_no_applied_migration_changed(recorded, remaining)
+    verify_no_applied_migration_changed(dict(applied), remaining)
 
     with pytest.raises(MigrationHistoryMissingError) as exc:
-        verify_no_applied_migration_removed(recorded, remaining)
+        verify_no_applied_migration_removed(applied, remaining)
     assert exc.value.migration_id == MigrationId(MIG_2)
     assert "never be deleted" in str(exc.value)
 
 
 def test_the_first_missing_migration_in_application_order_is_named() -> None:
-    """Determinism: `recorded` arrives ORDER BY sequence, so the earliest gone.
+    """Determinism rests on the code, not the caller: an ordered `applied`.
 
-    A dict preserves insertion order, and `applied_migrations` inserts in
-    application order, so naming the first-iterated missing id names the
-    earliest-applied one -- the migration a reader restores first.
+    ``verify_no_applied_migration_removed`` takes an ordered ``Sequence`` -- the
+    raw ``applied_migrations`` result, ``ORDER BY sequence`` -- so the
+    first-iterated missing id is the earliest-applied one whatever the caller
+    built it from. Reversing the sequence names the other, proving the order is
+    read from the sequence rather than from any incidental sorting.
     """
     remaining = MigrationSet.ordered(())
-    recorded = {
-        MigrationId(MIG_2): ContentHash.of_text("second-gone").value,
-        MigrationId(MIG_3): ContentHash.of_text("third-gone").value,
-    }
+    applied = (
+        (MigrationId(MIG_2), ContentHash.of_text("second-gone").value),
+        (MigrationId(MIG_3), ContentHash.of_text("third-gone").value),
+    )
 
     with pytest.raises(MigrationHistoryMissingError) as exc:
-        verify_no_applied_migration_removed(recorded, remaining)
+        verify_no_applied_migration_removed(applied, remaining)
     assert exc.value.migration_id == MigrationId(MIG_2)
+
+    with pytest.raises(MigrationHistoryMissingError) as exc:
+        verify_no_applied_migration_removed(tuple(reversed(applied)), remaining)
+    assert exc.value.migration_id == MigrationId(MIG_3)
 
 
 def test_a_present_pending_migration_is_not_a_removal() -> None:
@@ -448,7 +454,7 @@ def test_a_present_pending_migration_is_not_a_removal() -> None:
     ordinary `migrate apply` that adds a migration.
     """
     migrations = MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
-    verify_no_applied_migration_removed({}, migrations)
+    verify_no_applied_migration_removed((), migrations)
 
 
 # -- Ordering --------------------------------------------------------------

@@ -192,7 +192,7 @@ def verify_no_applied_migration_changed(
 
 
 def verify_no_applied_migration_removed(
-    recorded: Mapping[MigrationId, str], migration_set: MigrationSet
+    applied: Sequence[tuple[MigrationId, str]], migration_set: MigrationSet
 ) -> None:
     """Assert every recorded applied migration still has a file in the set.
 
@@ -211,16 +211,21 @@ def verify_no_applied_migration_removed(
     only in the previous database, reached through the active-state pointer
     (``cli/commands.py::_verify_history``).
 
-    ``recorded`` arrives in application order (``applied_migrations`` reads
-    ``ORDER BY sequence``), so the earliest-applied migration whose file is gone
-    is named first -- the one a reader restores to make the rest resolvable.
+    Takes ``applied`` as an **ordered** ``Sequence`` -- the raw
+    ``applied_migrations`` result, which reads ``ORDER BY sequence`` -- rather
+    than a ``Mapping``, so the earliest-applied migration whose file is gone is
+    named first *by construction*. The forward check gets its determinism from
+    iterating the ordered ``MigrationSet`` and reading ``recorded`` only for
+    lookup; a ``Mapping`` here would have rested the named culprit on the
+    caller's dict-iteration order, which the type does not promise. Naming the
+    earliest gone is the one a reader restores to make the rest resolvable.
 
     Raises:
         MigrationHistoryMissingError: On the first recorded migration whose file
             is absent from ``migration_set``.
     """
     present = {migration.migration_id for migration in migration_set}
-    for migration_id in recorded:
+    for migration_id, _checksum in applied:
         if migration_id not in present:
             raise MigrationHistoryMissingError(migration_id)
 
