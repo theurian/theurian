@@ -246,9 +246,18 @@ class SqliteReviewFindingStore:
         store, so a test can assert the projection equals its git source. A missing
         store dumps empty; a damaged or otherwise unreadable one -- including an
         OS-level failure merely checking whether the file exists, since
-        :meth:`Path.exists` does not treat every ``OSError`` as "missing" -- raises
+        :meth:`Path.exists` does not treat every ``OSError`` as "missing", and a
+        file whose schema committed but whose data transaction never did -- raises
         rather than returning a partial dump that would read as a smaller-but-valid
         corpus.
+
+        ``replace_all``'s ``executescript`` commits the DDL before the data
+        transaction that lands the rows and the metadata row share (see its
+        docstring): a crash in that window leaves empty, well-formed tables and no
+        metadata row. Without a guard, that file dumps as ``FindingsDump((), ())`` --
+        indistinguishable from a genuinely empty store -- so the metadata row's
+        presence is checked first, and its absence raises rather than answering
+        empty.
         """
         try:
             exists = self._path.exists()
@@ -258,6 +267,15 @@ class SqliteReviewFindingStore:
             return FindingsDump(findings=(), rejected=())
         try:
             with self._read() as connection:
+                metadata_row = connection.execute(
+                    "SELECT 1 FROM findings_metadata WHERE id = 1"
+                ).fetchone()
+                if metadata_row is None:
+                    raise FindingsStoreError(
+                        f"{self._path.name} has no metadata row -- the file was left "
+                        "half-built by a rebuild that crashed after its schema "
+                        "committed but before its data transaction did"
+                    )
                 finding_rows = connection.execute(
                     "SELECT commit_sha, position, reviewer, severity, finding_text, provider, "
                     "source_uri, committed_at, pull_request, family, specialist FROM findings "
