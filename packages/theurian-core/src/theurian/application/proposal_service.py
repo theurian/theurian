@@ -2463,6 +2463,25 @@ class ProposalService:
         in the loop can follow writes already made for earlier moves in the
         same call; the writes route through the same failure branch as an
         ``OSError`` would, without being one.
+
+        **The restored read attaches a referrer, the same as every other
+        caller that can reach this refusal** (see
+        :class:`~theurian.domain.errors.IrregularSourceFileError`'s own
+        enumeration). Left bare, a replaced destination swapped for a FIFO
+        between the size-cap fix landing and this one raised
+        :class:`~theurian.domain.errors.IrregularSourceFileError` with no
+        ``referrer`` at all, so ``accept`` published "The referenced file is a
+        named pipe (FIFO), not a regular file" naming no path -- the identical
+        CP-2 shape :meth:`_read_within_project` was fixed to stop. ``relative``
+        is safe to attach: it is Theurian's own project-relative construction
+        from ``move.destination``, resolved and proved contained by
+        :meth:`_destination_of` before ``_commit`` ever runs, never an
+        author-controlled string. :class:`~theurian.domain.errors.InputTooLargeError`
+        needs no matching clause -- its constructor takes no path at all, the
+        same as every other size-cap raise on this path -- and an unattached
+        :class:`~theurian.domain.errors.PathEscapeError` here stays generic
+        rather than wrong, the same choice :meth:`_read_within_project` already
+        makes for it.
         """
         created: list[Path] = []
         restored: list[tuple[Path, bytes]] = []
@@ -2472,9 +2491,13 @@ class ProposalService:
                 move.destination.parent.mkdir(parents=True, exist_ok=True)
                 if move.replaced:
                     relative = PurePosixPath(move.destination.relative_to(self._paths.root))
-                    restored.append(
-                        (move.destination, read_source_file(self._paths.root, relative))
-                    )
+                    try:
+                        restored_bytes = read_source_file(self._paths.root, relative)
+                    except IrregularSourceFileError as exc:
+                        raise IrregularSourceFileError(
+                            exc.shape, referrer=relative.as_posix()
+                        ) from exc
+                    restored.append((move.destination, restored_bytes))
                 else:
                     created.append(move.destination)
                 _write_file(move.destination, move.data, exclusive=False)

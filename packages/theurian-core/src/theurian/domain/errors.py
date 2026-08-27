@@ -893,7 +893,7 @@ class IrregularSourceFileError(SecurityError):
     :class:`PathEscapeError` already use on this load path.
 
     **Every caller that can reach this refusal either attaches one or names the
-    file some other way**, and the four are enumerated rather than summarised,
+    file some other way**, and the six are enumerated rather than summarised,
     because "a caller attaches it" was written while only one did and the accept
     path published a refusal naming no path at all::
 
@@ -904,6 +904,18 @@ class IrregularSourceFileError(SecurityError):
     * ``application/proposal_service.py::_read_within_project`` -- attaches the
       project-relative path it built itself, for all three files the accept path
       reads (the migration, ``evidence.json``, and each body).
+    * ``application/proposal_service.py::_commit`` -- attaches the
+      project-relative destination it built itself, for the prior body a
+      replace operation overwrites (#400). Until this attachment landed, a
+      replaced destination swapped for a FIFO between the size-cap fix and this
+      one made ``accept`` publish the identical unreferred refusal
+      ``_read_within_project`` was fixed to stop.
+    * ``application/proposal_service.py::_reads_identical_bytes`` -- cannot
+      reach this refusal in production: its read only runs when a loaded
+      operation's ``content_sha256`` is ``None``, and the loader always sets it
+      (:class:`~theurian.domain.migration.UpsertRevision`'s sole production
+      constructor), so the branch is defensive and unreached, the identical
+      shape ``migration_loader.py::_load_one`` is below.
     * ``migration_loader.py::_load_one`` -- cannot reach this refusal at all:
       ``load_migrations`` filters entries through ``_entry_is_migration_file``'s
       ``S_ISREG`` check first, pinned by ``test_load_migrations_skips_a_fifo_and
