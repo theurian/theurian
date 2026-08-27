@@ -7,6 +7,7 @@ Parsers are where untrusted input enters the system, and where the promise that
 from __future__ import annotations
 
 import json
+import time
 from pathlib import PurePosixPath
 from typing import Any, cast
 
@@ -18,6 +19,7 @@ from theurian.domain.ports import NormalizedDocument
 from theurian.domain.values import JSON, MARKDOWN, YAML, MediaType
 from theurian.infrastructure.filesystem.parsers.markdown import (
     GOVERNED_FIELDS,
+    MAX_FENCES,
     MarkdownParser,
 )
 from theurian.infrastructure.filesystem.parsers.openapi import OpenApiParser
@@ -69,6 +71,41 @@ def test_markdown_extracts_code_fences_with_language() -> None:
     fences = _structured(document)["codeFences"]
 
     assert [f["language"] for f in fences] == ["python", None]
+
+
+def test_unclosed_fence_openers_scan_linearly() -> None:
+    """Issue #331: the old combined opener-through-closer regex had a lazy
+    ``.*?`` body group that had to rescan every remaining line before it could
+    conclude a closer was absent -- once per unclosed opener, so a document that
+    is n unclosed openers cost Theta(n^2). Measured on 68e8a0b (pre-fix): 156 KB
+    (32,000 unclosed openers) took 25.3 s, with each doubling of the input
+    roughly quadrupling the cost.
+
+    The 1 s bound sits nearly two orders of magnitude below that 25.3 s and well
+    above the linear scan's own measured cost (0.006 s), so it fails on the
+    defect rather than on a slow machine.
+    """
+    text = "```a\n" * 32000
+    assert len(text.encode("utf-8")) == 160_000
+
+    started = time.monotonic()
+    document = _markdown(text)
+    elapsed = time.monotonic() - started
+
+    assert _structured(document)["codeFences"] == [], "no opener here ever closes"
+    assert elapsed < 1.0, f"32,000 unclosed fence openers took {elapsed:.2f}s"
+
+
+def test_max_fences_bounds_the_record_not_the_scan() -> None:
+    """``MAX_FENCES`` bounds what ``_fences`` *records*; issue #331 was that
+    nothing bounded what the scan *spent* getting there. A document of
+    ``MAX_FENCES + 1`` closed (not merely opened) fences must still record no
+    more than ``MAX_FENCES`` of them."""
+    text = "".join(f"```lang{i}\nbody\n```\n" for i in range(MAX_FENCES + 1))
+    document = _markdown(text)
+    fences = _structured(document)["codeFences"]
+
+    assert len(fences) == MAX_FENCES
 
 
 def test_markdown_title_comes_from_the_first_heading() -> None:
