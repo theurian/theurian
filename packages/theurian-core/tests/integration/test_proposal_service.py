@@ -15,7 +15,7 @@ import sys
 import tempfile
 from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path
-from typing import Final
+from typing import Final, NoReturn
 
 import pytest
 import yaml
@@ -26,6 +26,7 @@ from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
     _PERMISSION_ERRNOS,
+    MAX_UPSERT_OPERATIONS,
     ApprovedSetUnusableError,
     CandidateMigrationSet,
     ChangeAlreadyInPlaceError,
@@ -3083,6 +3084,74 @@ def test_two_operations_naming_one_body_are_refused_with_the_proposal_intact(
     assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
     assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
     assert not drafted.body_destination.exists()
+
+
+# -- #306: the operation-count cap and the shared-body dedup ---------------
+
+
+def test_accept_refuses_a_proposal_past_the_operation_cap(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-5 (#306): past ``MAX_UPSERT_OPERATIONS``, ``accept`` refuses before any body is read.
+
+    ``_body_moves`` is monkeypatched to raise the instant it is *called* --
+    not merely when its generator is driven -- so this proves the cap fires
+    before line 869's ``moves = tuple(self._body_moves(...))``, not only that
+    the migration is eventually refused. The padding operations carry no
+    ``contentFile`` at all, which is itself part of the proof: nothing about
+    them needs to resolve to a real file, because the cap has to refuse before
+    anything tries to.
+    """
+    drafted = service.draft(_request())
+    document = _document(drafted.migration_file)
+    operations = document["operations"]
+    assert isinstance(operations, list)
+    padding = [{"op": "noop", "n": i} for i in range(MAX_UPSERT_OPERATIONS + 1 - len(operations))]
+    padded = {**document, "operations": [*operations, *padding]}
+    drafted.migration_file.write_text(yaml.safe_dump(padded, sort_keys=False), encoding="utf-8")
+    before = _contents(drafted.directory)
+
+    def _must_not_run(
+        _self: ProposalService, _directory: Path, _document: Mapping[str, object]
+    ) -> NoReturn:
+        raise AssertionError("_body_moves ran after the operation cap should have refused")
+
+    monkeypatch.setattr(ProposalService, "_body_moves", _must_not_run)
+
+    with pytest.raises(ProposalError, match="operations") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert str(MAX_UPSERT_OPERATIONS) in str(caught.value)
+    assert caught.value.remedy, "the refusal must name a remedy"
+    assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
+def test_accept_reads_a_shared_content_file_once(service: ProposalService) -> None:
+    """AC-6 (#306): N operations naming ONE ``contentFile`` share a single resident read.
+
+    Drives ``_body_moves`` directly at a count well above
+    ``MAX_UPSERT_OPERATIONS`` -- the dedup this pins is a property of
+    ``_body_moves`` itself, independent of the operation-count cap AC-5 pins,
+    so calling it directly (bypassing ``accept``'s cap) proves the mechanism
+    holds on its own rather than being confused for the cap's effect.
+    """
+    drafted = service.draft(_request())
+    document = _document(drafted.migration_file)
+    operations = document["operations"]
+    assert isinstance(operations, list)
+    base = _upsert(drafted.migration_file)
+    extra = MAX_UPSERT_OPERATIONS + 250
+    clones = [dict(base) for _ in range(extra)]
+    padded = {**document, "operations": [*operations, *clones]}
+
+    moves = list(service._body_moves(drafted.directory, padded))
+
+    upsert_moves = [move for move in moves if move.destination == drafted.body_destination]
+    assert len(upsert_moves) == extra + 1, "one _BodyMove per operation naming the body"
+    distinct_reads = {id(move.data) for move in upsert_moves}
+    assert len(distinct_reads) == 1, "every operation naming one contentFile must share one read"
+    assert upsert_moves[0].data == BODY.encode("utf-8")
 
 
 def test_a_pin_that_does_not_match_its_own_body_is_refused_with_the_proposal_intact(
