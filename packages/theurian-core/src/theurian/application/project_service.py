@@ -110,6 +110,21 @@ _REBUILD_STATE_CLAUSE: Final = (
     "were written with, so changing the id without rebuilding them addresses an empty project."
 )
 
+#: The cure for a knowledge directory that resolves outside the project root.
+#: A clone can deliver ``.theurian`` as a committed symbolic link pointing out of
+#: the working tree (``.theurian -> ../elsewhere``), and every path Theurian reads
+#: or writes derives from it -- so a link that escapes turns `migrate apply`'s
+#: state database, active pointer and write lock, and every read that follows,
+#: into files outside the tree the clone gave the user (#237, T-5). Names the
+#: escape rather than a file to delete, the shape :class:`PathEscapeError`'s
+#: remedy takes: the cure is to make the knowledge directory a real directory
+#: inside the project again, not to remove content a link happens to point at.
+KNOWLEDGE_DIR_ESCAPE_REMEDY: Final = (
+    "Replace the knowledge directory with a regular directory inside the project. A "
+    "clone may have delivered it as a symbolic link pointing outside the working tree; "
+    "remove the link, run `theurian init` to recreate the directory, then retry."
+)
+
 
 def _registry_reset_remedy(path: Path) -> str:
     """The remedy for a registry file whose *set of ids* cannot be trusted.
@@ -440,7 +455,46 @@ class ProjectPaths:
     def of(cls, root: Path, knowledge_directory: PurePosixPath | None = None) -> ProjectPaths:
         directory = knowledge_directory or DEFAULT_KNOWLEDGE_DIRECTORY
         resolved = root.resolve()
-        return cls(root=resolved, knowledge_dir=resolved / str(directory))
+        knowledge_dir = resolved / str(directory)
+
+        # Contain the `.theurian` join itself, not only the index-pointer id that
+        # later resolves under it. `resolved` resolves the *root*; the join is
+        # not, so a clone that ships `.theurian` as a symbolic link to
+        # `../elsewhere` puts every state read and write outside the working tree
+        # (#237, T-5) -- `migrate apply` writing its state database, active
+        # pointer and write lock into the link's target and returning 0, and the
+        # `migrate status` after it reading `stateBuilt: true` back from there.
+        # Every path in this class derives from `knowledge_dir`, so containing it
+        # here refuses both faces at once, upstream of every helper.
+        #
+        # Checked against `resolved`, never against the join's own resolution:
+        # `index_for` compares a candidate to `self.state.resolve()`, but when
+        # `.theurian` itself escapes, `self.state.resolve()` *is* the escaped
+        # location and the comparison is trivially satisfied -- which is why the
+        # containment must live at the join and be anchored to the true root.
+        # Resolving the whole join (not just its last component) also follows a
+        # symlinked ancestor of `.theurian`, so a link anywhere on its path is
+        # caught the same way.
+        try:
+            escapes = not knowledge_dir.resolve().is_relative_to(resolved)
+        except (OSError, ValueError) as exc:
+            # A symlink cycle (`ELOOP`) or a name the platform rejects makes
+            # `resolve` raise rather than answer a location. Neither is a
+            # `TheurianError`, and a join that will not resolve to a place inside
+            # the project is refused for the same reason one that resolves
+            # outside is: nothing derived from it can be trusted to stay inside.
+            raise ProjectError(
+                f"{directory} does not resolve to a location inside {resolved}: {exc}",
+                remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+            ) from exc
+        if escapes:
+            raise ProjectError(
+                f"{directory} resolves outside the project root {resolved}, so every file "
+                f"Theurian would read or write under it is outside the working tree.",
+                remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+            )
+
+        return cls(root=resolved, knowledge_dir=knowledge_dir)
 
 
 def derive_project_id(root: Path) -> ProjectId:
