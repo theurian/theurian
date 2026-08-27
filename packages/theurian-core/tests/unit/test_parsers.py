@@ -10,9 +10,12 @@ import json
 import re
 import time
 from pathlib import PurePosixPath
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import pytest
+from hypothesis import given, seed, settings
+from hypothesis import strategies as st
+from hypothesis.strategies import DrawFn
 
 from theurian.domain.errors import InputTooLargeError
 from theurian.domain.knowledge import SourceAnchor
@@ -228,6 +231,104 @@ def test_code_fences_match_the_pre_331_regex_oracle(case: str, body: str) -> Non
     """
     document = _markdown(body)
     assert _structured(document)["codeFences"] == _oracle_fences(body), case
+
+
+#: `_FENCE_LINE_ENDINGS` mixes LF and CRLF *per line*, and the trailing one is
+#: sometimes dropped -- both shapes the 14 fixed cases above cover only once
+#: each (`"crlf-line-endings"`, `"no-trailing-newline"`), never in combination
+#: with the fence shapes below.
+_FENCE_LINE_ENDINGS: Final = ("\n", "\r\n")
+
+
+@st.composite
+def _markdown_ish_line(draw: DrawFn) -> str:
+    """One line of a fuzzed, fence-adjacent Markdown document.
+
+    Six shapes, each independently likely across a document of up to 15
+    lines: a blank line, ordinary prose, a fence opener (with a run of two,
+    three or four backticks and a random language tag), a bare closer, a
+    closer with trailing content after it (never a closer, per the
+    ``"closer-with-trailing-content"`` fixed case), and a tilde run (never a
+    fence at all, per ``"tilde-blocks-are-not-fences"``). Indentation is drawn
+    independently of the shape, so an opener or closer can land indented --
+    the ``"four-space-indented-fence"`` fixed case, generalised.
+    """
+    indent = draw(st.sampled_from(["", " ", "  ", "   ", "    "]))
+    kind = draw(st.sampled_from(["blank", "prose", "opener", "closer", "closer-trailing", "tilde"]))
+    if kind == "blank":
+        return ""
+    if kind == "prose":
+        return indent + draw(st.text(alphabet="abcXYZ019 .,!_-", max_size=10))
+    if kind == "opener":
+        run = draw(st.sampled_from(["```", "````", "``"]))
+        lang = draw(st.text(alphabet="abcXYZ019_+-", max_size=6))
+        return f"{indent}{run}{lang}"
+    if kind == "closer":
+        run = draw(st.sampled_from(["```", "````", "``"]))
+        return f"{indent}{run}"
+    if kind == "closer-trailing":
+        run = draw(st.sampled_from(["```", "````"]))
+        return f"{indent}{run}extra"
+    run = draw(st.sampled_from(["~~~", "~~~~"]))
+    return f"{indent}{run}"
+
+
+@st.composite
+def _markdown_ish_documents(draw: DrawFn) -> str:
+    """A document assembled from :func:`_markdown_ish_line`, up to 15 lines,
+    each followed by an independently drawn line ending -- and sometimes no
+    trailing one at all."""
+    lines = draw(st.lists(_markdown_ish_line(), max_size=15))
+    parts: list[str] = []
+    for line in lines:
+        parts.append(line)
+        parts.append(draw(st.sampled_from(_FENCE_LINE_ENDINGS)))
+    # `mypy` cannot re-infer `DrawFn.__call__`'s type variable across a loop
+    # boundary followed by another call site in the same function (a
+    # reproduced, minimal case is filed for reference) -- drawing into an
+    # explicitly typed local first, rather than inline in the `if`, sidesteps
+    # it without changing what gets drawn.
+    drop_trailing_ending: bool = draw(st.booleans())
+    if parts and drop_trailing_ending:
+        parts.pop()
+    return "".join(parts)
+
+
+#: Deterministic in CI: `@seed` fixes which examples run (not `derandomize`
+#: alone -- see the identical note on `_GENERATED` in `test_ref_recording.py`),
+#: `database=None` writes nothing to disk, and 400 examples run in well under a
+#: second (measured 2026-08-28: 0.52s), comfortably inside the 300-500 range
+#: this fuzz needs to cover the six line shapes above in combination.
+_FUZZ_SETTINGS = settings(deadline=None, derandomize=True, database=None, max_examples=400)
+
+
+@seed(331)
+@_FUZZ_SETTINGS
+@given(body=_markdown_ish_documents())
+def test_code_fences_match_the_pre_331_regex_oracle_over_random_documents(body: str) -> None:
+    """The 14-case oracle above pins specific edges by hand; this pins the
+    property those edges were sampled from, so a divergence the fixed cases
+    do not happen to hit still goes red.
+
+    #331 replaced ``_fences``'s single combined opener-through-closer regex
+    with a from-scratch forward line scan for performance (see that
+    function's docstring) -- a genuinely different algorithm from
+    ``_oracle_fences``'s regex, not a copy of it, so agreement between the two
+    across random shapes is exactly the claim `docs/security/threat-model.md`
+    makes about this rewrite and the only thing that was, until now, checked
+    against a one-time, uncommitted dev-time fuzz run rather than a committed
+    one.
+
+    Verified directly (2026-08-28): reverting the closer-detection filter from
+    ``line.startswith("```") and _FENCE_CLOSER_LINE.fullmatch(line)`` to
+    ``line.startswith("```")`` alone -- treating any backtick-opening line as a
+    valid closer, including one carrying its own language tag or trailing
+    text -- turned this test red on the very first generated example,
+    ``"```\\n```0\\n"``, confirming it can fail rather than passing
+    vacuously.
+    """
+    document = _markdown(body)
+    assert _structured(document)["codeFences"] == _oracle_fences(body), body
 
 
 def test_markdown_title_comes_from_the_first_heading() -> None:
