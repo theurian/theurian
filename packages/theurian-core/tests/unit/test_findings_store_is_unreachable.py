@@ -14,21 +14,59 @@ prongs each blind to what the other catches.
 
 **How the scanned population is assembled matters as much as the scan itself.**
 :data:`SERVING_MODULES` is not one hand-written list a human must remember to
-extend every time a file is added. ``mcp/`` and ``daemon/`` are walked wholesale
-(every ``.py`` file under either, at any depth, via :func:`_walk_python_modules`)
--- neither directory carries the findings write path, so nothing in either needs
-excluding, and a brand-new file under either is scanned automatically with no
-list to fall out of date. ``application/`` and ``cli/`` do carry the write path
-(``application/findings_builder.py``, ``cli/findings_commands.py``), so those two
-stay hand-picked instead -- and :func:`test_every_application_and_cli_module_is_classified`
-is the completeness guard for that choice: it forces a NEW ``application/`` or
-``cli/`` file into one of three named buckets (serving, write path, or
-acknowledged non-serving) before it can pass, rather than letting it default to
-"not in any list, so not scanned, unnoticed". ``infrastructure/sqlite/store.py``
--- the canonical-store adapter every read tool imports, reached by ``mcp/tools.py``
-for ``knowledge.get`` -- is in the hand-picked remainder too, closing the specific
-gap a round-one review measured: a store reference added to it evaded every prior
-check because it was in neither the walked directories nor the old list.
+extend every time a file is added. ``mcp/``, ``daemon/`` and ``review/`` are
+walked wholesale (every ``.py`` file under any of the three, at any depth, via
+:func:`_walk_python_modules`) -- none of the three carries the findings write
+path, so nothing under any of them needs excluding, and a brand-new file under
+any of them is scanned automatically with no list to fall out of date.
+``review/`` is walked rather than acknowledged like most of the rest of the
+package (see below) because it is *not* an ordinary non-serving package: its
+own docstring names it the future home of review-knowledge serving code
+(Milestone 7, ``#129``), so a package-level acknowledgement there would wave
+through the exact file this whole test guards against -- measured by a
+round-two review, which planted ``review/findings_search.py`` importing the
+store and watched it pass the entire suite, because ``review/`` was in neither
+the walked set nor any completeness bucket. ``application/`` and ``cli/`` do
+carry the write path (``application/findings_builder.py``,
+``cli/findings_commands.py``), so those two stay hand-picked instead --
+:func:`test_every_shipped_python_module_is_classified` is the completeness
+guard for that choice, forcing a NEW ``application/`` or ``cli/`` file into one
+of three named buckets (serving, write path, or acknowledged non-serving)
+before it can pass, rather than letting it default to "not in any list, so not
+scanned, unnoticed". ``infrastructure/sqlite/store.py`` -- the canonical-store
+adapter every read tool imports, reached by ``mcp/tools.py`` for
+``knowledge.get`` -- is in the hand-picked remainder too, closing the specific
+gap a round-one review measured: a store reference added to it evaded every
+prior check because it was in neither the walked directories nor the old list.
+``cli/main.py`` -- the command-registration root every CLI entry point is
+wired through -- is scanned for the same reason, moved here from the acknowledged
+non-serving bucket it sat in before; it names no store reference today, so the
+scan stays green.
+
+**The completeness guard now covers the whole shipped package, not only
+``application/`` and ``cli/``.** A round-two review measured that ``domain/``
+(40 files), ``infrastructure/`` (31 files outside the hand-picked five above),
+``security/`` (7 files), and nine smaller reserved packages sat outside every
+bucket -- 89 of 132 shipped modules, seen by neither the walk, the hand-picked
+list, nor any completeness check, at the time of that measurement (@98f11bc,
+2026-08-28). :func:`test_every_shipped_python_module_is_classified` closes that
+by requiring every ``.py`` file under the shipped package, walked fresh from
+disk, to fall into one of: :data:`SERVING_MODULES`, :data:`WRITE_PATH_MODULES`,
+the ``application/``/``cli/`` non-serving lists, the file-level
+:data:`_INFRASTRUCTURE_NON_SERVING_MODULES` (``infrastructure/`` mixes hand-picked
+serving members with the rest, like ``application/``/``cli/``, so it gets the
+same per-file treatment), :data:`_TOP_LEVEL_NON_SERVING_MODULES`, or one of
+:data:`_ACKNOWLEDGED_SUBTREES`'s whole-package acknowledgements. **The
+subtree acknowledgement is a deliberately weaker guarantee than the file-level
+lists**: it forces classification of a NEW top-level package, not of a new file
+inside one already acknowledged -- ``domain/newthing.py`` passes silently where
+``application/newthing.py`` would not. That trade-off is what keeps 132 files
+tractable at package granularity instead of demanding a fourth 89-entry hand
+list; it is safe here because every acknowledged subtree is either pure value
+types with no I/O (``domain/``, most of ``security/``) or a docstring-only
+placeholder for a layer that is "not yet implemented" by its own module
+docstring -- and it is exactly the gap that made ``review/`` above the one
+exception, walked rather than acknowledged.
 
 **Prong (a) -- no serving-layer module imports the store [AST].** Every module in
 the assembled :data:`SERVING_MODULES` set is parsed and its imports are scanned;
@@ -78,9 +116,32 @@ show only the helper's name in the tool's own ``co_names``, not the symbol the
 helper's code references one hop away -- a one-hop transitivity gap, also owed to
 the same later lane rather than fixed by walking further here.
 
-Pure in the sense the T-7 structural arms are: every check parses ``.py`` files as
-text or as an AST. Nothing here opens a database, a socket, or a temporary
-directory.
+**A static sibling of that same one-hop gap.** Prong (a) reads each
+:data:`SERVING_MODULES` member's *own* import statements; it does not follow an
+import transitively. A brand-new module under an acknowledged, unscanned area
+(``infrastructure/some_new_adapter.py``, say) that itself imports the store, then
+imported by a serving module by its own innocuous name
+(``from theurian.infrastructure.some_new_adapter import get_finding_count``),
+shows the serving module naming only ``some_new_adapter`` and
+``get_finding_count`` -- neither a store module component nor a store symbol --
+so prong (a) sees nothing to catch, and prong (b)'s grep sees no store table
+token in the serving module either, only in the adapter one hop away.
+:func:`test_every_shipped_python_module_is_classified` forces the new adapter
+itself into a bucket, but an "acknowledged non-serving" entry is a classification,
+not a measurement (see :data:`_APPLICATION_NON_SERVING_MODULES`'s own docstring
+note) -- it does not scan the adapter's imports either. Closing this needs the
+same store-level universal invariant the string-concatenation residual above is
+owed to, not a deeper walk here; recorded with the same slice-3 disposition as
+its runtime counterpart.
+
+Pure in the sense the T-7 structural arms are, with one named exception: every
+*assertion* here parses ``.py`` files as text or as an AST and opens no database,
+socket, or long-lived resource. The one guard test that is not pure this way is
+:func:`test_the_directory_walk_picks_up_a_new_file_under_a_walked_directory`,
+which writes a synthetic tree of throwaway ``.py`` files under ``tmp_path`` to
+prove :func:`_walk_python_modules` itself is recursive and re-reads on every
+call -- it needs a real filesystem to observe a walk picking up a freshly
+written file, which a snippet parsed in memory cannot demonstrate.
 """
 
 from __future__ import annotations
@@ -102,14 +163,23 @@ pytestmark = pytest.mark.unit
 #: directory the product does not run against, passing whatever the source did.
 SRC = pathlib.Path(theurian.__file__).resolve().parent
 
-#: Directories walked wholesale rather than named file-by-file. Neither ``mcp/``
-#: nor ``daemon/`` carries the findings write path -- that lives only in
-#: ``application/findings_builder.py`` and ``cli/findings_commands.py`` (see
-#: :data:`WRITE_PATH_MODULES`) -- so nothing under either needs excluding, and a
-#: NEW file placed under either is scanned with no list a human must remember to
-#: extend. :func:`test_the_directory_walk_picks_up_a_new_file_under_a_walked_directory`
-#: guards the walk itself against silently stopping to see a new file.
-_WALKED_SERVING_DIRS: tuple[str, ...] = ("mcp", "daemon")
+#: Directories walked wholesale rather than named file-by-file. None of
+#: ``mcp/``, ``daemon/`` or ``review/`` carries the findings write path -- that
+#: lives only in ``application/findings_builder.py`` and
+#: ``cli/findings_commands.py`` (see :data:`WRITE_PATH_MODULES`) -- so nothing
+#: under any of the three needs excluding, and a NEW file placed under any of
+#: them is scanned with no list a human must remember to extend. ``review/`` is
+#: walked rather than acknowledged like the rest of the package precisely
+#: because it is the one package whose own docstring names it the future home
+#: of review-knowledge serving code -- see the module docstring's "How the
+#: scanned population is assembled" section for the measured reason.
+#: :func:`test_the_directory_walk_picks_up_a_new_file_under_a_walked_directory`
+#: guards the walk mechanism itself against silently stopping to see a new
+#: file, on a synthetic tree; :func:`test_the_walked_serving_directories_exist_and_are_non_empty`
+#: guards the real directories these three names point at against being
+#: renamed or removed, which ``Path.rglob`` would otherwise tolerate in
+#: silence.
+_WALKED_SERVING_DIRS: tuple[str, ...] = ("mcp", "daemon", "review")
 
 
 def _walk_python_modules(root: pathlib.Path, directory: str) -> tuple[str, ...]:
@@ -130,13 +200,17 @@ def _walk_python_modules(root: pathlib.Path, directory: str) -> tuple[str, ...]:
 #: and answers it with knowledge; the write/maintenance path rebuilds a derived
 #: artifact and answers with counts.
 #:
-#: - ``mcp/``, ``daemon/`` -- walked wholesale (see :data:`_WALKED_SERVING_DIRS`):
-#:   the whole daemon tool surface a client speaks to, and the process that builds
-#:   and runs it.
+#: - ``mcp/``, ``daemon/``, ``review/`` -- walked wholesale (see
+#:   :data:`_WALKED_SERVING_DIRS`): the whole daemon tool surface a client
+#:   speaks to, the process that builds and runs it, and the review-knowledge
+#:   package that is the one docstring-named future home of findings-serving
+#:   code.
 #: - ``application/retrieval_service.py``, ``application/visibility.py`` -- the
 #:   retrieval and gate the tools call.
 #: - ``cli/commands.py`` -- the content-returning CLI (the knowledge read/search
 #:   commands).
+#: - ``cli/main.py`` -- the command-registration root every CLI entry point,
+#:   including ``commands.py``'s, is wired through.
 #: - the index read-side -- ``index_store.py``, ``index_query.py``,
 #:   ``index_scan.py``, ``index_forest.py`` -- what a search reads its candidates
 #:   from.
@@ -146,25 +220,28 @@ def _walk_python_modules(root: pathlib.Path, directory: str) -> tuple[str, ...]:
 #:   does not reach it, and not one of the four ``index_*`` modules either.
 #:
 #: ``application/`` and ``cli/`` are hand-picked rather than walked, unlike
-#: ``mcp/``/``daemon/``: the findings write path lives in both
+#: ``mcp/``/``daemon/``/``review/``: the findings write path lives in both
 #: (``application/findings_builder.py``, ``cli/findings_commands.py``), so a walk
 #: would need to exclude exactly those two anyway, at which point it buys nothing
 #: over naming the serving members directly. The cost of hand-picking is that a
 #: NEW file in either directory is invisible to this set until someone adds it --
-#: :func:`test_every_application_and_cli_module_is_classified` is the
-#: completeness guard for that gap: it fails the moment a new ``application/`` or
-#: ``cli/`` file is neither here, nor in :data:`WRITE_PATH_MODULES`, nor in
-#: :data:`_APPLICATION_NON_SERVING_MODULES` / :data:`_CLI_NON_SERVING_MODULES`,
-#: forcing a human classification rather than a silent default to "not scanned".
-#: ``application/project_service.py`` owns the *path* helper ``findings_for`` for
-#: both build and serve, so it names the artifact without serving it -- it is one
-#: of the acknowledged non-serving members, not measured to be unreachable.
+#: :func:`test_every_shipped_python_module_is_classified` is the completeness
+#: guard for that gap, and for the whole rest of the package alongside it: it
+#: fails the moment a new ``application/`` or ``cli/`` file is neither here, nor
+#: in :data:`WRITE_PATH_MODULES`, nor in :data:`_APPLICATION_NON_SERVING_MODULES`
+#: / :data:`_CLI_NON_SERVING_MODULES`, forcing a human classification rather than
+#: a silent default to "not scanned". ``application/project_service.py`` owns the
+#: *path* helper ``findings_for`` for both build and serve, so it names the
+#: artifact without serving it -- it is one of the acknowledged non-serving
+#: members, not measured to be unreachable.
 SERVING_MODULES: tuple[str, ...] = (
     *_walk_python_modules(SRC, "mcp"),
     *_walk_python_modules(SRC, "daemon"),
+    *_walk_python_modules(SRC, "review"),
     "application/retrieval_service.py",
     "application/visibility.py",
     "cli/commands.py",
+    "cli/main.py",
     "infrastructure/sqlite/index_store.py",
     "infrastructure/sqlite/index_query.py",
     "infrastructure/sqlite/index_scan.py",
@@ -184,7 +261,7 @@ WRITE_PATH_MODULES: tuple[str, ...] = (
 #: content the way ``retrieval_service.py``/``visibility.py`` do, nor the
 #: findings write path. Named explicitly, alongside :data:`SERVING_MODULES`'s own
 #: hand-picked entries for this directory, so the completeness test below
-#: (``test_every_application_and_cli_module_is_classified``) can assert the three
+#: (``test_every_shipped_python_module_is_classified``) can assert the three
 #: buckets are exhaustive over the real directory listing. Membership here is an
 #: acknowledgement, not a measurement: it is not a claim that any of these files
 #: were checked for a store reference, only that a human has sorted them into
@@ -210,7 +287,9 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
     }
 )
 
-#: The ``cli/`` twin of :data:`_APPLICATION_NON_SERVING_MODULES`.
+#: The ``cli/`` twin of :data:`_APPLICATION_NON_SERVING_MODULES`. ``main.py`` is
+#: NOT here -- it moved into :data:`SERVING_MODULES` (the command-registration
+#: root), so it is scanned rather than merely acknowledged.
 _CLI_NON_SERVING_MODULES: frozenset[str] = frozenset(
     {
         "__init__.py",
@@ -218,12 +297,121 @@ _CLI_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "context.py",
         "index_commands.py",
         "index_status_report.py",
-        "main.py",
         "migration_pipeline.py",
         "output.py",
         "propose_commands.py",
         "setup_commands.py",
     }
+)
+
+#: Every other ``.py`` file directly under ``infrastructure/``: neither serving
+#: content the way the hand-picked five in :data:`SERVING_MODULES` do, nor the
+#: findings write path (which does not touch ``infrastructure/`` at all --
+#: ``WRITE_PATH_MODULES`` is entirely ``application/``/``cli/``). Paths are
+#: relative to ``infrastructure/`` itself, not bare filenames, because unlike
+#: ``application/``/``cli/`` this directory has real subpackages
+#: (``sqlite/``, ``claude/``, ``services/``, ...). Membership here is an
+#: acknowledgement, not a measurement, in the same sense
+#: :data:`_APPLICATION_NON_SERVING_MODULES` already documents: a human has
+#: sorted these into "not serving, not the write path", not scanned each one
+#: for a store reference.
+_INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
+    {
+        "__init__.py",
+        "determinism.py",
+        "claude/__init__.py",
+        "claude/mcp_config.py",
+        "embedding/__init__.py",
+        "embedding/hashing.py",
+        "filesystem/__init__.py",
+        "filesystem/migration_loader.py",
+        "filesystem/parsers/markdown.py",
+        "filesystem/parsers/openapi.py",
+        "filesystem/parsers/registry.py",
+        "filesystem/parsers/structured.py",
+        "git/__init__.py",
+        "git/trailer_source.py",
+        "github/__init__.py",
+        "raptor/__init__.py",
+        "raptor/extractive.py",
+        "secrets/__init__.py",
+        "secrets/file_store.py",
+        "services/__init__.py",
+        "services/launchagent.py",
+        "services/runner.py",
+        "services/systemd_user.py",
+        "sqlite/__init__.py",
+        "sqlite/connection.py",
+        "sqlite/findings_schema.py",
+        "sqlite/findings_store.py",
+        "sqlite/index_purge.py",
+        "sqlite/index_schema.py",
+        "sqlite/schema.py",
+        "vector/__init__.py",
+    }
+)
+
+#: The one file directly at the package root, ``theurian/__init__.py``: package
+#: metadata (``__version__``, ``__protocol_version__``) and the public-surface
+#: docstring, no I/O.
+_TOP_LEVEL_NON_SERVING_MODULES: frozenset[str] = frozenset({"__init__.py"})
+
+#: Whole-subtree acknowledgements: every ``.py`` file under each prefix, however
+#: many and whatever their name, is classified non-serving in one entry rather
+#: than a per-file list. **A deliberately weaker guarantee than the file-level
+#: lists above**: a NEW top-level package needs an entry here before
+#: :func:`test_every_shipped_python_module_is_classified` passes, but a NEW
+#: file inside an already-acknowledged subtree does not -- ``domain/newthing.py``
+#: passes silently where ``application/newthing.py`` would not. That trade-off
+#: is what keeps a 132-file package tractable without a fourth ~90-entry hand
+#: list, and it is sound for exactly the packages listed: each is either pure
+#: value types and ports with no I/O, or a package whose own module docstring
+#: says its layer is "not yet implemented" and names where the real code
+#: currently lives instead. ``review/`` is deliberately NOT here -- see
+#: :data:`_WALKED_SERVING_DIRS`'s own docstring for why that one package gets
+#: the stronger, walked guarantee instead.
+_ACKNOWLEDGED_SUBTREES: tuple[tuple[str, str], ...] = (
+    (
+        "domain/",
+        "pure value types, entities and ports (including the review-finding "
+        "port and record) -- no I/O, so nothing here opens a database itself; "
+        "a serving module importing a store symbol *from* here is still "
+        "caught, because the import shows up in the serving module's own scan",
+    ),
+    (
+        "security/",
+        "path, secret-file, env-file and project-config guards -- no store or findings reference",
+    ),
+    (
+        "retrieval/",
+        "docstring-only placeholder; the real retrieval code is "
+        "application/retrieval_service.py, already in SERVING_MODULES",
+    ),
+    (
+        "indexing/",
+        "docstring-only placeholder; the real index code is under application/ "
+        "and infrastructure/sqlite/, both already accounted for",
+    ),
+    ("ingestion/", "docstring-only placeholder for the ingestion layer, not yet implemented"),
+    (
+        "normalization/",
+        "a mechanical, pure source-to-canonical text projection; no I/O beyond "
+        "the bytes it is given",
+    ),
+    (
+        "observability/",
+        "docstring-only placeholder for opt-in tracing/metrics, not yet implemented",
+    ),
+    (
+        "specification/",
+        "docstring-only placeholder for specification handling, not yet implemented",
+    ),
+    ("traceability/", "docstring-only placeholder for the traceability graph, not yet implemented"),
+    (
+        "migrations/",
+        "SQLite schema-migration docstring package; the migration code itself "
+        "is under infrastructure/sqlite/",
+    ),
 )
 
 #: A store *module* is named by any of these as a dotted-path component. The three
@@ -460,7 +648,7 @@ def test_the_write_path_modules_do_reach_the_store() -> None:
 def test_the_directory_walk_picks_up_a_new_file_under_a_walked_directory(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Guards :func:`_walk_python_modules`: the reason ``mcp/``/``daemon/`` need no list.
+    """Guards :func:`_walk_python_modules`: the reason the walked dirs need no list.
 
     A round-one review found the previous, hand-written :data:`SERVING_MODULES`
     missed ``daemon/`` entirely: a new ``Route`` serving a finding, added to
@@ -472,8 +660,8 @@ def test_the_directory_walk_picks_up_a_new_file_under_a_walked_directory(
     :data:`SERVING_MODULES` shrink with no test noticing until a real evasion
     landed. Built against a synthetic tree rather than :data:`SRC`, so a file can
     actually be added and observed, including one nested a directory deep --
-    proving the walk is recursive, not only one level, in case ``mcp/`` or
-    ``daemon/`` ever grows a subpackage.
+    proving the walk is recursive, not only one level, in case any walked
+    directory ever grows a subpackage.
     """
     (tmp_path / "mcp").mkdir()
     (tmp_path / "mcp" / "existing.py").write_text("x = 1\n")
@@ -499,31 +687,82 @@ def test_the_directory_walk_picks_up_a_new_file_under_a_walked_directory(
     )
 
 
-#: Every ``.py`` file directly under ``application/`` and ``cli/`` in the shipped
-#: package, read fresh from disk rather than hand-counted -- the population
-#: :func:`test_every_application_and_cli_module_is_classified` checks the three
-#: named buckets against.
+def test_the_walked_serving_directories_exist_and_are_non_empty() -> None:
+    """Guards the real walk against a renamed or vanished directory -- silently on both sides.
+
+    :func:`_walk_python_modules` is built on :meth:`pathlib.Path.rglob`, and
+    ``rglob`` on a directory that does not exist returns an empty iterator with
+    no exception. A renamed ``daemon/`` (or ``mcp/``, or ``review/``) would
+    therefore make :data:`SERVING_MODULES` quietly lose every file that
+    directory used to contribute, with nothing failing at import time -- the
+    same silent-shrink failure
+    :func:`test_the_directory_walk_picks_up_a_new_file_under_a_walked_directory`
+    guards for a synthetic tree, but that test never touches the real package,
+    so it cannot catch this. Each configured directory is asserted to exist
+    under the shipped package, and walking it is asserted to find at least one
+    file -- an empty walk over a directory that exists (all three currently
+    carry at least an ``__init__.py``) is as indistinguishable from a rename as
+    a missing directory is, and this treats both the same way.
+    """
+    for directory in _WALKED_SERVING_DIRS:
+        path = SRC / directory
+        assert path.is_dir(), (
+            f"{directory}/ is in _WALKED_SERVING_DIRS but does not exist under {SRC} -- "
+            f"renamed or removed? SERVING_MODULES would otherwise shrink silently, since "
+            f"Path.rglob on a missing directory returns nothing rather than raising."
+        )
+        assert _walk_python_modules(SRC, directory), (
+            f"walking {directory}/ found no .py file -- an empty walk is indistinguishable "
+            f"from a renamed or emptied directory and would leave SERVING_MODULES silently "
+            f"missing this directory's contents."
+        )
+
+
+#: Every ``.py`` file under ``root``, as a path string relative to ``root`` --
+#: the population :func:`test_every_shipped_python_module_is_classified` checks
+#: every named bucket and every :data:`_ACKNOWLEDGED_SUBTREES` prefix against,
+#: read fresh from disk rather than hand-counted. ``__pycache__`` is excluded;
+#: nothing else is, so a new subpackage anywhere under ``root`` is included
+#: automatically and must be classified before this test passes.
+def _all_shipped_modules(root: pathlib.Path) -> frozenset[str]:
+    return frozenset(
+        str(path.relative_to(root))
+        for path in root.rglob("*.py")
+        if "__pycache__" not in path.parts
+    )
+
+
+#: Every ``.py`` file directly under ``application/`` or ``cli/`` in the shipped
+#: package -- both directories are flat (no subpackage today), so a bare
+#: filename is a legitimate relative path; kept for the two directories whose
+#: completeness check pre-dates the whole-package walk above.
 def _directory_module_names(directory: str) -> set[str]:
     return {path.name for path in (SRC / directory).glob("*.py")}
 
 
-def test_every_application_and_cli_module_is_classified() -> None:
-    """Completeness guard: a new ``application/`` or ``cli/`` file must be sorted, not defaulted in.
+def test_every_shipped_python_module_is_classified() -> None:
+    """Completeness guard, extended from ``application/``/``cli/`` to the whole shipped package.
 
-    :data:`SERVING_MODULES` hand-picks these two directories' members rather than
-    walking them (``mcp/``/``daemon/`` are walked instead -- see their own comment
-    -- because the findings write path lives in both of these two and a walk would
-    need the same exclusion a hand-picked list already is). A hand-picked list
-    silently stops being exhaustive the moment a new file lands and nobody updates
-    it, so the three named buckets -- serving, write path, and the acknowledged
-    non-serving rest -- are asserted to equal the real directory listing. A new,
-    unclassified file makes this fail, forcing the same "decide before it can
-    pass" a reviewer already gets from :data:`KNOWN_TOOL_NAMES` and from
-    :data:`SERVING_MODULES` itself for ``mcp/``/``daemon/``.
+    A round-two review measured that the completeness guard this test replaces
+    covered only two of theurian's sixteen top-level packages: ``domain/`` (40
+    files), 31 of ``infrastructure/``'s 36, ``security/`` (7), and nine smaller
+    reserved packages -- 89 of 132 shipped modules (@98f11bc, 2026-08-28) -- sat
+    outside every bucket, unscanned, unacknowledged, and unnoticed by any test.
+    This asserts the union of every named bucket -- :data:`SERVING_MODULES`,
+    :data:`WRITE_PATH_MODULES`, the ``application/``/``cli/``/``infrastructure/``
+    non-serving lists, :data:`_TOP_LEVEL_NON_SERVING_MODULES`, and every
+    :data:`_ACKNOWLEDGED_SUBTREES` prefix -- equals :func:`_all_shipped_modules`'s
+    walk of the real package. A file in neither is unclassified and fails this
+    test; a file in two is a bug in the bucket data, not a classification gap,
+    and is reported by name rather than merely failing the equality.
 
     This equality is a completeness check on classification, not a claim that
-    the acknowledged non-serving members were scanned for a store reference --
-    only :data:`SERVING_MODULES` and :data:`WRITE_PATH_MODULES` are.
+    every acknowledged member was scanned for a store reference -- only
+    :data:`SERVING_MODULES` and :data:`WRITE_PATH_MODULES` are (see prong (a)
+    and prong (b) below). :data:`_ACKNOWLEDGED_SUBTREES` is a strictly weaker
+    guarantee than the three file-level lists: see its own docstring for why
+    that trade-off is deliberate, and why ``review/`` is walked instead of
+    acknowledged rather than accepting it here.
     """
 
     def _relative(prefix: str, modules: tuple[str, ...]) -> set[str]:
@@ -534,19 +773,55 @@ def test_every_application_and_cli_module_is_classified() -> None:
     write_application = _relative("application/", WRITE_PATH_MODULES)
     write_cli = _relative("cli/", WRITE_PATH_MODULES)
 
-    application_accounted = (
-        serving_application | write_application | _APPLICATION_NON_SERVING_MODULES
-    )
-    cli_accounted = serving_cli | write_cli | _CLI_NON_SERVING_MODULES
+    application_accounted = {
+        f"application/{name}"
+        for name in serving_application | write_application | _APPLICATION_NON_SERVING_MODULES
+    }
+    cli_accounted = {f"cli/{name}" for name in serving_cli | write_cli | _CLI_NON_SERVING_MODULES}
+    infrastructure_accounted = {
+        f"infrastructure/{name}" for name in _INFRASTRUCTURE_NON_SERVING_MODULES
+    }
+    top_level_accounted = set(_TOP_LEVEL_NON_SERVING_MODULES)
 
-    assert application_accounted == _directory_module_names("application"), (
+    # The two directories with their own pre-existing per-file completeness
+    # story are still checked exactly as before -- a stronger guarantee (every
+    # file individually named) than the whole-package check below gives them,
+    # since the whole-package check alone cannot tell "unclassified" apart from
+    # "classified into the wrong one of these two directories' own buckets".
+    assert application_accounted == {
+        f"application/{name}" for name in _directory_module_names("application")
+    }, (
         "a file under application/ is neither serving, write-path, nor named "
         "non-serving -- classify it (does it return finding content?) before this "
         "can pass"
     )
-    assert cli_accounted == _directory_module_names("cli"), (
+    assert cli_accounted == {f"cli/{name}" for name in _directory_module_names("cli")}, (
         "a file under cli/ is neither serving, write-path, nor named non-serving "
         "-- classify it (does it return finding content?) before this can pass"
+    )
+
+    named_accounted = (
+        set(SERVING_MODULES)
+        | set(WRITE_PATH_MODULES)
+        | application_accounted
+        | cli_accounted
+        | infrastructure_accounted
+        | top_level_accounted
+    )
+    every_module = _all_shipped_modules(SRC)
+    subtree_accounted = {
+        module
+        for module in every_module
+        if any(module.startswith(prefix) for prefix, _reason in _ACKNOWLEDGED_SUBTREES)
+    }
+    accounted = named_accounted | subtree_accounted
+    unaccounted = every_module - accounted
+
+    assert not unaccounted, (
+        "a shipped .py file is neither a named serving module, a named write-path "
+        "module, a named non-serving module, nor under an acknowledged subtree in "
+        "_ACKNOWLEDGED_SUBTREES -- classify it (does it return finding content?) "
+        "before this can pass:\n" + "\n".join(f"  {module}" for module in sorted(unaccounted))
     )
 
 
