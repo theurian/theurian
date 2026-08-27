@@ -2826,8 +2826,10 @@ stateHash            ee3ab796ab22f936…    8624b114c4bc0017…    DIFFERS
 ```
 
 **A transcript from Milestone 5, kept as measured.** It does not reproduce
-byte-for-byte on a current build: `SCHEMA_VERSION` is 3 since #30 PR2, so this run
-would now print `3` in both columns and two different hashes, because the schema
+byte-for-byte on a current build: `SCHEMA_VERSION` was 3 since #30 PR2, now 4
+since [#117](https://github.com/theurian/theurian/issues/117) dropped
+`knowledge_revisions`' lexicographic `valid_to > valid_from` CHECK, so this run
+would now print `4` in both columns and two different hashes, because the schema
 version is an input to a state hash (ADR-0017,
 `test_schema_version_changes_the_hash`). What the transcript is evidence for —
 which fields differ and which do not — is unaffected, and that is the claim it is
@@ -3117,17 +3119,24 @@ build that records — no version-2 file, and no version-1 file, reaches the
 detector. A missing row therefore means the record was lost rather than that the
 file predates the table — the ambiguity is unreachable rather than unlikely.
 `test_a_pre_integrity_database_is_refused_unread_by_every_tool` asserts that
-premise on all three tools and over every version below the current one, including
-that none of them reports an old database as a damaged one, and
+premise on all three tools, swept over `PRE_INTEGRITY_SCHEMA_VERSIONS` — exactly
+1 and 2, the versions that predate `project_integrity` — including that none of
+them reports an old database as a damaged one, and
 `test_a_missing_integrity_record_is_damage_and_not_silence` asserts the inference
-itself. Measured end to end on a genuine version-2 database — built by
-`0.1.0.dev3`, the previous release of the real CLI, then read by this build: all
-three tools refuse with "theurian-state-f1711b98d302.sqlite was written at schema
-version 2, but this build uses 3. State databases are derived; rebuild with
-`theurian migrate apply` rather than migrating this file", and one `theurian
-migrate apply` rebuilds it (`databaseCreated: true`, a new state hash
-`2e8880bf25be…` under a new filename, `schemaVersion: 3`, and no `integrity` key
-from any tool).
+itself. (That set was a derived `range(1, SCHEMA_VERSION)` until
+[#117](https://github.com/theurian/theurian/issues/117): a `SCHEMA_VERSION` bump
+unrelated to this table would otherwise have widened the derived range to sweep
+in a version that already holds `project_integrity`, asserting the wrong premise
+about it — see ADR-0017's compliance section.) Measured end to end on a genuine
+version-2 database — built by `0.1.0.dev3`, the previous release of the real
+CLI, then read by the build that shipped `SCHEMA_VERSION` 3, before #117 bumped
+it to 4: all three tools refuse with "theurian-state-f1711b98d302.sqlite was
+written at schema version 2, but this build uses 3. State databases are
+derived; rebuild with `theurian migrate apply` rather than migrating this
+file", and one `theurian migrate apply` rebuilds it (`databaseCreated: true`, a
+new state hash `2e8880bf25be…` under a new filename, `schemaVersion: 3`, and no
+`integrity` key from any tool). `SCHEMA_VERSION` is 4 now (above); the same
+sequence against today's build lands on `schemaVersion: 4` instead of `3`.
 
 **Neither side of the new comparison counts a row the caller may not read.** Both
 count `SURFACEABLE_STATUSES` — at build time in the `INSERT … SELECT`, at read

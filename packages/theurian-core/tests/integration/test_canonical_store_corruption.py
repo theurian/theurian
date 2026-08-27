@@ -2063,8 +2063,9 @@ async def test_a_pre_integrity_database_is_refused_unread_by_every_tool(
     `schema_metadata` rather than by building with an old build, so the file this
     refuses is otherwise a perfectly readable current database -- which is what
     makes the refusal attributable to the version and to nothing else. Confirmed
-    against a database `0.1.0.dev3` really wrote: all three tools refuse it with
-    "… was written at schema version 2, but this build uses 3".
+    against a database `0.1.0.dev3` really wrote, read by the build that shipped
+    `SCHEMA_VERSION` 3, before #117 bumped it to 4: all three tools refuse it
+    with "… was written at schema version 2, but this build uses 3".
 
     Two assertions, and they fail separately. Every tool must refuse -- RED the
     moment `is_supported` accepts anything in this set -- and every refusal must
