@@ -550,6 +550,27 @@ def test_internal_refs_are_not_recorded_as_external() -> None:
     assert _structured(document)["_index"]["externalRefs"] == []
 
 
+def _external_refs_cost(n: int, *, repeats: int = 5) -> tuple[float, Any]:
+    """Best (minimum) wall time of ``repeats`` calls to ``_external_refs`` on
+    the long-key/wide-fan-out shape at size ``n``, and the walk result from the
+    last call -- identical across repeats since the input document is
+    unchanged.
+
+    ``min`` rather than ``mean`` damps CI scheduling noise, which only ever
+    adds delay: the fastest observed run sits closest to the walk's own cost,
+    and a slower one reflects the runner, not the code.
+    """
+    document: dict[str, Any] = {"openapi": "3.1.0", "x" * n: {str(i): 0 for i in range(n)}}
+    best = float("inf")
+    walk = None
+    for _ in range(repeats):
+        started = time.monotonic()
+        walk = _external_refs(document)
+        best = min(best, time.monotonic() - started)
+    assert walk is not None, "repeats must be at least 1"
+    return best, walk
+
+
 def test_external_refs_path_build_is_linear() -> None:
     """Issue #328: ``_external_refs`` built each child's path with
     ``f"{path}.{key}"``, which copies the parent's whole accumulated string on
@@ -559,25 +580,45 @@ def test_external_refs_path_build_is_linear() -> None:
     nor ``MAX_REF_DEPTH`` fires on this shape, since there is no ``$ref`` at all
     and the depth never exceeds 2.
 
-    Measured on 68e8a0b (pre-fix), in-process against ``_external_refs``
-    directly: n=240,000 (a ~3.25 MB document) took ~1.28 s. Round-one adversarial
-    review (LOW) found the original 0.5 s bound too thin a margin: only ~2.5x
-    the reverted-bug cost, so a machine 2.5-3x faster than the one it was
-    measured on could pass the bug. The fixed code measures ~0.037 s here
-    (2026-08-27); 0.2 s sits comfortably above that -- roughly 5.5x margin --
-    while staying well below what even a fast machine would see for the
-    reverted quadratic cost.
+    This test used to assert an absolute wall (``elapsed < 0.2``), which no
+    single threshold can satisfy on every machine: it passed locally at
+    ~0.036s, then failed on a loaded ubuntu CI runner at 0.29s -- a runner slow
+    enough to miss a 0.2s wall on the *fixed* code is not implausible, and a
+    machine fast enough to pass a reverted quadratic's absolute cost is not
+    implausible either. The two ranges overlap, so a fixed wall is fragile in
+    both directions at once.
+
+    What is machine-independent is the *scaling*, not the absolute time: a
+    linear walk costs ~2x per doubling of the input; the pre-#328 quadratic one
+    costs ~4x, since it pays for a copy of the accumulated path on every edge.
+    Measured directly (2026-08-27), best-of-5 to damp scheduling noise: the
+    fixed code costs 0.0175s at n=120,000 and 0.0350s at n=240,000 -- ratio
+    2.00. The pre-#328 eager ``f"{path}.{key}"`` build, reconstructed against
+    the same shape and the same current helpers, costs 0.270s and 1.238s --
+    ratio 4.59. A 3.0 threshold sits comfortably between the two and holds on
+    any machine, fast or slow, loaded or idle, because it never compares
+    against a wall clock -- only against itself at half the size.
     """
-    n = 240_000
-    document: dict[str, Any] = {"openapi": "3.1.0", "x" * n: {str(i): 0 for i in range(n)}}
+    small, small_walk = _external_refs_cost(120_000)
+    large, large_walk = _external_refs_cost(240_000)
 
-    started = time.monotonic()
-    walk = _external_refs(document)
-    elapsed = time.monotonic() - started
+    assert small_walk.found == () and large_walk.found == (), "no $ref anywhere in this document"
+    assert small_walk.truncations == () and large_walk.truncations == (), (
+        "neither cap fires on this shape"
+    )
 
-    assert walk.found == (), "no $ref anywhere in this document"
-    assert walk.truncations == (), "neither cap fires on this shape"
-    assert elapsed < 0.2, f"the long-key/wide-fan-out shape took {elapsed:.2f}s"
+    ratio = large / small
+    # A linear walk scales ~2x per doubling; the pre-#328 quadratic build
+    # measured ~4.6x on this same shape (see docstring). 3.0 sits comfortably
+    # between the two.
+    assert ratio < 3.0, (
+        f"cost scaled {ratio:.2f}x for a 2x larger input ({small:.3f}s -> {large:.3f}s); "
+        "linear scales ~2x per doubling, the pre-#328 quadratic build ~4.6x"
+    )
+    # A generous absolute backstop against a total blowup, not the primary
+    # signal: comfortably above the ~1.2s a reintroduced quadratic measures at
+    # n=240,000 here, and far above the ~0.035s the fixed code measures.
+    assert large < 5.0, f"the n=240,000 shape alone took {large:.2f}s"
 
 
 def test_openapi_accepts_json_as_well_as_yaml() -> None:
