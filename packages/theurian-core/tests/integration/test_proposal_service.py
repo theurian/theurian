@@ -36,6 +36,7 @@ from theurian.application.proposal_service import (
     ProposalRequest,
     ProposalService,
     _evidence_failure_reason,
+    _refuse_past_the_operation_cap,
     _require_filename_matches_id,
 )
 from theurian.cli.migration_pipeline import rehearse_migration_set
@@ -3196,6 +3197,56 @@ def test_body_moves_dedups_two_content_files_sharing_one_inode(service: Proposal
         "two content files naming one inode must share the one resident read"
     )
     assert moves[0].data == BODY.encode("utf-8")
+
+
+def test_the_operation_cap_boundary_is_inclusive() -> None:
+    """FIX 3 (#306): pins the ``<=`` boundary AT the constant, independent of AC-5.
+
+    AC-5 (``test_accept_refuses_a_proposal_past_the_operation_cap``) drives the
+    cap through ``accept()`` with a document one operation over the limit --
+    it proves the cap fires before ``_body_moves`` runs, but it does not by
+    itself distinguish ``<=`` from ``<``: a mutant narrowing the check to
+    ``<`` (an effective cap one below the constant) still refuses "one over"
+    and AC-5 stays green. This calls ``_refuse_past_the_operation_cap``
+    directly at the exact boundary on both sides: a document of exactly
+    ``MAX_UPSERT_OPERATIONS`` operations must NOT be refused by the cap (it
+    may still be refused later, by schema or replay, for reasons this test
+    does not touch), and one operation past it MUST be.
+    """
+    at_cap = {"operations": [{"op": "noop"}] * MAX_UPSERT_OPERATIONS}
+
+    _refuse_past_the_operation_cap(at_cap)  # must not raise
+
+    past_cap = {"operations": [{"op": "noop"}] * (MAX_UPSERT_OPERATIONS + 1)}
+    with pytest.raises(ProposalError, match=str(MAX_UPSERT_OPERATIONS)) as caught:
+        _refuse_past_the_operation_cap(past_cap)
+    assert caught.value.remedy, "the refusal must name a remedy"
+
+
+def test_the_operation_cap_holds_the_two_channel_memory_ceiling() -> None:
+    """FIX 3 amendment (#306): pins the cap VALUE, not only the ``<=`` logic above.
+
+    The boundary test pins the comparison operator but not the constant
+    itself: with ``MAX_UPSERT_OPERATIONS`` loosened to, say, 5,000, that test
+    would still pass at 5,000/5,001 -- it has no opinion on what the number
+    should *be*. The real cost claim -- the two-channel peak
+    ``_commit`` can hold resident (the incoming ``moves`` bytes and, for every
+    replaced body, the ``restored`` destination bytes kept for rollback; see
+    ``MAX_UPSERT_OPERATIONS``'s docstring) -- is only proven at real memory
+    scale by the e2e ``AC-7`` proof, which CI's ``-m "not e2e"`` jobs exclude.
+    This recomputes that same bound from the LIVE constants and pins it
+    against the 4 GiB ceiling the constant's own docstring targets, so a
+    constant change that breaks the ceiling goes red here, in the CI-run
+    suite, rather than only in the excluded e2e job.
+    """
+    two_channel_peak_bytes = MAX_UPSERT_OPERATIONS * 2 * MAX_SOURCE_FILE_BYTES
+    four_gib = 4 * 1024**3
+    assert two_channel_peak_bytes <= four_gib, (
+        f"MAX_UPSERT_OPERATIONS={MAX_UPSERT_OPERATIONS} admits a two-channel peak of "
+        f"{two_channel_peak_bytes} bytes (moves + restored, each up to "
+        f"MAX_SOURCE_FILE_BYTES={MAX_SOURCE_FILE_BYTES} per operation), past the "
+        f"{four_gib}-byte ceiling MAX_UPSERT_OPERATIONS's own docstring claims"
+    )
 
 
 def test_a_pin_that_does_not_match_its_own_body_is_refused_with_the_proposal_intact(
