@@ -28,7 +28,14 @@ pytestmark = pytest.mark.integration
 #: The columns the statement names, beyond the ones it ranks on. Derived from
 #: `SUBSTRING_COLUMNS` rather than written out, so a column added to the scan is
 #: added to this table too and the test keeps measuring the shipped statement.
-_CHUNK_COLUMNS: Final = ("chunk_id", "item_id", "revision_id", "project_id", *SUBSTRING_COLUMNS)
+_CHUNK_COLUMNS: Final = (
+    "chunk_id",
+    "item_id",
+    "revision_id",
+    "served_content_sha256",
+    "project_id",
+    *SUBSTRING_COLUMNS,
+)
 
 #: `İ` (U+0130) is the one common character whose lowercase is *longer* than
 #: itself: a full Unicode fold gives `i` + U+0307, two code points for one. Five
@@ -69,6 +76,7 @@ def _matched_characters(*, fold: Callable[[str], str] | None) -> list[int]:
             "chunk_id": "c0",
             "item_id": "architecture.auth",
             "revision_id": "rev-c0",
+            "served_content_sha256": "body-of-rev-c0",
             "project_id": "demo",
             "text": WITNESS_TEXT,
         }

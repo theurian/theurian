@@ -292,6 +292,15 @@ class IndexableChunk:
     project_id: str
     item_id: str
     revision_id: str
+    #: :func:`~theurian.domain.knowledge.served_content_hash` of the source
+    #: revision's title-plus-body -- the exact text this chunk was split from and
+    #: is served inside -- denormalised so the index records the content identity
+    #: of what it holds. The serve gate compares it against canonical's
+    #: current-revision served hash to withhold a chunk whose title or body drifted
+    #: under an unchanged `revision_id` (GHSA-3f65). Required, with no default:
+    #: unlike `namespace`/`kind`, a chunk has no meaningful "written before it was
+    #: set" state -- every builder reads it off the revision it is splitting.
+    served_content_sha256: str
     status: str
     sensitivity: str
     trust_level: str

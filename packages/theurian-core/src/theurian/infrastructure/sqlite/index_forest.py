@@ -127,12 +127,20 @@ def summary_statement(  # noqa: PLR0913 - the node gate and the leaf gate each t
         "JOIN descendants d ON e.node_id = d.node_id "
         "WHERE e.source_node_id IS NOT NULL"
         ") "
-        "SELECT chunks.chunk_id, chunks.item_id, chunks.revision_id, min(d.score) AS rank_score "
+        # `served_content_sha256` rides the leaf projection so a forest-found hit
+        # reaches the same content-identity gate as a leaf found directly
+        # (GHSA-3f65): a summary-found row is still a leaf chunk with a revision id,
+        # so it carries the same drift risk. In the GROUP BY beside the ids --
+        # every chunk of one revision shares this hash, so it neither splits a
+        # group nor merges two.
+        "SELECT chunks.chunk_id, chunks.item_id, chunks.revision_id, "
+        "  chunks.served_content_sha256, min(d.score) AS rank_score "
         "FROM descendants d "
         "JOIN node_derivation e ON e.node_id = d.node_id AND e.source_chunk_id IS NOT NULL "
         "JOIN chunks ON chunks.chunk_id = e.source_chunk_id "
         f"WHERE {leaf_where} "
-        "GROUP BY chunks.chunk_id, chunks.item_id, chunks.revision_id "
+        "GROUP BY chunks.chunk_id, chunks.item_id, chunks.revision_id, "
+        "  chunks.served_content_sha256 "
         "ORDER BY rank_score, chunks.chunk_id LIMIT ?"
     )
     args.extend(leaf_scope)

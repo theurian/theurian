@@ -18,6 +18,26 @@ The file is named for the index build id, not the state hash, because two index
 builds over one canonical state are a normal thing to have — a re-embedding with
 a different model changes nothing canonical.
 
+**Version 7 gives `chunks` a `served_content_sha256` column, so the serve gate
+can check content identity and not only revision identity** (GHSA-3f65). The
+canonical re-check in `CanonicalVisibility._may_surface` compared the indexed
+`revision_id` against the live pointer and stopped there, so the *served* text
+could drift under an *unchanged* `revision_id`. The cheapest face is the title:
+it is migration metadata no `contentSha256` pins, so an author edits it, removes
+`.theurian/state/active.json` so history verification early-returns, and
+re-applies -- leaving the revision id and the body hash both unchanged while
+canonical now holds a different title. The index prepends the title to the body
+before splitting, so its excerpt still carries the old title, and the gate served
+it. A body edit that re-pins `contentSha256` is the other face. The column records
+the `served_content_hash` of the source revision's title-plus-body the build saw
+-- the exact text an excerpt is cut from -- and the gate withholds a row whose
+hash disagrees with canonical's current-revision served hash. The bump is the
+forcing function: a pre-v7 build carries no such hash and so cannot prove content
+identity, so it must not be trusted -- it reports `index-schema-mismatch` on the
+first search and is rebuilt, which is the only build that can answer the check at
+all (ADR-0022 point 3). A new face of the derived-state-trust class GHSA-266v
+closed on the index side.
+
 **Version 6 changes no column and is still a real break: from it on, a build
 consults the deployment's disclosure ceiling and writes no row for an item above
 it** (#119, ADR-0025 part 1). The DDL moves only in `chunks.sensitivity`'s
@@ -26,8 +46,8 @@ change, because the column is now the record of a decision the *build* made
 rather than a label nothing acted on. That alone earns the bump under this file's
 own rule.
 
-**Phase 4 moves that comment again and the version stays at 6, which is an
-exception to the rule above and is argued rather than assumed.** The read-side
+**Phase 4 moves that comment again. Through Phase 4 the version held at 6 -- an
+exception to the rule above, argued rather than assumed.** The read-side
 predicate (`_scope`, `_node_scope`) reads `chunks.sensitivity` and
 `nodes.sensitivity`, columns every version-6 file already has, and writes nothing
 new -- so there is no file the new code could misread, which is the whole of what
@@ -35,8 +55,13 @@ the version gate is for. Every file that could disagree with this DDL text is
 version 5 or lower and is already rejected. Version 6 has never left this branch:
 `main` pins 5 and the released artifacts pin 2, so "a version-6 build made by the
 phase-3 code" is the only kind that exists, and the phase-4 predicate serves it
-correctly by construction. Bumping to 7 would order a rebuild of files that need
-none, and would split one unreleased change across two versions.
+correctly by construction. Bumping to 7 *for Phase 4 alone* would have ordered a
+rebuild of files that need none, and split one unreleased change across two
+versions -- which is why Phase 4 did not. Version 7 (GHSA-3f65) supersedes that
+decision: it orders exactly that rebuild, deliberately, because the
+served-content-identity gate needs a `served_content_sha256` no pre-v7 build
+carries (the version-7 note above). Phase 4's comment move rides that same bump
+at no rebuild cost beyond what the security fix already requires.
 
 The forcing function is what makes the bump the point rather than the paperwork.
 Every version-5 index predates the exclusion, so it may hold an above-ceiling
@@ -110,7 +135,7 @@ from typing import Final
 
 #: Bump for ANY change to the DDL below. Independent of the canonical store's
 #: version: they version separately because they are rebuilt separately.
-INDEX_SCHEMA_VERSION: Final = 6
+INDEX_SCHEMA_VERSION: Final = 7
 
 #: FTS5 is a compile-time option. It ships with the python.org, Homebrew, and
 #: Debian builds, but not with every distribution's, so its absence is detected
@@ -157,6 +182,19 @@ CREATE TABLE chunks (
     project_id   TEXT    NOT NULL,
     item_id      TEXT    NOT NULL,
     revision_id  TEXT    NOT NULL,
+    -- The `served_content_hash` of the source revision's title-plus-body -- the
+    -- exact text an excerpt is cut from -- denormalised beside `revision_id` for
+    -- the same re-check the `status`/`sensitivity` columns below serve: the index
+    -- is never authoritative, so a hit has to prove not just *which* revision it
+    -- came from but that its served text still matches what canonical holds for
+    -- that revision now. `revision_id` alone cannot: the served text can drift
+    -- under an unchanged id -- a title, which no `contentSha256` pins, is the
+    -- cheapest (GHSA-3f65) -- and the gate that compared only the id then served
+    -- the stale bytes. `NOT NULL` with no `DEFAULT`, unlike `namespace`/`kind`
+    -- below: a content hash has no "written before it was set" state, so a row
+    -- reaching the writer without one is a builder bug, refused rather than
+    -- defaulted to a value the gate would read as a mismatch and silently drop.
+    served_content_sha256 TEXT NOT NULL,
     ordinal      INTEGER NOT NULL,
     heading      TEXT    NOT NULL DEFAULT '',
     text         TEXT    NOT NULL,

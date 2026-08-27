@@ -2400,6 +2400,16 @@ drift) — not a new channel *while the purge succeeds*. See the
 GHSA-97q9-xxfg-33r6 correction below for the purge-*failed* case, where it was a
 new channel and is now closed.
 
+**The leaf-chunk excerpt face of #130's same-revision content drift *was* a
+disclosure channel, and is closed by T-23 (GHSA-3f65-gr36-qqx8).** A leaf's
+excerpt is cut from the index's `title\n\nbody` chunk text, so content drifted
+under an *unchanged* revision id — which the revision-identity check does not
+catch — reached the caller; the serve gate now withholds a leaf whose served
+content no longer matches canonical's current revision (see T-23). What remains
+here is the summary `raptorPath[].title` face, which the serve gate does not
+re-check against canonical: it stays the same stale-build-time-text residual as
+T-17a, bounded by the next `theurian index build`, not closed by T-23.
+
 Withdrawal already reaches the forest, and Milestone 6's builder was the first
 thing to hand that traversal a graph it did not write itself: a purge deletes
 every node not universally grounded in surviving chunks
@@ -4865,6 +4875,94 @@ dependency: T-21's ranked-search face is closed only because `visibility.py`'s
 revision-identity check discriminates the withheld item from the approved one, and
 that check holds only because T-18 forbids two items from sharing a revision id.
 
+#### T-23 — A revision's served content drifts under an unchanged revision id, and a stale index serves it past the gate (Information disclosure, **Critical** — closed in 0.1.0.dev13)
+
+Class: **a revision's served content (title + body) drifts under an unchanged
+`revision_id`, so the serve gate's revision-identity check clears a row whose
+indexed text no longer matches what canonical now holds.**
+
+Adjacent to T-17a — both are *the index holds bytes canonical's current state
+does not* — but a different root cause, and named by it: T-17a is *the index
+still holds withdrawn rows*, while this is *a revision's served content drifts
+under an unchanged id*. It is a new face of the derived-state-trust class T-19 /
+GHSA-266v-fcj2-qggx: where T-19 ships a wholesale doctored `.theurian/state/`,
+this drifts one live revision's served content, which T-19's provenance anchor
+does not catch — the drift is authored through the documented migration path, so
+*this* installation built the index and recorded its provenance.
+
+`CanonicalVisibility._may_surface` cleared a ranked row once its indexed
+`revision_id` matched canonical's current pointer, trusting INV-1 — one revision
+id names one immutable body. On the write path it does. But `.theurian/state/`
+is derived, unsigned and git-ignored (ADR-0004, SEC-7), so the served content
+can be drifted under an unchanged id along the documented migration path: an
+author edits an approved revision's **title** — migration metadata that no
+`contentSha256` pins — or its **body** (re-pinning `contentSha256`), deletes
+`.theurian/state/active.json` so history verification (FR-K5) early-returns, and
+re-applies (or edits the state database directly, SEC-7). Canonical adopts the
+new content; a published index still holds the old chunk text under the same
+`revision_id`; the revision check passes on both sides. The index chunks
+`served_content_text(title, body)` = `title\n\nbody`, so the excerpt — cut from
+that chunk text — carried the retracted title or body to the caller. Reproducible
+in the shipped default configuration through the documented migration API, so
+**Critical**. Fixed in 0.1.0.dev13 (GHSA-3f65-gr36-qqx8, which carries the
+affected range).
+
+**Control — served-content identity at the serve gate, both sides.** A per-chunk
+`served_content_sha256` records, at build time, the hash of the exact string the
+builder chunks (`served_content_hash(title, body)`, the single definition of the
+concatenation the index serves and the gate re-hashes). `_may_surface` recomputes
+that hash from canonical's *current* revision's title and body — joined in by the
+gate read `_ITEM_WITH_CURRENT_CONTENT_SQL`, so no extra per-row canonical read —
+and withholds any row whose build-time hash disagrees, beside the status and
+sensitivity checks and inside `cleared`, before the candidate-depth cut (never at
+excerpt time, which would reopen the SEC-13 candidate-displacement oracle). Title
+and body drift both move the hash. A `None` current hash — a pointer the gate read
+could not dereference — is withheld too: a check that cannot run is not one that
+passes, the only direction a derived file may fail in.
+
+**The fail-closed-on-`None` handling relies on `knowledge_revisions.title` and
+`body` being `NOT NULL`** (`schema.py`). The gate read is a `LEFT JOIN` on the
+current revision; a join *miss* yields NULL for both columns together (the
+recomputation is skipped, the hash is `None`, the row is withheld), while a join
+*hit* yields both present, because the columns cannot be NULL — so no state exists
+in which one is present and the other absent, and the `None` branch is entered
+only on a genuine miss. This premise is what a schema-invariant test on those two
+columns pins.
+
+**Forcing function — `INDEX_SCHEMA_VERSION` 6 → 7.** A pre-v7 build carries no
+`served_content_sha256` and so cannot prove content identity; it reports
+`index-schema-mismatch` on the first search and stands aside to the unranked
+canonical scan until `theurian index build` rebuilds it (ADR-0022 point 3) — the
+same one-command rebuild every index-schema bump requires, never an in-place
+migration of the file.
+
+**Two-corpora invariant.** An index built over a drifted revision and one built
+over a corpus that never drifted return the same response: the drifted row is
+withheld in the first and absent in the second. Pinned by
+[`tests/integration/test_same_revision_drift.py`](https://github.com/theurian/theurian/blob/main/packages/theurian-core/tests/integration/test_same_revision_drift.py)
+(title-drift and body-drift CRITICALs; `knowledge.get` serving canonical's
+current redacted body, not the stale index; a pre-fix v6 build refused wholesale
+by the schema gate rather than row-by-row; a search racing a rebuild resolving
+one atomic build, both possible builds refusing the drifted sentinel, ADR-0022)
+and
+[`tests/unit/test_content_identity_gate.py`](https://github.com/theurian/theurian/blob/main/packages/theurian-core/tests/unit/test_content_identity_gate.py).
+
+**Index-derived result fields, with dispositions**, so "did a served face go
+unclosed" is answered in the record:
+
+| Result field | Source | Disposition under this class |
+| :-- | :-- | :-- |
+| `excerpt` (and the row's own `title`, `sourceAnchors`) | index chunk text, `title\n\nbody` | **the demonstrated content face — closed:** the gate withholds the whole drifted row before it is projected |
+| `fusedScore` | a statistic over candidates | the T-17 class (priced before the gate); untouched here — a drifted row is withheld inside `cleared`, before the depth cut, so it never prices a visible row |
+| `foundBy` | which retriever matched a *visible* row | provenance; carries no drifted content |
+| `raptorPath[].title` | a summary node's text | **not closed here** — a summary build can still quote a drifted leaf; the T-17a residual (GHSA-97q9-xxfg-33r6) |
+
+**Scope boundary, stated plainly.** This closes the leaf-chunk excerpt face and
+nothing more. The `raptorPath[].title` staleness is the T-17a residual
+(GHSA-97q9-xxfg-33r6), not closed here: the gate re-checks a leaf's served
+content against canonical, but a summary node is derived text with no single
+canonical revision to compare against.
+
 ### TB-4: the filesystem and setup
 
 #### T-14 — Setup overwrites a user's configuration (Tampering, Medium)
@@ -4987,6 +5085,7 @@ fix.
 | T-20 | A body file shared across two revisions is served past the status gate | I | Critical | Closed in 0.1.0.dev5 — whole-set refusal keyed on body filesystem identity (`st_dev`/`st_ino`), `DuplicateContentFileError` (GHSA-w5cm-cqf9-vm7r) |
 | T-21 | An alias key colliding with a live item id resolves a withheld item to an approved item's authority | I | Critical | Closed in 0.1.0.dev6 — non-resolving `get_item_exact` on the read gate, plus a whole-set write refusal (`AliasItemCollisionError`, `deprecated` exempt); ranked face held by T-18 (GHSA-vx8x-rjfj-9x54) |
 | T-22 | A canonical read's cost grows with the above-ceiling rows it withholds | I | Medium | Accepted residual, measured (0.20 µs/row on the scan, 0.54 µs/row on `knowledge.status`'s counts); flattening owned by [#338](https://github.com/theurian/theurian/issues/338), acceptance recorded on #119 |
+| T-23 | A revision's served content drifts under an unchanged revision id, and a stale index serves it past the gate | I | Critical | Closed in 0.1.0.dev13 — serve gate keyed on `served_content_hash(title, body)` both sides, `INDEX_SCHEMA_VERSION` 6 → 7 forced rebuild; a new face of the derived-state-trust class T-19 (GHSA-3f65-gr36-qqx8); leaf-excerpt only, the `raptorPath[].title` face stays the T-17a residual (GHSA-97q9-xxfg-33r6) |
 
 ## Explicitly out of scope
 

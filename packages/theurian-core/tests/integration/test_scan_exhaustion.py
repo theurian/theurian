@@ -138,6 +138,7 @@ def _indexable(chunk_id: str, text: str, *, item: str) -> IndexableChunk:
         project_id=PROJECT,
         item_id=item,
         revision_id=f"rev-{chunk_id}",
+        served_content_sha256=f"body-of-rev-{chunk_id}",
         status="approved",
         sensitivity="internal",
         trust_level="reviewed",

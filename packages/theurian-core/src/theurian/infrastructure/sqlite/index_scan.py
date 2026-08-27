@@ -298,7 +298,11 @@ def scan_statement(
     ranking_parameters = [term.text for term in spent for _ in SUBSTRING_COLUMNS]
 
     sql = (
+        # `served_content_sha256` is a bare column ahead of the ranking expression,
+        # so it binds no parameter and leaves the `matched_characters` parameter
+        # order below untouched (see the note after the statement).
         "SELECT chunks.chunk_id, chunks.item_id, chunks.revision_id, "  # noqa: S608 - clauses are module-owned literals; every value is bound
+        "  chunks.served_content_sha256, "
         f"  {_matched_characters(spent)} AS matched_characters "
         "FROM chunks "
         f"WHERE ({matches}) AND {' AND '.join(clauses)} "

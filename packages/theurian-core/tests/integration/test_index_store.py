@@ -54,6 +54,7 @@ def _indexable(  # noqa: PLR0913 - one keyword per canonical field the filters r
         project_id=project,
         item_id=item,
         revision_id=f"rev-{chunk_id}",
+        served_content_sha256=f"body-of-rev-{chunk_id}",
         status=status,
         sensitivity=sensitivity,
         trust_level="reviewed",
@@ -1809,14 +1810,18 @@ def test_a_limit_of_exactly_one_is_allowed(
 def test_a_fresh_build_reports_the_current_schema_version(store: SqliteIndexStore) -> None:
     """The literal, so a DDL change that forgets to bump -- or bumps wrong -- fails.
 
-    Six at the time of writing, and the newest one adds no column: version 6
-    marks the build that stopped writing rows for items above the deployment's
-    disclosure ceiling (#119, ADR-0025 part 1). It moves the DDL only in
-    `chunks.sensitivity`'s comment, which is enough under this file's own rule --
-    and the reason it is a *version* rather than a comment is that every
-    version-5 file predates the exclusion, so it may hold above-ceiling text
-    whose collection statistics price the rows this deployment does serve. Those
-    files report `index-schema-mismatch` and are rebuilt rather than filtered.
+    Seven at the time of writing, and the newest one adds a column:
+    `chunks.served_content_sha256`, so the serve gate can withhold a chunk whose
+    served text -- its title-plus-body -- drifted under an unchanged revision id
+    (GHSA-3f65). The reason it is a *version* rather than a filter is that every
+    earlier build carries no such hash and so cannot prove content identity at
+    all; those files report
+    `index-schema-mismatch` and are rebuilt, which is the only build the gate can
+    trust. Version 6 before it changed no column -- it marks the build that
+    stopped writing rows for items above the deployment's disclosure ceiling
+    (#119, ADR-0025 part 1), a *version* rather than a comment because every
+    version-5 file predates the exclusion and may hold above-ceiling text whose
+    collection statistics price the rows this deployment does serve.
 
     Version 3 added `chunks.derived` and
     `chunk_derivation` for a writer that did not exist yet; version 4 drops both
@@ -1827,12 +1832,19 @@ def test_a_fresh_build_reports_the_current_schema_version(store: SqliteIndexStor
     query. Version 5 adds `chunks.kind`, so the withdrawal purge can re-derive the
     forest from the index's own surviving rows (ADR-0008 decision 9): a Domain
     tree is keyed on `kind`, which lived only on the in-memory chunk until now.
+    Version 6 changed no column -- a build began consulting the disclosure ceiling
+    (#119). Version 7 adds `chunks.served_content_sha256`, so the serve gate checks
+    content identity and not only revision identity (GHSA-3f65): the served text --
+    title-plus-body -- could drift under an unchanged revision id (a title, which
+    no `contentSha256` pins, is the cheapest) and was served from a stale index
+    until the gate could compare the built served hash against canonical's current
+    one.
     Asserted directly rather than against `INDEX_SCHEMA_VERSION - 1`, because a
     relative check moves with the constant and pins nothing about what the
     constant *is*.
     """
     assert store.schema_version() == INDEX_SCHEMA_VERSION
-    assert store.schema_version() == 6, (
+    assert store.schema_version() == 7, (
         "the index schema version changed. If a DDL change intended it, update this literal "
         "and the CHANGELOG; if not, a bump slipped in without a schema change behind it"
     )

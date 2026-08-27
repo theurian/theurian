@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.1.0.dev13] - 2026-08-27
+
 ### Added
 
 - **Review-Finding trailer ingestion, parse-only**
@@ -256,6 +258,48 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   resolved path, `Project` rejects anything else at construction, and a Git
   working tree does not live under `/proc` — so this can only reject a hand
   edit.
+
+### Security
+
+- **The serve gate now re-checks a served excerpt's content against canonical's
+  current revision, closing a same-revision content-drift disclosure**
+  (`GHSA-3f65-gr36-qqx8`; T-23 in
+  [the threat model](../../docs/security/threat-model.md), a new face of the
+  derived-state-trust class `GHSA-266v-fcj2-qggx` / T-19). `knowledge.search`
+  cleared a retrieved row on **revision identity alone** —
+  `CanonicalVisibility._may_surface` checked that the indexed `revision_id` still
+  matched canonical's current pointer and stopped there. The state database is a
+  derived, unsigned, git-ignored file (ADR-0004, SEC-7), so a revision's *served*
+  content can be made to drift under an *unchanged* `revision_id`: an author edits
+  an approved revision's title (migration metadata that no `contentSha256` pins)
+  or body (re-pinning `contentSha256`), deletes `.theurian/state/active.json` so
+  history verification early-returns (FR-K5), and re-applies. Canonical then holds
+  the new content while a published index still holds the old chunk text under the
+  same `revision_id`, so the revision check passed on both sides and the excerpt —
+  cut from the index's `title\n\nbody` chunk text — served the retracted content.
+
+  The gate now keys on the **exact served bytes**. A per-chunk
+  `served_content_sha256`, recorded at build time as the hash of the very string
+  the builder chunks (`served_content_hash(title, body)`), is compared at serve
+  time against the same hash recomputed from canonical's *current* revision's
+  title and body. Title drift and body drift both move it; a mismatch — or an
+  unverifiable `None` — withholds the whole row, beside the status and sensitivity
+  checks and before the candidate-depth cut. This is the same class
+  `GHSA-266v-fcj2-qggx` closed for a wholesale doctored `.theurian/state/`; here
+  the drift is a single live revision's served content.
+
+  **Consumer-visible consequence: `INDEX_SCHEMA_VERSION` moves 6 → 7, so the
+  first `knowledge.search` after upgrading rebuilds the index.** A pre-fix build
+  carries no `served_content_sha256` column and cannot answer the content check,
+  so it is refused whole as `index-schema-mismatch` and stands aside to the
+  unranked canonical scan until `theurian index build` runs — the same one-command
+  rebuild every `INDEX_SCHEMA_VERSION` bump has always required (ADR-0022
+  point 3), never an in-place migration of the file.
+
+  **Scope.** The leaf-chunk excerpt is closed; a summary build's
+  `raptorPath[].title` can still quote a drifted leaf, which stays the T-17a
+  residual (`GHSA-97q9-xxfg-33r6`), not this fix. The advisory carries the full
+  mechanism and the affected range.
 
 ## [0.1.0.dev12] - 2026-08-26
 

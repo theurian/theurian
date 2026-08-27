@@ -73,6 +73,7 @@ def _indexable(chunk_id: str, text: str, *, revision: str) -> IndexableChunk:
         project_id=PROJECT,
         item_id=f"architecture.{revision}",
         revision_id=revision,
+        served_content_sha256=f"body-of-{revision}",
         status="approved",
         sensitivity="internal",
         trust_level="reviewed",
@@ -603,9 +604,10 @@ def test_a_purge_sees_content_that_is_committed_but_not_yet_checkpointed(
         writer.execute("PRAGMA wal_autocheckpoint = 0")
         writer.execute("BEGIN IMMEDIATE")
         writer.execute(
-            "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, heading, "
+            "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, "
+            "served_content_sha256, ordinal, heading, "
             "text, token_estimate, status, sensitivity, trust_level) "
-            "VALUES ('late#0', ?, 'architecture.late', 'late', 0, '', "
+            "VALUES ('late#0', ?, 'architecture.late', 'late', 'body-of-late', 0, '', "
             "'a retention decision committed after the last checkpoint', 10, "
             "'approved', 'internal', 'reviewed')",
             (PROJECT,),
@@ -846,10 +848,11 @@ def test_a_purge_does_not_touch_a_source_whose_wal_is_hot(
         "c.execute('PRAGMA journal_mode = WAL')\n"
         "c.execute('PRAGMA wal_autocheckpoint = 0')\n"
         "c.execute('BEGIN IMMEDIATE')\n"
-        'c.execute("INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal,'
-        " heading, text, token_estimate, status, sensitivity, trust_level) VALUES"
-        " ('hot#0','demo','architecture.hot','hot',0,'','committed but not checkpointed',"
-        "10,'approved','internal','reviewed')\")\n"
+        'c.execute("INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, '
+        "served_content_sha256,"
+        " ordinal, heading, text, token_estimate, status, sensitivity, trust_level) VALUES"
+        " ('hot#0','demo','architecture.hot','hot','body-of-hot',0,'',"
+        "'committed but not checkpointed',10,'approved','internal','reviewed')\")\n"
         "c.execute('COMMIT')\n"
         "os._exit(0)\n"
     )

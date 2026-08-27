@@ -558,16 +558,20 @@ class SqliteIndexStore:
 
         with _connect(self._path) as connection:
             connection.executemany(
-                "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, "
-                "heading, text, token_estimate, status, sensitivity, trust_level, namespace, "
-                "kind) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, "
+                "served_content_sha256, ordinal, heading, text, token_estimate, status, "
+                "sensitivity, trust_level, namespace, kind) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         c.chunk.chunk_id,
                         c.project_id,
                         c.item_id,
                         c.revision_id,
+                        # The served text's hash (title-plus-body), which the serve
+                        # gate re-checks against canonical to withhold a drifted
+                        # title or body under an unchanged revision id (GHSA-3f65).
+                        c.served_content_sha256,
                         c.chunk.ordinal,
                         c.chunk.heading,
                         c.chunk.text,
@@ -739,8 +743,8 @@ class SqliteIndexStore:
         """
         with self._read() as connection:
             rows = connection.execute(
-                "SELECT chunk_id, item_id, revision_id, ordinal, heading, text, "
-                "status, sensitivity, trust_level, namespace, kind "
+                "SELECT chunk_id, item_id, revision_id, served_content_sha256, ordinal, heading, "
+                "text, status, sensitivity, trust_level, namespace, kind "
                 "FROM chunks WHERE project_id = ? ORDER BY chunk_id",
                 (project_id,),
             ).fetchall()
@@ -758,6 +762,18 @@ class SqliteIndexStore:
                     project_id=project_id,
                     item_id=str(row["item_id"]),
                     revision_id=str(row["revision_id"]),
+                    # Read back to reconstruct the row faithfully. Contrary to a
+                    # first reading, a purge does not write this hash forward: it
+                    # re-derives only the forest nodes over the surviving chunks
+                    # (`_recompute_forest`), which never read this column, and it
+                    # does not rewrite the leaf chunk rows at all. The two-corpus
+                    # equality holds because those surviving `chunks` rows keep the
+                    # hash the build recorded and the serve-time retriever queries
+                    # read it fresh from them -- so a chunk in a purged build and
+                    # the same chunk in a build that never held the withdrawn rows
+                    # agree on this column because neither rewrote it, not because a
+                    # re-derivation carried it across.
+                    served_content_sha256=str(row["served_content_sha256"]),
                     status=str(row["status"]),
                     sensitivity=str(row["sensitivity"]),
                     trust_level=str(row["trust_level"]),
@@ -1059,7 +1075,7 @@ class SqliteIndexStore:
         # `_scope`); every user-supplied value is a bound parameter.
         sql = (
             "SELECT chunks.chunk_id, chunks.item_id, chunks.revision_id, "  # noqa: S608 - clauses are module-owned literals; values are bound
-            "  bm25(chunks_fts) AS rank_score "
+            "  chunks.served_content_sha256, bm25(chunks_fts) AS rank_score "
             # CROSS JOIN, which SQLite honours as an ordering instruction. With a
             # plain JOIN the FR-R1 predicates on `chunks` make the planner drive
             # from `chunks` and re-run MATCH per candidate row: measured at 20,000
@@ -1143,7 +1159,7 @@ class SqliteIndexStore:
         clauses, parameters = self._scope(project_id, include_unapproved, visible_sensitivities)
         sql = (
             "SELECT chunks.chunk_id, chunks.item_id, chunks.revision_id, "  # noqa: S608 - clauses are module-owned literals; values are bound
-            "  bm25(chunks_trigram) AS rank_score "
+            "  chunks.served_content_sha256, bm25(chunks_trigram) AS rank_score "
             "FROM chunks_trigram CROSS JOIN chunks ON chunks.rowid = chunks_trigram.rowid "
             f"WHERE chunks_trigram MATCH ? AND {' AND '.join(clauses)} "
             "ORDER BY rank_score, chunks.chunk_id LIMIT ?"
@@ -1490,7 +1506,8 @@ class SqliteIndexStore:
         clauses, parameters = self._scope(project_id, include_unapproved, visible_sensitivities)
 
         sql = (
-            "SELECT chunks.chunk_id, chunks.item_id, chunks.revision_id, embeddings.vector "  # noqa: S608 - clauses are module-owned literals; values are bound
+            "SELECT chunks.chunk_id, chunks.item_id, chunks.revision_id, "  # noqa: S608 - clauses are module-owned literals; values are bound
+            "  chunks.served_content_sha256, embeddings.vector "
             "FROM embeddings JOIN chunks ON chunks.chunk_id = embeddings.chunk_id "
             f"WHERE {' AND '.join(clauses)}"
         )
@@ -1544,6 +1561,7 @@ def _dense_ranking(
                 chunk_id=str(row["chunk_id"]),
                 item_id=str(row["item_id"]),
                 revision_id=str(row["revision_id"]),
+                served_content_sha256=str(row["served_content_sha256"]),
                 score=similarity,
             )
         )
@@ -1614,6 +1632,10 @@ def _ranked(
             chunk_id=str(row["chunk_id"]),
             item_id=str(row["item_id"]),
             revision_id=str(row["revision_id"]),
+            # `str()` like the ids beside it: a corrupt cell that names no real
+            # hash travels as a string that the serve gate then fails to match,
+            # dropping the row -- the direction a derived, unsigned file must fail.
+            served_content_sha256=str(row["served_content_sha256"]),
             score=score(row),
         )
         for row in rows

@@ -50,6 +50,7 @@ from theurian.domain.context import RequestContext
 from theurian.domain.enums import Sensitivity, may_disclose, may_surface
 from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import ProjectId
+from theurian.domain.knowledge import served_content_hash, served_content_text
 from theurian.domain.ports.canonical_store import CanonicalReadSession
 from theurian.domain.ports.embedding import EmbeddingProvider
 from theurian.domain.ports.index_store import IndexStore
@@ -226,15 +227,30 @@ class IndexBuilder:
                 # The title is prepended to the body before splitting so that a
                 # query matching only the title still finds the document. A
                 # separately indexed title field would need its own retriever and
-                # its own fusion weight for the same effect.
-                body = f"{revision.title}\n\n{revision.body}"
-                for chunk in chunk_document(revision.revision_id.value, body):
+                # its own fusion weight for the same effect. `served_content_text`
+                # is the single definition of this format, shared with the serve
+                # gate so the text the index chunks and the text the gate re-hashes
+                # cannot drift apart (GHSA-3f65).
+                served = served_content_text(revision.title, revision.body)
+                for chunk in chunk_document(revision.revision_id.value, served):
                     indexable.append(
                         IndexableChunk(
                             chunk=chunk,
                             project_id=request.project_id,
                             item_id=item.item_id.value,
                             revision_id=revision.revision_id.value,
+                            # The hash of exactly the text served above, so the
+                            # gate can catch a title or body that later drifts
+                            # under this same revision id (GHSA-3f65). Not the
+                            # revision's body-only `content_sha256`: the served
+                            # text prepends the title, and a title can drift while
+                            # the body hash holds. `served_content_hash` re-runs
+                            # `served_content_text` internally, so this is provably
+                            # the hash of the `served` string the chunker just
+                            # received -- one format definition, both uses.
+                            served_content_sha256=served_content_hash(
+                                revision.title, revision.body
+                            ).value,
                             status=item.status.value,
                             # The item's, not the revision's, and for the same
                             # reason `status` is: a `changeSensitivity` moves the

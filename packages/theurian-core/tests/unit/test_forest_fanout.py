@@ -73,6 +73,7 @@ def _one_kind_corpus(items: int, *, kind: str = "architecture") -> list[Indexabl
                     project_id=PROJECT,
                     item_id=item,
                     revision_id=revision,
+                    served_content_sha256=f"body-of-{revision}",
                     status="approved",
                     sensitivity="internal",
                     trust_level="reviewed",

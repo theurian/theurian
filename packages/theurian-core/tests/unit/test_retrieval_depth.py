@@ -67,7 +67,7 @@ from theurian.domain.ports.index_store import ForestRecompute
 from theurian.domain.ranking import Ranked, RetrieverPage
 from theurian.domain.raptor import IndexableNode
 from theurian.domain.retrieval import RaptorPathSegment
-from theurian.domain.values import ValidityPeriod
+from theurian.domain.values import ContentHash, ValidityPeriod
 
 pytestmark = pytest.mark.unit
 
@@ -411,8 +411,23 @@ def _moment_row(number: int) -> Ranked:
     """
     revision = f"01K1M{number:021d}"
     return Ranked(
-        chunk_id=f"{revision}#0", item_id=f"architecture.item-{number:04d}", revision_id=revision
+        chunk_id=f"{revision}#0",
+        item_id=f"architecture.item-{number:04d}",
+        revision_id=revision,
+        # Matched by the sessions' `current_served_content_sha256` below, so the honest
+        # row clears the content-identity gate too (GHSA-3f65); an unset hash would
+        # make every row here unclearable, exactly as a short revision id would.
+        served_content_sha256=_content_hash(revision),
     )
+
+
+def _content_hash(revision: str) -> str:
+    """The body hash both a `_moment_row` and its canonical item agree on.
+
+    Derived from the revision id so the row the index carries and the item the
+    session returns match by construction -- the honest case INV-1 guarantees.
+    """
+    return ContentHash.of_text(revision).value
 
 
 @final
@@ -439,19 +454,23 @@ class _ControlledValiditySession:
         valid = self._valid_at_moment.get(item_id.value)
         if valid is None:
             return None
+        revision = f"01K1M{int(item_id.value.rsplit('-', 1)[-1]):021d}"
         return KnowledgeItem(
             item_id=item_id,
             project_id=DEMO,
             namespace="architecture",
             kind=KnowledgeKind.ARCHITECTURE,
             status=KnowledgeStatus.APPROVED,
-            current_revision_id=RevisionId(f"01K1M{int(item_id.value.rsplit('-', 1)[-1]):021d}"),
+            current_revision_id=RevisionId(revision),
             owner="platform-team",
             trust_level=TrustLevel.REVIEWED,
             sensitivity=Sensitivity.INTERNAL,
             validity=ValidityPeriod(
                 valid_from=MOMENT if valid else MOMENT + timedelta(days=1),
             ),
+            # Matches the row's hash, so content identity clears (GHSA-3f65) and
+            # what these tests measure stays the pass-count and moment behaviour.
+            current_served_content_sha256=ContentHash(_content_hash(revision)),
         )
 
     def get_item_exact(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
@@ -592,17 +611,21 @@ class _SensitivitySession:
     def get_item(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:  # noqa: ARG002
         number = int(item_id.value.rsplit("-", 1)[-1])
         current = ABOVE_THE_CEILING if item_id.value in self._withheld_ids else Sensitivity.INTERNAL
+        revision = f"01K1M{number:021d}"
         return KnowledgeItem(
             item_id=item_id,
             project_id=DEMO,
             namespace="architecture",
             kind=KnowledgeKind.ARCHITECTURE,
             status=KnowledgeStatus.APPROVED,
-            current_revision_id=RevisionId(f"01K1M{number:021d}"),
+            current_revision_id=RevisionId(revision),
             owner="platform-team",
             trust_level=TrustLevel.REVIEWED,
             sensitivity=current,
             validity=ValidityPeriod(valid_from=MOMENT - timedelta(days=1)),
+            # Matches the row's hash so the content-identity gate (GHSA-3f65)
+            # clears here and only the sensitivity axis withholds, as intended.
+            current_served_content_sha256=ContentHash(_content_hash(revision)),
         )
 
     def get_item_exact(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:

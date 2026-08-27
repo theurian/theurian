@@ -60,7 +60,7 @@ from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, T
 from theurian.domain.identifiers import ItemId, ProjectId, RevisionId
 from theurian.domain.knowledge import KnowledgeItem, KnowledgeRevision
 from theurian.domain.ranking import Ranked
-from theurian.domain.values import ValidityPeriod
+from theurian.domain.values import ContentHash, ValidityPeriod
 
 pytestmark = pytest.mark.unit
 
@@ -91,23 +91,33 @@ def _ulid(number: int) -> str:
 
 
 def _row(number: int) -> Ranked:
-    """One retriever row, with an item id and a revision id distinct to ``number``."""
+    """One retriever row, with an item id and a revision id distinct to ``number``.
+
+    ``served_content_sha256`` is the row's build-time body hash, distinct per ``number``
+    and matched by :func:`_approved_item` -- a row only *clears* if this equals the
+    canonical item's current-revision hash (GHSA-3f65), so a row missing it is
+    unclearable by construction, the same trap :func:`_ulid` records for a short id.
+    """
     return Ranked(
         chunk_id=f"{_ulid(number)}#0",
         item_id=f"architecture.a{number:04d}",
         revision_id=_ulid(number),
+        served_content_sha256=ContentHash.of_text(_ulid(number)).value,
     )
 
 
 def _approved_item(row: Ranked) -> KnowledgeItem:
     """The canonical item behind ``row``, in the one state that lets it surface.
 
-    Both halves are load-bearing to
+    All three halves are load-bearing to
     :class:`~theurian.application.visibility.CanonicalVisibility`: a status that
-    is not approved, or a ``current_revision_id`` other than the one the index
-    ranked, is withheld. An item built any other way makes a row *known* to the
-    session and still not clear, which is a fixture that reaches the lookup but
-    not the branch after it.
+    is not approved, a ``current_revision_id`` other than the one the index
+    ranked, or a ``current_served_content_sha256`` other than the row's build-time hash,
+    is withheld. The last is GHSA-3f65: it is taken *from the row* here, so the
+    honest fixture matches by construction and a drift test can break it on
+    purpose. An item built any other way makes a row *known* to the session and
+    still not clear, which is a fixture that reaches the lookup but not the
+    branch after it.
     """
     return KnowledgeItem(
         item_id=ItemId(row.item_id),
@@ -120,6 +130,7 @@ def _approved_item(row: Ranked) -> KnowledgeItem:
         trust_level=TrustLevel.REVIEWED,
         sensitivity=Sensitivity.INTERNAL,
         validity=ValidityPeriod(valid_from=NOW),
+        current_served_content_sha256=ContentHash(row.served_content_sha256),
     )
 
 

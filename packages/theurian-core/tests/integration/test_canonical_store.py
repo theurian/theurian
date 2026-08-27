@@ -422,6 +422,28 @@ def test_schema_version_is_recorded_inside_the_database(database: Path) -> None:
     assert row[0] == SCHEMA_VERSION
 
 
+def test_the_content_gate_rests_on_revision_title_and_body_being_not_null(
+    database: Path,
+) -> None:
+    """The serve gate's fail-closed-on-`None` branch (T-23, GHSA-3f65) reads the
+    current revision's ``title`` and ``body`` through a ``LEFT JOIN`` and treats a
+    NULL in either as "cannot verify -> withhold". That branch is meant to fire
+    only on a genuine join *miss*, never on a hit with one column present and the
+    other NULL -- a state the schema forbids by making both columns ``NOT NULL``.
+    Drop the ``NOT NULL`` on either and a half-present revision could read as
+    unverifiable and silently withhold an approved row, so pin the constraint.
+    """
+    with closing(sqlite3.connect(database)) as raw, raw:
+        not_null = {
+            name: notnull
+            for _cid, name, _type, notnull, _default, _pk in raw.execute(
+                "PRAGMA table_info(knowledge_revisions)"
+            )
+        }
+    assert not_null["title"] == 1, "knowledge_revisions.title must be NOT NULL"
+    assert not_null["body"] == 1, "knowledge_revisions.body must be NOT NULL"
+
+
 def test_a_foreign_schema_version_is_refused(database: Path) -> None:
     """Rebuilt, never migrated. A state database is derived (ADR-0017)."""
     with closing(sqlite3.connect(database)) as raw, raw:

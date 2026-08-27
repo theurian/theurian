@@ -15,6 +15,7 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Final, final
@@ -39,6 +40,7 @@ from theurian.domain.knowledge import (
     KnowledgeRevision,
     RevisionMetadata,
     SourceAnchor,
+    served_content_hash,
 )
 from theurian.domain.project import Project
 from theurian.domain.specification import Specification
@@ -275,9 +277,10 @@ class SqliteCanonicalStore:
     def get_item(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
         resolved = self._resolve_alias(context.project_id, item_id)
         return self._read_one(
-            "SELECT * FROM knowledge_items WHERE project_id = ? AND item_id = ?",
+            _ITEM_WITH_CURRENT_CONTENT_SQL
+            + "WHERE knowledge_items.project_id = ? AND knowledge_items.item_id = ?",
             (context.project_id.value, resolved.value),
-            _item_from_row,
+            _item_with_current_content_from_row,
         )
 
     def get_item_exact(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
@@ -293,9 +296,10 @@ class SqliteCanonicalStore:
         row the id names, judged by its own status.
         """
         return self._read_one(
-            "SELECT * FROM knowledge_items WHERE project_id = ? AND item_id = ?",
+            _ITEM_WITH_CURRENT_CONTENT_SQL
+            + "WHERE knowledge_items.project_id = ? AND knowledge_items.item_id = ?",
             (context.project_id.value, item_id.value),
-            _item_from_row,
+            _item_with_current_content_from_row,
         )
 
     def _resolve_alias(self, project_id: ProjectId, item_id: ItemId) -> ItemId:
@@ -1301,6 +1305,56 @@ def _project_from_row(row: sqlite3.Row) -> Project:
         last_seen_commit=row["last_seen_commit"],
         tenant_id=TenantId(row["tenant_id"]),
     )
+
+
+#: The item read the serve gate uses, joined to its current revision's served text.
+#:
+#: Selects the current revision's `title` and `body` rather than its stored
+#: `content_sha256`, because the gate checks *served* content identity: the index
+#: serves the title prepended to the body, so a body-only hash would miss a title
+#: drift (GHSA-3f65). `_item_with_current_content_from_row` recomputes
+#: `served_content_hash(title, body)` from these two columns -- the same function
+#: the index build hashes with -- so the two sides compare the same bytes.
+#:
+#: A `LEFT JOIN` so a NULL or dangling `current_revision_id` still returns the
+#: item -- with `current_served_content_sha256` NULL, which the gate reads as
+#: "cannot verify" and withholds. The join binds no parameter; each caller appends
+#: its own `WHERE`, so the trailing space is load-bearing. Only
+#: `get_item`/`get_item_exact` use it, because only they feed `CanonicalVisibility`;
+#: `list_items` and the status-filtered read stay on the plain `SELECT *` that
+#: their measured timing (see `list_items_by_status`) and the index builder were
+#: written against.
+_ITEM_WITH_CURRENT_CONTENT_SQL: Final = (
+    "SELECT knowledge_items.*, "
+    "current_revision.title AS current_title, current_revision.body AS current_body "
+    "FROM knowledge_items "
+    "LEFT JOIN knowledge_revisions AS current_revision "
+    "  ON current_revision.project_id = knowledge_items.project_id "
+    "  AND current_revision.revision_id = knowledge_items.current_revision_id "
+)
+
+
+def _item_with_current_content_from_row(row: sqlite3.Row) -> KnowledgeItem:
+    """`_item_from_row` plus the current revision's served-content hash from the join.
+
+    The gate reads carry `current_served_content_sha256` so
+    :meth:`~theurian.application.visibility.CanonicalVisibility._may_surface` can
+    check that indexed text still matches canonical's *current served content*
+    (GHSA-3f65) -- title-plus-body, the text an excerpt is cut from -- without a
+    second per-row read the candidate-depth discipline forbids. Recomputed here
+    from the joined `title` and `body` with the same `served_content_hash` the
+    index build uses, so a drift in either moves this value and the gate catches
+    it; keying on the stored body-only `content_sha256` would miss a title drift.
+    `None` when the pointer is unset or names no surviving revision (both join
+    columns NULL); the gate withholds on `None`, the safe direction for a check
+    that guards a disclosure.
+    """
+    item = _item_from_row(row)
+    title = row["current_title"]
+    body = row["current_body"]
+    if title is None or body is None:
+        return item
+    return replace(item, current_served_content_sha256=served_content_hash(str(title), str(body)))
 
 
 def _item_from_row(row: sqlite3.Row) -> KnowledgeItem:

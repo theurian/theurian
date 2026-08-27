@@ -1864,6 +1864,7 @@ def store(tmp_path: Path) -> SqliteIndexStore:
                 project_id="demo",
                 item_id="architecture.auth",
                 revision_id="rev-c1",
+                served_content_sha256="body-of-rev-c1",
                 status="approved",
                 sensitivity="internal",
                 trust_level="reviewed",

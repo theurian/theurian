@@ -70,6 +70,7 @@ def _indexable(
         project_id=project,
         item_id=f"architecture.{revision}",
         revision_id=revision,
+        served_content_sha256=f"body-of-{revision}",
         status=status,
         sensitivity="internal",
         trust_level="reviewed",

@@ -63,6 +63,7 @@ def _indexable(  # noqa: PLR0913 - one keyword per canonical field the filters r
         project_id=project,
         item_id=item,
         revision_id=f"rev-{chunk_id}",
+        served_content_sha256=f"body-of-rev-{chunk_id}",
         status=status,
         sensitivity="internal",
         trust_level="reviewed",
@@ -130,9 +131,10 @@ def test_node_id_and_chunk_id_refuse_a_null_value(store: SqliteIndexStore) -> No
         connection.rollback()
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, "
-                "heading, text, token_estimate, status, sensitivity, trust_level) "
-                "VALUES (NULL, 'demo', 'a.x', 'x', 0, '', 'text', 1, 'approved', "
+                "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, "
+                "served_content_sha256, ordinal, heading, text, token_estimate, status, "
+                "sensitivity, trust_level) "
+                "VALUES (NULL, 'demo', 'a.x', 'x', 'body-hash', 0, '', 'text', 1, 'approved', "
                 "'internal', 'reviewed')"
             )
 
@@ -202,9 +204,10 @@ def test_the_node_derivation_check_refuses_both_and_neither_source(
         connection.execute("PRAGMA foreign_keys = ON")
         with connection:
             connection.execute(
-                "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, "
-                "heading, text, token_estimate, status, sensitivity, trust_level) "
-                "VALUES ('c1#0', 'demo', 'a.x', 'x', 0, '', 'text', 1, 'approved', "
+                "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, "
+                "served_content_sha256, ordinal, heading, text, token_estimate, status, "
+                "sensitivity, trust_level) "
+                "VALUES ('c1#0', 'demo', 'a.x', 'x', 'body-hash', 0, '', 'text', 1, 'approved', "
                 "'internal', 'reviewed')"
             )
             connection.execute(_NODE_INSERT, _node_row(node_id="n1"))
@@ -244,9 +247,10 @@ def test_duplicate_derivation_edges_are_refused(store: SqliteIndexStore) -> None
         connection.execute("PRAGMA foreign_keys = ON")
         with connection:
             connection.execute(
-                "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, "
-                "heading, text, token_estimate, status, sensitivity, trust_level) "
-                "VALUES ('c1#0', 'demo', 'a.x', 'x', 0, '', 'text', 1, 'approved', "
+                "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, "
+                "served_content_sha256, ordinal, heading, text, token_estimate, status, "
+                "sensitivity, trust_level) "
+                "VALUES ('c1#0', 'demo', 'a.x', 'x', 'body-hash', 0, '', 'text', 1, 'approved', "
                 "'internal', 'reviewed')"
             )
             connection.execute(_NODE_INSERT, _node_row(node_id="n1"))

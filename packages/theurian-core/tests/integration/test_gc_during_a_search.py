@@ -70,6 +70,7 @@ def _indexable(chunk_id: str) -> IndexableChunk:
         project_id=PROJECT,
         item_id="architecture.retention",
         revision_id=chunk_id.split("#", 1)[0],
+        served_content_sha256=f"body-of-{chunk_id.split('#', 1)[0]}",
         status="approved",
         sensitivity="internal",
         trust_level="reviewed",

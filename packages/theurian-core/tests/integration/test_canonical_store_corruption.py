@@ -193,9 +193,39 @@ REFUSALS_WITHOUT_A_REMEDY: Final = frozenset(
 #: in SQL and admits in Python through `Sensitivity(...)`, so the cell refuses
 #: there too and this set is unchanged. Restoring the predicate form turns this
 #: test RED, which is what makes it the guard on that decision.
+#:
+#: **Four positions joined this set with GHSA-3f65 and were reasoned about here
+#: rather than kept out**, because keeping them out would mean abandoning the fix.
+#: The serve gate now checks that indexed text still matches canonical's
+#: *current-revision served content* -- its title-plus-body, the text an excerpt
+#: is cut from -- by joining `knowledge_revisions` on `(project_id, revision_id)`
+#: and recomputing `served_content_hash(title, body)`
+#: (`store._ITEM_WITH_CURRENT_CONTENT_SQL`). Two of the four break the *join*: a
+#: sentinel in `knowledge_revisions.revision_id` or `knowledge_revisions.project_id`
+#: leaves no matching current revision, so the recomputed hash is absent (NULL
+#: title and body). The other two break the *hash*: a sentinel in
+#: `knowledge_revisions.title` or `knowledge_revisions.body` still matches the
+#: join but changes the recomputed served hash, so it no longer equals the one the
+#: index recorded. All four end the same way -- `CanonicalVisibility._may_surface`
+#: withholds the row and `knowledge.search` answers ``count: 0`` with no
+#: `integrity` key. This is the *same class* as `knowledge_items.item_id` above --
+#: a broken item -> revision chain the count-based #30 detector cannot see, now
+#: reaching one table further because the gate reads one table further -- and it
+#: fails in the safe direction: a revision row a bit-flip has damaged, in its
+#: identity or in its served text, cannot vouch for the derived index text keyed to
+#: it, so the text is withheld rather than served unverified (ADR-0004: the index
+#: is never authoritative). Before the fix these cells answered cleanly, because
+#: the ranked path read title and body from the index and never touched
+#: `knowledge_revisions`. Disclosing revision-row damage as `integrity` rather than
+#: answering it silently is the #30 detector's job, and its scope does not yet
+#: reach `knowledge_revisions`; that is a separate gap, not this fix's to close.
 UNDETECTED_UNDERREPORT: Final = frozenset(
     {
         ("knowledge.search", "knowledge_items", "item_id"),
+        ("knowledge.search", "knowledge_revisions", "revision_id"),
+        ("knowledge.search", "knowledge_revisions", "project_id"),
+        ("knowledge.search", "knowledge_revisions", "title"),
+        ("knowledge.search", "knowledge_revisions", "body"),
     }
 )
 

@@ -203,6 +203,34 @@ class KnowledgeRevision:
         return self.metadata.status is KnowledgeStatus.APPROVED and self.validity.contains(moment)
 
 
+def served_content_text(title: str, body: str) -> str:
+    """The exact text the index chunks and later serves for a revision.
+
+    A revision's title is prepended to its body before the document is split, so a
+    query matching only the title still finds it (``IndexBuilder``). The text an
+    excerpt is therefore cut from is this concatenation, not the body alone. Kept
+    here as the single definition of that format so the builder that chunks it and
+    the serve gate that re-hashes it read one function and cannot drift apart
+    (GHSA-3f65): a second inline ``f"{title}\\n\\n{body}"`` anywhere is exactly the
+    divergence this guards against.
+    """
+    return f"{title}\n\n{body}"
+
+
+def served_content_hash(title: str, body: str) -> ContentHash:
+    """SHA-256 of :func:`served_content_text` -- the identity the serve gate checks.
+
+    Deliberately *not* the revision's own ``content_sha256``, which hashes the body
+    alone (INV-3). The index serves the title inside every excerpt, and a title can
+    drift under an unchanged revision id and unchanged body hash (edit the title
+    metadata, which no ``contentSha256`` pins, and re-apply), so a body-only hash
+    would let a retracted title through (GHSA-3f65). The build records this hash per
+    chunk and the canonical re-check recomputes it from the current revision's
+    title and body; they compare the same bytes only when both hash this string.
+    """
+    return ContentHash.of_text(served_content_text(title, body))
+
+
 @dataclass(frozen=True, slots=True)
 class KnowledgeItem:
     """The stable identity behind a series of revisions.
@@ -224,6 +252,21 @@ class KnowledgeItem:
     validity: ValidityPeriod
     tenant_id: TenantId = field(default_factory=TenantId)
     acl_group: AclGroup = field(default_factory=AclGroup)
+    #: The :func:`served_content_hash` of the revision `current_revision_id` names
+    #: -- the hash of its title-plus-body, the text an excerpt is cut from -- so
+    #: the serve gate can check that indexed text still matches canonical's
+    #: *current served content*, not only its current revision id (GHSA-3f65).
+    #:
+    #: Populated on exactly one path: the gate read
+    #: (`_ITEM_WITH_CURRENT_CONTENT_SQL` in the SQLite store), which joins the
+    #: current revision and recomputes this from its title and body. Every other
+    #: construction leaves it `None` -- including `with_revision`, which moves the
+    #: pointer in memory but does not read the store, so it cannot know the served
+    #: hash without one. `None` is what the gate treats as unverifiable and
+    #: withholds on, the safe direction for a check that exists to stop a stale
+    #: body reaching a caller; an in-memory item never reaches the gate, which
+    #: always reads a fresh item through that join.
+    current_served_content_sha256: ContentHash | None = None
 
     def with_revision(self, revision: KnowledgeRevision) -> Self:
         """Return a copy pointing at ``revision`` and adopting its metadata.
@@ -240,6 +283,11 @@ class KnowledgeItem:
                 f"Revision {revision.revision_id} belongs to project {revision.project_id}, "
                 f"not to {self.project_id}"
             )
+        # `current_served_content_sha256` is deliberately not set here: it is the
+        # serve gate's check value, and the gate reads it from the store's
+        # gate-read join, not from an in-memory item (GHSA-3f65). Computing it here
+        # from `revision.content_sha256` would be both dead (nothing reads it) and
+        # wrong (that is the body-only hash, not the served title-plus-body one).
         return replace(
             self,
             current_revision_id=revision.revision_id,

@@ -131,6 +131,7 @@ class Doc:
                 project_id=PROJECT,
                 item_id=f"{self.kind}.doc-{self.index}",
                 revision_id=rev,
+                served_content_sha256=f"body-of-{rev}",
                 status="approved",
                 sensitivity="internal",
                 trust_level="reviewed",

@@ -340,7 +340,45 @@ class CanonicalVisibility:
         # Compared as strings rather than by building a `RevisionId` out of index
         # data: this runs once per ranked row, and an id that failed validation
         # would raise here rather than simply fail to match.
-        return item.current_revision_id.value == row.revision_id
+        if item.current_revision_id.value != row.revision_id:
+            return False
+        # Content identity, not only revision identity (GHSA-3f65). The revision
+        # check above trusts that a `revision_id` names one immutable body (INV-1),
+        # and on the write path it does. But the state database is a derived,
+        # unsigned, git-ignored file (ADR-0004, SEC-7): the *served* content can be
+        # made to drift under an *unchanged* revision id. The title face is the
+        # cheapest: a title is migration metadata that no `contentSha256` pins, so
+        # editing it (and removing `.theurian/state/active.json` so `_verify_history`
+        # early-returns, then re-applying) leaves the revision id and the body hash
+        # both unchanged while canonical now holds a different title -- and the
+        # index prepends the title to the body, so its excerpt still carries the old
+        # one. A body edit that re-pins `contentSha256` is the other face. Either
+        # way the revision check passes on both sides, so without this one the gate
+        # cleared the stale bytes and `chunk_texts` excerpted them (a new face of
+        # the derived-state-trust class, GHSA-266v). Both fields are the
+        # `served_content_hash` of title-plus-body -- the exact text an excerpt is
+        # cut from: `row.served_content_sha256` is what the index recorded at build
+        # time, `item.current_served_content_sha256` is what canonical holds for
+        # that revision now. Equal in the honest case by INV-1; unequal means the
+        # served text drifted, so the row is withheld.
+        #
+        # `None` -- a current revision whose row the gate read could not
+        # dereference -- is withheld too: a check that cannot be performed is not a
+        # check that passes, and failing towards fewer results is the only
+        # direction a derived file may fail in.
+        #
+        # In `cleared`, beside status and sensitivity, and never deferred to excerpt
+        # or passage time -- for the reason spelled out above them: a row dropped
+        # after the depth loop has counted it toward `CANDIDATE_DEPTH` displaces a
+        # visible row the loop then never digs deeper to reach, and `count`,
+        # `usedTokens` and every rank move with a document the caller may not read
+        # (SEC-13, the displacement defect PR #112 reopened twice). No request
+        # parameter reaches this comparison, so it is safe to apply where `moment`
+        # must not.
+        return (
+            item.current_served_content_sha256 is not None
+            and item.current_served_content_sha256.value == row.served_content_sha256
+        )
 
 
 __all__ = ["CanonicalVisibility", "Visibility"]

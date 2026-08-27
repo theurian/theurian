@@ -88,7 +88,7 @@ SURVIVING_REVISION: Final = "revOK"
 EXPECTED_SELF_EDGES_REFUSED: Final = 142
 
 _CHUNK_COLUMNS = (
-    "chunk_id, project_id, item_id, revision_id, ordinal, heading, text, "
+    "chunk_id, project_id, item_id, revision_id, served_content_sha256, ordinal, heading, text, "
     "token_estimate, status, sensitivity, trust_level"
 )
 _NODE_COLUMNS = (
@@ -187,8 +187,8 @@ def _write_graph(
     with connection:
         connection.executemany(
             f"INSERT INTO chunks ({_CHUNK_COLUMNS}) "  # noqa: S608 - module-owned column list
-            "VALUES (?, 'p', 'i', ?, 0, 'h', 'text of a generated chunk', 4, 'approved', "
-            "'internal', 'reviewed')",
+            "VALUES (?, 'p', 'i', ?, 'body-hash', 0, 'h', 'text of a generated chunk', 4, "
+            "'approved', 'internal', 'reviewed')",
             list(chunks.items()),
         )
         connection.executemany(

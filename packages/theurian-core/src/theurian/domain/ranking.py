@@ -122,6 +122,16 @@ class Ranked:
     chunk_id: str
     item_id: str
     revision_id: str
+    #: The :func:`~theurian.domain.knowledge.served_content_hash` of the source
+    #: revision's title-plus-body, as the index recorded it when this chunk was
+    #: written. Carried so the serve gate can check *content* identity, not only
+    #: revision identity: a title or body that drifts under an unchanged
+    #: `revision_id` leaves this row's hash pinned to the text the index actually
+    #: holds, while the canonical item now hashes to something else, so
+    #: `CanonicalVisibility._may_surface` can drop the stale text (GHSA-3f65). A
+    #: derived, unsigned field like the ids beside it, so it fails towards fewer
+    #: results: the empty default no real hash equals is withheld, never surfaced.
+    served_content_sha256: str = ""
     #: The retriever's own score, kept for explanation and never for fusion.
     score: float = 0.0
 
