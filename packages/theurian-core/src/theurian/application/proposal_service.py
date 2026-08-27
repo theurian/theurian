@@ -123,9 +123,10 @@ _MAX_NAMES_LISTED: Final = 5
 #: **Why a count, not only a size.** The migration file itself is already
 #: bounded (``MAX_YAML_BYTES``, 4 MiB), but nothing bounded how many
 #: operations that budget can spend: a minimal ``upsertRevision`` entry is a
-#: few dozen bytes, so the file's own cap alone admits on the order of
-#: 10,000-30,000 of them. Each one may name a *distinct* ``contentFile`` up
-#: to :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` (8 MiB) -- a
+#: few dozen bytes, so the file's own cap alone admits on the order of tens
+#: of thousands of them, plausibly past 100,000. Each one may name a
+#: *distinct* ``contentFile`` up to
+#: :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` (8 MiB) -- a
 #: separate file the migration only points at, so the migration's own byte
 #: cap says nothing about it -- and :meth:`ProposalService._body_moves`
 #: read every one of them into memory before ADR-0027's schema check ever
@@ -143,19 +144,44 @@ _MAX_NAMES_LISTED: Final = 5
 #: operations array padded with cheap entries. The cap is on
 #: ``len(document["operations"])``, full stop.
 #:
-#: **Why 500, not the sibling precedent's 5,000.** ``openapi.py``'s
-#: ``MAX_OPERATIONS`` bounds records that come from the document already
-#: being read, so its worst case is bounded by that same document's own
-#: byte cap. Here every operation can pull in a *separate* 8 MiB file, so
-#: the worst-case aggregate is ``cap * MAX_SOURCE_FILE_BYTES`` --
-#: 5,000 would still admit ~39 GiB. 500 keeps that worst case at ~3.9 GiB,
-#: the same order of magnitude this codebase already treats as a defensible
-#: bound elsewhere (``forest_builder.MAX_CHILDREN_PER_DOMAIN``, also 500),
-#: while leaving two orders of magnitude of headroom over what a generated
-#: proposal ever produces: ``ProposalService.draft`` always emits exactly
-#: two operations (``createItem`` and ``upsertRevision``); only a
-#: hand-authored, batched migration can approach this cap.
-MAX_UPSERT_OPERATIONS: Final = 500
+#: **Why the bound is two channels, not one.** ``moves = tuple(self._body_moves(...))``
+#: holds one resident copy per *distinct* incoming body -- up to
+#: ``cap * MAX_SOURCE_FILE_BYTES``. But :meth:`ProposalService._commit`, further
+#: down the same call, holds a *second* set simultaneously: for every move that
+#: replaces an existing destination, ``restored`` carries
+#: ``move.destination.read_bytes()`` -- the prior body being overwritten -- kept
+#: resident so a failed write can roll it back. Both lists can be full at once
+#: (a migration whose every operation replaces an existing body), so the true
+#: worst-case peak is ``2 * cap * MAX_SOURCE_FILE_BYTES``, not the one-channel
+#: figure this docstring stated before #306's round-one review measured the
+#: gap: 499 replace-mode operations at 1 MiB each peaked at ~1051 MiB against a
+#: create-mode run's ~542 MiB for the same count, roughly double, exactly what
+#: the two-channel formula predicts.
+#:
+#: **Why 250, not the sibling precedent's 500 or 5,000.** ``openapi.py``'s
+#: ``MAX_OPERATIONS`` bounds records that come from the document already being
+#: read, so its worst case is bounded by that same document's own byte cap --
+#: it is not the precedent for this bound, whose worst case is spent on
+#: *separate* files the document only names. 5,000 would admit
+#: ``2 * 5,000 * 8 MiB`` = ~78 GiB; 500 would still admit ~7.8 GiB. 250 keeps
+#: the two-channel peak at ``2 * 250 * 8 MiB`` = ~3.9 GiB, a pure memory
+#: ceiling this project can defend on its own terms, independent of any other
+#: constant's value. It leaves enormous headroom over what this repository's
+#: own migrations ever declare: the largest legitimate migration checked in
+#: anywhere in this repo is 5 operations (the sample project's
+#: ``add-order-cancellation``); every other migration here is 1-2, and
+#: ``ProposalService.draft`` always emits exactly two (``createItem`` and
+#: ``upsertRevision``). 250 is ~50x that observed maximum and rejects nothing
+#: a real migration in this codebase has ever produced.
+#:
+#: **What this bound does not cover.** The ``restored`` reads above are bounded
+#: to at most :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` per entry
+#: only for a destination an *earlier accepted proposal* landed through this
+#: same path -- every write this service performs goes through the size-capped
+#: read path. A destination file that reached its size some other way (written
+#: directly, outside ``accept``) is read here uncapped by ``move.destination.read_bytes()``;
+#: that gap is tracked separately (#400) and is not closed by this cap.
+MAX_UPSERT_OPERATIONS: Final = 250
 
 #: Where a secret-scan finding sits when the text it was found in is an artifact
 #: ``accept`` lands rather than a field of the migration document (#349).
@@ -2750,7 +2776,7 @@ def _refuse_past_the_operation_cap(document: Mapping[str, object]) -> None:
     one per operation naming a ``contentFile``, and that spend happens the
     instant ``_body_moves`` runs -- so the count has to be checked before that
     call, not after. See :data:`MAX_UPSERT_OPERATIONS` for why the count is
-    checked at all and why 500 is where it sits.
+    checked at all and why 250 is where it sits.
     """
     count = _operation_count(document)
     if count <= MAX_UPSERT_OPERATIONS:

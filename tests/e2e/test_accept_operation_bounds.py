@@ -41,12 +41,13 @@ pytestmark = [
     pytest.mark.skipif(THEURIAN is None, reason="theurian is not installed on PATH"),
 ]
 
-#: Ten times the shipped cap (``proposal_service.MAX_UPSERT_OPERATIONS`` = 500).
-#: Not imported from the source constant -- this file drives only the installed
-#: binary, never the Python package in-process -- so the margin is deliberately
-#: wide: any cap this project would plausibly ship is well below 5,000, and the
-#: pre-fix growth at this count (~2.6 GB at a comparable body size) makes the
-#: flat/not-flat distinction robust to ordinary process-measurement noise.
+#: Twenty times the shipped cap (``proposal_service.MAX_UPSERT_OPERATIONS`` =
+#: 250). Not imported from the source constant -- this file drives only the
+#: installed binary, never the Python package in-process -- so the margin is
+#: deliberately wide: any cap this project would plausibly ship is well below
+#: 5,000, and the pre-fix growth at this count (~2.6 GB at a comparable body
+#: size) makes the flat/not-flat distinction robust to ordinary
+#: process-measurement noise.
 OPERATION_COUNT_WELL_ABOVE_THE_CAP = 5_000
 
 #: Large enough that a resident copy per operation is visible over normal
