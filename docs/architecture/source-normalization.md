@@ -110,27 +110,35 @@ and the `$ref` walk read as universal.
 | Operations recorded | 5,000 | `parsers/openapi.py::MAX_OPERATIONS` — **OpenAPI only** | T-6 index growth |
 | Loader | `yaml.safe_load` only, under a 4 MiB document cap | `security/yaml_loading.py::load_yaml`, `MAX_YAML_BYTES` | arbitrary object construction |
 | External `$ref` | recorded, never fetched | `parsers/openapi.py::_external_refs` — **OpenAPI only** | T-7 SSRF |
-| Structure recorded from Markdown | 2,000 headings, 1,000 code fences | `parsers/markdown.py::MAX_HEADINGS`, `MAX_FENCES` — **Markdown only** | an unbounded structure tree — and *only* that: neither bounds what the scan spends ([#331](https://github.com/theurian/theurian/issues/331)) |
+| Structure recorded from Markdown | 2,000 headings, 1,000 code fences | `parsers/markdown.py::MAX_HEADINGS`, `MAX_FENCES` — **Markdown only** | an unbounded structure tree — bounding the record only, not the scan; the fence scan itself is now a linear single pass by construction ([#331](https://github.com/theurian/theurian/issues/331), discharged) |
 
 Size is re-checked after reading, because a file can grow between `stat` and
 `read`.
 
-**Two residuals are measured and open, each owned by its own issue, and both
-bounded only by the file-size row above.**
+**Both residuals below are discharged, each owned by its own issue and
+measured in `docs/security/threat-model.md` under T-6.**
 
-- The `$ref` walk builds a path string per edge and nothing charges it, which is
-  quadratic in document size
-  ([#328](https://github.com/theurian/theurian/issues/328), measured in
-  `docs/security/threat-model.md` under T-6).
-- `parsers/markdown.py::_FENCE` is quadratic on fence openers that never close.
-  It is not line iteration: the pattern spans the whole document with `(.*?)`
-  under `re.DOTALL`, so every opener that finds no closer scans to the end.
-  Measured 2026-08-24 on `_FENCE.finditer` over a body of `` ```a `` lines,
-  which open a fence and can never close one: 9.8 KiB 0.10 s, 19.5 KiB 0.39 s,
-  39.1 KiB 1.56 s, 78.1 KiB 6.24 s, 156.2 KiB 25.12 s — four times the cost per
-  doubling, and no reference recorded either way. `MAX_FENCES` does not bound
-  it, because the cap is applied to the matches the scan *yields* and this input
-  yields none.
+- The `$ref` walk used to build a path string per edge with nothing charging
+  it, quadratic in document size. `_external_refs` now carries the path as a
+  tuple of un-rendered segments, rendered to a string only where a ref or a
+  truncation is actually recorded, bounding the per-edge cost to `O(depth)`
+  — capped by `MAX_REF_DEPTH` — instead of `O(len of the rendered string)`
+  ([#328](https://github.com/theurian/theurian/issues/328), discharged;
+  measured 2026-08-27 at n=240,000, ~3.25 MB: 1.28 s → 0.037 s, now linear).
+- `parsers/markdown.py::_fences` used to be quadratic on fence openers that
+  never close. It was not line iteration: the pattern spanned the whole
+  document with `(.*?)` under `re.DOTALL`, so every opener that found no
+  closer scanned to the end. Measured 2026-08-24 over a body of `` ```a ``
+  lines, which open a fence and can never close one: 9.8 KiB 0.10 s, 19.5 KiB
+  0.39 s, 39.1 KiB 1.56 s, 78.1 KiB 6.24 s, 156.2 KiB 25.12 s — four times the
+  cost per doubling, and no reference recorded either way. `_fences` is now a
+  single forward pass over lines instead ([#331](https://github.com/theurian/theurian/issues/331),
+  discharged; measured on the same 156.2 KiB shape: 25.3 s → 0.0065 s,
+  roughly 3900×, now linear). A bounded residual replaces it: `_fences`
+  materializes `lines` and `line_starts` up front, so peak memory is now
+  `O(line-count)` — measured 2026-08-27, ~202 MB at the 8 MiB
+  `MAX_SOURCE_FILE_BYTES` cap, linear and irrelevant at ordinary document
+  sizes.
 
 The rest of the Markdown parse is priced differently and is not a residual.
 `_FRONT_MATTER` is `\A`-anchored, so it matches at one position: 0.048 s over
