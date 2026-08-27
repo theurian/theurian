@@ -81,6 +81,43 @@ operations:
           sourceUri: git://demo/auth-policy.md
 """
 
+#: A second, independent migration over its own item, so #116's delete-detection
+#: test can remove *one* applied migration and leave a non-empty set behind --
+#: the realistic tampering, not the degenerate "delete the only migration" case.
+#: Named apart from :data:`SECOND_MIGRATION` below, which revises the *same* item
+#: and would collide as a module constant.
+RATE_LIMIT_MIGRATION_ID = "01K1CCCCCC01234567890ABCDE"
+RATE_LIMIT_REVISION_ID = "01K1CCCREV01234567890ABCDE"
+RATE_LIMIT_BODY = "# Rate limiting\n\nEvery endpoint carries a request budget.\n"
+
+RATE_LIMIT_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {RATE_LIMIT_MIGRATION_ID}
+createdAt: 2026-08-02T10:05:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.rate-limit
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.rate-limit
+    revisionId: {RATE_LIMIT_REVISION_ID}
+    contentFile: ../knowledge/architecture/rate-limit.md
+    contentSha256: {body_pin(RATE_LIMIT_BODY)}
+    metadata:
+      title: Rate limiting
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/rate-limit.md
+"""
+
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
@@ -112,6 +149,16 @@ def _invoke(*args: str) -> tuple[int, dict[str, Any]]:
 def _write_migration(root: Path, migration: str = MIGRATION, body: str = BODY) -> None:
     (root / ".theurian/knowledge/architecture/auth-policy.md").write_text(body)
     (root / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml").write_text(migration)
+
+
+#: The path #116's test deletes -- a module constant so the write and the unlink
+#: cannot drift on the filename spelling.
+RATE_LIMIT_MIGRATION_PATH = f".theurian/migrations/{RATE_LIMIT_MIGRATION_ID}-add-rate-limit.yaml"
+
+
+def _write_rate_limit_migration(root: Path) -> None:
+    (root / ".theurian/knowledge/architecture/rate-limit.md").write_text(RATE_LIMIT_BODY)
+    (root / RATE_LIMIT_MIGRATION_PATH).write_text(RATE_LIMIT_MIGRATION)
 
 
 # -- issue #205: a contentFile that does not resolve ------------------------
@@ -1840,6 +1887,59 @@ def test_editing_an_applied_migration_is_fatal(project: Path) -> None:
     code, error = _invoke("migrate", "status")
     assert code == EXIT_STATE_ERROR
     assert "never be edited" in error["error"]
+
+
+def test_deleting_an_applied_migration_is_fatal(project: Path) -> None:
+    """FR-K5 (#116): removal is the one tampering the checksum trail cannot see.
+
+    The forward checksum check binds only files that still exist, so deleting an
+    applied migration -- the strongest tampering -- passed silently while its
+    canonical rows stayed in the store (issue #116). The reverse check refuses
+    it, symmetric with `test_editing_an_applied_migration_is_fatal` above, and
+    names the deleted migration so the operator can restore it (AC-2).
+
+    Checked at ``validate``, ``apply`` *and* ``status``, the three commands that
+    resolve a project through ``_verify_history``: an evidence guard that fired
+    at one and not the others would let a caller route around it by reaching for
+    a different command, the same divergence issue #63 recorded for the scope
+    guard.
+    """
+    _invoke("init")
+    _write_migration(project)
+    _write_rate_limit_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0, "both migrations must apply cleanly first"
+
+    (project / RATE_LIMIT_MIGRATION_PATH).unlink()
+
+    for command in ("validate", "apply", "status"):
+        code, error = _invoke("migrate", command)
+        assert code == EXIT_STATE_ERROR, (
+            f"`migrate {command}` did not refuse a deleted applied migration (#116)"
+        )
+        assert RATE_LIMIT_MIGRATION_ID in error["error"], (
+            f"`migrate {command}` refused without naming the deleted migration (AC-2)"
+        )
+        assert "never be deleted" in error["error"]
+        assert error["remedy"], f"`migrate {command}` named no remedy to restore it"
+
+
+def test_apply_is_unaffected_when_no_applied_migration_was_deleted(project: Path) -> None:
+    """AC-3: the honest path -- adding a new migration on top -- still applies.
+
+    Guards the reverse check against over-refusal: a *pending* migration is
+    recorded nowhere yet, so it is present-in-set-but-absent-from-history, the
+    opposite direction the delete check must not confuse for tampering. Adding
+    one shifts the state hash (ADR-0016) and routes to a fresh database, so both
+    migrations replay there -- exit 0, and the new migration among the applied.
+    """
+    _invoke("init")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0
+
+    _write_rate_limit_migration(project)
+    code, applied = _invoke("migrate", "apply")
+    assert code == 0, "applying a newly added migration is honest, not tampering"
+    assert applied["applied"] == [MIGRATION_ID, RATE_LIMIT_MIGRATION_ID]
 
 
 def test_a_revision_conflict_is_reported_not_merged(project: Path) -> None:

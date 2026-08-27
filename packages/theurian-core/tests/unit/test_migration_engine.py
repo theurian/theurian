@@ -25,6 +25,7 @@ from theurian.application.migration_engine import (
     run_static_migration_guards,
     unenforceable_scope_violations,
     verify_no_applied_migration_changed,
+    verify_no_applied_migration_removed,
 )
 from theurian.domain.enums import (
     KnowledgeKind,
@@ -41,6 +42,7 @@ from theurian.domain.errors import (
     MigrationCycleError,
     MigrationDependencyMissingError,
     MigrationError,
+    MigrationHistoryMissingError,
     RevisionConflictError,
     UnenforceableScopeError,
 )
@@ -395,6 +397,58 @@ def test_verification_passes_when_checksums_match() -> None:
 def test_an_unrecorded_migration_is_not_a_mismatch() -> None:
     migrations = MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
     verify_no_applied_migration_changed({}, migrations)
+
+
+def test_deleting_an_applied_migration_is_detected() -> None:
+    """Issue #116: the reverse direction the checksum trail cannot see.
+
+    ``recorded`` holds a migration whose file is gone -- the case a deletion
+    leaves in the previously active history. The forward check iterates the files
+    that remain and never reaches it; this one iterates the recorded history and
+    names it.
+    """
+    remaining = MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+    recorded = {
+        MigrationId(MIG_1): remaining.migrations[0].checksum.value,
+        MigrationId(MIG_2): ContentHash.of_text("gone").value,
+    }
+
+    # The forward check is blind to it: MIG_2 is not among the files it iterates.
+    verify_no_applied_migration_changed(recorded, remaining)
+
+    with pytest.raises(MigrationHistoryMissingError) as exc:
+        verify_no_applied_migration_removed(recorded, remaining)
+    assert exc.value.migration_id == MigrationId(MIG_2)
+    assert "never be deleted" in str(exc.value)
+
+
+def test_the_first_missing_migration_in_application_order_is_named() -> None:
+    """Determinism: `recorded` arrives ORDER BY sequence, so the earliest gone.
+
+    A dict preserves insertion order, and `applied_migrations` inserts in
+    application order, so naming the first-iterated missing id names the
+    earliest-applied one -- the migration a reader restores first.
+    """
+    remaining = MigrationSet.ordered(())
+    recorded = {
+        MigrationId(MIG_2): ContentHash.of_text("second-gone").value,
+        MigrationId(MIG_3): ContentHash.of_text("third-gone").value,
+    }
+
+    with pytest.raises(MigrationHistoryMissingError) as exc:
+        verify_no_applied_migration_removed(recorded, remaining)
+    assert exc.value.migration_id == MigrationId(MIG_2)
+
+
+def test_a_present_pending_migration_is_not_a_removal() -> None:
+    """The honest opposite: a file present but not yet recorded must pass.
+
+    A pending migration is present-in-set-but-absent-from-history -- the exact
+    inverse of a deletion -- and confusing it for tampering would refuse every
+    ordinary `migrate apply` that adds a migration.
+    """
+    migrations = MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+    verify_no_applied_migration_removed({}, migrations)
 
 
 # -- Ordering --------------------------------------------------------------

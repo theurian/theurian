@@ -89,6 +89,27 @@ class MigrationChecksumMismatchError(MigrationError):
         )
 
 
+class MigrationHistoryMissingError(MigrationError):
+    """An already-applied migration's file is gone from the migration set (issue #116).
+
+    The reverse of :class:`MigrationChecksumMismatchError`, and the one tampering
+    that check cannot see: the checksum trail binds only files that still exist,
+    so deleting an applied migration -- the strongest tampering -- leaves nothing
+    to compare against and passes silently while its canonical rows stay in the
+    store. Fatal and never auto-repaired, for the same reason an edit is: the
+    recorded history says a migration was applied and the working tree no longer
+    backs that claim, and only a human can say which is right (ADR-0005).
+    """
+
+    def __init__(self, migration_id: MigrationId) -> None:
+        self.migration_id = migration_id
+        super().__init__(
+            f"Migration {migration_id} was applied and recorded in the knowledge "
+            f"history, but its file is no longer present. "
+            f"An applied migration must never be deleted."
+        )
+
+
 class MigrationCycleError(MigrationError):
     """``dependsOn`` declares a cycle, so no application order exists."""
 

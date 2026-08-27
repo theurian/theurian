@@ -29,6 +29,7 @@ from theurian.application.migration_engine import (
     run_static_migration_guards,
     unenforceable_scope_violations,
     verify_no_applied_migration_changed,
+    verify_no_applied_migration_removed,
 )
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
@@ -65,6 +66,7 @@ from theurian.domain.errors import (
     MigrationChecksumMismatchError,
     MigrationCycleError,
     MigrationError,
+    MigrationHistoryMissingError,
     PathEscapeError,
     RevisionConflictError,
     TheurianError,
@@ -1909,6 +1911,12 @@ def _verify_history(context: CommandContext, as_json: bool) -> None:
 
     try:
         verify_no_applied_migration_changed(recorded, context.loaded.migration_set)
+        # Reverse direction (issue #116): an edit is a file that disagrees with
+        # its recorded checksum, and the check above binds only files that still
+        # exist -- so a *deleted* applied migration, the strongest tampering,
+        # slipped past it entirely. Checked here against the same previously
+        # active history, so `validate`, `apply` and `status` refuse it alike.
+        verify_no_applied_migration_removed(recorded, context.loaded.migration_set)
     except MigrationChecksumMismatchError as exc:
         _fail(
             str(exc),
@@ -1916,6 +1924,17 @@ def _verify_history(context: CommandContext, as_json: bool) -> None:
                 "Restore the original migration file, or record the change as a new "
                 "migration. Never edit an applied migration, and never adjust the "
                 "recorded checksum to match."
+            ),
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+    except MigrationHistoryMissingError as exc:
+        _fail(
+            str(exc),
+            remedy=(
+                "Restore the deleted migration file (recover it from Git). An applied "
+                "migration must never be removed: its recorded history is what makes the "
+                "built knowledge trustworthy, and its canonical rows remain until you do."
             ),
             as_json=as_json,
             code=EXIT_STATE_ERROR,

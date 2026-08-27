@@ -32,6 +32,7 @@ from theurian.domain.enums import (
 from theurian.domain.errors import (
     MigrationChecksumMismatchError,
     MigrationError,
+    MigrationHistoryMissingError,
     RevisionConflictError,
     ScopeViolation,
     UnenforceableScopeError,
@@ -188,6 +189,40 @@ def verify_no_applied_migration_changed(
             raise MigrationChecksumMismatchError(
                 migration.migration_id, recorded_checksum, migration.checksum.value
             )
+
+
+def verify_no_applied_migration_removed(
+    recorded: Mapping[MigrationId, str], migration_set: MigrationSet
+) -> None:
+    """Assert every recorded applied migration still has a file in the set.
+
+    The reverse direction of :func:`verify_no_applied_migration_changed`, and the
+    tampering that one misses (issue #116). The checksum check iterates the files
+    that *exist* and binds each to its recorded hash, so a deleted applied
+    migration -- present in the recorded history, absent from the files -- is
+    never reached and passes silently. This iterates the recorded history
+    instead, closing the asymmetry: FR-K5's tamper-evidence must cover removal,
+    the strongest tampering, not only in-place edits.
+
+    Like the forward check, this must run against the **previously active**
+    history, not the state currently being built. Deleting a migration changes
+    the state hash (ADR-0016) and routes the next command to a fresh database
+    where nothing was ever applied and nothing looks missing; the evidence lives
+    only in the previous database, reached through the active-state pointer
+    (``cli/commands.py::_verify_history``).
+
+    ``recorded`` arrives in application order (``applied_migrations`` reads
+    ``ORDER BY sequence``), so the earliest-applied migration whose file is gone
+    is named first -- the one a reader restores to make the rest resolvable.
+
+    Raises:
+        MigrationHistoryMissingError: On the first recorded migration whose file
+            is absent from ``migration_set``.
+    """
+    present = {migration.migration_id for migration in migration_set}
+    for migration_id in recorded:
+        if migration_id not in present:
+            raise MigrationHistoryMissingError(migration_id)
 
 
 #: The only tenant and ACL group a document may name until a real
@@ -855,4 +890,5 @@ __all__ = [
     "run_static_migration_guards",
     "unenforceable_scope_violations",
     "verify_no_applied_migration_changed",
+    "verify_no_applied_migration_removed",
 ]
