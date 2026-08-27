@@ -65,9 +65,20 @@ jobs:
       - name: Install gitleaks
         env:
           GITLEAKS_VERSION: "8.30.0"
+          # Pinning the version alone still lets a compromised asset or a
+          # MITM substitute arbitrary bytes for the tarball this job then
+          # `sudo install`s onto PATH with the job's token (#108). The digest
+          # below is from gitleaks' own published
+          # gitleaks_8.30.0_checksums.txt for this release -- fetched from
+          # https://github.com/gitleaks/gitleaks/releases/download/v8.30.0/gitleaks_8.30.0_checksums.txt
+          # Bump GITLEAKS_VERSION and GITLEAKS_SHA256 together, from that
+          # release's checksums.txt: a version bump that forgets the digest
+          # must fail verification, not install unverified bytes silently.
+          GITLEAKS_SHA256: "79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e"
         run: |
           curl -sSfL -o gitleaks.tar.gz \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
           tar -xzf gitleaks.tar.gz gitleaks
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
           gitleaks version
