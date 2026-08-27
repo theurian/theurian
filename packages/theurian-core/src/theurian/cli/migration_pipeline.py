@@ -38,6 +38,7 @@ from theurian.application.migration_engine import (
 from theurian.application.project_service import ProjectPaths, resolve_state_hash
 from theurian.application.proposal_service import CandidateMigrationSet
 from theurian.cli.context import schema_root
+from theurian.domain.errors import IrregularSourceFileError
 from theurian.domain.migration import MIGRATION_ENGINE_VERSION
 from theurian.domain.ports import Clock
 from theurian.domain.project import Project
@@ -211,9 +212,27 @@ def _materialize(candidate: CandidateMigrationSet, target: Path) -> Path:
     third residue, not a new one: the window exists because the accept path's
     moves are not under the write lock, and this lengthens it rather than
     opening it.
+
+    **A landed read that refuses an irregular file names it** (the
+    ``application/proposal_service.py::_commit`` shape, #400). A landed body
+    can be swapped for a FIFO, socket or device between the caller's load and
+    this copy -- the same window the paragraph above already records for an
+    edited one -- and left bare,
+    :class:`~theurian.domain.errors.IrregularSourceFileError` would propagate
+    saying only that *a* file is irregular, naming none of ``candidate.landed``.
+    ``relative`` is safe to attach: it is not an authored string but
+    ``candidate.landed``'s own entries, which :meth:`ProposalService._candidate`
+    builds from what the loader itself recorded when the landed set was
+    originally read (``migration.source_path``,
+    ``operation.resolved_content_path``), already project-relative and already
+    proved contained then.
     """
     for relative in candidate.landed:
-        _write(target, relative, read_source_file(candidate.root, PurePosixPath(relative)))
+        try:
+            data = read_source_file(candidate.root, PurePosixPath(relative))
+        except IrregularSourceFileError as exc:
+            raise IrregularSourceFileError(exc.shape, referrer=relative) from exc
+        _write(target, relative, data)
     for relative, data in candidate.incoming:
         _write(target, relative, data)
     return target

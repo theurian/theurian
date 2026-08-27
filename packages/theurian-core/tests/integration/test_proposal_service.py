@@ -3540,6 +3540,74 @@ def test_the_replay_removes_the_throwaway_tree_it_staged_the_union_in(
     assert list(system_temp.iterdir()) == [], "the replay left residue in the temporary root"
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_a_rehearsal_read_of_an_irregular_landed_file_names_it(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_materialize`` reads the *landed* set too, and must name what it refuses.
+
+    #400 fixed ``_commit``'s own restored-body read to attach a referrer to
+    ``IrregularSourceFileError`` -- the incoming/replace side of the accept
+    path. ``_materialize`` (``cli/migration_pipeline.py``) reads the *landed*
+    side of the same union through the identical ``read_source_file`` call, for
+    the ADR-0027 rehearsal every ``accept`` runs before it writes anything, and
+    until this fix let the same refusal propagate bare.
+
+    **Why landing a FIFO by hand does not reach this code.** The loader itself
+    already names an irregular *landed* file safely: ``_landed_files`` reads the
+    approved set through the injected port, which re-parses every operation
+    (``_parse_upsert``) and refuses there, with a referrer, before
+    ``_materialize`` ever runs. Driven instead through the examine-to-move
+    window ``_materialize``'s own docstring records: the landed body is still a
+    regular file when the loader verifies it, and is swapped for a FIFO in the
+    gap between that verification and the rehearsal's own read of it -- the
+    same seam ``test_the_replay_removes_the_throwaway_tree_it_staged_the_union_in``
+    above wraps ``_materialize`` to reach.
+
+    The refusal that reaches ``accept`` is :class:`ApprovedSetUnusableError`,
+    not the raw :class:`~theurian.domain.errors.IrregularSourceFileError`:
+    ``_refuse_unless_the_union_applies`` translates every ``TheurianError`` the
+    rehearsal raises, and a landed-set fault re-rehearses the landed set alone
+    to attribute it correctly (:meth:`ProposalService._union_refusal`). What
+    this test pins is that the *landed path* still appears in that translated
+    message, not that the type is left untranslated -- unlike ``_commit``'s own
+    clause, which the docstring there records leaves it deliberately raw.
+    """
+    from theurian.cli import migration_pipeline as pipeline
+
+    first = service.draft(_request())
+    second = service.draft(_request(item_id=ItemId("architecture.other"), body=BODY))
+    # Landed by hand: the loader's own eager verification (`_landed_files`)
+    # must see a regular file and pass, or the refusal this test drives would
+    # come from `_parse_upsert` instead of from the fix under test.
+    shutil.copy(first.migration_file, paths.migrations / first.migration_file.name)
+    first.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(first.body_file, first.body_destination)
+    shutil.rmtree(first.directory)
+
+    real_materialize = pipeline._materialize
+
+    def spy(candidate: CandidateMigrationSet, target: Path) -> Path:
+        # `_union_refusal` re-rehearses the landed set alone to attribute the
+        # fault, so `_materialize` runs twice; swapping only when the
+        # destination is not already a FIFO keeps the second call a no-op.
+        if not first.body_destination.is_fifo():
+            first.body_destination.unlink()
+            os.mkfifo(first.body_destination)
+        return real_materialize(candidate, target)
+
+    monkeypatch.setattr(pipeline, "_materialize", spy)
+
+    with pytest.raises(ApprovedSetUnusableError) as caught:
+        service.accept(second.proposal_id)
+
+    landed_relative = first.body_destination.relative_to(paths.root).as_posix()
+    assert landed_relative in str(caught.value), (
+        f"the refusal must name {landed_relative!r}, or a reader has no way to tell which "
+        "landed file the rehearsal refused"
+    )
+
+
 # -- stage 1's second half, and the faults it must not claim -----------------
 #
 # Both guards below are ones no real input reaches, which on this project is the
