@@ -38,7 +38,11 @@ round; this schema deliberately carries none of the retrieval machinery
 ``index_schema.py`` does. That absence of machinery is not, by itself, what stands
 between a caller and a finding -- the schema cannot refuse a query issued against
 it. The guarantee that nothing *reaches* this schema at all is enforced by
-``tests/unit/test_findings_store_is_unreachable.py`` (AC-7), not by this file.
+``tests/unit/test_findings_store_is_unreachable.py`` (AC-7), not by this file --
+and that guarantee is scoped to AC-7's own declared population (``SERVING_MODULES``:
+``mcp/`` and ``daemon/`` walked wholesale, plus a hand-picked list covering
+``application/``, ``cli/``, the index read-side, and the canonical-store adapter),
+not a scan of the whole package.
 """
 
 from __future__ import annotations
@@ -53,8 +57,9 @@ FINDINGS_SCHEMA_VERSION: Final = 1
 FINDINGS_DDL: Final = """
 -- Store identity -------------------------------------------------------------
 -- One row. Carries the schema version AND the parser-grammar stamp the rows were
--- produced under, so a file parsed by a superseded grammar is detected and
--- rebuilt wholesale (ADR-0029 AC-4) rather than trusted. `built_at` records when.
+-- produced under, so a file parsed by a superseded grammar is *detectable* via
+-- that stamp (ADR-0029 AC-4) -- see the module docstring above for what reads it
+-- today and what does not. `built_at` records when.
 CREATE TABLE findings_metadata (
     id                      INTEGER PRIMARY KEY CHECK (id = 1),
     findings_schema_version INTEGER NOT NULL,
@@ -101,10 +106,12 @@ CREATE TABLE findings (
 -- not by the builder, not by a later reader. A finding is never derived from it.
 --
 -- `reason` is untrusted too, not product-generated: the parser builds it by
--- interpolating the offending token straight from the line (repr-escaped, one
--- token), so it carries arbitrary-length author-controlled Unicode. A later
--- reader must give it the same untrusted-content handling `raw_line` gets
--- (SEC-15), not treat it as safe because it reads like a diagnostic message.
+-- interpolating the offending token straight from the line, at three sites --
+-- two repr-escape a single split token, one repr-escapes the whole pre-separator
+-- prefix (itself potentially several words) -- so it carries arbitrary-length
+-- author-controlled Unicode. A later reader must give it the same
+-- untrusted-content handling `raw_line` gets (SEC-15), not treat it as safe
+-- because it reads like a diagnostic message.
 CREATE TABLE rejected_trailers (
     commit_sha  TEXT    NOT NULL,
     position    INTEGER NOT NULL,

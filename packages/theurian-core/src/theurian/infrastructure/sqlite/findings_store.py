@@ -71,11 +71,12 @@ _INSERT_METADATA: Final = (
 #: place.
 _REBUILD_REMEDY: Final = "Run `theurian findings build` to rebuild the store from git history."
 
-#: The write-path remedy. Naming the rebuild command here would be circular: a
-#: write failure means the rebuild command itself could not finish, so telling the
-#: caller to re-run it points back at the thing that just failed. What actually
-#: causes a write to fail -- an unwritable ``.theurian/state`` directory or a full
-#: disk -- is what the remedy names instead.
+#: The write-path remedy. It names the actual cause -- an unwritable
+#: ``.theurian/state`` directory or a full disk -- first, and only then, as its
+#: second clause, tells the caller to retry `theurian findings build`. Leading
+#: with the retry alone would be circular: a write failure means the rebuild
+#: command itself could not finish, so "just re-run it" is no cure by itself;
+#: naming the precondition to fix first is what makes the retry meaningful.
 _WRITE_REMEDY: Final = (
     "Check that .theurian/state is writable and there is free disk space, then "
     "retry `theurian findings build`."
@@ -159,9 +160,13 @@ class SqliteReviewFindingStore:
         The file is recreated from empty each call -- any prior file is unlinked
         first -- so the schema is always current afterwards and the row set is
         exactly the load's. The findings, the rejected trailers and the stamp are
-        written in one transaction: a crash before it commits leaves no stamp row,
-        which reads as "not current" and forces a clean rebuild rather than
-        publishing a half-written store.
+        written in one transaction: a crash before it commits leaves no stamp row
+        rather than publishing a half-written store as valid. That absent row would
+        read as "not current" through :meth:`is_current` -- though no shipped path
+        checks it today (see that method's own docstring) -- and in any case the
+        next call to this method overwrites the file wholesale regardless of what
+        it finds, unconditional rebuild being how this slice's one writer already
+        behaves.
 
         The whole operation, including directory creation and the unlink, runs
         inside one ``try``: an earlier cut left ``mkdir``/``unlink`` outside it,

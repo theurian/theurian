@@ -10,11 +10,20 @@ because findings are their own artifact rebuilt on their own path (WatchDog ruli
 1). The two may be invoked by one top-level rebuild command as *distinct* steps;
 they do not entangle.
 
-**The findings store adds no authority beyond git history.** This builder is the
-store's only writer, and it writes exactly the load the git source resolved -- so
-there is no path here for a finding that did not come from a signed commit. A write
-path that admitted off-git findings, or any serving read, is a future lane
-(ADR-0029's serving/deriving arm), deliberately absent from this slice.
+**This builder adds no authority beyond git history -- and history here means
+reachability from ``refs/remotes/origin/main``, not a verified signature.** It is
+the store's only writer, and in normal operation it writes exactly the load
+:class:`~theurian.domain.ports.review_finding_source.ReviewFindingSource` resolved
+from that ref. But "signed commit" overstates what is checked: nothing in this
+builder, its source, or the port it writes through verifies a commit's GPG
+signature -- measured, an *unsigned* commit's trailer is accepted the same as a
+signed one (``git verify-commit`` returns 1 and ``%G?`` reports ``N``) -- and a
+non-git-resolved :class:`~theurian.domain.review_finding.FindingLoad` handed to
+:meth:`build` lands through the same path if one is constructed and passed in.
+Signing is enforced by branch protection on the public ``origin``, not by this
+code. A write path that admitted findings unreachable from that ref, or any
+serving read, is a future lane (ADR-0029's serving/deriving arm), deliberately
+absent from this slice.
 """
 
 from __future__ import annotations

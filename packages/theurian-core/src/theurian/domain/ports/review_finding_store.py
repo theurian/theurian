@@ -85,12 +85,15 @@ class StoredRejection:
     by the store or its builder. A later reader must not "helpfully" parse it.
 
     ``reason`` is untrusted too, not product-generated: the parser builds it by
-    interpolating the offending token straight from the line (``f"unknown
-    reviewer {token!r}"``, ``f"...got {prefix!r}"``), so it carries arbitrary-length
-    author-controlled Unicode, repr-escaped to one token but not otherwise bounded
-    or sanitized. A serving-slice implementer must not conclude this field is safe
-    to render or index without the same untrusted-content discipline ``raw_line``
-    already carries (SEC-15).
+    interpolating the offending token straight from the line, at three sites
+    (``f"unknown reviewer {token!r}"``, ``f"unknown severity {token!r}"``, and
+    ``f"...got {prefix!r}"``), so it carries arbitrary-length author-controlled
+    Unicode -- repr-escaped, but not uniformly to one token: the first two
+    interpolate a single split token, while the third embeds the whole
+    pre-separator prefix, itself potentially several space-separated words. None of
+    the three is otherwise bounded or sanitized. A serving-slice implementer must
+    not conclude this field is safe to render or index without the same
+    untrusted-content discipline ``raw_line`` already carries (SEC-15).
     """
 
     commit_sha: str
@@ -105,7 +108,12 @@ class FindingsStamp:
 
     A store whose stamp no longer equals the current build's is stale: a schema
     change or a parser-grammar change (ADR-0029 decision 2) means the file would be
-    read differently now, so it is rebuilt wholesale rather than trusted (AC-4).
+    read differently now. That staleness is *detectable* by comparing this value
+    (AC-4); the consumer that acts on the comparison -- refusing a stale store, or
+    triggering a rebuild because of it -- arrives with the serving slice. Today the
+    store's one writer, ``findings build``, rebuilds wholesale on every run
+    regardless of what this stamp says, so nothing reads this value to decide
+    whether to rebuild.
     """
 
     findings_schema_version: int
@@ -145,9 +153,13 @@ class ReviewFindingStore(Protocol):
         same load leave a logically identical store (AC-2), and a rebuild from git
         is a pure function of the source (AC-1/AC-6).
 
-        ``load`` must be one a git :class:`ReviewFindingSource` resolved: this port
-        adds no authority beyond git history, so there is no path here for a finding
-        that did not come from a signed commit.
+        ``load`` is expected to be one a git :class:`ReviewFindingSource` resolved --
+        but that is a fact about the one shipped caller, not a guarantee this port
+        enforces: neither the port nor its adapter verifies that a given
+        ``commit_sha`` names a commit that exists in this repository's history, and
+        nothing here checks a commit's signature either, so a ``FindingLoad`` built
+        from a fabricated sha lands the same as a real one (see the module
+        docstring above for the measured detail).
         """
         ...
 

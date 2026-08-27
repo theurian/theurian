@@ -2,7 +2,7 @@
 
 A finding is a *pre-classified, human-authored review record*: a reviewer and a
 severity drawn from closed vocabularies, plus a one-line summary a human wrote
-into a signed commit. It needs no LLM promotion gate to become structured
+into a commit. It needs no LLM promotion gate to become structured
 (ADR-0029 decision 1, FR-V5), which is what makes it the git-native floor of the
 FR-V review-ingestion family.
 
@@ -103,23 +103,37 @@ def _compute_parser_stamp() -> str:
     **What this covers, exactly.** The five things ADR-0029 decision 2 calls a
     "grammar change": the trailer key (:data:`TRAILER_KEY`), the separator
     (:data:`SEPARATOR`), the two closed vocabularies (:class:`ReviewerToken`,
-    :class:`FindingSeverity`), and the alias map (:data:`_REVIEWER_ALIASES`).
-    Changing any of those five -- adding an alias, widening a vocabulary, changing
-    the key or the separator -- moves the stamp, so a derived store built under the
-    old set is detected as stale and rebuilt (AC-4).
+    :class:`FindingSeverity`), and the alias map (:data:`_REVIEWER_ALIASES`). The
+    stamp hashes the five member-*value* serializations, not the enum machinery
+    that reads them: changing one of those values -- adding an alias entry, adding
+    or renaming a member, changing the key or the separator -- moves the stamp
+    (each verified independently by mutation). A store built under the old values
+    is then *detectable* as stale from the mismatch (AC-4); the consumer that acts
+    on that detection -- refusing a stale store, or triggering a rebuild from the
+    signal -- arrives with the serving slice. Today the store's one writer rebuilds
+    unconditionally on every run regardless of what this stamp says, so nothing
+    here is stale-then-rebuilt yet: the detection is real, the reaction is not
+    shipped.
 
-    **What this does NOT cover: the parser's mechanics.** The single space consumed
-    after the key, the ``<reviewer> <SEVERITY>`` two-token split on the prefix
-    (both in :func:`parse_trailer_line`), and the column-0 extraction rule that
-    decides which body line even reaches this parser
-    (``infrastructure/git/trailer_source.py``) are not hashed. Widening any of
-    those -- tolerating a TAB after the key, accepting an indented trailer line,
-    folding a continuation -- changes the accepted set while all five hashed
-    literals stay byte-identical, so the stamp does not move and a store built
-    under the old mechanics reads as current under the new ones (demonstrated by
-    adversarial review). Binding mechanics into the stamp is a real fix, filed as
-    its own follow-up issue rather than folded in here; until it lands, a mechanics
-    change owes a manual
+    **What this does NOT cover: matching behaviour layered on the vocabularies, and
+    the parser's mechanics.** Four mechanics are not hashed: the single space
+    consumed after the key, the ``<reviewer> <SEVERITY>`` two-token split on the
+    prefix, and the alias-lookup mechanism :func:`_reviewer` applies to the first
+    token (all three in :func:`parse_trailer_line` / :func:`_reviewer`), plus the
+    column-0 extraction rule that decides which body line even reaches this parser
+    (``infrastructure/git/trailer_source.py``). Widening any of those -- tolerating
+    a TAB after the key, accepting an indented trailer line, folding a
+    continuation -- changes the accepted set while all five hashed values stay
+    byte-identical, so the stamp does not move and a store built under the old
+    mechanics reads as current under the new ones (demonstrated by adversarial
+    review). The same gap exists one layer up, in how a member is *matched* rather
+    than what it is *worth*: an ``Enum._missing_`` hook or a ``__new__`` override
+    could widen what ``ReviewerToken(...)`` or ``FindingSeverity(...)`` accepts --
+    ``Review-Finding: CODE-REVIEW HIGH``, or ``security`` in mixed case, starting to
+    parse -- without moving a single hashed literal, because every member's *value*
+    stays unchanged. Binding mechanics and matching behaviour into the stamp is a
+    real fix, tracked as its own structural-bind residual in issue #406 rather than
+    folded in here; until it lands, either kind of change owes a manual
     :data:`~theurian.infrastructure.sqlite.findings_schema.FINDINGS_SCHEMA_VERSION`
     bump -- the same manual discipline ``INDEX_SCHEMA_VERSION`` already relies on
     for whatever its own forcing function does not reach.
@@ -152,8 +166,11 @@ def _compute_parser_stamp() -> str:
 
 #: The current trailer-grammar identity (see :func:`_compute_parser_stamp`). A
 #: derived store records this beside its schema version; a stored value that no
-#: longer equals this one means the file was parsed by a superseded grammar and is
-#: rebuilt wholesale from git history rather than read in place (ADR-0029, AC-4).
+#: longer equals this one means the file was parsed by a superseded grammar --
+#: *detectable* staleness (ADR-0029, AC-4). Today the store's one writer rebuilds
+#: wholesale from git history on every run regardless of this comparison; a reader
+#: that trusts a store in place, and rebuilds only on a detected mismatch, is the
+#: serving slice this signal is for.
 PARSER_STAMP: Final = _compute_parser_stamp()
 
 

@@ -70,9 +70,10 @@ def findings_build(as_json: JsonOption = False) -> None:
     except TheurianError as exc:
         # Each failure carries its own remedy: a path that cannot be contained
         # names the escape, unreachable git history (a fresh clone) names the
-        # fetch, and a store write failure names what write failures are actually
-        # caused by (see `FindingsStoreError`'s write/read remedy split) --
-        # never a remedy that points back at this same command.
+        # fetch, and a store write failure names the precondition to fix FIRST --
+        # writable state, free disk space -- with a retry of this same command
+        # only as the trailing clause, never offered as the cure on its own (see
+        # `FindingsStoreError`'s write/read remedy split).
         _fail(str(exc), remedy=exc.remedy or "Run `theurian doctor`.", as_json=as_json, code=1)
         return
     _emit({**report, "built": True}, as_json=as_json)
