@@ -2285,6 +2285,36 @@ def test_status_over_an_escaping_state_symlink_reads_nothing_from_outside_the_tr
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_init_refuses_an_escaping_knowledge_symlink_and_creates_nothing_outside(
+    project: Path,
+) -> None:
+    """H-1 (code-review + security HIGH): `init` bypassed the containment chokepoint.
+
+    `initialize_project` builds `paths.knowledge_dir / relative` directly and
+    mkdir's it, so a clone that tracks `.theurian/knowledge` as a symlink to
+    outside the tree -- the same authored-symlink class as `.theurian` itself
+    (#237, T-5) -- made `init` create the knowledge subtree at the link's target,
+    exit 0, `createdPaths` reporting them as if in-tree. Reproduced against the
+    real CLI: `outside/{architecture,domain,operations,security,testing}`.
+
+    The gap the existing init tests missed: they all init an honest tree *then*
+    introduce the symlink. This one has the escaping symlink present AT init time,
+    which is what a clone delivers. `init` must refuse before the first mkdir and
+    create nothing outside; every write target now routes through `_contain`.
+    """
+    (project / ".theurian").mkdir()
+    outside = project.parent / "outside-knowledge"
+    outside.mkdir()
+    (project / ".theurian" / "knowledge").symlink_to(outside)
+
+    code, payload = _invoke("init")
+
+    assert code == 1
+    assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
+    assert list(outside.iterdir()) == [], "init created directories outside the tree"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
 def test_apply_refuses_a_symlink_loop_migrations_directory_without_seeding_a_state_database(
     project: Path,
 ) -> None:

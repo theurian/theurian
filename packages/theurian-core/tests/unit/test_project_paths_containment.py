@@ -17,10 +17,12 @@ directly.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import get_type_hints
+from typing import Any, get_args, get_type_hints
 
 import pytest
 
@@ -179,9 +181,26 @@ def test_a_symlinked_ancestor_of_the_knowledge_dir_that_escapes_is_refused(tmp_p
 # `.of`'s root-join check contains `.theurian` and its ancestors, but a clone can
 # force-add a symlink at a *descendant* -- `.theurian/state -> ../../elsewhere`,
 # past the ADR-0004 ignore -- and `.theurian` stays an honest directory that
-# check waves through. `ProjectPaths._contained` closes that class for every path
-# the class derives. The sweep below is exhaustive by reflection: a helper added
-# later without containment is caught, not remembered.
+# check waves through. `_contain` closes that class.
+#
+# **The population this completeness argument ranges over is every WRITER (and
+# reader) under the project tree, not the convenient set of enumerable
+# `ProjectPaths` members.** That distinction is the whole point: a reflection
+# test that reads GREEN while `theurian init` mkdir's the knowledge subtree at a
+# symlink's out-of-tree target is a false completeness claim. So the population is:
+#
+#   1. Every `ProjectPaths` path helper -- swept below by reflection over member
+#      *shapes* (property, cached_property, method; `Path`, `Path | None`, or
+#      unannotated), so no shape escapes enumeration.
+#   2. `initialize_project` -- a writer that is not a member, routed through the
+#      same `_contain` chokepoint and pinned by its own integration test
+#      (`test_cli_commands.py::test_init_refuses_an_escaping_knowledge_symlink_*`).
+#   3. Out of scope, named not silently dropped: the `ingest` manifest's
+#      `.theurian/cache` write is a *different* root cause -- derived, git-ignored
+#      state a repository should not carry (the GHSA-266v class), filed #394.
+#
+# A new writer joins (1) by reflection, or gets its own named containment plus a
+# test as (2) does -- never a silent exclusion, the treatment `migrations` gets.
 
 #: How to call each path-returning helper, and which ``.theurian`` child a clone
 #: would make an escaping symlink to reach it. `index_for` and `database_for` are
@@ -234,31 +253,77 @@ _ESCAPING_CHILD: dict[str, str] = {
 _READER_CONTAINED: set[str] = {"migrations"}
 
 
-def _reflected_path_helpers() -> set[str]:
-    """Every public member of :class:`ProjectPaths` that yields a ``Path``.
+#: Sentinel for "no return annotation": distinct from a member annotated
+#: ``-> None``, which is genuinely not a path helper.
+_UNANNOTATED = object()
 
-    Read off the class by reflection rather than remembered, so the sweep's
-    coverage is a property of the shipped class and not of a hand-list that the
-    next helper silently outgrows. ``of`` is excluded because it returns a
-    :class:`ProjectPaths`, and ``_contained`` because it is the private
-    chokepoint the sweep exists to prove every *other* member routes through --
-    both fall out of the ``return is Path`` test rather than being named here.
+
+def _underlying_function(member: object) -> Callable[..., Any] | None:
+    """The function behind a class member, across every descriptor shape.
+
+    ``property.fget``, ``cached_property.func``, ``classmethod``/``staticmethod``'s
+    ``__func__``, or a plain method. The earlier sweep keyed on ``callable(member)``,
+    which is ``False`` for a ``functools.cached_property`` (it defines ``__get__``
+    but not ``__call__``), so a ``cached_property`` path helper fell through the
+    ``else`` and was never enumerated -- a real hole a reviewer added a shadow to
+    prove. Returning ``None`` means "not a member that carries a function".
+    """
+    if isinstance(member, property):
+        return member.fget
+    if isinstance(member, functools.cached_property):
+        return member.func
+    if isinstance(member, classmethod | staticmethod):
+        return member.__func__
+    if inspect.isfunction(member):
+        return member
+    return None
+
+
+def _could_return_a_path(function: Callable[..., Any]) -> bool:
+    """Whether ``function``'s return annotation does not *rule out* a ``Path``.
+
+    Not ``== Path``: that missed ``Path | None`` (a ``UnionType``, not ``Path``)
+    and an unannotated helper (no ``return`` key), both mypy-legal shapes a path
+    helper can wear. A member is included unless its annotation is present and
+    provably not a path -- so a union *containing* ``Path`` counts, and an
+    unannotated member counts (it cannot be proved harmless), while a member
+    annotated ``-> str`` or ``-> ProjectPaths`` (``of``) is excluded. Over-
+    inclusion is the safe direction: it forces a human to classify, which is the
+    completeness guarantee, rather than letting a shape slip past unseen.
+    """
+    try:
+        annotation = get_type_hints(function).get("return", _UNANNOTATED)
+    except Exception:
+        # An annotation that will not resolve cannot be proved harmless.
+        return True
+    if annotation is _UNANNOTATED:
+        return True
+    members = set(get_args(annotation)) or {annotation}
+    return Path in members
+
+
+def _reflected_path_helpers(cls: type = ProjectPaths) -> set[str]:
+    """Every public member of ``cls`` that could yield a ``Path``.
+
+    Read off the class by reflection over member *shapes* rather than remembered,
+    so the sweep's coverage is a property of the shipped class and not of a
+    hand-list the next helper silently outgrows. ``of`` falls out because it
+    returns a :class:`ProjectPaths`; ``_contain``/``_contained`` fall out on the
+    leading underscore -- they are the chokepoint the sweep proves every *other*
+    member routes through.
+
+    ``cls`` is a parameter so a test can point the same reflection at a subclass
+    carrying a deliberately-uncontained shadow member and prove the enumeration
+    catches it.
     """
     found: set[str] = set()
-    for name, member in vars(ProjectPaths).items():
+    for name, member in vars(cls).items():
         if name.startswith("_"):
             continue
-        if isinstance(member, property):
-            function = member.fget
-        elif isinstance(member, classmethod):
-            function = member.__func__
-        elif callable(member):
-            function = member
-        else:
-            continue
+        function = _underlying_function(member)
         if function is None:
             continue
-        if get_type_hints(function).get("return") is Path:
+        if _could_return_a_path(function):
             found.add(name)
     return found
 
@@ -275,6 +340,47 @@ def test_the_containment_sweep_covers_every_path_returning_helper() -> None:
     assert set(_HELPER_CALLS) == _reflected_path_helpers()
     assert set(_ESCAPING_CHILD) == set(_HELPER_CALLS)
     assert set(_HELPER_CALLS) >= _READER_CONTAINED
+
+
+@pytest.mark.parametrize(
+    "shadow",
+    [
+        pytest.param(functools.cached_property(lambda self: self.knowledge_dir / "x"), id="cached"),
+        pytest.param(property(lambda self: self.knowledge_dir / "x"), id="path-or-none"),
+        pytest.param(property(lambda self: self.knowledge_dir / "x"), id="unannotated"),
+    ],
+)
+def test_the_reflection_catches_the_member_shapes_the_return_is_path_test_missed(
+    shadow: object,
+) -> None:
+    """M-1: the earlier ``return is Path`` + ``callable()`` sweep missed shapes.
+
+    A ``cached_property`` (``callable()`` is ``False``), a ``Path | None`` return
+    (a ``UnionType``, not ``Path``), and an unannotated helper are all mypy-legal
+    and were all invisible to the old reflection -- so adding one to
+    ``ProjectPaths`` left the completeness assertion GREEN while the member wrote
+    uncontained. The subclass carries the shadow under a name absent from
+    ``_HELPER_CALLS``; the reflection must surface it, which is exactly what makes
+    the completeness equality above go RED for such an addition.
+
+    The union and unannotated shapes are asserted through the annotation helper
+    directly, because a ``lambda`` cannot carry either annotation.
+    """
+    shadowed = type("_Shadowed", (ProjectPaths,), {"shadow_member": shadow})
+    assert "shadow_member" in _reflected_path_helpers(shadowed)
+
+    # The two annotation shapes a lambda cannot express, checked at the predicate.
+    def path_or_none(self: ProjectPaths) -> Path | None:  # pragma: no cover - reflected only
+        return None
+
+    def unannotated(self):  # type: ignore[no-untyped-def]  # pragma: no cover - reflected only
+        return self.knowledge_dir
+
+    assert _could_return_a_path(path_or_none)
+    assert _could_return_a_path(unannotated)
+    of_function = _underlying_function(inspect.getattr_static(ProjectPaths, "of"))
+    assert of_function is not None
+    assert not _could_return_a_path(of_function), "`of` returns ProjectPaths, not a Path"
 
 
 @_NEEDS_SYMLINKS
@@ -331,14 +437,15 @@ def test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it(
 def test_a_not_yet_created_state_db_under_an_escaping_state_symlink_is_refused(
     tmp_path: Path,
 ) -> None:
-    """Refinement: the creation case, where a naive ``path.resolve()`` slips.
+    """Refinement: the creation case.
 
     The state database does not exist yet -- a first ``migrate apply`` is about to
-    create it -- so there is no inode to resolve. The escape is via its parent,
-    the ``state`` symlink. Resolving the deepest *existing* directory entry
-    (the ``state`` link itself) rather than the missing file is what refuses the
-    write before it is created, closing the gap between "the file does not exist"
-    and "its parent is a link that leaves the tree".
+    create it -- so there is no inode of its own to resolve. The escape is via its
+    parent, the ``state`` symlink. ``path.resolve()`` (non-strict) follows that
+    *existing* symlink and normalises only the missing leaf, so the target still
+    resolves outside and is refused before the write creates it -- closing the gap
+    between "the file does not exist" and "its parent is a link that leaves the
+    tree".
     """
     root = tmp_path / "repo"
     (root / ".theurian").mkdir(parents=True)
@@ -358,11 +465,11 @@ def test_a_dangling_escaping_symlink_is_refused_not_read_as_absent(tmp_path: Pat
     """The dangling-target variant of the creation case.
 
     ``state -> ../../gone`` where the target does not exist: ``state.exists()`` is
-    ``False``, so a walk that keyed on existence alone would step *past* the link
-    to the honest ``.theurian`` and pass. The walk stops at the deepest directory
-    *entry* -- a symlink counts even dangling -- and resolves the link itself,
-    which lands outside the root. This is the crash-masked-as-absent shape the
-    first descendant probe hit before the target dir was created.
+    ``False``, so a check that keyed on existence alone would read it as "no state
+    yet" and pass. ``path.resolve()`` (non-strict) still follows the dangling link
+    to its normalised target location -- outside the root -- and refuses. This is
+    the crash-masked-as-absent shape the first descendant probe hit before the
+    target dir was created.
     """
     root = tmp_path / "repo"
     (root / ".theurian").mkdir(parents=True)
@@ -371,6 +478,28 @@ def test_a_dangling_escaping_symlink_is_refused_not_read_as_absent(tmp_path: Pat
 
     with pytest.raises(ProjectError):
         _ = paths.active_pointer
+
+
+@_NEEDS_SYMLINKS
+def test_containment_resolves_an_unresolved_root_before_comparing(tmp_path: Path) -> None:
+    """Pin the ``root.resolve()`` an adversarial mutation to ``self.root`` survived.
+
+    ``ProjectPaths.of`` always pre-resolves the root, so within ``.of``-built
+    instances the resolve is a no-op and dropping it changes nothing measurable --
+    which is why the mutation survived the suite. But a caller holding an
+    *unresolved* root (a symlinked directory) would then compare a resolved leaf
+    against an unresolved root and refuse every honest access. Built directly, not
+    via ``.of``, so the root stays the unresolved symlink path; without the
+    resolve, ``paths.state`` raises instead of resolving inside the real tree.
+    """
+    real = tmp_path / "real"
+    (real / ".theurian" / "state").mkdir(parents=True)
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory=True)
+
+    paths = ProjectPaths(root=linked, knowledge_dir=linked / ".theurian")
+
+    assert paths.state.resolve() == (real / ".theurian" / "state").resolve()
 
 
 @_NEEDS_SYMLINKS
