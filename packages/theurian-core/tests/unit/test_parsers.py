@@ -26,7 +26,15 @@ from theurian.infrastructure.filesystem.parsers.markdown import (
     MAX_FENCES,
     MarkdownParser,
 )
-from theurian.infrastructure.filesystem.parsers.openapi import OpenApiParser, _external_refs
+from theurian.infrastructure.filesystem.parsers.openapi import (
+    MAX_REF_DEPTH,
+    MAX_REFS,
+    OpenApiParser,
+    _as_a_fetcher_reads_it,
+    _external_refs,
+    _ref_scheme,
+    _RefWalk,
+)
 from theurian.infrastructure.filesystem.parsers.registry import (
     ASYNCAPI,
     JSON_SCHEMA,
@@ -720,6 +728,171 @@ def test_external_refs_path_build_is_linear() -> None:
     # signal: comfortably above the ~1.2s a reintroduced quadratic measures at
     # n=240,000 here, and far above the ~0.035s the fixed code measures.
     assert large < 5.0, f"the n=240,000 shape alone took {large:.2f}s"
+
+
+# -- $ref path-build oracle (issue #328, security review MEDIUM) ---------
+#
+# `test_external_refs_path_build_is_linear` above pins the #328 rewrite's
+# *cost*; `test_recorded_paths_match_the_pre_328_eager_concat_build` in
+# `test_ref_recording.py` pins its *output*, on one hand-built two-``$ref``
+# fixture. The threat model credits this rewrite with a 3,000-document fuzz
+# (T-6, T-7) -- that run happened once at dev time and was never committed, so
+# every push since #328 landed re-relied on a claim nothing re-checked. This
+# is that fuzz, committed.
+
+_REF_VALUES: Final = (
+    "https://evil.test/x.json",
+    "./local.yaml#/S",
+    "../up.yaml",
+    "//evil.test/x.json",
+    "\\\\host\\share\\x.json",
+    "x://evil.test/y.json",
+    "#/components/schemas/S",
+    "",
+    "   ",
+    "file:///etc/passwd",
+    "C:\\Windows\\x.json",
+)
+
+#: Keys chosen to stress the exact seam #328 touched: how a child's path is
+#: rendered, not what the walk finds. Digit-only strings (``"0"``, ``"12"``)
+#: must still render dotted, because they arrive as *mapping* keys -- the
+#: property `test_recorded_paths_match_the_pre_328_eager_concat_build`'s
+#: ``"0"`` key pins by hand for one fixture; ``.``, ``[``, ``]`` are the
+#: characters a rendered path string could be confused with its own
+#: separators.
+_REF_PATH_KEYS: Final = st.one_of(
+    st.just(""),
+    st.sampled_from(["0", "1", "12", "007", "-1", "$ref", "a.b", "x[3]", "..", "[0]"]),
+    st.text(alphabet="abcXYZ.[]_- ", min_size=0, max_size=5),
+)
+
+_ref_walk_leaves = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(-3, 3),
+    st.text(max_size=4),
+    st.sampled_from(_REF_VALUES).map(lambda ref: {"$ref": ref}),
+)
+
+
+def _ref_walk_extend(children: st.SearchStrategy[Any]) -> st.SearchStrategy[Any]:
+    return st.one_of(
+        st.dictionaries(_REF_PATH_KEYS, children, max_size=4),
+        st.lists(children, max_size=4),
+    )
+
+
+_ref_walk_bodies = st.recursive(_ref_walk_leaves, _ref_walk_extend, max_leaves=30)
+
+
+@st.composite
+def _ref_walk_value(draw: DrawFn) -> Any:
+    """One value in a random document: either an ordinary recursive body or a
+    spine of single-child wrappers pushed past ``MAX_REF_DEPTH``, so some
+    generated documents exercise a *truncation*'s ``at`` too, not only a found
+    ref's -- :func:`_render_ref_path` is called from both `record` and `cut`
+    in the current walk.
+    """
+    if draw(st.booleans()):
+        return draw(_ref_walk_bodies)
+
+    depth = draw(st.integers(min_value=1, max_value=MAX_REF_DEPTH + 4))
+    node: Any = draw(_ref_walk_leaves)
+    for _ in range(depth):
+        node = {draw(_REF_PATH_KEYS): node} if draw(st.booleans()) else [node]
+    return node
+
+
+def _ref_walk_documents() -> st.SearchStrategy[dict[str, Any]]:
+    """A random document for ``_external_refs``: up to four top-level keys,
+    each an independently drawn body or depth spine."""
+    return st.dictionaries(_REF_PATH_KEYS, _ref_walk_value(), max_size=4)
+
+
+def _eager_external_refs(document: dict[str, Any]) -> _RefWalk:
+    """The pre-#328 ``_external_refs`` walk, kept as an independent oracle.
+
+    Reproduced verbatim from ``git show d60166d^`` -- the eager
+    ``f"{path}.{key}"`` / ``f"{path}[{index}]"`` string build #328 replaced
+    with a tuple of segments rendered lazily. Everything else (the record and
+    cut logic, both caps, and the scheme classification) is imported from the
+    current module unchanged: #328 touched only how a child's path is
+    accumulated, never what the walk records or where it stops, so this
+    function's only job is to build the path the old way and hand every other
+    decision to the same helpers the current walk uses.
+    """
+    found: list[dict[str, str]] = []
+    truncations: dict[str, dict[str, str]] = {}
+    seen: set[str] = set()
+    descended: set[int] = set()
+    alive: list[object] = []
+
+    def cut(reason: str, path: str, limit: int) -> None:
+        truncations.setdefault(reason, {"reason": reason, "at": path, "limit": str(limit)})
+
+    def record(ref: object, path: str) -> None:
+        if not isinstance(ref, str) or ref in seen:
+            return
+        target = _as_a_fetcher_reads_it(ref)
+        if not target or target.startswith("#"):
+            return
+        seen.add(ref)
+        found.append({"ref": ref, "at": path, "scheme": _ref_scheme(target), "resolved": "false"})
+
+    def walk(node: object, path: str, depth: int) -> None:
+        if not isinstance(node, dict | list) or not node:
+            return
+        if id(node) in descended:
+            return
+        if len(found) >= MAX_REFS:
+            cut("refCount", path, MAX_REFS)
+            return
+        if depth > MAX_REF_DEPTH:
+            cut("depth", path, MAX_REF_DEPTH)
+            return
+        descended.add(id(node))
+        alive.append(node)
+        if isinstance(node, dict):
+            record(node.get("$ref"), path)
+            for key, child in node.items():
+                walk(child, f"{path}.{key}" if path else str(key), depth + 1)
+        else:
+            for index, child in enumerate(node):
+                walk(child, f"{path}[{index}]", depth + 1)
+
+    walk(document, "", 0)
+    return _RefWalk(found=tuple(found), truncations=tuple(truncations.values()))
+
+
+@seed(328)
+@_FUZZ_SETTINGS
+@given(document=_ref_walk_documents())
+def test_ref_paths_match_the_pre_328_eager_concat_build_over_random_documents(
+    document: dict[str, Any],
+) -> None:
+    """The threat model credits this rewrite with a fuzz over 3,000 randomized
+    documents (T-6, T-7); until now that run was one-time and uncommitted, so
+    nothing re-checked the claim on any later push.
+
+    #328 replaced the eager per-edge string build with a tuple of segments
+    rendered only where a ref or a truncation is actually recorded -- a
+    genuinely different data structure, not a copy of the old one -- so
+    agreement between :func:`_external_refs` and the eager oracle above,
+    across random nesting, mixed key/index paths and pathological keys, is
+    exactly the fidelity claim the threat model makes about the rewrite.
+
+    Verified directly (2026-08-28): perturbing ``_render_ref_path`` to render
+    a sequence index with a dot (``f"{rendered}.{value}"``) instead of a
+    bracket -- byte-identical to how a mapping key renders -- turned this
+    test red on the very first generated example, confirming it can fail
+    rather than passing vacuously.
+    """
+    walk = _external_refs(document)
+    oracle = _eager_external_refs(document)
+
+    assert walk.found == oracle.found
+    assert walk.truncations == oracle.truncations
 
 
 def test_openapi_accepts_json_as_well_as_yaml() -> None:
