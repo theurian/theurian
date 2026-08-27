@@ -1942,6 +1942,92 @@ def test_apply_is_unaffected_when_no_applied_migration_was_deleted(project: Path
     assert applied["applied"] == [MIGRATION_ID, RATE_LIMIT_MIGRATION_ID]
 
 
+# -- issue #130: a body edited after the migration that pinned it was applied --
+
+#: Issue #130's reproduction, and deliberately a *removal*: the body loses the
+#: one sentence that made it findable. Removal is the face that matters, because
+#: a stale index goes on answering with a line the working tree no longer
+#: contains -- disclosure of withdrawn content, not merely a wrong answer.
+#: `_write_migration` pins `BODY`, so writing this afterwards is what puts the
+#: declared digest and the bytes on disk out of step.
+_BODY_WITH_ITS_ONE_CLAIM_REMOVED = "# Authentication policy\n\n"
+
+
+def test_a_body_edited_after_apply_is_refused_when_apply_is_re_run(project: Path) -> None:
+    """Issue #130's reproduction, driven at the layer that refuses it today.
+
+    The 2026-08-10 report: edit a revision's body file in place, re-run plain
+    ``migrate apply``, get exit 0 -- and the canonical store, plus every index
+    built from it, keeps serving the removed line. What killed that
+    reproduction is ``contentSha256`` becoming schema-required on every
+    ``upsertRevision`` (ADR-0027 decision 1) and re-verified against the bytes
+    on disk each time the loader re-reads a body (``_parse_upsert``): the
+    re-apply now refuses instead of silently confirming a state nothing on disk
+    supports.
+
+    **No test drove that refusal.** Measured 2026-08-26, the sentence asserted
+    below occurred exactly once in the repository -- in the loader that raises
+    it -- and nowhere in ``tests/``. The adjacent pin tests all enter through
+    ``propose accept`` or ``migrate validate``; none re-applies. A guard that no
+    test reaches survives its own deletion, and this one guards the difference
+    between "fewer results" and "withdrawn content still served".
+    """
+    _invoke("init")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0, "the drift must start from a cleanly applied state"
+
+    body = project / ".theurian/knowledge/architecture/auth-policy.md"
+    body.write_text(_BODY_WITH_ITS_ONE_CLAIM_REMOVED)
+
+    code, error = _invoke("migrate", "apply")
+
+    assert code == EXIT_STATE_ERROR, "a re-apply over a drifted body must not report success"
+    # Both digests by value, not merely "a mismatch was reported": a refusal
+    # naming neither side tells an author nothing about which half to correct,
+    # and an equality-only check would pass on two identically wrong strings.
+    assert body_pin(_BODY_WITH_ITS_ONE_CLAIM_REMOVED)[:12] in error["error"], (
+        "the refusal must name the digest of the bytes actually on disk"
+    )
+    assert body_pin(BODY)[:12] in error["error"], (
+        "and the digest the applied migration pinned, which is what it no longer matches"
+    )
+    assert "The body file changed after the migration was written." in error["error"], (
+        "the diagnosis is the operator-facing half: which of the two files moved"
+    )
+    # The referrer, so the remedy points at a file the author can open. Both
+    # halves: the migration that carries the stale pin, and the body it names.
+    assert f"{MIGRATION_ID}-add-auth-policy.yaml" in error["error"]
+    assert "../knowledge/architecture/auth-policy.md" in error["error"]
+
+
+def test_a_body_edited_after_apply_is_refused_by_validate_as_well(project: Path) -> None:
+    """The same drift, through the command an operator reaches for first.
+
+    ``migrate validate`` is documented as reporting what can be checked without
+    touching state, so an author who has been told a re-apply refuses will run
+    it to find out why. If it passed while ``apply`` refused, the two commands
+    would disagree about whether the project is well-formed -- the divergence
+    issue #63 recorded for the scope guard, here on the body pin.
+
+    Pinned against known values rather than against ``apply``'s output: two
+    commands agreeing by both falling back to the same wrong text would satisfy
+    an equality-only check.
+    """
+    _invoke("init")
+    _write_migration(project)
+    assert _invoke("migrate", "apply")[0] == 0, "the drift must start from a cleanly applied state"
+
+    body = project / ".theurian/knowledge/architecture/auth-policy.md"
+    body.write_text(_BODY_WITH_ITS_ONE_CLAIM_REMOVED)
+
+    code, error = _invoke("migrate", "validate")
+
+    assert code == EXIT_STATE_ERROR, "validate must not call a drifted project well-formed"
+    assert body_pin(_BODY_WITH_ITS_ONE_CLAIM_REMOVED)[:12] in error["error"]
+    assert body_pin(BODY)[:12] in error["error"]
+    assert "The body file changed after the migration was written." in error["error"]
+
+
 def test_a_revision_conflict_is_reported_not_merged(project: Path) -> None:
     """ADR-0006. The remedy must say a human decides, not the tool.
 
