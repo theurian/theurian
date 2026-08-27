@@ -527,9 +527,14 @@ segment costs `O(depth)`, bounded by `MAX_REF_DEPTH`, never `O(len of the
 rendered string)`. Measured 2026-08-27 on the same long-key/wide-fan-out
 shape at n=240,000 (~3.25 MB, zero refs, zero truncations): 1.28 s pre-fix →
 0.037 s post-fix, now linear. Pinned by
-`test_external_refs_path_build_is_linear` and, for output fidelity,
-`test_recorded_paths_match_the_pre_328_eager_concat_build` — 3,000 randomized
-documents against the pre-fix eager-concat build, zero mismatches. The only
+`test_external_refs_path_build_is_linear` and, for output fidelity, two
+committed regression tests against the pre-fix eager-concat build, both
+comparing the tuple-path `_external_refs` to a reconstructed pre-#328 oracle:
+`test_recorded_paths_match_the_pre_328_eager_concat_build` (a single
+two-`$ref` fixture, in `test_ref_recording.py`) and
+`test_ref_paths_match_the_pre_328_eager_concat_build_over_random_documents`
+(a seeded, deterministic Hypothesis fuzz, `@seed(328)`, 400 random nested
+structures, in `test_parsers.py`). Zero mismatches on either. The only
 bound left is `MAX_SOURCE_FILE_BYTES` (8 MiB), which was clone-reachable
 before the fix too — an OpenAPI file is ordinary committed content — and this
 was graded as availability, not disclosure, throughout.
@@ -549,9 +554,13 @@ non-backtracking patterns (an opener, a closer) instead of one pattern whose
 lazy `.*?` rescanned the remaining document per unclosed opener. Measured on
 the same 156.2 KiB shape: 25.3 s → 0.0065 s, roughly 3900×, and the scan is
 now linear (~2×, not ~4×, per doubling). Pinned by
-`test_unclosed_fence_openers_scan_linearly` and, for output fidelity, an
-oracle fuzzed against the pre-fix regex over 20,000 randomized documents plus
-targeted edge cases, zero mismatches: `codeFences` stays byte-identical.
+`test_unclosed_fence_openers_scan_linearly` and, for output fidelity, two
+committed regression tests against the pre-fix regex embedded as an oracle,
+both in `test_parsers.py`: `test_code_fences_match_the_pre_331_regex_oracle`
+(a 14-case named-edge differential oracle) and
+`test_code_fences_match_the_pre_331_regex_oracle_over_random_documents` (a
+seeded, deterministic Hypothesis fuzz, `@seed(331)`, 400 random documents).
+`codeFences` stays byte-identical on both.
 
 **A bounded residual replaces it, in the same parser: peak memory is now
 `O(line-count)`, not constant.** `_fences` materializes `lines` and

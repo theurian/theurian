@@ -170,12 +170,16 @@ def _fence_scan_peak_memory(*, line_count: int) -> tuple[int, int]:
 # -- codeFences differential oracle (issue #331, round-one MEDIUM) --------
 #
 # #331's own review measured the line-scan rewrite byte-identical to the regex
-# it replaced over an 800k-document fuzz corpus, but nothing pinned
-# ``line``/``characters`` directly: a mutation that offsets either by any
-# constant currently survives the full suite. This oracle is the pre-#331
-# ``_fences`` body, verbatim, so the two extractions are compared against each
-# other rather than against hand-computed numbers a copy-paste of the
-# implementation would also get wrong.
+# it replaced, over a one-time, uncommitted dev-time fuzz run -- but nothing
+# pinned ``line``/``characters`` directly: a mutation that offsets either by
+# any constant currently survives the full suite. This oracle is the
+# pre-#331 ``_fences`` body, verbatim, so the two extractions are compared
+# against each other rather than against hand-computed numbers a copy-paste
+# of the implementation would also get wrong. The committed regression guard
+# is this 14-case oracle plus the 400-example seeded fuzz below
+# (``test_code_fences_match_the_pre_331_regex_oracle_over_random_documents``,
+# ``@seed(331)``) -- not the dev-time run, which was never re-checked on any
+# later push.
 
 _OLD_FENCE = re.compile(r"^```([A-Za-z0-9_+-]*)[ \t]*$(.*?)^```[ \t]*$", re.MULTILINE | re.DOTALL)
 
@@ -230,12 +234,14 @@ def test_code_fences_match_the_pre_331_regex_oracle(case: str, body: str) -> Non
     """The line-scan rewrite (#331) must match what it replaced exactly, not
     only on language: round one (code and adversarial review, MEDIUM) found
     that a mutation offsetting ``line`` or ``characters`` by any constant
-    currently survives the full suite. Each case here is a shape #331's own
-    800k-document fuzz run does not specifically target: CRLF, indentation, a
-    malformed closer, degenerate backtick runs, overlapping opener-looking
-    lines, truncation at both sides of ``MAX_FENCES``, and the ordinary shapes
-    besides -- compared field-for-field against an independent oracle rather
-    than against hardcoded numbers.
+    currently survives the full suite. Each case here is a named edge chosen
+    by hand -- CRLF, indentation, a malformed closer, degenerate backtick
+    runs, overlapping opener-looking lines, truncation at both sides of
+    ``MAX_FENCES``, and the ordinary shapes besides -- rather than left to
+    the 400-example seeded fuzz below
+    (``test_code_fences_match_the_pre_331_regex_oracle_over_random_documents``)
+    to draw by chance, and compared field-for-field against an independent
+    oracle rather than against hardcoded numbers.
     """
     document = _markdown(body)
     assert _structured(document)["codeFences"] == _oracle_fences(body), case
@@ -735,10 +741,11 @@ def test_external_refs_path_build_is_linear() -> None:
 # `test_external_refs_path_build_is_linear` above pins the #328 rewrite's
 # *cost*; `test_recorded_paths_match_the_pre_328_eager_concat_build` in
 # `test_ref_recording.py` pins its *output*, on one hand-built two-``$ref``
-# fixture. The threat model credits this rewrite with a 3,000-document fuzz
-# (T-6, T-7) -- that run happened once at dev time and was never committed, so
+# fixture. The threat model (T-6, T-7) used to credit this rewrite with a
+# 3,000-document fuzz that ran once at dev time and was never committed, so
 # every push since #328 landed re-relied on a claim nothing re-checked. This
-# is that fuzz, committed.
+# is a committed replacement for that claim: a smaller (400-example),
+# deterministic, seeded fuzz that re-runs on every push instead.
 
 _REF_VALUES: Final = (
     "https://evil.test/x.json",
@@ -871,16 +878,18 @@ def _eager_external_refs(document: dict[str, Any]) -> _RefWalk:
 def test_ref_paths_match_the_pre_328_eager_concat_build_over_random_documents(
     document: dict[str, Any],
 ) -> None:
-    """The threat model credits this rewrite with a fuzz over 3,000 randomized
-    documents (T-6, T-7); until now that run was one-time and uncommitted, so
-    nothing re-checked the claim on any later push.
+    """The threat model (T-6, T-7) used to credit this rewrite with a fuzz over
+    3,000 randomized documents; that run was one-time and uncommitted, so
+    nothing re-checked the claim on any later push. This is the committed
+    replacement: a smaller (400-example), deterministic, seeded fuzz that
+    re-runs on every push instead.
 
     #328 replaced the eager per-edge string build with a tuple of segments
     rendered only where a ref or a truncation is actually recorded -- a
     genuinely different data structure, not a copy of the old one -- so
     agreement between :func:`_external_refs` and the eager oracle above,
     across random nesting, mixed key/index paths and pathological keys, is
-    exactly the fidelity claim the threat model makes about the rewrite.
+    exactly the fidelity claim the threat model now makes about the rewrite.
 
     Verified directly (2026-08-28): perturbing ``_render_ref_path`` to render
     a sequence index with a dot (``f"{rendered}.{value}"``) instead of a

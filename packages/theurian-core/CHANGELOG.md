@@ -24,9 +24,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   now costs roughly 2×, not 4×, per doubling of the input. `_fences` is now a
   single forward pass over lines, matched against two anchored,
   non-backtracking patterns instead of one pattern that rescans the remaining
-  document per unclosed opener; `codeFences` stays byte-identical on every
-  input tried (20,000 fuzzed documents plus targeted edge cases, zero
-  mismatches). **A bounded residual replaces it:** the rewrite materializes
+  document per unclosed opener; `codeFences` stays byte-identical, pinned by
+  a 14-case named-edge oracle
+  (`test_code_fences_match_the_pre_331_regex_oracle`) plus a seeded,
+  deterministic Hypothesis fuzz over 400 random documents
+  (`test_code_fences_match_the_pre_331_regex_oracle_over_random_documents`,
+  `@seed(331)`), both against the pre-fix regex embedded as an oracle.
+  **A bounded residual replaces it:** the rewrite materializes
   `lines` and `line_starts` up front, so peak memory is now linear in document
   size rather than constant — ~202 MB on an 8 MiB document (the
   `MAX_SOURCE_FILE_BYTES` cap), irrelevant at ordinary sizes and pinned by
@@ -48,8 +52,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   a string only where a ref or a truncation is actually recorded, not once per
   edge crossed; appending a segment now costs `O(depth)`, bounded by
   `MAX_REF_DEPTH`, never `O(len of the rendered string)`. Recorded ref paths
-  stay byte-identical to the pre-fix eager-concat build (3,000 fuzzed
-  documents, zero mismatches). Discharges the T-6 residual
+  stay byte-identical to the pre-fix eager-concat build, pinned by a single
+  two-`$ref` fixture
+  (`test_recorded_paths_match_the_pre_328_eager_concat_build`) plus a seeded,
+  deterministic Hypothesis fuzz over 400 random nested structures
+  (`test_ref_paths_match_the_pre_328_eager_concat_build_over_random_documents`,
+  `@seed(328)`). Discharges the T-6 residual
   `docs/security/threat-model.md` recorded as owed to this issue.
 
 ## [0.1.0.dev13] - 2026-08-27
