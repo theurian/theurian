@@ -3338,6 +3338,72 @@ def test_a_mid_loop_oversized_replacement_rolls_back_an_earlier_write_too(
     assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_a_mid_loop_irregular_replacement_rolls_back_an_earlier_write_too(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#400's other sibling: a FIFO destination, not an oversized one.
+
+    ``_commit``'s rollback clause -- ``except (InputTooLargeError,
+    IrregularSourceFileError, PathEscapeError)`` -- exists for all three
+    members of that family, and only the oversized member had a driving test
+    until now; dropping ``IrregularSourceFileError`` from that tuple survives
+    the suite. Modelled on
+    ``test_a_mid_loop_oversized_replacement_rolls_back_an_earlier_write_too``:
+    two replace operations, processed in document order -- the first
+    destination is small and legitimate, so ``_commit`` writes it and stages
+    its prior bytes in ``restored``; the second is a FIFO, the shape whose
+    ``st_size`` bounds nothing
+    (:class:`~theurian.domain.errors.IrregularSourceFileError`, issue #215).
+    ``read_source_file`` refuses it from ``stat()`` alone, before ``open()`` is
+    ever called, so this never blocks and needs no interruptible-timer guard,
+    unlike the FIFO test above that opens one.
+
+    Also pins this round's HIGH fix: the restored read used to re-raise
+    ``IrregularSourceFileError`` bare, so ``accept`` published "The referenced
+    file is a named pipe (FIFO), not a regular file" naming no path at all. The
+    project-relative destination must now appear in the message, or a caller
+    has no way to tell which of the migration's several ``contentFile``
+    entries was refused.
+    """
+    drafted = service.draft(_request())
+    revisions = (
+        ("alpha", "01K9AAAAAA0000000000000001", "A\n"),
+        ("beta", "01K9AAAAAA0000000000000002", "B\n"),
+    )
+    migration = _hand_authored_two_body_migration(drafted.migration_id.value, revisions)
+    drafted.migration_file.write_text(migration, encoding="utf-8")
+    drafted.body_file.unlink()
+    for namespace, _revision_id, text in revisions:
+        body = drafted.directory / namespace / "notes.md"
+        body.parent.mkdir(parents=True, exist_ok=True)
+        body.write_text(text, encoding="utf-8")
+
+    # Alpha (processed first) is a small, legitimate replaced destination;
+    # beta (processed second) is a FIFO -- the irregular shape `_commit`'s
+    # restored read must refuse before reading a byte of it.
+    alpha_destination = paths.knowledge / "alpha" / "notes.md"
+    beta_destination = paths.knowledge / "beta" / "notes.md"
+    alpha_destination.parent.mkdir(parents=True, exist_ok=True)
+    beta_destination.parent.mkdir(parents=True, exist_ok=True)
+    alpha_destination.write_text("stale alpha\n", encoding="utf-8")
+    os.mkfifo(beta_destination)
+
+    with pytest.raises(IrregularSourceFileError) as caught:
+        service.accept(drafted.proposal_id)
+
+    beta_relative = beta_destination.relative_to(paths.root).as_posix()
+    assert beta_relative in str(caught.value), (
+        f"the refusal must name {beta_relative!r}, or a caller cannot tell which "
+        "contentFile it refused"
+    )
+    assert alpha_destination.read_text() == "stale alpha\n", (
+        "the earlier move's write must be rolled back, not left holding the incoming body"
+    )
+    assert beta_destination.is_fifo(), "the refused destination is untouched"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
 def test_a_pin_that_does_not_match_its_own_body_is_refused_with_the_proposal_intact(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
