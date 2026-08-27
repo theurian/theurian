@@ -22,7 +22,7 @@ from theurian.infrastructure.filesystem.parsers.markdown import (
     MAX_FENCES,
     MarkdownParser,
 )
-from theurian.infrastructure.filesystem.parsers.openapi import OpenApiParser
+from theurian.infrastructure.filesystem.parsers.openapi import OpenApiParser, _external_refs
 from theurian.infrastructure.filesystem.parsers.registry import (
     ASYNCAPI,
     JSON_SCHEMA,
@@ -426,6 +426,32 @@ def test_internal_refs_are_not_recorded_as_external() -> None:
     source = b'{"openapi": "3.1.0", "paths": {"/a": {"get": {"x": {"$ref": "#/components/x"}}}}}'
     document = OpenApiParser().parse(source, media_type=OPENAPI, anchor=ANCHOR)
     assert _structured(document)["_index"]["externalRefs"] == []
+
+
+def test_external_refs_path_build_is_linear() -> None:
+    """Issue #328: ``_external_refs`` built each child's path with
+    ``f"{path}.{key}"``, which copies the parent's whole accumulated string on
+    every edge. A document with one long mapping key (length n) fanning out to n
+    children under it therefore cost Theta(n^2) -- both the key length and the
+    fan-out are chosen by whoever wrote the document, and neither ``MAX_REFS``
+    nor ``MAX_REF_DEPTH`` fires on this shape, since there is no ``$ref`` at all
+    and the depth never exceeds 2.
+
+    Measured on 68e8a0b (pre-fix), in-process against ``_external_refs``
+    directly: n=240,000 (a ~3.25 MB document) took ~1.28 s. The 0.5 s bound sits
+    below that and well above the tuple-path build's own measured cost
+    (~0.04 s), so it fails on the defect rather than on a slow machine.
+    """
+    n = 240_000
+    document: dict[str, Any] = {"openapi": "3.1.0", "x" * n: {str(i): 0 for i in range(n)}}
+
+    started = time.monotonic()
+    walk = _external_refs(document)
+    elapsed = time.monotonic() - started
+
+    assert walk.found == (), "no $ref anywhere in this document"
+    assert walk.truncations == (), "neither cap fires on this shape"
+    assert elapsed < 0.5, f"the long-key/wide-fan-out shape took {elapsed:.2f}s"
 
 
 def test_openapi_accepts_json_as_well_as_yaml() -> None:
