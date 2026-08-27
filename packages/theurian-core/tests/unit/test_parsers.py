@@ -7,10 +7,15 @@ Parsers are where untrusted input enters the system, and where the promise that
 from __future__ import annotations
 
 import json
+import re
+import time
 from pathlib import PurePosixPath
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import pytest
+from hypothesis import given, seed, settings
+from hypothesis import strategies as st
+from hypothesis.strategies import DrawFn
 
 from theurian.domain.errors import InputTooLargeError
 from theurian.domain.knowledge import SourceAnchor
@@ -18,9 +23,18 @@ from theurian.domain.ports import NormalizedDocument
 from theurian.domain.values import JSON, MARKDOWN, YAML, MediaType
 from theurian.infrastructure.filesystem.parsers.markdown import (
     GOVERNED_FIELDS,
+    MAX_FENCES,
     MarkdownParser,
 )
-from theurian.infrastructure.filesystem.parsers.openapi import OpenApiParser
+from theurian.infrastructure.filesystem.parsers.openapi import (
+    MAX_REF_DEPTH,
+    MAX_REFS,
+    OpenApiParser,
+    _as_a_fetcher_reads_it,
+    _external_refs,
+    _ref_scheme,
+    _RefWalk,
+)
 from theurian.infrastructure.filesystem.parsers.registry import (
     ASYNCAPI,
     JSON_SCHEMA,
@@ -69,6 +83,266 @@ def test_markdown_extracts_code_fences_with_language() -> None:
     fences = _structured(document)["codeFences"]
 
     assert [f["language"] for f in fences] == ["python", None]
+
+
+def test_unclosed_fence_openers_scan_linearly() -> None:
+    """Issue #331: the old combined opener-through-closer regex had a lazy
+    ``.*?`` body group that had to rescan every remaining line before it could
+    conclude a closer was absent -- once per unclosed opener, so a document that
+    is n unclosed openers cost Theta(n^2). Measured on 68e8a0b (pre-fix): 156 KB
+    (32,000 unclosed openers) took 25.3 s, with each doubling of the input
+    roughly quadrupling the cost.
+
+    The 1 s bound sits nearly two orders of magnitude below that 25.3 s and well
+    above the linear scan's own measured cost (0.006 s), so it fails on the
+    defect rather than on a slow machine.
+    """
+    text = "```a\n" * 32000
+    assert len(text.encode("utf-8")) == 160_000
+
+    started = time.monotonic()
+    document = _markdown(text)
+    elapsed = time.monotonic() - started
+
+    assert _structured(document)["codeFences"] == [], "no opener here ever closes"
+    assert elapsed < 1.0, f"32,000 unclosed fence openers took {elapsed:.2f}s"
+
+
+def test_max_fences_bounds_the_record_not_the_scan() -> None:
+    """``MAX_FENCES`` bounds what ``_fences`` *records*; issue #331 was that
+    nothing bounded what the scan *spent* getting there. A document of
+    ``MAX_FENCES + 1`` closed (not merely opened) fences must still record no
+    more than ``MAX_FENCES`` of them."""
+    text = "".join(f"```lang{i}\nbody\n```\n" for i in range(MAX_FENCES + 1))
+    document = _markdown(text)
+    fences = _structured(document)["codeFences"]
+
+    assert len(fences) == MAX_FENCES
+
+
+def test_fence_scan_memory_stays_linear_in_document_size() -> None:
+    """Round-one MEDIUM (code review): ``_fences`` materializes ``lines`` and
+    ``line_starts`` at O(line-count) -- ~202 MB peak measured 2026-08-27 at the
+    8 MiB ``MAX_SOURCE_FILE_BYTES`` cap on an all-newline document. That is a
+    bounded, linear residual against the quadratic *CPU* blowup #331 removed,
+    and irrelevant at ordinary document sizes (microseconds and kilobytes
+    either way); only an adversarial document at the ingestion cap reaches it.
+    Pinned here at a smaller scale, so a future change that reintroduces
+    super-linear memory -- as happened once already in the sibling ``$ref``
+    walk this same review round measured (issue #245) -- goes RED rather than
+    only showing up as a slow CI run somewhere else.
+    """
+    small_peak, small_bytes = _fence_scan_peak_memory(line_count=100_000)
+    large_peak, large_bytes = _fence_scan_peak_memory(line_count=800_000)
+
+    assert large_bytes == pytest.approx(8 * small_bytes, rel=0.01)
+    ratio = large_peak / small_peak
+    # A linear cost stays near the 8x input ratio; a quadratic one would be
+    # near 64x. 16x leaves comfortable room above measurement noise while
+    # catching a real regression back toward quadratic.
+    assert ratio < 16, f"peak memory scaled {ratio:.1f}x for an 8x larger document"
+    # A generous absolute ceiling too, in case a future change keeps the
+    # linear *shape* but inflates the per-line constant: ~2.5x the ~38.7 MB
+    # measured 2026-08-27 for this document size.
+    assert large_peak < 96 * 1024 * 1024, f"peaked at {large_peak / 1024 / 1024:.1f} MB"
+
+
+def _fence_scan_peak_memory(*, line_count: int) -> tuple[int, int]:
+    """Peak traced memory parsing an all-newline document of ``line_count``
+    single-character lines, and the document's byte length.
+
+    Every line is a non-candidate for either fence pattern (issue #331's
+    prefix-skip guard filters it before the regex ever runs), which isolates
+    what ``lines``/``line_starts`` themselves cost from what the regex costs.
+    """
+    import tracemalloc
+
+    data = ("a\n" * line_count).encode("utf-8")
+    tracemalloc.start()
+    try:
+        MarkdownParser().parse(data, media_type=MARKDOWN, anchor=ANCHOR)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return peak, len(data)
+
+
+# -- codeFences differential oracle (issue #331, round-one MEDIUM) --------
+#
+# #331's own review measured the line-scan rewrite byte-identical to the regex
+# it replaced, over a one-time, uncommitted dev-time fuzz run -- but nothing
+# pinned ``line``/``characters`` directly: a mutation that offsets either by
+# any constant currently survives the full suite. This oracle is the
+# pre-#331 ``_fences`` body, verbatim, so the two extractions are compared
+# against each other rather than against hand-computed numbers a copy-paste
+# of the implementation would also get wrong. The committed regression guard
+# is this 14-case oracle plus the 400-example seeded fuzz below
+# (``test_code_fences_match_the_pre_331_regex_oracle_over_random_documents``,
+# ``@seed(331)``) -- not the dev-time run, which was never re-checked on any
+# later push.
+
+_OLD_FENCE = re.compile(r"^```([A-Za-z0-9_+-]*)[ \t]*$(.*?)^```[ \t]*$", re.MULTILINE | re.DOTALL)
+
+
+def _oracle_fences(body: str) -> list[dict[str, Any]]:
+    """The pre-#331 ``_fences`` extraction, kept as an independent check."""
+    fences: list[dict[str, Any]] = []
+    for match in _OLD_FENCE.finditer(body):
+        if len(fences) >= MAX_FENCES:
+            break
+        fences.append(
+            {
+                "language": match.group(1) or None,
+                "line": body.count("\n", 0, match.start()) + 1,
+                "characters": len(match.group(2)),
+            }
+        )
+    return fences
+
+
+def _closed_fences(count: int) -> str:
+    """``count`` distinct, closed, language-tagged fences -- for the
+    ``MAX_FENCES`` boundary cases, where what matters is whether the cap and
+    the oracle agree on which ones survive it."""
+    return "".join(f"```lang{i}\nbody{i}\n```\n" for i in range(count))
+
+
+_FENCE_DIFFERENTIAL_CASES: dict[str, str] = {
+    "tilde-blocks-are-not-fences": "~~~python\nx = 1\n~~~\n",
+    "crlf-line-endings": "```python\r\nx = 1\r\n```\r\n",
+    "four-space-indented-fence": "    ```python\n    x = 1\n    ```\n",
+    "closer-with-trailing-content": "```python\nx = 1\n```extra\n",
+    "two-backtick-run": "``\nx\n``\n",
+    "four-backtick-run": "````\nx\n````\n",
+    "nested-opener-looking-lines": "```outer\n```inner\nx\n```\n```\n",
+    "unterminated-final-fence": "```python\nno closer\n",
+    "empty-language": "```\nx\n```\n",
+    "no-trailing-newline": "```python\nx = 1\n```",
+    "multi-line-body": "```python\nline1\nline2\nline3\n```\n",
+    "language-tagged-fence": "```json\n{}\n```\n",
+    "max_fences_minus_one_closed": _closed_fences(MAX_FENCES - 1),
+    "max_fences_plus_one_closed": _closed_fences(MAX_FENCES + 1),
+}
+
+
+@pytest.mark.parametrize(
+    ("case", "body"),
+    list(_FENCE_DIFFERENTIAL_CASES.items()),
+    ids=list(_FENCE_DIFFERENTIAL_CASES),
+)
+def test_code_fences_match_the_pre_331_regex_oracle(case: str, body: str) -> None:
+    """The line-scan rewrite (#331) must match what it replaced exactly, not
+    only on language: round one (code and adversarial review, MEDIUM) found
+    that a mutation offsetting ``line`` or ``characters`` by any constant
+    currently survives the full suite. Each case here is a named edge chosen
+    by hand -- CRLF, indentation, a malformed closer, degenerate backtick
+    runs, overlapping opener-looking lines, truncation at both sides of
+    ``MAX_FENCES``, and the ordinary shapes besides -- rather than left to
+    the 400-example seeded fuzz below
+    (``test_code_fences_match_the_pre_331_regex_oracle_over_random_documents``)
+    to draw by chance, and compared field-for-field against an independent
+    oracle rather than against hardcoded numbers.
+    """
+    document = _markdown(body)
+    assert _structured(document)["codeFences"] == _oracle_fences(body), case
+
+
+#: `_FENCE_LINE_ENDINGS` mixes LF and CRLF *per line*, and the trailing one is
+#: sometimes dropped -- both shapes the 14 fixed cases above cover only once
+#: each (`"crlf-line-endings"`, `"no-trailing-newline"`), never in combination
+#: with the fence shapes below.
+_FENCE_LINE_ENDINGS: Final = ("\n", "\r\n")
+
+
+@st.composite
+def _markdown_ish_line(draw: DrawFn) -> str:
+    """One line of a fuzzed, fence-adjacent Markdown document.
+
+    Six shapes, each independently likely across a document of up to 15
+    lines: a blank line, ordinary prose, a fence opener (with a run of two,
+    three or four backticks and a random language tag), a bare closer, a
+    closer with trailing content after it (never a closer, per the
+    ``"closer-with-trailing-content"`` fixed case), and a tilde run (never a
+    fence at all, per ``"tilde-blocks-are-not-fences"``). Indentation is drawn
+    independently of the shape, so an opener or closer can land indented --
+    the ``"four-space-indented-fence"`` fixed case, generalised.
+    """
+    indent = draw(st.sampled_from(["", " ", "  ", "   ", "    "]))
+    kind = draw(st.sampled_from(["blank", "prose", "opener", "closer", "closer-trailing", "tilde"]))
+    if kind == "blank":
+        return ""
+    if kind == "prose":
+        return indent + draw(st.text(alphabet="abcXYZ019 .,!_-", max_size=10))
+    if kind == "opener":
+        run = draw(st.sampled_from(["```", "````", "``"]))
+        lang = draw(st.text(alphabet="abcXYZ019_+-", max_size=6))
+        return f"{indent}{run}{lang}"
+    if kind == "closer":
+        run = draw(st.sampled_from(["```", "````", "``"]))
+        return f"{indent}{run}"
+    if kind == "closer-trailing":
+        run = draw(st.sampled_from(["```", "````"]))
+        return f"{indent}{run}extra"
+    run = draw(st.sampled_from(["~~~", "~~~~"]))
+    return f"{indent}{run}"
+
+
+@st.composite
+def _markdown_ish_documents(draw: DrawFn) -> str:
+    """A document assembled from :func:`_markdown_ish_line`, up to 15 lines,
+    each followed by an independently drawn line ending -- and sometimes no
+    trailing one at all."""
+    lines = draw(st.lists(_markdown_ish_line(), max_size=15))
+    parts: list[str] = []
+    for line in lines:
+        parts.append(line)
+        parts.append(draw(st.sampled_from(_FENCE_LINE_ENDINGS)))
+    # `mypy` cannot re-infer `DrawFn.__call__`'s type variable across a loop
+    # boundary followed by another call site in the same function (a
+    # reproduced, minimal case is filed for reference) -- drawing into an
+    # explicitly typed local first, rather than inline in the `if`, sidesteps
+    # it without changing what gets drawn.
+    drop_trailing_ending: bool = draw(st.booleans())
+    if parts and drop_trailing_ending:
+        parts.pop()
+    return "".join(parts)
+
+
+#: Deterministic in CI: `@seed` fixes which examples run (not `derandomize`
+#: alone -- see the identical note on `_GENERATED` in `test_ref_recording.py`),
+#: `database=None` writes nothing to disk, and 400 examples run in well under a
+#: second (measured 2026-08-28: 0.52s), comfortably inside the 300-500 range
+#: this fuzz needs to cover the six line shapes above in combination.
+_FUZZ_SETTINGS = settings(deadline=None, derandomize=True, database=None, max_examples=400)
+
+
+@seed(331)
+@_FUZZ_SETTINGS
+@given(body=_markdown_ish_documents())
+def test_code_fences_match_the_pre_331_regex_oracle_over_random_documents(body: str) -> None:
+    """The 14-case oracle above pins specific edges by hand; this pins the
+    property those edges were sampled from, so a divergence the fixed cases
+    do not happen to hit still goes red.
+
+    #331 replaced ``_fences``'s single combined opener-through-closer regex
+    with a from-scratch forward line scan for performance (see that
+    function's docstring) -- a genuinely different algorithm from
+    ``_oracle_fences``'s regex, not a copy of it, so agreement between the two
+    across random shapes is exactly the claim `docs/security/threat-model.md`
+    makes about this rewrite and the only thing that was, until now, checked
+    against a one-time, uncommitted dev-time fuzz run rather than a committed
+    one.
+
+    Verified directly (2026-08-28): reverting the closer-detection filter from
+    ``line.startswith("```") and _FENCE_CLOSER_LINE.fullmatch(line)`` to
+    ``line.startswith("```")`` alone -- treating any backtick-opening line as a
+    valid closer, including one carrying its own language tag or trailing
+    text -- turned this test red on the very first generated example,
+    ``"```\\n```0\\n"``, confirming it can fail rather than passing
+    vacuously.
+    """
+    document = _markdown(body)
+    assert _structured(document)["codeFences"] == _oracle_fences(body), body
 
 
 def test_markdown_title_comes_from_the_first_heading() -> None:
@@ -389,6 +663,245 @@ def test_internal_refs_are_not_recorded_as_external() -> None:
     source = b'{"openapi": "3.1.0", "paths": {"/a": {"get": {"x": {"$ref": "#/components/x"}}}}}'
     document = OpenApiParser().parse(source, media_type=OPENAPI, anchor=ANCHOR)
     assert _structured(document)["_index"]["externalRefs"] == []
+
+
+def _external_refs_cost(n: int, *, repeats: int = 5) -> tuple[float, Any]:
+    """Best (minimum) wall time of ``repeats`` calls to ``_external_refs`` on
+    the long-key/wide-fan-out shape at size ``n``, and the walk result from the
+    last call -- identical across repeats since the input document is
+    unchanged.
+
+    ``min`` rather than ``mean`` damps CI scheduling noise, which only ever
+    adds delay: the fastest observed run sits closest to the walk's own cost,
+    and a slower one reflects the runner, not the code.
+    """
+    document: dict[str, Any] = {"openapi": "3.1.0", "x" * n: {str(i): 0 for i in range(n)}}
+    best = float("inf")
+    walk = None
+    for _ in range(repeats):
+        started = time.monotonic()
+        walk = _external_refs(document)
+        best = min(best, time.monotonic() - started)
+    assert walk is not None, "repeats must be at least 1"
+    return best, walk
+
+
+def test_external_refs_path_build_is_linear() -> None:
+    """Issue #328: ``_external_refs`` built each child's path with
+    ``f"{path}.{key}"``, which copies the parent's whole accumulated string on
+    every edge. A document with one long mapping key (length n) fanning out to n
+    children under it therefore cost Theta(n^2) -- both the key length and the
+    fan-out are chosen by whoever wrote the document, and neither ``MAX_REFS``
+    nor ``MAX_REF_DEPTH`` fires on this shape, since there is no ``$ref`` at all
+    and the depth never exceeds 2.
+
+    This test used to assert an absolute wall (``elapsed < 0.2``), which no
+    single threshold can satisfy on every machine: it passed locally at
+    ~0.036s, then failed on a loaded ubuntu CI runner at 0.29s -- a runner slow
+    enough to miss a 0.2s wall on the *fixed* code is not implausible, and a
+    machine fast enough to pass a reverted quadratic's absolute cost is not
+    implausible either. The two ranges overlap, so a fixed wall is fragile in
+    both directions at once.
+
+    What is machine-independent is the *scaling*, not the absolute time: a
+    linear walk costs ~2x per doubling of the input; the pre-#328 quadratic one
+    costs ~4x, since it pays for a copy of the accumulated path on every edge.
+    Measured directly (2026-08-27), best-of-5 to damp scheduling noise: the
+    fixed code costs 0.0175s at n=120,000 and 0.0350s at n=240,000 -- ratio
+    2.00. The pre-#328 eager ``f"{path}.{key}"`` build, reconstructed against
+    the same shape and the same current helpers, costs 0.270s and 1.238s --
+    ratio 4.59. A 3.0 threshold sits comfortably between the two and holds on
+    any machine, fast or slow, loaded or idle, because it never compares
+    against a wall clock -- only against itself at half the size.
+    """
+    small, small_walk = _external_refs_cost(120_000)
+    large, large_walk = _external_refs_cost(240_000)
+
+    assert small_walk.found == () and large_walk.found == (), "no $ref anywhere in this document"
+    assert small_walk.truncations == () and large_walk.truncations == (), (
+        "neither cap fires on this shape"
+    )
+
+    ratio = large / small
+    # A linear walk scales ~2x per doubling; the pre-#328 quadratic build
+    # measured ~4.6x on this same shape (see docstring). 3.0 sits comfortably
+    # between the two.
+    assert ratio < 3.0, (
+        f"cost scaled {ratio:.2f}x for a 2x larger input ({small:.3f}s -> {large:.3f}s); "
+        "linear scales ~2x per doubling, the pre-#328 quadratic build ~4.6x"
+    )
+    # A generous absolute backstop against a total blowup, not the primary
+    # signal: comfortably above the ~1.2s a reintroduced quadratic measures at
+    # n=240,000 here, and far above the ~0.035s the fixed code measures.
+    assert large < 5.0, f"the n=240,000 shape alone took {large:.2f}s"
+
+
+# -- $ref path-build oracle (issue #328, security review MEDIUM) ---------
+#
+# `test_external_refs_path_build_is_linear` above pins the #328 rewrite's
+# *cost*; `test_recorded_paths_match_the_pre_328_eager_concat_build` in
+# `test_ref_recording.py` pins its *output*, on one hand-built two-``$ref``
+# fixture. The threat model (T-6, T-7) used to credit this rewrite with a
+# 3,000-document fuzz that ran once at dev time and was never committed, so
+# every push since #328 landed re-relied on a claim nothing re-checked. This
+# is a committed replacement for that claim: a smaller (400-example),
+# deterministic, seeded fuzz that re-runs on every push instead.
+
+_REF_VALUES: Final = (
+    "https://evil.test/x.json",
+    "./local.yaml#/S",
+    "../up.yaml",
+    "//evil.test/x.json",
+    "\\\\host\\share\\x.json",
+    "x://evil.test/y.json",
+    "#/components/schemas/S",
+    "",
+    "   ",
+    "file:///etc/passwd",
+    "C:\\Windows\\x.json",
+)
+
+#: Keys chosen to stress the exact seam #328 touched: how a child's path is
+#: rendered, not what the walk finds. Digit-only strings (``"0"``, ``"12"``)
+#: must still render dotted, because they arrive as *mapping* keys -- the
+#: property `test_recorded_paths_match_the_pre_328_eager_concat_build`'s
+#: ``"0"`` key pins by hand for one fixture; ``.``, ``[``, ``]`` are the
+#: characters a rendered path string could be confused with its own
+#: separators.
+_REF_PATH_KEYS: Final = st.one_of(
+    st.just(""),
+    st.sampled_from(["0", "1", "12", "007", "-1", "$ref", "a.b", "x[3]", "..", "[0]"]),
+    st.text(alphabet="abcXYZ.[]_- ", min_size=0, max_size=5),
+)
+
+_ref_walk_leaves = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(-3, 3),
+    st.text(max_size=4),
+    st.sampled_from(_REF_VALUES).map(lambda ref: {"$ref": ref}),
+)
+
+
+def _ref_walk_extend(children: st.SearchStrategy[Any]) -> st.SearchStrategy[Any]:
+    return st.one_of(
+        st.dictionaries(_REF_PATH_KEYS, children, max_size=4),
+        st.lists(children, max_size=4),
+    )
+
+
+_ref_walk_bodies = st.recursive(_ref_walk_leaves, _ref_walk_extend, max_leaves=30)
+
+
+@st.composite
+def _ref_walk_value(draw: DrawFn) -> Any:
+    """One value in a random document: either an ordinary recursive body or a
+    spine of single-child wrappers pushed past ``MAX_REF_DEPTH``, so some
+    generated documents exercise a *truncation*'s ``at`` too, not only a found
+    ref's -- :func:`_render_ref_path` is called from both `record` and `cut`
+    in the current walk.
+    """
+    if draw(st.booleans()):
+        return draw(_ref_walk_bodies)
+
+    depth = draw(st.integers(min_value=1, max_value=MAX_REF_DEPTH + 4))
+    node: Any = draw(_ref_walk_leaves)
+    for _ in range(depth):
+        node = {draw(_REF_PATH_KEYS): node} if draw(st.booleans()) else [node]
+    return node
+
+
+def _ref_walk_documents() -> st.SearchStrategy[dict[str, Any]]:
+    """A random document for ``_external_refs``: up to four top-level keys,
+    each an independently drawn body or depth spine."""
+    return st.dictionaries(_REF_PATH_KEYS, _ref_walk_value(), max_size=4)
+
+
+def _eager_external_refs(document: dict[str, Any]) -> _RefWalk:
+    """The pre-#328 ``_external_refs`` walk, kept as an independent oracle.
+
+    Reproduced verbatim from ``git show d60166d^`` -- the eager
+    ``f"{path}.{key}"`` / ``f"{path}[{index}]"`` string build #328 replaced
+    with a tuple of segments rendered lazily. Everything else (the record and
+    cut logic, both caps, and the scheme classification) is imported from the
+    current module unchanged: #328 touched only how a child's path is
+    accumulated, never what the walk records or where it stops, so this
+    function's only job is to build the path the old way and hand every other
+    decision to the same helpers the current walk uses.
+    """
+    found: list[dict[str, str]] = []
+    truncations: dict[str, dict[str, str]] = {}
+    seen: set[str] = set()
+    descended: set[int] = set()
+    alive: list[object] = []
+
+    def cut(reason: str, path: str, limit: int) -> None:
+        truncations.setdefault(reason, {"reason": reason, "at": path, "limit": str(limit)})
+
+    def record(ref: object, path: str) -> None:
+        if not isinstance(ref, str) or ref in seen:
+            return
+        target = _as_a_fetcher_reads_it(ref)
+        if not target or target.startswith("#"):
+            return
+        seen.add(ref)
+        found.append({"ref": ref, "at": path, "scheme": _ref_scheme(target), "resolved": "false"})
+
+    def walk(node: object, path: str, depth: int) -> None:
+        if not isinstance(node, dict | list) or not node:
+            return
+        if id(node) in descended:
+            return
+        if len(found) >= MAX_REFS:
+            cut("refCount", path, MAX_REFS)
+            return
+        if depth > MAX_REF_DEPTH:
+            cut("depth", path, MAX_REF_DEPTH)
+            return
+        descended.add(id(node))
+        alive.append(node)
+        if isinstance(node, dict):
+            record(node.get("$ref"), path)
+            for key, child in node.items():
+                walk(child, f"{path}.{key}" if path else str(key), depth + 1)
+        else:
+            for index, child in enumerate(node):
+                walk(child, f"{path}[{index}]", depth + 1)
+
+    walk(document, "", 0)
+    return _RefWalk(found=tuple(found), truncations=tuple(truncations.values()))
+
+
+@seed(328)
+@_FUZZ_SETTINGS
+@given(document=_ref_walk_documents())
+def test_ref_paths_match_the_pre_328_eager_concat_build_over_random_documents(
+    document: dict[str, Any],
+) -> None:
+    """The threat model (T-6, T-7) used to credit this rewrite with a fuzz over
+    3,000 randomized documents; that run was one-time and uncommitted, so
+    nothing re-checked the claim on any later push. This is the committed
+    replacement: a smaller (400-example), deterministic, seeded fuzz that
+    re-runs on every push instead.
+
+    #328 replaced the eager per-edge string build with a tuple of segments
+    rendered only where a ref or a truncation is actually recorded -- a
+    genuinely different data structure, not a copy of the old one -- so
+    agreement between :func:`_external_refs` and the eager oracle above,
+    across random nesting, mixed key/index paths and pathological keys, is
+    exactly the fidelity claim the threat model now makes about the rewrite.
+
+    Verified directly (2026-08-28): perturbing ``_render_ref_path`` to render
+    a sequence index with a dot (``f"{rendered}.{value}"``) instead of a
+    bracket -- byte-identical to how a mapping key renders -- turned this
+    test red on the very first generated example, confirming it can fail
+    rather than passing vacuously.
+    """
+    walk = _external_refs(document)
+    oracle = _eager_external_refs(document)
+
+    assert walk.found == oracle.found
+    assert walk.truncations == oracle.truncations
 
 
 def test_openapi_accepts_json_as_well_as_yaml() -> None:

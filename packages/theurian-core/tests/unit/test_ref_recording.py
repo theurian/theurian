@@ -363,6 +363,39 @@ def test_a_ref_inside_an_array_is_recorded_with_its_index_path() -> None:
     )
 
 
+def test_recorded_paths_match_the_pre_328_eager_concat_build() -> None:
+    """Issue #328 changed how the walk *builds* a path -- a tuple of segments
+    accumulated across the recursion, rendered to a string only where a ref is
+    actually recorded -- not what it renders *to*. This fixture was checked
+    directly against the pre-fix ``f"{path}.{key}"`` / ``f"{path}[{index}]"``
+    build before this test was written, so every ``at`` value below is pinned to
+    that build's actual output, not to what the new build merely happens to
+    produce.
+
+    ``"0"`` is a dict key here, not a list index -- chosen so a renderer that
+    forgot to tag segments by kind (rendering every numeric-looking segment as
+    ``[0]``) would be caught: the correct rendering is ``.0``, dotted like any
+    other key, because the walk never inspects a key's own spelling to decide
+    how it renders.
+    """
+    document = {
+        "openapi": "3.1.0",
+        "a": {
+            "0": {
+                "list": [
+                    {"deep": {"$ref": "https://evil.test/one.json"}},
+                    [{"$ref": "https://evil.test/two.json"}],
+                ]
+            }
+        },
+    }
+
+    by_ref = {record["ref"]: record for record in _index(document)["externalRefs"]}
+
+    assert by_ref["https://evil.test/one.json"]["at"] == "a.0.list[0].deep"
+    assert by_ref["https://evil.test/two.json"]["at"] == "a.0.list[1][0]"
+
+
 def test_the_same_reference_written_twice_is_recorded_once() -> None:
     """The record is per distinct reference string, which is what
     ``unresolvedRefCount`` counts. Without the dedup a document repeating one

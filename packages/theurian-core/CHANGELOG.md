@@ -12,6 +12,54 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Markdown fence scan no longer rescans the rest of the document per
+  unclosed fence opener** ([#331](https://github.com/theurian/theurian/issues/331)).
+  `parsers/markdown.py::_FENCE` combined opener and closer into one
+  `re.MULTILINE | re.DOTALL` pattern whose lazy `(.*?)` body group had to scan
+  every remaining line before it could conclude a closer was absent, so a
+  document of n unclosed openers cost Θ(n²). Measured: 156 KB of unclosed
+  openers (32,000 of them) went from 25.3 s to 0.0065 s (~3900×), and the scan
+  now costs roughly 2×, not 4×, per doubling of the input. `_fences` is now a
+  single forward pass over lines, matched against two anchored,
+  non-backtracking patterns instead of one pattern that rescans the remaining
+  document per unclosed opener; `codeFences` stays byte-identical, pinned by
+  a 14-case named-edge oracle
+  (`test_code_fences_match_the_pre_331_regex_oracle`) plus a seeded,
+  deterministic Hypothesis fuzz over 400 random documents
+  (`test_code_fences_match_the_pre_331_regex_oracle_over_random_documents`,
+  `@seed(331)`), both against the pre-fix regex embedded as an oracle.
+  **A bounded residual replaces it:** the rewrite materializes
+  `lines` and `line_starts` up front, so peak memory is now linear in document
+  size rather than constant — ~202 MB on an 8 MiB document (the
+  `MAX_SOURCE_FILE_BYTES` cap), irrelevant at ordinary sizes and pinned by
+  `test_fence_scan_memory_stays_linear_in_document_size` so a future change
+  cannot silently make it super-linear again. Discharges the T-6 residual
+  `docs/security/threat-model.md` recorded as owed to this issue.
+
+- **The OpenAPI `$ref` walk no longer copies its accumulated path string on
+  every edge** ([#328](https://github.com/theurian/theurian/issues/328)).
+  `_external_refs`'s `walk` built each child's path with `f"{path}.{key}"`,
+  which copies the parent's whole path on every child; `descended` (#245)
+  bounds how many *nodes* the walk enters but never charged this, so one long
+  mapping key with a wide fan-out under it cost Θ(edges × path length) —
+  quadratic in the document's own size, with neither `MAX_REFS` nor
+  `MAX_REF_DEPTH` firing on this shape. Measured at n=240,000 (~3.25 MB, zero
+  refs, zero truncations): 1.28 s → 0.037 s. `walk` now carries the path as a
+  tuple of un-rendered segments — mirroring
+  `normalization/projection.py::_walk`'s tuple-path split — and renders it to
+  a string only where a ref or a truncation is actually recorded, not once per
+  edge crossed; appending a segment now costs `O(depth)`, bounded by
+  `MAX_REF_DEPTH`, never `O(len of the rendered string)`. Recorded ref paths
+  stay byte-identical to the pre-fix eager-concat build, pinned by a single
+  two-`$ref` fixture
+  (`test_recorded_paths_match_the_pre_328_eager_concat_build`) plus a seeded,
+  deterministic Hypothesis fuzz over 400 random nested structures
+  (`test_ref_paths_match_the_pre_328_eager_concat_build_over_random_documents`,
+  `@seed(328)`). Discharges the T-6 residual
+  `docs/security/threat-model.md` recorded as owed to this issue.
+
 ## [0.1.0.dev13] - 2026-08-27
 
 ### Added
