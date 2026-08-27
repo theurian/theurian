@@ -350,7 +350,13 @@ def _render_ref_path(path: _RefPath) -> str:
     index, with no leading dot before the first segment. Called only where a ref
     or a truncation is actually recorded -- at most ``MAX_REFS`` plus two times
     per document -- rather than once per edge the walk crosses, which is the
-    change #328 made: see :func:`_external_refs`.
+    change #328 made: see :func:`_external_refs`. Each call still costs
+    ``O(depth)`` on its own (the loop below rebuilds ``rendered`` once per
+    segment), bounded by ``MAX_REF_DEPTH``, so total render cost across one
+    document is bounded by ``MAX_REF_DEPTH * MAX_REFS`` -- a residual against
+    the per-edge cost #328 removed, not a reintroduction of it: the pre-#328
+    build paid this same per-call cost on *every* edge the walk crossed,
+    unconditionally, not only where a ref ended up recorded.
     """
     rendered = ""
     for kind, value in path:
