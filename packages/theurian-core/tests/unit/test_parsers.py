@@ -109,6 +109,53 @@ def test_max_fences_bounds_the_record_not_the_scan() -> None:
     assert len(fences) == MAX_FENCES
 
 
+def test_fence_scan_memory_stays_linear_in_document_size() -> None:
+    """Round-one MEDIUM (code review): ``_fences`` materializes ``lines`` and
+    ``line_starts`` at O(line-count) -- ~202 MB peak measured 2026-08-27 at the
+    8 MiB ``MAX_SOURCE_FILE_BYTES`` cap on an all-newline document. That is a
+    bounded, linear residual against the quadratic *CPU* blowup #331 removed,
+    and irrelevant at ordinary document sizes (microseconds and kilobytes
+    either way); only an adversarial document at the ingestion cap reaches it.
+    Pinned here at a smaller scale, so a future change that reintroduces
+    super-linear memory -- as happened once already in the sibling ``$ref``
+    walk this same review round measured (issue #245) -- goes RED rather than
+    only showing up as a slow CI run somewhere else.
+    """
+    small_peak, small_bytes = _fence_scan_peak_memory(line_count=100_000)
+    large_peak, large_bytes = _fence_scan_peak_memory(line_count=800_000)
+
+    assert large_bytes == pytest.approx(8 * small_bytes, rel=0.01)
+    ratio = large_peak / small_peak
+    # A linear cost stays near the 8x input ratio; a quadratic one would be
+    # near 64x. 16x leaves comfortable room above measurement noise while
+    # catching a real regression back toward quadratic.
+    assert ratio < 16, f"peak memory scaled {ratio:.1f}x for an 8x larger document"
+    # A generous absolute ceiling too, in case a future change keeps the
+    # linear *shape* but inflates the per-line constant: ~2.5x the ~38.7 MB
+    # measured 2026-08-27 for this document size.
+    assert large_peak < 96 * 1024 * 1024, f"peaked at {large_peak / 1024 / 1024:.1f} MB"
+
+
+def _fence_scan_peak_memory(*, line_count: int) -> tuple[int, int]:
+    """Peak traced memory parsing an all-newline document of ``line_count``
+    single-character lines, and the document's byte length.
+
+    Every line is a non-candidate for either fence pattern (issue #331's
+    prefix-skip guard filters it before the regex ever runs), which isolates
+    what ``lines``/``line_starts`` themselves cost from what the regex costs.
+    """
+    import tracemalloc
+
+    data = ("a\n" * line_count).encode("utf-8")
+    tracemalloc.start()
+    try:
+        MarkdownParser().parse(data, media_type=MARKDOWN, anchor=ANCHOR)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return peak, len(data)
+
+
 # -- codeFences differential oracle (issue #331, round-one MEDIUM) --------
 #
 # #331's own review measured the line-scan rewrite byte-identical to the regex

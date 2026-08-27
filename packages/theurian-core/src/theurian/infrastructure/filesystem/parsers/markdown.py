@@ -228,7 +228,21 @@ def _fences(body: str) -> list[dict[str, Any]]:
     line it does not need to. Two anchored, non-backtracking line patterns
     replace the old combined opener-through-closer regex, whose lazy ``.*?``
     had to rescan every remaining line before it could conclude a closer was
-    absent -- once per unclosed opener.
+    absent -- once per unclosed opener: measured on 68e8a0b (pre-#331), 156 KB
+    (32,000 unclosed openers) cost 25.3 s and doubled roughly quadratically.
+    The same shape costs 0.0065 s here, a ~3900x improvement on the input the
+    rewrite exists for. The constant recorded below is a trade against *that*
+    win, not a regression against it -- it is irrelevant at the sizes almost
+    every real document hits, and only visible on an adversarial document at
+    the ingestion cap.
+
+    Materializes ``lines`` and ``line_starts`` up front, so peak memory is
+    O(line-count): measured 2026-08-27, ~202 MB at an 8 MiB document (the
+    ``MAX_SOURCE_FILE_BYTES`` cap), linear with input size and not
+    super-linear. A typical few-KB Markdown file costs microseconds and
+    kilobytes either way; this is a bounded residual against the quadratic
+    CPU blowup #331 removed, recorded here so a future change does not
+    reintroduce super-linear memory without anyone noticing.
     """
     lines = body.split("\n")
     line_starts: list[int] = []
