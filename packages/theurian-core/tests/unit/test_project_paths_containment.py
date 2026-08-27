@@ -221,6 +221,7 @@ _HELPER_CALLS: dict[str, Callable[[ProjectPaths], Path]] = {
     "write_lock": lambda p: p.write_lock,
     "index_for": lambda p: p.index_for("01K1AAAAAA01234567890ABCDE"),
     "database_for": lambda p: p.database_for(_SAMPLE_STATE_HASH),
+    "findings_for": lambda p: p.findings_for("01K1AAAAAA01234567890ABCDE"),
 }
 
 #: The ``.theurian`` child whose symlink escape reaches each helper. A leaf helper
@@ -240,6 +241,7 @@ _ESCAPING_CHILD: dict[str, str] = {
     "write_lock": "runtime",
     "index_for": "state",
     "database_for": "state",
+    "findings_for": "state",
 }
 
 #: The one helper deliberately contained by its *reader* rather than by
