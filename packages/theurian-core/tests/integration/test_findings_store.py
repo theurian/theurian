@@ -279,22 +279,40 @@ def test_dump_orders_by_commit_then_position(tmp_path: Path) -> None:
     dropped or reversed ``ORDER BY``, returns the wrong sequence and this fails.
     Both tables are checked, since both order.
 
-    **What this test cannot drive, and why no test can: the ``position`` term
-    alone.** Dropping only ``position`` from ``ORDER BY commit_sha, position``
-    (leaving ``ORDER BY commit_sha``) is unobservable through any row-content
-    assertion while ``PRIMARY KEY (commit_sha, position)`` stands on this table --
-    verified with ``EXPLAIN QUERY PLAN`` against the real schema and the real
-    query text: SQLite satisfies ``ORDER BY commit_sha`` by scanning the
-    composite-key index the ``PRIMARY KEY`` creates (``sqlite_autoindex_findings_1``),
-    and a full scan of that index visits rows in its own key order, the whole
-    ``(commit_sha, position)``, not only the prefix the ``ORDER BY`` names. That
-    holds for two rows or two hundred, insertion order scrambled or not (measured
-    both ways). So the two texts produce byte-identical output as long as the
-    key stands -- an equivalent mutation, not a coincidence of authored insertion
-    order the way an earlier reading of this file guessed. The sibling test below
-    still pins a real, load-bearing property (``dump`` orders by position within a
-    commit independent of insertion order); it does not, and cannot, distinguish
-    this one specific pair of query texts.
+    **What this test cannot drive, and why: the ``position`` term alone, and
+    only while the composite-PK autoindex is the ONLY index able to satisfy
+    ``ORDER BY commit_sha``.** Dropping only ``position`` from
+    ``ORDER BY commit_sha, position`` (leaving ``ORDER BY commit_sha``) is
+    unobservable through any row-content assertion **in that specific plan
+    state**, and no further -- this is a bound on a query planner's choice, not
+    a guarantee SQLite makes about the query text. Measured (2026-08-28, SQLite
+    3.47.1 the Python driver links and CLI 3.51.0): with no index over
+    ``commit_sha`` other than the ``PRIMARY KEY (commit_sha, position)``
+    autoindex, ``EXPLAIN QUERY PLAN`` names
+    ``SCAN findings USING INDEX sqlite_autoindex_findings_1`` for
+    ``ORDER BY commit_sha`` alone -- unchanged after ``ANALYZE``, after a forged
+    ``sqlite_stat1`` row claiming extreme cardinality skew, and under
+    ``PRAGMA reverse_unordered_selects = 1`` -- and a full scan of that index
+    visits rows in its own key order, the whole ``(commit_sha, position)``, not
+    only the prefix the ``ORDER BY`` names, so the dropped-``position`` query
+    produces byte-identical output to the two-term one for two rows or two
+    hundred, insertion order scrambled or not. **That bound breaks the moment a
+    second index can satisfy the sort instead**: adding
+    ``CREATE INDEX findings_by_sha ON findings (commit_sha)`` -- which leaves the
+    ``PRIMARY KEY`` fully intact -- flips the plan to
+    ``SCAN findings USING INDEX findings_by_sha`` and the dropped-``position``
+    query returns rows in that index's insertion order within each commit,
+    breaking within-commit order (measured: reverses ``[first, second]`` to
+    ``[second, first]`` for the exact rows this test authors). Forcing
+    ``NOT INDEXED`` on the real schema reproduces the same break via
+    ``USE TEMP B-TREE FOR ORDER BY``, with no schema change at all. The sibling
+    test below still pins a real, load-bearing property (``dump`` orders by
+    position within a commit independent of insertion order); it does not, and
+    cannot, distinguish this one specific pair of query texts --
+    :func:`test_the_dump_query_plan_uses_the_composite_primary_key_index` pins
+    the plan choice this whole argument depends on, so a schema change that
+    adds a competing index fails loudly here rather than silently reopening the
+    gap.
     """
     store = _store(tmp_path)
     # Insertion order is b, b, a, a -- the opposite of the (commit_sha, position)
@@ -353,9 +371,12 @@ def test_dump_orders_by_position_within_a_commit_independent_of_insertion_order(
     sorted order ``dump`` must return.
 
     **This does not kill the ``ORDER BY commit_sha, position`` -> ``ORDER BY
-    commit_sha`` mutation** (see the sibling test's docstring for why: verified
-    with ``EXPLAIN QUERY PLAN`` to be an equivalent mutation while the composite
-    ``PRIMARY KEY`` stands, independent of insertion order). What this test does
+    commit_sha`` mutation** (see the sibling test's docstring for the measured,
+    dated bound: the two texts are plan-equivalent only while the composite
+    ``PRIMARY KEY`` autoindex is the *only* index able to satisfy
+    ``ORDER BY commit_sha`` -- a planner choice
+    :func:`test_the_dump_query_plan_uses_the_composite_primary_key_index` pins,
+    not a SQLite guarantee about the query text itself). What this test does
     pin is real regardless: the order ``dump`` returns is a property of
     ``(commit_sha, position)``, never of physical row placement, which is what a
     caller comparing two dumps for logical equality (AC-2/AC-6) actually needs.
@@ -384,6 +405,71 @@ def test_dump_orders_by_position_within_a_commit_independent_of_insertion_order(
 
     assert [f.position for f in dump.findings] == [0, 1]
     assert [f.finding_text for f in dump.findings] == ["first", "second"]
+
+
+#: ``dump``'s own query text, copied verbatim from
+#: :meth:`SqliteReviewFindingStore.dump` -- the two sibling tests above depend
+#: on this exact text being satisfied by the composite-``PRIMARY KEY``
+#: autoindex, not by an explicit sort, and this constant is what
+#: :func:`test_the_dump_query_plan_uses_the_composite_primary_key_index` pins
+#: that against. Kept in sync by hand: a change to either query in the adapter
+#: must be mirrored here, or this test silently checks a plan for a query
+#: nothing runs.
+_FINDINGS_DUMP_SELECT = (
+    "SELECT commit_sha, position, reviewer, severity, finding_text, provider, "
+    "source_uri, committed_at, pull_request, family, specialist FROM findings "
+    "ORDER BY commit_sha, position"
+)
+_REJECTED_DUMP_SELECT = (
+    "SELECT commit_sha, position, raw_line, reason FROM rejected_trailers "
+    "ORDER BY commit_sha, position"
+)
+
+
+def test_the_dump_query_plan_uses_the_composite_primary_key_index(tmp_path: Path) -> None:
+    """Pins the planner choice the two ``ORDER BY`` docstrings above depend on.
+
+    The claim that dropping the ``position`` term from ``ORDER BY commit_sha,
+    position`` is unobservable is bounded, not universal: it holds only while
+    ``dump``'s real query resolves to a scan of the composite ``PRIMARY KEY``
+    autoindex, because that scan visits rows in full ``(commit_sha, position)``
+    order as a side effect of using the index at all. Measured: a *harmless*
+    secondary index over ``commit_sha`` alone does not disturb this -- the
+    two-term ``ORDER BY`` dump actually issues still prefers the composite
+    index, since only it satisfies both sort terms without an extra sort step
+    -- so this test does not fire on that change, and should not. What it does
+    catch is the composite key itself ceasing to be what provides the order:
+    replacing ``PRIMARY KEY (commit_sha, position)`` with a functionally
+    equivalent ``UNIQUE INDEX`` of the same two columns keeps every row-content
+    assertion in this file passing (the order is still correct) while silently
+    swapping which index produces it -- exactly the kind of change that would
+    make the bounded claim above quietly false again without anything here
+    noticing, were it not pinned to this specific autoindex name.
+    """
+    store = _store(tmp_path)
+    store.replace_all(
+        FindingLoad(
+            accepted=(_finding(_sha("a")), _finding(_sha("b"))),
+            rejected=(RejectedTrailer(_sha("c"), "Review-Finding: bogus", "reason"),),
+        )
+    )
+
+    with closing(sqlite3.connect(store.path)) as connection:
+        findings_plan = connection.execute("EXPLAIN QUERY PLAN " + _FINDINGS_DUMP_SELECT).fetchall()
+        rejected_plan = connection.execute("EXPLAIN QUERY PLAN " + _REJECTED_DUMP_SELECT).fetchall()
+
+    findings_detail = " ".join(str(row[3]) for row in findings_plan)
+    rejected_detail = " ".join(str(row[3]) for row in rejected_plan)
+    assert "sqlite_autoindex_findings_1" in findings_detail, (
+        f"the findings dump no longer scans the composite PRIMARY KEY autoindex "
+        f"(plan: {findings_detail!r}) -- the ORDER BY equivalence the sibling "
+        f"tests' docstrings describe no longer holds; a schema change added a "
+        f"competing index, or the query itself changed"
+    )
+    assert "sqlite_autoindex_rejected_trailers_1" in rejected_detail, (
+        f"the rejected_trailers dump no longer scans the composite PRIMARY KEY "
+        f"autoindex (plan: {rejected_detail!r})"
+    )
 
 
 def test_rejected_trailer_positions_are_assigned_per_commit_not_globally(tmp_path: Path) -> None:
