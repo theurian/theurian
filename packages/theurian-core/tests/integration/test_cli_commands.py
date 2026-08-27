@@ -24,7 +24,12 @@ from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from migration_fixtures import UNREACHED_BODY_PIN, body_pin
 from typer.testing import CliRunner
 
-from theurian.application.project_service import ProjectError, ProjectPaths, ProjectRegistry
+from theurian.application.project_service import (
+    KNOWLEDGE_DIR_ESCAPE_REMEDY,
+    ProjectError,
+    ProjectPaths,
+    ProjectRegistry,
+)
 from theurian.cli.index_status_report import index_staleness
 from theurian.cli.main import app
 from theurian.domain.errors import MigrationError
@@ -2104,6 +2109,211 @@ def test_apply_refuses_an_unreadable_migrations_directory_without_seeding_a_stat
     assert not state_dir.exists() or not any(state_dir.iterdir())
 
 
+def _escape_the_theurian_directory(project: Path) -> Path:
+    """Deliver ``.theurian`` as a symbolic link that leaves the working tree.
+
+    Models what a clone hands the victim in #237: the layout lives beside the
+    tree at ``../shared`` and ``.theurian`` is a committed relative symlink into
+    it. The link is relative because a clone carries a relative one; the target
+    is genuinely outside the clone's real tree, which is the property the
+    assertions turn on.
+
+    Returns the out-of-tree ``shared`` directory the writes would land in.
+    """
+    shared = project.parent / "shared"
+    shutil.move(str(project / ".theurian"), str(shared))
+    (project / ".theurian").symlink_to(Path("..") / "shared")
+    assert not shared.resolve().is_relative_to(project.resolve()), (
+        "the fixture must place the layout genuinely outside the clone's real tree"
+    )
+    return shared
+
+
+def _escape_the_state_directory(project: Path) -> Path:
+    """Deliver ``.theurian/state`` as a symbolic link that leaves the tree.
+
+    The descendant face of #237: ``.theurian`` stays an honest directory (so the
+    root-join check waves it through), and a clone force-adds ``state`` as a
+    symlink past the ADR-0004 ignore. The state database, active pointer and any
+    read of them would follow it outside the tree. ``state`` is derived and empty
+    after ``init``, so replacing it models the committed link without losing
+    content.
+
+    Returns the out-of-tree directory the writes would land in.
+    """
+    shared_state = project.parent / "shared_state"
+    shared_state.mkdir(exist_ok=True)
+    shutil.rmtree(project / ".theurian" / "state")
+    # Relative to the link's own directory, `.theurian/`: two `..` reach the
+    # tree's parent, where the out-of-tree target sits.
+    (project / ".theurian" / "state").symlink_to(Path("..") / ".." / "shared_state")
+    assert not shared_state.resolve().is_relative_to(project.resolve()), (
+        "the fixture must place the state directory genuinely outside the clone's real tree"
+    )
+    return shared_state
+
+
+def _escaped_state_artefacts(shared: Path) -> list[Path]:
+    """Every state or lifecycle artefact that landed outside the tree.
+
+    The three faces #237 writes: the state database (``*.sqlite``), the active
+    pointer (``active.json``) and the write lock (``write.lock``). ``init``
+    leaves the directories that hold them empty, so any *file* here is a write
+    that escaped.
+    """
+    return sorted(
+        path
+        for path in shared.rglob("*")
+        if path.is_file()
+        and (path.suffix == ".sqlite" or path.name in {"active.json", "write.lock"})
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_apply_refuses_an_escaping_theurian_symlink_and_writes_nothing_outside_the_tree(
+    project: Path,
+) -> None:
+    """#237 (HIGH): a committed ``.theurian -> ../shared`` symlink made
+    ``migrate apply`` write the state database, active pointer and write lock
+    outside the cloned working tree and return 0.
+
+    Reproduced against the real CLI: with the layout relocated to ``../shared``
+    and ``.theurian`` a symlink into it, an empty ``migrate apply`` seeded
+    ``shared/state/theurian-state-*.sqlite``, ``shared/state/active.json`` and
+    ``shared/runtime/write.lock`` -- all outside the clone. The root-join
+    containment in ``ProjectPaths.of`` refuses before any helper derives a path,
+    so nothing is written and the caller is told how to repair the link.
+
+    The assertion compares against the clone's *real* tree: the writes escape
+    through a symlink, so a check that stayed lexical would miss them.
+    """
+    _invoke("init")
+    shared = _escape_the_theurian_directory(project)
+
+    code, payload = _invoke("migrate", "apply")
+
+    # Exit 1, not `EXIT_STATE_ERROR`: the refusal is raised while resolving the
+    # project context (`ProjectPaths.of`), upstream of the migration load that
+    # owns exit 4 -- so the escape is caught before a state directory is named.
+    assert code == 1
+    assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
+    assert _escaped_state_artefacts(shared) == [], "migrate apply wrote state outside the tree"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_status_over_an_escaping_theurian_symlink_reads_nothing_from_outside_the_tree(
+    project: Path,
+) -> None:
+    """AC-2 (read face): the same root-join fix closes reads, not only writes.
+
+    A real state is built first, then the whole ``.theurian`` -- state included
+    -- is relocated outside the tree and replaced by the escaping symlink, the
+    shape a clone could carry with a genuine build sitting at the link's target.
+    Before the fix, ``migrate status`` followed the link and reported
+    ``stateBuilt: true`` read back from outside the clone; every read derives
+    from the same ``knowledge_dir`` the write path does, so containing the join
+    refuses the read at the same point.
+
+    Deliberately no migration is written: an empty apply still seeds the state,
+    and a ``contentFile`` would make the loader refuse the migration read first
+    (exit 4), masking the pointer read this pins. With no migration, ``migrate
+    status`` reaches ``read_active_state`` and, before the fix, reads the active
+    pointer straight back from outside the tree.
+    """
+    _invoke("init")
+    assert _invoke("migrate", "apply")[0] == 0
+    _escape_the_theurian_directory(project)
+
+    code, payload = _invoke("migrate", "status")
+
+    # Exit 1 for the same reason the write face refuses at exit 1: the escape is
+    # caught resolving the context, before any pointer under the tree is read.
+    assert code == 1
+    assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_apply_refuses_an_escaping_state_symlink_and_writes_nothing_outside_the_tree(
+    project: Path,
+) -> None:
+    """#237 descendant face: the root-join check alone did not close this.
+
+    ``.theurian`` is an honest directory, so ``ProjectPaths.of``'s join check
+    passes it -- but a clone force-added ``.theurian/state`` as a symlink to
+    ``../../shared_state`` past the ADR-0004 ignore. Reproduced against the real
+    CLI before the per-target containment: an empty ``migrate apply`` seeded the
+    state database and active pointer in ``shared_state``, outside the clone.
+    ``ProjectPaths._contained`` refuses the moment ``paths.state`` is derived, so
+    nothing escapes.
+    """
+    _invoke("init")
+    shared_state = _escape_the_state_directory(project)
+
+    code, payload = _invoke("migrate", "apply")
+
+    assert code == 1
+    assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
+    assert _escaped_state_artefacts(shared_state) == [], (
+        "migrate apply wrote state outside the tree"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_status_over_an_escaping_state_symlink_reads_nothing_from_outside_the_tree(
+    project: Path,
+) -> None:
+    """The read face of the descendant escape.
+
+    A real state is built, then ``.theurian/state`` is replaced by a symlink to a
+    directory outside the tree holding that state. Before the per-target
+    containment, ``migrate status`` followed the link and read ``stateBuilt:
+    true`` back from outside the clone; ``_contained`` refuses when ``paths.state``
+    is derived, so the read never leaves the tree.
+    """
+    _invoke("init")
+    assert _invoke("migrate", "apply")[0] == 0
+    # Move the built state out of the tree, then point the symlink at it -- the
+    # shape a clone could carry with a genuine build sitting at the link's target.
+    shared_state = project.parent / "shared_state"
+    shutil.move(str(project / ".theurian" / "state"), str(shared_state))
+    (project / ".theurian" / "state").symlink_to(Path("..") / ".." / "shared_state")
+
+    code, payload = _invoke("migrate", "status")
+
+    assert code == 1
+    assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_init_refuses_an_escaping_knowledge_symlink_and_creates_nothing_outside(
+    project: Path,
+) -> None:
+    """H-1 (code-review + security HIGH): `init` bypassed the containment chokepoint.
+
+    `initialize_project` builds `paths.knowledge_dir / relative` directly and
+    mkdir's it, so a clone that tracks `.theurian/knowledge` as a symlink to
+    outside the tree -- the same authored-symlink class as `.theurian` itself
+    (#237, T-5) -- made `init` create the knowledge subtree at the link's target,
+    exit 0, `createdPaths` reporting them as if in-tree. Reproduced against the
+    real CLI: `outside/{architecture,domain,operations,security,testing}`.
+
+    The gap the existing init tests missed: they all init an honest tree *then*
+    introduce the symlink. This one has the escaping symlink present AT init time,
+    which is what a clone delivers. `init` must refuse before the first mkdir and
+    create nothing outside; every write target now routes through `_contain`.
+    """
+    (project / ".theurian").mkdir()
+    outside = project.parent / "outside-knowledge"
+    outside.mkdir()
+    (project / ".theurian" / "knowledge").symlink_to(outside)
+
+    code, payload = _invoke("init")
+
+    assert code == 1
+    assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
+    assert list(outside.iterdir()) == [], "init created directories outside the tree"
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
 def test_apply_refuses_a_symlink_loop_migrations_directory_without_seeding_a_state_database(
     project: Path,
@@ -2401,10 +2611,19 @@ def test_validate_does_not_tell_a_user_to_delete_a_migration_an_ancestor_symlink
     `migrations/`, after which `migrate validate` exited 0 with `.theurian`
     still outside the project.
 
-    The unit-level pin is
-    `tests/unit/test_migration_loader_errors.py::test_load_migrations_does_not_call_a_plain_entry_a_symlink_when_an_ancestor_escapes`;
-    this one exists because the payload is where the instruction is delivered.
-    The `exit 0` acceptance itself stays #237's box and is not touched here.
+    Since #237's root-join containment, the refusal arrives *earlier* than the
+    migration loader: `ProjectPaths.of` proves `.theurian` resolves inside the
+    tree while resolving the command context, so `migrate validate` never
+    reaches the loader's `EscapeRole` remedy for this shape. That earlier
+    refusal names the `.theurian` link rather than any migration, so the harm
+    this test guards against -- routing a user into deleting their own work --
+    is closed at the root instead of avoided in the wording. The loader's
+    `EscapeRole` remedy is still pinned where it is still reached: at the unit
+    level in `tests/unit/test_migration_loader_errors.py`, and for a *descendant*
+    symlink the root join does not resolve.
+
+    What stays pinned here is that the earlier refusal is non-destructive even
+    with a real migration sitting behind the link: the entry is untouched.
     """
     _invoke("init")
     _write_migration(project)
@@ -2414,15 +2633,12 @@ def test_validate_does_not_tell_a_user_to_delete_a_migration_an_ancestor_symlink
     entry = project / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml"
     assert not entry.is_symlink(), "fixture must drive a PLAIN file, not a link"
 
-    result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+    code, payload = _invoke("migrate", "validate")
 
-    assert result.exit_code == EXIT_STATE_ERROR
-    payload = json.loads(result.stderr)
-    relative = str(entry.relative_to(project))
-    assert payload["error"] == f"{relative!r} escapes the permitted root"
+    assert code == 1
+    assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
     assert "is a symbolic link" not in payload["remedy"]
     assert "remove it" not in payload["remedy"], "that instruction destroys the user's work"
-    assert "each directory above it" in payload["remedy"]
     assert entry.exists(), "the refusal must not have removed anything itself"
 
 
@@ -2434,14 +2650,14 @@ def test_validate_does_not_tell_a_user_to_delete_a_symlink_that_is_not_the_escap
     plain file -- the construction that survived keying the strong role on
     `is_symlink()` alone.
 
-    The entry is a symbolic link, so the `lstat` is earned; it points at a
-    sibling *inside its own directory*, and `.theurian` is what escapes. This
-    test follows the instruction the way a user would and asserts the outcome
-    that made it a defect rather than a wording nit: after the deletion, the
-    migration is gone and the containment violation is untouched.
-
-    The `exit 0` at the end is issue #237's box, not this one's. What is pinned
-    here is that Theurian never routes anyone into it.
+    The entry is a symbolic link, so the `lstat` the old loader remedy trusted is
+    earned; it points at a sibling *inside its own directory*, and `.theurian` is
+    what escapes. Since #237's root-join containment, `migrate validate` refuses
+    while resolving the command context -- before the loader inspects the entry
+    at all -- so the entry's link-ness never selects a remedy. What this pins is
+    the outcome that made the old wording a defect rather than a nit: the refusal
+    removes nothing, so the migration is still there to be repaired once the
+    `.theurian` link is fixed.
     """
     _invoke("init")
     _write_migration(project)
@@ -2455,12 +2671,11 @@ def test_validate_does_not_tell_a_user_to_delete_a_symlink_that_is_not_the_escap
     (project / ".theurian").symlink_to(outside_theurian)
     assert entry.is_symlink(), "fixture must earn the lstat the old rule trusted"
 
-    result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+    code, payload = _invoke("migrate", "validate")
 
-    assert result.exit_code == EXIT_STATE_ERROR
-    payload = json.loads(result.stderr)
+    assert code == 1
+    assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
     assert "remove it" not in payload["remedy"], "that instruction destroys the user's work"
-    assert "each directory above it" in payload["remedy"]
     assert entry.is_symlink(), "the entry is still there to be repaired"
 
 

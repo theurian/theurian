@@ -110,6 +110,21 @@ _REBUILD_STATE_CLAUSE: Final = (
     "were written with, so changing the id without rebuilding them addresses an empty project."
 )
 
+#: The cure for a knowledge directory that resolves outside the project root.
+#: A clone can deliver ``.theurian`` as a committed symbolic link pointing out of
+#: the working tree (``.theurian -> ../elsewhere``), and every path Theurian reads
+#: or writes derives from it -- so a link that escapes turns `migrate apply`'s
+#: state database, active pointer and write lock, and every read that follows,
+#: into files outside the tree the clone gave the user (#237, T-5). Names the
+#: escape rather than a file to delete, the shape :class:`PathEscapeError`'s
+#: remedy takes: the cure is to make the knowledge directory a real directory
+#: inside the project again, not to remove content a link happens to point at.
+KNOWLEDGE_DIR_ESCAPE_REMEDY: Final = (
+    "Replace the knowledge directory with a regular directory inside the project. A "
+    "clone may have delivered it as a symbolic link pointing outside the working tree; "
+    "remove the link, run `theurian init` to recreate the directory, then retry."
+)
+
 
 def _registry_reset_remedy(path: Path) -> str:
     """The remedy for a registry file whose *set of ids* cannot be trusted.
@@ -303,6 +318,78 @@ class ProjectError(TheurianError):
         super().__init__(message)
 
 
+def _contain(root: Path, path: Path) -> Path:
+    """Prove ``path`` stays inside ``root``, or refuse with the escape remedy.
+
+    The one containment chokepoint under a project's ``.theurian``:
+    :meth:`ProjectPaths._contained` routes every path the class hands out through
+    here, and :func:`initialize_project` routes every directory and file it
+    creates. A committed symbolic link at any level -- ``.theurian`` itself (also
+    refused earlier, in :meth:`ProjectPaths.of`), a ``knowledge``/``state``
+    directory a clone tracked, or a leaf a clone force-added past the ADR-0004
+    ignore -- cannot redirect a read or write outside the working tree the clone
+    gave the user (#237, T-5). That closes the *authored-symlink* class: a link
+    delivered as tracked repository content. The derived-cache face the ``ingest``
+    manifest opens through ``.theurian/cache`` (git-ignored state a repository
+    should not carry at all) is a different root cause -- the GHSA-266v
+    derived-state-trust class -- and is tracked separately as #394, not closed
+    here.
+
+    Anchored to ``root``, never to a nearer ancestor. ``index_for`` compared a
+    candidate to ``self.state.resolve()``, but when ``.theurian/state`` is itself
+    an escaping symlink ``self.state.resolve()`` *is* the escaped location, so the
+    check was trivially satisfied and a descendant symlink walked straight through
+    it -- the root-join check in :meth:`ProjectPaths.of` misses it too, because
+    ``.theurian`` there is an honest directory.
+
+    ``root`` is re-resolved rather than trusted. Every ``ProjectPaths`` is built
+    through :meth:`ProjectPaths.of`, which resolves it, so the re-resolve is a
+    no-op there -- but a caller holding an *unresolved* root (a symlinked ``/tmp``
+    on macOS, a repository under a symlinked home) would otherwise compare a
+    resolved ``path`` against an unresolved ``root`` and refuse every legitimate
+    access. Dropping it is pinned against by
+    ``test_project_paths_containment.py``'s symlinked-root case.
+
+    ``resolve`` (non-strict) is what handles the creation case correctly. A first
+    write into a not-yet-created target has no inode of its own, but ``resolve``
+    follows every *existing* symlink on the way down -- the ``state`` directory
+    the write lands in -- and normalises only the missing tail, so a target under
+    an escaping (or even dangling) symlinked parent still resolves outside and is
+    refused before it is created (measured, for both an existing and a dangling
+    parent). Walking up to the deepest existing ancestor instead was wrong in the
+    other direction: when the whole project tree does not exist yet, that walk
+    climbs *above* the root to its parent and refuses a path that is lexically
+    inside an as-yet-uncreated ``.theurian``.
+
+    A symbolic link is refused only when it *escapes*: a link whose resolved
+    target is inside ``root`` is legitimate and passes untouched. A symlink *loop*
+    inside the tree resolves lexically inside it and is not an escape; the
+    operation that dereferences it fails downstream with the ``ELOOP`` its own
+    error path already names.
+    """
+    resolved_root = root.resolve()
+    try:
+        resolved = path.resolve()
+    except (OSError, ValueError) as exc:
+        # An embedded NUL raises `ValueError`, a name the platform rejects raises
+        # `OSError`; neither is a `TheurianError`, and callers only narrow to that
+        # (the conversion `index_for` and `entry_root` make). Defensive parity
+        # with those: every path reaching here is built from the already-validated
+        # `knowledge_dir` and constant child names, so this arm is a contract
+        # guarantee, not a branch real data drives.
+        raise ProjectError(
+            f"{path} does not resolve to a location inside {resolved_root}: {exc}",
+            remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+        ) from exc
+    if not resolved.is_relative_to(resolved_root):
+        raise ProjectError(
+            f"{path} resolves outside the project root {resolved_root}, so a read or write "
+            f"through it would land outside the working tree.",
+            remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+        )
+    return path
+
+
 @dataclass(frozen=True, slots=True)
 class ProjectPaths:
     """Absolute paths derived from a project root.
@@ -314,17 +401,42 @@ class ProjectPaths:
     root: Path
     knowledge_dir: Path
 
+    def _contained(self, path: Path) -> Path:
+        """Prove ``path`` cannot deliver a read or write outside the tree.
+
+        Every filesystem path this class hands out routes through here, and so
+        does every directory :func:`initialize_project` creates, so the
+        containment is a property of one chokepoint (:func:`_contain`) rather than
+        a check duplicated per helper -- a helper added later that forgets it is
+        caught by ``tests/unit/test_project_paths_containment.py``'s reflection
+        sweep. The mechanism, the anchoring, and the class it closes (the
+        authored-symlink #237/T-5 class, not the derived-cache #394 face) are all
+        recorded on :func:`_contain`.
+        """
+        return _contain(self.root, path)
+
     @property
     def migrations(self) -> Path:
+        # The one helper deliberately *not* routed through `_contained`. It is
+        # consumed inside `resolve_context` (`load_migrations(paths.root,
+        # paths.migrations, ...)`), where the migration loader already contains it
+        # -- `_refuse_unusable_migrations_directory_symlink` proves the migrations
+        # directory resolves inside the root -- and does so with a culprit-naming
+        # remedy the CLI deliberately grades EXIT_STATE_ERROR (`_require_project`'s
+        # `except PathEscapeError`, issue #233). Routing it here would pre-empt
+        # that richer refusal with `_contained`'s coarser one and regrade a
+        # deliberate exit 4 to exit 1. The containment property the sweep asserts
+        # still holds for it -- just via the loader, pinned by
+        # `tests/unit/test_migration_loader_errors.py` and the CLI validate tests.
         return self.knowledge_dir / "migrations"
 
     @property
     def knowledge(self) -> Path:
-        return self.knowledge_dir / "knowledge"
+        return self._contained(self.knowledge_dir / "knowledge")
 
     @property
     def specifications(self) -> Path:
-        return self.knowledge_dir / "specifications"
+        return self._contained(self.knowledge_dir / "specifications")
 
     @property
     def proposals(self) -> Path:
@@ -334,7 +446,7 @@ class ProjectPaths:
         input, and it is the one thing under ``.theurian/`` written by an agent
         and read by a person.
         """
-        return self.knowledge_dir / "proposals"
+        return self._contained(self.knowledge_dir / "proposals")
 
     @property
     def proposals_local(self) -> Path:
@@ -351,7 +463,7 @@ class ProjectPaths:
         differs, and ``propose accept`` reads both through one implementation:
         a second location must not become a second reader (SEC-7).
         """
-        return self.knowledge_dir / "proposals-local"
+        return self._contained(self.knowledge_dir / "proposals-local")
 
     @property
     def config(self) -> Path:
@@ -363,19 +475,24 @@ class ProjectPaths:
         from a literal, so the path and its only reader cannot end up meaning
         different files.
         """
-        return self.knowledge_dir / PROJECT_CONFIG_FILE
+        return self._contained(self.knowledge_dir / PROJECT_CONFIG_FILE)
 
     @property
     def state(self) -> Path:
-        return self.knowledge_dir / "state"
+        return self._contained(self.knowledge_dir / "state")
 
     @property
     def runtime(self) -> Path:
-        return self.knowledge_dir / "runtime"
+        return self._contained(self.knowledge_dir / "runtime")
 
     @property
     def active_pointer(self) -> Path:
-        return self.state / "active.json"
+        # Built from `knowledge_dir`, not from `self.state`, so accessing it runs
+        # `_contained` once over the whole path rather than twice (once for the
+        # `state` property, again for the leaf). One `resolve` of the full path
+        # follows a symlink at `state` *or* the leaf, so the single check is no
+        # weaker -- an escaping `state` is still caught here.
+        return self._contained(self.knowledge_dir / "state" / "active.json")
 
     @property
     def active_index_pointer(self) -> Path:
@@ -386,7 +503,7 @@ class ProjectPaths:
         canonical, and swapping the pointer is what makes a blue/green index
         build a rename rather than an outage.
         """
-        return self.state / "active-index.json"
+        return self._contained(self.knowledge_dir / "state" / "active-index.json")
 
     def index_for(self, index_build_id: str) -> Path:
         """Where one index build lives.
@@ -404,9 +521,10 @@ class ProjectPaths:
             ProjectError: If the id would escape the state directory, or cannot
                 name a path at all.
         """
+        state = self.state  # one `_contained`; an escaping `state` refuses here
         try:
-            candidate = (self.state / f"theurian-index-{index_build_id}.sqlite").resolve()
-            contained = candidate.is_relative_to(self.state.resolve())
+            candidate = (state / f"theurian-index-{index_build_id}.sqlite").resolve()
+            contained = candidate.is_relative_to(state.resolve())
         except (ValueError, OSError) as exc:
             # An embedded NUL makes `resolve` raise `ValueError`, and a name the
             # platform rejects makes it raise `OSError`. Neither is a
@@ -424,23 +542,71 @@ class ProjectPaths:
         # a caller's later `is_file()` cannot raise the error just converted.
         if not contained:
             raise ProjectError(
-                f"The index pointer names {index_build_id!r}, which resolves outside {self.state}.",
+                f"The index pointer names {index_build_id!r}, which resolves outside {state}.",
                 remedy=INDEX_POINTER_REMEDY,
             )
         return candidate
 
     @property
     def write_lock(self) -> Path:
-        return self.runtime / "write.lock"
+        return self._contained(self.knowledge_dir / "runtime" / "write.lock")
 
     def database_for(self, state_hash: StateHash) -> Path:
-        return self.state / state_hash.database_filename
+        return self._contained(self.knowledge_dir / "state" / state_hash.database_filename)
 
     @classmethod
     def of(cls, root: Path, knowledge_directory: PurePosixPath | None = None) -> ProjectPaths:
         directory = knowledge_directory or DEFAULT_KNOWLEDGE_DIRECTORY
         resolved = root.resolve()
-        return cls(root=resolved, knowledge_dir=resolved / str(directory))
+        knowledge_dir = resolved / str(directory)
+
+        # Contain the `.theurian` join itself, not only the index-pointer id that
+        # later resolves under it. `resolved` resolves the *root*; the join is
+        # not, so a clone that ships `.theurian` as a symbolic link to
+        # `../elsewhere` puts every state read and write outside the working tree
+        # (#237, T-5) -- `migrate apply` writing its state database, active
+        # pointer and write lock into the link's target and returning 0, and the
+        # `migrate status` after it reading `stateBuilt: true` back from there.
+        #
+        # Kept, not subsumed into `_contain`. `_contain` guards every path
+        # *derived* from `knowledge_dir`, but `knowledge_dir` is a field the class
+        # also hands out directly -- `project status` reads `knowledge_dir.is_dir()`
+        # (cli/commands.py) without going through a helper -- so a symlinked
+        # `.theurian` would follow the link on those direct uses if this check were
+        # removed. It is also the earliest refusal: it fires while resolving the
+        # command context, before a single helper is touched. `_contain` closes the
+        # complementary face a descendant symlink opens (`.theurian/state ->
+        # ../elsewhere`), which this check misses because `.theurian` there is an
+        # honest directory.
+        #
+        # Checked against `resolved`, never against the join's own resolution:
+        # `index_for` compares a candidate to `self.state.resolve()`, but when
+        # `.theurian` itself escapes, `self.state.resolve()` *is* the escaped
+        # location and the comparison is trivially satisfied -- which is why the
+        # containment must live at the join and be anchored to the true root.
+        # Resolving the whole join (not just its last component) also follows a
+        # symlinked ancestor of `.theurian`, so a link anywhere on its path is
+        # caught the same way.
+        try:
+            escapes = not knowledge_dir.resolve().is_relative_to(resolved)
+        except (OSError, ValueError) as exc:
+            # A symlink cycle (`ELOOP`) or a name the platform rejects makes
+            # `resolve` raise rather than answer a location. Neither is a
+            # `TheurianError`, and a join that will not resolve to a place inside
+            # the project is refused for the same reason one that resolves
+            # outside is: nothing derived from it can be trusted to stay inside.
+            raise ProjectError(
+                f"{directory} does not resolve to a location inside {resolved}: {exc}",
+                remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+            ) from exc
+        if escapes:
+            raise ProjectError(
+                f"{directory} resolves outside the project root {resolved}, so every file "
+                f"Theurian would read or write under it is outside the working tree.",
+                remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+            )
+
+        return cls(root=resolved, knowledge_dir=knowledge_dir)
 
 
 def derive_project_id(root: Path) -> ProjectId:
@@ -469,11 +635,22 @@ def initialize_project(paths: ProjectPaths) -> tuple[str, ...]:
 
     Never overwrites. Returns the project-relative paths it created, so setup can
     report exactly what changed rather than claiming success vaguely (§34).
+
+    A *writer* under the project tree, so it belongs to the same population
+    ``ProjectPaths``'s helpers do and routes every ``mkdir``/``touch`` target
+    through the same :func:`_contain` chokepoint. It does not go through a
+    ``ProjectPaths`` helper because its targets are arbitrary subpaths of
+    ``knowledge_dir`` rather than the named paths the class exposes -- but a
+    clone can track ``.theurian/knowledge`` as a symbolic link to outside the
+    tree exactly as it can ``.theurian`` itself, and without this ``init`` would
+    ``mkdir`` the knowledge subtree at the link's target and report the paths as
+    if in-tree (#237, T-5). Refusing before the create keeps a partial run inside
+    the tree: nothing is created outside it, whichever target the link sits on.
     """
     created: list[str] = []
 
     for relative in INITIAL_DIRECTORIES:
-        directory = paths.knowledge_dir / relative
+        directory = _contain(paths.root, paths.knowledge_dir / relative)
         if not directory.exists():
             directory.mkdir(parents=True)
             created.append(str(Path(paths.knowledge_dir.name) / relative))
@@ -485,7 +662,7 @@ def initialize_project(paths: ProjectPaths) -> tuple[str, ...]:
     # kept off Git (ADR-0028) -- and the argument lands the same way: a
     # `.gitkeep` there would commit the one directory a clone must not carry.
     for relative in ("migrations", "specifications", "proposals"):
-        keep = paths.knowledge_dir / relative / ".gitkeep"
+        keep = _contain(paths.root, paths.knowledge_dir / relative / ".gitkeep")
         if not keep.exists():
             keep.touch()
             created.append(str(Path(paths.knowledge_dir.name) / relative / ".gitkeep"))

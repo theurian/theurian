@@ -681,7 +681,22 @@ def init_command(as_json: JsonOption = False) -> None:
         )
         return
 
-    created = initialize_project(context.paths)
+    try:
+        created = initialize_project(context.paths)
+    except TheurianError as exc:
+        # `initialize_project` now refuses a `.theurian` subtree that a tracked
+        # symlink points outside the working tree (#237), rather than `mkdir`-ing
+        # the knowledge directories at the link's target. Its `.remedy` names the
+        # cure; without this `except` it arrived as a Typer traceback, since the
+        # only guard here wrapped `resolve_context`.
+        _fail(
+            str(exc),
+            remedy=_context_remedy(exc, default="Repair the .theurian layout, then re-run."),
+            as_json=as_json,
+            code=1,
+        )
+        return
+
     try:
         gitignore_changed, _ = ensure_gitignore(context.paths.root)
     except TheurianError as exc:
