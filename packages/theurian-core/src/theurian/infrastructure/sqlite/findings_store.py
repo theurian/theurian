@@ -63,15 +63,34 @@ _INSERT_METADATA: Final = (
 )
 
 
+#: The read-path remedy: the store is a projection of git history (ADR-0004), so
+#: the cure for a damaged or stale *file* is to rebuild it, never to repair it in
+#: place.
+_REBUILD_REMEDY: Final = "Run `theurian findings build` to rebuild the store from git history."
+
+#: The write-path remedy. Naming the rebuild command here would be circular: a
+#: write failure means the rebuild command itself could not finish, so telling the
+#: caller to re-run it points back at the thing that just failed. What actually
+#: causes a write to fail -- an unwritable ``.theurian/state`` directory or a full
+#: disk -- is what the remedy names instead.
+_WRITE_REMEDY: Final = (
+    "Check that .theurian/state is writable and there is free disk space, then "
+    "retry `theurian findings build`."
+)
+
+
 class FindingsStoreError(TheurianError):
     """The review-finding store could not be written or read.
 
-    Carries a rebuild remedy: the store is a projection of git history (ADR-0004),
-    so the cure for a damaged file is to rebuild it, never to repair it in place.
+    The remedy differs by which side failed. A **write**-path failure (the store
+    could not be created or replaced) carries :data:`_WRITE_REMEDY`. A **read**-path
+    failure (the file exists but its content is damaged, stale, or otherwise
+    unreadable) carries the default :data:`_REBUILD_REMEDY`: the cure for a damaged
+    projection is to reconstruct it from source, never to repair it in place.
     """
 
-    def __init__(self, detail: str) -> None:
-        self.remedy = "Run `theurian findings build` to rebuild the store from git history."
+    def __init__(self, detail: str, *, remedy: str = _REBUILD_REMEDY) -> None:
+        self.remedy = remedy
         super().__init__(f"The review-finding store could not be used ({detail}).")
 
 
@@ -140,15 +159,22 @@ class SqliteReviewFindingStore:
         written in one transaction: a crash before it commits leaves no stamp row,
         which reads as "not current" and forces a clean rebuild rather than
         publishing a half-written store.
+
+        The whole operation, including directory creation and the unlink, runs
+        inside one ``try``: an earlier cut left ``mkdir``/``unlink`` outside it,
+        catching only ``sqlite3.Error``, so a ``PermissionError`` on either escaped
+        as a raw traceback past every ``TheurianError`` handler above this adapter
+        (the same shape ``project_service.index_for`` converts ``(ValueError,
+        OSError)`` for). Both ``OSError`` and ``sqlite3.Error`` convert here.
         """
         finding_rows = _finding_rows(load.accepted)
         rejected_rows = _rejected_rows(load.rejected)
         stamped_at = datetime.now(UTC).isoformat()
 
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        # Wholesale: start from no file, so no earlier schema or row can survive.
-        self._path.unlink(missing_ok=True)
         try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            # Wholesale: start from no file, so no earlier schema or row can survive.
+            self._path.unlink(missing_ok=True)
             with closing(sqlite3.connect(self._path)) as connection:
                 for pragma in CONNECTION_PRAGMAS:
                     connection.execute(pragma)
@@ -161,19 +187,28 @@ class SqliteReviewFindingStore:
                     _INSERT_METADATA, (FINDINGS_SCHEMA_VERSION, PARSER_STAMP, stamped_at)
                 )
                 connection.commit()
-        except sqlite3.Error as exc:
-            raise FindingsStoreError(f"writing {self._path.name}: {exc}") from exc
+        except (sqlite3.Error, OSError) as exc:
+            raise FindingsStoreError(
+                f"writing {self._path.name}: {exc}", remedy=_WRITE_REMEDY
+            ) from exc
 
     def stamp(self) -> FindingsStamp | None:
         """The recorded (schema version, parser stamp), or ``None`` if unreadable.
 
-        A missing file, a missing metadata row, or an unreadable one all answer
-        ``None`` -- each means the same thing to a staleness check: there is no
-        trustworthy stamp, so a rebuild is owed. A corrupt file is *not* raised
-        here for that reason; :meth:`dump`, which promises real content, is where a
-        damaged store becomes loud.
+        A missing file, a missing metadata row, an unreadable one, or an OS-level
+        failure merely checking whether the file exists (an untraversable parent
+        directory raises ``PermissionError`` from :meth:`Path.exists`, which does
+        not treat every ``OSError`` as "missing") all answer ``None`` -- each means
+        the same thing to a staleness check: there is no trustworthy stamp, so a
+        rebuild is owed. A corrupt file is *not* raised here for that reason;
+        :meth:`dump`, which promises real content, is where a damaged store becomes
+        loud.
         """
-        if not self._path.exists():
+        try:
+            exists = self._path.exists()
+        except OSError:
+            return None
+        if not exists:
             return None
         try:
             with self._read() as connection:
@@ -181,7 +216,7 @@ class SqliteReviewFindingStore:
                     "SELECT findings_schema_version, parser_stamp FROM findings_metadata "
                     "WHERE id = 1"
                 ).fetchone()
-        except sqlite3.Error:
+        except (sqlite3.Error, OSError):
             return None
         if row is None:
             return None
@@ -209,10 +244,17 @@ class SqliteReviewFindingStore:
 
         Not a serving read: it takes no content predicate and returns the whole
         store, so a test can assert the projection equals its git source. A missing
-        store dumps empty; a damaged one raises rather than returning a partial dump
-        that would read as a smaller-but-valid corpus.
+        store dumps empty; a damaged or otherwise unreadable one -- including an
+        OS-level failure merely checking whether the file exists, since
+        :meth:`Path.exists` does not treat every ``OSError`` as "missing" -- raises
+        rather than returning a partial dump that would read as a smaller-but-valid
+        corpus.
         """
-        if not self._path.exists():
+        try:
+            exists = self._path.exists()
+        except OSError as exc:
+            raise FindingsStoreError(f"reading {self._path.name}: {exc}") from exc
+        if not exists:
             return FindingsDump(findings=(), rejected=())
         try:
             with self._read() as connection:
@@ -225,7 +267,7 @@ class SqliteReviewFindingStore:
                     "SELECT commit_sha, position, raw_line, reason FROM rejected_trailers "
                     "ORDER BY commit_sha, position"
                 ).fetchall()
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError) as exc:
             raise FindingsStoreError(f"reading {self._path.name}: {exc}") from exc
         return FindingsDump(
             findings=tuple(_stored_finding(row) for row in finding_rows),

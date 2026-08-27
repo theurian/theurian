@@ -53,12 +53,19 @@ def findings_build(as_json: JsonOption = False) -> None:
         source=GitTrailerFindingSource(paths.root),
         store_factory=SqliteReviewFindingStore,
     )
-    request = FindingsBuildRequest(store_path=paths.findings_for(_FINDINGS_STORE_ID))
     try:
+        # `findings_for` is inside the try too: it resolves the store path through
+        # `ProjectPaths._contained`, which can itself raise a `ProjectError` (a
+        # `TheurianError`) -- an earlier cut left it outside, so that escape
+        # bypassed this handler just like the write-path escape below.
+        request = FindingsBuildRequest(store_path=paths.findings_for(_FINDINGS_STORE_ID))
         report = builder.build(request)
     except TheurianError as exc:
-        # git history unreachable (a fresh clone), or the store could not be
-        # written -- both carry their own rebuild/fetch remedy.
+        # Each failure carries its own remedy: a path that cannot be contained
+        # names the escape, unreachable git history (a fresh clone) names the
+        # fetch, and a store write failure names what write failures are actually
+        # caused by (see `FindingsStoreError`'s write/read remedy split) --
+        # never a remedy that points back at this same command.
         _fail(str(exc), remedy=exc.remedy or "Run `theurian doctor`.", as_json=as_json, code=1)
         return
     _emit({**report, "built": True}, as_json=as_json)
