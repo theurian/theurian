@@ -329,17 +329,89 @@ class ProjectPaths:
     root: Path
     knowledge_dir: Path
 
+    def _contained(self, path: Path) -> Path:
+        """Prove ``path`` cannot deliver a read or write outside the tree.
+
+        Every filesystem path this class hands out routes through here, so a
+        committed symbolic link at *any* level -- ``.theurian`` itself (also
+        refused earlier, in :meth:`of`), a ``state`` or ``runtime`` directory, or
+        a leaf file a clone force-added past the ADR-0004 ignore -- cannot
+        redirect a state read or write outside the tree the clone gave the user
+        (#237, T-5). A single chokepoint rather than a check per helper: a helper
+        added later that forgets it is caught by
+        ``tests/unit/test_project_paths_containment.py``'s reflection sweep.
+
+        Anchored to :attr:`root`, the *resolved* working-tree root, never to a
+        nearer ancestor. ``index_for`` compared a candidate to
+        ``self.state.resolve()``, but when ``.theurian/state`` is itself an
+        escaping symlink ``self.state.resolve()`` *is* the escaped location, so
+        the check was trivially satisfied and a descendant symlink walked
+        straight through it -- the root-join check in :meth:`of` misses it too,
+        because ``.theurian`` there is an honest directory.
+
+        ``resolve`` (non-strict) is what handles the creation case correctly. A
+        first write into a not-yet-created target has no inode of its own, but
+        ``resolve`` follows every *existing* symlink on the way down -- the
+        ``state`` directory the write lands in -- and normalises only the missing
+        tail, so a target under an escaping (or even dangling) symlinked parent
+        still resolves outside and is refused before it is created (measured, for
+        both an existing and a dangling parent). Walking up to the deepest
+        existing ancestor instead was wrong in the other direction: when the
+        whole project tree does not exist yet, that walk climbs *above* the root
+        to its parent and refuses a path that is lexically inside an
+        as-yet-uncreated ``.theurian``.
+
+        A symbolic link is refused only when it *escapes*: a link whose resolved
+        target is inside :attr:`root` is legitimate (``/tmp`` symlinked to
+        ``/private/tmp`` on macOS, a repository under a symlinked home) and
+        passes untouched. A symlink *loop* inside the tree resolves lexically
+        inside it and is not an escape; the operation that dereferences it fails
+        downstream with the ``ELOOP`` its own error path already names.
+        """
+        root = self.root.resolve()
+        try:
+            resolved = path.resolve()
+        except (OSError, ValueError) as exc:
+            # An embedded NUL raises `ValueError`, a name the platform rejects
+            # raises `OSError`; neither is a `TheurianError`, and callers only
+            # narrow to that (the conversion `index_for` and `entry_root` make).
+            # Defensive parity with those: every path reaching here is built from
+            # the already-validated `knowledge_dir` and constant child names, so
+            # this arm is a contract guarantee, not a branch real data drives.
+            raise ProjectError(
+                f"{path} does not resolve to a location inside {root}: {exc}",
+                remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+            ) from exc
+        if not resolved.is_relative_to(root):
+            raise ProjectError(
+                f"{path} resolves outside the project root {root}, so a read or write "
+                f"through it would land outside the working tree.",
+                remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+            )
+        return path
+
     @property
     def migrations(self) -> Path:
+        # The one helper deliberately *not* routed through `_contained`. It is
+        # consumed inside `resolve_context` (`load_migrations(paths.root,
+        # paths.migrations, ...)`), where the migration loader already contains it
+        # -- `_refuse_unusable_migrations_directory_symlink` proves the migrations
+        # directory resolves inside the root -- and does so with a culprit-naming
+        # remedy the CLI deliberately grades EXIT_STATE_ERROR (`_require_project`'s
+        # `except PathEscapeError`, issue #233). Routing it here would pre-empt
+        # that richer refusal with `_contained`'s coarser one and regrade a
+        # deliberate exit 4 to exit 1. The containment property the sweep asserts
+        # still holds for it -- just via the loader, pinned by
+        # `tests/unit/test_migration_loader_errors.py` and the CLI validate tests.
         return self.knowledge_dir / "migrations"
 
     @property
     def knowledge(self) -> Path:
-        return self.knowledge_dir / "knowledge"
+        return self._contained(self.knowledge_dir / "knowledge")
 
     @property
     def specifications(self) -> Path:
-        return self.knowledge_dir / "specifications"
+        return self._contained(self.knowledge_dir / "specifications")
 
     @property
     def proposals(self) -> Path:
@@ -349,7 +421,7 @@ class ProjectPaths:
         input, and it is the one thing under ``.theurian/`` written by an agent
         and read by a person.
         """
-        return self.knowledge_dir / "proposals"
+        return self._contained(self.knowledge_dir / "proposals")
 
     @property
     def proposals_local(self) -> Path:
@@ -366,7 +438,7 @@ class ProjectPaths:
         differs, and ``propose accept`` reads both through one implementation:
         a second location must not become a second reader (SEC-7).
         """
-        return self.knowledge_dir / "proposals-local"
+        return self._contained(self.knowledge_dir / "proposals-local")
 
     @property
     def config(self) -> Path:
@@ -378,19 +450,19 @@ class ProjectPaths:
         from a literal, so the path and its only reader cannot end up meaning
         different files.
         """
-        return self.knowledge_dir / PROJECT_CONFIG_FILE
+        return self._contained(self.knowledge_dir / PROJECT_CONFIG_FILE)
 
     @property
     def state(self) -> Path:
-        return self.knowledge_dir / "state"
+        return self._contained(self.knowledge_dir / "state")
 
     @property
     def runtime(self) -> Path:
-        return self.knowledge_dir / "runtime"
+        return self._contained(self.knowledge_dir / "runtime")
 
     @property
     def active_pointer(self) -> Path:
-        return self.state / "active.json"
+        return self._contained(self.state / "active.json")
 
     @property
     def active_index_pointer(self) -> Path:
@@ -401,7 +473,7 @@ class ProjectPaths:
         canonical, and swapping the pointer is what makes a blue/green index
         build a rename rather than an outage.
         """
-        return self.state / "active-index.json"
+        return self._contained(self.state / "active-index.json")
 
     def index_for(self, index_build_id: str) -> Path:
         """Where one index build lives.
@@ -446,10 +518,10 @@ class ProjectPaths:
 
     @property
     def write_lock(self) -> Path:
-        return self.runtime / "write.lock"
+        return self._contained(self.runtime / "write.lock")
 
     def database_for(self, state_hash: StateHash) -> Path:
-        return self.state / state_hash.database_filename
+        return self._contained(self.state / state_hash.database_filename)
 
     @classmethod
     def of(cls, root: Path, knowledge_directory: PurePosixPath | None = None) -> ProjectPaths:
@@ -464,8 +536,16 @@ class ProjectPaths:
         # (#237, T-5) -- `migrate apply` writing its state database, active
         # pointer and write lock into the link's target and returning 0, and the
         # `migrate status` after it reading `stateBuilt: true` back from there.
-        # Every path in this class derives from `knowledge_dir`, so containing it
-        # here refuses both faces at once, upstream of every helper.
+        #
+        # Kept, not subsumed into `_contained`. `_contained` guards every path
+        # *derived* from `knowledge_dir`, but `knowledge_dir` is a field the class
+        # also hands out directly -- `initialize_project` writes `paths.knowledge_dir
+        # / relative` without going through a helper -- so a symlinked `.theurian`
+        # would escape those direct uses if this check were removed. It is also the
+        # earliest refusal: it fires while resolving the command context, before a
+        # single helper is touched. `_contained` closes the complementary face a
+        # descendant symlink opens (`.theurian/state -> ../elsewhere`), which this
+        # check misses because `.theurian` there is an honest directory.
         #
         # Checked against `resolved`, never against the join's own resolution:
         # `index_for` compares a candidate to `self.state.resolve()`, but when

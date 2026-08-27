@@ -2129,6 +2129,30 @@ def _escape_the_theurian_directory(project: Path) -> Path:
     return shared
 
 
+def _escape_the_state_directory(project: Path) -> Path:
+    """Deliver ``.theurian/state`` as a symbolic link that leaves the tree.
+
+    The descendant face of #237: ``.theurian`` stays an honest directory (so the
+    root-join check waves it through), and a clone force-adds ``state`` as a
+    symlink past the ADR-0004 ignore. The state database, active pointer and any
+    read of them would follow it outside the tree. ``state`` is derived and empty
+    after ``init``, so replacing it models the committed link without losing
+    content.
+
+    Returns the out-of-tree directory the writes would land in.
+    """
+    shared_state = project.parent / "shared_state"
+    shared_state.mkdir(exist_ok=True)
+    shutil.rmtree(project / ".theurian" / "state")
+    # Relative to the link's own directory, `.theurian/`: two `..` reach the
+    # tree's parent, where the out-of-tree target sits.
+    (project / ".theurian" / "state").symlink_to(Path("..") / ".." / "shared_state")
+    assert not shared_state.resolve().is_relative_to(project.resolve()), (
+        "the fixture must place the state directory genuinely outside the clone's real tree"
+    )
+    return shared_state
+
+
 def _escaped_state_artefacts(shared: Path) -> list[Path]:
     """Every state or lifecycle artefact that landed outside the tree.
 
@@ -2204,6 +2228,58 @@ def test_status_over_an_escaping_theurian_symlink_reads_nothing_from_outside_the
 
     # Exit 1 for the same reason the write face refuses at exit 1: the escape is
     # caught resolving the context, before any pointer under the tree is read.
+    assert code == 1
+    assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_apply_refuses_an_escaping_state_symlink_and_writes_nothing_outside_the_tree(
+    project: Path,
+) -> None:
+    """#237 descendant face: the root-join check alone did not close this.
+
+    ``.theurian`` is an honest directory, so ``ProjectPaths.of``'s join check
+    passes it -- but a clone force-added ``.theurian/state`` as a symlink to
+    ``../../shared_state`` past the ADR-0004 ignore. Reproduced against the real
+    CLI before the per-target containment: an empty ``migrate apply`` seeded the
+    state database and active pointer in ``shared_state``, outside the clone.
+    ``ProjectPaths._contained`` refuses the moment ``paths.state`` is derived, so
+    nothing escapes.
+    """
+    _invoke("init")
+    shared_state = _escape_the_state_directory(project)
+
+    code, payload = _invoke("migrate", "apply")
+
+    assert code == 1
+    assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
+    assert _escaped_state_artefacts(shared_state) == [], (
+        "migrate apply wrote state outside the tree"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_status_over_an_escaping_state_symlink_reads_nothing_from_outside_the_tree(
+    project: Path,
+) -> None:
+    """The read face of the descendant escape.
+
+    A real state is built, then ``.theurian/state`` is replaced by a symlink to a
+    directory outside the tree holding that state. Before the per-target
+    containment, ``migrate status`` followed the link and read ``stateBuilt:
+    true`` back from outside the clone; ``_contained`` refuses when ``paths.state``
+    is derived, so the read never leaves the tree.
+    """
+    _invoke("init")
+    assert _invoke("migrate", "apply")[0] == 0
+    # Move the built state out of the tree, then point the symlink at it -- the
+    # shape a clone could carry with a genuine build sitting at the link's target.
+    shared_state = project.parent / "shared_state"
+    shutil.move(str(project / ".theurian" / "state"), str(shared_state))
+    (project / ".theurian" / "state").symlink_to(Path("..") / ".." / "shared_state")
+
+    code, payload = _invoke("migrate", "status")
+
     assert code == 1
     assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
 

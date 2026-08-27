@@ -18,7 +18,9 @@ directly.
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
+from typing import get_type_hints
 
 import pytest
 
@@ -27,10 +29,18 @@ from theurian.application.project_service import (
     ProjectError,
     ProjectPaths,
 )
+from theurian.domain.state import StateHash
+from theurian.domain.values import ContentHash
+from theurian.security.project_config import PROJECT_CONFIG_FILE
 
 _NEEDS_SYMLINKS = pytest.mark.skipif(
     sys.platform == "win32", reason="symlinks need privileges on Windows"
 )
+
+#: A throwaway state hash for ``database_for``. Its value never reaches an
+#: assertion: every escape test refuses on the ``state`` component before the
+#: filename it derives is used.
+_SAMPLE_STATE_HASH = StateHash(ContentHash("a" * 64))
 
 
 def test_an_honest_real_theurian_resolves_to_a_contained_knowledge_dir(tmp_path: Path) -> None:
@@ -162,3 +172,223 @@ def test_a_symlinked_ancestor_of_the_knowledge_dir_that_escapes_is_refused(tmp_p
         ProjectPaths.of(root, PurePosixPath("nested/.theurian"))
 
     assert excinfo.value.remedy == KNOWLEDGE_DIR_ESCAPE_REMEDY
+
+
+# -- The descendant class: a committed symlink at any target, not just `.theurian` -----
+#
+# `.of`'s root-join check contains `.theurian` and its ancestors, but a clone can
+# force-add a symlink at a *descendant* -- `.theurian/state -> ../../elsewhere`,
+# past the ADR-0004 ignore -- and `.theurian` stays an honest directory that
+# check waves through. `ProjectPaths._contained` closes that class for every path
+# the class derives. The sweep below is exhaustive by reflection: a helper added
+# later without containment is caught, not remembered.
+
+#: How to call each path-returning helper, and which ``.theurian`` child a clone
+#: would make an escaping symlink to reach it. `index_for` and `database_for` are
+#: methods; the rest are properties. `_reflected_path_helpers` proves this map
+#: names every helper on the class, so a new one that skips containment fails the
+#: completeness test rather than passing unseen.
+_HELPER_CALLS: dict[str, Callable[[ProjectPaths], Path]] = {
+    "migrations": lambda p: p.migrations,
+    "knowledge": lambda p: p.knowledge,
+    "specifications": lambda p: p.specifications,
+    "proposals": lambda p: p.proposals,
+    "proposals_local": lambda p: p.proposals_local,
+    "config": lambda p: p.config,
+    "state": lambda p: p.state,
+    "runtime": lambda p: p.runtime,
+    "active_pointer": lambda p: p.active_pointer,
+    "active_index_pointer": lambda p: p.active_index_pointer,
+    "write_lock": lambda p: p.write_lock,
+    "index_for": lambda p: p.index_for("01K1AAAAAA01234567890ABCDE"),
+    "database_for": lambda p: p.database_for(_SAMPLE_STATE_HASH),
+}
+
+#: The ``.theurian`` child whose symlink escape reaches each helper. A leaf helper
+#: (``active_pointer``) escapes through its parent directory (``state``); a
+#: directory helper escapes through itself.
+_ESCAPING_CHILD: dict[str, str] = {
+    "migrations": "migrations",
+    "knowledge": "knowledge",
+    "specifications": "specifications",
+    "proposals": "proposals",
+    "proposals_local": "proposals-local",
+    "config": PROJECT_CONFIG_FILE,
+    "state": "state",
+    "runtime": "runtime",
+    "active_pointer": "state",
+    "active_index_pointer": "state",
+    "write_lock": "runtime",
+    "index_for": "state",
+    "database_for": "state",
+}
+
+#: The one helper deliberately contained by its *reader* rather than by
+#: ``_contained``: ``migrations`` is consumed inside ``resolve_context``, where
+#: the migration loader already refuses a directory that escapes the root, with a
+#: culprit-naming remedy the CLI grades ``EXIT_STATE_ERROR`` (issue #233).
+#: Routing it through ``_contained`` would pre-empt that richer refusal with a
+#: coarser one and regrade a deliberate exit 4 to exit 1. It stays in the
+#: reflection population (the property must hold for it) but out of the
+#: ``_contained`` refusal sweep, and its own guard below pins the exclusion.
+_READER_CONTAINED: set[str] = {"migrations"}
+
+
+def _reflected_path_helpers() -> set[str]:
+    """Every public member of :class:`ProjectPaths` that yields a ``Path``.
+
+    Read off the class by reflection rather than remembered, so the sweep's
+    coverage is a property of the shipped class and not of a hand-list that the
+    next helper silently outgrows. ``of`` is excluded because it returns a
+    :class:`ProjectPaths`, and ``_contained`` because it is the private
+    chokepoint the sweep exists to prove every *other* member routes through --
+    both fall out of the ``return is Path`` test rather than being named here.
+    """
+    found: set[str] = set()
+    for name, member in vars(ProjectPaths).items():
+        if name.startswith("_"):
+            continue
+        if isinstance(member, property):
+            function = member.fget
+        elif isinstance(member, classmethod):
+            function = member.__func__
+        elif callable(member):
+            function = member
+        else:
+            continue
+        if function is None:
+            continue
+        if get_type_hints(function).get("return") is Path:
+            found.add(name)
+    return found
+
+
+def test_the_containment_sweep_covers_every_path_returning_helper() -> None:
+    """The reflection guard: a new path helper must join the sweep or fail here.
+
+    Equality both ways -- a helper added to the class but not the map, or removed
+    from the class but left in the map -- so the sweep cannot quietly stop being
+    exhaustive. Every reflected helper is either swept through ``_contained`` or
+    named in :data:`_READER_CONTAINED` with a reason; a new one is neither until a
+    human classifies it, so it fails here rather than passing uncontained.
+    """
+    assert set(_HELPER_CALLS) == _reflected_path_helpers()
+    assert set(_ESCAPING_CHILD) == set(_HELPER_CALLS)
+    assert set(_HELPER_CALLS) >= _READER_CONTAINED
+
+
+@_NEEDS_SYMLINKS
+def test_migrations_is_contained_by_its_reader_not_the_chokepoint(tmp_path: Path) -> None:
+    """Pin the one deliberate exclusion so it cannot be silently changed.
+
+    ``migrations`` is not routed through ``_contained``: accessing it under an
+    escaping-``migrations`` fixture returns the (uncontained) path rather than
+    raising, because the migration loader contains it downstream with a
+    deliberately richer, exit-4 refusal. If someone later routes it through
+    ``_contained``, this goes RED and points at the reason in
+    ``ProjectPaths.migrations`` -- the same regression the CLI validate tests
+    (``test_validate_names_the_symlink_when_the_migrations_directory_escapes_the_project``)
+    would show as an exit-code change.
+    """
+    root = tmp_path / "repo"
+    (root / ".theurian").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / ".theurian" / "migrations").symlink_to(outside)
+    paths = ProjectPaths.of(root)
+
+    # No raise: the property hands back the path, and the loader refuses later.
+    assert paths.migrations == root.resolve() / ".theurian" / "migrations"
+
+
+@_NEEDS_SYMLINKS
+@pytest.mark.parametrize("helper", sorted(set(_HELPER_CALLS) - _READER_CONTAINED))
+def test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it(
+    tmp_path: Path, helper: str
+) -> None:
+    """The descendant class, swept over every helper the reflection guard found.
+
+    For each helper, the ``.theurian`` child on its path is a symlink that leaves
+    the tree -- the force-added-symlink shape a clone can carry past the ADR-0004
+    ignore. Every helper must refuse rather than hand back a path a read or write
+    would follow outside the working tree. A future helper that forgets
+    ``_contained`` returns an uncontained path here and goes RED.
+    """
+    root = tmp_path / "repo"
+    (root / ".theurian").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir(exist_ok=True)
+    (root / ".theurian" / _ESCAPING_CHILD[helper]).symlink_to(outside)
+    paths = ProjectPaths.of(root)
+
+    with pytest.raises(ProjectError) as excinfo:
+        _HELPER_CALLS[helper](paths)
+
+    assert excinfo.value.remedy == KNOWLEDGE_DIR_ESCAPE_REMEDY
+
+
+@_NEEDS_SYMLINKS
+def test_a_not_yet_created_state_db_under_an_escaping_state_symlink_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Refinement: the creation case, where a naive ``path.resolve()`` slips.
+
+    The state database does not exist yet -- a first ``migrate apply`` is about to
+    create it -- so there is no inode to resolve. The escape is via its parent,
+    the ``state`` symlink. Resolving the deepest *existing* directory entry
+    (the ``state`` link itself) rather than the missing file is what refuses the
+    write before it is created, closing the gap between "the file does not exist"
+    and "its parent is a link that leaves the tree".
+    """
+    root = tmp_path / "repo"
+    (root / ".theurian").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / ".theurian" / "state").symlink_to(outside, target_is_directory=True)
+    paths = ProjectPaths.of(root)
+
+    database = root / ".theurian" / "state" / _SAMPLE_STATE_HASH.database_filename
+    assert not database.exists(), "the DB must not exist, so the parent link is the only escape"
+    with pytest.raises(ProjectError):
+        paths.database_for(_SAMPLE_STATE_HASH)
+
+
+@_NEEDS_SYMLINKS
+def test_a_dangling_escaping_symlink_is_refused_not_read_as_absent(tmp_path: Path) -> None:
+    """The dangling-target variant of the creation case.
+
+    ``state -> ../../gone`` where the target does not exist: ``state.exists()`` is
+    ``False``, so a walk that keyed on existence alone would step *past* the link
+    to the honest ``.theurian`` and pass. The walk stops at the deepest directory
+    *entry* -- a symlink counts even dangling -- and resolves the link itself,
+    which lands outside the root. This is the crash-masked-as-absent shape the
+    first descendant probe hit before the target dir was created.
+    """
+    root = tmp_path / "repo"
+    (root / ".theurian").mkdir(parents=True)
+    (root / ".theurian" / "state").symlink_to(Path("..") / ".." / "gone")
+    paths = ProjectPaths.of(root)
+
+    with pytest.raises(ProjectError):
+        _ = paths.active_pointer
+
+
+@_NEEDS_SYMLINKS
+def test_a_symlinked_state_pointing_inside_the_root_writes_normally(tmp_path: Path) -> None:
+    """Refinement (AC-2, no false rejection): escape-the-ROOT, not is-a-symlink.
+
+    ``.theurian/state -> ../state_real`` where ``state_real`` sits inside the
+    clone is a legitimate contained link, so it must resolve fine and a write
+    through it must land inside the tree. The containment check refuses only a
+    link whose resolved target leaves the root, never a link as such.
+    """
+    root = tmp_path / "repo"
+    (root / ".theurian").mkdir(parents=True)
+    (root / "state_real").mkdir()
+    (root / ".theurian" / "state").symlink_to(Path("..") / "state_real")
+    paths = ProjectPaths.of(root)
+
+    assert paths.state.resolve().is_relative_to(root.resolve())
+    paths.active_pointer.write_text("{}")
+
+    assert (root / "state_real" / "active.json").read_text() == "{}"
