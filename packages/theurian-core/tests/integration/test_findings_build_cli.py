@@ -6,10 +6,10 @@ parser stamp, the store path, ``built`` -- was unpinned, and the two write-path
 error conversions FIX-1 (commit 8775b5c) and FIX-2 (commit f75f2d4) landed with
 no test driving the escape they closed. Written because a mutation run found
 five survivors in ``cli/findings_commands.py`` and ``application/findings_builder.py``
-and nothing else: dropping the store-id constant, pointing the trailer source at
-``.theurian`` instead of the project root, reporting ``built: False`` on success,
-swapping the two counts, and freezing the parser stamp all left the whole suite
-green.
+and nothing else (measured @98f11bc, 2026-08-28): dropping the store-id constant,
+pointing the trailer source at ``.theurian`` instead of the project root,
+reporting ``built: False`` on success, swapping the two counts, and freezing the
+parser stamp all left the whole suite green.
 
 Drives a real, hermetic git repository -- a bare origin and a working clone that
 serves as the project root, exactly as ``tests/integration/test_findings_builder.py``
@@ -246,18 +246,33 @@ def test_a_second_build_over_unchanged_history_reports_the_same_and_stays_logica
     reason="POSIX permission bits, and root is refused by none of them",
 )
 def test_a_read_only_state_directory_is_reported_as_a_graded_write_failure(project: Path) -> None:
-    """FIX-1 (commit 8775b5c): an ``OSError`` on the write path becomes the JSON error contract.
+    """FIX-1 (8775b5c): a bare ``PermissionError`` from ``unlink`` becomes the JSON contract.
 
-    Before the fix, ``replace_all``'s ``mkdir``/``unlink`` sat outside its own
-    ``try``, so a ``PermissionError`` there escaped every ``TheurianError``
-    handler as a raw traceback -- empty stdout under ``--json``. ``.theurian/state``
-    is pre-created and stripped of write permission, so the write, not the
-    read, is what refuses.
+    Measured (round-2 review): the original shape of this test -- a *fresh*
+    ``.theurian/state`` (no prior store file) chmod'd read-only before any build
+    ever ran -- does not exercise the ``OSError`` arm FIX-1 added at all.
+    ``mkdir(exist_ok=True)`` is a no-op on a directory that already exists and
+    ``unlink(missing_ok=True)`` is a no-op with nothing to unlink, so the refusal
+    only ever surfaces once ``sqlite3.connect`` tries to open the (unwritable)
+    file, as ``sqlite3.OperationalError`` -- already a ``sqlite3.Error`` subclass
+    the pre-fix ``except sqlite3.Error`` alone caught, so this test drove the
+    same arm before and after commit 8775b5c.
+
+    The genuine ``OSError`` arm needs a store file that already exists: the
+    directory entry itself is then what ``unlink`` must remove, and *that* raises
+    a bare ``PermissionError`` (not a ``sqlite3.Error``) when its parent
+    directory is read-only. So a build runs once successfully first -- the store
+    file now exists -- and only then is ``.theurian/state`` stripped of write
+    permission, before the second build that this test actually drives.
     """
     _commit(project, "fix: a change (#1)", "Review-Finding: security HIGH — a finding")
     _publish(project)
+    first_code, first_payload = _invoke("findings", "build")
+    assert first_code == 0, (
+        f"fixture premise: a store must exist before the read-only state dir is driven, got "
+        f"{first_payload}"
+    )
     state_dir = project / ".theurian" / "state"
-    state_dir.mkdir(parents=True)
     state_dir.chmod(0o500)
     try:
         code, payload = _invoke("findings", "build")
@@ -268,6 +283,41 @@ def test_a_read_only_state_directory_is_reported_as_a_graded_write_failure(proje
     assert set(payload) == {"error", "remedy"}, (
         f"a write failure must arrive as the graded {{error, remedy}} contract, not a raw "
         f"traceback; got {sorted(payload)}"
+    )
+    assert "writable" in payload["remedy"], payload["remedy"]
+
+
+def test_a_write_side_permission_error_is_converted_to_the_graded_contract_under_root_too(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FIX-1 (commit 8775b5c): the ``OSError`` conversion is proven on every runner, root included.
+
+    The chmod sibling above cannot run as root -- POSIX permission bits refuse
+    nobody there -- so it is skipped on the offline CI job, which runs as root,
+    leaving the ``OSError`` arm unproven exactly where the suite always runs.
+    ``Path.unlink`` is monkeypatched to raise ``PermissionError`` directly, the
+    same fault-injection shape ``tests/integration/test_index_gc_cli.py``'s
+    ``test_gc_converts_a_reclaim_permission_error_into_its_own_contract`` uses
+    for the identical portability reason. Filtered to the store's own file-name
+    prefix so pytest's own bookkeeping ``unlink`` calls are untouched.
+    """
+    _commit(project, "fix: a change (#1)", "Review-Finding: security HIGH — a finding")
+    _publish(project)
+    real_unlink = Path.unlink
+
+    def _refuse_to_unlink_the_store(self: Path, *args: object, **kwargs: object) -> None:
+        if self.name.startswith("theurian-findings-"):
+            raise PermissionError(13, "Permission denied")
+        real_unlink(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "unlink", _refuse_to_unlink_the_store)
+
+    code, payload = _invoke("findings", "build")
+
+    assert code == 1, payload
+    assert set(payload) == {"error", "remedy"}, (
+        f"an OS refusal on the write path must arrive as the graded {{error, remedy}} contract, "
+        f"not a raw traceback; got {sorted(payload)}"
     )
     assert "writable" in payload["remedy"], payload["remedy"]
 
