@@ -12,6 +12,68 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Security
+
+- **`propose accept`'s body-materialisation cost is now bounded on every
+  channel it has, closing #306 and #400 together**
+  ([#306](https://github.com/theurian/theurian/issues/306),
+  [#400](https://github.com/theurian/theurian/issues/400); SEC-8, T-6 in
+  [the threat model](../../docs/security/threat-model.md)). `_body_moves`
+  read a fresh copy of a body for every operation that named it, with no cap
+  on how many operations a migration could declare and no dedup for two
+  operations naming the same file — a schema refusal fired only after that
+  read had already happened. `_commit`'s rollback snapshot of a *replaced*
+  destination read it with a raw `Path.read_bytes()`, uncapped whenever that
+  destination had reached its size some way other than through this service
+  — a body committed directly to `.theurian/knowledge/`, exactly what a
+  `git clone` delivers.
+
+  **#306, the incoming/count face.** Two independent bounds close it, both
+  landing before a single body is read: `MAX_UPSERT_OPERATIONS` (250) refuses
+  a migration whose `operations` list is longer, checked against the raw
+  parsed document; and `_body_moves` now reads a given source at most once,
+  keyed on `(st_dev, st_ino)` inode identity rather than the path string —
+  which a case-insensitive or NFC/NFD-normalising filesystem can alias — so
+  resident memory tracks distinct bodies, not operations naming them.
+  Measured: 1,000 operations naming one shared 512 KB body held 583 MB
+  resident before the fix — the same run also missed a 120-second budget and
+  was SIGKILLed, a latency DoS on top of the memory one — against 65 MB
+  after, flat as operation count grows past the cap, with an over-cap
+  proposal now refusing in about 2 seconds instead of timing out.
+
+  **The cap is sized for two channels, not one.** `_commit` holds a second
+  set of bytes resident alongside the incoming bodies: for every operation
+  that replaces an existing destination, the prior body is kept resident for
+  rollback at the same time as the incoming one is held in `moves`. Both can
+  be full together, so the worst-case peak is
+  `2 × MAX_UPSERT_OPERATIONS × MAX_SOURCE_FILE_BYTES` ≈ 3.9 GiB, not the
+  single-channel `250 × 8 MiB` a reader might otherwise infer from the cap
+  alone — which is why `MAX_UPSERT_OPERATIONS` tightened from an
+  initially-chosen 500 to 250. This repository's largest legitimate
+  migration is 5 operations, so 250 leaves roughly 50× headroom over what a
+  real migration here has ever declared.
+
+  **#400, the replaced/per-entry face, closed the same way.**
+  `MAX_UPSERT_OPERATIONS` bounds the *count* of operations, not the size of
+  any *one* destination a replace operation overwrites. `_commit` now reads
+  a replaced destination through `security/paths.py::read_source_file`, the
+  same size-capped path every other accept-path read already takes: a
+  destination over `MAX_SOURCE_FILE_BYTES` (8 MiB) is refused before a byte
+  of it is read, and a new rollback clause restores whatever the same
+  `accept` call had already written before re-raising. Measured against a
+  256 MiB replaced destination: **+257.3 MiB** resident before this fix (the
+  replacement succeeded, the whole file held in memory) against **+1.3 MiB**
+  after (refused before reading). The boundary is exact — 8 MiB is accepted,
+  8 MiB + 1 byte is refused.
+
+  Two refusals reached through this same path also stopped naming no file at
+  all: `_commit`'s restored-destination read and the ADR-0027 rehearsal's
+  landed-set read (`cli/migration_pipeline.py::_materialize`) now both
+  attach a project-relative `referrer` to `IrregularSourceFileError`, the
+  same fix `ProposalService._read_within_project` already had for the
+  incoming side — left bare, either read published a refusal naming no path
+  at all.
+
 ## [0.1.0.dev13] - 2026-08-27
 
 ### Added
