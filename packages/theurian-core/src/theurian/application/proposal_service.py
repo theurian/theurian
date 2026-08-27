@@ -122,10 +122,14 @@ _MAX_NAMES_LISTED: Final = 5
 #:
 #: **Why a count, not only a size.** The migration file itself is already
 #: bounded (``MAX_YAML_BYTES``, 4 MiB), but nothing bounded how many
-#: operations that budget can spend: a minimal ``upsertRevision`` entry is a
-#: few dozen bytes, so the file's own cap alone admits on the order of tens
-#: of thousands of them, plausibly past 100,000. Each one may name a
-#: *distinct* ``contentFile`` up to
+#: operations that budget can spend. ``_operation_count`` runs on the raw
+#: parsed document, before any per-entry shape is checked -- so the cheapest
+#: entry that keeps ``operations`` a list is a bare scalar list item, four
+#: bytes (``"- x\n"``), and 4 MiB of those is well past a million: the
+#: largest such document that still fits the byte cap parses to 1,048,573
+#: entries, measured directly rather than estimated from a "typical" entry
+#: size a document under this check need not use. A schema-valid
+#: ``upsertRevision`` may instead name a *distinct* ``contentFile`` up to
 #: :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` (8 MiB) -- a
 #: separate file the migration only points at, so the migration's own byte
 #: cap says nothing about it -- and :meth:`ProposalService._body_moves`
