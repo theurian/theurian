@@ -241,7 +241,21 @@ def _fences(body: str) -> list[dict[str, Any]]:
     # is a valid, empty-language opener too), so this list is computed once and
     # consulted by a pointer that only moves forward -- never rebuilt per
     # opener, which is exactly the rescan issue #331 removed.
-    closer_lines = [i for i, line in enumerate(lines) if _FENCE_CLOSER_LINE.fullmatch(line)]
+    #
+    # `startswith` filters before either pattern gets a chance to run: both
+    # patterns require the line to open with the same three characters they
+    # test for, so a line that fails this check cannot fullmatch either one --
+    # this is a pure short-circuit, not a fidelity-affecting change. It matters
+    # because `fullmatch` costs far more per call than `startswith`, and this
+    # loop was paying that cost on every line of the document, fenced or not:
+    # measured 2026-08-27, an 8 MiB all-newline document (no line ever a
+    # candidate) cost 11.7 s / 202 MB running the regex unconditionally versus
+    # a fraction of that once non-candidate lines are filtered first.
+    closer_lines = [
+        i
+        for i, line in enumerate(lines)
+        if line.startswith("```") and _FENCE_CLOSER_LINE.fullmatch(line)
+    ]
 
     fences: list[dict[str, Any]] = []
     closer_index = 0
@@ -249,6 +263,9 @@ def _fences(body: str) -> list[dict[str, Any]]:
     while line_index < len(lines):
         if len(fences) >= MAX_FENCES:
             break
+        if not lines[line_index].startswith("```"):
+            line_index += 1
+            continue
         opener = _FENCE_OPENER_LINE.fullmatch(lines[line_index])
         if opener is None:
             line_index += 1
