@@ -29,6 +29,28 @@ a narrow run is a false report.
 policy except at Protocol and `**kwargs` edges. There is no "I'll fix the types
 later".
 
+## A security guard covers the exact set it protects, never a subset
+
+A content-identity or containment guard keys on the **whole** of what it protects
+— every served field, every write/read target — never a convenient subset, nor an
+enumeration a direct-path-builder or an unusual member shape slips past. Two
+shipped/near-shipped disclosures had this one shape:
+
+- **GHSA-3f65:** the serve gate hashed the revision *body* while the index served
+  `f"{title}\n\n{body}"` — a title drift evaded the gate. Fix: key on the exact
+  served string, not a subset of it.
+- **#237:** the containment chokepoint enumerated `ProjectPaths` helpers while
+  `init`/`ingest` built paths straight from `knowledge_dir` and escaped the tree;
+  the reflection sweep also missed `cached_property` / `Path | None` / unannotated
+  members. Fix: the population is *every writer under the tree*, proven exhaustive.
+
+Before calling such a guard closed: name the population it must cover (every field
+served, every path written or read — **not** the convenient enumerable set), prove
+the enumeration is exhaustive (reflect over **all** member shapes; audit callers
+that bypass the helper), and key the guard on that whole set. A test that ranges
+over the enumerable set while a member outside it slips through is a false
+completeness claim.
+
 ## Layering — the rule most easily broken
 
 Ports and Adapters (ADR-0003), enforced by ruff `TID251`:

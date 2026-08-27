@@ -52,7 +52,19 @@ GOVERNED_FIELDS: Final = frozenset(
 _FRONT_MATTER = re.compile(r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n)*", re.DOTALL)
 
 _ATX_HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
-_FENCE = re.compile(r"^```([A-Za-z0-9_+-]*)[ \t]*$(.*?)^```[ \t]*$", re.MULTILINE | re.DOTALL)
+
+#: A fence *opener* line -- an optional language tag, no other content. A
+#: *closer* line permits no language tag at all: ``` ```lang``` `` never closes
+#: anything, only bare ``` `` ` `` does. Matched with :meth:`re.Pattern.fullmatch`
+#: against one already-split line rather than combined into the single
+#: ``^```...$(.*?)^```...$`` pattern issue #331 replaced -- that pattern's lazy
+#: ``.*?`` had to rescan every remaining line to confirm a closer was truly
+#: absent, once per unclosed opener, which is Theta(n^2) on a document that is
+#: n unclosed openers: measured on 68e8a0b, 156 KB (32,000 openers) took 25.3 s
+#: and doubling the input roughly quadrupled it. ``MAX_FENCES`` bounds what is
+#: *recorded*; it never bounded what the scan *spent* to get there.
+_FENCE_OPENER_LINE = re.compile(r"```([A-Za-z0-9_+-]*)[ \t]*")
+_FENCE_CLOSER_LINE = re.compile(r"```[ \t]*")
 
 #: Guards a pathological document from producing an unbounded structure tree.
 MAX_HEADINGS: Final = 2000
@@ -209,18 +221,87 @@ def _fences(body: str) -> list[dict[str, Any]]:
 
     Kept as structure because a code fence is usually the concrete example a
     reader is looking for, and its language is a useful filter.
+
+    A single forward pass over lines (issue #331), matching the semantics
+    ``re.MULTILINE`` gives ``^``/``$`` exactly: splitting on ``"\\n"`` produces
+    the same segments those anchors bound, without ever letting ``.`` cross a
+    line it does not need to. Two anchored, non-backtracking line patterns
+    replace the old combined opener-through-closer regex, whose lazy ``.*?``
+    had to rescan every remaining line before it could conclude a closer was
+    absent -- once per unclosed opener: measured on 68e8a0b (pre-#331), 156 KB
+    (32,000 unclosed openers) cost 25.3 s and doubled roughly quadratically.
+    The same shape costs 0.0065 s here, a ~3900x improvement on the input the
+    rewrite exists for. The constant recorded below is a trade against *that*
+    win, not a regression against it -- it is irrelevant at the sizes almost
+    every real document hits, and only visible on an adversarial document at
+    the ingestion cap.
+
+    Materializes ``lines`` and ``line_starts`` up front, so peak memory is
+    O(line-count): measured 2026-08-27, ~202 MB at an 8 MiB document (the
+    ``MAX_SOURCE_FILE_BYTES`` cap), linear with input size and not
+    super-linear. A typical few-KB Markdown file costs microseconds and
+    kilobytes either way; this is a bounded residual against the quadratic
+    CPU blowup #331 removed, recorded here so a future change does not
+    reintroduce super-linear memory without anyone noticing.
     """
+    lines = body.split("\n")
+    line_starts: list[int] = []
+    offset = 0
+    for line in lines:
+        line_starts.append(offset)
+        offset += len(line) + 1
+
+    # Every closer-matching line also matches the opener pattern (a bare ` ``` `
+    # is a valid, empty-language opener too), so this list is computed once and
+    # consulted by a pointer that only moves forward -- never rebuilt per
+    # opener, which is exactly the rescan issue #331 removed.
+    #
+    # `startswith` filters before either pattern gets a chance to run: both
+    # patterns require the line to open with the same three characters they
+    # test for, so a line that fails this check cannot fullmatch either one --
+    # this is a pure short-circuit, not a fidelity-affecting change. It matters
+    # because `fullmatch` costs far more per call than `startswith`, and this
+    # loop was paying that cost on every line of the document, fenced or not:
+    # measured 2026-08-27, an 8 MiB all-newline document (no line ever a
+    # candidate) cost 11.7 s / 202 MB running the regex unconditionally versus
+    # a fraction of that once non-candidate lines are filtered first.
+    closer_lines = [
+        i
+        for i, line in enumerate(lines)
+        if line.startswith("```") and _FENCE_CLOSER_LINE.fullmatch(line)
+    ]
+
     fences: list[dict[str, Any]] = []
-    for match in _FENCE.finditer(body):
+    closer_index = 0
+    line_index = 0
+    while line_index < len(lines):
         if len(fences) >= MAX_FENCES:
             break
+        if not lines[line_index].startswith("```"):
+            line_index += 1
+            continue
+        opener = _FENCE_OPENER_LINE.fullmatch(lines[line_index])
+        if opener is None:
+            line_index += 1
+            continue
+        while closer_index < len(closer_lines) and closer_lines[closer_index] <= line_index:
+            closer_index += 1
+        if closer_index >= len(closer_lines):
+            # No closer remains anywhere after this opener, so none remains
+            # after any later opener either (closer indices only increase):
+            # the whole rest of the scan is unclosed and the loop can stop
+            # rather than repeat this same negative search per opener.
+            break
+        closer_line = closer_lines[closer_index]
+        content_start = line_starts[line_index] + len(lines[line_index])
         fences.append(
             {
-                "language": match.group(1) or None,
-                "line": body.count("\n", 0, match.start()) + 1,
-                "characters": len(match.group(2)),
+                "language": opener.group(1) or None,
+                "line": line_index + 1,
+                "characters": line_starts[closer_line] - content_start,
             }
         )
+        line_index = closer_line + 1
     return fences
 
 

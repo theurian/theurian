@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Final, final
+from typing import Any, Final, Literal, final
 
 import yaml
 
@@ -46,10 +46,12 @@ _HTTP_METHODS: Final = frozenset(
 #: (measured 2026-08-24) while recording a single reference and reaching neither
 #: cap. Both bounds are needed and neither implies the other -- these caps do not
 #: fire on the shape that made the walk expensive, and the memo says nothing
-#: about how large a record a legitimate document may produce. Nothing here
-#: bounds the third quantity, the per-child path strings the walk builds
-#: (https://github.com/theurian/theurian/issues/328, measured in
-#: :func:`_external_refs`).
+#: about how large a record a legitimate document may produce. A third quantity,
+#: the per-child path the walk builds, is bounded by construction rather than by
+#: a cap here: :func:`_external_refs` carries it as a tuple of segments and
+#: renders it to a string only where a ref or a truncation is actually recorded
+#: (https://github.com/theurian/theurian/issues/328) -- see that function's
+#: docstring for what made the eager string build quadratic.
 MAX_OPERATIONS: Final = 5000
 MAX_REFS: Final = 5000
 
@@ -333,6 +335,39 @@ class _RefWalk:
     truncations: tuple[dict[str, str], ...]
 
 
+#: One step of a ``$ref`` path, tagged by how it renders rather than inspecting
+#: the value at render time -- a mapping key that happens to read ``"3"`` must
+#: still render with a leading dot, not as ``[3]``.
+_RefPathKind = Literal["key", "index"]
+_RefPathSegment = tuple[_RefPathKind, str]
+_RefPath = tuple[_RefPathSegment, ...]
+
+
+def _render_ref_path(path: _RefPath) -> str:
+    """Render a ``$ref`` path exactly as the pre-#328 eager build did.
+
+    ``f"{path}.{key}"`` for a mapping key, ``f"{path}[{index}]"`` for a sequence
+    index, with no leading dot before the first segment. Called only where a ref
+    or a truncation is actually recorded -- at most ``MAX_REFS`` plus two times
+    per document -- rather than once per edge the walk crosses, which is the
+    change #328 made: see :func:`_external_refs`. Each call still costs
+    ``O(depth)`` on its own (the loop below rebuilds ``rendered`` once per
+    segment), bounded by ``MAX_REF_DEPTH``, so total render cost across one
+    document is bounded by ``MAX_REF_DEPTH * MAX_REFS`` -- a residual against
+    the per-edge cost #328 removed, not a reintroduction of it: the pre-#328
+    build paid this same per-call cost on *every* edge the walk crossed,
+    unconditionally, not only where a ref ended up recorded.
+    """
+    rendered = ""
+    for kind, value in path:
+        rendered = (
+            f"{rendered}[{value}]"
+            if kind == "index"
+            else (f"{rendered}.{value}" if rendered else value)
+        )
+    return rendered
+
+
 def _external_refs(document: dict[str, Any]) -> _RefWalk:
     """Collect ``$ref`` targets that point outside this document.
 
@@ -362,16 +397,20 @@ def _external_refs(document: dict[str, Any]) -> _RefWalk:
     ``OpenApiParser.parse``, so each figure is a whole parse rather than the walk
     alone.
 
-    **What the memo bounds is node *entries*, not what the walk spends.** Every
-    edge still builds its own path string -- ``f"{path}.{key}"`` below -- and
-    nothing charges it, so a document with one long mapping key and a wide
-    fan-out under it costs Theta(edges x path length), which is quadratic in the
-    document's own size: measured 2026-08-24, ~0.53 MiB costs 0.21 s, ~1.07 MiB
-    0.98 s, ~2.16 MiB 4.21 s and ~4.39 MiB 16.93 s -- four times the cost per
-    doubling, with no reference recorded and neither cap reached. The only bound
-    on it is ``MAX_SOURCE_FILE_BYTES`` (8 MiB). That is a measured residual, not
-    a closed one, and it is owned by
-    https://github.com/theurian/theurian/issues/328.
+    **What the memo bounds is node *entries*, not what an eager path string
+    would have spent.** Before #328, every edge built its own path with
+    ``f"{path}.{key}"``, which copies the parent's whole accumulated string on
+    every child; nothing charged that copy, so a document with one long mapping
+    key and a wide fan-out under it cost Theta(edges x path length), quadratic in
+    the document's own size: measured 2026-08-24, ~0.53 MiB cost 0.21 s, ~1.07
+    MiB 0.98 s, ~2.16 MiB 4.21 s and ~4.39 MiB 16.93 s -- four times the cost per
+    doubling, with no reference recorded and neither cap reached. ``walk`` now
+    carries the path as a :data:`_RefPath` tuple of un-rendered segments instead:
+    appending one costs ``O(depth)`` -- bounded by ``MAX_REF_DEPTH`` -- never
+    ``O(len of the rendered string)``, and :func:`_render_ref_path` is called
+    only where a ref or a truncation is actually recorded. The same #328 document
+    shapes now cost within measurement noise of an unmodified walk over the same
+    structure with no long key at all.
 
     Three properties of *where* the check sits, each load-bearing:
 
@@ -402,19 +441,28 @@ def _external_refs(document: dict[str, Any]) -> _RefWalk:
     # whoever called it.
     alive: list[object] = []
 
-    def cut(reason: str, at: str, limit: int) -> None:
-        truncations.setdefault(reason, {"reason": reason, "at": at, "limit": str(limit)})
+    def cut(reason: str, path: _RefPath, limit: int) -> None:
+        truncations.setdefault(
+            reason, {"reason": reason, "at": _render_ref_path(path), "limit": str(limit)}
+        )
 
-    def record(ref: object, path: str) -> None:
+    def record(ref: object, path: _RefPath) -> None:
         if not isinstance(ref, str) or ref in seen:
             return
         target = _as_a_fetcher_reads_it(ref)
         if not target or target.startswith("#"):
             return
         seen.add(ref)
-        found.append({"ref": ref, "at": path, "scheme": _ref_scheme(target), "resolved": "false"})
+        found.append(
+            {
+                "ref": ref,
+                "at": _render_ref_path(path),
+                "scheme": _ref_scheme(target),
+                "resolved": "false",
+            }
+        )
 
-    def walk(node: object, path: str, depth: int) -> None:
+    def walk(node: object, path: _RefPath, depth: int) -> None:
         if not isinstance(node, dict | list) or not node:
             # Neither cap may claim it cut something the node could not have
             # held. A scalar has no children at all, and an empty container has
@@ -444,12 +492,12 @@ def _external_refs(document: dict[str, Any]) -> _RefWalk:
         if isinstance(node, dict):
             record(node.get("$ref"), path)
             for key, child in node.items():
-                walk(child, f"{path}.{key}" if path else str(key), depth + 1)
+                walk(child, (*path, ("key", str(key))), depth + 1)
         else:
             for index, child in enumerate(node):
-                walk(child, f"{path}[{index}]", depth + 1)
+                walk(child, (*path, ("index", str(index))), depth + 1)
 
-    walk(document, "", 0)
+    walk(document, (), 0)
     return _RefWalk(found=tuple(found), truncations=tuple(truncations.values()))
 
 

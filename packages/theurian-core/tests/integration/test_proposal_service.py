@@ -15,7 +15,7 @@ import sys
 import tempfile
 from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path
-from typing import Final
+from typing import Final, NoReturn
 
 import pytest
 import yaml
@@ -26,6 +26,7 @@ from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
     _PERMISSION_ERRNOS,
+    MAX_UPSERT_OPERATIONS,
     ApprovedSetUnusableError,
     CandidateMigrationSet,
     ChangeAlreadyInPlaceError,
@@ -35,6 +36,7 @@ from theurian.application.proposal_service import (
     ProposalRequest,
     ProposalService,
     _evidence_failure_reason,
+    _refuse_past_the_operation_cap,
     _require_filename_matches_id,
 )
 from theurian.cli.migration_pipeline import rehearse_migration_set
@@ -3085,6 +3087,323 @@ def test_two_operations_naming_one_body_are_refused_with_the_proposal_intact(
     assert not drafted.body_destination.exists()
 
 
+# -- #306: the operation-count cap and the shared-body dedup ---------------
+
+
+def test_accept_refuses_a_proposal_past_the_operation_cap(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-5 (#306): past ``MAX_UPSERT_OPERATIONS``, ``accept`` refuses before any body is read.
+
+    ``_body_moves`` is monkeypatched to raise the instant it is *called* --
+    not merely when its generator is driven -- so this proves the cap fires
+    before line 869's ``moves = tuple(self._body_moves(...))``, not only that
+    the migration is eventually refused. The padding operations carry no
+    ``contentFile`` at all, which is itself part of the proof: nothing about
+    them needs to resolve to a real file, because the cap has to refuse before
+    anything tries to.
+    """
+    drafted = service.draft(_request())
+    document = _document(drafted.migration_file)
+    operations = document["operations"]
+    assert isinstance(operations, list)
+    padding = [{"op": "noop", "n": i} for i in range(MAX_UPSERT_OPERATIONS + 1 - len(operations))]
+    padded = {**document, "operations": [*operations, *padding]}
+    drafted.migration_file.write_text(yaml.safe_dump(padded, sort_keys=False), encoding="utf-8")
+    before = _contents(drafted.directory)
+
+    def _must_not_run(
+        _self: ProposalService, _directory: Path, _document: Mapping[str, object]
+    ) -> NoReturn:
+        raise AssertionError("_body_moves ran after the operation cap should have refused")
+
+    monkeypatch.setattr(ProposalService, "_body_moves", _must_not_run)
+
+    with pytest.raises(ProposalError, match="operations") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert str(MAX_UPSERT_OPERATIONS) in str(caught.value)
+    assert caught.value.remedy, "the refusal must name a remedy"
+    assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
+def test_accept_reads_a_shared_content_file_once(service: ProposalService) -> None:
+    """AC-6 (#306): N operations naming ONE ``contentFile`` share a single resident read.
+
+    Drives ``_body_moves`` directly at a count well above
+    ``MAX_UPSERT_OPERATIONS`` -- the dedup this pins is a property of
+    ``_body_moves`` itself, independent of the operation-count cap AC-5 pins,
+    so calling it directly (bypassing ``accept``'s cap) proves the mechanism
+    holds on its own rather than being confused for the cap's effect.
+    """
+    drafted = service.draft(_request())
+    document = _document(drafted.migration_file)
+    operations = document["operations"]
+    assert isinstance(operations, list)
+    base = _upsert(drafted.migration_file)
+    extra = MAX_UPSERT_OPERATIONS + 250
+    clones = [dict(base) for _ in range(extra)]
+    padded = {**document, "operations": [*operations, *clones]}
+
+    moves = list(service._body_moves(drafted.directory, padded))
+
+    upsert_moves = [move for move in moves if move.destination == drafted.body_destination]
+    assert len(upsert_moves) == extra + 1, "one _BodyMove per operation naming the body"
+    distinct_reads = {id(move.data) for move in upsert_moves}
+    assert len(distinct_reads) == 1, "every operation naming one contentFile must share one read"
+    assert upsert_moves[0].data == BODY.encode("utf-8")
+
+
+def test_body_moves_dedups_two_content_files_sharing_one_inode(service: ProposalService) -> None:
+    """FIX 2 (#306): two DIFFERENT ``contentFile`` values reaching one physical
+    file share the single read AC-6 pins for one *repeated* value.
+
+    Before this fix ``_body_moves``'s dedup cache was keyed on the resolved
+    source path *string*. Two ``contentFile`` entries naming the same inode
+    through two different spellings -- APFS/NTFS case-folding is the class
+    the review measured (verified on Darwin) -- each resolve to a *different*
+    string and so each missed the cache, holding two resident copies of one
+    physical file. A hardlink reproduces the identical class -- one inode,
+    two path strings -- without depending on filesystem case-folding, so this
+    proof holds on every platform the CI matrix runs. Keying the cache on
+    ``(st_dev, st_ino)`` instead collapses both onto the single read the
+    first triggers.
+    """
+    drafted = service.draft(_request())
+    document = _document(drafted.migration_file)
+    operations = document["operations"]
+    assert isinstance(operations, list)
+    base = _upsert(drafted.migration_file)
+
+    alias_source = drafted.body_file.parent / "alias.md"
+    os.link(drafted.body_file, alias_source)
+    assert alias_source.stat().st_ino == drafted.body_file.stat().st_ino, (
+        "the hardlink must share the inode"
+    )
+    alias_content_file = drafted.content_file.rsplit("/", 1)[0] + "/alias.md"
+    assert alias_content_file != drafted.content_file
+
+    clone = dict(base)
+    clone["contentFile"] = alias_content_file
+    padded = {**document, "operations": [*operations, clone]}
+
+    moves = list(service._body_moves(drafted.directory, padded))
+
+    assert len(moves) == 2, "one _BodyMove per operation, even though they share an inode"
+    destinations = {move.destination for move in moves}
+    assert destinations == {drafted.body_destination, drafted.body_destination.parent / "alias.md"}
+    assert moves[0].data is moves[1].data, (
+        "two content files naming one inode must share the one resident read"
+    )
+    assert moves[0].data == BODY.encode("utf-8")
+
+
+def test_the_operation_cap_boundary_is_inclusive() -> None:
+    """FIX 3 (#306): pins the ``<=`` boundary AT the constant, independent of AC-5.
+
+    AC-5 (``test_accept_refuses_a_proposal_past_the_operation_cap``) drives the
+    cap through ``accept()`` with a document one operation over the limit --
+    it proves the cap fires before ``_body_moves`` runs, but it does not by
+    itself distinguish ``<=`` from ``<``: a mutant narrowing the check to
+    ``<`` (an effective cap one below the constant) still refuses "one over"
+    and AC-5 stays green. This calls ``_refuse_past_the_operation_cap``
+    directly at the exact boundary on both sides: a document of exactly
+    ``MAX_UPSERT_OPERATIONS`` operations must NOT be refused by the cap (it
+    may still be refused later, by schema or replay, for reasons this test
+    does not touch), and one operation past it MUST be.
+    """
+    at_cap = {"operations": [{"op": "noop"}] * MAX_UPSERT_OPERATIONS}
+
+    _refuse_past_the_operation_cap(at_cap)  # must not raise
+
+    past_cap = {"operations": [{"op": "noop"}] * (MAX_UPSERT_OPERATIONS + 1)}
+    with pytest.raises(ProposalError, match=str(MAX_UPSERT_OPERATIONS)) as caught:
+        _refuse_past_the_operation_cap(past_cap)
+    assert caught.value.remedy, "the refusal must name a remedy"
+
+
+def test_the_operation_cap_holds_the_two_channel_memory_ceiling() -> None:
+    """FIX 3 amendment (#306): pins the cap VALUE, not only the ``<=`` logic above.
+
+    The boundary test pins the comparison operator but not the constant
+    itself: with ``MAX_UPSERT_OPERATIONS`` loosened to, say, 5,000, that test
+    would still pass at 5,000/5,001 -- it has no opinion on what the number
+    should *be*. The real cost claim -- the two-channel peak
+    ``_commit`` can hold resident (the incoming ``moves`` bytes and, for every
+    replaced body, the ``restored`` destination bytes kept for rollback; see
+    ``MAX_UPSERT_OPERATIONS``'s docstring) -- is only proven at real memory
+    scale by the e2e ``AC-7`` proof, which CI's ``-m "not e2e"`` jobs exclude.
+    This recomputes that same bound from the LIVE constants and pins it
+    against the 4 GiB ceiling the constant's own docstring targets, so a
+    constant change that breaks the ceiling goes red here, in the CI-run
+    suite, rather than only in the excluded e2e job.
+    """
+    two_channel_peak_bytes = MAX_UPSERT_OPERATIONS * 2 * MAX_SOURCE_FILE_BYTES
+    four_gib = 4 * 1024**3
+    assert two_channel_peak_bytes <= four_gib, (
+        f"MAX_UPSERT_OPERATIONS={MAX_UPSERT_OPERATIONS} admits a two-channel peak of "
+        f"{two_channel_peak_bytes} bytes (moves + restored, each up to "
+        f"MAX_SOURCE_FILE_BYTES={MAX_SOURCE_FILE_BYTES} per operation), past the "
+        f"{four_gib}-byte ceiling MAX_UPSERT_OPERATIONS's own docstring claims"
+    )
+
+
+def test_accept_refuses_an_oversized_replaced_destination_without_reading_it_whole(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#400: the per-entry face of #306's class -- ``_commit``'s restored read was raw.
+
+    #306 bounds how many operations one migration may declare, not the size of
+    any *one* destination a replace operation overwrites. A body committed
+    directly to ``.theurian/knowledge/`` -- exactly what a ``git clone``
+    delivers -- can be arbitrarily large: landing it through Git never routes
+    it through ``MAX_SOURCE_FILE_BYTES``. Before this fix, ``_commit`` read
+    such a destination with a raw ``Path.read_bytes()`` to build the rollback
+    snapshot, so a proposal whose own incoming body is small and otherwise
+    valid still forced the whole of an oversized *committed* destination
+    resident -- one replace operation, independent of the operation-count cap
+    entirely.
+
+    The destination is planted just over the cap (not gigabytes), so the test
+    stays fast; what this pins is that the refusal fires at all -- SEC-8's
+    check reads ``stat().st_size`` before any byte of the file is read
+    (:func:`~theurian.security.paths.read_source_file`), so a refusal here
+    proves the oversized bytes were never read into memory, not merely that
+    they were read and then rejected.
+    """
+    drafted = service.draft(_request())
+    drafted.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    oversized = b"x" * (MAX_SOURCE_FILE_BYTES + 1024 * 1024)  # ~1 MiB over SEC-8's cap
+    drafted.body_destination.write_bytes(oversized)
+
+    with pytest.raises(InputTooLargeError, match="source file size") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert caught.value.remedy, "the refusal must name a remedy"
+    # Refused before anything moved: the committed destination is untouched,
+    # the proposal's own sources survive, and nothing landed in migrations/.
+    assert drafted.body_destination.read_bytes() == oversized
+    assert drafted.migration_file.exists(), "a refused accept leaves the proposal intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
+def test_a_mid_loop_oversized_replacement_rolls_back_an_earlier_write_too(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#400: the new size-cap raise rolls back like any other mid-commit failure.
+
+    Two replace operations in one migration, processed in document order: the
+    first destination is small and legitimate, so ``_commit`` writes it and
+    stages its prior bytes in ``restored``; the second destination is the
+    oversized committed body the size cap must refuse. The refusal fires while
+    reading the *second* move -- :meth:`ProposalService._commit`'s rollback
+    must still undo the *first* move's already-landed write, or its own
+    "either everything lands or nothing changed" promise would be broken by
+    the very fault this cap exists to catch. Modelled on
+    ``test_two_content_files_sharing_a_leaf_name_do_not_collide`` for the
+    two-body layout.
+    """
+    drafted = service.draft(_request())
+    revisions = (
+        ("alpha", "01K9AAAAAA0000000000000001", "A\n"),
+        ("beta", "01K9AAAAAA0000000000000002", "B\n"),
+    )
+    migration = _hand_authored_two_body_migration(drafted.migration_id.value, revisions)
+    drafted.migration_file.write_text(migration, encoding="utf-8")
+    drafted.body_file.unlink()
+    for namespace, _revision_id, text in revisions:
+        body = drafted.directory / namespace / "notes.md"
+        body.parent.mkdir(parents=True, exist_ok=True)
+        body.write_text(text, encoding="utf-8")
+
+    # Alpha (processed first) already sits at a small, legitimate destination;
+    # beta (processed second) sits at an oversized one -- the committed body
+    # the size cap must refuse before it is read.
+    alpha_destination = paths.knowledge / "alpha" / "notes.md"
+    beta_destination = paths.knowledge / "beta" / "notes.md"
+    alpha_destination.parent.mkdir(parents=True, exist_ok=True)
+    beta_destination.parent.mkdir(parents=True, exist_ok=True)
+    alpha_destination.write_text("stale alpha\n", encoding="utf-8")
+    oversized = b"x" * (MAX_SOURCE_FILE_BYTES + 1024 * 1024)
+    beta_destination.write_bytes(oversized)
+
+    with pytest.raises(InputTooLargeError):
+        service.accept(drafted.proposal_id)
+
+    assert alpha_destination.read_text() == "stale alpha\n", (
+        "the earlier move's write must be rolled back, not left holding the incoming body"
+    )
+    assert beta_destination.read_bytes() == oversized, "the refused destination is untouched"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_a_mid_loop_irregular_replacement_rolls_back_an_earlier_write_too(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#400's other sibling: a FIFO destination, not an oversized one.
+
+    ``_commit``'s rollback clause -- ``except (InputTooLargeError,
+    IrregularSourceFileError, PathEscapeError)`` -- exists for all three
+    members of that family, and only the oversized member had a driving test
+    until now; dropping ``IrregularSourceFileError`` from that tuple survives
+    the suite. Modelled on
+    ``test_a_mid_loop_oversized_replacement_rolls_back_an_earlier_write_too``:
+    two replace operations, processed in document order -- the first
+    destination is small and legitimate, so ``_commit`` writes it and stages
+    its prior bytes in ``restored``; the second is a FIFO, the shape whose
+    ``st_size`` bounds nothing
+    (:class:`~theurian.domain.errors.IrregularSourceFileError`, issue #215).
+    ``read_source_file`` refuses it from ``stat()`` alone, before ``open()`` is
+    ever called, so this never blocks and needs no interruptible-timer guard,
+    unlike the FIFO test above that opens one.
+
+    Also pins this round's HIGH fix: the restored read used to re-raise
+    ``IrregularSourceFileError`` bare, so ``accept`` published "The referenced
+    file is a named pipe (FIFO), not a regular file" naming no path at all. The
+    project-relative destination must now appear in the message, or a caller
+    has no way to tell which of the migration's several ``contentFile``
+    entries was refused.
+    """
+    drafted = service.draft(_request())
+    revisions = (
+        ("alpha", "01K9AAAAAA0000000000000001", "A\n"),
+        ("beta", "01K9AAAAAA0000000000000002", "B\n"),
+    )
+    migration = _hand_authored_two_body_migration(drafted.migration_id.value, revisions)
+    drafted.migration_file.write_text(migration, encoding="utf-8")
+    drafted.body_file.unlink()
+    for namespace, _revision_id, text in revisions:
+        body = drafted.directory / namespace / "notes.md"
+        body.parent.mkdir(parents=True, exist_ok=True)
+        body.write_text(text, encoding="utf-8")
+
+    # Alpha (processed first) is a small, legitimate replaced destination;
+    # beta (processed second) is a FIFO -- the irregular shape `_commit`'s
+    # restored read must refuse before reading a byte of it.
+    alpha_destination = paths.knowledge / "alpha" / "notes.md"
+    beta_destination = paths.knowledge / "beta" / "notes.md"
+    alpha_destination.parent.mkdir(parents=True, exist_ok=True)
+    beta_destination.parent.mkdir(parents=True, exist_ok=True)
+    alpha_destination.write_text("stale alpha\n", encoding="utf-8")
+    os.mkfifo(beta_destination)
+
+    with pytest.raises(IrregularSourceFileError) as caught:
+        service.accept(drafted.proposal_id)
+
+    beta_relative = beta_destination.relative_to(paths.root).as_posix()
+    assert beta_relative in str(caught.value), (
+        f"the refusal must name {beta_relative!r}, or a caller cannot tell which "
+        "contentFile it refused"
+    )
+    assert alpha_destination.read_text() == "stale alpha\n", (
+        "the earlier move's write must be rolled back, not left holding the incoming body"
+    )
+    assert beta_destination.is_fifo(), "the refused destination is untouched"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
 def test_a_pin_that_does_not_match_its_own_body_is_refused_with_the_proposal_intact(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
@@ -3219,6 +3538,74 @@ def test_the_replay_removes_the_throwaway_tree_it_staged_the_union_in(
     assert all(path.is_relative_to(system_temp) for path in staged), staged
     assert not [path for path in staged if path.exists()], "a replay target was left behind"
     assert list(system_temp.iterdir()) == [], "the replay left residue in the temporary root"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_a_rehearsal_read_of_an_irregular_landed_file_names_it(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_materialize`` reads the *landed* set too, and must name what it refuses.
+
+    #400 fixed ``_commit``'s own restored-body read to attach a referrer to
+    ``IrregularSourceFileError`` -- the incoming/replace side of the accept
+    path. ``_materialize`` (``cli/migration_pipeline.py``) reads the *landed*
+    side of the same union through the identical ``read_source_file`` call, for
+    the ADR-0027 rehearsal every ``accept`` runs before it writes anything, and
+    until this fix let the same refusal propagate bare.
+
+    **Why landing a FIFO by hand does not reach this code.** The loader itself
+    already names an irregular *landed* file safely: ``_landed_files`` reads the
+    approved set through the injected port, which re-parses every operation
+    (``_parse_upsert``) and refuses there, with a referrer, before
+    ``_materialize`` ever runs. Driven instead through the examine-to-move
+    window ``_materialize``'s own docstring records: the landed body is still a
+    regular file when the loader verifies it, and is swapped for a FIFO in the
+    gap between that verification and the rehearsal's own read of it -- the
+    same seam ``test_the_replay_removes_the_throwaway_tree_it_staged_the_union_in``
+    above wraps ``_materialize`` to reach.
+
+    The refusal that reaches ``accept`` is :class:`ApprovedSetUnusableError`,
+    not the raw :class:`~theurian.domain.errors.IrregularSourceFileError`:
+    ``_refuse_unless_the_union_applies`` translates every ``TheurianError`` the
+    rehearsal raises, and a landed-set fault re-rehearses the landed set alone
+    to attribute it correctly (:meth:`ProposalService._union_refusal`). What
+    this test pins is that the *landed path* still appears in that translated
+    message, not that the type is left untranslated -- unlike ``_commit``'s own
+    clause, which the docstring there records leaves it deliberately raw.
+    """
+    from theurian.cli import migration_pipeline as pipeline
+
+    first = service.draft(_request())
+    second = service.draft(_request(item_id=ItemId("architecture.other"), body=BODY))
+    # Landed by hand: the loader's own eager verification (`_landed_files`)
+    # must see a regular file and pass, or the refusal this test drives would
+    # come from `_parse_upsert` instead of from the fix under test.
+    shutil.copy(first.migration_file, paths.migrations / first.migration_file.name)
+    first.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(first.body_file, first.body_destination)
+    shutil.rmtree(first.directory)
+
+    real_materialize = pipeline._materialize
+
+    def spy(candidate: CandidateMigrationSet, target: Path) -> Path:
+        # `_union_refusal` re-rehearses the landed set alone to attribute the
+        # fault, so `_materialize` runs twice; swapping only when the
+        # destination is not already a FIFO keeps the second call a no-op.
+        if not first.body_destination.is_fifo():
+            first.body_destination.unlink()
+            os.mkfifo(first.body_destination)
+        return real_materialize(candidate, target)
+
+    monkeypatch.setattr(pipeline, "_materialize", spy)
+
+    with pytest.raises(ApprovedSetUnusableError) as caught:
+        service.accept(second.proposal_id)
+
+    landed_relative = first.body_destination.relative_to(paths.root).as_posix()
+    assert landed_relative in str(caught.value), (
+        f"the refusal must name {landed_relative!r}, or a reader has no way to tell which "
+        "landed file the rehearsal refused"
+    )
 
 
 # -- stage 1's second half, and the faults it must not claim -----------------

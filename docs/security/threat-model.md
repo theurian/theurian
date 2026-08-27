@@ -511,30 +511,72 @@ FIFO made `migrate validate --json` hang with no output and no exit (#215), and
 a hang cannot even be graded. Each is measured on the fix's own branch and
 pinned by tests that fail when the guard is removed.
 
-**Residual, measured and owned rather than closed: the `$ref` walk's path
-strings ([#328](https://github.com/theurian/theurian/issues/328)).** #245's memo
-bounds how many nodes the walk *enters*; nothing charges the `f"{path}.{key}"`
-built per edge, so one long mapping key with a wide fan-out under it costs
+**Discharged: the `$ref` walk's path strings
+([#328](https://github.com/theurian/theurian/issues/328)).** #245's memo
+bounds how many nodes the walk *enters*; nothing charged the `f"{path}.{key}"`
+built per edge, so one long mapping key with a wide fan-out under it cost
 Θ(edges × path length) — quadratic in the document's own size. Measured
-2026-08-24 on this branch, with no reference recorded and neither `$ref` cap
-reached: ~0.53 MiB 0.21 s, ~1.07 MiB 0.98 s, ~2.16 MiB 4.21 s, ~4.39 MiB
-16.93 s, four times the cost per doubling. The only bound is
-`MAX_SOURCE_FILE_BYTES` (8 MiB). It is clone-reachable — an OpenAPI file is
-ordinary committed content — and it is graded as availability, not disclosure.
+2026-08-24, with no reference recorded and neither `$ref` cap reached:
+~0.53 MiB 0.21 s, ~1.07 MiB 0.98 s, ~2.16 MiB 4.21 s, ~4.39 MiB 16.93 s, four
+times the cost per doubling. `walk` in `_external_refs` now carries the path
+as a tuple of un-rendered segments — mirroring
+`normalization/projection.py::_walk`'s `path: tuple[str, ...]` split — and
+renders it to a string, via `_render_ref_path`, only where a ref or a
+truncation is actually recorded, not once per edge crossed: appending a
+segment costs `O(depth)`, bounded by `MAX_REF_DEPTH`, never `O(len of the
+rendered string)`. Measured 2026-08-27 on the same long-key/wide-fan-out
+shape at n=240,000 (~3.25 MB, zero refs, zero truncations): 1.28 s pre-fix →
+0.037 s post-fix, now linear. Pinned by
+`test_external_refs_path_build_is_linear` and, for output fidelity, two
+committed regression tests against the pre-fix eager-concat build, both
+comparing the tuple-path `_external_refs` to a reconstructed pre-#328 oracle:
+`test_recorded_paths_match_the_pre_328_eager_concat_build` (a single
+two-`$ref` fixture, in `test_ref_recording.py`) and
+`test_ref_paths_match_the_pre_328_eager_concat_build_over_random_documents`
+(a seeded, deterministic Hypothesis fuzz, `@seed(328)`, 400 random nested
+structures, in `test_parsers.py`). Zero mismatches on either. The only
+bound left is `MAX_SOURCE_FILE_BYTES` (8 MiB), which was clone-reachable
+before the fix too — an OpenAPI file is ordinary committed content — and this
+was graded as availability, not disclosure, throughout.
 
-**A second residual, in another parser: the Markdown fence scan
-([#331](https://github.com/theurian/theurian/issues/331)).**
-`parsers/markdown.py::_FENCE` is not line iteration — the pattern spans the whole
-document, `(.*?)` under `re.DOTALL` — so every fence opener that finds no closer
-scans to the end of the file, and a body of openers that can never close costs
-Θ(n²). Measured 2026-08-24 on this branch over a body of `` ```a `` lines, which
-open a fence and can never close one: 9.8 KiB 0.10 s, 19.5 KiB 0.39 s, 39.1 KiB
-1.56 s, 78.1 KiB 6.24 s, 156.2 KiB 25.12 s — four times the cost per doubling.
-`MAX_FENCES` does not bound it: the cap is applied to the matches the scan
-*yields*, and this input yields none at any size. The only bound is
-`MAX_SOURCE_FILE_BYTES` (8 MiB) again. Clone-reachable — a Markdown file is the
-ordinary case of committed knowledge — and graded as availability, not
-disclosure. The rest of that parse is priced: `_FRONT_MATTER` is `\A`-anchored
+**Also discharged, in another parser: the Markdown fence scan
+([#331](https://github.com/theurian/theurian/issues/331)).** The old
+`parsers/markdown.py::_FENCE` was not line iteration — the pattern spanned the
+whole document, `(.*?)` under `re.DOTALL` — so every fence opener that found
+no closer scanned to the end of the file, and a body of openers that could
+never close cost Θ(n²). Measured 2026-08-24 over a body of `` ```a `` lines,
+which open a fence and can never close one: 9.8 KiB 0.10 s, 19.5 KiB 0.39 s,
+39.1 KiB 1.56 s, 78.1 KiB 6.24 s, 156.2 KiB 25.12 s — four times the cost per
+doubling. `MAX_FENCES` never bounded it: the cap is applied to the matches the
+scan *yields*, and this input yields none at any size. `_fences` is now a
+single forward pass over lines, matched against two anchored,
+non-backtracking patterns (an opener, a closer) instead of one pattern whose
+lazy `.*?` rescanned the remaining document per unclosed opener. Measured on
+the same 156.2 KiB shape: 25.3 s → 0.0065 s, roughly 3900×, and the scan is
+now linear (~2×, not ~4×, per doubling). Pinned by
+`test_unclosed_fence_openers_scan_linearly` and, for output fidelity, two
+committed regression tests against the pre-fix regex embedded as an oracle,
+both in `test_parsers.py`: `test_code_fences_match_the_pre_331_regex_oracle`
+(a 14-case named-edge differential oracle) and
+`test_code_fences_match_the_pre_331_regex_oracle_over_random_documents` (a
+seeded, deterministic Hypothesis fuzz, `@seed(331)`, 400 random documents).
+`codeFences` stays byte-identical on both.
+
+**A bounded residual replaces it, in the same parser: peak memory is now
+`O(line-count)`, not constant.** `_fences` materializes `lines` and
+`line_starts` up front, so a pathological document costs memory as well as
+CPU time — measured 2026-08-27, ~202 MB peak on an 8 MiB all-newline document
+(the `MAX_SOURCE_FILE_BYTES` cap). This is linear, not the Θ(n²) the rewrite
+removed, and irrelevant at ordinary document sizes (microseconds and
+kilobytes either way); it is recorded, not closed, and pinned by
+`test_fence_scan_memory_stays_linear_in_document_size` — a smaller-scale
+shape ratio check plus an absolute ceiling — so a future change that
+reintroduces super-linear memory here, as already happened once in the
+sibling `$ref` walk (#245), goes RED rather than only showing up as a slow CI
+run elsewhere. The only bound on either quantity is `MAX_SOURCE_FILE_BYTES`
+(8 MiB). Both were clone-reachable — a Markdown file is the ordinary case of
+committed knowledge — and graded as availability, not disclosure. The rest of
+that parse is priced: `_FRONT_MATTER` is `\A`-anchored
 and matched 4 MiB in 0.048 s, and the heading pass is linear in the document and
 bounded by `MAX_HEADINGS` rather than by the input (2,000 headings at the tail of
 an 8 MiB file, 6.68 s, doubling with the file).
@@ -559,13 +601,19 @@ in this table is read as a control that runs.
   What has changed for the ingestion side is that the bounds above are *counted*
   rather than timed: they price the work a walk spends rather than the seconds
   it takes, which is the quantity a wall clock was standing in for. A counter
-  bounds only what it counts, and there are **two** quantities above that no
-  counter here counts, each recorded as its own residual and neither covered by
-  this paragraph: the `$ref` walk's per-edge path strings
-  (`parsers/openapi.py::_external_refs`, ~4.39 MiB in 16.93 s,
+  bounds only what it counts, and as of 2026-08-24 there were **two**
+  quantities above that no counter here counted, each recorded as its own
+  residual and neither covered by this paragraph: the `$ref` walk's per-edge
+  path strings (`parsers/openapi.py::_external_refs`, ~4.39 MiB in 16.93 s,
   [#328](https://github.com/theurian/theurian/issues/328)) and the Markdown fence
   scan (`parsers/markdown.py::_FENCE`, 156.2 KiB in 25.12 s,
-  [#331](https://github.com/theurian/theurian/issues/331)).
+  [#331](https://github.com/theurian/theurian/issues/331)). **Both are
+  discharged now** — see the two entries above — one bounded by construction
+  (`_render_ref_path`'s cost is `O(depth)`, capped by `MAX_REF_DEPTH`) and the
+  other by a scan that visits each line once rather than rescanning; neither
+  needed a new counter to close. What remains true is narrower than it was:
+  no quantity in this section is priced by a wall clock, and none of the
+  bounds above are timed rather than counted or structurally capped.
 
 *Future controls, not shipped:* a per-query wall-clock bound is a daemon-level
 control on the transport layer and is filed as
@@ -927,6 +975,87 @@ which is why `_unresolvable` publishes them at all (SEC-13); those ids and the
 unreadable list are the daemon's own registry contents, not caller input, so they
 need no bound. What was unbounded was the amplification, not the audience.
 
+**Controls on `propose accept`'s body-materialisation cost**
+([#306](https://github.com/theurian/theurian/issues/306),
+[#400](https://github.com/theurian/theurian/issues/400)). The controls above
+bound what parsing and querying spend; `accept` spends memory on a third axis
+— the bodies a migration's own operations name, both the ones it *brings* and
+the ones a replace operation *overwrites* — and until these fixes landed
+nothing bounded it. `_body_moves` read one full copy of every operation's
+named `contentFile` into memory, with no cap on operation count and no dedup
+for two operations naming the same file, and a schema refusal fired only
+after that read had already happened. `_commit`'s rollback snapshot of a
+*replaced* destination read it with a raw `Path.read_bytes()`, uncapped
+whenever that destination had reached its size some way other than through
+this service — a body committed directly to `.theurian/knowledge/`, exactly
+what a `git clone` delivers.
+
+| Bound | Symbol |
+| :-- | :-- |
+| max operations in one migration document, refused on the raw parsed document before `_body_moves` reads a single body | `application/proposal_service.py::MAX_UPSERT_OPERATIONS` (250) |
+| a source body is read at most once however many operations name it, so resident memory tracks distinct bodies rather than operations — keyed on `(st_dev, st_ino)` inode identity, not the path string, which a case-insensitive or NFC/NFD-normalising filesystem can alias | `application/proposal_service.py::_body_moves` |
+| a *replaced* destination's rollback-snapshot read is bounded the same way every other accept-path read is, rather than a raw, uncapped read | `application/proposal_service.py::_commit`, routed through `security/paths.py::read_source_file` (#400) |
+
+**#306, the incoming/count face.** Measured: 1,000 operations naming one
+shared 512 KB body held 583 MB resident before the fix, against 65 MB after,
+flat as operation count grows past the cap; the unfixed run also missed a
+120-second budget and was SIGKILLed — a latency DoS alongside the memory one
+— while the fixed path refuses an over-cap proposal in about 2 seconds.
+
+**Why 250, not the openapi precedent's 5,000.**
+`parsers/openapi.py::MAX_OPERATIONS` bounds records that are already inside
+the document being read, so its worst case is capped by that document's own
+byte limit (`MAX_YAML_BYTES`, 4 MiB). `MAX_UPSERT_OPERATIONS` bounds
+operations that each *name a separate file* — up to `MAX_SOURCE_FILE_BYTES`
+(8 MiB) apiece, outside the migration document's own cap — so it needed its
+own ceiling rather than borrowing that one.
+
+**The bound is two channels, not one.** `_commit` holds a second set of bytes
+resident alongside the incoming `moves`: for every operation that replaces an
+existing destination, `restored` carries the prior body — kept for rollback —
+at the same time as the incoming bytes are held in `moves`. Both can be full
+together, so the worst-case peak is
+`2 × MAX_UPSERT_OPERATIONS × MAX_SOURCE_FILE_BYTES` ≈ 3.9 GiB, not the
+single-channel `250 × 8 MiB` a reader might otherwise infer from the cap
+alone — which is why the cap tightened from an initially-chosen 500. This
+repository's largest legitimate migration is 5 operations, so 250 leaves
+roughly 50× headroom over what a real migration here has ever declared.
+Pinned against a 4 GiB ceiling by
+`test_the_operation_cap_holds_the_two_channel_memory_ceiling`.
+
+**#400, the replaced/per-entry face, closed too.** `MAX_UPSERT_OPERATIONS`
+bounds the *count* of operations, not the size of any *one* destination a
+replace operation overwrites. Until #400, `_commit`'s rollback-snapshot read
+of that destination was a raw `Path.read_bytes()`, uncapped for a destination
+that had reached its size outside this service — so a single valid proposal
+replacing an oversized committed body forced the whole of it resident,
+independent of the operation-count cap entirely. `_commit` now reads a
+replaced destination through `read_source_file`, the same size-capped path
+every other accept-path read already takes: a destination over
+`MAX_SOURCE_FILE_BYTES` is refused before a byte of it is read, and a new
+rollback clause restores whatever the same `accept` call had already written
+before re-raising. Measured against a 256 MiB replaced destination:
+**+257.3 MiB** resident before the fix (the replacement succeeded, the whole
+file held in memory) against **+1.3 MiB** after (refused before reading) —
+the boundary is exact, 8 MiB accepted, 8 MiB + 1 byte refused. Pinned by
+`test_accept_refuses_an_oversized_replaced_destination_without_reading_it_whole`
+and the mid-loop rollback it drives,
+`test_a_mid_loop_oversized_replacement_rolls_back_an_earlier_write_too`.
+
+**A refusal reached through either read used to name no file at all.**
+`_commit`'s restored-destination read and the ADR-0027 rehearsal's landed-set
+read (`cli/migration_pipeline.py::_materialize`) now both attach a
+project-relative `referrer` to `IrregularSourceFileError` — left bare, a
+replaced or landed file swapped for a FIFO, socket or device in the window
+between an earlier check and this read propagated the refusal naming no path,
+the same shape `ProposalService._read_within_project` was already fixed to
+stop for the incoming side. `domain/errors.py`'s `IrregularSourceFileError`
+docstring enumerates all eight `read_source_file` call sites in this build
+against that claim. Pinned by
+`test_a_mid_loop_irregular_replacement_rolls_back_an_earlier_write_too` and
+`test_a_rehearsal_read_of_an_irregular_landed_file_names_it`, all four tests
+in `tests/integration/test_proposal_service.py`.
+
 Recorded under T-6 rather than as its own entry: resource exhaustion is one
 threat, and splitting it by which stage the load enters would leave a reader
 asking "can someone burn this daemon's CPU" to find two places.
@@ -972,10 +1101,11 @@ reached — now costs 1.5 ms
 ([#245](https://github.com/theurian/theurian/issues/245), measured 2026-08-24
 and pinned by `test_a_shared_node_is_entered_once_however_many_paths_reach_it`).
 
-That closes the node-entry count and nothing else. The walk still builds one
-path string per edge, unpriced and quadratic in the document's size
+That closes the node-entry count and nothing else. The walk used to still
+build one path string per edge, unpriced and quadratic in the document's size
 ([#328](https://github.com/theurian/theurian/issues/328), measured under T-6
-above), so SEC-8 is discharged here for the alias shape and owed for that one.
+above) — that residual is discharged now too, so SEC-8 is discharged here for
+both the alias shape and the per-edge path-string shape.
 
 **`unresolvedRefCount` counts distinct `$ref` strings, and nothing else.** Not
 occurrences, not distinct targets — two spellings of one URL count twice — and
@@ -5067,7 +5197,7 @@ fix.
 | T-3 | Prompt injection via knowledge | T/E | High | SEC-15, SEC-16 |
 | T-4 | Path traversal | I | Critical | SEC-7 |
 | T-5 | Symlink escape | I | Critical | SEC-7 |
-| T-6 | Resource exhaustion, at parse and at query | D | Medium | SEC-8 |
+| T-6 | Resource exhaustion, at parse, at query, and at `accept` | D | Medium | SEC-8 |
 | T-7 | SSRF via external URL | I | Medium | SEC-10 — `$ref` recorded-never-fetched only; scheme allowlist, private-network rejection and repository allowlist owed with M7 ([#129](https://github.com/theurian/theurian/issues/129)) |
 | T-8 | Token in a config file | I | High | SEC-5 |
 | T-9 | Token in a log | I | High | SEC-6 |
