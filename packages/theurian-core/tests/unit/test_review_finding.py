@@ -341,15 +341,24 @@ def _severity_enum_with_extra() -> type[StrEnum]:
 def test_the_parser_stamp_changes_when_any_grammar_element_changes(
     monkeypatch: pytest.MonkeyPatch, attribute: str, replacement: object
 ) -> None:
-    """Every element of the grammar is an input to the stamp -- drop one and it moves.
+    """Each of the five hashed vocabulary constants is an input to the stamp.
 
-    ``_compute_parser_stamp`` hashes the key, the separator, the two closed
-    vocabularies, and the alias map. If any of those stopped feeding the hash, a
-    real grammar change to *that* element would leave the stamp unchanged and a
-    superseded store would read as current -- the forcing function silently broken.
+    ``_compute_parser_stamp`` hashes exactly five things (see its own docstring):
+    the trailer key, the separator, the two closed vocabularies, and the alias
+    map. It does **not** cover the parser's mechanics -- the space consumed after
+    the key, the ``<reviewer> <SEVERITY>`` token split, and the column-0
+    extraction rule that decides which body line reaches the parser at all -- so
+    "every element of the grammar" overstates what this test can catch: a change
+    to one of those mechanics leaves every case below green while the accepted
+    set still changed (recorded gap, production commit ``ebec475``). What this
+    test does pin is narrower and still real: if any of the five hashed
+    constants stopped feeding the hash, a change to *that* constant would leave
+    the stamp unchanged and a superseded store would read as current -- the
+    forcing function silently broken for that element.
 
-    Each case swaps one element for a materially different value and asserts the
-    recomputed stamp differs from the live :data:`PARSER_STAMP`. Because the stamp
+    Each case swaps one of the five constants for a materially different value
+    and asserts the recomputed stamp differs from the live :data:`PARSER_STAMP`.
+    Because the stamp
     is derived from the live module globals at call time, this exercises the real
     ``_compute_parser_stamp``: a source that dropped, say, the ``separator=`` line
     from the hashed material would produce the *same* stamp here for a changed
