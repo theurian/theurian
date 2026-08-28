@@ -31,7 +31,26 @@ from urllib.parse import quote
 #: written by a build that records. A compatibility window here would turn "no
 #: record" into an ambiguity between "damaged" and "old", which is the
 #: distinction the whole signal exists to make.
-SCHEMA_VERSION: Final = 3
+#:
+#: **4** drops `knowledge_revisions`' `CHECK (valid_to IS NULL OR valid_to >
+#: valid_from)` (#117). `valid_from`/`valid_to` are stored as
+#: `datetime.isoformat()` verbatim -- the author's own UTC offset, never
+#: normalised -- so SQLite compared them as TEXT rather than as instants. A
+#: window the domain accepts can sort the wrong way as a string: `valid_from`
+#: `2031-01-01T00:00:00+09:00` (the instant 2030-12-31T15:00Z) and `valid_to`
+#: `2031-01-01T00:00:00+00:00` (the instant 2031-01-01T00:00Z, nine hours
+#: *later*) satisfy `valid_to > valid_from` as datetimes and fail it as text
+#: (`'...+00:00' < '...+09:00'`), so `migrate apply` refused a window
+#: `ValidityPeriod.__post_init__` (INV-4, `domain/values.py`) had already
+#: approved. INV-4 compares aware `datetime`s and orders by instant, so it is
+#: unaffected by which offset an author wrote in -- it is also the *only* place
+#: `valid_from`/`valid_to` are written (`SqliteWriter.append_revision`,
+#: `.put_item` and `.register_specification` in `store.py` each bind
+#: `<x>.validity.valid_from`/`.valid_to`, and `validity` is typed
+#: `ValidityPeriod` on every entity that carries one), so dropping the
+#: redundant SQL `CHECK` removes a false refusal without opening a write path
+#: the domain does not already gate.
+SCHEMA_VERSION: Final = 4
 
 #: Applied to every connection. `foreign_keys` is per-connection in SQLite, not
 #: per-database, so forgetting it on one connection silently disables referential
@@ -114,6 +133,14 @@ CREATE TABLE projects (
 -- `revision_id` stays the primary key: it is what `source_anchors` references
 -- and what `idx_revisions_migration` serves, and the index this adds costs one
 -- b-tree over columns two reads already filter on together.
+--
+-- No `CHECK (valid_to > valid_from)` on `valid_from`/`valid_to` (#117,
+-- SCHEMA_VERSION 4): both columns store `datetime.isoformat()` verbatim, so a
+-- same-instant comparison across two UTC offsets sorts the wrong way as TEXT.
+-- The ordering guarantee is `ValidityPeriod.__post_init__` (INV-4,
+-- domain/values.py), which compares aware datetimes and is the only
+-- constructor that reaches these columns -- see the SCHEMA_VERSION docstring
+-- above for the window that moved this check out of SQL.
 CREATE TABLE knowledge_revisions (
     revision_id     TEXT PRIMARY KEY,
     item_id         TEXT NOT NULL,
@@ -138,8 +165,7 @@ CREATE TABLE knowledge_revisions (
     valid_to        TEXT,
     author          TEXT NOT NULL,
     created_at      TEXT NOT NULL,
-    source_commit   TEXT,
-    CHECK (valid_to IS NULL OR valid_to > valid_from)
+    source_commit   TEXT
 );
 
 CREATE INDEX idx_revisions_item ON knowledge_revisions(project_id, item_id, created_at);

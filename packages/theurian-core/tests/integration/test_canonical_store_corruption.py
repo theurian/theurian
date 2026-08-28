@@ -2024,28 +2024,42 @@ def test_an_unsupported_schema_version_is_reported_as_a_version_not_as_damage(
     )
 
 
+#: Every schema version that predates the `project_integrity` table (#30 PR2),
+#: fixed by history rather than derived from `SCHEMA_VERSION`.
+#:
+#: `range(1, SCHEMA_VERSION)` used to equal this set, but only by coincidence:
+#: it held while `SCHEMA_VERSION` was 3, the version `project_integrity` itself
+#: shipped in. #117 is the case that broke the coincidence -- it bumps
+#: `SCHEMA_VERSION` to 4 for a reason that has nothing to do with
+#: `project_integrity` (dropping a `CHECK` on `valid_from`/`valid_to`), and
+#: `range(1, 4)` now includes 3, a version that has held `project_integrity`
+#: since it shipped. Sweeping it into this population would assert something
+#: false about it: 3 *is* refused (`is_supported` is exact-match, ADR-0017),
+#: but not because it predates the integrity table.
+PRE_INTEGRITY_SCHEMA_VERSIONS: Final = (1, 2)
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stamped_version", range(1, SCHEMA_VERSION))
+@pytest.mark.parametrize("stamped_version", PRE_INTEGRITY_SCHEMA_VERSIONS)
 async def test_a_pre_integrity_database_is_refused_unread_by_every_tool(
     corpus: Corpus, stamped_version: int
 ) -> None:
     """#30 PR2. The premise the "no record is damage" inference rests on.
 
-    :data:`~theurian.infrastructure.sqlite.schema.SCHEMA_VERSION` is 3 because no
-    earlier version held a `project_integrity` table -- neither version 1 nor the
-    version 2 that `0.1.0.dev3` shipped. The detector reads a missing record as
-    *damage* rather than as "not recorded", and that is only sound while no such
-    file can be opened at all -- otherwise "no record" means either "this state
-    lost one" or "this state predates the table", and the detector cannot tell
-    which. `is_supported` is exact-match for that reason (ADR-0017: state
-    databases are rebuilt, never migrated), so the ambiguity is unreachable
-    rather than merely unlikely.
+    Every version in :data:`PRE_INTEGRITY_SCHEMA_VERSIONS` held no
+    `project_integrity` table -- neither version 1 nor the version 2 that
+    `0.1.0.dev3` shipped. The detector reads a missing record as *damage* rather
+    than as "not recorded", and that is only sound while no such file can be
+    opened at all -- otherwise "no record" means either "this state lost one" or
+    "this state predates the table", and the detector cannot tell which.
+    `is_supported` is exact-match for that reason (ADR-0017: state databases are
+    rebuilt, never migrated), so the ambiguity is unreachable rather than merely
+    unlikely.
 
-    Parametrised over *every* version below the current one rather than over the
-    first alone, because the inference needs the whole range closed and a
-    compatibility window would most plausibly be opened for the version
-    immediately behind -- the one a released build actually wrote. It widens by
-    itself on the next bump.
+    Parametrised over the *whole* fixed set rather than over the first alone,
+    because the inference needs the whole range closed and a compatibility
+    window would most plausibly be opened for the version immediately behind --
+    the one a released build actually wrote.
 
     So this asserts the premise on the surface where it would be violated: not
     one tool but all three, because `_resolve` is shared and a compatibility
@@ -2053,12 +2067,13 @@ async def test_a_pre_integrity_database_is_refused_unread_by_every_tool(
     `schema_metadata` rather than by building with an old build, so the file this
     refuses is otherwise a perfectly readable current database -- which is what
     makes the refusal attributable to the version and to nothing else. Confirmed
-    against a database `0.1.0.dev3` really wrote: all three tools refuse it with
-    "… was written at schema version 2, but this build uses 3".
+    against a database `0.1.0.dev3` really wrote, read by the build that shipped
+    `SCHEMA_VERSION` 3, before #117 bumped it to 4: all three tools refuse it
+    with "… was written at schema version 2, but this build uses 3".
 
     Two assertions, and they fail separately. Every tool must refuse -- RED the
-    moment `is_supported` accepts anything below `SCHEMA_VERSION` -- and every
-    refusal must name a remedy the caller can run.
+    moment `is_supported` accepts anything in this set -- and every refusal must
+    name a remedy the caller can run.
 
     There is deliberately no third assertion that the refusals carry no
     `integrity` key. A refused tool publishes no field at all, so "an old file is
@@ -2067,11 +2082,11 @@ async def test_a_pre_integrity_database_is_refused_unread_by_every_tool(
     cannot exist -- a check that can never fail. Were `is_supported` to accept an
     old version, the tool would answer and the first assertion is what catches it;
     a separate `integrity` check would only report whether that (already failing)
-    answer also carried the key, so dropping it loses nothing. The population the
+    answer also carried the key, so dropping it loses nothing. The population this
     parametrization sweeps is pinned by
-    :func:`test_the_pre_integrity_schema_versions_are_exactly_one_and_two`, so a
-    `SCHEMA_VERSION` reversion that shrinks `range(1, SCHEMA_VERSION)` fails there
-    rather than silently narrowing this sweep to fewer cases.
+    :func:`test_the_pre_integrity_schema_versions_are_exactly_one_and_two`, so an
+    edit that shrinks or widens :data:`PRE_INTEGRITY_SCHEMA_VERSIONS` without cause
+    fails there rather than silently changing this sweep.
     """
     connection = sqlite3.connect(corpus.database)
     try:
@@ -2101,18 +2116,22 @@ async def test_a_pre_integrity_database_is_refused_unread_by_every_tool(
 def test_the_pre_integrity_schema_versions_are_exactly_one_and_two() -> None:
     """#30 PR2. The population the refusal sweep above is parametrized over.
 
-    `test_a_pre_integrity_database_is_refused_unread_by_every_tool` is parametrized
-    over ``range(1, SCHEMA_VERSION)``, which loses a case *silently* when
-    ``SCHEMA_VERSION`` falls: ``3 -> 2`` drops version 2 -- the one `0.1.0.dev3`
-    shipped, and the one a compatibility window would most plausibly be opened for
-    -- from the sweep, and a parametrization with fewer cases still passes. So the
-    sweep alone cannot hold the range closed. This pins it: exactly versions 1 and
-    2 precede the `project_integrity` table, and a reversion that would reopen the
-    "no record means old, not damaged" ambiguity is RED here.
+    :data:`PRE_INTEGRITY_SCHEMA_VERSIONS` is a fixed historical fact -- exactly
+    versions 1 and 2 precede the `project_integrity` table -- and this pins it to
+    the literal tuple rather than trusting the constant's own definition to stay
+    correct. It was derived from `range(1, SCHEMA_VERSION)` until #117: that
+    coupling failed in *both* directions the underlying pin already worried
+    about, and one it had not yet met. A `SCHEMA_VERSION` fall still silently
+    drops a case (`3 -> 2` loses the `0.1.0.dev3` version from the sweep); #117's
+    rise to 4 for a reason unrelated to `project_integrity` is the new one --
+    `range(1, 4)` gained 3, a version that has held the table since it shipped,
+    and swept it into a population whose whole premise is "held no such table".
+    A reversion of either kind, or an edit to the constant itself, is RED here.
     """
-    assert set(range(1, SCHEMA_VERSION)) == {1, 2}, (
-        f"the pre-integrity schema versions are now {sorted(range(1, SCHEMA_VERSION))}, so the "
-        f"refusal sweep no longer covers what it claims (SCHEMA_VERSION = {SCHEMA_VERSION})"
+    assert PRE_INTEGRITY_SCHEMA_VERSIONS == (1, 2), (
+        f"PRE_INTEGRITY_SCHEMA_VERSIONS is now {PRE_INTEGRITY_SCHEMA_VERSIONS}, so the refusal "
+        f"sweep no longer covers what it claims to -- exactly the versions that predate "
+        f"`project_integrity` (#30 PR2)"
     )
 
 

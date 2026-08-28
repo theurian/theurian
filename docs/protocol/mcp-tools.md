@@ -254,7 +254,7 @@ key, even though the default answer surfaces only a subset of those statuses and
 can shrink — a recorded integrity residual, not a disclosure, since the row is
 caller-readable at either status. A
 *missing* `project_integrity` row is damage too rather than "not recorded": every
-database this build opens declares schema version 3 or is refused unread, and
+database this build opens declares schema version 4 or is refused unread, and
 every apply that creates a database or applies a migration records the count, so a
 readable database with no record has lost one.
 

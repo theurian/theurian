@@ -45,6 +45,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   the family-taxonomy corpus items, and the relation/view surfaces are the later
   lanes ADR-0029 still owes.
 
+## [0.1.0.dev14] - 2026-08-28
+
 ### Fixed
 
 - **The Markdown fence scan no longer rescans the rest of the document per
@@ -92,6 +94,36 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   (`test_ref_paths_match_the_pre_328_eager_concat_build_over_random_documents`,
   `@seed(328)`). Discharges the T-6 residual
   `docs/security/threat-model.md` recorded as owed to this issue.
+
+### Changed
+
+- **BREAKING — `SCHEMA_VERSION` 3 → 4: every existing state database is refused
+  once, and one `theurian migrate apply` rebuilds it**
+  ([#117](https://github.com/theurian/theurian/issues/117)).
+  `knowledge_revisions`' `CHECK (valid_to IS NULL OR valid_to > valid_from)`
+  compared `valid_from`/`valid_to` as stored — `datetime.isoformat()`
+  verbatim, each keeping the author's own UTC offset rather than a
+  normalised one — so SQLite ordered them as TEXT, not as instants. A window
+  the domain accepts sorts the wrong way as a string: `validFrom`
+  `2031-01-01T00:00:00+09:00` (the instant 2030-12-31T15:00Z) and `validTo`
+  `2031-01-01T00:00:00+00:00` (the instant 2031-01-01T00:00Z, nine hours
+  *later*) satisfy `valid_to > valid_from` as datetimes and fail it as text,
+  so `theurian migrate apply` exited 1 with an unhandled
+  `sqlite3.IntegrityError` for a legitimate window.
+
+  The `CHECK` is dropped rather than rewritten; the ordering guarantee moves
+  entirely to the domain. `ValidityPeriod.__post_init__` (INV-4,
+  `domain/values.py`) already compares aware `datetime`s and orders by
+  instant, and it is the only constructor that reaches these columns —
+  `SqliteWriter.append_revision`, `.put_item` and `.register_specification`
+  each bind `<entity>.validity.valid_from`/`.valid_to`, which
+  `test_validity_write_path.py` pins structurally so removing the redundant
+  SQL check does not open a bypass. A state database is derived and
+  Git-ignored (ADR-0004) and is rebuilt rather than migrated (ADR-0017), so
+  nothing authored is lost — but the rebuild is not automatic, and until it
+  runs the three read tools refuse. BREAKING for a state database on disk,
+  not for the wire: `protocolVersion` stays `theurian/v1`, the same rule the
+  `SCHEMA_VERSION` 2 → 3 entry for `0.1.0.dev4` applies.
 
 ### Security
 

@@ -90,23 +90,34 @@ loss. Because it is not, it is a cache miss.
 - `tests/integration/test_canonical_store_corruption.py::test_a_pre_integrity_database_is_refused_unread_by_every_tool`
   — decision 3 and the rejected "compatibility window" alternative, asserted on
   all three MCP read tools at once, because `_resolve` is shared and a window
-  opened for one would be open for the others. Parametrised over *every* version
-  below the current one, so the rule is held across the whole range rather than at
-  its far end. Landed in Milestone 6 with a bump of this constant (2 → 3,
-  `project_integrity` and the composite pointer key,
+  opened for one would be open for the others. Parametrised over
+  `PRE_INTEGRITY_SCHEMA_VERSIONS` — exactly 1 and 2, the versions that predate
+  `project_integrity`. Landed in Milestone 6 with a bump of this constant (2 →
+  3, `project_integrity` and the composite pointer key,
   [#30](https://github.com/theurian/theurian/issues/30) PR2 and
   [#24](https://github.com/theurian/theurian/issues/24)). The exact-match rule is
   load-bearing for more than tidiness now: the #30 detector reads a *missing*
   `project_integrity` row as damage, which is only sound while no database written
-  before that table existed can be opened at all.
+  before that table existed can be opened at all. Until
+  [#117](https://github.com/theurian/theurian/issues/117),
+  `PRE_INTEGRITY_SCHEMA_VERSIONS` was derived as `range(1, SCHEMA_VERSION)`
+  rather than pinned; #117 bumped `SCHEMA_VERSION` 3 → 4 for a reason unrelated
+  to `project_integrity` (dropping a lexicographic `CHECK` on `valid_from`/
+  `valid_to`), which would have widened the derived range to include 3 — a
+  version that has held `project_integrity` since it shipped — into a
+  population whose whole premise is "predates the table". The constant is now
+  a fixed tuple for that reason, pinned by its own test
+  (`test_the_pre_integrity_schema_versions_are_exactly_one_and_two`).
 
 That bump was measured against a database the previous release really wrote, not
 only against a stamped version cell: `0.1.0.dev3` built a state database at
 version 2, after which all three read tools of this build refuse it with the
 message this ADR's decision 4 implies — rebuild rather than migrate — and one
 `theurian migrate apply` produces `databaseCreated: true` under a new state hash,
-after which the tools answer at version 3. The superseded file is left in place
-for `theurian index gc` (decision 5).
+after which the tools answer at the current `SCHEMA_VERSION` — 3 when this bump
+landed, 4 since [#117](https://github.com/theurian/theurian/issues/117) dropped
+`knowledge_revisions`' lexicographic `valid_to > valid_from` CHECK. The
+superseded file is left in place for `theurian index gc` (decision 5).
 
 Still owed, with the milestone that will satisfy it:
 
