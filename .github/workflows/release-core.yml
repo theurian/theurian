@@ -90,19 +90,34 @@ jobs:
       - uses: actions/checkout@v7
         with:
           # Full history, for the same class of reason as core.yml's test job
-          # (see the comment there, which also records the ~4 MiB cost): a test
-          # in this suite reads real git history, and a depth-1 clone answers it
-          # wrongly rather than not at all. Here it is the live Review-Finding
-          # canary in `test_git_trailer_source.py`, which counts column-0
-          # `Review-Finding:` lines in `refs/remotes/origin/main` and asserts
-          # every one is accounted for, `> 0`. On a `workflow_dispatch` run the
-          # ref resolves -- so the test's skip guard does not fire -- but at a
-          # single commit, the release squash, which carries no trailers, so the
-          # count is 0 and the job fails. Measured on main at 488995d: 0 keyed
-          # lines depth-1 against 122 in full history (run 33136215234).
-          # On a tag push there is no `origin/main` at all and the canary
-          # skipped silently instead; with full history it now runs on tag runs
-          # too, which is the point of having it.
+          # (its comment also records the ~4 MiB cost). THREE checks here read
+          # real git history, so do not re-derive this setting from any one of
+          # them:
+          #
+          #   * the live Review-Finding canary in `test_git_trailer_source.py`
+          #     -- column-0 `Review-Finding:` lines in
+          #     `refs/remotes/origin/main`, all accounted for, `> 0`. The only
+          #     one that FAILS: on a `workflow_dispatch` run on main the ref
+          #     resolves, so its skip guard does not fire, but at one commit --
+          #     the release squash, which carries no trailers. Measured on main
+          #     at 488995d: 0 keyed lines depth-1 against 122 full (run
+          #     33136215234).
+          #   * the frozen-anchor pin in that same file, which SKIPS when its
+          #     immutable commit is absent from a shallow clone.
+          #   * the corpus byte-identity rule in
+          #     `test_dogfood_corpus_governance.py`, which SKIPS per unreadable
+          #     anchor. core.yml calls it the only check that catches a
+          #     committed body edited with its `contentSha256` re-pinned, and
+          #     it had never run on this gate before.
+          #
+          # Those two skip silently with nothing turning RED, so the canary
+          # alone does not justify this line.
+          #
+          # A tag push has no `origin/main`, so the canary skipped there; it now
+          # runs, which is the point of having it. That ref is then main's tip
+          # AT RUN TIME, an input outside the tagged tree -- deliberate: the
+          # canary asserts a property, not a count, so drift alone cannot fail
+          # it.
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v7
         with:
