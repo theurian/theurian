@@ -12,6 +12,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0.dev14] - 2026-08-28
+
 ### Fixed
 
 - **The Markdown fence scan no longer rescans the rest of the document per
