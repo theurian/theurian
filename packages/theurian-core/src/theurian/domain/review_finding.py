@@ -2,7 +2,7 @@
 
 A finding is a *pre-classified, human-authored review record*: a reviewer and a
 severity drawn from closed vocabularies, plus a one-line summary a human wrote
-into a signed commit. It needs no LLM promotion gate to become structured
+into a commit. It needs no LLM promotion gate to become structured
 (ADR-0029 decision 1, FR-V5), which is what makes it the git-native floor of the
 FR-V review-ingestion family.
 
@@ -32,6 +32,7 @@ adapter that reads git:
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -94,6 +95,83 @@ class FindingSeverity(StrEnum):
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
     LOW = "LOW"
+
+
+def _compute_parser_stamp() -> str:
+    """A content hash over the five closed-vocabulary literals decision 2 names.
+
+    **What this covers, exactly.** The five things ADR-0029 decision 2 calls a
+    "grammar change": the trailer key (:data:`TRAILER_KEY`), the separator
+    (:data:`SEPARATOR`), the two closed vocabularies (:class:`ReviewerToken`,
+    :class:`FindingSeverity`), and the alias map (:data:`_REVIEWER_ALIASES`). The
+    stamp hashes the five member-*value* serializations, not the enum machinery
+    that reads them: changing one of those values -- adding an alias entry, adding
+    or renaming a member, changing the key or the separator -- moves the stamp
+    (each verified independently by mutation). A store built under the old values
+    is then *detectable* as stale from the mismatch (AC-4); the consumer that acts
+    on that detection -- refusing a stale store, or triggering a rebuild from the
+    signal -- arrives with the serving slice. Today the store's one writer rebuilds
+    unconditionally on every run regardless of what this stamp says, so nothing
+    here is stale-then-rebuilt yet: the detection is real, the reaction is not
+    shipped.
+
+    **What this does NOT cover: matching behaviour layered on the vocabularies, and
+    the parser's mechanics.** Four mechanics are not hashed: the single space
+    consumed after the key, the ``<reviewer> <SEVERITY>`` two-token split on the
+    prefix, and the alias-lookup mechanism :func:`_reviewer` applies to the first
+    token (all three in :func:`parse_trailer_line` / :func:`_reviewer`), plus the
+    column-0 extraction rule that decides which body line even reaches this parser
+    (``infrastructure/git/trailer_source.py``). Widening any of those -- tolerating
+    a TAB after the key, accepting an indented trailer line, folding a
+    continuation -- changes the accepted set while all five hashed values stay
+    byte-identical, so the stamp does not move and a store built under the old
+    mechanics reads as current under the new ones (demonstrated by adversarial
+    review). The same gap exists one layer up, in how a member is *matched* rather
+    than what it is *worth*: an ``Enum._missing_`` hook or a ``__new__`` override
+    could widen what ``ReviewerToken(...)`` or ``FindingSeverity(...)`` accepts --
+    ``Review-Finding: CODE-REVIEW HIGH``, or ``security`` in mixed case, starting to
+    parse -- without moving a single hashed literal, because every member's *value*
+    stays unchanged. Binding mechanics and matching behaviour into the stamp is a
+    real fix, tracked as its own structural-bind residual in issue #406 rather than
+    folded in here; until it lands, either kind of change owes a manual
+    :data:`~theurian.infrastructure.sqlite.findings_schema.FINDINGS_SCHEMA_VERSION`
+    bump -- the same manual discipline ``INDEX_SCHEMA_VERSION`` already relies on
+    for whatever its own forcing function does not reach.
+
+    Derived rather than hand-maintained for the five literals it does cover,
+    because each is a thing an edit to the *vocabulary* changes: the key, the
+    separator, the two closed vocabularies, and the alias map (adding an alias is
+    the recorded grammar change of decision 2). Hashing all five means the stamp
+    cannot silently stay equal across a vocabulary change the way a forgotten
+    manual bump would -- the forcing-function property the derived index/state
+    schema versions rely on, moved from a human's discipline onto the constants
+    themselves, for this one slice of the grammar.
+
+    Deterministic: the vocabularies and the alias map are serialized in sorted
+    order, so the stamp is a pure function of the grammar and not of dict or set
+    iteration order (no ``hash()``, no unordered iteration reaching an output).
+    """
+    material = "\n".join(
+        [
+            f"key={TRAILER_KEY}",
+            f"separator={SEPARATOR}",
+            "reviewers=" + ",".join(sorted(token.value for token in ReviewerToken)),
+            "aliases="
+            + ",".join(f"{raw}->{token.value}" for raw, token in sorted(_REVIEWER_ALIASES.items())),
+            "severities=" + ",".join(sorted(severity.value for severity in FindingSeverity)),
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+#: The current trailer-grammar identity (see :func:`_compute_parser_stamp`). A
+#: derived store records this beside its schema version; a stored value that no
+#: longer equals this one means the file was parsed by a superseded grammar --
+#: *detectable* staleness (ADR-0029, AC-4). Today the store's one writer rebuilds
+#: wholesale from git history on every run regardless of this comparison; a reader
+#: that trusts a store in place, and rebuilds only on a detected mismatch, is the
+#: serving slice this signal is for.
+PARSER_STAMP: Final = _compute_parser_stamp()
 
 
 class MalformedTrailerError(DomainError):

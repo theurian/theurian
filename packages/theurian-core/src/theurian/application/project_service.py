@@ -547,6 +547,27 @@ class ProjectPaths:
             )
         return candidate
 
+    def findings_for(self, build_id: str) -> Path:
+        """Where the review-finding store lives (ADR-0029 phase-2 slice-2).
+
+        The ``theurian-findings-`` prefix matters for the reason ``index_for``'s
+        does: this file shares ``.theurian/state/`` with canonical state databases
+        (``theurian-state-``) and retrieval indexes (``theurian-index-``), and a
+        glob that could not tell the three apart would hand one artifact's reader
+        another's file.
+
+        Routed through :meth:`_contained` like :meth:`database_for`, not through
+        ``index_for``'s bespoke state-scoped check. That richer check exists because
+        the index id arrives from ``active-index.json`` -- a derived, git-ignored
+        file any process can edit with ``../``. This slice has **no findings
+        pointer**: ``build_id`` is a trusted constant supplied by ``theurian
+        findings build``, so the root-level containment ``_contained`` proves is
+        sufficient. When a serving slice adds an untrusted pointer, the
+        state-scoped check ``index_for`` carries becomes owed here too.
+        """
+        filename = f"theurian-findings-{build_id}.sqlite"
+        return self._contained(self.knowledge_dir / "state" / filename)
+
     @property
     def write_lock(self) -> Path:
         return self._contained(self.knowledge_dir / "runtime" / "write.lock")

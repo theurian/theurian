@@ -598,6 +598,10 @@ CLI_NOT_SWEPT: Final = {
     "daemon stop": "signals a process this suite must not have running",
     "doctor": "a health report, not a command over this project's state: it exits "
     "non-zero on a healthy corpus because the fixture installs no Claude Code",
+    "findings build": "never opens the canonical store: it reads git history "
+    "(refs/remotes/origin/main) and writes a separate derived findings store, so a "
+    "corrupted canonical cell cannot reach its output -- and it needs a fetched "
+    "public ref this corpus has no reason to carry",
     "ingest": "writes migration files, which moves the state hash and so the database",
     "init": "writes .theurian/ and appends to .gitignore in the working directory",
     "project register": "rewrites the registry the corpus was built from",

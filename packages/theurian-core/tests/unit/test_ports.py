@@ -43,6 +43,13 @@ from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
 #: one file to one document by media type and cannot express a ``git log`` read
 #: that yields many findings across many commits -- so it lands with its driving
 #: ADR, exactly the deliberate-decision path this list gates.
+#:
+#: ``ReviewFindingStore`` is the other half of that same ADR-0029 arm: where the
+#: source *reads* findings out of git, the store *lands* them in a wholesale-rebuilt
+#: Canonical-layer projection. It is a genuine new abstraction rather than a
+#: registration -- no existing port expresses a rebuild-from-git artifact carrying a
+#: parser stamp and exposing a verification dump but no serving read -- so it too
+#: lands with ADR-0029.
 EXPECTED_PORTS = frozenset(
     {
         "AuthorizationProvider",
@@ -55,6 +62,7 @@ EXPECTED_PORTS = frozenset(
         "ObjectStore",
         "RerankingProvider",
         "ReviewFindingSource",
+        "ReviewFindingStore",
         "ReviewProvider",
         "SecretStore",
         "SourceParser",

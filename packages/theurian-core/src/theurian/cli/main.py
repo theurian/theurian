@@ -23,6 +23,7 @@ from theurian import __protocol_version__, __version__
 from theurian.cli import (
     auth_commands,
     commands,
+    findings_commands,
     index_commands,
     propose_commands,
     setup_commands,
@@ -65,6 +66,7 @@ app.add_typer(commands.migrate_app, name="migrate")
 app.add_typer(commands.daemon_app, name="daemon")
 app.add_typer(auth_commands.auth_app, name="auth")
 app.add_typer(index_commands.index_app, name="index")
+app.add_typer(findings_commands.findings_app, name="findings")
 app.add_typer(propose_commands.propose_app, name="propose")
 app.command("setup")(setup_commands.setup_command)
 app.command("doctor")(setup_commands.doctor_command)

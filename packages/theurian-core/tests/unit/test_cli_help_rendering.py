@@ -98,7 +98,7 @@ _BOX: Final = re.compile(r"[─-╿]")
 #:
 #: Remedy when this fails: a command was added or removed, so change the number
 #: -- and check that the new one is in the sweep's output, not merely counted.
-COMMAND_COUNT: Final = 30
+COMMAND_COUNT: Final = 32
 
 #: Labels the walk must produce, one per branch it has. ``short_help`` and
 #: ``epilog`` are set by no command in the tree, so their branches are pinned by

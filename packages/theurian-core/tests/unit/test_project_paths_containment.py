@@ -31,6 +31,8 @@ from theurian.application.project_service import (
     ProjectError,
     ProjectPaths,
 )
+from theurian.cli.commands import _STATE_DATABASE_GLOB
+from theurian.cli.index_commands import INDEX_FILENAME_PREFIX
 from theurian.domain.state import StateHash
 from theurian.domain.values import ContentHash
 from theurian.security.project_config import PROJECT_CONFIG_FILE
@@ -221,6 +223,7 @@ _HELPER_CALLS: dict[str, Callable[[ProjectPaths], Path]] = {
     "write_lock": lambda p: p.write_lock,
     "index_for": lambda p: p.index_for("01K1AAAAAA01234567890ABCDE"),
     "database_for": lambda p: p.database_for(_SAMPLE_STATE_HASH),
+    "findings_for": lambda p: p.findings_for("01K1AAAAAA01234567890ABCDE"),
 }
 
 #: The ``.theurian`` child whose symlink escape reaches each helper. A leaf helper
@@ -240,6 +243,7 @@ _ESCAPING_CHILD: dict[str, str] = {
     "write_lock": "runtime",
     "index_for": "state",
     "database_for": "state",
+    "findings_for": "state",
 }
 
 #: The one helper deliberately contained by its *reader* rather than by
@@ -521,3 +525,53 @@ def test_a_symlinked_state_pointing_inside_the_root_writes_normally(tmp_path: Pa
     paths.active_pointer.write_text("{}")
 
     assert (root / "state_real" / "active.json").read_text() == "{}"
+
+
+def test_the_findings_index_and_state_filename_prefixes_are_pairwise_disjoint(
+    tmp_path: Path,
+) -> None:
+    """The three artifacts sharing ``.theurian/state/`` are told apart by prefix (#396 T-4).
+
+    Every reader in ``.theurian/state/`` tells its own artifact apart from its two
+    neighbours by filename prefix alone, never by opening the file first: ``index
+    gc`` globs ``theurian-index-*`` and *must* skip the canonical
+    ``theurian-state-*`` database beside it (``test_index_gc_cli.py``'s whole
+    reason for existing), and ``_applied_migration_ids`` globs
+    ``theurian-state-*`` and tries to open whatever matches as a canonical state
+    database, silently treating an open failure as "nothing recorded there". A
+    findings store retargeted onto either neighbour's prefix would be picked up by
+    the wrong reader -- reclaimed as a stale index build, or opened and silently
+    ignored as an unreadable state database -- without either reader raising.
+
+    ``findings_for``'s filename is pinned by exact value, driven through the real
+    method rather than a hand-built string, so a retargeted f-string moves this
+    assertion regardless of which neighbour's prefix it was pointed at. The other
+    two prefixes are read from their owning modules (``INDEX_FILENAME_PREFIX``,
+    ``_STATE_DATABASE_GLOB``) rather than restated as literals here, so a prefix
+    change made *only* in its owning module still fails this test if it collides.
+    """
+    root = tmp_path / "repo"
+    (root / ".theurian").mkdir(parents=True)
+    paths = ProjectPaths.of(root)
+
+    findings_name = paths.findings_for("local").name
+
+    assert findings_name == "theurian-findings-local.sqlite"
+
+    findings_prefix = "theurian-findings-"
+    assert findings_name == f"{findings_prefix}local.sqlite"
+    index_prefix = INDEX_FILENAME_PREFIX
+    state_prefix = _STATE_DATABASE_GLOB.removesuffix("*.sqlite")
+    assert state_prefix == "theurian-state-", (
+        f"_STATE_DATABASE_GLOB no longer has the shape 'theurian-state-*.sqlite'; "
+        f"got {_STATE_DATABASE_GLOB!r}, so the derived prefix is {state_prefix!r}"
+    )
+
+    prefixes = (findings_prefix, index_prefix, state_prefix)
+    assert len(set(prefixes)) == 3, f"the three artifact prefixes are not distinct: {prefixes}"
+    assert not any(
+        a != b and (a.startswith(b) or b.startswith(a)) for a in prefixes for b in prefixes
+    ), (
+        f"one artifact prefix is a prefix of another ({prefixes}), so a glob on "
+        f"the shorter one would also match the other artifact's files"
+    )

@@ -9,12 +9,15 @@ adapter's scoping and loss-free mapping are exercised against real repositories 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import StrEnum
 
 import pytest
 
+from theurian.domain import review_finding
 from theurian.domain.errors import DomainError
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.review_finding import (
+    PARSER_STAMP,
     FindingSeverity,
     MalformedTrailerError,
     ReviewerToken,
@@ -279,3 +282,103 @@ def test_a_finding_rejects_a_naive_date() -> None:
             pull_request=None,
             date=datetime(2026, 8, 26, 12, 0),  # noqa: DTZ001 - the naive date is the fixture
         )
+
+
+# --- PARSER_STAMP: the forcing function covers every grammar element --------
+
+
+def test_the_parser_stamp_is_the_live_derivation_not_a_frozen_hash() -> None:
+    """PARSER_STAMP is recomputed from the grammar, so it cannot drift silently.
+
+    The stamp is a forcing function (ADR-0029 decision 2): a derived findings store
+    records it, and a store built under a superseded grammar reads as stale and is
+    rebuilt. That only works if the published constant is the *current* derivation,
+    not a value someone froze once. Pinning ``PARSER_STAMP == _compute_parser_stamp()``
+    is the anchor the element-sensitivity test below rests on -- together they say
+    the stamp both equals the live derivation and moves when any part of it does.
+    """
+    assert review_finding._compute_parser_stamp() == PARSER_STAMP
+
+
+def _reviewer_enum_with_extra() -> type[StrEnum]:
+    """A reviewer vocabulary with one extra member -- a grammar change to detect."""
+    return StrEnum(  # type: ignore[return-value]
+        "ExtraReviewerToken",
+        {
+            "CODE_REVIEW": "code-review",
+            "SECURITY": "security",
+            "ADVERSARIAL": "adversarial",
+            "EXTRA": "an-added-reviewer",
+        },
+    )
+
+
+def _severity_enum_with_extra() -> type[StrEnum]:
+    """A severity scale with one extra member -- a grammar change to detect."""
+    return StrEnum(  # type: ignore[return-value]
+        "ExtraFindingSeverity",
+        {
+            "CRITICAL": "CRITICAL",
+            "HIGH": "HIGH",
+            "MEDIUM": "MEDIUM",
+            "LOW": "LOW",
+            "TRIVIAL": "TRIVIAL",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "attribute, replacement",
+    [
+        pytest.param("TRAILER_KEY", "Review-Note:", id="key"),
+        pytest.param("SEPARATOR", " -- ", id="separator"),
+        pytest.param("ReviewerToken", None, id="reviewer-vocabulary"),
+        pytest.param("FindingSeverity", None, id="severity-scale"),
+        pytest.param("_REVIEWER_ALIASES", None, id="alias-map-added"),
+        pytest.param("_REVIEWER_ALIASES", {}, id="alias-map-removed"),
+    ],
+)
+def test_the_parser_stamp_changes_when_any_grammar_element_changes(
+    monkeypatch: pytest.MonkeyPatch, attribute: str, replacement: object
+) -> None:
+    """Each of the five hashed vocabulary constants is an input to the stamp.
+
+    ``_compute_parser_stamp`` hashes exactly five things (see its own docstring):
+    the trailer key, the separator, the two closed vocabularies, and the alias
+    map. It does **not** cover the parser's mechanics -- the space consumed after
+    the key, the ``<reviewer> <SEVERITY>`` token split, and the column-0
+    extraction rule that decides which body line reaches the parser at all -- so
+    "every element of the grammar" overstates what this test can catch: a change
+    to one of those mechanics leaves every case below green while the accepted
+    set still changed (recorded gap, production commit ``ebec475``). What this
+    test does pin is narrower and still real: if any of the five hashed
+    constants stopped feeding the hash, a change to *that* constant would leave
+    the stamp unchanged and a superseded store would read as current -- the
+    forcing function silently broken for that element.
+
+    Each case swaps one of the five constants for a materially different value
+    and asserts the recomputed stamp differs from the live :data:`PARSER_STAMP`.
+    Because the stamp
+    is derived from the live module globals at call time, this exercises the real
+    ``_compute_parser_stamp``: a source that dropped, say, the ``separator=`` line
+    from the hashed material would produce the *same* stamp here for a changed
+    separator, and the ``separator`` case would fail -- which is exactly the
+    regression this pins against.
+    """
+    if attribute == "ReviewerToken":
+        replacement = _reviewer_enum_with_extra()
+    elif attribute == "FindingSeverity":
+        replacement = _severity_enum_with_extra()
+    elif attribute == "_REVIEWER_ALIASES" and replacement is None:
+        # A second alias for an existing reviewer: adding a spelling is the recorded
+        # grammar change of decision 2, so the stamp must move for it.
+        replacement = {**review_finding._REVIEWER_ALIASES, "sec": ReviewerToken.SECURITY}
+
+    monkeypatch.setattr(review_finding, attribute, replacement)
+
+    assert review_finding._compute_parser_stamp() != PARSER_STAMP, (
+        f"changing the grammar's {attribute} left PARSER_STAMP unchanged: that "
+        f"element no longer feeds the stamp, so a store built under an old grammar "
+        f"that differs only in {attribute} would read as current instead of being "
+        f"rebuilt (ADR-0029 decision 2, AC-4)."
+    )

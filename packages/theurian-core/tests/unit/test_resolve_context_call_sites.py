@@ -152,6 +152,7 @@ RESOLVE_CONTEXT_CALL_SITES = {
     ("cli/index_commands.py", "index_build", "_require_project"),
     ("cli/index_commands.py", "index_status", "_require_project"),
     ("cli/index_commands.py", "index_gc", "_require_project"),
+    ("cli/findings_commands.py", "findings_build", "_require_project"),
     ("cli/propose_commands.py", "propose_accept", "_require_project"),
     ("cli/propose_commands.py", "_draft", "_require_project"),
 }

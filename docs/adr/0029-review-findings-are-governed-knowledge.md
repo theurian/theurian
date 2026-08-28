@@ -778,6 +778,83 @@ and its embargo-cleared count, the reverse `recorded-in` edge set, the
 review-unit view, and the ranked-search T-17a population) is unchanged, because
 this slice serves nothing.
 
+**Landed in #368 phase-2 slice-2 ([#396](https://github.com/theurian/theurian/issues/396)),
+store landing with NO serving.** The parsed finding record (decision 1) now
+lands in a real artifact: `SqliteReviewFindingStore`
+(`infrastructure/sqlite/findings_store.py`) writes a `theurian-findings-*.sqlite`
+file under `.theurian/state/`, rebuilt wholesale by `theurian findings build`
+(`cli/findings_commands.py`, `application/findings_builder.py`) from slice-1's
+`GitTrailerFindingSource`. This is the Canonical-layer artifact decision 4's
+layer table names, not an index/derived one, and it inherits ADR-0004's
+projection property: a deleted store rebuilds identically from git, so losing
+the file is a cache miss, not data loss
+(`tests/integration/test_findings_builder.py`).
+
+What this slice discharges:
+
+- **Idempotent, wholesale rebuild.** Two `replace_all` calls over one
+  unchanged load leave a logically identical store — same rows, same rejected
+  trailers, same stamp — compared by content, never by SQLite file bytes
+  (`tests/integration/test_findings_store.py`,
+  `tests/integration/test_findings_build_cli.py`).
+- **Convergence as history grows.** A rebuild after a new commit lands the
+  new full set with nothing lost or duplicated
+  (`tests/integration/test_findings_builder.py`).
+- **Rejected trailers stay apart from findings, inert.** A malformed keyed
+  line lands in its own table, byte-preserved and never re-parsed into a
+  finding (`tests/integration/test_findings_store.py`).
+- **Staleness is detectable.** A schema-version or parser-grammar mismatch
+  is a comparable stamp (`FindingsStamp`, `is_current()`); no shipped path
+  acts on the comparison yet, because the store's one writer rebuilds
+  unconditionally on every run regardless of what the stamp says — the
+  detection is real, the reaction arrives with the serving slice
+  (`tests/integration/test_findings_store.py`).
+- **AC-7: structurally, no path a caller reaches serves a finding.** Two
+  prongs, each blind to what the other catches — an AST import scan of every
+  serving module, and a grep for the store's table and file-name tokens plus
+  the MCP tool registry — assert that `mcp/`, `daemon/`, `review/`, the
+  retrieval/visibility/CLI-content modules, the CLI's command-registration
+  root, the index read-side, and the canonical-store adapter neither import
+  nor name the store, and that the five registered MCP tools serve no
+  finding. A round-two review measured that the completeness guard behind
+  this had covered only 2 of the package's 16 top-level packages — 89 of 132
+  shipped modules sat outside every bucket, unscanned and unacknowledged; the
+  guard now covers the whole shipped package, walking `mcp`/`daemon`/`review`
+  and classifying every remaining file
+  (`tests/unit/test_findings_store_is_unreachable.py`). The runtime companion
+  — that the *built* daemon registers exactly the known read-only tool set
+  and no tool's bytecode reaches a store symbol — is
+  `tests/integration/test_findings_tool_registry.py`. This discharges the
+  closure argument's family 8 baseline structurally, not by the absence of
+  code: a store now exists, and nothing reaches it.
+
+What stays owed, unchanged by this slice because it serves nothing: a served
+`findingText`'s SEC-15 safety triple, the non-public-path embargo refusal, the
+family-taxonomy corpus items, the recurrence query and its embargo-cleared
+count, the reverse `recorded-in` edge set, the FR-V6 review-unit view, and the
+ranked-search T-17a population. The derived `pullRequest`, `family` and
+`specialist` fields stay `None` in the store too — the schema carries the
+columns (D5's pattern), NULL until the derivations land.
+
+Three residuals from review are recorded, not blocking, each its own issue
+rather than folded into this slice: the write is not yet atomic against a
+concurrent reader, unlike `index build`'s working-name-then-`os.replace`
+discipline
+([#404](https://github.com/theurian/theurian/issues/404)); the stored
+`committed_at` order is not chronological across UTC offsets
+([#405](https://github.com/theurian/theurian/issues/405)); and
+`PARSER_STAMP` covers the five closed-vocabulary literals decision 2 names but
+not the parser's mechanics, so a grammar-widening change can leave a store
+reading as current under a grammar it was not built under
+([#406](https://github.com/theurian/theurian/issues/406)). A fourth was found
+in this slice's round two but belongs to slice-1's mechanism, out of this
+slice's own diff: `%b` can drop a column-0 trailer folded into the subject
+paragraph, unaccounted, which falsifies decision 1's loss-free mapping and the
+live loss-free test's own baseline
+([#410](https://github.com/theurian/theurian/issues/410)) — the live corpus is
+unaffected (measured: the `%b` and `%B` grep counts agree), and the fix belongs
+to slice-1, not this one.
+
 ## Amendment 1 — the parser contract (2026-08-26, PR #387, #368 phase-2 slice-1)
 
 > **This is an append-only amendment. The normative decisions above are
