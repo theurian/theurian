@@ -511,8 +511,8 @@ async def test_the_cap_refuses_the_excess_caller(
     the only place to stop the (N+1)th caller is before it starts any
     retrieval work at all. This is the test that would have caught a cap that
     let the excess caller queue and run anyway, which does not fail on
-    result *correctness* but on cost -- the observable family this whole
-    slice exists to close (see brief-26, "a resource the query consumes").
+    result *correctness* but on cost -- "a resource the query consumes", the
+    observable family threat-model T-6 enumerates and this slice closes.
     """
     server = build_server(registry)
     gate = _SaturationGate()
@@ -815,8 +815,8 @@ async def test_health_answers_promptly_while_the_cap_is_saturated(
     must answer even while every search worker thread is blocked: it is
     served directly as an ``async def`` route on the asyncio event loop,
     never through ``anyio.to_thread.run_sync``, so it shares nothing with the
-    pool the cap is bounding (the mechanism fact brief-26 records as the
-    whole reason a cap was chosen over a wall-clock timeout).
+    pool the cap is bounding (the mechanism fact threat-model T-6 records as
+    the reason a cap was chosen over a wall-clock timeout).
 
     Launching exactly ``MAX_CONCURRENT_SEARCHES`` holders and nothing else --
     this test's own earlier form -- never actually exercised that claim: no
