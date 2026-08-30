@@ -604,11 +604,11 @@ async def test_a_normal_search_is_unaffected_by_the_cap(registry: ProjectRegistr
     assert result["results"][0]["itemId"] == "architecture.auth-policy"
 
 
-# -- AC-3: the refusal never varies with query, projectId, or store content -
+# -- AC-3: the refusal *message* never varies with query, projectId, or store content -
 
 
 @pytest.mark.asyncio
-async def test_the_refusal_is_byte_identical_whatever_the_input(  # noqa: PLR0915 -- 4 rounds, 9
+async def test_the_refusal_is_byte_identical_whatever_the_input(  # noqa: PLR0915 -- 4 rounds, 10
     # captures compared in one assertion; splitting would defeat that comparison (see docstring)
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -625,18 +625,31 @@ async def test_the_refusal_is_byte_identical_whatever_the_input(  # noqa: PLR091
     own semaphore), covering:
       (a) two different queries against the same store,
       (b) two different projectIds against one server serving both,
-      (c) a corpus with three withheld rows against one with none, and
+      (c) a corpus with three withheld rows against one with none, AND that
+          same withheld-row corpus with `includeUnapproved=True`, and
       (d) four of the tool's other parameters on the same store as (a): a
           non-default `limit`, a non-default `maxTokens`, `useDense=True`,
           and `includeUnapproved=True`.
-    All nine captured refusal strings must be the same string, and that
-    string must be exactly `SEARCH_CAPACITY_REFUSAL` with nothing appended --
-    a mutation that appended caller- or grant-derived text uniformly (round
-    1's `refusal-carries-limit`, `refusal-carries-grant`) survived the
-    original five-capture, self-consistency-only version of this test,
-    because every one of those captures used the same default `limit` and
-    the same deployment grant, so the appended text was identical across all
-    of them.
+    All ten captured refusal strings must be the same string, and that string
+    must be exactly `SEARCH_CAPACITY_REFUSAL` with nothing appended -- a
+    mutation that appended caller- or grant-derived text uniformly (round 1's
+    `refusal-carries-limit`, `refusal-carries-grant`) survived the original
+    five-capture, self-consistency-only version of this test, because every
+    one of those captures used the same default `limit` and the same
+    deployment grant, so the appended text was identical across all of them.
+
+    (c)'s second capture is the withheld-corpus axis crossed with a parameter
+    axis, and it exists because the other nine, on their own, do not cross
+    them: every `includeUnapproved=True` capture before this one ran against
+    `plain`, whose one applied migration leaves `active.migration_count - 1`
+    at `0`, and every withheld-row capture before this one left
+    `includeUnapproved` at its default `False`. `refusal-cross-axis-leak`
+    (adversarial round 2, M-1) appends
+    `f" [{active.migration_count - 1}]"` to the refusal precisely when
+    `includeUnapproved` is truthy AND that difference is truthy -- true only
+    for `retired` (two applied migrations) with `includeUnapproved=True`, so
+    it survived every capture the nine-capture version of this test took and
+    is what this tenth capture exists to kill.
 
     The `limit=50` capture in (d) is also timed: `MAX_RESULTS` clamps
     `capped_limit` to exactly 50, so a mutation that scaled the admission
@@ -680,7 +693,10 @@ async def test_the_refusal_is_byte_identical_whatever_the_input(  # noqa: PLR091
         drained = await _drain(gate, tasks)
     _assert_all_succeeded(drained, MAX_CONCURRENT_SEARCHES)
 
-    # (c) a corpus with withheld rows against one with none.
+    # (c) a corpus with withheld rows against one with none -- and, in the
+    # same round, that withheld-row corpus again with `includeUnapproved=True`:
+    # the one capture that crosses the withheld-corpus axis with a parameter
+    # axis (see the docstring's `refusal-cross-axis-leak` paragraph).
     retired_server = build_server(retired)
     gate = _SaturationGate()
     monkeypatch.setattr(tools, "hybrid_answer", gate.stub)
@@ -689,6 +705,14 @@ async def test_the_refusal_is_byte_identical_whatever_the_input(  # noqa: PLR091
     )
     try:
         messages.append(await _refused(retired_server, project_id="retired", query="a short query"))
+        messages.append(
+            await _refused(
+                retired_server,
+                project_id="retired",
+                query="a short query",
+                includeUnapproved=True,
+            )
+        )
     finally:
         drained = await _drain(gate, tasks)
     _assert_all_succeeded(drained, MAX_CONCURRENT_SEARCHES)
@@ -725,7 +749,7 @@ async def test_the_refusal_is_byte_identical_whatever_the_input(  # noqa: PLR091
         drained = await _drain(gate, tasks)
     _assert_all_succeeded(drained, MAX_CONCURRENT_SEARCHES)
 
-    assert len(messages) == 9
+    assert len(messages) == 10
     assert len({*messages}) == 1, (
         "the refusal must be byte-identical whatever the input; observed distinct "
         f"strings: {sorted(set(messages))}"
@@ -836,6 +860,18 @@ async def test_health_answers_promptly_while_the_cap_is_saturated(
     the lifespan starts plays no part in the route this test drives -- and a
     plain ``httpx2.ASGITransport`` request confirmed that against the
     *current*, un-gated tool during this test's own construction.
+
+    Scope: the bound pinned below (``elapsed < 0.5``) is for GIL-*releasing*
+    holders. ``BoundedSemaphore.acquire`` and the stub's ``threading.Event.wait``
+    both release the GIL while blocked, which is what keeps that bound tight.
+    A holder that instead holds the GIL continuously -- the real substring
+    scan exercised by ``test_the_cap_gates_the_real_substring_scan_fallback``
+    below is CPU-bound and does not release it -- is a different residual,
+    recorded in threat-model T-6 rather than tested here: with
+    ``MAX_CONCURRENT_SEARCHES`` GIL-holding holders admitted, a 12-probe
+    series there measured an asyncio tick delayed up to 844ms, 1.7x this
+    test's own threshold, so a timing assertion pinned to that recorded worst
+    would be inherently flaky rather than a stronger test.
     """
     server = build_server(registry)
     gate = _SaturationGate()
@@ -845,10 +881,16 @@ async def test_health_answers_promptly_while_the_cap_is_saturated(
     config = DaemonConfig(token=generate_token(), data_dir=tmp_path)
     starlette_app = build_app(config, server)
 
-    total_pool_tokens = int(anyio.to_thread.current_default_thread_limiter().total_tokens)
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    total_pool_tokens = int(limiter.total_tokens)
     excess_count = total_pool_tokens - MAX_CONCURRENT_SEARCHES
 
     tasks = await _saturate(server, gate, project_id="demo", count=MAX_CONCURRENT_SEARCHES)
+    # Pre-initialised (mirrors the `fresh_tasks` fix in AC-4's test above): if
+    # the list comprehension below raised partway through, `waiters` would
+    # otherwise be unbound in `finally`, masking the real failure behind a
+    # `NameError` and leaking whatever tasks it had already created.
+    waiters: list[asyncio.Task[dict[str, Any]]] = []
     try:
         # Each of these also occupies one `anyio` pool thread for as long as it
         # is parked in `search_admission.acquire(timeout=...)` -- the cap
@@ -861,12 +903,22 @@ async def test_health_answers_promptly_while_the_cap_is_saturated(
             )
             for i in range(excess_count)
         ]
-        # No signal exists for "genuinely inside acquire()" from outside the
-        # semaphore itself; a fixed delay, comfortably shorter than
-        # ADMISSION_WAIT_SECONDS (1.0s), is what confirms it in practice --
-        # dispatch to a worker thread and the pre-gate resolve work are both
-        # far faster than this.
+        # A fixed delay, comfortably shorter than ADMISSION_WAIT_SECONDS
+        # (1.0s), for every waiter to have certainly reached
+        # `search_admission.acquire()` -- dispatch to a worker thread and the
+        # pre-gate resolve work are both far faster than this.
         await asyncio.sleep(0.3)
+
+        # `borrowed_tokens` is `anyio`'s own live occupancy count -- the
+        # signal a prior round of this test claimed did not exist. Asserted
+        # immediately before the probe: the fixed delay above is what gets
+        # every waiter into `acquire()` in practice, but this is what confirms
+        # it actually happened rather than merely assuming it did.
+        assert int(limiter.borrowed_tokens) == total_pool_tokens, (
+            f"only {int(limiter.borrowed_tokens)}/{total_pool_tokens} anyio pool tokens were "
+            "borrowed right before the probe -- the harness failed to saturate the whole "
+            "pool, so a fast /health response here would not have proven anything"
+        )
 
         transport = httpx.ASGITransport(app=starlette_app)
         async with httpx.AsyncClient(
@@ -875,6 +927,17 @@ async def test_health_answers_promptly_while_the_cap_is_saturated(
             started = time.monotonic()
             response = await asyncio.wait_for(client.get("/health"), timeout=_WAIT_BOUND_SECONDS)
             elapsed = time.monotonic() - started
+
+        # And again immediately after: a waiter that returned early during the
+        # probe -- admitted once a permit freed, or refused once its own
+        # admission wait elapsed -- would give up a pool token mid-probe, and
+        # the precondition above must hold for the probe's whole duration, not
+        # only at its start.
+        assert int(limiter.borrowed_tokens) == total_pool_tokens, (
+            f"only {int(limiter.borrowed_tokens)}/{total_pool_tokens} anyio pool tokens were "
+            "still borrowed once the probe returned -- a waiter returned early during the "
+            "probe, so it was not actually saturated for the whole response"
+        )
     finally:
         drained = await _drain(gate, tasks)
         # Whether each waiter is admitted (a holder's permit frees once
@@ -901,11 +964,13 @@ async def test_health_answers_promptly_while_the_cap_is_saturated(
 
 #: A registered-but-unbuilt-index project big enough that `_scan`'s real
 #: substring walk holds a permit for a measurable amount of wall-clock time.
-#: 900 approved items of roughly 1,000 characters each measured a ~0.05s solo
+#: 900 approved items of roughly 1,000 characters each measured a 0.059s solo
 #: no-match scan and, at `_SCAN_CORPUS_CONCURRENT_CALLERS` simultaneous
-#: no-match searches, 8-15 refusals out of the batch across repeated runs on
-#: this project's own hardware -- comfortable margin over the >=1 this test
-#: asserts.
+#: no-match searches against `ADMISSION_WAIT_SECONDS` monkeypatched to 0.3s
+#: (this test only -- see its body), 11-13 of 24 refusals across 6 replays
+#: under machine saturation on this project's own hardware, never zero --
+#: the residual risk this margin does not close is faster hardware still,
+#: which admits every caller regardless of the admission wait.
 _SCAN_CORPUS_APPROVED_ITEMS: Final = 900
 _SCAN_CORPUS_BODY_CHARS: Final = 1_000
 _SCAN_CORPUS_CONCURRENT_CALLERS: Final = 24
@@ -1027,17 +1092,29 @@ async def test_the_cap_gates_the_real_substring_scan_fallback(
     semaphore before the expensive scan starts, and every concurrent caller
     runs unrefused.
 
-    No monkeypatching here: `_build_scan_only_project` builds a real,
-    unindexed project of `_SCAN_CORPUS_APPROVED_ITEMS` approved items, so
-    every one of `_SCAN_CORPUS_CONCURRENT_CALLERS` concurrent no-match
-    searches takes the genuine `_scan` path and genuinely holds a permit for
-    the scan's own duration. If the gate does not hold across that path, none
-    of them is ever refused; this asserts at least one is.
+    `hybrid_answer` itself is not monkeypatched here: `_build_scan_only_project`
+    builds a real, unindexed project of `_SCAN_CORPUS_APPROVED_ITEMS` approved
+    items, so every one of `_SCAN_CORPUS_CONCURRENT_CALLERS` concurrent
+    no-match searches takes the genuine `_scan` path and genuinely holds a
+    permit for the scan's own duration. If the gate does not hold across that
+    path, none of them is ever refused; this asserts at least one is.
+
+    `ADMISSION_WAIT_SECONDS` *is* monkeypatched, to 0.3s, purely to make that
+    assertion robust to hardware speed rather than to exercise anything about
+    the constant itself -- see the comment at its call site and
+    `_SCAN_CORPUS_APPROVED_ITEMS`'s docstring for the measured margin.
     """
     registry = _build_scan_only_project(tmp_path, monkeypatch)
     server = build_server(registry)
+    # Shrunk from the shipped 1.0s so an excess caller's admission wait
+    # elapses well inside a single wave of the real scan (measured ~0.059s
+    # solo below) rather than being outrun by it on fast hardware -- the
+    # shipped value is a call-time module lookup (`tools.ADMISSION_WAIT_
+    # SECONDS`, not a name captured at import time), verified live by two
+    # round-2 mutation kills, and stays pinned elsewhere by
+    # `test_the_cap_pins_its_recorded_constants`.
+    monkeypatch.setattr(tools, "ADMISSION_WAIT_SECONDS", 0.3)
 
-    started = time.monotonic()
     outcomes = await asyncio.wait_for(
         asyncio.gather(
             *[
@@ -1048,10 +1125,13 @@ async def test_the_cap_gates_the_real_substring_scan_fallback(
             ],
             return_exceptions=True,
         ),
+        # `asyncio.wait_for` already fails this test with its own
+        # `TimeoutError` if the batch does not finish inside this bound --
+        # an `assert elapsed < N` after a successful `wait_for` can only ever
+        # be true (a prior round's `assert elapsed < 20.0`, more than double
+        # this bound, could never fire), so no such assertion is added here.
         timeout=_WAIT_BOUND_SECONDS * 2,
     )
-    elapsed = time.monotonic() - started
-    assert elapsed < 20.0, f"this test's own call batch took {elapsed:.1f}s, over its own bound"
 
     refused = [o for o in outcomes if isinstance(o, BaseException) and "maximum number" in str(o)]
     other_errors = [
