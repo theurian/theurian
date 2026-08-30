@@ -135,7 +135,7 @@ ADMISSION_WAIT_SECONDS: Final = 1.0
 #: publishes, and admission control must not reopen it by a different route
 #: (SEC-13, T-6). Verified byte-identical across queries, projects and
 #: corpora, and across `limit`, `maxTokens`, `useDense` and
-#: `includeUnapproved` (nine pinned captures), by
+#: `includeUnapproved` (ten pinned captures), by
 #: `test_the_refusal_is_byte_identical_whatever_the_input`.
 SEARCH_CAPACITY_REFUSAL: Final = (
     f"The daemon is already answering its maximum number of concurrent searches "
