@@ -511,37 +511,59 @@ FIFO made `migrate validate --json` hang with no output and no exit (#215), and
 a hang cannot even be graded. Each is measured on the fix's own branch and
 pinned by tests that fail when the guard is removed.
 
-> **Amended in the #199 unit-A audit (2026-08-30, measured at `06de58a`): which
-> budget answers an alias bomb, and what it still admits.** This entry recorded
-> #232's pre-fix cost and the constants that closed it, but not which of the two
-> constants does the closing, and the guess on record was that PyYAML's node
-> cache bounds the breadth. **It does not.** `_walk` carries no memo — unlike
-> `_external_refs`'s `descended` — so a node reached by *n* paths is entered *n*
-> times. At 22 alias levels the parsed graph holds **48 objects** while the walk
-> enters **120,491**. What stops it is `MAX_PROJECTION_CHARS`, charged in
-> `_Spend.emit` during the walk; `MAX_PROJECTION_NODES` is not reached on this
-> shape and neither is the parse.
+> **Amended in the #199 unit-A audit, re-measured after review (2026-08-31):
+> what the shipped ingestion path costs on an alias bomb, and what it does with
+> one.** This entry recorded #232's pre-fix cost and the constants that closed
+> it, but not which constant does the closing, and the guess on record was that
+> PyYAML's node cache bounds the breadth. **It does not.** `_walk` carries no
+> memo — unlike `_external_refs`'s `descended` — so a node reached by *n* paths
+> is entered *n* times: at 22 alias levels the parsed graph holds **48 objects**
+> while the walk enters **120,491**. The budget that bites is
+> `MAX_PROJECTION_CHARS`, charged in `_Spend.emit` during the walk;
+> `MAX_PROJECTION_NODES` is not reached on this shape.
 >
-> The doubling bomb is therefore **flat** above the level where the character
-> budget first bites: 0.45–0.51 s and 5.01 MB peak at every level from 18 to 60,
-> against a nominal expansion running from 5.2 × 10⁵ to 2.3 × 10¹⁸. Size of the
-> claimed expansion buys the attacker nothing past that point.
+> **The shipped path truncates; it does not refuse.** Ingestion calls
+> `normalization/projection.py::project` — `application/ingestion_service.py:225`,
+> inside `_to_document`. `project` cuts at `MAX_PROJECTION_CHARS` on a line
+> boundary, appends `SIZE_MARKER` (`[truncated: size limit]`) and **returns that
+> text to be indexed**. The refusing twin `project_checked`, and
+> `parsers/structured.py::build_projection` which wraps it, have **no production
+> caller at all** — `build_projection` has none anywhere, and `project_checked`
+> is reached only from it and from `tests/unit/test_projection.py`. So the
+> attacker's document is not rejected: a truncated projection of it enters the
+> index, and the bound is on work spent, not on admission.
 >
-> The worst clone-reachable shape found is not the doubling bomb but aliased
-> non-empty containers, which cost a visit and emit nothing, maximising visits
-> per emitted character: a **1,289,309-byte** document — inside the 4 MiB
-> `MAX_YAML_BYTES` gate — spends **3.14 s** and **3.92 MB** over **903,541**
-> visits before the character budget refuses it.
+> Measured on the shipped path (`YamlParser.parse` → `project`), **wall clock
+> taken clean — `tracemalloc` inflates it 6.4–7.6× and never runs in a timing
+> pass** — CPython 3.12.2, macOS arm64, at this commit:
 >
-> **The residual, stated as a figure rather than an adjective:** the bounds admit
-> ~3.1 s of GIL-holding pure-Python work on the ingestion path from one
-> clone-reachable document, about 6.5× the 0.48 s that
-> `projection.py::MAX_PROJECTION_NODES` records for the shape that reaches the
-> *node* ceiling. Both figures are real and they are different shapes — that
-> constant's document is refused on nodes, this one on characters. Bounded and
-> counted, not timed: the decision below that no ingestion-side timeout is filed
-> is unchanged, and what this amendment closes is the missing number, not the
-> decision.
+> | Document | Bytes | Parse | Project | Total | Parse share | RSS delta |
+> | :-- | --: | --: | --: | --: | --: | --: |
+> | worst shape **found** | 1,289,309 | 1.886 s | 0.384 s | **2.270 s** | 83.1% | +80.6 MB |
+> | widest the 4 MiB gate admits | 4,194,295 | 5.941 s | 0.375 s | **6.316 s** | **94.1%** | +157.7 MB |
+>
+> Python-heap peak for the second row, measured in a separate `tracemalloc` pass:
+> **226.2 MB**. Both rows truncate and index a 2,097,127-character projection.
+>
+> **The parse dominates, and that is the correction that matters.** An earlier
+> revision of this amendment timed the projection alone, under `tracemalloc`,
+> against the *refusing* function, and reported ~3.1 s as an ingestion-path cost.
+> All three were wrong: the walk is 6% of the end-to-end cost at the gate's
+> ceiling, `MAX_YAML_BYTES` rather than any projection budget is what bounds the
+> dominant term, and the function measured is one ingestion never calls. That
+> revision also compared its figure to the 0.48 s
+> `projection.py::MAX_PROJECTION_NODES` records and called it ~6.5× larger; the
+> comparison put an instrumented number against a clean one. Clean on clean the
+> two shapes are **0.95×** — indistinguishable — so the comparison is withdrawn
+> rather than restated.
+>
+> **Residual, as a figure and with its limits:** one clone-reachable document
+> admitted by the 4 MiB gate costs ~6.3 s of single-threaded CPU-bound work and
+> ~158 MB RSS before its truncated projection is indexed. This is the worst shape
+> **found**, not an established maximum — no search over document shapes was
+> exhaustive, and a cheaper-per-byte parse shape may exist. The bound is counted
+> and sized, not timed; the decision below that no ingestion-side timeout is
+> filed is unchanged, and what this amendment closes is the missing number.
 
 **Discharged: the `$ref` walk's path strings
 ([#328](https://github.com/theurian/theurian/issues/328)).** #245's memo

@@ -83,19 +83,23 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `RetrievalResult`, which are named nowhere outside their module. **C-4:** the
   T-9 sweep row said "all nine sources" where an AST count over the test's own
   `seeds` dict measures ten — wider than claimed, so nothing rested on it.
-  T-6 also gains the measurement #199 owed it: the projection walk carries no
-  memo, so PyYAML's node cache does not bound alias re-entry, and
-  `MAX_PROJECTION_CHARS` rather than `MAX_PROJECTION_NODES` is what stops an
-  alias bomb — flat at 0.45–0.51 s from level 18 to 60, with a worst
-  clone-reachable shape of 3.14 s and 3.92 MB over 903,541 visits from a 1.29 MB
-  document. The recorded decision that no ingestion-side timeout is filed is
-  unchanged; the gap closed is the figure. Two `src` docstrings carrying the same
-  class are corrected with it — `index_purge.py::_restamp` on
-  `index_metadata.index_build_id`, which `SqliteIndexStore.add_nodes` does read
-  back, and `verify_state_provenance`, which claimed two call sites and has one:
-  the build path it also named is gated by `BuildProvenance.has_state` in
-  `cli/index_commands.py` instead — both prose-only and
-  AST-identical once docstrings are stripped. The audit record, its three
+  T-6 also gains the measurement #199 owed it, taken on the path ingestion
+  actually runs: `application/ingestion_service.py:225` calls
+  `projection.project`, which **truncates** at `MAX_PROJECTION_CHARS` and indexes
+  the result — the refusing `project_checked`, and the `build_projection` that
+  wraps it, have no production caller. The widest document the 4 MiB
+  `MAX_YAML_BYTES` gate admits costs **6.32 s and ~158 MB RSS** end to end, of
+  which **94% is the YAML parse**, not the projection walk; the walk's own
+  absent-memo behaviour is real (48 parsed objects against 120,491 visits) but is
+  ~6% of the cost. Recorded as the worst shape *found*, not an established
+  maximum. The recorded decision that no ingestion-side timeout is filed is
+  unchanged. Three `src` docstrings carrying the correction class are fixed with
+  it — `index_purge.py::_restamp` on `index_metadata.index_build_id`, which
+  `SqliteIndexStore.add_nodes` does read back; `verify_state_provenance`, which
+  claimed two call sites and has one, the build path it also named being gated by
+  `BuildProvenance.has_state` in `cli/index_commands.py` instead; and
+  `infrastructure/github/__init__.py`'s config-reader sentence — all prose-only
+  and AST-identical once docstrings are stripped. The audit record, its
   population keys and the escape space they leave are in
   [`docs/work-logs/2026-08-30-199-unit-a-audit.md`](../../docs/work-logs/2026-08-30-199-unit-a-audit.md).
 
