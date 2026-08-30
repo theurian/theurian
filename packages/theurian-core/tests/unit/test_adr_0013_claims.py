@@ -10,7 +10,7 @@ https://github.com/theurian/theurian/issues/414, which owns building both
 
 **The correction was landed with nothing holding it in either direction**, which
 is the gap this module closes. Two things can each make the ADR false again, and
-they fail here as two different tests:
+they fail here separately:
 
 - **Drift back.** Someone rewrites the bullet in the present tense, or adds the
   claim back elsewhere in the file, and a durable architectural record asserts a
@@ -96,7 +96,16 @@ OWED_BY: Final = "issues/414"
 
 #: The report half of the retracted claim -- "reports proposal age", with up to
 #: three words in between so "reports the proposal age" is caught too.
-_ALREADY_REPORTS_PROPOSAL_AGE: Final = re.compile(r"\breports?\b(?:\s+\w+){0,3}?\s+proposal[ -]age")
+#:
+#: **The plural is not optional, and that is the whole of the difference.**
+#: ``\breports?\b`` also matched the bare ``report``, so the owed future tense
+#: #252's own body proposes -- "`knowledge.status` will report proposal age when
+#: the write tools land" -- fired the negative test with a message saying the ADR
+#: claims it *already* reports. Measured against the compiled pattern. The finite
+#: ``reports`` is the claim this module refuses; ``will report`` is the thing the
+#: bullet is allowed to say, and a pin that punishes the correct wording teaches
+#: the next author to delete the pin.
+_ALREADY_REPORTS_PROPOSAL_AGE: Final = re.compile(r"\breports\b(?:\s+\w+){0,3}?\s+proposal[ -]age")
 
 #: The ``doctor`` half. ``warns``, not ``warning``: the corrected bullet says "a
 #: `doctor` warning past a threshold **are owed**", so the noun is what the ADR
@@ -203,6 +212,32 @@ def test_adr_0013_does_not_claim_either_half_of_the_report_already_ships() -> No
 
 
 # -- The fact: what `knowledge.status` publishes ----------------------------
+
+
+def test_the_property_scan_descends_into_nested_schemas() -> None:
+    """RED means the walk was flattened to a top-level read, un-covering nesting.
+
+    The one assertion here driven by synthetic input rather than by the published
+    schema, and it exists because the published schema cannot drive it: no name
+    nested under ``knowledge.status``'s own ``properties`` matches
+    :data:`_PROPOSAL_FIELD` today, and the premise guard in the test below is
+    satisfied by the six top-level names alone. The descent is therefore
+    load-bearing for what the module docstring claims -- a proposal-named field
+    fails *however deeply it is nested* -- while nothing about the real file
+    forces it to keep happening. Measured: deleting the two lines that recurse
+    into a nested ``properties`` left every other test in this module green, so
+    a future simplification to a top-level read would land unopposed.
+
+    The input is a literal rather than a perturbation of the real schema so that
+    it goes on driving the descent if ``integrity`` or ``itemsByStatus`` ever
+    stops declaring ``properties`` of its own.
+    """
+    nested = {"properties": {"integrity": {"properties": {"proposalAge": {"type": "integer"}}}}}
+
+    assert "proposalAge" in _declared_property_names(nested), (
+        "the property scan no longer descends into nested `properties`, so a "
+        "proposal-age field declared inside an object would pass unseen"
+    )
 
 
 def test_the_published_status_response_carries_no_proposal_field() -> None:
