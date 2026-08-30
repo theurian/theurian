@@ -2412,9 +2412,9 @@ control it also named stayed unbuilt: `application/setup_steps.py`'s
 owner is [#80](https://github.com/theurian/theurian/issues/80), which diagnoses
 exactly that split and records that a successor issue for the control itself is
 still owed. **The code no longer states a schedule**, and that is the lesson
-rather than a tidy-up: the retired
-`detail` promised "Artifact verification arrives with the first tagged release",
-which came due the moment `release-core.yml` landed, since a first tagged release
+rather than a tidy-up: the retired `detail` promised "Artifact verification
+arrives with the first tagged release", which came due the moment
+`release-core.yml` landed, since a first tagged release
 is what that workflow exists to cut. An issue has an owner and can be reassigned;
 a string in a probe is read by users and paged by nobody. The severity stays
 Critical: the harm is
