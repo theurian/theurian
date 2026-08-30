@@ -195,6 +195,8 @@ or calls a model, so a provider adapter stays a thin, testable mapping.
 
 Repositories must be allowlisted in `.theurian/config.yaml` before one is
 contacted (SEC-10). That is the design obligation on the adapter, not current
-behaviour: no reader of `.theurian/config.yaml` exists in `src/`, so building the
+behaviour: `security/project_config.py` reads that file for `security.secretScan`
+alone, nothing in `src/` reads `providers.review.repositories`, so building the
 allowlist reader is the first thing the ingestion work owes
-([#129](https://github.com/theurian/theurian/issues/129)).
+([#368](https://github.com/theurian/theurian/issues/368) carries it; #129 was
+closed on the wording rather than the control).
