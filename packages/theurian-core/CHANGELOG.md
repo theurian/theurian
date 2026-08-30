@@ -92,8 +92,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   unchanged; the gap closed is the figure. Two `src` docstrings carrying the same
   class are corrected with it — `index_purge.py::_restamp` on
   `index_metadata.index_build_id`, which `SqliteIndexStore.add_nodes` does read
-  back, and `verify_state_provenance`, whose second call site is really
-  `BuildProvenance.has_state` in `cli/index_commands.py` — both prose-only and
+  back, and `verify_state_provenance`, which claimed two call sites and has one:
+  the build path it also named is gated by `BuildProvenance.has_state` in
+  `cli/index_commands.py` instead — both prose-only and
   AST-identical once docstrings are stripped. The audit record, its three
   population keys and the escape space they leave are in
   [`docs/work-logs/2026-08-30-199-unit-a-audit.md`](../../docs/work-logs/2026-08-30-199-unit-a-audit.md).
