@@ -75,7 +75,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   exist — and a sibling of the still-open
   [#195](https://github.com/theurian/theurian/issues/195). What holds the
   correction is `tests/unit/test_adr_0018_claims.py`, in both directions: the
-  prose half goes RED if the mitigation returns in any tense or if the stated
+  prose half goes RED if the retracted wording returns or if the stated
   absence is dropped, and the fact half goes RED when a filesystem-type read
   lands in `domain/setup.py` or `application/setup_steps.py`. That fact half is
   a source-text sweep over a named API list, which is narrower than "no probe
