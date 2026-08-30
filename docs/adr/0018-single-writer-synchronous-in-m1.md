@@ -91,8 +91,12 @@ each call site cannot.
 ### Negative
 
 - The file lock is advisory and behaves inconsistently on some network
-  filesystems. Accepted: a `.theurian/state/` directory on NFS is already
-  outside the supported configuration, and `doctor` will warn about it.
+  filesystems. Accepted: a `.theurian/state/` directory on NFS is outside the
+  supported configuration, and nothing detects that it is — no `doctor` step
+  reads the filesystem type, the `StepId` registry in `domain/setup.py` holds no
+  such probe, and none is planned. An operator whose state directory sits on NFS
+  is told nothing by `doctor`; the exclusion is enforced by nothing but this
+  record ([#417](https://github.com/theurian/theurian/issues/417)).
 - Two enforcement mechanisms exist between Milestone 3 and 1.0 — the queue for
   in-daemon writes and the lock for CLI writes. Both are required, because a CLI
   invocation is a separate process that a queue cannot reach.

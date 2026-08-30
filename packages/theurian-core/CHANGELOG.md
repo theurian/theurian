@@ -47,6 +47,26 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Documentation
 
+- **ADR-0018 no longer cites a `doctor` NFS warning as the mitigation for an
+  accepted risk** ([#417](https://github.com/theurian/theurian/issues/417)). Its
+  Consequences > Negative accepted the advisory lock's behaviour on network
+  filesystems on the grounds that a `.theurian/state/` directory on NFS "is
+  already outside the supported configuration, and `doctor` will warn about it".
+  No such warning exists, and unlike the ADR-0013 case below there is no probe
+  owed: `git grep -ni nfs packages/theurian-core/src/` matches nothing, and none
+  of the nineteen steps the `StepId` registry in `domain/setup.py` enumerates
+  probes a filesystem type. The acceptance itself is unchanged — NFS is still
+  outside the supported configuration — but the bullet now says that nothing
+  detects the configuration and that no probe is planned, so an operator on NFS
+  reads it as unsignalled rather than as covered by a check they would otherwise
+  wait for. Same class as the #252 correction below and the earlier #198 and
+  #129 ones — a mechanism named in a durable record whose component does not
+  exist — and a sibling of the still-open
+  [#195](https://github.com/theurian/theurian/issues/195). #417 stays open: its
+  served corpus twin under `.theurian/knowledge/architecture/` carries the same
+  sentence and is corrected by a governed re-seed from a `main` that already
+  holds this amendment.
+
 - **ADR-0013 no longer describes the proposal-age report as shipped**
   ([#252](https://github.com/theurian/theurian/issues/252)). Its Consequences
   said in the present tense that `knowledge.status` reports proposal age and
