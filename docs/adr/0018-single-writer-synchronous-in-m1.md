@@ -91,12 +91,19 @@ each call site cannot.
 ### Negative
 
 - The file lock is advisory and behaves inconsistently on some network
-  filesystems. Accepted: a `.theurian/state/` directory on NFS is outside the
-  supported configuration, and nothing detects that it is — no `doctor` step
-  reads the filesystem type, the `StepId` registry in `domain/setup.py` holds no
-  such probe, and none is planned. An operator whose state directory sits on NFS
-  is told nothing by `doctor`; the exclusion is enforced by nothing but this
-  record ([#417](https://github.com/theurian/theurian/issues/417)).
+  filesystems. Accepted: a `.theurian/` directory on NFS is outside the
+  supported configuration — the advisory lock is `.theurian/runtime/write.lock`,
+  and the databases it guards are under `.theurian/state/` — and nothing
+  detects that it is. No step in `application/setup_steps.py::STEPS` reads a
+  filesystem type (measured 2026-08-30 at 06de58a), and `doctor` reports that
+  tuple in full: `cli/setup_commands.py::doctor_command` runs `SetupService` on
+  its default step set, and `tests/integration/test_setup_service.py:103` pins
+  the reported set equal to `StepId`. No probe is planned either — building one
+  is rejected rather than deferred, for want of a portable detection design, per
+  the disposition recorded on #417. An operator whose project directory sits on
+  NFS is therefore told nothing by `doctor`. Nothing enforces the exclusion; it
+  is stated here — and in this document's corpus copy — and nowhere else.
+  Tracked in [#417](https://github.com/theurian/theurian/issues/417).
 - Two enforcement mechanisms exist between Milestone 3 and 1.0 — the queue for
   in-daemon writes and the lock for CLI writes. Both are required, because a CLI
   invocation is a separate process that a queue cannot reach.
