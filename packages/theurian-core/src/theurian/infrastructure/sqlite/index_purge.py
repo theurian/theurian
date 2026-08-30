@@ -644,9 +644,13 @@ def _restamp(target: Path, *, index_build_id: str, state_hash: str) -> None:
 
     `Connection.backup` copies pages, so without this the purged file still
     carries the id and timestamp of the build it was copied from — a file whose
-    own record of itself disagrees with the pointer that names it. Nothing in
-    `src/` reads `index_metadata.index_build_id` back today, which is what makes
-    this cheap to get wrong and expensive to find later (ADR-0024 decision 2).
+    own record of itself disagrees with the pointer that names it. Nothing
+    *serves* that column: `mcp/search.py` publishes `indexBuildId` from the
+    pointer, so the disagreement reaches no caller. It is not unread, though —
+    `SqliteIndexStore.add_nodes` reads it back out of `index_metadata` to stamp
+    each summary node with the build it belongs to (`index_store.py`, which says
+    so in its own docstring), which is why this is cheap to get wrong and
+    expensive to find later (ADR-0024 decision 2).
 
     **`nodes` carries a second copy of that identity and needs the same
     treatment.** `index_build_id` is one of ADR-0008 decision 5's fourteen

@@ -1752,10 +1752,17 @@ def verify_state_provenance(
 ) -> None:
     """Refuse canonical state this installation did not build (ADR-0004, SEC-7).
 
-    The enforcement point for :class:`BuildProvenance`. Called on the serve path
-    (the MCP tools' ``_resolve``) and before an index is built from canonical
-    state (``theurian index build``), so a database that this installation never
-    produced never influences a served result -- whatever put it on disk.
+    The serve path's enforcement point for :class:`BuildProvenance`, and its only
+    caller is the MCP tools' ``_resolve``. ``theurian index build`` refuses the
+    same doctored state one step earlier and by a different route --
+    ``cli/index_commands.py``'s ``_require_buildable_state`` calls
+    :meth:`BuildProvenance.has_state` directly, because it has to ``_fail`` with a
+    CLI exit code rather than raise -- so a database this installation never
+    produced influences no served result whatever put it on disk, but this
+    function is not what holds the build side. Do not read the sibling gates off
+    this docstring: they are ``has_state`` at ``cli/index_commands.py`` (index
+    build) and ``cli/commands.py`` (``migrate apply``), and ``has_index`` at
+    ``cli/commands.py`` and ``mcp/search.py``.
 
     Raises:
         ProjectError: If no out-of-tree record shows this installation built the
