@@ -23,6 +23,7 @@ errors it raises. How a search is actually answered lives in
 from __future__ import annotations
 
 import shlex
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -70,6 +71,50 @@ MAX_BUDGET_TOKENS: Final = 32_000
 #: 2,000 characters is longer than any real question and matches what the FTS
 #: builder was already willing to consider; nothing beyond it was ever searched.
 MAX_QUERY_CHARS: Final = 2_000
+
+#: How many `knowledge.search` calls this daemon answers at once (T-6, third
+#: row: concurrent occupancy of the retrieval path). Sync MCP tools run on
+#: `anyio.to_thread.run_sync`'s worker pool, and cancelling the *awaiting* task
+#: does not stop the worker thread already dispatched to it -- so a
+#: transport-level wall-clock timeout bounds how long a caller waits, never how
+#: much CPU or GIL time the daemon spends answering. This cap bounds that spend
+#: directly, refusing admission past a fixed number in flight rather than
+#: letting an unbounded queue of callers build up behind however much work is
+#: already running.
+#:
+#: 4 is a recorded default (T-6), not a tuning. OSS Core is one process
+#: serving one user's agents (ADR-0002), where four concurrent searches is
+#: already generous headroom for that shape of deployment; there is no
+#: operator config key for it in this slice (issue #26).
+MAX_CONCURRENT_SEARCHES: Final = 4
+
+#: How long an admission attempt waits for a permit before it is refused.
+#: `threading.BoundedSemaphore.acquire(timeout=...)` releases the GIL while
+#: waiting, so a caller parked here never blocks the asyncio loop serving
+#: `/health` or any other tool -- the waiter holds a worker thread from
+#: `anyio`'s default 40-thread limiter, and nothing else.
+#:
+#: A recorded default (T-6), not a tuning, for the same reason
+#: `MAX_CONCURRENT_SEARCHES` is: long enough that a caller who merely
+#: overlapped a few slow searches is admitted once one finishes, short enough
+#: that a caller stuck behind a genuinely saturated daemon is told so rather
+#: than left waiting indefinitely.
+ADMISSION_WAIT_SECONDS: Final = 1.0
+
+#: The refusal a caller sees when the admission wait in `knowledge_search`
+#: elapses. Built once, from `MAX_CONCURRENT_SEARCHES` alone, and interpolates
+#: nothing else -- not the query, not `projectId`, not anything read from the
+#: store. A refusal that varied with any of those would itself be a disclosure
+#: channel: "an error that fires for one input and not another" is exactly the
+#: family SEC-13's withholding closes for every other observable this module
+#: publishes, and admission control must not reopen it by a different route
+#: (SEC-13, T-6). Verified byte-identical across queries, projects and corpora
+#: by `test_the_refusal_is_byte_identical_whatever_the_input`.
+SEARCH_CAPACITY_REFUSAL: Final = (
+    f"The daemon is already answering its maximum number of concurrent searches "
+    f"({MAX_CONCURRENT_SEARCHES}). Retry shortly. This refusal depends only on "
+    f"concurrent load, never on the query or the project's contents."
+)
 
 
 class ToolError(TheurianError):
@@ -425,6 +470,13 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
     # installation built it (ADR-0004, SEC-7).
     provenance = BuildProvenance.for_registry(registry)
 
+    # One bounded semaphore per server registration, shared by every
+    # `knowledge.search` call this daemon serves (ADR-0002: one process, many
+    # concurrent agents). See the gated block inside `knowledge_search` for
+    # why this is a cap rather than a per-query timeout, and why a refusal is
+    # a `ToolError` rather than an empty result or a `fallbackReason`.
+    search_admission = threading.BoundedSemaphore(MAX_CONCURRENT_SEARCHES)
+
     def _with_remedy(exc: ProjectError) -> ToolError:
         """A ``ProjectError``, with its remedy still attached.
 
@@ -737,22 +789,50 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # condition any local process can create, and a fallback that served an
         # above-ceiling document would make deleting a file the way past the
         # ceiling (#119).
-        answer = hybrid_answer(
-            paths,
-            database,
-            state=active,
-            project_id=projectId,
-            query=searched,
-            limit=capped_limit,
-            include_unapproved=includeUnapproved,
-            visible_sensitivities=grant.sensitivities,
-            budget_tokens=capped_budget,
-            use_dense=useDense,
-            as_of=as_of,
-            provenance=provenance,
-        )
-        if isinstance(answer, Fallback):
-            answer = substring_answer(
+        #
+        # Gated to `MAX_CONCURRENT_SEARCHES` in flight (T-6, SEC-8, #26) --
+        # this block alone, not `_resolve`, the normalisation above, or the
+        # integrity read below, all of which are cheap indexed work that
+        # gating behind load would only slow down for everyone without
+        # bounding anything.
+        #
+        # **Cap, not a per-query timeout.** Sync MCP tools run through
+        # `anyio.to_thread.run_sync`; cancelling the *awaiting* task does not
+        # stop the worker thread it dispatched to, so a transport wall-clock
+        # timeout bounds only how long the caller waits, never how much CPU or
+        # GIL time the daemon spends running `hybrid_answer`/`substring_answer`
+        # for a flood of concurrent callers. A refusal triggered by measured
+        # cost also risks the "error that fires for one input and not
+        # another" disclosure family while T-17a's residual stands; a refusal
+        # triggered by concurrent load alone cannot, because it is a function
+        # of how many callers are already inside this block and nothing about
+        # what any of them asked for or what the store holds.
+        #
+        # **`ToolError`, not an empty result or a ninth `fallbackReason`.** A
+        # search that goes quiet under load instead of saying why is the
+        # failure f30881e closed; answering `count: 0` here would reopen it.
+        # It is not a fallback either: `retrieval.fallbackReason` describes
+        # *how* an answer WAS produced (no index built, no drafts in the
+        # index) -- a refused call produced no answer at all, so folding it in
+        # would either invent a reason for "produced nothing" or grow the wire
+        # schema for something that is not a retrieval outcome.
+        #
+        # **Why `/health` stays live.** A caller waiting on `acquire` or
+        # actually inside this block holds a worker thread from `anyio`'s
+        # default 40-thread limiter but releases the GIL while blocked --
+        # `BoundedSemaphore.acquire(timeout=...)` is a C-level wait, not a
+        # busy loop -- and `/health` is served directly on the asyncio loop,
+        # never through `anyio.to_thread.run_sync`, so it shares no thread
+        # with what this gate bounds.
+        #
+        # The refusal is raised *before* the `try`: a failed `acquire` holds
+        # no permit, and calling `release()` for it would hand this
+        # semaphore's count a permit it never had (AC-4).
+        if not search_admission.acquire(timeout=ADMISSION_WAIT_SECONDS):
+            raise ToolError(SEARCH_CAPACITY_REFUSAL)
+        try:
+            answer = hybrid_answer(
+                paths,
                 database,
                 state=active,
                 project_id=projectId,
@@ -761,9 +841,25 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 include_unapproved=includeUnapproved,
                 visible_sensitivities=grant.sensitivities,
                 budget_tokens=capped_budget,
-                fallback=answer,
+                use_dense=useDense,
                 as_of=as_of,
+                provenance=provenance,
             )
+            if isinstance(answer, Fallback):
+                answer = substring_answer(
+                    database,
+                    state=active,
+                    project_id=projectId,
+                    query=searched,
+                    limit=capped_limit,
+                    include_unapproved=includeUnapproved,
+                    visible_sensitivities=grant.sensitivities,
+                    budget_tokens=capped_budget,
+                    fallback=answer,
+                    as_of=as_of,
+                )
+        finally:
+            search_admission.release()
 
         # The #30 integrity signal, checked against the same `active` pointer
         # that chose `database` and answered `snapshotId`. Two measurements --
