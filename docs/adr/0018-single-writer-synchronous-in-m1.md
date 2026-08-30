@@ -97,13 +97,14 @@ each call site cannot.
   detects that it is. No step in `application/setup_steps.py::STEPS` reads a
   filesystem type (measured 2026-08-30 at 06de58a), and `doctor` reports that
   tuple in full: `cli/setup_commands.py::doctor_command` runs `SetupService` on
-  its default step set, and `tests/integration/test_setup_service.py:103` pins
-  the reported set equal to `StepId`. No probe is planned either — building one
-  is rejected rather than deferred, for want of a portable detection design, per
-  the disposition recorded on #417. An operator whose project directory sits on
-  NFS is therefore told nothing by `doctor`. Nothing enforces the exclusion; it
-  is stated here — and in this document's corpus copy — and nowhere else.
-  Tracked in [#417](https://github.com/theurian/theurian/issues/417).
+  its default step set, and
+  `tests/integration/test_setup_service.py::test_every_specified_step_is_reported`
+  pins the reported set equal to `StepId`. No probe is planned either — building
+  one is rejected rather than deferred, for want of a portable detection design,
+  per the disposition recorded on #417. An operator whose project directory sits
+  on NFS is therefore told nothing by `doctor`. Nothing enforces the exclusion:
+  no step reads a filesystem type. Tracked in
+  [#417](https://github.com/theurian/theurian/issues/417).
 - Two enforcement mechanisms exist between Milestone 3 and 1.0 — the queue for
   in-daemon writes and the lock for CLI writes. Both are required, because a CLI
   invocation is a separate process that a queue cannot reach.

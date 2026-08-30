@@ -73,7 +73,15 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   are under `.theurian/state/`. Same class as the #252, #198 and #129
   corrections — a mechanism named in a durable record whose component does not
   exist — and a sibling of the still-open
-  [#195](https://github.com/theurian/theurian/issues/195). #417 stays open: its
+  [#195](https://github.com/theurian/theurian/issues/195). What holds the
+  correction is `tests/unit/test_adr_0018_claims.py`, in both directions: the
+  prose half goes RED if the mitigation returns in any tense or if the stated
+  absence is dropped, and the fact half goes RED when a filesystem-type read
+  lands in `domain/setup.py` or `application/setup_steps.py`. That fact half is
+  a source-text sweep over a named API list, which is narrower than "no probe
+  exists" and says so in its own docstring; the "no probe is planned" half has
+  no fact side at all, because a plan is not a property of the source tree.
+  #417 stays open: its
   served corpus twin under `.theurian/knowledge/architecture/` carries the same
   sentence and is corrected by a governed re-seed from a `main` that already
   holds this amendment.
