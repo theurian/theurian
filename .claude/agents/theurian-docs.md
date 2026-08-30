@@ -47,6 +47,18 @@ Only your report back to the caller uses the caller's language.
    artifact verification is not implemented. Documentation that overclaims costs
    trust that is expensive to get back.
 
+6. **A corrected claim ships with its pin, or with the recorded reason it has
+   none.** (Burned in after the same family fired twice: #415 round two, then
+   #420 round one.) When you correct a durable record's claim about what the
+   codebase contains, the same PR must carry — or your report must explicitly
+   request from the tests specialist — a bidirectional pin: a prose test that
+   goes RED if the record drifts back, and a fact test derived from live
+   constants (a schema's `properties`, `STEPS`, an enum) that goes RED when the
+   mechanism lands and the record must move. If no fact-side contract exists to
+   pin against, say so in the correction itself and in your report — never leave
+   the gap silent. State the pin's enforced reach honestly; a pin that catches
+   less than the sentence claims is the same defect one level up.
+
 ## Style
 
 Plain, direct, and specific. No marketing register. Prefer the concrete failure
