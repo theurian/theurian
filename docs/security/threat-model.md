@@ -593,12 +593,20 @@ in this table is read as a control that runs.
   no entry point in shipped code, so the honest record is that the bound is not
   *needed*, not that it is owed. It belongs with whatever change first unpacks
   an archive, and there is no such change planned.
-- *Wall clock timeout* — **not implemented, here or anywhere.** Nothing in
-  `src/` calls `signal`, `sqlite3.Connection.set_progress_handler`, `interrupt`,
-  or `asyncio.wait_for` (same search). The two near misses are named further
-  down for the query side and hold identically here: `busy_timeout` is a lock
-  wait, and `GIT_TIMEOUT_SECONDS` bounds a subprocess — neither bounds a parse.
-  What has changed for the ingestion side is that the bounds above are *counted*
+- *Wall clock timeout on a parse or a query* — **still not implemented.**
+  Nothing in `src/` calls `signal`, `sqlite3.Connection.set_progress_handler`,
+  `interrupt`, or `asyncio.wait_for` (same search, re-run 2026-08-30). What
+  [#26](https://github.com/theurian/theurian/issues/26) (a8c1ce3) added is
+  `threading.BoundedSemaphore.acquire(timeout=ADMISSION_WAIT_SECONDS)`
+  (`mcp/tools.py`) — a wall-clock bound, but on a **lock wait for an admission
+  permit**, not on a parse or a query: it bounds how long a caller waits for a
+  slot to open, never how long the search holding a slot runs. It is a third
+  near miss of the same shape as the two named further down for the query
+  side, not a counterexample to this paragraph: `busy_timeout` is a lock wait
+  on the database writer, `GIT_TIMEOUT_SECONDS` bounds a subprocess, and the
+  admission `acquire(timeout=...)` bounds a wait for a semaphore permit —
+  none of the three bounds a parse or a query. What has changed for the
+  ingestion side is that the bounds above are *counted*
   rather than timed: they price the work a walk spends rather than the seconds
   it takes, which is the quantity a wall clock was standing in for. A counter
   bounds only what it counts, and as of 2026-08-24 there were **two**
@@ -937,13 +945,32 @@ run through `anyio.to_thread.run_sync`; cancelling the *awaiting* task does not
 stop the worker thread already dispatched to it, so a transport-level
 wall-clock bound would cap only how long a caller waits, never how much CPU or
 GIL time the daemon spends inside `hybrid_answer`/`substring_answer` for a
-flood of concurrent callers — the cap bounds that directly, a timeout would
-not. A refusal triggered by measured cost also risks reopening the "error that
-fires for one input and not another" disclosure family (SEC-13) while T-17a's
-residual stands (above); the shipped refusal is triggered by concurrent load
-alone, built once from `MAX_CONCURRENT_SEARCHES` and interpolating nothing
-from the request or the store, and is verified byte-identical across queries,
-projects and corpora by `test_the_refusal_is_byte_identical_whatever_the_input`.
+flood of concurrent callers. The shipped cap bounds concurrent occupancy
+instead — the *rate* of spend, at most `MAX_CONCURRENT_SEARCHES` threads'
+worth at once — not the total: a permit has no upper bound on how long it is
+held once acquired, and bounding that hold time is exactly what a per-query
+timeout would do instead; this row records that as not taken here.
+
+**What the refusal event depends on, and what SEC-13 actually needs.** The
+event fires when no permit frees within `ADMISSION_WAIT_SECONDS`, and whether
+one frees depends on how long the in-flight searches run — which varies with
+the visible corpus and with what the current holders asked for. Measured: the
+same four-caller load flips between admitting and refusing a fifth caller
+depending on the holders' query and the store's size, so the event is *not* a
+function of concurrent load alone, and this entry must not claim that it is.
+What SEC-13 needs is narrower, and it holds: no bit about content the caller
+may not read crosses this channel. The refusal message is a fixed string,
+built once from `MAX_CONCURRENT_SEARCHES` and interpolating nothing from the
+request or the store, verified byte-identical across queries, projects and
+corpora by `test_the_refusal_is_byte_identical_whatever_the_input`; the
+refusal path reads nothing from the store; and the event's timing inputs are
+the durations of searches run over rows every caller may already read —
+withheld rows never enter them, because the index excludes them at build time
+and the substring scan reads through `idx_items_status` (#158). Measured
+flat: adding 1,200 withheld rows to an otherwise identical visible corpus
+moved neither the solo-caller latency nor the refusal outcome, on both the
+ranked and the scan path; the T-17a stale-index shape measured flat the same
+way (2026-08-30).
 
 **What the cap bounds, and what it does not.** It bounds concurrent occupancy
 of the retrieval answer path alone — all three members enter through
@@ -953,23 +980,52 @@ gate (checked by grep, 2026-08-30). It does not bound the cost of a single
 call: the dense path's peak memory and GIL-held time (the first two rows
 above) and the fallback's rows-and-memory page bound (the fourth row) are all
 unchanged. `knowledge.get` and `knowledge.status` stay uncapped — both are
-bounded indexed reads, not the unbounded retrieval work this gate exists for.
-`anyio`'s own default thread limiter (40 tokens, `anyio` 4.14.2, measured
-2026-08-30) remains the process-level backstop behind this cap, unrelated to
-`MAX_CONCURRENT_SEARCHES` and unchanged by it.
+bounded indexed reads, not the unbounded retrieval work this gate exists for —
+but not isolated from the gate: `anyio`'s own default thread limiter (40
+tokens, `anyio` 4.14.2, measured 2026-08-30) is sized independently of
+`MAX_CONCURRENT_SEARCHES` but SHARED with it, and a caller parked in the
+admission wait holds one of those 40 tokens for as long as it waits. With the
+pool saturated, `knowledge.get`, `knowledge.status` and `project.list` queue
+behind the parked searches for up to `ADMISSION_WAIT_SECONDS` (measured
+~0.72 s under the same flood that motivates this cap, against ~1.3 s for the
+same flood with no gate at all — the cap improves this, and the improvement
+is recorded rather than assumed). `/health` is exempt: it is served on the
+asyncio loop directly and never takes a thread from that pool.
 
-Pinned by four tests in `tests/integration/test_search_concurrency_cap.py`:
-`test_the_cap_refuses_the_excess_caller` (a caller past the cap is refused
-before it does any retrieval work, while the admitted callers are still in
-flight), `test_capacity_is_restored_on_every_exit_path` (a permit comes back
-whether the answer block returns or raises, on every exit path), the byte-
-identity test named above, and `test_health_answers_promptly_while_the_cap_is_saturated`
-(`/health` keeps answering while the cap is fully saturated, because the
-semaphore wait releases the GIL and never touches the asyncio loop serving
-it). `MAX_CONCURRENT_SEARCHES` (4) and `ADMISSION_WAIT_SECONDS` (1.0 s) are
-recorded defaults, not measurements; there is no operator config key for
-either in this slice. The other three rows of the table above are separate
-changes and are not filed.
+**Accepted design decision: the denial is per-daemon, not per-project.** Four
+concurrent searches on any *one* project refuse `knowledge.search` for every
+project this daemon serves, for as long as they are in flight — measured:
+alpha's four holders refuse a beta caller after 1.003 s, and four ordinary
+no-match searches on a 2,000-document project held all four permits for
+1.79–2.64 s. Accepted because the alternative is unbounded occupancy: the
+same flood at base, with no admission gate at all, delayed `knowledge.get` to
+a measured worst of 84.3 s, against a measured worst of 3.0 s under the cap.
+There is no operator config key for `MAX_CONCURRENT_SEARCHES` in this slice,
+so a deployment cannot raise it, or exempt one project from another's load.
+
+Pinned by 8 tests in `tests/integration/test_search_concurrency_cap.py`,
+among them: `test_the_cap_refuses_the_excess_caller` (a caller past the cap is
+refused before it does any retrieval work, while the admitted callers are
+still in flight), `test_capacity_is_restored_on_every_exit_path` (a permit
+comes back whether the answer block returns or raises, on every exit path),
+the byte-identity test named above, `test_health_answers_promptly_while_the_cap_is_saturated`
+(`/health` keeps answering while the cap is fully saturated), and
+`test_the_cap_pins_its_recorded_constants` (pins `MAX_CONCURRENT_SEARCHES` (4)
+and `ADMISSION_WAIT_SECONDS` (1.0 s) — the two constants this entry publishes
+— against silent drift). `/health` stays prompt because it is served on the
+asyncio loop directly and never takes a worker thread from the pool this gate
+parks callers in, not because the semaphore wait releases the GIL: that
+release is what keeps *other* sync tools sharing the pool merely queued
+rather than starved (above), and it is not the mechanism for `/health`, which
+shares no thread with this gate in the first place. A GIL-holding residual is
+recorded rather than assumed away: with `MAX_CONCURRENT_SEARCHES` (4)
+GIL-holding holders admitted, a 12-probe series measured an asyncio tick
+delayed up to 844 ms (in-process, 2026-08-30) — bounded by the cap at no more
+than `MAX_CONCURRENT_SEARCHES` GIL-holding members at once, and `/health`
+still answered 200 throughout. `MAX_CONCURRENT_SEARCHES` (4) and
+`ADMISSION_WAIT_SECONDS` (1.0 s) are recorded defaults, not measurements;
+there is no operator config key for either in this slice. The other three
+rows of the table above are separate changes and are not filed.
 
 **A fourth member spends no CPU and was here for the same reason: it was
 unbounded work for one call, and [#17](https://github.com/theurian/theurian/issues/17)
