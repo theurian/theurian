@@ -65,6 +65,39 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   produce proposals. It aligns the ADR with `docs/protocol/mcp-tools.md`, which
   already records that proposal ages are not in that response.
 
+- **The threat model's recorded claims are reconciled against `src/`**
+  ([#199](https://github.com/theurian/theurian/issues/199), unit A). An audit of
+  every control claim in `docs/security/threat-model.md` against
+  `packages/theurian-core/src/` found four false, each now narrowed to the fact
+  that is true rather than deleted. **C-1:** "No reader of `.theurian/config.yaml`
+  exists in `src/`" was falsified by ADR-0027 decision 3 —
+  `security/project_config.py::read_secret_scan_policy` reads it on the `propose
+  accept` path — and the conclusion survives on the narrower fact that nothing
+  reads `providers.review.repositories`. **C-2:** three not-shipped controls
+  named CLOSED issues as their owners, each closed after a *documentation* fix
+  while the control stayed unbuilt; T-7's three SSRF controls now point at #368,
+  T-16's install-time verification at #80, and T-15's ingest-time scanning at
+  #329, all verified open. **C-3:** T-3's own correction blockquote claimed
+  `theurian.domain.retrieval` has no importer in `src/`; it has five, one of them
+  `mcp/results.py`, so the argument is restated on `SafetyMetadata` and
+  `RetrievalResult`, which are named nowhere outside their module. **C-4:** the
+  T-9 sweep row said "all nine sources" where an AST count over the test's own
+  `seeds` dict measures ten — wider than claimed, so nothing rested on it.
+  T-6 also gains the measurement #199 owed it: the projection walk carries no
+  memo, so PyYAML's node cache does not bound alias re-entry, and
+  `MAX_PROJECTION_CHARS` rather than `MAX_PROJECTION_NODES` is what stops an
+  alias bomb — flat at 0.45–0.51 s from level 18 to 60, with a worst
+  clone-reachable shape of 3.14 s and 3.92 MB over 903,541 visits from a 1.29 MB
+  document. The recorded decision that no ingestion-side timeout is filed is
+  unchanged; the gap closed is the figure. Two `src` docstrings carrying the same
+  class are corrected with it — `index_purge.py::_restamp` on
+  `index_metadata.index_build_id`, which `SqliteIndexStore.add_nodes` does read
+  back, and `verify_state_provenance`, whose second call site is really
+  `BuildProvenance.has_state` in `cli/index_commands.py` — both prose-only and
+  AST-identical once docstrings are stripped. The audit record, its three
+  population keys and the escape space they leave are in
+  [`docs/work-logs/2026-08-30-199-unit-a-audit.md`](../../docs/work-logs/2026-08-30-199-unit-a-audit.md).
+
 ## [0.1.0.dev14] - 2026-08-28
 
 ### Fixed

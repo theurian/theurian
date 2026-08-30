@@ -2406,7 +2406,7 @@ is the gap #39 inherits.
 this is tolerable. The requirement stands: OSS-11 requires the checksums and
 `requirements-analysis.md`'s threat table maps T-16 to OSS-7, OSS-11 and setup
 step 3. Filed as [#39](https://github.com/theurian/theurian/issues/39), which is
-**closed** — on its documentation half, on 2026-08-07, while the install-time
+now **closed** — on its documentation half, on 2026-08-07, while the install-time
 control it also named stayed unbuilt: `application/setup_steps.py`'s
 `probe_artifact_integrity` returns an unconditional `NOT_APPLICABLE`. The live
 owner is [#80](https://github.com/theurian/theurian/issues/80), which diagnoses
