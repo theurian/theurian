@@ -16,10 +16,11 @@ they fail here as two different tests:
   claim back elsewhere in the file, and a durable architectural record asserts a
   mechanism that does not exist -- the class #252 belongs to, alongside the #198
   and #129 corrections.
-- **#414 lands.** The report is built, ``knowledge.status`` grows a proposal
-  field, and the ADR goes on calling it owed. The fact half below goes RED on the
-  schema change, so the bullet is updated by the change that makes it wrong
-  rather than by whoever notices later.
+- **#414 lands.** The report is built, ``knowledge.status`` grows a field whose
+  name says so, and the ADR goes on calling it owed. The fact half below goes RED
+  on that schema change, so the bullet is updated by the change that makes it
+  wrong rather than by whoever notices later -- within the reach stated below,
+  which is narrower than "the report ships".
 
 This is the pattern ``test_setup_claims.py`` states: pin fact and prose to each
 other in both directions, so neither can move without the other. What differs is
@@ -28,8 +29,27 @@ can call; a proposal-age *report* has no code to probe, so its absence is read
 off the published contract -- ``schemas/mcp/knowledge-status-response.schema.json``,
 which sets ``additionalProperties: false`` and is validated against a real
 ``knowledge.status`` response by ``tests/integration/test_wire_contract.py``. The
-field list is derived from that file rather than restated here, so a new field
-fails this module whatever it is named.
+field names are read from that file rather than restated here, so the check holds
+for whatever the response grows next.
+
+**What the fact side actually enforces, which is narrower than that.** It matches
+field *names*, so:
+
+- A proposal-**named** field fails this module however deeply it is nested.
+  Measured: ``proposalAge`` at the top level, and ``oldestProposalAgeDays`` under
+  ``integrity``, whose own key does not match -- both RED.
+- A proposal-**age** field under any other name does not. Measured:
+  ``oldestUnreviewedDays``, added as a required top-level field, leaves all three
+  tests green. #414 can ship the report under a name like that and only the prose
+  pin would still be asserting the bullet is owed.
+- The ``doctor`` half has no fact-side contract at all. Nothing published
+  describes it, so the prose pin alone holds it, and no perturbation of a schema
+  can turn that half RED.
+
+Closing the second and third would mean guessing names and mechanisms #414 has
+not chosen -- the same defect as pinning grammar, one level down. The reach is
+recorded here instead, because a reader deciding whether this module covers them
+must not be told it covers more than it does.
 
 **Two named files, and the corpus twin is deliberately not one of them.**
 ``.theurian/knowledge/architecture/ai-writes-produce-proposals.<ulid>.md`` is a
