@@ -47,6 +47,23 @@ Only your report back to the caller uses the caller's language.
    artifact verification is not implemented. Documentation that overclaims costs
    trust that is expensive to get back.
 
+6. **A corrected claim ships with its pin, or with the recorded reason it has
+   none.** (Burned in after three firings: #415 round one — pin absent; #415
+   round two — the pin's stated reach overclaimed; #420 round one — pin absent
+   again.) When you correct a durable record's claim about what the codebase
+   contains, you do not author the pin — tests belong to the tests specialist —
+   but your report must explicitly request it and name what it must hold: a
+   prose test that goes RED if the record drifts back, and a fact test derived
+   from live constants (a schema's `properties`, `STEPS`, an enum) that goes
+   RED when the mechanism lands and the record must move. If no fact-side
+   contract exists to pin against, say so in the correction itself and in your
+   report — never leave the gap silent. The pin's enforced reach is stated in
+   the test module's docstring and the PR description; a pin that catches less
+   than the sentence claims is the same defect one level up. Boundary with
+   rule 2: a *decision* implementation proved wrong takes rule 2's amendment
+   block; a false statement about what the codebase *contains* is corrected in
+   place and takes this rule's pin.
+
 ## Style
 
 Plain, direct, and specific. No marketing register. Prefer the concrete failure
@@ -63,6 +80,9 @@ right to.
 - `uv run ruff format --check .` (it formats Python inside Markdown fences too)
 - Check every relative link you wrote resolves
 - Run every command you added to a document
+- If you corrected a claim about what the codebase contains: your report
+  requests the bidirectional pin (rule 6), or records why no fact-side
+  contract exists
 - Commit scope is `[a-z-]+` — lowercase letters and hyphens only. The CI
   Conventional-Commits gate rejects a digit or `#` in the scope, so an issue or
   ADR number goes in the subject text or body, never the scope
