@@ -45,6 +45,26 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   the family-taxonomy corpus items, and the relation/view surfaces are the later
   lanes ADR-0029 still owes.
 
+### Documentation
+
+- **ADR-0013 no longer describes the proposal-age report as shipped**
+  ([#252](https://github.com/theurian/theurian/issues/252)). Its Consequences
+  said in the present tense that `knowledge.status` reports proposal age and
+  that `doctor` warns past a threshold. Neither half had an implementation.
+  `knowledge_status` publishes six keys — `projectId`, `stateHash`,
+  `itemCount`, `itemsByStatus`, `appliedMigrations`, `schemaVersion` — plus the
+  conditional `integrity`, and the response schema names no proposal field;
+  `doctor_command` (`cli/setup_commands.py`) and the rest of the setup layer
+  read `.theurian/proposals/` nowhere. The bullet now reads as owed rather than
+  shipped and names [#414](https://github.com/theurian/theurian/issues/414),
+  which owns building both. Same class as the #198 and #129 corrections — a
+  mechanism named in the present tense in a durable record whose component does
+  not exist — and a sibling of the still-open
+  [#195](https://github.com/theurian/theurian/issues/195), where
+  `plugins/claude-code/README.md` goes on asserting that write-intent tools
+  produce proposals. It aligns the ADR with `docs/protocol/mcp-tools.md`, which
+  already records that proposal ages are not in that response.
+
 ## [0.1.0.dev14] - 2026-08-28
 
 ### Fixed
