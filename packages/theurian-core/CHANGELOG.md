@@ -14,6 +14,28 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Added
 
+- **`knowledge.search` now caps concurrent admissions into the retrieval path**
+  (threat-model T-6, [#26](https://github.com/theurian/theurian/issues/26)). A
+  `threading.BoundedSemaphore` in `mcp/tools.py::register`, shared by every
+  `knowledge.search` call the daemon serves, admits at most
+  `MAX_CONCURRENT_SEARCHES` (4) calls into the answer block at once; a caller
+  who does not gain a permit within `ADMISSION_WAIT_SECONDS` (1.0 s) is
+  refused with a constant `ToolError` that names the retry and interpolates
+  nothing from the request or the store — the refusal never varies with the
+  query, the project, or the store's contents, verified byte-identical by
+  `test_the_refusal_is_byte_identical_whatever_the_input`. Capacity is
+  restored on every exit path
+  (`test_capacity_is_restored_on_every_exit_path`), a caller past the cap is
+  refused before it does any retrieval work
+  (`test_the_cap_refuses_the_excess_caller`), and `/health` keeps answering
+  while the cap is saturated
+  (`test_health_answers_promptly_while_the_cap_is_saturated`), because the
+  semaphore's wait releases the GIL and never touches the asyncio loop. This
+  bounds concurrent occupancy only, additive to existing behaviour: it does
+  not bound the cost of a single call, and `knowledge.get`/`knowledge.status`
+  stay uncapped. 4 and 1.0 s are recorded defaults, not tuned; there is no
+  operator config key for either in this slice.
+
 - **Review-Finding trailer landing store, still no serving surface**
   ([#368](https://github.com/theurian/theurian/issues/368), ADR-0029). A
   `ReviewFindingStore` port, a `SqliteReviewFindingStore` adapter, and a

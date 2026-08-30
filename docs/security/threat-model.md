@@ -615,11 +615,14 @@ in this table is read as a control that runs.
   no quantity in this section is priced by a wall clock, and none of the
   bounds above are timed rather than counted or structurally capped.
 
-*Future controls, not shipped:* a per-query wall-clock bound is a daemon-level
-control on the transport layer and is filed as
-[#26](https://github.com/theurian/theurian/issues/26), which owns it for the
-query members enumerated below. No ingestion-side timeout is filed, for the
-reason just given.
+*Future controls, not shipped for the timeout half:* a per-query wall-clock
+bound is a daemon-level control on the transport layer, and stays unshipped —
+now recorded as *not taken* for the query members enumerated below, not merely
+unfiled (reasoning and the driving tests are at the remediation table's third
+row, further down). What [#26](https://github.com/theurian/theurian/issues/26)
+filed for those members is discharged instead, by a concurrency cap rather
+than this bound. No ingestion-side timeout is filed, for the reason just
+given.
 
 **A migration document is validated on its own path, and it carries its own
 ingestion bounds ([#291](https://github.com/theurian/theurian/issues/291),
@@ -829,11 +832,21 @@ GIL-releasing SQLite work", "`sqlite3` releases the GIL, so a handful of such
 queries saturate the CPU" — was an argument about how the load *spreads*, and it
 is inverted for the other two members. With the third member enumerated, the scan
 is the **only** one of the three that releases the GIL, so the removed wording was
-not merely over-general — it described the minority case. What is true of all
-three: **there is no per-query timeout and no limit on how many run at once.**
-That was established by looking
-rather than assumed — nothing in the tree calls `sqlite3`'s interrupt or progress
-handler, and nothing implements a semaphore, a rate limit, or a concurrency cap.
+not merely over-general — it described the minority case. What was true of all
+three, and stays true of two of them: **there is still no per-query timeout,
+and — as of [#26](https://github.com/theurian/theurian/issues/26) (a8c1ce3,
+2026-08-30) — it is no longer true that nothing limits how many run at once.**
+The timeout half was established by looking rather than assumed, and still
+holds by the same look: nothing in the tree calls `sqlite3`'s interrupt or
+progress handler, and — because sync MCP tools run through
+`anyio.to_thread.run_sync`, whose worker thread a cancelled awaiting task does
+not stop — a transport-level wall-clock bound would still cap only how long a
+caller waits, not the daemon's own CPU or GIL spend, even if one were added.
+The concurrency half changed by construction, not by absence:
+`mcp/tools.py::register` now builds a `threading.BoundedSemaphore` that gates
+admission to the answer block for all three members. What it bounds, what it
+does not, and the tests that pin it are below, at the remediation table's
+third row.
 
 `busy_timeout = 5000` is not the missing bound, and it is the near miss most
 likely to end someone's search. It is a **lock wait** — how long a connection
@@ -909,20 +922,53 @@ either way: `fetchall` already holds every vector" — is measured true, and the
 port's "the `limit` was a fiction" reasoning is not narrower than it reads. It is
 correct about the parameter, and the parameter is not the remediation.
 
-What would bound these is a mechanism change, which belongs to its own change
-with its own review:
+Three of these four remain a mechanism change belonging to its own change with
+its own review; the third — concurrent occupancy — has since shipped:
 
 | Quantity | What would bound it |
 | :-- | :-- |
 | peak memory on the dense path | streaming the cursor and keeping a top-*k* heap instead of `fetchall` + sort, or pushing the scoring into SQL |
 | GIL-held time on the dense path | the same, or moving the cosine into a released-GIL extension |
-| concurrent occupancy, any of the three members | a semaphore or concurrency cap on the retrieval path, or a per-query timeout at the transport layer |
+| concurrent occupancy, any of the three members | **Shipped** ([#26](https://github.com/theurian/theurian/issues/26), a8c1ce3, 2026-08-30): `mcp/tools.py::register`'s admission gate, a `threading.BoundedSemaphore` sized by `MAX_CONCURRENT_SEARCHES` (4) with a bounded admission wait, `ADMISSION_WAIT_SECONDS` (1.0 s) — both recorded defaults, not tuned. The per-query-timeout half of the OR is recorded as not taken, below |
 | rows and memory on the fallback path | a page bound on `list_items`, which is a change to the search fallback's published surface rather than a retrieval tuning |
 
-A per-query bound is a daemon-level control on the transport layer rather than a
-retrieval change, and is filed for a later milestone on that basis:
-[#26](https://github.com/theurian/theurian/issues/26), which covers the third
-row of that table for all three members. The other three rows are separate
+**Why the timeout half of that row is recorded as not taken.** Sync MCP tools
+run through `anyio.to_thread.run_sync`; cancelling the *awaiting* task does not
+stop the worker thread already dispatched to it, so a transport-level
+wall-clock bound would cap only how long a caller waits, never how much CPU or
+GIL time the daemon spends inside `hybrid_answer`/`substring_answer` for a
+flood of concurrent callers — the cap bounds that directly, a timeout would
+not. A refusal triggered by measured cost also risks reopening the "error that
+fires for one input and not another" disclosure family (SEC-13) while T-17a's
+residual stands (above); the shipped refusal is triggered by concurrent load
+alone, built once from `MAX_CONCURRENT_SEARCHES` and interpolating nothing
+from the request or the store, and is verified byte-identical across queries,
+projects and corpora by `test_the_refusal_is_byte_identical_whatever_the_input`.
+
+**What the cap bounds, and what it does not.** It bounds concurrent occupancy
+of the retrieval answer path alone — all three members enter through
+`knowledge_search`'s single admission gate; `hybrid_answer` and
+`substring_answer` each have exactly one call site in `src/`, both inside that
+gate (checked by grep, 2026-08-30). It does not bound the cost of a single
+call: the dense path's peak memory and GIL-held time (the first two rows
+above) and the fallback's rows-and-memory page bound (the fourth row) are all
+unchanged. `knowledge.get` and `knowledge.status` stay uncapped — both are
+bounded indexed reads, not the unbounded retrieval work this gate exists for.
+`anyio`'s own default thread limiter (40 tokens, `anyio` 4.14.2, measured
+2026-08-30) remains the process-level backstop behind this cap, unrelated to
+`MAX_CONCURRENT_SEARCHES` and unchanged by it.
+
+Pinned by four tests in `tests/integration/test_search_concurrency_cap.py`:
+`test_the_cap_refuses_the_excess_caller` (a caller past the cap is refused
+before it does any retrieval work, while the admitted callers are still in
+flight), `test_capacity_is_restored_on_every_exit_path` (a permit comes back
+whether the answer block returns or raises, on every exit path), the byte-
+identity test named above, and `test_health_answers_promptly_while_the_cap_is_saturated`
+(`/health` keeps answering while the cap is fully saturated, because the
+semaphore wait releases the GIL and never touches the asyncio loop serving
+it). `MAX_CONCURRENT_SEARCHES` (4) and `ADMISSION_WAIT_SECONDS` (1.0 s) are
+recorded defaults, not measurements; there is no operator config key for
+either in this slice. The other three rows of the table above are separate
 changes and are not filed.
 
 **A fourth member spends no CPU and was here for the same reason: it was
