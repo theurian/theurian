@@ -95,15 +95,29 @@ MAX_CONCURRENT_SEARCHES: Final = 4
 #: `threading.BoundedSemaphore.acquire(timeout=...)` releases the GIL while
 #: waiting, so a caller parked here never blocks the asyncio loop serving
 #: `/health` or any other tool. But the wait is not free: the token it holds
-#: for up to this long is one of the 40 `anyio.to_thread.run_sync` gives out
-#: by default, the same pool `knowledge.get`, `knowledge.status` and
-#: `project.list` draw from -- so with the pool saturated, those calls queue
-#: behind the parked searches for up to `ADMISSION_WAIT_SECONDS` (measured
-#: ~0.72 s under the same flood that motivates this cap; at base, with no
-#: gate at all, the flood cost them ~1.3 s instead -- the cap improves this,
-#: and the improvement is recorded rather than assumed). `/health` alone is
-#: unaffected: it is served on the asyncio loop directly and never takes a
-#: thread from that pool.
+#: is drawn from the same pool `knowledge.get`, `knowledge.status` and
+#: `project.list` draw from -- the anyio worker pool (40 tokens, anyio
+#: 4.14.2, re-measured 2026-08-30; T-6 records it) `anyio.to_thread.run_sync`
+#: gives out.
+#:
+#: A parked waiter holds one pool token for at most `ADMISSION_WAIT_SECONDS`,
+#: but the queue behind it is not bounded by that constant: a freed token
+#: goes to the next queued sync call, so another tool waits one
+#: token-handoff wave per ceil(pending sync calls / (pool tokens -
+#: MAX_CONCURRENT_SEARCHES)) -- linear in the number of concurrent callers,
+#: with no recorded limit. The 40-token pool is the only ceiling on how many
+#: calls queue at once. Measured (in-process, branch b8d2030, 2026-08-31,
+#: real searches, all three tools probed at the same instant):
+#: `knowledge.get` 0.62 s at 36 concurrent searches, 1.64 s at 72 (the first
+#: flood depth over the old claimed bound), 2.69 s at 120, 7.71 s at 300 --
+#: and at 300, `knowledge.get`/`knowledge.status`/`project.list` all ~7.75 s
+#: while `/health` answered in 0.004 s (the exemption is the half that
+#: holds). The step function fits delay ~= (K - 36) / 36 *
+#: ADMISSION_WAIT_SECONDS to within 0.05 s. Against a measured worst of
+#: 84.3 s at a 120-call flood with no gate: the cap improves every measured
+#: point and bounds none of them at `ADMISSION_WAIT_SECONDS`. `/health`
+#: alone is unaffected: it is served on the asyncio loop directly and never
+#: takes a thread from that pool.
 #:
 #: A recorded default (T-6), not a tuning, for the same reason
 #: `MAX_CONCURRENT_SEARCHES` is: long enough that a caller who merely
@@ -119,8 +133,10 @@ ADMISSION_WAIT_SECONDS: Final = 1.0
 #: channel: "an error that fires for one input and not another" is exactly the
 #: family SEC-13's withholding closes for every other observable this module
 #: publishes, and admission control must not reopen it by a different route
-#: (SEC-13, T-6). Verified byte-identical across queries, projects and corpora
-#: by `test_the_refusal_is_byte_identical_whatever_the_input`.
+#: (SEC-13, T-6). Verified byte-identical across queries, projects and
+#: corpora, and across `limit`, `maxTokens`, `useDense` and
+#: `includeUnapproved` (nine pinned captures), by
+#: `test_the_refusal_is_byte_identical_whatever_the_input`.
 SEARCH_CAPACITY_REFUSAL: Final = (
     f"The daemon is already answering its maximum number of concurrent searches "
     f"({MAX_CONCURRENT_SEARCHES}). Retry shortly. This refusal message is a "
@@ -803,10 +819,13 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # ceiling (#119).
         #
         # Gated to `MAX_CONCURRENT_SEARCHES` in flight (T-6, SEC-8, #26) --
-        # this block alone, not `_resolve`, the normalisation above, or the
-        # integrity read below, all of which are cheap filesystem work (three
-        # JSON reads and one `exists()` call) that gating behind load would
-        # only slow down for everyone without bounding anything.
+        # this block alone -- not `_resolve` (three JSON reads and one
+        # `exists()` call: cheap filesystem work), not the normalisation
+        # above, and not the integrity read below (a short-lived SQLite
+        # connection for three indexed counts, carrying the corpus-bounded
+        # per-above-ceiling-row slope `_measure_integrity` records) --
+        # because gating cheap or bounded work behind load would slow
+        # everyone without bounding anything.
         #
         # **Cap, not a per-query timeout.** Sync MCP tools run through
         # `anyio.to_thread.run_sync`; cancelling the *awaiting* task does not
@@ -823,18 +842,39 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # four-caller load flips between admitting and refusing a fifth
         # caller depending on the holders' query and on the store's size, so
         # the event is *not* a function of concurrent load alone, and this
-        # comment must not claim that it is. What SEC-13 needs is narrower,
-        # and it holds: no bit about content the caller may not read crosses
-        # this channel. The message is a fixed string
+        # comment must not claim that it is. What SEC-13 needs is narrower
+        # than "the event depends on nothing": the message is a fixed string
         # (`SEARCH_CAPACITY_REFUSAL`); the refusal path reads nothing from the
-        # store; and the event's timing inputs are the durations of searches
-        # run over rows every caller may already read -- withheld rows never
-        # enter them, because the index excludes them at build time and the
-        # substring scan reads through `idx_items_status` (#158). Measured
-        # flat: adding 1,200 withheld rows to an otherwise identical visible
-        # corpus moved neither the solo-caller latency nor the refusal
-        # outcome, on both the ranked and the scan path; the T-17a
-        # stale-index shape measured flat the same way.
+        # store; and the event's timing inputs are the durations of the
+        # in-flight searches, and what SEC-13 needs there is that no term in
+        # those durations lets a caller learn about content it may not read.
+        # Rows withheld **by status** never enter them: the index excludes
+        # them at build time, and the substring scan reads through
+        # `idx_items_status` (#158) -- measured flat at +/-1,200 *rejected*
+        # rows (2026-08-30, in-process, both paths). Two recorded terms are
+        # inherited unchanged rather than closed here, and both are on OTHER
+        # axes: `list_items_by_status`'s sensitivity predicate costs a
+        # measured 0.20 us per above-ceiling row on the scan path
+        # (corpus-bounded, no caller can shrink it -- #338, T-22), and the
+        # ranked path's `|ranking|` term costs a measured 14.7 us per
+        # withheld row while a published build predates a withdrawal
+        # (T-17's ranked-reads face) -- a window ADR-0024 decision 5 closes
+        # at apply time by purging the published build, leaving the
+        # purge-failure path (`_PURGE_FAILED`) as the recorded residual when
+        # it cannot. Neither has been measured to move the refusal
+        # outcome, and neither was measured here in the shape where it is
+        # live; what this gate adds is at most a coarser, load-noised copy of
+        # timing channels those entries already record and own -- a solo
+        # caller times its own query at far higher fidelity than a refusal
+        # bit under contention.
+        #
+        # Frame for the status-axis measurement (adversarial round-2
+        # independent reproduction, in-process, b8d2030, 2026-08-31): two
+        # projects with byte-identical 900-item visible corpora, one +1,200
+        # rejected rows, scan path, interleaved A/B, 42 solo probes each --
+        # solo median 56.50 ms vs 56.59 ms (1.00x), refusals per 24-caller
+        # storm 13/15/16 vs 16/13/12. Mechanism pinned by
+        # `test_the_substring_scan_reads_items_through_idx_items_status`.
         #
         # **`ToolError`, not an empty result or a ninth `fallbackReason`.** A
         # search that goes quiet under load instead of saying why is the
