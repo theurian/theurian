@@ -391,11 +391,11 @@ and it is off by default for that reason.
 > six full scans cost 3.06 s where 6,000 canonical reads cost about 0.09 s, but
 > what it bought is a cheaper unit and not a closed channel: T-17's "closed
 > outright on this branch" is retracted there. The residual is the same face of
-> the same class and ended the same way: the purge
+> the same class and it ends the same way: the purge
 > [#15](https://github.com/theurian/theurian/issues/15) shipped leaves no
-> withheld row in the published index for `_visible_ranking` to price a canonical
-> read against. This said "still ends with #15" until 2026-09-01, while #15 had
-> closed on 2026-08-10.
+> withheld row in the published index for `_visible_ranking` to spend a canonical
+> read on. This said "still ends with #15" until 2026-09-01, while #15 had closed
+> on 2026-08-10.
 >
 > **Corrected in Milestone 5, review round 8. The cost paragraph above — "it was
 > never compared against the alternative that actually runs today,
