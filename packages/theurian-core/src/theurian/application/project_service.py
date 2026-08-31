@@ -1065,7 +1065,12 @@ def mark_active_index_purge_failed(paths: ProjectPaths, *, expected_build_id: st
       degradation to the unranked canonical scan until the next rebuild. It is the
       success purge path's lock-free-write class (``withdrawal_purge`` publishing
       ``new_id`` under no index-write lock), and a compare-and-swap pointer write
-      is #113's scope, not this fix's.
+      belongs to the derived index's single-writer contract, which ADR-0018
+      records as owed and #439 owns. This sentence said "#113's scope" until
+      2026-09-01: #113 is the merged pull request that shipped the
+      purge-is-a-build model on 2026-08-10, so it can hold no owed work. The cite
+      at the head of this bullet names the same pull request as the *mechanism*
+      this check rests on, which is history and is correct (#444).
     - ``False`` when the recorded ``indexedSensitivities`` cannot be decoded: such
       a build is already stood aside by the flavor gate, so it serves nobody the
       withdrawn rows and there is nothing here to close by tainting it.
