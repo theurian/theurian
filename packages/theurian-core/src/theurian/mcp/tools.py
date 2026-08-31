@@ -23,6 +23,7 @@ errors it raises. How a search is actually answered lives in
 from __future__ import annotations
 
 import shlex
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -70,6 +71,77 @@ MAX_BUDGET_TOKENS: Final = 32_000
 #: 2,000 characters is longer than any real question and matches what the FTS
 #: builder was already willing to consider; nothing beyond it was ever searched.
 MAX_QUERY_CHARS: Final = 2_000
+
+#: How many `knowledge.search` calls this daemon answers at once (T-6, third
+#: row: concurrent occupancy of the retrieval path). Sync MCP tools run on
+#: `anyio.to_thread.run_sync`'s worker pool, and cancelling the *awaiting* task
+#: does not stop the worker thread already dispatched to it -- so a
+#: transport-level wall-clock timeout bounds how long a caller waits, never how
+#: much CPU or GIL time the daemon spends answering. This cap bounds concurrent
+#: occupancy -- the *rate* of spend, at most `MAX_CONCURRENT_SEARCHES` threads'
+#: worth at once -- not the total: a permit has no upper bound on how long it
+#: is held once acquired. Bounding how long a permit may be held is what a
+#: per-query timeout would do instead, and T-6 records that as not taken here.
+#: What this cap does bound is an unbounded queue of callers building up
+#: behind however much work is already running.
+#:
+#: 4 is a recorded default (T-6), not a tuning. OSS Core is one process
+#: serving one user's agents (ADR-0002), where four concurrent searches is
+#: already generous headroom for that shape of deployment; there is no
+#: operator config key for it in this slice (issue #26).
+MAX_CONCURRENT_SEARCHES: Final = 4
+
+#: How long an admission attempt waits for a permit before it is refused.
+#: `threading.BoundedSemaphore.acquire(timeout=...)` releases the GIL while
+#: waiting, so a caller parked here never blocks the asyncio loop serving
+#: `/health` or any other tool. But the wait is not free: the token it holds
+#: is drawn from the same pool `knowledge.get`, `knowledge.status` and
+#: `project.list` draw from -- the anyio worker pool (40 tokens, anyio
+#: 4.14.2, re-measured 2026-08-30; T-6 records it) `anyio.to_thread.run_sync`
+#: gives out.
+#:
+#: A parked waiter holds one pool token for at most `ADMISSION_WAIT_SECONDS`,
+#: but the queue behind it is not bounded by that constant: a freed token goes
+#: to the next queued sync call, so another tool's delay grows with the number
+#: of concurrent searches, with no recorded limit. The 40-token pool (anyio
+#: 4.14.2) bounds how many calls *execute* at once; nothing above it bounds
+#: arrivals -- uvicorn runs with no `limit_concurrency` -- so the queue itself
+#: has no ceiling. Measured (in-process, 2026-08-31, four holders held open by
+#: a blocking stub, the flood being real `knowledge.search` calls that are all
+#: refused; reproduced independently three times within 0.06 s at every depth):
+#: `knowledge.get`, probed with the pool asserted at 40/40 borrowed, waited
+#: 0.62 s at 36 concurrent searches, 1.64 s at 72, 2.69 s at 120, 7.71 s at
+#: 300. Those probes were issued ~0.4 s after the flood began; a caller
+#: arriving *with* the flood waits up to a full admission wave more (measured
+#: 1.02 s at 36, 2.06 s at 72, 3.10 s at 120). The one base-vs-branch point
+#: measured by a single harness on both sides (a 120-call real-search flood,
+#: in-process, 2026-08-30) put `knowledge.get`'s worst at 84.3 s with no gate
+#: against 3.0 s under the cap.
+#:
+#: A recorded default (T-6), not a tuning, for the same reason
+#: `MAX_CONCURRENT_SEARCHES` is: long enough that a caller who merely
+#: overlapped a few slow searches is admitted once one finishes, short enough
+#: that a caller stuck behind a genuinely saturated daemon is told so rather
+#: than left waiting indefinitely.
+ADMISSION_WAIT_SECONDS: Final = 1.0
+
+#: The refusal a caller sees when the admission wait in `knowledge_search`
+#: elapses. Built once, from `MAX_CONCURRENT_SEARCHES` alone, and interpolates
+#: nothing else -- not the query, not `projectId`, not anything read from the
+#: store. A refusal that varied with any of those would itself be a disclosure
+#: channel: "an error that fires for one input and not another" is exactly the
+#: family SEC-13's withholding closes for every other observable this module
+#: publishes, and admission control must not reopen it by a different route
+#: (SEC-13, T-6). Verified byte-identical across queries, projects and
+#: corpora, and across `limit`, `maxTokens`, `useDense` and
+#: `includeUnapproved` (thirteen pinned captures), by
+#: `test_the_refusal_is_byte_identical_whatever_the_input`.
+SEARCH_CAPACITY_REFUSAL: Final = (
+    f"The daemon is already answering its maximum number of concurrent searches "
+    f"({MAX_CONCURRENT_SEARCHES}). Retry shortly. This refusal message is a "
+    f"constant: it carries nothing from your request or from any project's "
+    f"contents."
+)
 
 
 class ToolError(TheurianError):
@@ -425,6 +497,13 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
     # installation built it (ADR-0004, SEC-7).
     provenance = BuildProvenance.for_registry(registry)
 
+    # One bounded semaphore per server registration, shared by every
+    # `knowledge.search` call this daemon serves (ADR-0002: one process, many
+    # concurrent agents). See the gated block inside `knowledge_search` for
+    # why this is a cap rather than a per-query timeout, and why a refusal is
+    # a `ToolError` rather than an empty result or a `fallbackReason`.
+    search_admission = threading.BoundedSemaphore(MAX_CONCURRENT_SEARCHES)
+
     def _with_remedy(exc: ProjectError) -> ToolError:
         """A ``ProjectError``, with its remedy still attached.
 
@@ -737,22 +816,97 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # condition any local process can create, and a fallback that served an
         # above-ceiling document would make deleting a file the way past the
         # ceiling (#119).
-        answer = hybrid_answer(
-            paths,
-            database,
-            state=active,
-            project_id=projectId,
-            query=searched,
-            limit=capped_limit,
-            include_unapproved=includeUnapproved,
-            visible_sensitivities=grant.sensitivities,
-            budget_tokens=capped_budget,
-            use_dense=useDense,
-            as_of=as_of,
-            provenance=provenance,
-        )
-        if isinstance(answer, Fallback):
-            answer = substring_answer(
+        #
+        # Gated to `MAX_CONCURRENT_SEARCHES` in flight (T-6, SEC-8, #26) --
+        # this block alone -- not `_resolve` (three JSON reads and their
+        # existence probes: cheap filesystem work), not the normalisation
+        # above, and not the integrity read below (a short-lived SQLite
+        # connection for three indexed counts, carrying the corpus-bounded
+        # per-above-ceiling-row slope `_measure_integrity` records) --
+        # because gating cheap or bounded work behind load would slow
+        # everyone without bounding anything.
+        #
+        # **Cap, not a per-query timeout.** Sync MCP tools run through
+        # `anyio.to_thread.run_sync`; cancelling the *awaiting* task does not
+        # stop the worker thread it dispatched to, so a transport wall-clock
+        # timeout bounds only how long the caller waits, never how much CPU or
+        # GIL time the daemon spends running `hybrid_answer`/`substring_answer`
+        # for a flood of concurrent callers.
+        #
+        # **What the refusal event depends on, and what SEC-13 actually
+        # needs.** The event fires when no permit frees within
+        # `ADMISSION_WAIT_SECONDS`, and whether one frees depends on how long
+        # the in-flight searches run -- which varies with the visible corpus
+        # and with what the current holders asked for. Measured: the same
+        # four-caller load flips between admitting and refusing a fifth
+        # caller depending on the holders' query and on the store's size, so
+        # the event is *not* a function of concurrent load alone, and this
+        # comment must not claim that it is. What SEC-13 needs is narrower
+        # than "the event depends on nothing": the message is a fixed string
+        # (`SEARCH_CAPACITY_REFUSAL`); the refusal path reads nothing from the
+        # store; and the event's timing inputs are the durations of the
+        # in-flight searches, and what SEC-13 needs there is that no term in
+        # those durations lets a caller learn about content it may not read.
+        # Rows withheld by status never enter them **at build time, and for
+        # any build whose withdrawal purge has completed**: the index excludes
+        # them when it is built, the substring scan reads through
+        # `idx_items_status` (#158), and ADR-0024 decision 5 purges a
+        # published build at the apply that withdraws from it. Two recorded
+        # terms are inherited unchanged rather than closed here. On the
+        # sensitivity axis, `list_items_by_status`'s sensitivity predicate
+        # costs a measured 0.20 us per above-ceiling row on the scan path
+        # (corpus-bounded, no caller can shrink it -- #338, T-22). On the
+        # **status** axis, in the window where a published build still
+        # predates a withdrawal, the ranked path's `|ranking|` term costs a
+        # measured 14.7 us per withheld row (T-17's ranked-reads face);
+        # `_PURGE_FAILED` is the *control* on that window's failure case -- a
+        # build whose purge failed is stood aside, not served -- and the
+        # residual T-17a records is its three remaining conditions: an
+        # in-flight request, a double disk fault, and a concurrent clean build
+        # reverted by the non-atomic taint write. Neither term has been
+        # measured to move the refusal outcome, and neither was measured here
+        # in the shape where it is live. One further term is cross-project by
+        # construction: under the accepted per-daemon denial, the in-flight
+        # holders whose durations set the refusal may belong to a different
+        # project than the refused caller -- their durations vary with that
+        # project's visible corpus, which is already every caller's to read
+        # under the deployment-wide grant (ADR-0002).
+        #
+        # Frame for the status-axis measurement (adversarial round-2
+        # independent reproduction, in-process, b8d2030, 2026-08-31): two
+        # projects with byte-identical 900-item visible corpora, one +1,200
+        # rejected rows, scan path, interleaved A/B, 42 solo probes each --
+        # solo median 56.50 ms vs 56.59 ms (1.00x), refusals per 24-caller
+        # storm 13/15/16 vs 16/13/12. Mechanism pinned by
+        # `test_the_substring_scan_reads_items_through_idx_items_status`.
+        #
+        # **`ToolError`, not an empty result or a ninth `fallbackReason`.** A
+        # search that goes quiet under load instead of saying why is the
+        # failure f30881e closed; answering `count: 0` here would reopen it.
+        # It is not a fallback either: `retrieval.fallbackReason` describes
+        # *how* an answer WAS produced (no index built, no drafts in the
+        # index) -- a refused call produced no answer at all, so folding it in
+        # would either invent a reason for "produced nothing" or grow the wire
+        # schema for something that is not a retrieval outcome.
+        #
+        # **Why `/health` stays live.** `/health` is served directly on the
+        # asyncio loop, never through `anyio.to_thread.run_sync`, so it never
+        # takes a worker thread from the pool this gate parks callers in -- a
+        # saturated gate leaves no thread for `/health` to wait behind in the
+        # first place. `BoundedSemaphore.acquire(timeout=...)` also releases
+        # the GIL while blocked rather than busy-looping, but that is what
+        # keeps the *other* sync tools sharing that pool merely queued rather
+        # than starved, not what keeps `/health` prompt -- see
+        # `ADMISSION_WAIT_SECONDS` above for what that queuing costs them.
+        #
+        # The refusal is raised *before* the `try`: a failed `acquire` holds
+        # no permit, and calling `release()` for it would hand this
+        # semaphore's count a permit it never had (AC-4).
+        if not search_admission.acquire(timeout=ADMISSION_WAIT_SECONDS):
+            raise ToolError(SEARCH_CAPACITY_REFUSAL)
+        try:
+            answer = hybrid_answer(
+                paths,
                 database,
                 state=active,
                 project_id=projectId,
@@ -761,9 +915,25 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 include_unapproved=includeUnapproved,
                 visible_sensitivities=grant.sensitivities,
                 budget_tokens=capped_budget,
-                fallback=answer,
+                use_dense=useDense,
                 as_of=as_of,
+                provenance=provenance,
             )
+            if isinstance(answer, Fallback):
+                answer = substring_answer(
+                    database,
+                    state=active,
+                    project_id=projectId,
+                    query=searched,
+                    limit=capped_limit,
+                    include_unapproved=includeUnapproved,
+                    visible_sensitivities=grant.sensitivities,
+                    budget_tokens=capped_budget,
+                    fallback=answer,
+                    as_of=as_of,
+                )
+        finally:
+            search_admission.release()
 
         # The #30 integrity signal, checked against the same `active` pointer
         # that chose `database` and answered `snapshotId`. Two measurements --

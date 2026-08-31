@@ -14,6 +14,24 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Added
 
+- **`knowledge.search` gains an admission cap on the retrieval path**
+  (threat-model T-6, [#26](https://github.com/theurian/theurian/issues/26)). A
+  `threading.BoundedSemaphore` in `mcp/tools.py::register`, shared by every
+  `knowledge.search` call the daemon serves, admits at most
+  `MAX_CONCURRENT_SEARCHES` (4) calls into the answer block at once. A caller
+  past the cap is refused before it does any retrieval work
+  (`test_the_cap_refuses_the_excess_caller`), capacity is restored on every
+  exit path whether the answer block returns or raises
+  (`test_capacity_is_restored_on_every_exit_path`), and `/health` keeps
+  answering while the cap is saturated
+  (`test_health_answers_promptly_while_the_cap_is_saturated`). This bounds
+  concurrent occupancy only — not the cost of a single call — and
+  `knowledge.get`/`knowledge.status` stay uncapped. `MAX_CONCURRENT_SEARCHES`
+  (4) and `ADMISSION_WAIT_SECONDS` (1.0 s) are recorded defaults, not tuned;
+  there is no operator config key for either in this slice. See what the cap
+  does and does not bound, and the cross-project design decision, in
+  [T-6](../../docs/security/threat-model.md).
+
 - **Review-Finding trailer landing store, still no serving surface**
   ([#368](https://github.com/theurian/theurian/issues/368), ADR-0029). A
   `ReviewFindingStore` port, a `SqliteReviewFindingStore` adapter, and a
@@ -44,6 +62,36 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   stay `None`; a served finding's SEC-15 safety triple, the recurrence query,
   the family-taxonomy corpus items, and the relation/view surfaces are the later
   lanes ADR-0029 still owes.
+
+### Changed
+
+- **Under sustained concurrent load, `knowledge.search` now refuses with a
+  constant retryable error instead of queueing without bound** (threat-model
+  T-6, [#26](https://github.com/theurian/theurian/issues/26)). This is a
+  client-visible behaviour change, not additive: a `knowledge.search` call
+  that succeeded at base can now be refused once `MAX_CONCURRENT_SEARCHES`
+  (4) calls are already in the retrieval answer block and a further caller
+  does not gain a permit within `ADMISSION_WAIT_SECONDS` (1.0 s). The
+  refusal's `ToolError` message is a constant, interpolating nothing from the
+  request or the store, verified byte-identical by
+  `test_the_refusal_is_byte_identical_whatever_the_input`. Measured
+  serialization cost at 40 concurrent callers against a light corpus (its own
+  document count and size were not themselves recorded): median latency
+  0.10 s → 0.36 s, max 0.11 s → 0.62 s (2026-08-30, in-process, branch vs
+  05ab8f3) — zero calls were refused in that run, since even the max stayed
+  under the 1.0 s admission wait. **On a heavier corpus the comparison
+  inverts in wall clock, and the two medians measure different outcomes.**
+  Measured 2026-08-30, in-process, 400 documents × 2,000 chars, 40
+  concurrent callers: with the cap effectively off (emulated in-process by
+  raising `MAX_CONCURRENT_SEARCHES` to 10,000 on the branch — not a
+  `05ab8f3` build), all 40 callers were answered, median 3.72 s / max
+  3.83 s; under the shipped cap, 19 of 40 were refused within ~1 s and the
+  21 answered calls' median was 1.04 s / max 1.15 s. A refused caller
+  spends less time per attempt; it does not get an answer. T-6 records
+  the multi-second interference this causes for the other tools sharing the
+  pool. The refusal has no machine-readable envelope — no error code, no
+  retry-after, no capabilities flag — tracked as
+  [#419](https://github.com/theurian/theurian/issues/419).
 
 ### Documentation
 
