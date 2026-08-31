@@ -186,8 +186,9 @@ narrowness of the one reader rather than from an absence of hits. Measured at
 `6b83be1`: `git grep -n 'paths\.config' packages/theurian-core/src` returns one
 line — `proposal_service.py` handing the path to `read_secret_scan_policy` —
 and that function names one published key, `SECRET_SCAN_KEY = "secretScan"`,
-under one block. No `raptor` key is reachable from either. So **the CLI flag is
-the switch and the config key is not** —
+under one block. Those two — the single call site, and the single key it leads
+to — are the whole path from `src/` to this file's contents, and no `raptor` key
+lies on it. So **the CLI flag is the switch and the config key is not** —
 `raptor.enabled` is declared `false` in the schema and set `false` in
 `examples/sample-project/.theurian/config.yaml` (ADR-0008 decision 10's two
 places, both flipped by the builder change), and `theurian index build --raptor`

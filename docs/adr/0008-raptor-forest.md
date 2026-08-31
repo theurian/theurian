@@ -1056,13 +1056,21 @@ flowchart TB
 >
 
 > 10. **`raptor.enabled` defaults to `false` in the first release that ships the
->     forest.** `schemas/config/project-config.schema.json` declares
->     `"enabled": { "type": "boolean", "default": true }` today. That is not a
->     decision anyone took: nothing in `src/` reads it, and when this was written
->     nothing read `.theurian/config.yaml` at all. The schema's consumers outside
->     itself were `tests/unit/test_examples.py`, which validates the example
->     document against it, and `tests/unit/test_schemas.py`, which checks one
->     unrelated property — so `default: true` has never taken effect anywhere.
+>     forest.** *The state of things as this decision was taken, every clause of
+>     it:* `schemas/config/project-config.schema.json` declared
+>     `"enabled": { "type": "boolean", "default": true }`. That was not a decision
+>     anyone took — nothing in `src/` read it, and nothing read
+>     `.theurian/config.yaml` at all — and the schema's consumers outside itself
+>     were `tests/unit/test_examples.py`, which validates the example document
+>     against it, and `tests/unit/test_schemas.py`, which checks one unrelated
+>     property, so `default: true` had never taken effect anywhere.
+>
+>     *Two of those clauses have moved since, and the notes below say where.* The
+>     schema declares `false` now — this decision landing, recorded in the landed
+>     note. And the file has a reader, for `security.secretScan`, recorded in the
+>     correction note. What has not moved is the key itself: nothing in `src/`
+>     reads `raptor.enabled` today either, which is what the rest of this decision
+>     rests on.
 >
 >     A capability whose acceptance tests are owed and whose build cost is
 >     unmeasured (see the amendment to decision 3) ships opt-in, so that turning it
@@ -1128,18 +1136,20 @@ flowchart TB
 >     > [ADR-0027](0027-accept-validates-before-it-moves.md) decision 3:
 >     > `security/project_config.py::read_secret_scan_policy` opens the file, and
 >     > `application/proposal_service.py` calls it at `theurian propose accept`.
->     > Both sentences are narrowed to the population that is still unread rather
->     > than deleted, and both conclusions survive that narrowing, because
->     > neither leaned on the file being unread — only on `raptor.enabled` being
+>     > Neither is deleted, and the two took different repairs: the "switch is
+>     > the CLI flag" note is **narrowed** to the population that is still
+>     > unread, while the rationale is **tensed** to the record it always was —
+>     > one narrowed, one tensed. Both conclusions survive either way, because
+>     > neither leaned on the file being unread, only on `raptor.enabled` being
 >     > unread, which it is. Measured at `6b83be1`: `git grep -n 'paths\.config'
 >     > packages/theurian-core/src` returns one line — `proposal_service.py`
 >     > handing the path to `read_secret_scan_policy` — and that function names
 >     > one published key, `SECRET_SCAN_KEY = "secretScan"`, under one block, so
 >     > no `raptor` key is reachable from the only reader the file has.
 >     > `tests/unit/test_config_key_call_sites.py` pins the one key that does
->     > have a reader. The consumer enumeration in the rationale is
->     > tensed to when it was taken rather than re-counted, since the schema has
->     > gained test-side consumers only.
+>     > have a reader. The consumer list inside that record was left at the count
+>     > it was taken with rather than re-counted, since the schema has gained
+>     > test-side consumers only.
 
 ## Consequences
 
