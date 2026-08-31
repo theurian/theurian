@@ -162,23 +162,29 @@ great deal of ordinary port surface, and a pin that fires on it gets deleted.
     path, since contention is per open file description rather than per process.
   - ``test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself``
     keys on ``WriteLock|write_transaction`` and refuses only a construct by which
-    a second OS process can be **running while the test is**. Eleven files, and
+    a second OS process can be **running while the test is**. **Ten files**, and
     the number is a dated measurement rather than a property -- taken 2026-08-31
-    at #446 by ``git grep -lP '\\bWriteLock\\b|\\bwrite_transaction\\b' --
-    packages/theurian-core/tests tests``, which is the key this tier compiles.
-    The figure written here said *nine* and the tree held ten before this PR
-    added ``canonical_store_surface.py``; a count in prose churns on every new
-    member, which is why the test asserts a property and not this list.
+    at #446 by the self-excluding key
+    ``git grep -lP '\\bWriteLock\\b|\\bwrite_transaction\\b' --
+    packages/theurian-core/tests tests ':!*test_connection_claims.py'``, which is
+    the population the tier actually scans: the rule drops this module before it
+    looks at anything, so the same key without the pathspec -- the *raw* grep,
+    which answers eleven -- describes a set the tier never reads. The figure
+    written here said *nine* while the tree held ten, and then *eleven* off the
+    raw grep; a count in prose churns on every new member **and** on whichever
+    key its author reached for, which is why the test asserts a property and not
+    this list.
 
-    Five of the eleven name ``subprocess``, and that is not a finding. Four are
+    Four of the ten name ``subprocess``, and that is not a finding. All four are
     integration tests and every one of them uses ``subprocess.run``, which blocks
     until the child exits, so the child cannot be holding the lock while the
-    parent is; the fifth is this module, which names the word only in the prose
-    you are reading. A rule that refused ``subprocess`` outright would report
-    five false positives and teach the next author to delete it. This tier
-    asserts a property rather than an exact file list, because
-    ``write_transaction`` is how an ordinary integration test seeds a database
-    and pinning that list would churn on every new one.
+    parent is. The eleventh file the raw grep returns is this module, which names
+    the word only in the prose you are reading, and the tier excludes it before
+    the rule runs. A rule that refused ``subprocess`` outright would report four
+    false positives and teach the next author to delete it. This tier asserts a
+    property rather than an exact file list, because ``write_transaction`` is how
+    an ordinary integration test seeds a database and pinning that list would
+    churn on every new one.
 
   So the cross-process wording these docstrings carry ("two processes that both
   enter here serialise") remains a property of ``fcntl.flock`` rather than
