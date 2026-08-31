@@ -142,8 +142,9 @@ contain, and has its own pin in
 cost a read; the direction they refuse to trade for costs the claim.
 
 **The population of this class outside the three files scanned here is tracked
-in the issues, not counted here.** #447 holds the Python members, #455 the
-wheel-shipped root ``description`` in
+in the issues, not counted here.** #447 held the Python members — three, narrowed
+the same way on 2026-09-01 and outside this module's scope still, so their prose
+is unpinned; #455 holds the wheel-shipped root ``description`` in
 ``schemas/config/project-config.schema.json``, and #461 a Markdown member in
 ``plugins/``. Two attempts to state that population as a number have been wrong —
 round one said the schema string was the only one outside ``src/``, and round two
