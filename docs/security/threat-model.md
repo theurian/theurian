@@ -1635,8 +1635,11 @@ a separate point:*
 - **`theurian ingest` runs no scan**, and neither does index building. Ingest
   records a manifest of content that is already approved, so scanning there is a
   different control at a different point in the lifecycle — a real one, and out
-  of #316's scope
-  ([#198](https://github.com/theurian/theurian/issues/198) tracks the family).
+  of #316's scope. Owned by
+  [#329](https://github.com/theurian/theurian/issues/329), which carries #198's
+  measurement of this path forward: #198 closed on the `propose accept` half it
+  shipped and owns nothing here, which is the form the T-15 summary row already
+  uses.
 - **`theurian propose` does not scan at draft time.** A refusal there would tell
   an author sooner, but `accept` is the gate, so a draft-time scan is a
   convenience rather than a control.
@@ -2618,10 +2621,24 @@ revision of this entry called #56 open, which it was when that revision was
 written and is not now. The mechanism it exercised is unchanged:
 `release-core.yml` still publishes that section verbatim, so a future edit to it
 reaches the release page the same way.
-Nothing in this repository holds any of the three to the step's own words — no
-test reads `README.md`, `packages/theurian-core/CHANGELOG.md` or this file, and
-`test_setup_claims.py` reads the *plugin's* README, not the root one — and that
-is the gap #39 inherits.
+Nothing in this repository holds any of the three to the step's own words. The
+evidence for that is narrower than what this paragraph used to offer, which was
+false: it said "no test reads `README.md`,
+`packages/theurian-core/CHANGELOG.md` or this file, and `test_setup_claims.py`
+reads the *plugin's* README, not the root one". All three files are read under
+`packages/theurian-core/tests/` — seven files name `README.md` alone — and
+`test_setup_claims.py` carries the root `README.md` in `CORE_ARRIVAL_SURFACES`,
+which the #323 paragraph further up this entry already records ("the file joined
+the tuple in the same change"). What holds is the narrower fact: only two test
+modules name `probe_artifact_integrity` at all, and neither reads any of the
+three — `test_artifact_integrity_claim.py` compares the probe against
+`docs/contributing/release.md`, and `test_dogfood_corpus_governance.py` is about
+corpus membership (`git grep -ln artifact_integrity -- packages/theurian-core/tests`,
+2026-08-31 at `5a9a1e5`). **That gap is not #39's.** #39 is closed, so it
+inherits nothing; the paragraph below names the live owner. What that owner
+covers is the shipped probe string and the question of what the string's pin
+should assert — not a test tying these three surfaces to the probe's words, so
+the cross-surface pin has no owner and is stated here rather than attributed.
 
 **Recorded as unmet, not accepted** — unlike T-17a, no argument is offered that
 this is tolerable. The requirement stands: OSS-11 requires the checksums and
@@ -4192,6 +4209,29 @@ a different absolute value. Every figure here is in-process; none went over the
 loopback hop a real client adds (TB-1), so all of them are floors on the effort
 extraction takes and not ceilings.
 
+> **The fix those three records name has shipped, and the owner cite is
+> discharged (2026-08-31, #427's owner-cite sweep).** Three places above hand
+> this residual to [#15](https://github.com/theurian/theurian/issues/15) as
+> future work: the round-five argument's `the purge did not remove it` row, and
+> the closing sentence of each of the round-six and round-seven corrections. #15
+> closed `COMPLETED` on 2026-08-10. What it shipped is `66a43ae`:
+> `migrate apply` publishes a purged build synchronously on any withdrawal
+> (`application/withdrawal_purge.py::publish_purge_for_withdrawal`, called from
+> `cli/commands.py`, wiring ADR-0024 decision 5), which is the trigger T-17a's
+> closure below describes and pins.
+>
+> **The three records are left exactly as written**, because each is the state of
+> the argument at the round that produced it and the fix location they name did
+> not move. What is corrected is the register: they read as *owed*, and it is
+> *shipped*. Where the class stands now — status axis by that trigger,
+> sensitivity axis by exclusion at build time in #119, and the residuals that
+> survive both — is stated once, under T-17a below, rather than restated here.
+>
+> **This note does not re-take the measurements above.** Every figure in the
+> round-five, round-six and round-seven records was taken against a build that
+> still held withdrawn rows; none has been re-run against a purged build, and no
+> open issue owns that re-measurement.
+
 **`SqliteIndexStore._scan_cache` is a mitigation with an expiry date, not an
 optimisation, and calling it the wrong thing is how it survives past its
 purpose.** It memoises `_scan_below_the_trigram_floor` on the three arguments
@@ -4489,9 +4529,17 @@ the dense path, which T-6 enumerates as the second member of that class.
 >      withheld content reaches a caller; the cost is a self-inflicted degradation to
 >      the unranked scan until a rebuild. Same lock-free-pointer-write class as the
 >      success purge path (`withdrawal_purge` publishing `new_id` under no
->      index-write lock); a recorded MEDIUM deferred to #113 (ADR-0022), whose
->      compare-and-swap pointer write is its scope, not this fix's. Found by all
+>      index-write lock); a recorded MEDIUM, deferred to the derived index's
+>      single-writer contract (ADR-0022's blue/green pointer discipline, and the
+>      interface ADR-0018 records as owed), whose compare-and-swap pointer write
+>      is that work's scope and not this fix's. Owned by
+>      [#439](https://github.com/theurian/theurian/issues/439). Found by all
 >      three round-one reviewers and graded safe-direction, no disclosure.
+>      **Owner corrected 2026-08-31 by #427's owner-cite sweep:** this deferral
+>      named #113, a pull request that merged on 2026-08-10 and so cannot receive
+>      work. #444 records the same sentence in
+>      `application/project_service.py`'s docstring, with #439 as the live owner
+>      there too.
 >
 > **GHSA-97q9-xxfg-33r6 was graded High, not Critical — a recorded design
 > decision.** The verbatim `raptorPath` disclosure it closed is a HIGH converted
@@ -5506,7 +5554,7 @@ fix.
 | T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — `theurian propose accept` scans every body it would land **and the migration document's author-written fields** ([#336](https://github.com/theurian/theurian/issues/336)), `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it. The document's derived fields and a proposal's `evidence.json` are not read ([#330](https://github.com/theurian/theurian/issues/330)). Ingest-time and index-time scanning are separate controls and do not ship ([#329](https://github.com/theurian/theurian/issues/329); #198 is closed, having shipped the `propose accept` half) |
 | T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet ([#80](https://github.com/theurian/theurian/issues/80); #39 is closed, on its documentation half only) |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
-| T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15); closed for the sensitivity axis in #119 by exclusion at build plus a `changeSensitivity` purge trigger (ADR-0025 parts 1–2). The unpurged-build (purge-failed) cell — including its verbatim `--raptor` `raptorPath` face — is closed by GHSA-97q9-xxfg-33r6, which refuses to serve a purge-failed build (graded High: two non-default operator conditions), leaving only an in-flight request, a double disk fault, and a concurrent clean build reverted by the non-atomic taint write (all SAFE-direction, the last deferred to #113/ADR-0022); the free-page byte residue ([#344](https://github.com/theurian/theurian/issues/344)) is recorded |
+| T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15); closed for the sensitivity axis in #119 by exclusion at build plus a `changeSensitivity` purge trigger (ADR-0025 parts 1–2). The unpurged-build (purge-failed) cell — including its verbatim `--raptor` `raptorPath` face — is closed by GHSA-97q9-xxfg-33r6, which refuses to serve a purge-failed build (graded High: two non-default operator conditions), leaving only an in-flight request, a double disk fault, and a concurrent clean build reverted by the non-atomic taint write (all SAFE-direction, the last deferred to the derived index's single-writer contract, ADR-0022/ADR-0018, owned by [#439](https://github.com/theurian/theurian/issues/439) — merged PR #113 stood here until #427's sweep); the free-page byte residue ([#344](https://github.com/theurian/theurian/issues/344)) is recorded |
 | T-18 | Reused revision id resolves to a withheld item's body | I | Critical | Closed in 0.1.0.dev3 — item-scoped `append_revision` + `put_item` store guards, `SCHEMA_VERSION` gate (GHSA-7997-g35f-q59h) |
 | T-19 | A repository ships a doctored `.theurian/state/` served without a local build | I | Critical | Closed in 0.1.0.dev4 — out-of-tree `BuildProvenance` anchor, enforced at every serve path (GHSA-266v-fcj2-qggx, ADR-0004, SEC-7) |
 | T-20 | A body file shared across two revisions is served past the status gate | I | Critical | Closed in 0.1.0.dev5 — whole-set refusal keyed on body filesystem identity (`st_dev`/`st_ino`), `DuplicateContentFileError` (GHSA-w5cm-cqf9-vm7r) |
