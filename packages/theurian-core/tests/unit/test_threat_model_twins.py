@@ -71,7 +71,8 @@ def _summary_row(path: pathlib.Path, threat_id: str) -> str:
 
     Anchored at the start of the line, so the key is the row's own id cell and
     not an occurrence of the same string inside another row's prose -- T-15's
-    Control cell alone names six other issues.
+    Control cell alone names seven issue numbers (#336, #349, #360, #361, #330,
+    #329, #198; count over the full cell, the owner cite's own pair included).
     """
     pattern = re.compile(rf"^\| {re.escape(threat_id)} \|", re.MULTILINE)
     rows = [line for line in path.read_text(encoding="utf-8").splitlines() if pattern.match(line)]
