@@ -106,10 +106,14 @@ tracked-path count below, both of which move only when the corpus does.
 :data:`MINIMUM_MIGRATIONS` is checked against
 :func:`test_the_committed_corpus_is_present_and_has_not_shrunk`'s
 ``len(_migration_paths())`` -- a count of tracked migration files, not of
-live items, and the two are not the same number: this branch ships 27
-tracked migrations over 26 live items (measured 2026-08-31; the ADR-0013
-re-seed is a second migration, and a second revision, over an item that
-already existed -- see :data:`GOVERNED_OPERATIONS`). The constant itself
+live items, and the two are not the same number: a re-seed is a second
+migration, and a second revision, over an item that already exists (see
+:data:`GOVERNED_OPERATIONS`), so it grows the migration count without
+growing the item count. A branch-relative "this branch ships" figure here
+re-binds on every read and every branch, so the count is instead a dated
+point measurement rather than a live claim: 30 tracked migrations over 26
+live items, measured 2026-09-01 at ``2844ea5`` (the ADR-0013 re-seed plus
+the three #199 unit C second-wave re-seeds). The constant itself
 stays 26 and stays a lower bound: the dogfood corpus is expected to grow,
 and every item or revision added is fully governed by the rules below
 whether or not anyone raises the number here. What the bound catches is

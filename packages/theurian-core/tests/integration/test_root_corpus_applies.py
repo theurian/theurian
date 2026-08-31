@@ -107,13 +107,22 @@ MIGRATIONS_DIRECTORY: Final = REPO_ROOT / ".theurian" / "migrations"
 #: A lower bound, not an exact count -- the corpus is expected to grow, and
 #: every item a future migration adds is fully governed whether or not this
 #: number is ever updated. Mirrors ``test_dogfood_corpus_governance.py``'s
-#: ``MINIMUM_MIGRATIONS`` (26) as an independent measurement, not an import:
-#: the two floors still share a value because a re-seed adds a revision, never
-#: an item -- migrations and evidence files grow with each one, items do not.
-#: Measured 2026-09-01 at 7b2ca67: four items now carry two revisions each --
-#: the ADR-0013 re-seed (#416) plus the three #199 unit C second-wave
-#: re-seeds (#471, :data:`_SECOND_WAVE_MARKERS`) -- and the corpus still holds
-#: exactly 26 distinct items.
+#: ``MINIMUM_MIGRATIONS`` (26) as an independent measurement, not an import.
+#:
+#: **The two floors coincide by history, not by mechanism** -- the same
+#: account ``tools/corpus_drift.py``'s own floor constant records for its
+#: pair with ``MINIMUM_MIGRATIONS``: both were set to 26 the same day
+#: (2026-08-20, the ``dogfood/dev7-corpus`` seeding), and "the same number
+#: and the same shape" describes that day, not a claim that the two
+#: populations stay equal. They do not, and the mechanism is the opposite of
+#: a coincidence: a re-seed is a second migration, and a second revision,
+#: over an item that already exists, so it grows the migration count
+#: without growing the item count -- which is *why* the two populations
+#: diverge even though the two floor constants do not. Measured 2026-09-01
+#: at 7b2ca67: four items now carry two revisions each -- the ADR-0013
+#: re-seed (#416) plus the three #199 unit C second-wave re-seeds (#471,
+#: :data:`_SECOND_WAVE_MARKERS`) -- and the corpus still holds exactly 26
+#: distinct items.
 MINIMUM_KNOWLEDGE_ITEMS: Final = 26
 
 #: The item the #416 re-seed gave a second revision -- the one member of this
@@ -122,30 +131,66 @@ MINIMUM_KNOWLEDGE_ITEMS: Final = 26
 _RESEEDED_ITEM: Final = ItemId("architecture.ai-writes-produce-proposals")
 
 #: #199 unit C's second wave (#471): three more items re-seeded through
-#: propose/accept, and a literal string each corrected body carries that its
-#: superseded body does not -- pre-empted from the ADV-RC MEDIUM-1 class the
-#: #440 round found (a reverted re-seed payload leaves the whole suite green
-#: at the same test count, because a revision-id check alone cannot tell a
-#: correction from a reverted one).
+#: propose/accept, and a literal string each corrected body carries that
+#: neither the original seed nor a partially-corrected intermediate state
+#: does -- pre-empted from the ADV-RC MEDIUM-1 class the #440 round found
+#: (a reverted re-seed payload leaves the whole suite green at the same
+#: test count, because a revision-id check alone cannot tell a correction
+#: from a reverted one).
 #:
-#: Wrap-safe single tokens, deliberately: ``write.lock`` and ``ADR-0025``
+#: **Three-point measured, not two -- this round's own lesson.** A round-one
+#: version of this pin keyed on ``write.lock``/``ADR-0025``, measured only
+#: seed-vs-current. Both the code and adversarial reviewers independently
+#: demonstrated that a *two*-point marker passes a re-seed drafted from an
+#: **intermediate** source commit -- one where the item's ADR had already
+#: moved past the seed but had not yet reached the correction the marker was
+#: meant to pin -- because the general vocabulary (``write.lock``,
+#: ``ADR-0025``) was already present pre-correction for an unrelated reason.
+#: The fix: key each marker on the correction's own issue reference instead
+#: of a word from its prose, and measure three points -- seed, every
+#: intermediate correction commit in the item's ``docs/adr/`` history,
+#: current -- not just the two ends.
+#:
+#: Wrap-safe single tokens, deliberately: an issue reference like ``#436``
 #: cannot split across a Markdown line wrap the way a multi-word phrase can
 #: (the ``#414``/"owed, not shipped" trap the ADR-0013 check above already
 #: works around by checking two substrings rather than one contiguous
 #: phrase).
 #:
-#: Measured 2026-09-01, ``grep -c <marker> <superseded body> <current body>``:
+#: **No clean negative twin for any of the three.** A ``not in`` pin needs a
+#: token present in the superseded body and absent from current *and* from
+#: every intermediate -- and this corpus's ADR-amendment convention quotes
+#: the retracted claim verbatim inside its own correction note, so the
+#: retracted wording reappears in the corrected text and fails to
+#: discriminate. Measured: "on the state database" (0018's retracted lock
+#: claim) appears 0 times in the superseded body and 1 time in the current
+#: one, quoted as part of the correction; "an operator cannot yet move it"
+#: (0008's retracted config claim) appears once in both; "reads either back
+#: today" (0024's retracted claim) appears once in both. No twin added for
+#: any of the three; each item is pinned by its correction marker alone.
 #:
-#: - ``architecture.single-writer-synchronous-in-m1`` / ``write.lock``: 0 -> 8
-#:   (the #432-corrected lock-file claim).
-#: - ``architecture.raptor-forest`` / ``ADR-0025``: 0 -> 1 (the #448/#119
-#:   sensitivity-enforcement amendment).
-#: - ``architecture.a-purge-is-a-build`` / ``ADR-0025``: 0 -> 1 (same
-#:   amendment family as the previous entry).
+#: Measured 2026-09-01, ``grep -cF <marker>`` -- ``-F``, literal, named
+#: because it is not the instrument the round-one version used: plain
+#: ``grep -c "write.lock"`` treats the ``.`` as "any character" and reports
+#: 8 for a body a literal count reports 3 for. Three points each --
+#: seed, intermediate, current:
+#:
+#: - ``architecture.single-writer-synchronous-in-m1`` / ``#436``: 0 (seed,
+#:   ``2a98d4c``) / 0 (intermediate, ``14dd466`` -- #432, the lock-file
+#:   claim's *own* correction commit, moved the claim but not yet to the
+#:   wording #436 later added) / 5 (current, ``5a9a1e5``, this item's #471
+#:   anchor).
+#: - ``architecture.raptor-forest`` / ``#426``: 0 (seed, ``2a98d4c``) / 0
+#:   (intermediate, ``b857c1a`` -- #119/#352's sensitivity-enforcement
+#:   change, the commit the withdrawn ``ADR-0025`` marker had mis-attributed
+#:   to #448) / 2 (current, ``3749581``, this item's #471 anchor).
+#: - ``architecture.a-purge-is-a-build`` / ``#426``: 0 (seed, ``2a98d4c``) /
+#:   0 (intermediate, ``b857c1a``, same commit as above) / 1 (current,
+#:   ``3749581``, this item's #471 anchor).
 _SECOND_WAVE_MARKERS: Final[tuple[tuple[ItemId, str], ...]] = (
-    (ItemId("architecture.single-writer-synchronous-in-m1"), "write.lock"),
-    (ItemId("architecture.raptor-forest"), "ADR-0025"),
-    (ItemId("architecture.a-purge-is-a-build"), "ADR-0025"),
+    (ItemId("architecture.single-writer-synchronous-in-m1"), "#436"),
+    (ItemId("architecture.raptor-forest"), "#426"),
+    (ItemId("architecture.a-purge-is-a-build"), "#426"),
 )
 
 #: Frozen rather than ``datetime.now()``: a project row's ``registered_at`` is
@@ -293,8 +338,10 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
     pre-emptively rather than waiting for a round to reproduce ADV-RC
     MEDIUM-1 a second time against a different item. Each reverts its own
     item's re-seed commit RED and nothing else's -- see the entries'
-    docstring for the measured old/new discrimination each marker was
-    chosen for.
+    docstring for the measured three-point (seed / intermediate / current)
+    discrimination each correction-keyed marker was chosen for, and for why
+    the round's own first version of this pin (a two-point, general-word
+    marker) is not what ships here.
     """
     _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files()
 
@@ -405,7 +452,8 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
     # any one wave commit's payload would leave the suite green at the same
     # test count for the identical reason the ADR-0013 revert above did --
     # see :data:`_SECOND_WAVE_MARKERS`'s docstring for the measured
-    # old/new discrimination behind each marker.
+    # three-point (seed / intermediate / current) discrimination behind
+    # each correction-keyed marker.
     for item_id, marker in _SECOND_WAVE_MARKERS:
         second_wave_body = _current_body(database, project.project_id, item_id)
         assert marker in second_wave_body, (
