@@ -101,11 +101,28 @@ A pin that only counts write methods stays green through that. So:
   the day a member shaped like that interface **appears**, whatever happens to
   the methods.
 
-Between them the reach is: these docstrings must move on either move. What the
-pair does not cover is an interface introduced under a name holding no
-"transaction" and returning something that is not a context manager -- a plain
-``begin()`` handing back a writer object passes both, and the handle-shaped
-parameter rule below is the only net left under it.
+Between them the reach is: these docstrings must move on either move. The member
+walk under both is over the **MRO**, so an interface reached through a base
+Protocol is caught rather than reported clean -- a ``vars(port)`` read saw only a
+class's own body, and #441's second review round found the shape a split port
+would most naturally take sitting straight through the net.
+
+What the pair still does not cover, re-derived 2026-08-31 against the walk as it
+now stands, is three spellings:
+
+- an interface under a name holding no "transaction" that returns something which
+  is not a context manager -- a plain ``begin()`` handing back a writer object
+  passes both nets;
+- ``transaction`` declared as a ``@property``, because ``inspect.isfunction`` is
+  ``False`` for the ``property`` object the class body holds;
+- ``transaction`` declared as a bare attribute annotation
+  (``transaction: Callable[[], AbstractContextManager[object]]``), which lands in
+  ``__annotations__`` and never in ``vars`` as a function at all.
+
+The handle-shaped parameter rule below is the only net left under the first of
+those; the other two are recorded, not chased, for the reason every grammar rule
+in this file set is: a walk widened to properties and annotations classifies a
+great deal of ordinary port surface, and a pin that fires on it gets deleted.
 
 -- What this module does not hold ------------------------------------------
 
@@ -115,18 +132,52 @@ parameter rule below is the only net left under it.
   and never flocked it. ``test_adr_0018_claims.py`` disclaims the same about its
   own path arithmetic, and the behaviour is held by
   ``tests/integration/test_canonical_store.py``.
-- **No test in this repository takes the write lock from a second OS process.**
-  Held as a live population rather than as a pasted count, by
-  ``test_the_only_write_lock_test_in_the_suite_runs_in_one_process``: every
-  mention of ``WriteLock`` under the two test roots, **this file excluded**, is
-  in ``test_canonical_store.py``, and nothing in that population names a
-  process-spawning API. Its
-  ``test_a_second_writer_waits_rather_than_corrupting`` uses two ``WriteLock``
-  objects **inside one process** -- which does exercise the real ``flock`` path,
-  since contention is per open file description rather than per process. So the
-  cross-process wording these docstrings carry ("two processes that both enter
-  here serialise") is a property of ``fcntl.flock``, not something the suite
-  measures.
+- **No test in this repository contends the write lock across two OS
+  processes.** *Contends*, not *takes*: the sentence that stood here until #441's
+  second review round said "takes ... from a second OS process", and it was
+  false. ``tests/e2e/test_migration_workflow.py`` runs ``theurian migrate apply``
+  as a child, and that child does take the lock -- ``cli/commands.py`` and
+  ``cli/migration_pipeline.py`` are the only two ``write_transaction`` call sites
+  in ``src`` and both are on the CLI's own path (measured 2026-08-31,
+  ``git grep -n 'write_transaction' -- packages/theurian-core/src``). What no
+  test does is hold it from two processes **at once**, and that is the claim the
+  two population tests below hold.
+
+  They hold it in two tiers, because one key cannot do both jobs:
+
+  - ``test_the_only_test_that_constructs_the_write_lock_runs_in_one_process``
+    keys on ``WriteLock`` -- an exact population of one file,
+    ``test_canonical_store.py``, which names no process-spawning API at all. Its
+    ``test_a_second_writer_waits_rather_than_corrupting`` uses two ``WriteLock``
+    objects **inside one interpreter**, which does exercise the real ``flock``
+    path, since contention is per open file description rather than per process.
+  - ``test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself``
+    keys on ``WriteLock|write_transaction`` -- nine files, measured 2026-08-31 --
+    and refuses only a construct by which a second OS process can be **running
+    while the test is**. Four of the nine name ``subprocess``, and that is not a
+    finding: every one of them uses ``subprocess.run``, which blocks until the
+    child exits, so the child cannot be holding the lock while the parent is. A
+    rule that refused ``subprocess`` outright would report four false positives
+    and teach the next author to delete it. This tier asserts a property rather
+    than an exact file list, because ``write_transaction`` is how an ordinary
+    integration test seeds a database and pinning that list would churn on every
+    new one.
+
+  So the cross-process wording these docstrings carry ("two processes that both
+  enter here serialise") remains a property of ``fcntl.flock`` rather than
+  something the suite measures.
+
+  **The blindness, stated rather than papered over.** Both keys are text searches
+  for two symbols, and a test whose only acquisition happens inside a spawned
+  CLI names neither. ``tests/e2e/test_migration_workflow.py`` is exactly that
+  file: it is in neither population, and widening the key does not reach it --
+  what it names is the installed entry point. Its serialness is established by
+  reading it (``subprocess.run``, which waits), not by anything asserted here.
+  Nor can a text scan see a thread that runs ``subprocess.run`` concurrently: a
+  ``\\bThread\\b`` token was measured against the tree on 2026-08-31 and fires on
+  this module's own English ("Thread a connection ... through these signatures"),
+  which is the cry-wolf shape these rules refuse. Both residues are recorded, not
+  chased.
 
   The self-exclusion is the whole reason this is a test and not a number. The
   pasted count that stood here said six lines over a key
@@ -137,16 +188,21 @@ parameter rule below is the only net left under it.
   ``git grep -n WriteLock -- packages/theurian-core/tests tests
   ':!*test_connection_claims.py'`` -- and the population it returns is asserted
   below rather than transcribed, so it is measured on the tree the reader has
-  rather than on a commit that no longer exists.
+  rather than on a commit that no longer exists. The self-exclusion matters twice
+  as much for the wider key, which this file's own samples would otherwise trip.
 - **The port is the surface the docstrings name, and the port is what is read.**
   The shipped SQLite adapter splits it: ``SqliteCanonicalStore`` implements the
   reads and holds no write method, while ``SqliteWriter`` is constructed from a
   ``sqlite3.Connection`` -- from *any* connection, which is the face #434
   removed. Which in-tree call sites build one is a question with a live answer,
-  ``git grep -n 'SqliteWriter(' -- packages/theurian-core/src``, and
-  ``store.py``'s own docstring sends the reader to that command rather than to a
-  line number. Nothing here enforces that those sites sit inside a
-  ``write_transaction`` block, and nothing here would notice one that did not.
+  ``git grep -n 'SqliteWriter(' -- packages/theurian-core/src
+  ':!*/sqlite/store.py'``, and ``store.py``'s own docstring sends the reader to
+  that command rather than to a line number. **The exclusion is the same
+  self-excluding-key discipline the population test below applies to itself**:
+  without it the key matches the docstring that quotes it, so the command reports
+  three sites where the tree has two (measured 2026-08-31). Nothing here enforces
+  that those sites sit inside a ``write_transaction`` block, and nothing here
+  would notice one that did not.
 """
 
 from __future__ import annotations
@@ -253,6 +309,12 @@ SENTENCE_END: Final = re.compile(r"\.(?=\s|$)")
 #: quiet disagreement between a docstring and the thing it describes.
 CITED_WRITE_METHODS: Final = frozenset({"append_revision", "put_item", "add_relation"})
 
+#: The modules the MRO scaffolding comes from. ``typing`` holds ``Protocol`` and
+#: ``Generic``; ``builtins`` holds ``object``. A port's own bases -- the shipped
+#: ones under ``theurian.domain.ports``, the synthetic ones in this module --
+#: come from neither, so :func:`_public_methods` reads them and skips these.
+_MRO_LIBRARY: Final = frozenset({"typing", "builtins"})
+
 #: Reads used as the population premise. If the member walk stops returning
 #: these, it is reading a narrowed surface and every conclusion drawn from it is
 #: about something other than the port.
@@ -273,15 +335,27 @@ TEST_ROOTS: Final = (
 #: which is how the claim it replaces came to count its own prose.
 _THIS_MODULE: Final = pathlib.Path(__file__).resolve().relative_to(REPO_ROOT).as_posix()
 
-#: The one test file that exercises the write lock, and the only member the
-#: population below may have. Written as a path rather than as a count: a count
-#: goes stale silently, while a path that moves fails naming what moved.
+#: The one test file that constructs a ``WriteLock``, and the only member the
+#: narrow population below may have. Written as a path rather than as a count: a
+#: count goes stale silently, while a path that moves fails naming what moved.
 WRITE_LOCK_EXERCISE: Final = "packages/theurian-core/tests/integration/test_canonical_store.py"
 
-#: How a Python test starts a second OS process. The rule under the claim "no
-#: test takes the write lock from a second OS process": if nothing in the
-#: ``WriteLock`` population names one of these, no test in it can be holding the
-#: lock from another process.
+#: The wider key: every test that enters the write path **in this process**,
+#: either by building the lock itself or by opening the transaction that builds
+#: it. ``write_transaction`` is what ``WriteLock`` alone was blind to -- the
+#: acquisition it mediates names no lock class at all, which is how a claim about
+#: the lock came to be measured over a population that could not contain most of
+#: its holders.
+#:
+#: A text key, so a file that merely *writes about* ``write_transaction`` is in
+#: it too. That is the safe direction: the rule below refuses a shape, and a
+#: prose-only member has no shape to refuse.
+_ENTERS_THE_WRITE_PATH: Final = re.compile(r"\bWriteLock\b|\bwrite_transaction\b")
+
+#: How a Python test starts a second OS process at all. The rule under the narrow
+#: population: if nothing in the ``WriteLock`` population names one of these, no
+#: test in it can be holding the lock from another process, whether concurrently
+#: or not.
 #:
 #: Word-bounded for the reason ``test_adr_0018_claims.py`` records about its own
 #: token list -- an unbounded ``fork`` fires inside ``forked`` and a pin that
@@ -289,6 +363,30 @@ WRITE_LOCK_EXERCISE: Final = "packages/theurian-core/tests/integration/test_cano
 _SPAWNS_A_PROCESS: Final = re.compile(
     r"\bsubprocess\b|\bmultiprocessing\b|\bos\.fork\b|\bposix_spawn\b"
     r"|\bProcessPoolExecutor\b|\bpexpect\b"
+)
+
+#: How a Python test gets a second OS process running **alongside itself**. The
+#: rule under the wider population, and the distinction is the whole content of
+#: the corrected claim: two processes that take the lock one after another do not
+#: contend for it, and only contention is what this repository does not test.
+#:
+#: ``subprocess.run`` is deliberately absent. It waits for the child, so the child
+#: has released the lock before the parent's next statement -- and it is what all
+#: four ``subprocess``-naming members of the wider population use, for git setup
+#: and for running the CLI under test. ``Popen`` is the same module's
+#: non-blocking spelling and is refused; so are the process pools, the forks and
+#: the asyncio spawners, each of which leaves a child alive across the caller's
+#: own execution.
+#:
+#: What is *not* here is any thread token. ``\bThread\b`` was measured against
+#: the two test roots on 2026-08-31 and matched this module's own prose -- "Thread
+#: a connection, a session or a transaction token through these signatures" --
+#: which is the false RED the word-bounding rule above exists to avoid. A thread
+#: calling ``subprocess.run`` is therefore a recorded residue of this rule, not
+#: something it catches.
+_RUNS_A_PROCESS_ALONGSIDE_ITSELF: Final = re.compile(
+    r"\bPopen\b|\bmultiprocessing\b|\bos\.fork\b|\bposix_spawn\b"
+    r"|\bProcessPoolExecutor\b|\bpexpect\b|\bcreate_subprocess_\w+\b"
 )
 
 #: The phrase the correction landed in **both** modules, and the one positive
@@ -452,7 +550,7 @@ def _module_source(*docstrings: str) -> str:
 
 
 def _public_methods(port: type) -> dict[str, Any]:
-    """Every public method a port Protocol declares.
+    """Every public method a port Protocol declares, its base Protocols included.
 
     Takes the port rather than reading ``CanonicalStore`` directly, so the rules
     built on it can be driven by a synthetic Protocol through the same walk the
@@ -460,12 +558,35 @@ def _public_methods(port: type) -> dict[str, Any]:
     :func:`_transaction_shaped_members`, whose whole point is that it finds
     nothing today: a rule that always returned nothing would be indistinguishable
     from it unless something can be shown to make it fire.
+
+    **The walk is over the MRO, not over ``vars(port)``, and that is the whole
+    difference between a net and a hole.** ``vars`` reports only what a class
+    body declares, so a ``transaction()`` reached through a base Protocol --
+    ADR-0018 point 1's own spelling, and the natural shape for the port #439
+    splits into reads and writes -- was invisible to every rule built on this
+    function. Measured 2026-08-31 on a two-line Protocol pair: ``"transaction" in
+    vars(port)`` is ``False`` while ``"transaction" in dir(port)`` is ``True``,
+    so :func:`_transaction_shaped_members` reported a clean port that declared
+    exactly the member it watches for.
+
+    The scaffolding is skipped by the module it comes from, :data:`_MRO_LIBRARY`.
+    Every Protocol drags ``typing.Protocol``, ``typing.Generic`` and
+    ``builtins.object`` into its MRO, and none of the three is anything a port
+    declares. They are excluded by name rather than left to the public-function
+    filter because "they happen to expose none" is the sort of unstated premise
+    this file set exists to refuse -- measured 2026-08-31 they expose zero apiece,
+    and the skip means a future one that did would still not be read as a port
+    member. The MRO is walked in reverse so a subclass declaration overwrites the
+    base's, which is the resolution order Python itself uses.
     """
-    return {
-        name: member
-        for name, member in vars(port).items()
-        if not name.startswith("_") and inspect.isfunction(member)
-    }
+    methods: dict[str, Any] = {}
+    for klass in reversed(port.__mro__):
+        if klass.__module__ in _MRO_LIBRARY:
+            continue
+        for name, member in vars(klass).items():
+            if not name.startswith("_") and inspect.isfunction(member):
+                methods[name] = member
+    return methods
 
 
 def _returns_a_context_manager(annotation: object) -> bool:
@@ -506,7 +627,14 @@ def _transaction_shaped_members(port: type) -> dict[str, str]:
 
     Names, not signatures, are what a rename escapes -- and a return annotation is
     what an untyped stub escapes. Neither reaches a ``begin()`` that hands back a
-    writer object; the module docstring records that as the shape both nets miss.
+    writer object, nor a ``transaction`` spelled as a ``@property`` or as a bare
+    attribute annotation, because :func:`_public_methods` classifies functions;
+    the module docstring records all three as the shapes both nets miss.
+
+    Both nets read :func:`_public_methods`, so both see a member declared on a
+    base Protocol. That is not incidental: the interface #439 owes lands beside
+    the reads most plausibly by splitting the port, and a rule reading only a
+    class's own body would report exactly that arrangement as clean.
     """
     shaped: dict[str, str] = {}
     for name, method in sorted(_public_methods(port).items()):
@@ -596,6 +724,19 @@ class _PortWithAdrPoint1Transaction(Protocol):
         ...
 
     def get_item(self, item_id: str) -> object | None: ...
+
+
+class _PortWithAnInheritedTransaction(_PortWithAdrPoint1Transaction, Protocol):
+    """The same declaration reached through a base Protocol rather than declared here.
+
+    The shape a port takes when it is split -- a write-side base holding
+    ``transaction()`` and a concrete port inheriting it -- which is how #439's
+    interface most plausibly lands beside the reads. Nothing in its own class body
+    is transaction-shaped, so a rule reading ``vars`` reports it clean; that is
+    the hole this sample exists to keep closed.
+    """
+
+    def list_items(self) -> tuple[object, ...]: ...
 
 
 class _PortWithARenamedWriteInterface(Protocol):
@@ -841,9 +982,12 @@ def test_the_canonical_store_port_publishes_more_than_one_write_method() -> None
 
     What this one measures is exactly the *removal*: writes consolidated behind
     one interface leave at most one public write method here and take it RED. It
-    does **not** notice an interface that lands *beside* the thirteen -- which is
-    the state ADR-0018's own Compliance section measured, a contract recorded as
-    owed while the port went on publishing every way round it.
+    does **not** notice an interface that lands *beside* the write methods it
+    counts -- which is the state ADR-0018's own Compliance section measured, a
+    contract recorded as owed while the port went on publishing every way round
+    it. How many those are is left to :func:`_write_methods` and printed by the
+    complement's failure message; a number written into this prose would be a
+    second record of it, drifting the day the port grows a write.
     :func:`test_the_canonical_store_port_declares_no_single_write_interface` is
     the other half, and neither is a substitute for the other.
 
@@ -878,10 +1022,16 @@ def test_the_canonical_store_port_declares_no_single_write_interface() -> None:
     The complement, and the reason the count above is not enough on its own. #439
     can add ``CanonicalStore.transaction()`` -- ADR-0018 point 1's own spelling, a
     context manager yielding a write handle -- **without removing a single one of
-    the thirteen write methods**, and the "more than one write method" pin stays
-    green through it while the docstrings' "held by convention at each call site"
-    quietly stops being the right description. That is not a hypothetical shape:
-    it is the state ADR-0018's Compliance section measured and recorded.
+    the write methods the port already publishes**, and the "more than one write
+    method" pin stays green through it while the docstrings' "held by convention
+    at each call site" quietly stops being the right description. That is not a
+    hypothetical shape: it is the state ADR-0018's Compliance section measured and
+    recorded.
+
+    The count is derived and printed rather than written down here. It was pasted
+    as "the thirteen" until #441's second review round, where it had already
+    drifted from the twelve ADR-0018 records; a number that appears in prose is a
+    copy of a measurement, and this file set exists because copies drift.
 
     The premise comes first. A member walk that found nothing would report "no
     transaction-shaped member" about a port it never read, so the reads are
@@ -897,9 +1047,11 @@ def test_the_canonical_store_port_declares_no_single_write_interface() -> None:
 
     assert not shaped, (
         f"`CanonicalStore` now declares a member shaped like the single write "
-        f"interface ADR-0018 records as owed: {shaped}. connection.py's and "
-        f"store.py's docstrings must stop saying exclusivity is held by convention "
-        f"at each call site"
+        f"interface ADR-0018 records as owed: {shaped}. It has landed beside the "
+        f"{len(_write_methods())} write methods the port still publishes, which "
+        f"is the arrangement the write-method count cannot see. connection.py's "
+        f"and store.py's docstrings must stop saying exclusivity is held by "
+        f"convention at each call site"
     )
 
 
@@ -911,7 +1063,7 @@ def test_the_interface_shape_rule_catches_adr_0018_point_1_and_spares_a_streamin
     would be indistinguishable from a working one -- the exact mutation that left
     nineteen tests green over a changed response shape.
 
-    Three positives and one negative, and the negative is the one that keeps the
+    Four positives and one negative, and the negative is the one that keeps the
     pin alive. ``stream_items() -> Iterator[object]`` is an ordinary streaming
     read, and a rule that read every ``Iterator`` return as a context manager
     would fire on the next one of those anybody adds.
@@ -919,8 +1071,16 @@ def test_the_interface_shape_rule_catches_adr_0018_point_1_and_spares_a_streamin
     The first sample is checked against the spelling that matters: ADR-0018 point
     1 writes the owed interface as ``CanonicalStore.transaction()``, so the rule
     is required to catch a member by that exact name.
+
+    The **inherited** sample is the one that was missing until #441's second
+    review round, and it is not a variation on the first: the member is declared
+    on a base Protocol and nothing in the port's own class body is
+    transaction-shaped, so a rule reading ``vars(port)`` catches the first sample
+    and reports this one clean. That is the shape a split port takes, which makes
+    it the likelier of the two ways #439 lands.
     """
     by_the_adr_spelling = _transaction_shaped_members(_PortWithAdrPoint1Transaction)
+    inherited = _transaction_shaped_members(_PortWithAnInheritedTransaction)
     renamed = _transaction_shaped_members(_PortWithARenamedWriteInterface)
     decorated = _transaction_shaped_members(_PortWithAContextManagerDecorator)
     reads_only = _transaction_shaped_members(_PortWithReadsOnly)
@@ -928,6 +1088,11 @@ def test_the_interface_shape_rule_catches_adr_0018_point_1_and_spares_a_streamin
     assert "transaction" in by_the_adr_spelling, (
         f"the shape rule no longer catches ADR-0018 point 1's own spelling, "
         f"`CanonicalStore.transaction()`: {by_the_adr_spelling}"
+    )
+    assert "transaction" in inherited, (
+        f"the shape rule reads only what a port's own class body declares, so the "
+        f"interface escapes it on a base Protocol -- which is the shape a port "
+        f"split into reads and writes takes: {inherited}"
     )
     assert "writing" in renamed, (
         f"the shape rule now depends on the name, so the same interface escapes it "
@@ -1026,15 +1191,16 @@ def test_the_handle_rule_refuses_a_connection_and_admits_a_domain_value() -> Non
 # -- The suite: what actually exercises the lock ------------------------------
 
 
-def test_the_only_write_lock_test_in_the_suite_runs_in_one_process() -> None:
+def test_the_only_test_that_constructs_the_write_lock_runs_in_one_process() -> None:
     """RED means the suite's write-lock coverage moved, and this module's disclaimer must too.
 
     Both docstrings under scan say two processes entering ``write_transaction``
     serialise, and nothing in this repository measures that. The claim is
     inherited from ``fcntl.flock`` -- contention is per open file description
-    rather than per process, so the one test that exists exercises the real path
-    with two ``WriteLock`` objects inside a single interpreter -- and the module
-    docstring above says so. **This test is what keeps that disclaimer true.**
+    rather than per process, so the one test that builds the lock directly
+    exercises the real path with two ``WriteLock`` objects inside a single
+    interpreter -- and the module docstring above says so. **This test is what
+    keeps that disclaimer true.**
 
     It replaces a pasted count that could not be. The count said six lines over
     ``git grep -n WriteLock packages/theurian-core/tests tests``, a key that reads
@@ -1053,13 +1219,13 @@ def test_the_only_write_lock_test_in_the_suite_runs_in_one_process() -> None:
     required to have found this module before its absence from the result means
     anything.
 
-    Reach: the file population is exact, and the process rule under it is a
-    source-text search for the ways a Python test spawns one. A test that took the
-    lock from a process started some other way -- an entry point invoked through a
-    helper module, a fixture in ``conftest.py`` -- would pass. That is the same
-    grammar-pinning limit every scan in this file set records, and the exact
-    population above is the part that carries the weight: any new file touching
-    ``WriteLock`` fails here and gets read by a person.
+    Reach: this is the *narrow* tier, and it is deliberately narrow. Its
+    population is exact, so any new file naming ``WriteLock`` fails here and gets
+    read by a person -- but ``WriteLock`` is not how most of the suite reaches the
+    lock, and a claim resting on this key alone would be a claim about one file.
+    :func:`test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself`
+    is the tier that covers ``write_transaction``, and the module docstring
+    records what neither key can see.
     """
     sources = _test_module_sources()
 
@@ -1074,8 +1240,9 @@ def test_the_only_write_lock_test_in_the_suite_runs_in_one_process() -> None:
 
     assert holders == [WRITE_LOCK_EXERCISE], (
         f"the suite's `WriteLock` population has moved: {holders}. This module's "
-        f"docstring says no test takes the write lock from a second OS process, "
-        f"and that claim now has to be re-read against whatever is here"
+        f"docstring says the one test that builds the lock directly runs in a "
+        f"single interpreter, and that claim now has to be re-read against "
+        f"whatever is here"
     )
 
     spawners = {
@@ -1085,35 +1252,125 @@ def test_the_only_write_lock_test_in_the_suite_runs_in_one_process() -> None:
     }
 
     assert not spawners, (
-        f"a test that touches `WriteLock` also starts a process: {spawners}. If it "
+        f"a test that builds a `WriteLock` also starts a process: {spawners}. If it "
         f"takes the lock from that process, this module and connection.py's "
         f"docstrings can stop calling the cross-process wording an inherited claim"
     )
 
 
-def test_the_process_spawn_rule_tells_a_second_process_from_a_second_lock_object() -> None:
-    """RED means the spawn rule stopped discriminating, so the test above is vacuous.
+def test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself() -> None:
+    """RED means a test can now hold the write lock in two processes at once.
 
-    Driven by synthetic input because the shipped suite cannot drive it: nothing
-    in the ``WriteLock`` population spawns anything, so a rule that always returned
-    nothing would look exactly like a working one.
+    The wider tier, and the one that answers what the narrow key could not. Every
+    in-process acquisition of the lock goes through ``write_transaction``, which
+    names no lock class, so a population keyed on ``WriteLock`` was blind to all
+    of them -- which is how "no test takes the write lock from a second OS
+    process" survived here while ``tests/e2e/test_migration_workflow.py`` was
+    running ``theurian migrate apply`` in a child that does exactly that.
 
-    The negative sample is the shipped test's own shape, quoted rather than
-    invented -- two ``WriteLock`` objects in one interpreter. A rule that fired on
-    it would report the very test whose single-process nature this module
-    documents as a cross-process one.
+    **The claim this holds is contention, not acquisition**, because acquisition
+    is not what the docstrings under scan are inherited from. Two processes taking
+    the lock one after another never meet; ``fcntl.flock`` only becomes the
+    unmeasured premise when they overlap. So the rule refuses a construct that
+    leaves a child *alive across the caller's own execution* and admits
+    ``subprocess.run``, which waits. That distinction is load-bearing rather than
+    lenient: four members of this population name ``subprocess`` -- for ``git
+    init`` and for the CLI under test -- and a rule that refused the module
+    outright would report four false positives on the first run.
+
+    A property, not an exact file list. ``write_transaction`` is how an ordinary
+    integration test seeds a database, so pinning the membership would go RED on
+    every new one and be deleted; the exact-list discipline lives in the narrow
+    tier, where the population is one file.
+
+    **The premises come first.** A population that came back empty would satisfy
+    "no member spawns" while measuring nothing, and one that had lost the file
+    which actually exercises the lock would not be reading the write path at all.
+
+    Reach: it is a text search over two symbols. A test whose only acquisition is
+    inside a spawned CLI names neither and is invisible here -- the e2e migration
+    workflow is that file, and the module docstring says so and says why widening
+    the key does not reach it.
     """
-    a_second_process = (
+    sources = _test_module_sources()
+
+    assert _THIS_MODULE in sources, (
+        f"the test-tree walk no longer finds this module ({_THIS_MODULE}), so it is "
+        f"not reading the population it claims to read: {len(sources)} files found"
+    )
+
+    population = sorted(
+        path
+        for path, text in sources.items()
+        if _ENTERS_THE_WRITE_PATH.search(text) and path != _THIS_MODULE
+    )
+
+    assert WRITE_LOCK_EXERCISE in population, (
+        f"the write-path population no longer contains {WRITE_LOCK_EXERCISE}, the "
+        f"file that actually exercises the lock, so it is not the population this "
+        f"test claims to read: {population}"
+    )
+
+    concurrent = {
+        path: sorted(set(found))
+        for path in population
+        if (found := _RUNS_A_PROCESS_ALONGSIDE_ITSELF.findall(sources[path]))
+    }
+
+    assert not concurrent, (
+        f"a test that enters the write path also runs a process alongside itself: "
+        f"{concurrent}. If both take the lock, this module and connection.py's "
+        f"docstrings can stop calling the cross-process wording an inherited claim "
+        f"-- and if they do not, this rule needs the reason written down"
+    )
+
+
+def test_the_spawn_rules_tell_a_concurrent_child_from_a_serial_one_and_from_a_lock_object() -> None:
+    """RED means a spawn rule stopped discriminating, so a population test is vacuous.
+
+    Driven by synthetic input because the shipped suite cannot drive either rule:
+    nothing in the narrow population spawns anything and nothing in the wider one
+    runs a child concurrently, so a rule that always returned nothing would look
+    exactly like a working one.
+
+    The middle sample is the one #441's second round added, and it is what the
+    corrected claim rests on. ``subprocess.run`` waits for the child, so it cannot
+    produce two processes holding the lock at once -- and four members of the
+    wider population use it. The narrow rule refuses it (it is still *a* second
+    process) while the concurrency rule admits it, and asserting both directions
+    on the same sample is what stops the two rules quietly collapsing into one.
+
+    The last sample is the shipped test's own shape, quoted rather than invented
+    -- two ``WriteLock`` objects in one interpreter. A rule that fired on it would
+    report the very test whose single-process nature this module documents as a
+    cross-process one.
+    """
+    a_concurrent_child = "child = subprocess.Popen([sys.executable, '-c', 'take_the_lock()'])\n"
+    a_serial_child = (
         "import subprocess\n\nsubprocess.run([sys.executable, '-c', 'take_the_lock()'])\n"
     )
     a_second_lock_object = (
         "outer = WriteLock(lock, timeout=0.2)\ninner = WriteLock(lock, timeout=0.2)\n"
     )
 
-    assert _SPAWNS_A_PROCESS.findall(a_second_process), (
+    assert _SPAWNS_A_PROCESS.findall(a_serial_child), (
         "the spawn rule no longer recognises a test that starts a second process"
     )
     assert not _SPAWNS_A_PROCESS.findall(a_second_lock_object), (
         "the spawn rule reads two lock objects in one interpreter as two processes, "
         "so it would fire on the shipped test this module describes as single-process"
+    )
+
+    assert _RUNS_A_PROCESS_ALONGSIDE_ITSELF.findall(a_concurrent_child), (
+        "the concurrency rule no longer recognises a child left running alongside "
+        "the test, which is the only shape that can contend for the lock"
+    )
+    assert not _RUNS_A_PROCESS_ALONGSIDE_ITSELF.findall(a_serial_child), (
+        "the concurrency rule reads a blocking `subprocess.run` as a concurrent "
+        "child, so it would fire on the four write-path tests that shell out and "
+        "wait -- a false RED on the population it exists to clear"
+    )
+    assert not _RUNS_A_PROCESS_ALONGSIDE_ITSELF.findall(a_second_lock_object), (
+        "the concurrency rule reads two lock objects in one interpreter as two "
+        "processes, so it would fire on the shipped single-process test"
     )

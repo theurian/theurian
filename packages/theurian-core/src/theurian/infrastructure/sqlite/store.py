@@ -801,8 +801,10 @@ class SqliteWriter:
     which holds the advisory lock for the duration of the transaction. The
     constructor takes any :class:`sqlite3.Connection`, so what pairs a writer
     with an open transaction is each call site rather than this type --
-    ``git grep -n 'SqliteWriter(' -- packages/theurian-core/src`` lists the
-    sites that have to hold it. That is ADR-0018's guarantee held by convention
+    ``git grep -n 'SqliteWriter(' -- packages/theurian-core/src ':!*/sqlite/store.py'``
+    lists the sites that have to hold it. The exclusion is not decoration: the
+    key without it matches this very line, so the docstring would count itself as
+    a call site. That is ADR-0018's guarantee held by convention
     at each call site, per its Milestone 5 amendment; the single interface the
     ADR leaves owed is tracked in
     https://github.com/theurian/theurian/issues/439.
