@@ -38,7 +38,7 @@ and neither implies the other:
 | Case, as a two-line append to the file at `5a9a1e5` | Cites / links | Verdict |
 | :-- | --: | :-- |
 | A. untouched | 114 / 114 | `same population` |
-| B. `+ [the fetch-control issue](…/issues/429) owns it.` | 114 / 115 | `KEY NO LONGER COVERS THE FILE` |
+| B. `+ [the fetch-control issue] (…/issues/429) owns it.` | 114 / 115 | `KEY NO LONGER COVERS THE FILE` |
 | C. `+ Owned by [#429] alone, with no link behind it.` | 115 / 114 | `KEY NO LONGER COVERS THE FILE` |
 | D. B and C together | 115 / 115 | `same population` |
 
@@ -46,7 +46,7 @@ and neither implies the other:
 it does. The pair cancels: both counts rise by one, the number sets do not move
 because #429 is already cited elsewhere, and a green verdict covers two cites
 that escaped the bracket-and-link correspondence. Closing it needs a different
-check — pairing `[#N](<url ending in /N>)` per occurrence — not a wider reading
+check — pairing `[#N] (<url ending in /N>)` per occurrence — not a wider reading
 of this one. Recorded, not built. #470's round one found this guard claiming more
 than it computed; round two found the narrowed claim still one dimension wide,
 which is why the wording here is now the print statement's own words.
