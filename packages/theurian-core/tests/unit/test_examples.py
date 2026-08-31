@@ -165,12 +165,19 @@ def _in_config(config: dict[str, Any], key: str) -> Any:
 #: and **the live owner**. #129 closed on the wording rather than on the control,
 #: which is why naming it is no longer enough to make the annotation somebody's.
 #:
+#: ``secretScan``'s third sentence is the same requirement on the other key, and
+#: it moved for the same reason (#428). It used to require ``#198``, which closed
+#: by *shipping* the ``propose accept`` half the annotation's first sentence
+#: describes -- so on the gap the third sentence states, ingest-time and
+#: index-time scanning, #198 is history and owns nothing. #329 owns those two.
+#: A live owner is what this row is for, and a closed one satisfied it.
+#:
 #: The module fragment is required *as well as* the key because the two are
 #: different facts and the annotation's job is to carry both. A rewrite naming
 #: only ``security.secretScan`` says what the file is read *for* and leaves a
 #: reader with nowhere to check it; it passed this row until round one.
 ANNOTATED_KEYS: tuple[tuple[str, Any, tuple[str, ...]], ...] = (
-    ("secretScan", "block", ("propose accept", "best effort", "#198")),
+    ("secretScan", "block", ("propose accept", "best effort", "#329")),
     (
         "repositories",
         ["acme/order-service"],

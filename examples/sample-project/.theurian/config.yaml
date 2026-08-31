@@ -59,7 +59,8 @@ security:
   # nothing, `warn` accepts and reports, `"off"` skips the scan; `block` is also
   # what an absent key selects, so this line states the default rather than
   # changing it. The detector is best effort and covers the approval gate only --
-  # `theurian ingest` and index building run no scan (#198).
+  # `theurian ingest` and index building run no scan (#329 owns those two; #198
+  # is closed, having shipped the `propose accept` half above).
   #
   # `off` needs the quotes. YAML reads a bare `off` as the boolean false, and the
   # acceptance is refused rather than guessing which policy that meant.
