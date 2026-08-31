@@ -57,6 +57,21 @@ deliberately not among them: the retired sentence carried it too ("#39, which is
 closed while its install-time half is not"), and admitting it would let the
 retired wording straight back in.
 
+**The marker has to reach the claim, not merely share a sentence with it.**
+Three of the five -- ``before``, ``used to``, ``no longer`` -- are ordinary
+English, and a rule that accepted one anywhere in the sentence was excused by
+clauses with nothing to do with the row: *"the roadmap used to be much shorter,
+and the summary table still points at #39"* asserts the present tense and was
+green. One escape per ordinary word is measured in
+:func:`test_a_correction_marker_in_another_clause_does_not_excuse_the_claim`,
+which goes RED against the unscoped rule. So the marker is scoped to what it is
+supposed to be correcting: it must begin inside the matched claim or within
+:data:`MARKER_REACH_CHARS` of its end, which is where the shipped correction's
+own two markers sit, and a marker before the claim's subject or past that reach
+is somebody else's clause. That test drives the rule from both sides, because a
+scope tightened until nothing is excused would report the shipped roadmap as the
+defect.
+
 Quotations are **not** stripped before this scan, which is what makes the two
 sides cover each other. A reassertion smuggled in as a quotation -- ``a later
 note: "the summary table still points at #39"`` -- is caught here *and* by
@@ -67,13 +82,15 @@ name the summary row, so it cannot match this key. Measured, not reasoned -- the
 scan over the shipped document returns zero.
 
 **Reach.** This module holds (1) that the roadmap carries exactly one block making
-the T-16 release-gate claim, located by a key that is in both the retired and the
-corrected wording, so a straight revert is still found rather than dropping out of
-the population; (2) that the threat model carries exactly one T-16 summary row;
+the T-16 release-gate claim, located by a key taken from a sentence the correction
+left untouched -- not from either wording of the claim itself -- so a straight
+revert of the claim is still found rather than dropping out of the population;
+(2) that the threat model carries exactly one T-16 summary row;
 (3) that exactly one quotation in that block carries the row's link labels and is
 a substring of the live row; (4) that every quotation in that block is a substring
 of the live threat model; and (5) that no block of the roadmap says the summary
-table or row points at #39 without recording that the pointing ended.
+table or row points at #39 without recording, in reach of that claim, that the
+pointing ended.
 
 It does **not** hold the tracker facts in that paragraph -- that #80 is open, that
 #39 is closed, that #80 carries ``post-1.0``. Who owns a gap is a fact about
@@ -92,13 +109,19 @@ discharges it.
 rather than chased. :data:`RETIRED_ROW_CLAIM` is one regex with a 60-character
 window, so a long subject escapes it -- *"the summary table, which nobody has
 looked at since the release-engineering rewrite of last spring, still points at
-#39"* puts 91 characters between the anchors -- and so does a rewording that drops
-the words *summary table* and *summary row*: *"the threat model's owner cell still
-points at #39"*. Widening the window trades those for false positives across a
-document that discusses issue numbers in most of its paragraphs, and a rule that
-cries wolf is deleted by the next author. The fact side is the half that does not
-depend on wording, and a reworded denial still has to get the row's own words past
-it.
+#39"* puts **99** characters between the anchors, counted in the
+:func:`_normalised` text from the end of the ``summary table`` match to the start
+of the ``#39`` match -- and so does a rewording that drops the words *summary
+table* and *summary row*: *"the threat model's owner cell still points at #39"*.
+The third is the residue of the marker scope above, which narrows that channel
+rather than closing it: a marker inside :data:`MARKER_REACH_CHARS` of the number
+is excused whichever clause it belongs to, so *"the summary row still points at
+#39, and no longer at #80"* -- ``no longer`` six characters past the number --
+is not caught. Widening either
+window trades these for false positives across a document that discusses issue
+numbers in most of its paragraphs, and a rule that cries wolf is deleted by the
+next author. The fact side is the half that does not depend on wording, and a
+reworded denial still has to get the row's own words past it.
 
 This module's own ``#39`` mentions are history cites -- class (b) under the #428
 sweep's rule, which grades a cite by whether it names a closed issue as the
@@ -146,8 +169,12 @@ T16_BLOCK_KEY: Final = "that unmet half is what the critical grade names"
 #: The retired assertion, as a shape rather than as its wording: the summary table
 #: or row, and #39, inside one sentence. The window stops at a full stop or a
 #: semicolon so it cannot reach across a sentence boundary and pair a subject with
-#: someone else's number.
-RETIRED_ROW_CLAIM: Final = re.compile(r"\bsummary (?:table|row)\b[^;.]{0,60}?#39")
+#: someone else's number. ``#39`` is bounded on its right for the same reason in
+#: the other direction: unbounded, it is a prefix of every issue from ``#390`` up,
+#: and *"the summary row now points at #390"* would be reported as a reassertion
+#: of a claim about a different issue. The left side needs no boundary -- ``#`` is
+#: one already, so ``#139`` cannot match.
+RETIRED_ROW_CLAIM: Final = re.compile(r"\bsummary (?:table|row)\b[^;.]{0,60}?#39\b")
 
 #: What turns a sentence naming the row and #39 into a record that the pointing
 #: ended. Any one of them is enough. ``closed`` is **not** here on purpose: the
@@ -155,6 +182,15 @@ RETIRED_ROW_CLAIM: Final = re.compile(r"\bsummary (?:table|row)\b[^;.]{0,60}?#39
 #: is not"), so admitting it would readmit the wording this module exists to
 #: refuse.
 CORRECTION_MARKERS: Final = ("until", "repointed", "no longer", "used to", "before")
+
+#: How far past a matched claim a correction marker may begin and still be read as
+#: correcting *that* claim. Derived from the shipped sentence rather than chosen:
+#: its two markers sit 1 (``until``) and 17 (``repointed``) characters past the
+#: ``#39`` the claim ends on, measured 2026-09-01, so 20 admits both and the rule
+#: does not depend on which of the two a reword keeps. A marker further out, or
+#: anywhere before the claim's subject, is refused -- see the module docstring for
+#: the three sentences that measurement was taken from.
+MARKER_REACH_CHARS: Final = 20
 
 #: A floor on the quotation of the row, written rather than derived, because its
 #: job is to refuse a **degenerate** quote. ``"[#80]"`` carries the row's label and
@@ -268,18 +304,40 @@ def _row_link_labels(row: str) -> list[str]:
     return labels
 
 
+def _correcting_marker(sentence: str, claim: re.Match[str]) -> str | None:
+    """The marker recording that *claim*'s pointing ended, or ``None`` if none reaches it.
+
+    A marker excuses the claim it is next to, not every claim in the sentence it
+    happens to land in: it has to begin at or after the claim's subject and no
+    more than :data:`MARKER_REACH_CHARS` past the number the claim ends on. The
+    membership test itself is the same substring test as before -- what changed is
+    *where* it is allowed to succeed.
+    """
+    reach = claim.end() + MARKER_REACH_CHARS
+    for marker in CORRECTION_MARKERS:
+        for occurrence in re.finditer(re.escape(marker), sentence):
+            if claim.start() <= occurrence.start() <= reach:
+                return marker
+    return None
+
+
 def _offending_sentences(text: str) -> list[str]:
-    """Sentences of *text* asserting the summary row points at #39, with no marker.
+    """Sentences of *text* asserting the summary row points at #39, with no marker in reach.
 
     Extracted rather than written inline so the synthetic driver below runs *this*
     predicate. A driver that restated the rule would go RED on its own restatement
     and stay green whatever the shipped rule did.
+
+    Every claim in the sentence is checked, not just the first: one corrected
+    mention does not license a second uncorrected one beside it.
     """
     return [
         sentence
         for sentence in _SENTENCE_BREAK.split(text)
-        if RETIRED_ROW_CLAIM.search(sentence)
-        and not any(marker in sentence for marker in CORRECTION_MARKERS)
+        if any(
+            _correcting_marker(sentence, claim) is None
+            for claim in RETIRED_ROW_CLAIM.finditer(sentence)
+        )
     ]
 
 
@@ -452,6 +510,77 @@ def test_the_retired_summary_table_claim_is_caught_when_it_comes_back() -> None:
         f"of the summary row beside #39 rather than the absence of a recorded "
         f"ending -- and the roadmap's own paragraph would be the defect. "
         f"{list(CORRECTION_MARKERS)} is what has to admit it"
+    )
+
+
+def test_a_correction_marker_in_another_clause_does_not_excuse_the_claim() -> None:
+    """RED means the rule is satisfiable by a word that says nothing about the row.
+
+    Three of :data:`CORRECTION_MARKERS` -- ``before``, ``used to``, ``no longer``
+    -- are ordinary English, and "somewhere in the same sentence" is a condition
+    an author meets by accident. All three inputs below assert the present tense
+    and were excused by the unscoped rule when this was measured (2026-09-01);
+    each puts its marker in a clause that is about something else.
+
+    Driven from both sides in one test, because the two failures are opposite and
+    a scope is only worth having if it holds both: a scope that excused nothing
+    would refuse the shipped roadmap's own corrected sentence, and the second
+    half is the input that would go RED if this were tightened that far.
+    """
+    asserting_the_present = (
+        "before the phase rename nobody re-read this table, and the summary table "
+        "still points at #39",
+        "the roadmap used to be much shorter, and the summary table still points at #39",
+        "the summary table still points at #39, a pointer the release checklist no longer mentions",
+    )
+    recording_the_end = (
+        "the summary table used to point at #39",
+        "the summary row no longer points at #39",
+        "the summary row pointed at #39 until `efd30fe` repointed it",
+    )
+
+    excused = [
+        text for text in asserting_the_present if not _offending_sentences(_normalised(text))
+    ]
+
+    assert not excused, (
+        f"a correction marker outside the claim it is supposed to be correcting "
+        f"still excused it: {excused}. Each of these asserts that the row points "
+        f"at #39 today and carries one of {list(CORRECTION_MARKERS)} in a clause "
+        f"about something else, which is how the rule can report the roadmap clean "
+        f"while a reassertion sits in it"
+    )
+
+    refused = [text for text in recording_the_end if _offending_sentences(_normalised(text))]
+
+    assert not refused, (
+        f"a marker in reach of the claim did not excuse it: {refused}. The scope "
+        f"is {MARKER_REACH_CHARS} characters past the claim, taken from the shipped "
+        f"sentence's own markers -- tightened below that, this rule reports the "
+        f"roadmap's corrected paragraph as the defect it exists to protect"
+    )
+
+
+def test_a_longer_issue_number_starting_with_39_is_not_read_as_the_claim() -> None:
+    """RED means the rule fires on issues it was never about, and is deleted for it.
+
+    ``#39`` is a prefix of every issue from ``#390`` up, and the roadmap cites
+    issue numbers in most of its paragraphs -- #390 and above are simply not
+    reached yet in the documents this module scans (measured 2026-09-01: no
+    ``#39``-prefixed longer number appears in either file), so the channel is
+    prospective and cost-free to close now.
+
+    It is worth closing because of *where* the false positive would land. A
+    reader told that "the summary row now points at #390" reasserts a claim about
+    #39 does not conclude that the boundary is missing; they conclude the rule is
+    noise, and the next edit deletes it.
+    """
+    unrelated = _normalised("the summary row now points at #390")
+
+    assert not _offending_sentences(unrelated), (
+        f"a sentence about #390 was read as the retired claim about #39: "
+        f"{_offending_sentences(unrelated)}. `RETIRED_ROW_CLAIM` needs the right "
+        f"boundary on the number, not a wider marker list"
     )
 
 

@@ -143,6 +143,33 @@ def _in_config(config: dict[str, Any], key: str) -> Any:
     return None
 
 
+#: A required sentence that is nothing but an issue number. That shape is the
+#: rows' "the annotation stays a claim someone owns" half, and it is the only one
+#: :data:`_CITE_SAID_TO_BE_CLOSED` is applied to: a required sentence carrying
+#: prose as well says something a closed issue can still be the correct authority
+#: for, and these annotations cite closed issues on purpose.
+_ISSUE_CITE: Final = re.compile(r"^#\d+$")
+
+#: The same cite described as closed, within one clause of itself. This is what
+#: makes *naming* an issue different from naming a **live** one, and it is keyed on
+#: the required cite rather than on the annotation at large: these annotations
+#: name closed issues on purpose, as the history that explains the live owner.
+#:
+#: The window stops at a full stop or a semicolon, which is what keeps the shipped
+#: text legal: ``#329 owns those two; #198 is closed`` puts the semicolon between
+#: the required cite and the word, and ``#429 owns it; #129 was closed`` does the
+#: same one row down. Measured 2026-09-01 -- both rows green as written, and the
+#: defect shape (``#500 owns those two; #198 is closed``, with ``#198`` still
+#: required) RED.
+#:
+#: **Escapes measured in both directions, recorded rather than chased.** A closure
+#: written past the window -- ``#329 owns those two, and after a long paragraph of
+#: qualification it is closed`` -- is not caught, and a live owner whose clause
+#: happens to carry the word as an adjective -- ``#329 owns the closed-loop pass``
+#: -- is caught although it is correct. Neither shape is in the file today. The
+#: rule is a cheap second signal beside the substring test, not a classifier.
+_CITE_SAID_TO_BE_CLOSED: Final = r"{cite}\b[^.;]{{0,30}}?\bclosed\b"
+
 #: ``(key, the value the example teaches, the sentences its annotation must keep)``.
 #:
 #: The value is asserted as well as the annotation because the two together are
@@ -177,32 +204,6 @@ def _in_config(config: dict[str, Any], key: str) -> Any:
 #: different facts and the annotation's job is to carry both. A rewrite naming
 #: only ``security.secretScan`` says what the file is read *for* and leaves a
 #: reader with nowhere to check it; it passed this row until round one.
-#: A required sentence that is nothing but an issue number -- the rows' "the
-#: annotation stays a claim someone owns" half, and the only one the rule below
-#: applies to. A sentence carrying prose as well says something a closed issue can
-#: still be the correct authority for.
-_ISSUE_CITE: Final = re.compile(r"^#\d+$")
-
-#: The same cite described as closed, within one clause of itself. This is what
-#: makes *naming* an issue different from naming a **live** one, and it is keyed on
-#: the required cite rather than on the annotation at large: these annotations
-#: name closed issues on purpose, as the history that explains the live owner.
-#:
-#: The window stops at a full stop or a semicolon, which is what keeps the shipped
-#: text legal: ``#329 owns those two; #198 is closed`` puts the semicolon between
-#: the required cite and the word, and ``#429 owns it; #129 was closed`` does the
-#: same one row down. Measured 2026-09-01 -- both rows green as written, and the
-#: defect shape (``#500 owns those two; #198 is closed``, with ``#198`` still
-#: required) RED.
-#:
-#: **Escapes measured in both directions, recorded rather than chased.** A closure
-#: written past the window -- ``#329 owns those two, and after a long paragraph of
-#: qualification it is closed`` -- is not caught, and a live owner whose clause
-#: happens to carry the word as an adjective -- ``#329 owns the closed-loop pass``
-#: -- is caught although it is correct. Neither shape is in the file today. The
-#: rule is a cheap second signal beside the substring test, not a classifier.
-_CITE_SAID_TO_BE_CLOSED: Final = r"{cite}\b[^.;]{{0,30}}?\bclosed\b"
-
 ANNOTATED_KEYS: tuple[tuple[str, Any, tuple[str, ...]], ...] = (
     ("secretScan", "block", ("propose accept", "best effort", "#329")),
     (
