@@ -223,6 +223,22 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   population keys and the escape space they leave are in
   [`docs/work-logs/2026-08-30-199-unit-a-audit.md`](../../docs/work-logs/2026-08-30-199-unit-a-audit.md).
 
+- **The requirements analysis's T-7 and T-15 rows carry the threat model's owner
+  cites** ([#428](https://github.com/theurian/theurian/issues/428)).
+  `docs/architecture/requirements-analysis.md` keeps a second copy of the threat
+  table, and [#425](https://github.com/theurian/theurian/pull/425) repointed only
+  the originals: the copy still owed T-7's scheme allowlist, private-network
+  rejection and repository allowlist to closed #129, and T-15's ingest-time and
+  index-time scanning to closed #198. Both cites now read as the threat model's
+  summary rows read — #429 for T-7's fetch controls, #329 for T-15's unshipped
+  scanning halves, each closed issue named for what it actually closed on. The
+  owner-cite fragments were extracted from both files and diffed rather than
+  compared by eye; nothing else in either row moved, and the rest of #428's twin
+  sweep stays open. That diff is now a test —
+  `tests/unit/test_threat_model_twins.py` re-extracts both fragments and fails
+  when either side moves alone — and it holds **these two rows**, not the two
+  tables: the general row-by-row pin needs the copy's differently shaped Control
+  column reconciled first, and that is a documents change.
 - **Two flowcharts stop advising a command the shipped `SessionStart` hook
   dropped** ([#421](https://github.com/theurian/theurian/issues/421)). The hook
   names an installer before `/theurian:setup`, because `/theurian:setup` shells
