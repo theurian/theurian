@@ -113,13 +113,27 @@ _SAMPLE_STATE_HASH: Final = StateHash(ContentHash("a" * 64))
 #: **The case rule is held once, by :func:`collapsed`, and deliberately not
 #: twice.** This pattern carried ``re.IGNORECASE`` as well until #441's second
 #: review round, and the second holder is what made the first untestable: with
-#: the flag on, a :func:`collapsed` that stopped lowercasing left every pin in
-#: this file set green, so
-#: ``test_the_reattachment_scan_normalises_case_and_line_wraps_itself`` asserted
-#: a normalisation it could not fail on. The flag was safe to drop because
-#: :func:`find_lock_on_database` is the pattern's only caller and it collapses
-#: first -- the sole use is at the bottom of this module, and
-#: ``git grep -n '_LOCK_ON_DATABASE' -- packages tests`` finds no other.
+#: the flag on, a :func:`collapsed` that stopped lowercasing left
+#: ``test_the_reattachment_scan_normalises_case_and_line_wraps_itself`` green --
+#: the one leg that names case asserting a normalisation it could not fail on.
+#:
+#: **It did not leave the file set green, and #441's third round falsified the
+#: sentence that said it did.** Measured 2026-08-31 by running that perturbation:
+#: with the flag restored and the lowercasing removed, two pins go RED in
+#: ``test_adr_0027_claims.py`` --
+#: ``test_adr_0027_names_the_separate_lock_file_and_the_state_directory_it_guards``
+#: and ``test_adr_0027_does_not_reattach_the_write_lock_to_a_database`` -- because
+#: ``_decision_two_residue`` keys on the lowercase ``adr-0018 makes single-writer
+#: a contract`` and matches zero list items. They report a residue bullet that
+#: has gone missing, two modules from the normalisation that actually moved, and
+#: the leg that names case is not among them. Dropping the flag is what puts it
+#: there: the same perturbation against this module as it stands takes all three
+#: RED.
+#:
+#: The flag was safe to drop because :func:`find_lock_on_database` is the
+#: pattern's only caller and it collapses first -- the sole use is at the bottom
+#: of this module, and ``git grep -n '_LOCK_ON_DATABASE' -- packages tests`` finds
+#: no other.
 #:
 #: Measured escapes, recorded rather than chased: "on the SQLite file", "on the
 #: state db", "against the database", "database-level lock". A rule that pins

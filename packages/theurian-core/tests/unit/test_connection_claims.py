@@ -352,6 +352,13 @@ WRITE_LOCK_EXERCISE: Final = "packages/theurian-core/tests/integration/test_cano
 #: prose-only member has no shape to refuse.
 _ENTERS_THE_WRITE_PATH: Final = re.compile(r"\bWriteLock\b|\bwrite_transaction\b")
 
+#: The acquisition itself, named once so the population key above and the premise
+#: below cannot drift apart on a rename. Read out of the syntax tree by
+#: :func:`_opens_a_write_transaction` rather than searched for, because the
+#: premise needs a member that *calls* it and the population key deliberately
+#: admits members that only mention it.
+_WRITE_TRANSACTION: Final = "write_transaction"
+
 #: How a Python test starts a second OS process at all. The rule under the narrow
 #: population: if nothing in the ``WriteLock`` population names one of these, no
 #: test in it can be holding the lock from another process, whether concurrently
@@ -378,6 +385,21 @@ _SPAWNS_A_PROCESS: Final = re.compile(
 #: the asyncio spawners, each of which leaves a child alive across the caller's
 #: own execution.
 #:
+#: **"The forks" is a list, and until #441's third review round it was one
+#: token.** ``os.fork`` alone left ``os.forkpty``, ``pty.fork``, ``os.popen`` and
+#: the ``os.spawn*`` family outside a rule whose prose read as covering them, so
+#: each is written out now and each has a probe in
+#: ``test_the_concurrency_rule_catches_every_non_blocking_spawn_it_names``.
+#: ``os.popen`` runs its child until the stream is closed; ``os.spawn*`` is
+#: refused in **both** its modes, ``P_NOWAIT`` and the blocking ``P_WAIT``, which
+#: is a deliberate over-refusal rather than an oversight: the argument that keeps
+#: ``subprocess.run`` admitted is that four real members use it, and no member
+#: uses ``os.spawn`` at all. Measured 2026-08-31 over both test roots, the added
+#: alternatives match three files -- this module, ``test_network_call_sites.py``
+#: (which lists the same spellings as its own rule) and
+#: ``tests/e2e/test_daemon_single_instance.py`` -- and none of the three is in
+#: this population, so the widening cannot cry wolf on the tree it ships with.
+#:
 #: What is *not* here is any thread token. ``\bThread\b`` was measured against
 #: the two test roots on 2026-08-31 and matched this module's own prose -- "Thread
 #: a connection, a session or a transaction token through these signatures" --
@@ -385,9 +407,24 @@ _SPAWNS_A_PROCESS: Final = re.compile(
 #: calling ``subprocess.run`` is therefore a recorded residue of this rule, not
 #: something it catches.
 _RUNS_A_PROCESS_ALONGSIDE_ITSELF: Final = re.compile(
-    r"\bPopen\b|\bmultiprocessing\b|\bos\.fork\b|\bposix_spawn\b"
-    r"|\bProcessPoolExecutor\b|\bpexpect\b|\bcreate_subprocess_\w+\b"
+    r"\bPopen\b|\bmultiprocessing\b|\bos\.fork\w*\b|\bpty\.fork\b|\bos\.popen\b"
+    r"|\bos\.spawn\w+\b|\bposix_spawn\b|\bProcessPoolExecutor\b|\bpexpect\b"
+    r"|\bcreate_subprocess_\w+\b"
 )
+
+#: One probe per non-blocking spawn the rule names, keyed by the spelling each is
+#: there to catch. Written as source lines rather than as bare tokens so a rule
+#: rewritten to require a call still sees them, and held as a mapping so a
+#: narrowed pattern fails naming the spelling it stopped catching rather than
+#: reporting a bare ``False``.
+_NON_BLOCKING_SPAWNS: Final = {
+    "os.fork": "child = os.fork()\n",
+    "os.forkpty": "pid, fd = os.forkpty()\n",
+    "pty.fork": "pid, fd = pty.fork()\n",
+    "os.popen": "stream = os.popen('theurian doctor')\n",
+    "os.spawnl": "os.spawnl(os.P_NOWAIT, sys.executable, 'python', '-c', 'take_the_lock()')\n",
+    "os.spawnve": "os.spawnve(os.P_NOWAIT, sys.executable, [sys.executable], {})\n",
+}
 
 #: The phrase the correction landed in **both** modules, and the one positive
 #: anchor required of each. It is the shortest sentence fragment that states the
@@ -546,6 +583,35 @@ def _test_module_sources() -> dict[str, str]:
                 continue
             sources[path.relative_to(REPO_ROOT).as_posix()] = path.read_text(encoding="utf-8")
     return sources
+
+
+def _opens_a_write_transaction(source: str) -> bool:
+    """Whether *source* calls ``write_transaction``, rather than writing about it.
+
+    Parsed rather than searched, and that is measured rather than fastidious. The
+    premise this feeds asks whether the wider population still contains a real
+    acquirer, and the obvious text key -- ``write_transaction(`` -- is spelled in
+    *prose* by two members of this file set: ``test_adr_0018_claims.py`` and
+    ``test_adr_0027_claims.py`` both write ``write_transaction(database_path,
+    lock_path)`` inside a docstring. Measured 2026-08-31 against the perturbation
+    that found the gap -- every real acquirer in the integration tests renamed,
+    the docstrings left alone -- the text key still reported two acquirers and the
+    premise stayed green, while this read reports none.
+
+    An attribute call counts, so a member that reaches the acquisition through a
+    module or a fixture object is not misread as prose. What escapes is an
+    acquisition made under an alias, which the premise's own failure would
+    describe accurately anyway: no member of this population opens a write
+    transaction under the name the population is keyed on.
+    """
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id == _WRITE_TRANSACTION:
+            return True
+        if isinstance(node.func, ast.Attribute) and node.func.attr == _WRITE_TRANSACTION:
+            return True
+    return False
 
 
 def _module_source(*docstrings: str) -> str:
@@ -780,6 +846,47 @@ class _PortWithReadsOnly(Protocol):
     def list_items(self) -> tuple[object, ...]: ...
 
     def stream_items(self) -> Iterator[object]: ...
+
+
+class _ScaffoldingDeclaringAPublicMember(Protocol):
+    """A base that reports ``typing`` as its module and declares a public method.
+
+    The module is forged in the class body rather than a real ``typing`` base
+    being used, because no real one drives the skip: ``Protocol``, ``Generic``
+    and ``object`` expose no public function apiece, so :data:`_MRO_LIBRARY`
+    could be emptied and every member walk would return the same members --
+    which is exactly the state #441's third round measured. "They happen to
+    expose none" is the unstated premise the skip exists to refuse, and only a
+    library-module base that *does* declare something can tell the two apart.
+
+    The annotation on ``__module__`` is mypy's, not this test's: every member a
+    Protocol declares needs an explicit type. ``typing`` excludes ``__module__``
+    from the protocol members it collects, so the forgery costs nothing at
+    runtime beyond the module name it is there to set.
+    """
+
+    __module__: str = "typing"
+
+    def scaffolding_member(self) -> object: ...
+
+
+class _OwnBaseDeclaringAPublicMember(Protocol):
+    """The same declaration, from a module that is not library scaffolding.
+
+    The control half. Without it the skip could be doing its work by refusing
+    every base, which would take the split port of
+    :class:`_PortWithAnInheritedTransaction` with it.
+    """
+
+    def inherited_member(self) -> object: ...
+
+
+class _PortOverLibraryScaffolding(
+    _ScaffoldingDeclaringAPublicMember, _OwnBaseDeclaringAPublicMember, Protocol
+):
+    """A port whose MRO carries both bases, so one walk answers both questions."""
+
+    def get_item(self, item_id: str) -> object | None: ...
 
 
 # -- The prose: what the write path's docstrings say -------------------------
@@ -1024,6 +1131,47 @@ def test_the_docstring_scan_leaves_the_corrected_wording_alone() -> None:
 # -- The fact: what the CanonicalStore port publishes -------------------------
 
 
+def test_the_member_walk_skips_library_scaffolding_and_reads_a_ports_own_base() -> None:
+    """RED means the MRO skip stopped discriminating, so every rule below is off.
+
+    Driven by synthetic Protocols because the shipped tower cannot drive it, and
+    that is the defect this test closes rather than a convenience: measured
+    2026-08-31, emptying :data:`_MRO_LIBRARY` left all 31 tests in this file set
+    green. The skip was a guard no input reached, which is a guard that survives
+    its own deletion -- and :func:`_public_methods` is the premise under the write
+    method count, the transaction-shape net and the handle rule alike, so a walk
+    that quietly started reading ``typing`` would take all three with it.
+
+    Both directions, on one MRO. The skip is keyed on the declaring module, so
+    the sample forges ``typing`` onto a base that declares a public function --
+    the shape a future ``typing`` addition would take -- while an identically
+    shaped base from this module must still be read. A skip widened to every base
+    would pass the first assertion and fail the second; one deleted altogether
+    fails the first.
+
+    The premise comes first: a walk that returned nothing at all would satisfy
+    "the scaffolding member is absent" while reading no port.
+    """
+    members = _public_methods(_PortOverLibraryScaffolding)
+
+    assert "get_item" in members, (
+        f"the member walk no longer reads a port's own class body, so it is not "
+        f"the walk the rules below are built on: {sorted(members)}"
+    )
+    assert "inherited_member" in members, (
+        f"the member walk no longer reads a base Protocol declared outside the "
+        f"library, so a port split into reads and writes is invisible to it: "
+        f"{sorted(members)}"
+    )
+
+    assert "scaffolding_member" not in members, (
+        f"the member walk now reads what a `typing` base declares as a port "
+        f"member, so `_MRO_LIBRARY` is no longer skipping library scaffolding "
+        f"and every count and net built on this walk is measuring the scaffolding "
+        f"too: {sorted(members)}"
+    )
+
+
 def test_the_canonical_store_port_publishes_more_than_one_write_method() -> None:
     """RED means the write methods left the port -- one of the two ways #439 lands.
 
@@ -1080,9 +1228,13 @@ def test_the_canonical_store_port_declares_no_single_write_interface() -> None:
     recorded.
 
     The count is derived and printed rather than written down here. It was pasted
-    as "the thirteen" until #441's second review round, where it had already
-    drifted from the twelve ADR-0018 records; a number that appears in prose is a
-    copy of a measurement, and this file set exists because copies drift.
+    as "the thirteen" until #441's second review round, and that figure was the
+    correct one: the port publishes thirteen write methods, which the failure
+    message below derives live rather than repeating. The record that has drifted
+    is ADR-0018's own Milestone 5 amendment, which still says twelve -- stale by
+    one, and not this docstring's to correct: it is owned by PR #446's fold-in of
+    #439. A number that appears in prose is a copy of a measurement, and this file
+    set exists because copies drift, so this one keeps none of its own.
 
     The premise comes first. A member walk that found nothing would report "no
     transaction-shaped member" about a port it never read, so the reads are
@@ -1342,6 +1494,14 @@ def test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself() ->
     every ``write_transaction`` acquisition unwatched while looking like coverage,
     which is the state this test was written to end.
 
+    That last premise asks for an **acquirer**, not a mention, and the difference
+    is the whole of it. The key admits a file that only writes about the write
+    path -- which is right for the rule, since prose has no spawn to refuse -- but
+    a premise satisfied by prose is satisfied by nothing: renaming every real
+    acquirer in the tree left this test green on three docstring mentions until
+    #441's third review round. :func:`_opens_a_write_transaction` reads a call out
+    of the syntax tree, so the same rename now takes it RED.
+
     Reach: it is a text search over two symbols. A test whose only acquisition is
     inside a spawned CLI names neither and is invisible here -- the e2e migration
     workflow is that file, and the module docstring says so and says why widening
@@ -1366,11 +1526,15 @@ def test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself() ->
         f"test claims to read: {population}"
     )
 
-    beyond_the_narrow_key = [path for path in population if "WriteLock" not in sources[path]]
-    assert beyond_the_narrow_key, (
-        f"the write-path population reaches nothing the `WriteLock` key does not, "
-        f"so this tier has collapsed into the narrow one and every "
-        f"`write_transaction` acquisition is unwatched again: {population}"
+    acquirers_beyond_the_narrow_key = [
+        path
+        for path in population
+        if "WriteLock" not in sources[path] and _opens_a_write_transaction(sources[path])
+    ]
+    assert acquirers_beyond_the_narrow_key, (
+        f"no member of the write-path population opens a write transaction without "
+        f"also naming `WriteLock`, so this tier has collapsed into the narrow one "
+        f"and every `write_transaction` acquisition is unwatched again: {population}"
     )
 
     concurrent = {
@@ -1384,6 +1548,49 @@ def test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself() ->
         f"{concurrent}. If both take the lock, this module and connection.py's "
         f"docstrings can stop calling the cross-process wording an inherited claim "
         f"-- and if they do not, this rule needs the reason written down"
+    )
+
+
+def test_the_acquirer_read_tells_a_call_from_a_docstring_that_spells_one() -> None:
+    """RED means the premise above is satisfiable by prose again.
+
+    The premise it guards asks the population for a *real* acquirer, and the
+    reason it is an AST read rather than a search for ``write_transaction(`` is
+    in this file set: ``test_adr_0018_claims.py`` and ``test_adr_0027_claims.py``
+    both write ``write_transaction(database_path, lock_path)`` inside a
+    docstring. Measured 2026-08-31 against the rename that found the gap -- every
+    real acquirer in the integration tests renamed, the docstrings left alone --
+    a text key reported those two as acquirers and the premise stayed green.
+
+    Driven synthetically, because the live population exercises only the answer
+    "yes": a read that returned ``True`` for everything would satisfy the premise
+    on the same nine files while measuring nothing. The negative sample is fed
+    through :func:`_module_source`, so the prose reaches the parser the way a
+    real module's docstring does.
+
+    The attribute sample is not a variation on the first: a member reaching the
+    acquisition through a module or a fixture object is an ordinary shape, and a
+    read that saw only bare names would call it prose.
+    """
+    an_acquisition = "with write_transaction(database, lock) as connection:\n    pass\n"
+    an_attribute_acquisition = "with sqlite.write_transaction(database, lock):\n    pass\n"
+    a_docstring_that_spells_one = _module_source(
+        "so ``write_transaction(database_path, lock_path)`` flocks a file that is not a database."
+    )
+
+    assert _opens_a_write_transaction(an_acquisition), (
+        "the acquirer read no longer sees a call to `write_transaction`, so the "
+        "population premise has nothing left it can be satisfied by"
+    )
+    assert _opens_a_write_transaction(an_attribute_acquisition), (
+        "the acquirer read sees only bare names, so a member that reaches the "
+        "acquisition through a module or a fixture object is read as prose"
+    )
+
+    assert not _opens_a_write_transaction(a_docstring_that_spells_one), (
+        "the acquirer read counts a docstring that spells the call as an "
+        "acquisition, which is the text key it replaced -- two members of this "
+        "file set would satisfy the premise by writing about the write path"
     )
 
 
@@ -1435,4 +1642,46 @@ def test_the_spawn_rules_tell_a_concurrent_child_from_a_serial_one_and_from_a_lo
     assert not _RUNS_A_PROCESS_ALONGSIDE_ITSELF.findall(a_second_lock_object), (
         "the concurrency rule reads two lock objects in one interpreter as two "
         "processes, so it would fire on the shipped single-process test"
+    )
+
+
+def test_the_concurrency_rule_catches_every_non_blocking_spawn_it_names() -> None:
+    """RED means the rule's prose reaches further than the rule does.
+
+    The population test above clears the tree of concurrent children, and that
+    clearance is worth exactly what the rule catches. Until #441's third review
+    round the rule held one fork token, ``os.fork``, while its own comment spoke
+    of "the forks" and of leaving a child alive across the caller's execution --
+    so ``os.forkpty``, ``pty.fork``, ``os.popen`` and the whole ``os.spawn*``
+    family were outside a net the reader was told covered them, and a test added
+    with any of them would have been reported clean.
+
+    One probe per spelling, keyed by the spelling, so a pattern narrowed back
+    fails naming what it stopped catching rather than reporting a bare ``False``.
+    Nothing in the shipped tree uses any of them -- which is why this test exists
+    at all: a rule with no live input is a rule that survives its own deletion.
+
+    The last assertion is what keeps the widening honest. ``os.fork\\w*`` is the
+    one alternative that matches a prefix rather than a word, and an ordinary
+    identifier that merely contains a spawn word must still pass -- the cry-wolf
+    shape ``_SPAWNS_A_PROCESS`` records about its own tokens, now with a probe
+    behind it.
+    """
+    missed = {
+        spelling: probe
+        for spelling, probe in _NON_BLOCKING_SPAWNS.items()
+        if not _RUNS_A_PROCESS_ALONGSIDE_ITSELF.findall(probe)
+    }
+    an_ordinary_identifier = "forked = self.spawn_helper(popen_path, subprocess_note)\n"
+
+    assert not missed, (
+        f"the concurrency rule no longer catches a non-blocking spawn its own "
+        f"comment names, so the population test clears a tree it never scanned "
+        f"for these: {sorted(missed)}"
+    )
+
+    assert not _RUNS_A_PROCESS_ALONGSIDE_ITSELF.findall(an_ordinary_identifier), (
+        f"the concurrency rule fires on identifiers that merely contain a spawn "
+        f"word ({an_ordinary_identifier.strip()!r}), which is the false RED that "
+        f"gets a pin deleted rather than read"
     )
