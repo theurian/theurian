@@ -278,12 +278,13 @@ against a fresh repository, it reports `operationsApplied: 0` and `ingested: 0`,
 then publishes an index of `chunks: 0`. `ingest` reads `.theurian/knowledge` and
 `.theurian/specifications` only — it does not walk the repository's own `docs/`.
 
-**Keep that repository on a local filesystem.** Writes are serialised by an OS
-advisory lock on `.theurian/runtime/write.lock`, and advisory locks behave
-inconsistently on network filesystems, so a `.theurian/` directory on NFS is
-outside the supported configuration — nothing detects that it is, and no probe
-is planned ([ADR-0018](docs/adr/0018-single-writer-synchronous-in-m1.md),
-[#417](https://github.com/theurian/theurian/issues/417)).
+**Keep that repository on a local filesystem.** Canonical state writes are
+serialised by an OS advisory lock on `.theurian/runtime/write.lock`, and
+advisory locks behave inconsistently on network filesystems, so a `.theurian/`
+directory on NFS is outside the supported configuration — nothing detects that
+it is, and no probe is planned
+([ADR-0018](docs/adr/0018-single-writer-synchronous-in-m1.md), which records the
+disposition made on [#417](https://github.com/theurian/theurian/issues/417)).
 
 <details>
 <summary><b>Authoring a migration with evidence</b></summary>

@@ -146,7 +146,7 @@ each call site cannot.
   one is rejected rather than deferred, for want of a portable detection design,
   per the disposition recorded on #417. An operator whose project directory sits
   on NFS is therefore told nothing by `doctor`. Nothing enforces the exclusion:
-  no step reads a filesystem type. Tracked in
+  no step reads a filesystem type. The disposition behind that is recorded on
   [#417](https://github.com/theurian/theurian/issues/417).
 - Two enforcement mechanisms exist between Milestone 3 and 1.0 — the queue for
   in-daemon writes and the lock for CLI writes. Both are required, because a CLI
