@@ -962,27 +962,33 @@ What SEC-13 needs is narrower than "the event depends on nothing": the
 refusal message is a fixed string, built once from `MAX_CONCURRENT_SEARCHES`
 and interpolating nothing from the request or the store, verified
 byte-identical across queries, projects and corpora, and across `limit`,
-`maxTokens`, `useDense` and `includeUnapproved` (ten pinned captures), by
-`test_the_refusal_is_byte_identical_whatever_the_input`; the refusal path
+`maxTokens`, `useDense` and `includeUnapproved` (thirteen pinned captures),
+by `test_the_refusal_is_byte_identical_whatever_the_input`; the refusal path
 reads nothing from the store; and the event's timing inputs are the
 durations of the in-flight searches, and what SEC-13 needs there is that no
 term in those durations lets a caller learn about content it may not read.
-Rows withheld **by status** never enter them: the index excludes them at
-build time, and the substring scan reads through `idx_items_status` (#158) —
-measured flat at ±1,200 *rejected* rows (2026-08-30, in-process, both
-paths). Two recorded terms are inherited unchanged rather than closed here,
-and both are on OTHER axes: `list_items_by_status`'s sensitivity predicate
-costs a measured 0.20 µs per above-ceiling row on the scan path
-(corpus-bounded, no caller can shrink it — #338, T-22), and the ranked
-path's `|ranking|` term costs a measured 14.7 µs per withheld row while a
-published build predates a withdrawal (T-17's ranked-reads face) — a window
-ADR-0024 decision 5 closes at apply time by purging the published build,
-leaving the purge-failure path (`_PURGE_FAILED`) as the recorded residual
-when it cannot. Neither has been measured to move the refusal outcome, and
-neither was measured here in the shape where it is live; what this gate adds
-is at most a coarser, load-noised copy of timing channels those entries
-already record and own — a solo caller times its own query at far higher
-fidelity than a refusal bit under contention.
+Rows withheld by status never enter them **at build time, and for any
+build whose withdrawal purge has completed**: the index excludes them when
+it is built, the substring scan reads through `idx_items_status` (#158),
+and ADR-0024 decision 5 purges a published build at the apply that
+withdraws from it. Two recorded terms are inherited unchanged rather than
+closed here. On the sensitivity axis, `list_items_by_status`'s sensitivity
+predicate costs a measured 0.20 µs per above-ceiling row on the scan path
+(corpus-bounded, no caller can shrink it — #338, T-22). On the **status**
+axis, in the window where a published build still predates a withdrawal,
+the ranked path's `|ranking|` term costs a measured 14.7 µs per withheld
+row (T-17's ranked-reads face); `_PURGE_FAILED` is the *control* on that
+window's failure case — a build whose purge failed is stood aside, not
+served — and the residual T-17a records is its three remaining
+conditions: an in-flight request, a double disk fault, and a concurrent
+clean build reverted by the non-atomic taint write. Neither term has been
+measured to move the refusal outcome, and neither was measured here in
+the shape where it is live. One further term is cross-project by
+construction: under the accepted per-daemon denial, the in-flight
+holders whose durations set the refusal may belong to a different
+project than the refused caller — their durations vary with that
+project's visible corpus, which is already every caller's to read
+under the deployment-wide grant (ADR-0002).
 
 Frame for the status-axis measurement (adversarial round-2 independent
 reproduction, in-process, b8d2030, 2026-08-31): two projects with
@@ -1007,22 +1013,22 @@ tokens, `anyio` 4.14.2, measured 2026-08-30) is sized independently of
 admission wait holds one of those tokens for as long as it waits.
 
 A parked waiter holds one pool token for at most `ADMISSION_WAIT_SECONDS`,
-but the queue behind it is not bounded by that constant: a freed token goes
-to the next queued sync call, so another tool waits one token-handoff wave
-per ⌈pending sync calls / (pool tokens − `MAX_CONCURRENT_SEARCHES`)⌉ — linear
-in the number of concurrent callers, with no recorded limit. The 40-token
-pool is the only ceiling on how many calls queue at once. Measured
-(in-process, branch b8d2030, 2026-08-31, real searches, all three tools
-probed at the same instant): `knowledge.get` 0.62 s at 36 concurrent
-searches, 1.64 s at 72 (the first flood depth over the old claimed bound),
-2.69 s at 120, 7.71 s at 300 — and at 300,
-`knowledge.get`/`knowledge.status`/`project.list` all ~7.75 s while
-`/health` answered in 0.004 s (the exemption is the half that holds). The
-step function fits delay ≈ (K − 36)/36 × `ADMISSION_WAIT_SECONDS` to within
-0.05 s. Against a measured worst of 84.3 s at a 120-call flood with no gate:
-the cap improves every measured point and bounds none of them at
-`ADMISSION_WAIT_SECONDS`. `/health` alone is unaffected: it is served on the
-asyncio loop directly and never takes a thread from that pool.
+but the queue behind it is not bounded by that constant: a freed token
+goes to the next queued sync call, so another tool's delay grows with the
+number of concurrent searches, with no recorded limit. The 40-token pool
+(anyio 4.14.2) bounds how many calls *execute* at once; nothing above it
+bounds arrivals — uvicorn runs with no `limit_concurrency` — so the queue
+itself has no ceiling. Measured (in-process, 2026-08-31, four holders held
+open by a blocking stub, the flood being real `knowledge.search` calls
+that are all refused; reproduced independently three times within 0.06 s
+at every depth): `knowledge.get`, probed with the pool asserted at 40/40
+borrowed, waited 0.62 s at 36 concurrent searches, 1.64 s at 72, 2.69 s
+at 120, 7.71 s at 300. Those probes were issued ~0.4 s after the flood
+began; a caller arriving *with* the flood waits up to a full admission
+wave more (measured 1.02 s at 36, 2.06 s at 72, 3.10 s at 120). The one
+base-vs-branch point measured by a single harness on both sides (a
+120-call real-search flood, in-process, 2026-08-30) put `knowledge.get`'s
+worst at 84.3 s with no gate against 3.0 s under the cap.
 
 **Accepted design decision: the denial is per-daemon, not per-project.** Four
 concurrent searches on any *one* project refuse `knowledge.search` for every

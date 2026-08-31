@@ -79,12 +79,15 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   document count and size were not themselves recorded): median latency
   0.10 s → 0.36 s, max 0.11 s → 0.62 s (2026-08-30, in-process, branch vs
   05ab8f3) — zero calls were refused in that run, since even the max stayed
-  under the 1.0 s admission wait. **This is not the whole cost picture: on a
-  heavier corpus the sign inverts.** Measured 2026-08-30, in-process, 400
-  documents × 2,000 chars, 40 concurrent callers: base median 3.72 s / max
-  3.83 s / refused 0, branch median 1.04 s / max 1.15 s / refused 19 of 40 —
-  the cap makes the branch *faster* here because it refuses rather than
-  queues once a real search outlasts `ADMISSION_WAIT_SECONDS`. T-6 records
+  under the 1.0 s admission wait. **On a heavier corpus the comparison
+  inverts in wall clock, and the two medians measure different outcomes.**
+  Measured 2026-08-30, in-process, 400 documents × 2,000 chars, 40
+  concurrent callers: with the cap effectively off (emulated in-process by
+  raising `MAX_CONCURRENT_SEARCHES` to 10,000 on the branch — not a
+  `05ab8f3` build), all 40 callers were answered, median 3.72 s / max
+  3.83 s; under the shipped cap, 19 of 40 were refused within ~1 s and the
+  21 answered calls' median was 1.04 s / max 1.15 s. A refused caller
+  spends less time per attempt; it does not get an answer. T-6 records
   the multi-second interference this causes for the other tools sharing the
   pool. The refusal has no machine-readable envelope — no error code, no
   retry-after, no capabilities flag — tracked as

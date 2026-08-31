@@ -490,9 +490,11 @@ Errors carry structured `details` because a message alone forces the caller back
 into the code to find out what happened.
 
 `knowledge.search` publishes one refusal this table does not cover: under
-sustained concurrent load — more than `MAX_CONCURRENT_SEARCHES` calls already
-in the retrieval answer block — the daemon refuses with a constant, retryable
-`ToolError` naming the cap, rather than queueing the caller without bound.
+sustained concurrent load, a caller is refused when `MAX_CONCURRENT_SEARCHES`
+(4) calls already hold permits and no permit frees within
+`ADMISSION_WAIT_SECONDS` (1.0 s) — the daemon then refuses with a constant,
+retryable `ToolError` naming the cap, rather than queueing the caller
+without bound.
 It carries no code from the table above and no `details`; today the refusal
 is distinguishable only by its message text, not by a machine-readable field.
 A coded, `retryAfter`-carrying envelope for it is tracked in
