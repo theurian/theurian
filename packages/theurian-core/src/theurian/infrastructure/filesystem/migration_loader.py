@@ -1031,12 +1031,13 @@ def _schema_rejection(exc: ValidationError) -> str:
     The **schema-side fact** the refusal carries is the third property, and the
     one an earlier version of this seam dropped. `jsonschema`'s own message named
     it -- the expected `const`, the `pattern`, the unexpected key -- and replacing
-    that message with "keyword name + echo of the instance" lost it: on all 26 of
-    this repository's committed migrations a single top-level typo produced
-    "does not satisfy 'additionalProperties'; the value there is {...}" with the
-    offending key truncated off the end of the instance, strictly worse diagnosis
-    than the `Additional properties are not allowed ('dependsOnn' was unexpected)`
-    it replaced. So the schema-side fact is put back:
+    that message with "keyword name + echo of the instance" lost it: measured
+    2026-08-22 at 06fbc42, on all 26 migrations the corpus then held, a single
+    top-level typo produced "does not satisfy 'additionalProperties'; the value
+    there is {...}" with the offending key truncated off the end of the
+    instance, strictly worse diagnosis than the `Additional properties are not
+    allowed ('dependsOnn' was unexpected)` it replaced. So the schema-side fact
+    is put back:
 
     * `required` and `additionalProperties` are worded from the *schema*: the
       missing names (`_missing_required_properties`) and the unexpected ones
