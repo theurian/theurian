@@ -661,12 +661,20 @@ in this table is read as a control that runs.
   no entry point in shipped code, so the honest record is that the bound is not
   *needed*, not that it is owed. It belongs with whatever change first unpacks
   an archive, and there is no such change planned.
-- *Wall clock timeout* — **not implemented, here or anywhere.** Nothing in
-  `src/` calls `signal`, `sqlite3.Connection.set_progress_handler`, `interrupt`,
-  or `asyncio.wait_for` (same search). The two near misses are named further
-  down for the query side and hold identically here: `busy_timeout` is a lock
-  wait, and `GIT_TIMEOUT_SECONDS` bounds a subprocess — neither bounds a parse.
-  What has changed for the ingestion side is that the bounds above are *counted*
+- *Wall clock timeout on a parse or a query* — **still not implemented.**
+  Nothing in `src/` calls `signal`, `sqlite3.Connection.set_progress_handler`,
+  `interrupt`, or `asyncio.wait_for` (same search, re-run 2026-08-30). What
+  [#26](https://github.com/theurian/theurian/issues/26) (a8c1ce3) added is
+  `threading.BoundedSemaphore.acquire(timeout=ADMISSION_WAIT_SECONDS)`
+  (`mcp/tools.py`) — a wall-clock bound, but on a **lock wait for an admission
+  permit**, not on a parse or a query: it bounds how long a caller waits for a
+  slot to open, never how long the search holding a slot runs. It is a third
+  near miss of the same shape as the two named further down for the query
+  side, not a counterexample to this paragraph: `busy_timeout` is a lock wait
+  on the database writer, `GIT_TIMEOUT_SECONDS` bounds a subprocess, and the
+  admission `acquire(timeout=...)` bounds a wait for a semaphore permit —
+  none of the three bounds a parse or a query. What has changed for the
+  ingestion side is that the bounds above are *counted*
   rather than timed: they price the work a walk spends rather than the seconds
   it takes, which is the quantity a wall clock was standing in for. A counter
   bounds only what it counts, and as of 2026-08-24 there were **two**
@@ -683,11 +691,14 @@ in this table is read as a control that runs.
   no quantity in this section is priced by a wall clock, and none of the
   bounds above are timed rather than counted or structurally capped.
 
-*Future controls, not shipped:* a per-query wall-clock bound is a daemon-level
-control on the transport layer and is filed as
-[#26](https://github.com/theurian/theurian/issues/26), which owns it for the
-query members enumerated below. No ingestion-side timeout is filed, for the
-reason just given.
+*Future controls, not shipped for the timeout half:* a per-query wall-clock
+bound is a daemon-level control on the transport layer, and stays unshipped —
+now recorded as *not taken* for the query members enumerated below, not merely
+unfiled (reasoning and the driving tests are at the remediation table's third
+row, further down). What [#26](https://github.com/theurian/theurian/issues/26)
+filed for those members is discharged instead, by a concurrency cap rather
+than this bound. No ingestion-side timeout is filed, for the reason just
+given.
 
 **A migration document is validated on its own path, and it carries its own
 ingestion bounds ([#291](https://github.com/theurian/theurian/issues/291),
@@ -897,11 +908,21 @@ GIL-releasing SQLite work", "`sqlite3` releases the GIL, so a handful of such
 queries saturate the CPU" — was an argument about how the load *spreads*, and it
 is inverted for the other two members. With the third member enumerated, the scan
 is the **only** one of the three that releases the GIL, so the removed wording was
-not merely over-general — it described the minority case. What is true of all
-three: **there is no per-query timeout and no limit on how many run at once.**
-That was established by looking
-rather than assumed — nothing in the tree calls `sqlite3`'s interrupt or progress
-handler, and nothing implements a semaphore, a rate limit, or a concurrency cap.
+not merely over-general — it described the minority case. What was true of all
+three, and stays true of two of them: **there is still no per-query timeout,
+and — as of [#26](https://github.com/theurian/theurian/issues/26) (a8c1ce3,
+2026-08-30) — it is no longer true that nothing limits how many run at once.**
+The timeout half was established by looking rather than assumed, and still
+holds by the same look: nothing in the tree calls `sqlite3`'s interrupt or
+progress handler, and — because sync MCP tools run through
+`anyio.to_thread.run_sync`, whose worker thread a cancelled awaiting task does
+not stop — a transport-level wall-clock bound would still cap only how long a
+caller waits, not the daemon's own CPU or GIL spend, even if one were added.
+The concurrency half changed by construction, not by absence:
+`mcp/tools.py::register` now builds a `threading.BoundedSemaphore` that gates
+admission to the answer block for all three members. What it bounds, what it
+does not, and the tests that pin it are below, at the remediation table's
+third row.
 
 `busy_timeout = 5000` is not the missing bound, and it is the near miss most
 likely to end someone's search. It is a **lock wait** — how long a connection
@@ -977,21 +998,143 @@ either way: `fetchall` already holds every vector" — is measured true, and the
 port's "the `limit` was a fiction" reasoning is not narrower than it reads. It is
 correct about the parameter, and the parameter is not the remediation.
 
-What would bound these is a mechanism change, which belongs to its own change
-with its own review:
+Three of these four remain a mechanism change belonging to its own change with
+its own review; the third — concurrent occupancy — has since shipped:
 
 | Quantity | What would bound it |
 | :-- | :-- |
 | peak memory on the dense path | streaming the cursor and keeping a top-*k* heap instead of `fetchall` + sort, or pushing the scoring into SQL |
 | GIL-held time on the dense path | the same, or moving the cosine into a released-GIL extension |
-| concurrent occupancy, any of the three members | a semaphore or concurrency cap on the retrieval path, or a per-query timeout at the transport layer |
+| concurrent occupancy, any of the three members | **Shipped** ([#26](https://github.com/theurian/theurian/issues/26), a8c1ce3, 2026-08-30): `mcp/tools.py::register`'s admission gate, a `threading.BoundedSemaphore` sized by `MAX_CONCURRENT_SEARCHES` (4) with a bounded admission wait, `ADMISSION_WAIT_SECONDS` (1.0 s) — both recorded defaults, not tuned. The per-query-timeout half of the OR is recorded as not taken, below |
 | rows and memory on the fallback path | a page bound on `list_items`, which is a change to the search fallback's published surface rather than a retrieval tuning |
 
-A per-query bound is a daemon-level control on the transport layer rather than a
-retrieval change, and is filed for a later milestone on that basis:
-[#26](https://github.com/theurian/theurian/issues/26), which covers the third
-row of that table for all three members. The other three rows are separate
-changes and are not filed.
+**Why the timeout half of that row is recorded as not taken.** Sync MCP tools
+run through `anyio.to_thread.run_sync`; cancelling the *awaiting* task does not
+stop the worker thread already dispatched to it, so a transport-level
+wall-clock bound would cap only how long a caller waits, never how much CPU or
+GIL time the daemon spends inside `hybrid_answer`/`substring_answer` for a
+flood of concurrent callers. The shipped cap bounds concurrent occupancy
+instead — the *rate* of spend, at most `MAX_CONCURRENT_SEARCHES` threads'
+worth at once — not the total: a permit has no upper bound on how long it is
+held once acquired, and bounding that hold time is exactly what a per-query
+timeout would do instead; this row records that as not taken here.
+
+**What the refusal event depends on, and what SEC-13 actually needs.** The
+event fires when no permit frees within `ADMISSION_WAIT_SECONDS`, and whether
+one frees depends on how long the in-flight searches run — which varies with
+the visible corpus and with what the current holders asked for. Measured: the
+same four-caller load flips between admitting and refusing a fifth caller
+depending on the holders' query and the store's size, so the event is *not* a
+function of concurrent load alone, and this entry must not claim that it is.
+What SEC-13 needs is narrower than "the event depends on nothing": the
+refusal message is a fixed string, built once from `MAX_CONCURRENT_SEARCHES`
+and interpolating nothing from the request or the store, verified
+byte-identical across queries, projects and corpora, and across `limit`,
+`maxTokens`, `useDense` and `includeUnapproved` (thirteen pinned captures),
+by `test_the_refusal_is_byte_identical_whatever_the_input`; the refusal path
+reads nothing from the store; and the event's timing inputs are the
+durations of the in-flight searches, and what SEC-13 needs there is that no
+term in those durations lets a caller learn about content it may not read.
+Rows withheld by status never enter them **at build time, and for any
+build whose withdrawal purge has completed**: the index excludes them when
+it is built, the substring scan reads through `idx_items_status` (#158),
+and ADR-0024 decision 5 purges a published build at the apply that
+withdraws from it. Two recorded terms are inherited unchanged rather than
+closed here. On the sensitivity axis, `list_items_by_status`'s sensitivity
+predicate costs a measured 0.20 µs per above-ceiling row on the scan path
+(corpus-bounded, no caller can shrink it — #338, T-22). On the **status**
+axis, in the window where a published build still predates a withdrawal,
+the ranked path's `|ranking|` term costs a measured 14.7 µs per withheld
+row (T-17's ranked-reads face); `_PURGE_FAILED` is the *control* on that
+window's failure case — a build whose purge failed is stood aside, not
+served — and the residual T-17a records is its three remaining
+conditions: an in-flight request, a double disk fault, and a concurrent
+clean build reverted by the non-atomic taint write. Neither term has been
+measured to move the refusal outcome, and neither was measured here in
+the shape where it is live. One further term is cross-project by
+construction: under the accepted per-daemon denial, the in-flight
+holders whose durations set the refusal may belong to a different
+project than the refused caller — their durations vary with that
+project's visible corpus, which is already every caller's to read
+under the deployment-wide grant (ADR-0002).
+
+Frame for the status-axis measurement (adversarial round-2 independent
+reproduction, in-process, b8d2030, 2026-08-31): two projects with
+byte-identical 900-item visible corpora, one +1,200 rejected rows, scan
+path, interleaved A/B, 42 solo probes each — solo median 56.50 ms vs
+56.59 ms (1.00×), refusals per 24-caller storm 13/15/16 vs 16/13/12.
+Mechanism pinned by
+`test_the_substring_scan_reads_items_through_idx_items_status`.
+
+**What the cap bounds, and what it does not.** It bounds concurrent occupancy
+of the retrieval answer path alone — all three members enter through
+`knowledge_search`'s single admission gate; `hybrid_answer` and
+`substring_answer` each have exactly one call site in `src/`, both inside that
+gate (checked by grep, 2026-08-30). It does not bound the cost of a single
+call: the dense path's peak memory and GIL-held time (the first two rows
+above) and the fallback's rows-and-memory page bound (the fourth row) are all
+unchanged. `knowledge.get` and `knowledge.status` stay uncapped — both are
+bounded indexed reads, not the unbounded retrieval work this gate exists for —
+but not isolated from the gate: `anyio`'s own default thread limiter (40
+tokens, `anyio` 4.14.2, measured 2026-08-30) is sized independently of
+`MAX_CONCURRENT_SEARCHES` but SHARED with it, and a caller parked in the
+admission wait holds one of those tokens for as long as it waits.
+
+A parked waiter holds one pool token for at most `ADMISSION_WAIT_SECONDS`,
+but the queue behind it is not bounded by that constant: a freed token
+goes to the next queued sync call, so another tool's delay grows with the
+number of concurrent searches, with no recorded limit. The 40-token pool
+(anyio 4.14.2) bounds how many calls *execute* at once; nothing above it
+bounds arrivals — uvicorn runs with no `limit_concurrency` — so the queue
+itself has no ceiling. Measured (in-process, 2026-08-31, four holders held
+open by a blocking stub, the flood being real `knowledge.search` calls
+that are all refused; reproduced independently three times within 0.06 s
+at every depth): `knowledge.get`, probed with the pool asserted at 40/40
+borrowed, waited 0.62 s at 36 concurrent searches, 1.64 s at 72, 2.69 s
+at 120, 7.71 s at 300. Those probes were issued ~0.4 s after the flood
+began; a caller arriving *with* the flood waits up to a full admission
+wave more (measured 1.02 s at 36, 2.06 s at 72, 3.10 s at 120). The one
+base-vs-branch point measured by a single harness on both sides (a
+120-call real-search flood, in-process, 2026-08-30) put `knowledge.get`'s
+worst at 84.3 s with no gate against 3.0 s under the cap.
+
+**Accepted design decision: the denial is per-daemon, not per-project.** Four
+concurrent searches on any *one* project refuse `knowledge.search` for every
+project this daemon serves, for as long as they are in flight — measured
+(round-1, 2026-08-30, in-process, against b8d2030's ancestors): alpha's four
+holders refuse a beta caller after 1.003 s (alpha/beta two-project
+registry), and four ordinary no-match searches on a 2,000-document project
+held all four permits for 1.79–2.64 s. Accepted because the alternative is
+unbounded occupancy: the same 120-call real-search flood at base, with no
+admission gate at all, delayed `knowledge.get` to a measured worst of
+84.3 s, against a measured worst of 3.0 s under the cap (round-1,
+2026-08-30, in-process). There is no operator config key for
+`MAX_CONCURRENT_SEARCHES` in this slice, so a deployment cannot raise it, or
+exempt one project from another's load.
+
+Pinned by 8 tests in `tests/integration/test_search_concurrency_cap.py`,
+among them: `test_the_cap_refuses_the_excess_caller` (a caller past the cap is
+refused before it does any retrieval work, while the admitted callers are
+still in flight), `test_capacity_is_restored_on_every_exit_path` (a permit
+comes back whether the answer block returns or raises, on every exit path),
+the byte-identity test named above, `test_health_answers_promptly_while_the_cap_is_saturated`
+(`/health` keeps answering while the cap is fully saturated), and
+`test_the_cap_pins_its_recorded_constants` (pins `MAX_CONCURRENT_SEARCHES` (4)
+and `ADMISSION_WAIT_SECONDS` (1.0 s) — the two constants this entry publishes
+— against silent drift). `/health` stays prompt because it is served on the
+asyncio loop directly and never takes a worker thread from the pool this gate
+parks callers in, not because the semaphore wait releases the GIL: that
+release is what keeps *other* sync tools sharing the pool merely queued
+rather than starved (above), and it is not the mechanism for `/health`, which
+shares no thread with this gate in the first place. A GIL-holding residual is
+recorded rather than assumed away: with `MAX_CONCURRENT_SEARCHES` (4)
+GIL-holding holders admitted, a 12-probe series measured an asyncio tick
+delayed up to 844 ms (in-process, 2026-08-30) — bounded by the cap at no more
+than `MAX_CONCURRENT_SEARCHES` GIL-holding members at once, and `/health`
+still answered 200 throughout. `MAX_CONCURRENT_SEARCHES` (4) and
+`ADMISSION_WAIT_SECONDS` (1.0 s) are recorded defaults, not measurements;
+there is no operator config key for either in this slice. The other three
+rows of the table above are separate changes and are not filed.
 
 **A fourth member spends no CPU and was here for the same reason: it was
 unbounded work for one call, and [#17](https://github.com/theurian/theurian/issues/17)
@@ -2057,13 +2200,39 @@ one that ran, on every session, and the pass that fixed the unreachable face lef
 it in place. Ranking the faces by how wrong they read, rather than by which of
 them a user meets, is what produced that.
 
-**Two of those three files still carry the premise**, in documents
-[#40](https://github.com/theurian/theurian/pull/40) did not reach:
+**Two of those three files carried the premise on into documents
+[#40](https://github.com/theurian/theurian/pull/40) did not reach.** Both are
+corrected, and take the same three columns as the resolved rows above:
 
-| Surface | What it says | Owner |
+| Surface | The premise it carried | Corrected in |
 | :-- | :-- | :-- |
-| `docs/integrations/claude-code.md:101` | the `SessionStart` flowchart: `theurian on PATH? --no--> warn: run /theurian:setup`, which now also disagrees with the shipped script | — |
-| `docs/architecture/requirements-analysis.md`, the compatibility flowchart | its `CLI absent` branch: "Advise /theurian:setup. Do not install anything." | — |
+| `docs/integrations/claude-code.md:101` | the `SessionStart` flowchart: `theurian on PATH? --no--> warn: run /theurian:setup`, which also disagreed with the shipped script | [#421](https://github.com/theurian/theurian/issues/421), fixed by [#435](https://github.com/theurian/theurian/pull/435) |
+| `docs/architecture/requirements-analysis.md`, the compatibility flowchart | its `CLI absent` branch: "Advise /theurian:setup. Do not install anything." | [#421](https://github.com/theurian/theurian/issues/421), fixed by [#435](https://github.com/theurian/theurian/pull/435) |
+
+Both nodes now name the installer before `/theurian:setup`, in the order the
+shipped hook prints it — measured by running
+`plugins/claude-code/scripts/session-start.sh` with `theurian` off `PATH`, which
+is the branch's whole behaviour. The requirements-analysis branch keeps "Do not
+install anything": that half was true of the hook, which prints its advice and
+runs none of it. **Both corrections are now pinned, and by a node rule rather
+than by the tuple.** `packages/theurian-core/tests/unit/test_setup_claims.py`
+gained `test_the_session_start_flowchart_names_the_installers_before_setup` and
+`test_the_compatibility_flowchart_advises_an_installer_before_setup`, each
+keyed on the one Core-absent edge of its chart and each asserting that edge
+unique before reading it. `docs/integrations/claude-code.md` also joined
+`CORE_ARRIVAL_SURFACES`, on the block that now quotes the hook's line verbatim.
+
+**Membership alone would not have held either node, and that was measured
+rather than argued.** Reverting `claude-code.md:101` to `warn: run
+/theurian:setup` while leaving the quoted block in place kept all three
+tuple rules green: the literal rule reads the quotation, and the ordering rule
+skips the diagram because the diagram's own block names no installer for it to
+place. `requirements-analysis.md` stays outside the tuple entirely — its node
+advises "the installer" and points here rather than repeating the commands, so
+the verbatim rule would have nothing to find, and loosening that rule to accept
+a paraphrase is the supply-chain trade this entry exists over. The fact side —
+that these are the installers the product offers — stays where it was, on
+`INSTALLERS` checked against `probe_core`'s own words.
 
 Both *specify* corrected surfaces rather than being them, which is why a search
 over user-facing text does not reach them. Recorded here rather than left to

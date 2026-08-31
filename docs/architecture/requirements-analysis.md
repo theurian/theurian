@@ -1127,7 +1127,7 @@ Resolution algorithm, run by `SessionStart` and by every command:
 ```mermaid
 flowchart TD
     A["Read plugin compatibility.yaml"] --> B["theurian --version --json"]
-    B -->|CLI absent| Z1["Advise /theurian:setup. Do not install anything."]
+    B -->|CLI absent| Z1["Advise the installer, then /theurian:setup.<br/>Do not install anything."]
     B --> C{"core in [minimum, maximumExclusive)?"}
     C -->|no, core too old| Z2["Stop. Show: upgrade Core to >= minimum"]
     C -->|no, core too new| Z3["Stop. Show: upgrade the plugin"]
@@ -1142,6 +1142,12 @@ Rules:
   therefore pins to the next MINOR. Post-1.0 it pins to the next MAJOR.
 - "Stop" means: print an actionable message and exit non-zero. It never means
   install, upgrade, downgrade, or delete anything.
+- "Advise the installer" means the two installer commands `probe_core` names, and
+  then `/theurian:setup` — the order `plugins/claude-code/scripts/session-start.sh`
+  prints, quoted once in
+  [the Claude Code integration doc](../integrations/claude-code.md#what-sessionstart-does).
+  Advising `/theurian:setup` on its own was unrunnable: it shells out to the
+  `theurian` binary whose absence produced the message.
 - Core exposes `system.capabilities` so the plugin can degrade per-feature rather
   than all-or-nothing when only an optional capability is missing.
 

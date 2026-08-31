@@ -98,7 +98,7 @@ thinking about something else. It must therefore be cheap and boring.
 ```mermaid
 flowchart TD
     S["Session starts"] --> A{"theurian on PATH?"}
-    A -->|no| W1["warn: run /theurian:setup"] --> Z["exit 0"]
+    A -->|no| W1["warn: Core is not installed.<br/>Install it with uv tool or pipx,<br/>then run /theurian:setup"] --> Z["exit 0"]
     A -->|yes| B{"compatible?"}
     B -->|no| W2["warn: version mismatch, show the remedy"] --> Z
     B -->|yes| C{"GET /health ok?"}
@@ -111,6 +111,17 @@ flowchart TD
 
     style Z fill:#1f6f4a,color:#fff
 ```
+
+The `theurian`-absent branch names the installer before the command that needs
+one. What it prints, verbatim:
+
+```text
+Theurian: Core is not installed. Install it with: uv tool install --python 3.13 'theurian[daemon]' or: pipx install --python 3.13 'theurian[daemon]', then run /theurian:setup to configure this machine.
+```
+
+Printed, never run. Naming `/theurian:setup` on its own was advice nobody could
+follow: that command shells out to the `theurian` binary whose absence produced
+the warning.
 
 Budget: p95 ≤ 300 ms, hard timeout 5 s, and it exits 0 unconditionally — a
 degraded Theurian must never stop a session from starting.

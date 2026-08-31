@@ -14,6 +14,24 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Added
 
+- **`knowledge.search` gains an admission cap on the retrieval path**
+  (threat-model T-6, [#26](https://github.com/theurian/theurian/issues/26)). A
+  `threading.BoundedSemaphore` in `mcp/tools.py::register`, shared by every
+  `knowledge.search` call the daemon serves, admits at most
+  `MAX_CONCURRENT_SEARCHES` (4) calls into the answer block at once. A caller
+  past the cap is refused before it does any retrieval work
+  (`test_the_cap_refuses_the_excess_caller`), capacity is restored on every
+  exit path whether the answer block returns or raises
+  (`test_capacity_is_restored_on_every_exit_path`), and `/health` keeps
+  answering while the cap is saturated
+  (`test_health_answers_promptly_while_the_cap_is_saturated`). This bounds
+  concurrent occupancy only — not the cost of a single call — and
+  `knowledge.get`/`knowledge.status` stay uncapped. `MAX_CONCURRENT_SEARCHES`
+  (4) and `ADMISSION_WAIT_SECONDS` (1.0 s) are recorded defaults, not tuned;
+  there is no operator config key for either in this slice. See what the cap
+  does and does not bound, and the cross-project design decision, in
+  [T-6](../../docs/security/threat-model.md).
+
 - **Review-Finding trailer landing store, still no serving surface**
   ([#368](https://github.com/theurian/theurian/issues/368), ADR-0029). A
   `ReviewFindingStore` port, a `SqliteReviewFindingStore` adapter, and a
@@ -45,7 +63,63 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   the family-taxonomy corpus items, and the relation/view surfaces are the later
   lanes ADR-0029 still owes.
 
+### Changed
+
+- **Under sustained concurrent load, `knowledge.search` now refuses with a
+  constant retryable error instead of queueing without bound** (threat-model
+  T-6, [#26](https://github.com/theurian/theurian/issues/26)). This is a
+  client-visible behaviour change, not additive: a `knowledge.search` call
+  that succeeded at base can now be refused once `MAX_CONCURRENT_SEARCHES`
+  (4) calls are already in the retrieval answer block and a further caller
+  does not gain a permit within `ADMISSION_WAIT_SECONDS` (1.0 s). The
+  refusal's `ToolError` message is a constant, interpolating nothing from the
+  request or the store, verified byte-identical by
+  `test_the_refusal_is_byte_identical_whatever_the_input`. Measured
+  serialization cost at 40 concurrent callers against a light corpus (its own
+  document count and size were not themselves recorded): median latency
+  0.10 s → 0.36 s, max 0.11 s → 0.62 s (2026-08-30, in-process, branch vs
+  05ab8f3) — zero calls were refused in that run, since even the max stayed
+  under the 1.0 s admission wait. **On a heavier corpus the comparison
+  inverts in wall clock, and the two medians measure different outcomes.**
+  Measured 2026-08-30, in-process, 400 documents × 2,000 chars, 40
+  concurrent callers: with the cap effectively off (emulated in-process by
+  raising `MAX_CONCURRENT_SEARCHES` to 10,000 on the branch — not a
+  `05ab8f3` build), all 40 callers were answered, median 3.72 s / max
+  3.83 s; under the shipped cap, 19 of 40 were refused within ~1 s and the
+  21 answered calls' median was 1.04 s / max 1.15 s. A refused caller
+  spends less time per attempt; it does not get an answer. T-6 records
+  the multi-second interference this causes for the other tools sharing the
+  pool. The refusal has no machine-readable envelope — no error code, no
+  retry-after, no capabilities flag — tracked as
+  [#419](https://github.com/theurian/theurian/issues/419).
+
 ### Documentation
+
+- **ADR-0018 Decision point 2 no longer places the write lock on the state
+  database** ([#424](https://github.com/theurian/theurian/issues/424)). The
+  point said Milestone 1 "enforces exclusivity with an **OS advisory file lock**
+  on the state database". No lock is ever taken on a database file:
+  `ProjectPaths.write_lock` (`application/project_service.py`) is
+  `.theurian/runtime/write.lock`, `ProjectPaths.database_for` puts the state
+  databases under `.theurian/state/`, and `write_transaction(database_path,
+  lock_path)` (`infrastructure/sqlite/connection.py`) flocks the lock file
+  before it opens a connection to the database and releases it after the commit.
+  Mutual exclusion was never in doubt — the record named the wrong object — so
+  the clause is corrected in place and a short blockquote records the drift,
+  rather than the decision being superseded. The correction also names what the
+  Milestone 5 amendment got wrong: it re-read point 2 as accurate after checking
+  that a lock is taken and not what it is taken on, so the Decision disagreed
+  with the Consequences > Negative bullet that
+  [#420](https://github.com/theurian/theurian/pull/420) had already corrected to
+  name both paths. Same class as the #417, #252, #198 and #129 corrections — a
+  durable record asserting a mechanism the codebase does not contain — and found
+  by the same #199 unit-A audit.
+  `docs/adr/0027-accept-validates-before-it-moves.md` repeats the retracted
+  phrasing in its decision-2 residue and is left for its own change
+  ([#433](https://github.com/theurian/theurian/issues/433)); the served
+  corpus twin under `.theurian/knowledge/architecture/` carries the retracted
+  sentence byte-identically and moves only on a governed re-seed (#199 unit C),
+  the same carry #417 records.
 
 - **ADR-0018 no longer cites a `doctor` NFS warning as the mitigation for an
   accepted risk** ([#417](https://github.com/theurian/theurian/issues/417)). Its
@@ -165,6 +239,32 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   when either side moves alone — and it holds **these two rows**, not the two
   tables: the general row-by-row pin needs the copy's differently shaped Control
   column reconciled first, and that is a documents change.
+- **Two flowcharts stop advising a command the shipped `SessionStart` hook
+  dropped** ([#421](https://github.com/theurian/theurian/issues/421)). The hook
+  names an installer before `/theurian:setup`, because `/theurian:setup` shells
+  out to the `theurian` binary whose absence produced the warning. Two documents
+  that *specify* the hook were left behind when it was corrected:
+  `docs/integrations/claude-code.md`'s `SessionStart` flowchart still said
+  `warn: run /theurian:setup`, and `docs/architecture/requirements-analysis.md`'s
+  compatibility flowchart still said "Advise /theurian:setup. Do not install
+  anything." Both now name the installer first, matched against the line the hook
+  actually prints — captured by running it with `theurian` off `PATH`, not read —
+  which the integration doc now quotes verbatim once. Requirements-analysis keeps
+  "Do not install anything": that half was always true of a hook that prints its
+  advice and runs none of it. The threat model's T-16 table, which carried the two
+  as deferrals with an empty owner column, now records them as corrected in the
+  same three columns its resolved rows use.
+
+  **Both nodes are pinned, one at a time, because adding the file to the
+  population would not have held either.** `tests/unit/test_setup_claims.py`
+  gained a rule per flowchart, each keyed on that chart's single Core-absent edge
+  and each asserting the edge is unique before reading it.
+  `docs/integrations/claude-code.md` also joined `CORE_ARRIVAL_SURFACES` — but
+  membership pins the verbatim quotation, not the picture above it: reverting the
+  node while leaving the quote in place left all three tuple rules green,
+  measured. `docs/architecture/requirements-analysis.md` stays outside the tuple,
+  since its node advises "the installer" and points at the quotation rather than
+  repeating the commands, and the tuple's rule is verbatim by design.
 
 ## [0.1.0.dev14] - 2026-08-28
 
