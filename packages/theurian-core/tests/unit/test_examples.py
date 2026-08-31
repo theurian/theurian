@@ -170,6 +170,33 @@ _ISSUE_CITE: Final = re.compile(r"^#\d+$")
 #: rule is a cheap second signal beside the substring test, not a classifier.
 _CITE_SAID_TO_BE_CLOSED: Final = r"{cite}\b[^.;]{{0,30}}?\bclosed\b"
 
+
+def _cites_said_to_be_closed(annotation: str, required: tuple[str, ...]) -> dict[str, str]:
+    """The requirements of ``required`` that ``annotation`` calls closed, to the match.
+
+    Extracted rather than left inline so that :data:`CLOSED_CITE_CASES` drives
+    *this* predicate. A driver that rebuilt the rule out of :data:`_ISSUE_CITE`
+    and :data:`_CITE_SAID_TO_BE_CLOSED` by hand would go RED against its own copy
+    and stay green whatever the rows below actually ran, which is the failure the
+    two constants were already in: the shipped annotations are compliant, so both
+    patterns matched nothing and deleting either changed no result.
+
+    Keyed on the requirement rather than on the annotation at large. Only a
+    requirement that is *nothing but* an issue number is a claim about who owns
+    the gap the row states; a requirement carrying prose says something a closed
+    issue can still be the correct authority for, and these annotations cite
+    closed issues on purpose.
+    """
+    return {
+        sentence: found.group(0)
+        for sentence in required
+        if _ISSUE_CITE.match(sentence)
+        and (
+            found := re.search(_CITE_SAID_TO_BE_CLOSED.format(cite=re.escape(sentence)), annotation)
+        )
+    }
+
+
 #: ``(key, the value the example teaches, the sentences its annotation must keep)``.
 #:
 #: The value is asserted as well as the annotation because the two together are
@@ -275,6 +302,15 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
     sentence that is *only* an issue number must also not be described as closed
     within its own clause. The rows' history cites are untouched -- they sit on
     the far side of a semicolon, and the window stops there.
+
+    **That half is driven elsewhere and has to be**, by
+    :func:`test_an_annotation_that_calls_its_own_owner_closed_is_refused`. Both
+    shipped annotations are compliant, so the guard reports nothing on either row
+    whether it works or matches nothing at all. Measured on this module as it
+    stood at ``57c3da3``, the commit before that driver: `_ISSUE_CITE` made
+    unmatchable, `_CITE_SAID_TO_BE_CLOSED` made unmatchable, and both at once --
+    16 passed on all three. These rows hold the config; the synthetic rows hold
+    the guard.
     """
     text = CONFIG.read_text(encoding="utf-8")
     config = load_yaml_mapping(text)
@@ -315,14 +351,7 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
             f"what change with them."
         )
 
-    retired = {
-        sentence: found.group(0)
-        for sentence in required
-        if _ISSUE_CITE.match(sentence)
-        and (
-            found := re.search(_CITE_SAID_TO_BE_CLOSED.format(cite=re.escape(sentence)), annotation)
-        )
-    }
+    retired = _cites_said_to_be_closed(annotation, required)
 
     assert not retired, (
         f"the annotation above `{key}` names {sorted(retired)} and says in the "
@@ -332,6 +361,102 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
         f"beside it, which is how a closed #198 satisfied this row until #428. "
         f"Move the requirement to whichever issue the annotation now names as "
         f"the owner."
+    )
+
+
+#: ``(what the row is, a fabricated annotation, what it requires, the requirements
+#: the guard must refuse)`` -- the driver for :data:`_ISSUE_CITE` and
+#: :data:`_CITE_SAID_TO_BE_CLOSED`.
+#:
+#: Both constants survived their own deletion before this table existed. The two
+#: shipped annotations are compliant, so ``_cites_said_to_be_closed`` returns ``{}``
+#: on them whether the patterns work or match nothing at all: at ``57c3da3``, the
+#: commit before these rows, the module reported **16 passed** with `_ISSUE_CITE`
+#: unmatchable, 16 with :data:`_CITE_SAID_TO_BE_CLOSED` unmatchable, and 16 with
+#: both (measured 2026-09-01). A guard no input reaches reports a safety it does
+#: not have, and every row here exists because one shape of mutation has to die
+#: on it.
+#:
+#: **The annotations are fabricated, and one of them is false on purpose.** #329
+#: is live; the first row writes *"#329 is closed"* as **input** to the guard, in
+#: the wording the round-one measurement used, and says so here so that a search
+#: for that sentence lands on this note rather than on a claim the repository
+#: appears to be making. Nothing in this table is read off disk: a driver keyed on
+#: the real annotations would go green the day somebody rewords one, which is the
+#: hole the shipped rows already have and the reason for these.
+#:
+#: One row per direction the guard can be wrong in:
+#:
+#: 1. the required cite called closed inside its own clause -- the shape #428
+#:    found on the ``secretScan`` row, and the only row that fails if either
+#:    pattern stops matching;
+#: 2. the shipped shape, whose closure sits past a semicolon -- it fails if the
+#:    ``[^.;]`` boundary is widened, which would make the live annotation the
+#:    defect;
+#: 3. a requirement that is prose beside a genuinely closed cite -- it fails if
+#:    :data:`_ISSUE_CITE` stops being anchored, since ``best effort`` sits 18
+#:    characters from ``closed`` in the same clause. This is the false positive
+#:    the rows have to stay clear of: these annotations name closed issues as
+#:    history on purpose.
+CLOSED_CITE_CASES: tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        "the required cite, called closed in its own clause",
+        "`theurian ingest` and index building run no scan (#500 owns those two; "
+        "#329 is closed, having shipped the `propose accept` half above).",
+        ("#329",),
+        ("#329",),
+    ),
+    (
+        "the shipped shape, the closure past a semicolon",
+        "`theurian ingest` and index building run no scan (#329 owns those two; "
+        "#198 is closed, having shipped the `propose accept` half above).",
+        ("#329",),
+        (),
+    ),
+    (
+        "a prose requirement in a clause about a closed issue",
+        "The detector is best effort now that #198 is closed; #329 owns the two gaps above.",
+        ("best effort", "#329"),
+        (),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("annotation", "required", "refused"),
+    [case[1:] for case in CLOSED_CITE_CASES],
+    ids=[case[0] for case in CLOSED_CITE_CASES],
+)
+def test_an_annotation_that_calls_its_own_owner_closed_is_refused(
+    annotation: str, required: tuple[str, ...], refused: tuple[str, ...]
+) -> None:
+    """RED means the closed-owner guard cannot fail, whatever the example says.
+
+    The guard above exists because `sentence in annotation` is satisfied by a
+    number appearing anywhere in the block, including inside a sentence saying
+    that issue is closed -- which is how a closed #198 held the `secretScan` row
+    until #428, with every test in this module green. It is checked here rather
+    than on the shipped rows because the shipped rows cannot check it: both
+    annotations are compliant, so the guard's result is `{}` either way and the
+    two patterns were surviving their own deletion.
+
+    Both directions in one table. Refusing too little is the defect the guard was
+    added for. Refusing too much is worse than not having it: these annotations
+    cite closed issues deliberately, as the history that explains the live owner,
+    and a guard that reported those would be removed by the next author rather
+    than narrowed.
+    """
+    found = _cites_said_to_be_closed(annotation, required)
+
+    assert sorted(found) == sorted(refused), (
+        f"the closed-owner guard read {sorted(found)} out of {list(required)}, "
+        f"expected {sorted(refused)}. The annotation is:\n  {annotation!r}\n\n"
+        f"Too few means it cannot see a required cite the annotation itself calls "
+        f"closed -- `_ISSUE_CITE` selects which requirements are owner claims and "
+        f"`_CITE_SAID_TO_BE_CLOSED` decides whether the clause retires one, and "
+        f"the shipped rows exercise neither. Too many means it refuses text that "
+        f"is correct: a history cite on the far side of a semicolon, or a "
+        f"requirement that is prose rather than an owner cite."
     )
 
 
