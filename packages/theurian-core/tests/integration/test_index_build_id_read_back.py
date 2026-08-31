@@ -45,10 +45,12 @@ The two behaviour tests use real SQLite files under ``tmp_path`` and a real
 ``ForestBuilder`` over a real ``ExtractiveSummarizer``. The signature pin reads
 no database at all: it parses every ``add_nodes`` the imported package declares
 -- three at ``5a14145``, the ``SqliteIndexStore`` adapter plus the ``IndexStore``
-and ``ForestRecomputeStore`` protocols -- so that a fourth declaration is covered
-by the change that writes it rather than by whoever remembers to add it here.
-Nothing reaches the developer's machine, nothing touches the network, and nothing
-starts a daemon.
+and ``ForestRecomputeStore`` protocols, each required by name in
+``test_every_declared_add_nodes_is_one_the_signature_pin_reads`` -- so that a
+fourth declaration is covered by the change that writes it rather than by whoever
+remembers to add it here, and a third cannot leave the population without saying
+so. Nothing reaches the developer's machine, nothing touches the network, and
+nothing starts a daemon.
 """
 
 from __future__ import annotations
@@ -298,21 +300,33 @@ def test_every_declared_add_nodes_is_one_the_signature_pin_reads() -> None:
     reports "no declaration takes the argument" in exactly the same way a clean
     tree does, so the population is established first.
 
-    The two named here are the two ADR-0024 decision 2's clause is *about*: the
-    adapter that reads the column and the port a second adapter would be written
-    against. They are required by name rather than by count -- a count would
-    redden on a third protocol that is nobody's problem, while a missing adapter
-    means the derivation stopped seeing the module the decision names.
+    **All three the clause is about, including the one the fix was for.** The
+    adapter reads the column; the port is what a second adapter would be written
+    against; and ``withdrawal_purge.ForestRecomputeStore`` is the protocol the
+    *purge* holds its building-file store as -- the caller that recomputes the
+    forest before ``_restamp`` moves the id, which is to say the caller the
+    clause exists for. It was the one the hand-written pair missed in round one,
+    and requiring only the other two left it able to disappear again: deleting
+    the declaration shrank the derived population to two with every test here
+    green, measured in round two.
+
+    Required by name rather than by count. A count would redden on a fourth
+    protocol that is nobody's problem, while a missing name means the derivation
+    stopped seeing a module the decision reasons about.
     """
     labels = {label for label, _ in ADD_NODES_DECLARATIONS}
 
     assert labels >= {
         "infrastructure/sqlite/index_store.py::SqliteIndexStore.add_nodes",
         "domain/ports/index_store.py::IndexStore.add_nodes",
+        "application/withdrawal_purge.py::ForestRecomputeStore.add_nodes",
     }, (
-        f"the `add_nodes` derivation no longer finds the adapter and the port "
-        f"ADR-0024 decision 2 reasons about; it found {sorted(labels)}. The pin "
-        f"below would report an absence about a population it never located."
+        f"the `add_nodes` derivation no longer finds the adapter, the port and the "
+        f"purge's own protocol, which ADR-0024 decision 2 reasons about; it found "
+        f"{sorted(labels)}. The pin below would report an absence about a population "
+        f"it never located -- and the purge's protocol is the declaration closest to "
+        f"the caller the clause is about, so its removal is a design change and not a "
+        f"tidy-up."
     )
 
 
@@ -337,7 +351,10 @@ def test_add_nodes_takes_no_build_id_argument(label: str, parameters: tuple[str,
     declaration, and it is the protocol the *purge* holds its building-file store
     as -- the one caller that recomputes the forest before ``_restamp`` moves the
     id, which is to say the caller the clause exists for. Walking for the
-    declarations means a fourth one is covered by the change that writes it.
+    declarations means a fourth one is covered by the change that writes it, and
+    :func:`test_every_declared_add_nodes_is_one_the_signature_pin_reads` requires
+    all three by name so that the third cannot quietly leave the population it
+    was added to.
     """
     assert "index_build_id" not in parameters, (
         f"{label} now takes `index_build_id` as an argument: {list(parameters)}. "
