@@ -16,9 +16,11 @@ providers:
     adapter: sqlite-vec
   review:
     adapter: none
-    # The allowlist review ingestion will read (SEC-10). Nothing in `src/` reads
-    # this file, so the allowlist is not in force; review ingestion is owed with
-    # Milestone 7 (#129).
+    # The allowlist review ingestion will read (SEC-10). This file is read --
+    # `security/project_config.py` opens it for `security.secretScan` alone --
+    # but nothing in `src/` reads `providers.review.repositories`, so the
+    # allowlist is not in force. It is owed with the first external fetch path
+    # (#429 owns it; #129 was closed on the wording rather than the control).
     repositories:
       - acme/order-service
 
