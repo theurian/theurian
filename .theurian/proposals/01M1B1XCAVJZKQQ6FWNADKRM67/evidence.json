@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M1B1XCAVJZKQQ6FWNADKRM67",
+  "migrationId": "01M1B1XCAVJZKQQ6FWNADKRM68",
+  "itemId": "architecture.ai-writes-produce-proposals",
+  "agentId": "claude-code-theurian-python",
+  "taskId": "199-unit-c-416-reseed",
+  "model": "claude-sonnet-5",
+  "reasoning": "Verbatim copy of the corrected ADR at the pinned commit; the tracked ADR is the source of truth, and the revision this replaces still asserts the proposal-age reporting that #252 measured as absent and #415 retracted.",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "6b83be1ecc3455c39ed00e461f35d2a589169ef8",
+      "filePath": "docs/adr/0013-ai-writes-produce-proposals.md"
+    }
+  ]
+}
