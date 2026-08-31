@@ -277,6 +277,109 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   the old count and moves only on a governed re-seed (#199 unit C) — the same
   carry #417, #432 and #441 record.
 
+- **Every issue cite in the threat model is classified, and the seven that named
+  an owner unable to receive work are repointed or corrected**
+  ([#427](https://github.com/theurian/theurian/issues/427),
+  [#470](https://github.com/theurian/theurian/pull/470)). The #199 unit-A audit
+  measured its escape space empty *of control-capability claims*. A different
+  claim shape lived there and was never a stated verification axis: the
+  **owner-cite** — "[#N] removes this face" — asserting that a tracked issue owns
+  a residual. The container census misses one on a blockquote continuation line,
+  and the verb sweep's list did not carry "removes".
+
+  **The population, and one row per cite rather than per number.** Run at
+  `5a9a1e5`: 114 cite occurrences over 56 distinct numbers on 110 lines, plus 97
+  bare `#N` mentions outside the key. #15 alone is cited six times and each cite
+  is classified on its own context, because the classification is a property of
+  the surrounding prose and not of the number. The whole table is committed —
+  `docs/work-logs/2026-08-31-427-owner-cite-sweep.md` — with the rule each label
+  is earned by: 88 history, 20 owner-with-an-open-issue, 2 explicit acceptance
+  records, 4 dead owners. Those four numbers are counted off the table by script
+  and its `(number, line)` pairs asserted equal as a set to the key's own output,
+  because counting by reading is what this arc had already lost three counts to.
+
+  **Four defects in the bracket key.** `#198` was still named as tracking
+  ingest-time secret scanning; it closed on the `propose accept` half it shipped,
+  and [#329](https://github.com/theurian/theurian/issues/329) — which quotes
+  #198's own measurement of that path — owns it. `#15` was named three times in
+  T-17's residual chain as the future fix for the `|ranking|` term; it closed
+  `COMPLETED` on 2026-08-10 having shipped exactly that, as `66a43ae`. The three
+  records are left byte-for-byte, because each is the argument as it stood at the
+  round that produced it and the fix location they name did not move — only the
+  register did, from owed to shipped — so a dated discharge blockquote is
+  appended at the end of the chain instead, locating each by a phrase chosen so
+  `grep -F` finds it exactly twice: the pointer and its target.
+
+  **It says what it does not claim.** None of the round-five, -six or -seven
+  figures has been re-run against a purged build. A Critical entry therefore goes
+  on publishing pre-purge numbers with a caveat and no scheduled correction — an
+  accurate residue the discharge created rather than closed, and it is named as
+  one rather than left to read as a closure.
+
+  **Three more in the bare-mention escape space, which no bracket key reaches.**
+  Two deferred a recorded MEDIUM to `#113`, a pull request that merged on
+  2026-08-10 and so cannot receive work — the same PR-as-owner shape
+  [#444](https://github.com/theurian/theurian/issues/444) records in the source
+  twin of that sentence — repointed to
+  [#439](https://github.com/theurian/theurian/issues/439), whose own body
+  measures the same file set, with ADR-0022/ADR-0018 kept as the mechanism
+  reference. The third attributed T-16's cross-surface gap to closed `#39`. That
+  the escape count was itself wrong — three places said two — is a round-one
+  finding on this PR, and is the whole reason the count now appears with its
+  population named beside it everywhere it appears.
+
+  **The key is committed and re-runnable**, as `tools/audit/threat_model_owner_cites.py`,
+  on the same terms as the three unit-A keys beside it: one file argument,
+  report-only, not CI-wired, classification explicitly out of scope because a
+  script can read neither the tracker nor the sentence. Its coverage guard
+  compares tracker links to cites **as occurrences and as distinct numbers**, and
+  its verdict is now stated as the two comparisons it computes rather than as a
+  property derived from them. The escape that forces that wording is recorded
+  beneath it, measured four ways against the file at `5a9a1e5`: untouched 114
+  cites / 114 links, green; one prose-labelled link, 114 / 115, red; one unlinked
+  `[#N]`, 115 / 114, red; **both together, 115 / 115, green** — a compensating
+  pair leaving two cites outside the correspondence. Closing it needs per-line
+  pairing, which is a different check and is recorded rather than built.
+
+  **One corrected claim about the codebase, so it ships with its pin.** T-16's
+  evidence for "nothing holds the three release-claim surfaces to the step's own
+  words" was that no test reads `README.md`, `packages/theurian-core/CHANGELOG.md`
+  or the threat model. Measured false: seven files under
+  `packages/theurian-core/tests` named the root README at `5a9a1e5` and eight do
+  at `7ea5840` — the eighth being the pin module itself — and
+  `test_setup_claims.CORE_ARRIVAL_SURFACES` carries the root README, which the
+  same entry recorded twenty lines further up. The conclusion survives on a
+  narrower fact and is now stated on both keys with the pathspec in each, since
+  run unscoped they answer 8 and 9 against the whole repository:
+  `probe_artifact_integrity` reaches one module and the step id reaches two, at
+  `5a9a1e5` and `7ea5840` alike. `test_threat_model_t16_claims.py` holds both
+  directions — the retracted wording refused as an assertion while legal as a
+  quotation, every block carrying it required to mark it retracted, and the
+  narrow fact held as an exact set so a third module naming the probe is the
+  moment the record must move to *held* rather than a test to make green. Its
+  self-exclusion is derived rather than intended: the token comes from
+  `StepId.ARTIFACT_INTEGRITY` and is asserted absent from the module's own bytes,
+  so the pin cannot make the entry's published key answer one more than the entry
+  says.
+
+  Documentation, one work log and one audit script — no file under
+  `packages/theurian-core/src/` is touched, and no behaviour changes. Three
+  review rounds, and every HIGH in all three was a count or a stated mechanism in
+  this change's *own* new prose rather than in the material it audited: the class
+  the sweep exists to close, recurring inside it. That is why each figure above
+  names its key and its commit, and why no sentence here restates a check as
+  something wider than the check computes. Residues owned: the two unowned faces
+  the discharge created, T-16's cross-surface pin and T-17's pre-purge figures
+  ([#472](https://github.com/theurian/theurian/issues/472), face B sequenced with
+  #445's ADR-0024 reconciliation, which needs the same purge-path ground truth);
+  the docstring-backslash ratchet a round-one fix surfaced
+  ([#473](https://github.com/theurian/theurian/issues/473) — D301 is off, and
+  enabling it flags 31 existing non-raw docstrings under
+  `packages/theurian-core/tests/unit/`); and the owner-cite class beyond this one
+  file, which #199 unit B's object-keyed census subsumes — the threat model's
+  members of the `#129`/`#39`/`#198` population are discharged here and listed
+  separately in the work log for #428's accounting.
+
 ## [0.1.0.dev15] - 2026-08-31
 
 ### Added
