@@ -102,7 +102,7 @@ by some *other* module under the core tests tree.
 **What the two keys do not reach, measured 2026-09-01 at `99d1f4b`.** The
 ``no-test-reads`` key is ``\bno test\b[^.]{0,40}?\breads?\b``. A subject longer
 than that window escapes it -- *"no test anywhere under
-packages/theurian-core/tests, at any level, reads README.md"* puts 59 characters
+packages/theurian-core/tests, at any level, reads README.md"* puts 60 characters
 between the two anchors and does not match -- and so does any rewording that
 drops the words *no test*: *"nothing in this repository reads README.md"*, *"not
 one test reads"* and *"no automated check reads"* were each run against the key
@@ -605,8 +605,18 @@ def test_every_t16_block_that_carries_the_retracted_wording_marks_it_retracted()
     the concern.`` -- escaped both halves at once: quoted, so
     :func:`test_no_unquoted_prose_in_t16_denies_that_a_test_reads_those_surfaces`
     saw nothing, and not the anchored block, so the marker rule never read it.
-    Measured against the shipped module by appending that sentence to T-16 in a
-    throwaway checkout: the file stayed green, 16 passed.
+    Measured both sides in a throwaway checkout, by appending that sentence
+    inside T-16 and running this module alone. At ``9d51a04``, before the rule
+    was widened, the module collected 14 and the append left it **14 passed** --
+    the escape. This module now collects 17, and the same append takes it to
+    **1 failed, 16 passed**. The two figures come from two different modules, so
+    neither run's total can be quoted for the other.
+
+    **Append inside the slice, or the demo measures nothing.** :func:`_entry`
+    stops at the next heading of *any* level, and the one after T-16 is
+    ``### TB-3: the retrieval result`` -- not ``#### T-17``. A sentence placed
+    before the T-17 heading is outside the entry, and this module reports green
+    for a reason that has nothing to do with the rule.
 
     So the requirement is over the population. Together the two halves cover the
     wording either way it is written -- unquoted anywhere is a defect outright,
@@ -910,13 +920,25 @@ def test_neither_module_that_names_the_probe_names_any_of_the_three_surfaces() -
 def test_this_module_is_not_a_member_of_the_population_it_measures() -> None:
     """The self-exclusion is measured, because the entry's published key has none.
 
-    T-16 quotes ``git grep -ln <token> -- packages/theurian-core/tests`` and
-    says the answer is two. A pin that carried the token would make that
-    published command answer three, so the sentence this module defends would be
-    false because the pin exists. The token is therefore derived from
-    ``StepId.ARTIFACT_INTEGRITY`` and never written here -- and *never written*
-    is a property of this file's bytes, which is a thing that can be checked
-    rather than intended.
+    T-16 publishes **two** keys, both scoped to this tree:
+    ``git grep -ln 'probe_<token>' -- packages/theurian-core/tests``, which the
+    entry says answers one, and ``git grep -ln '<token>' --
+    packages/theurian-core/tests``, which it says answers two. The exclusion here
+    is against :data:`PROBE_TOKEN`, and that covers both: the longer key contains
+    the shorter one, so a file carrying either string is a member of the looser
+    population and could only be a member of the stricter one as well. A pin that
+    carried the token would make the entry's second published command answer
+    three, so a sentence this module defends would be false because the pin
+    exists. The token is therefore derived from ``StepId.ARTIFACT_INTEGRITY`` and
+    never written here -- and *never written* is a property of this file's bytes,
+    which is a thing that can be checked rather than intended.
+
+    **The pathspec is load-bearing in both keys and is published with them.** Run
+    unscoped, the same two commands answer 8 and 9 against the whole repository
+    -- this module, the entry, the work log and the source all name the step id
+    -- and neither figure is what the entry states. That is a measurement, at
+    ``54236b4``; the scoped figures were 1 and 2 at ``5a9a1e5``, ``9d51a04`` and
+    ``54236b4`` alike.
 
     RED is not a defect in the rules above: it means someone wrote the token into
     this file, this module joined the population, and either the token goes or

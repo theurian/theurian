@@ -2638,16 +2638,21 @@ also matches `plugins/claude-code/README.md`, and it answers **seven at
 `test_threat_model_t16_claims.py`, the module that pins this very paragraph, so
 the figure moved because of this correction rather than despite it. The strict
 key — the *root* `README.md`, nothing path-like before it, and that pin module
-excluded from its own population — answers **five**, and is the one the pin
-computes.
+excluded from its own population — answers **five at `5a9a1e5`, at `9d51a04` and
+at `54236b4`**. It is the shape the pin computes in its own failure message, and
+like the two figures above it is a measurement no test holds: nothing goes RED if
+a sixth module starts naming the root README.
 
 What survived the correction is the narrower fact about the setup probe, and it
-is stated on both keys for the same reason:
+is stated on both keys for the same reason. **The pathspec is part of each key,
+not decoration from the column header** — run without it, the same two commands
+answer 8 and 9 against the whole repository, and the pin module's self-exclusion
+rests on the scoped form:
 
-| Key | Modules under `packages/theurian-core/tests` | At |
+| Key | Modules | At |
 | :-- | --: | :-- |
-| `git grep -ln 'probe_artifact_integrity'` — the probe function itself | 1 — `test_artifact_integrity_claim.py` | `5a9a1e5` and `9d51a04` |
-| `git grep -ln 'artifact_integrity'` — the step id, which is what the pin holds | 2 — the above, plus `test_dogfood_corpus_governance.py` | `5a9a1e5` and `9d51a04` |
+| `git grep -ln 'probe_artifact_integrity' -- packages/theurian-core/tests` — the probe function itself | 1 — `test_artifact_integrity_claim.py` | `5a9a1e5`, `9d51a04`, `54236b4` |
+| `git grep -ln 'artifact_integrity' -- packages/theurian-core/tests` — the step id, which is what the pin holds | 2 — the above, plus `test_dogfood_corpus_governance.py` | `5a9a1e5`, `9d51a04`, `54236b4` |
 
 The second module is a member of the looser key **only because it names the
 first one's file name** in prose; it reaches no probe. Neither module ties the
@@ -4235,14 +4240,16 @@ loopback hop a real client adds (TB-1), so all of them are floors on the effort
 extraction takes and not ceilings.
 
 > **The fix those three records name has shipped, and the owner cite is
-> discharged (2026-08-31, #427's owner-cite sweep).** Three places above hand
+> discharged (2026-08-31, #427's owner-cite sweep).** Three records above hand
 > this residual to [#15](https://github.com/theurian/theurian/issues/15) as
-> future work, located by the phrase each ends on rather than by a line number:
-> the round-five argument's row *"the purge did not remove it"* and the sentence
-> under it, *"removed by the same change and by nothing smaller"*; the round-six
-> correction's *"removes this face and T-17a's collection statistics together"*;
-> and the round-seven correction's *"removes the withheld term from
-> `|ranking|`"*. #15
+> future work, located by a phrase from each rather than by a line number. Four
+> quotes over the three records, because the round-five record is a table row
+> and the sentence that reads it: *"the purge did not remove it"*, and
+> *"removed by the same change and by nothing smaller"*; then the round-six
+> correction's *"T-17a's collection statistics together"*; and the round-seven
+> correction's *"removes the withheld term from `|ranking|`"*. Each of the four
+> was chosen because `grep -F` finds it exactly twice in this file — the pointer
+> and the record it points at — which a phrase spanning a soft wrap does not. #15
 > closed `COMPLETED` on 2026-08-10. What it shipped is `66a43ae`:
 > `migrate apply` publishes a purged build synchronously on any withdrawal
 > (`application/withdrawal_purge.py::publish_purge_for_withdrawal`, called from

@@ -20,7 +20,7 @@ uv run --frozen python tools/audit/threat_model_owner_cites.py /tmp/tm/threat-mo
 ```
 POP-2 CITES: 114 occurrences over 56 distinct numbers
 lines carrying at least one cite: 110
-tracker URLs reach 56 distinct numbers -- same population
+tracker URLs: 114 occurrences over 56 distinct numbers -- same population
 escape space (bare #N, outside the key): 97 mentions over 37 distinct numbers
 ```
 
@@ -28,15 +28,31 @@ escape space (bare #N, outside the key): 97 mentions over 37 distinct numbers
 classified on its own context; #40 is cited eight times in one table. 114 rows,
 not 56.
 
-**Every tracker link in this file is bracket-labelled**, and the script says so
-on every run rather than leaving it assumed: 114 URL occurrences over 56 distinct
-numbers, against 114 cites over the same 56. It compares **both** figures,
-because neither implies the other — a prose-labelled link to a number the file
-already cites (`[the fetch-control issue](…/issues/429)`) leaves the distinct
-sets equal while adding an occurrence, which is exactly how this guard was found
-false in #470's round one. That is the whole of what the line asserts. It does
-**not** assert that every cite is linked: a bare `#N` is neither bracketed nor
-linked, and is counted on its own line.
+**`same population` is the output above restated, and nothing further.** It means
+*the number of tracker links equals the number of bracketed cites, and both reach
+the same set of numbers* — 114 links and 114 cites, both over the same 56. Two
+cardinality comparisons over the whole file; no per-line pairing, so the verdict
+cannot say which link belongs to which cite. Both comparisons earn their place,
+and neither implies the other:
+
+| Case, as a two-line append to the file at `5a9a1e5` | Cites / links | Verdict |
+| :-- | --: | :-- |
+| A. untouched | 114 / 114 | `same population` |
+| B. `+ [the fetch-control issue](…/issues/429) owns it.` | 114 / 115 | `KEY NO LONGER COVERS THE FILE` |
+| C. `+ Owned by [#429] alone, with no link behind it.` | 115 / 114 | `KEY NO LONGER COVERS THE FILE` |
+| D. B and C together | 115 / 115 | `same population` |
+
+**Case D is the recorded escape**, and it is why the sentence above stops where
+it does. The pair cancels: both counts rise by one, the number sets do not move
+because #429 is already cited elsewhere, and a green verdict covers two cites
+that escaped the bracket-and-link correspondence. Closing it needs a different
+check — pairing `[#N](<url ending in /N>)` per occurrence — not a wider reading
+of this one. Recorded, not built. #470's round one found this guard claiming more
+than it computed; round two found the narrowed claim still one dimension wide,
+which is why the wording here is now the print statement's own words.
+
+The verdict says nothing at all about a bare `#N`: neither bracketed nor linked,
+and counted on its own line.
 
 **The escape space is bare `#N`** — 97 mentions, outside the key. It is measured
 rather than assumed because #427 exists over a cite the previous two keys did not

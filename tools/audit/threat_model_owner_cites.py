@@ -12,16 +12,36 @@ is a ``github.com/theurian/theurian/{issues,pull}/N`` URL, and no such URL is
 reachable under any other label -- so the bracket form and the URL form select
 the same population here.
 
-**The coverage line, and exactly what it rules out.** The script counts tracker
-URLs beside the cites and compares them **as occurrences and as distinct
-numbers**. Both halves are needed and neither implies the other: a
-prose-labelled link (``[the fetch-control issue](.../issues/429)`` where #429 is
-already cited elsewhere) adds a URL occurrence without adding a number, so the
-distinct-set comparison alone answers "same population" while a cite has escaped
-the bracket key -- which is how this guard was found false in #470's round one.
-A verdict of ``same population`` therefore means *every tracker link in the file
-is bracket-labelled*. It does **not** mean every cite in the file is linked:
-a bare ``#N`` is neither, and is counted separately below.
+**The coverage line, stated as what it computes.** ``same population`` means
+exactly this and nothing derived from it: *the number of tracker links equals the
+number of bracketed cites, and both reach the same set of numbers.* It is a pair
+of cardinality comparisons over the whole file. It pairs nothing per line, so it
+cannot say which link belongs to which cite, and no sentence here should claim it
+does -- the previous wording said a green verdict meant every tracker link is
+bracket-labelled, which is a universal the check does not compute. #470's round
+one found the first half of that overreach and round two the second.
+
+Both comparisons are needed, and neither implies the other. Measured against
+``git show 5a9a1e5:docs/security/threat-model.md`` with a two-line append per
+case::
+
+    A. untouched                       114 cites / 114 links   same population
+    B. + [the fetch-control issue](.../issues/429) owns it.
+                                       114 cites / 115 links   KEY NO LONGER COVERS
+    C. + Owned by [#429] alone, with no link behind it.
+                                       115 cites / 114 links   KEY NO LONGER COVERS
+    D. + both of the above             115 cites / 115 links   same population
+
+**Case D is the recorded escape.** A prose-labelled link and an unlinked
+``[#N]`` cancel: both counts rise by one, the number sets are untouched because
+#429 is cited elsewhere already, and the verdict stays green with two cites
+outside the bracket-and-link correspondence. Closing it needs per-line pairing --
+matching ``[#N](<url ending in /N>)`` as one unit -- which is a different check,
+not a wider version of this one. Recorded rather than built, so the line's
+meaning and the line's output are the same sentence.
+
+Separately: the verdict says nothing about a bare ``#N``, which is neither
+bracketed nor linked and is counted on its own line below.
 
 **What the script cannot do, and why classification lives elsewhere.** Whether a
 cite is (a) an owner-of-a-residual -- "[#N] removes this face", which is a defect
