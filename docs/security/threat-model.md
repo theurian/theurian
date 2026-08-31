@@ -1205,27 +1205,40 @@ a further node that could hold a reference.
 
 *Future controls, not shipped:* the scheme allowlist, the rejection of
 private-network destinations, and the repository allowlist in
-`.theurian/config.yaml` are owed with review ingestion (Milestone 7,
-[#368](https://github.com/theurian/theurian/issues/368), which carries all three
-as acceptance criteria on the fetch path it builds). `security/project_config.py`
-reads that file, but for one key only — `security.secretScan`. Nothing in `src/`
-reads `providers.review.repositories`, and `infrastructure/github/` is a
-docstring-only package with no HTTP client, so no code path performs any of the
-three.
+`.theurian/config.yaml` are owed with the first external fetch path, and are
+owned by [#429](https://github.com/theurian/theurian/issues/429).
+`security/project_config.py` reads that file, but for one key only —
+`security.secretScan`. Nothing in `src/` reads `providers.review.repositories`,
+and `infrastructure/github/` is a docstring-only package with no HTTP client, so
+no code path performs any of the three.
 
-> **Corrected in the #199 unit-A audit (2026-08-30).** This paragraph said "No
-> reader of `.theurian/config.yaml` exists in `src/`", which ADR-0027 decision 3
-> falsified: `security/project_config.py::read_secret_scan_policy` reads that
-> file on the `propose accept` path (`application/proposal_service.py:1148`).
-> The conclusion is unchanged and rests on the narrower fact above — the reader
-> is scoped to one key by design, which `project_config.py`'s own module
-> docstring states and
+> **Corrected in the #199 unit-A audit (2026-08-30, owner corrected again after
+> review).** This paragraph said "No reader of `.theurian/config.yaml` exists in
+> `src/`", which ADR-0027 decision 3 falsified:
+> `security/project_config.py::read_secret_scan_policy` reads that file on the
+> `propose accept` path (`application/proposal_service.py:1148`). The conclusion
+> is unchanged and rests on the narrower fact above — the reader is scoped to one
+> key by design, which `project_config.py`'s own module docstring states and
 > `tests/unit/test_config_key_call_sites.py::test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_ones`
-> pins as an equality over the whole source tree, so a reader added for
-> `providers.review.repositories` reddens there rather than passing quietly. The
-> owner moved for a second reason: [#129](https://github.com/theurian/theurian/issues/129)
-> was closed `COMPLETED` on 2026-08-22 having corrected this entry's wording, not
-> having built any of the three controls.
+> pins as an equality over the whole source tree. **That pin reads names, and
+> records its own limit:** a key assembled at runtime, one reached through a
+> variable, or a whole-mapping read that never names the key all pass it — "a
+> floor on the review a new reader gets, not a proof that one cannot exist". So a
+> reader added the ordinary way reddens there; one added those three ways does
+> not, and this sentence is the only thing standing behind it.
+>
+> **The owner has now been wrong twice, in opposite directions.**
+> [#129](https://github.com/theurian/theurian/issues/129) was closed `COMPLETED`
+> on 2026-08-22 having corrected this entry's wording rather than building any of
+> the three controls, so this audit repointed the three at
+> [#368](https://github.com/theurian/theurian/issues/368) — the review-ingestion
+> epic. Review then found that #368 builds no fetch path either: it ingests
+> `Review-Finding` trailers out of git history and reaches no network, so it can
+> no more own a fetch control than the closed issue could.
+> [#429](https://github.com/theurian/theurian/issues/429) was opened to hold them
+> against whatever first performs an external fetch. The lesson is narrower than
+> "check the issue is open": **an owner has to be the change that would implement
+> the control, and an epic in the right milestone is not automatically that.**
 
 What stands in for all three is the absence of the request. *Never fetched* is
 pinned separately from the recording, because reading the recorded output cannot
@@ -2288,9 +2301,11 @@ neither file matches the bare key, measured 2026-08-23 by the `git grep` above.
 What a reader who follows either now gets is the `daemon` extra, so
 `theurian daemon start` does not fail on `uvicorn`, and an interpreter chosen by
 the flag rather than by whichever `python3` comes first — which on macOS is 3.9.
-The rest of the release gate stays open in
-[#39](https://github.com/theurian/theurian/issues/39): nothing yet hashes a
-downloaded artifact against `SHA256SUMS`.
+The rest of the release gate stays open, tracked at
+[#80](https://github.com/theurian/theurian/issues/80) since
+[#39](https://github.com/theurian/theurian/issues/39) closed on its
+documentation half: nothing yet hashes a downloaded artifact against
+`SHA256SUMS`.
 
 One surface is adjacent and is deliberately **not** counted among the nine:
 `docs/integrations/serena.md:172` diagnoses "Theurian tools missing" as "Setup
@@ -2415,10 +2430,11 @@ lines and the claim was at line 1140. Distant, and on the same page.
 **Both of those surfaces were corrected by #56, merged into `main` on
 2026-08-06**, which replaced the changelog's premise with "setup never obtains
 Core, so it holds no artifact to hash" and the README row with one that states
-the published records exist and that nothing in Theurian checks them. An earlier revision of this entry
-called #56 open, which it was when that revision was written and is not now. The
-mechanism it exercised is unchanged: `release-core.yml` still publishes that
-section verbatim, so a future edit to it reaches the release page the same way.
+the published records exist and that nothing in Theurian checks them. An earlier
+revision of this entry called #56 open, which it was when that revision was
+written and is not now. The mechanism it exercised is unchanged:
+`release-core.yml` still publishes that section verbatim, so a future edit to it
+reaches the release page the same way.
 Nothing in this repository holds any of the three to the step's own words — no
 test reads `README.md`, `packages/theurian-core/CHANGELOG.md` or this file, and
 `test_setup_claims.py` reads the *plugin's* README, not the root one — and that
@@ -5297,7 +5313,7 @@ fix.
 | T-4 | Path traversal | I | Critical | SEC-7 |
 | T-5 | Symlink escape | I | Critical | SEC-7 |
 | T-6 | Resource exhaustion, at parse, at query, and at `accept` | D | Medium | SEC-8 |
-| T-7 | SSRF via external URL | I | Medium | SEC-10 — `$ref` recorded-never-fetched only; scheme allowlist, private-network rejection and repository allowlist owed with M7, carried as acceptance criteria on [#368](https://github.com/theurian/theurian/issues/368) (#129 closed on the wording, not the controls) |
+| T-7 | SSRF via external URL | I | Medium | SEC-10 — `$ref` recorded-never-fetched only; scheme allowlist, private-network rejection and repository allowlist owed with the first external fetch path, owned by [#429](https://github.com/theurian/theurian/issues/429) (#129 closed on the wording, not the controls) |
 | T-8 | Token in a config file | I | High | SEC-5 |
 | T-9 | Token in a log | I | High | SEC-6 |
 | T-10 | Cross-sensitivity summary leak | I | High | SEC-14 |

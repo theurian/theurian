@@ -27,7 +27,7 @@ generates a candidate; `system.capabilities` reports `reviewIngestion: false`,
 pinned by `test_capabilities_report_what_is_and_is_not_built`. So the sections
 below that describe *collection* — the stages, classification, candidate
 generation, provider access and privacy handling — describe what Milestone 7
-([#129](https://github.com/theurian/theurian/issues/129)) implements, not what
+([#368](https://github.com/theurian/theurian/issues/368)) implements, not what
 runs today.
 
 ## Evidence is not knowledge
@@ -195,8 +195,8 @@ or calls a model, so a provider adapter stays a thin, testable mapping.
 
 Repositories must be allowlisted in `.theurian/config.yaml` before one is
 contacted (SEC-10). That is the design obligation on the adapter, not current
-behaviour: `security/project_config.py` reads that file for `security.secretScan`
-alone, nothing in `src/` reads `providers.review.repositories`, so building the
-allowlist reader is the first thing the ingestion work owes
-([#368](https://github.com/theurian/theurian/issues/368) carries it; #129 was
-closed on the wording rather than the control).
+behaviour. `security/project_config.py` reads that file for `security.secretScan`
+alone, and nothing in `src/` reads `providers.review.repositories`, so building
+the allowlist reader is the first thing an external fetch path owes
+([#429](https://github.com/theurian/theurian/issues/429) owns it; #129 was closed
+on the wording rather than the control).

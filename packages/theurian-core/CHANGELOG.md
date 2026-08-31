@@ -73,11 +73,15 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   exists in `src/`" was falsified by ADR-0027 decision 3 —
   `security/project_config.py::read_secret_scan_policy` reads it on the `propose
   accept` path — and the conclusion survives on the narrower fact that nothing
-  reads `providers.review.repositories`. **C-2:** three not-shipped controls
-  named CLOSED issues as their owners, each closed after a *documentation* fix
-  while the control stayed unbuilt; T-7's three SSRF controls now point at #368,
-  T-16's install-time verification at #80, and T-15's ingest-time scanning at
-  #329, all verified open. **C-3:** T-3's own correction blockquote claimed
+  reads `providers.review.repositories`. **C-2:** not-shipped controls named
+  CLOSED issues as their owners — two of them (#129, #39) closed on a
+  *documentation* fix while the control stayed unbuilt, and #198 on a different
+  root cause, having **shipped** its control in `1a38afe` while entries went on
+  citing it for the ingest-time and index-time siblings it never claimed. T-7's
+  three SSRF controls now point at #429 (opened for them; #368 ingests git
+  trailers and builds no fetch path, so it could not own a fetch control),
+  T-16's install-time verification at #80, and T-15's unshipped scanning halves
+  at #329 — all verified open. **C-3:** T-3's own correction blockquote claimed
   `theurian.domain.retrieval` has no importer in `src/`; it has five, one of them
   `mcp/results.py`, so the argument is restated on `SafetyMetadata` and
   `RetrievalResult`, which are named nowhere outside their module. **C-4:** the
