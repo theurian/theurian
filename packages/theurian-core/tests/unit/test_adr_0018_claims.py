@@ -1,11 +1,13 @@
 """What ADR-0018 claims about its own mechanisms, against what the code does.
 
-**Two corrected claims are held here, and they are independent.** The Consequences
-bullet said ``doctor`` warns about NFS; the Decision said the write lock is taken
-on the state database. Both were false, both were corrected in place, and each
-gets a prose pin and a fact pin below. They share this module because they share
-a document and a failure mode -- a durable record describing a mechanism nobody
-re-read against the code -- not because one implies the other.
+**Three corrected claims are held here, and they are independent.** The
+Consequences bullet said ``doctor`` warns about NFS; the Decision said the write
+lock is taken on the state database; the Compliance section pointed its owed
+single-writer work at a closed issue. All three were false, all three were
+corrected in place, and each gets a prose pin and a fact pin below. They share
+this module because they share a document and a failure mode -- a durable record
+describing a mechanism nobody re-read against the code -- not because one implies
+another.
 
 -- 1. The NFS warning (#417) ------------------------------------------------
 
@@ -36,6 +38,25 @@ separately:
   goes on saying nothing detects it. The fact half below reads the source of the
   modules the step registry resolves to, so the bullet is updated by the change
   that makes it wrong.
+
+**Two records state this exclusion, and both prose halves read both of them.**
+ADR-0018's Consequences bullet is where the decision lives; ``README.md``'s quick
+start carries one line of it where an operator meets ``.theurian/`` for the first
+time, citing the ADR rather than re-asserting the absence on its own authority
+(https://github.com/theurian/theurian/issues/417). A copy nobody reads is a copy
+that drifts -- the exact defect #433 fixed in a different pair of records, where
+one document was corrected and its restatement left standing -- so
+:data:`NFS_RECORDS` is the population of both halves and neither file can soften
+alone.
+
+**The corpus twin stays excluded, and its reason does not reach README.**
+``.theurian/knowledge/architecture/single-writer-synchronous-in-m1.<ulid>.md`` is
+held byte-identical to its source anchor commit by
+``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``,
+so it still carries ``doctor`` "will warn about it" and only a governed re-seed
+(#199 unit C) can move it: a scan that reached it would report the governance
+guard doing its job as drift. ``README.md`` is under no such freeze, so nothing
+about the twin argues for leaving it unread.
 
 The fact is read from **source text**, not from a call. There is nothing to
 invoke: the claim is about an absence, and an absence has no return value. A
@@ -138,7 +159,13 @@ and the databases *resolve to*, and that they resolve apart:
   "database-level lock". Recorded rather than chased, for the same reason as
   every other grammar pin in this file.
 
-**One ADR file, and the corpus twin is deliberately not part of the prose scan.**
+**One ADR file for this claim, and the corpus twin is deliberately not part of
+the prose scan.** ``README.md`` names the same lock file in its NFS paragraph
+("an OS advisory lock on ``.theurian/runtime/write.lock``") and attaches it to
+nothing, so it is a third live record of *this* claim that no half below reads.
+That is a gap rather than a decision, recorded here and not closed: the scope
+this pin was written to is ADR-0018's Decision point 2 and ADR-0027's restatement
+of it.
 ``.theurian/knowledge/architecture/single-writer-synchronous-in-m1.<ulid>.md``
 still carries the retracted sentence byte-identically. That is not drift: the
 dogfood corpus is held byte-identical to its source anchor commit by
@@ -148,9 +175,92 @@ walker over this wording would go RED on that file on the day it was written.
 Recorded here because a reader who greps the tree for the old sentence finds it
 and needs to know why it stays.
 
-**Neither prose half is a closure argument.** They are regression pins over the
-wording this claim has actually taken, and a rule that pins grammar always has a
-next grammar.
+-- 3. Who owns the owed single-writer work (#436) ----------------------------
+
+ADR-0018 cited https://github.com/theurian/theurian/issues/15 three times as the
+Milestone-6 owner of work it records as owed. #15 closed on 2026-08-10
+(``66a43ae``) by wiring ADR-0024 decision 5 -- the withdrawal-to-purge trigger --
+which is none of the three, and Milestone 6 is past. A durable record pointing
+owed work at a closed tracker fails the same way as one citing a control that
+does not exist: a reader follows the pointer, finds it closed, and concludes the
+work shipped.
+
+**Two of the three cites are held here, and the third must not be.** The
+Milestone-5 amendment's sentence stays verbatim under a dated repoint note,
+because that blockquote is a record of what was believed then; so do the
+correction notes, which quote ``#15`` in order to retract it. A file-wide scan
+would read every one of those as the defect returning -- the trap this module
+already meets inside a single file over :func:`_decision_point_two`. So the pins
+read two Compliance bullets, isolated by :func:`_corrected_bullet` and keyed on
+the claim each bullet opens with rather than on the pointer it carries:
+
+- ``nothing holds point 1`` -- the ``CanonicalStore`` single write interface.
+- ``the derived index has no single-writer contract at all`` -- the index's own
+  contract.
+
+**A third repointed bullet is outside this pin, and that is a gap rather than a
+decision.** "Nothing runs two writers at once" gained #439 in the same commit but
+never cited #15, so neither half below reads it and reverting that one bullet
+alone leaves this module green. Recorded so the next reader does not take "the
+corrected bullets" to mean "every bullet the repoint touched".
+
+**What the prose halves enforce.**
+
+- Each bullet still names :data:`LIVE_OWNER` -- the link, not a bare ``#439``, so
+  the owner stays findable. Same rule and same reason as :data:`TRACKED_BY` on
+  the NFS exclusion.
+- No mention of the closed tracker inside those bullets stands unretracted. The
+  discriminator is sentence-level and mirrors
+  :func:`_detection_claims_without_denial`: a ``#15`` whose own sentence marks it
+  as history -- ``closed``, ``named``, ``until``, ``no longer``, ``passed``,
+  ``repointed`` -- is the correction working, and one with no such marker is an
+  owner-form cite. Measured escapes, recorded rather than chased: "tracked in
+  #15, which was named the owner in Milestone 6" and "#15 owns this; it was
+  closed and reopened" each carry a marker and pass. This is a regression pin
+  over the form the dead pointer actually took -- ``Milestone 6, with #15`` and
+  ``(Milestone 6, #15)`` -- not a characterisation of every way one could return.
+
+**What the fact half enforces, which is one of the two conditions the index
+bullet turns on.** That bullet asserts both that what the purge writes through
+"is still not an interface" and that no index write lock exists.
+:func:`test_no_index_write_path_module_takes_a_lock` holds the lock half: a
+source-text search for ``flock``, ``lockf`` and ``LOCK_EX`` over the modules the
+published index is written through, derived from the symbols rather than named by
+hand, so relocating the purge or the pointer swap moves the sweep with the code.
+The day #439 lands an index write lock, this goes RED and the bullet must move
+with it.
+
+``write_lock`` is dropped from ADR-0018's own pasted grep key, and that is not a
+narrowing for convenience: ``ProjectPaths.write_lock`` is the *canonical* store's
+lock path property, declared in one of the swept modules, so keeping the token
+would make this sweep RED today against a package that takes no index lock at
+all.
+
+The other condition -- that no single write interface has appeared on the
+``CanonicalStore`` port -- is already pinned on ``main`` by
+``test_connection_claims.py::test_the_canonical_store_port_declares_no_single_write_interface``
+and its ``..._publishes_more_than_one_write_method`` complement, both of which
+read the live Protocol. It is cited rather than duplicated here: a second copy of
+that derivation is the failure mode ``write_lock_claims.py`` exists to prevent.
+
+**The tracker facts have no fact side at all.** That #15 is closed, that #439 is
+open and carries no milestone, and that "twelve" was the figure written at
+``f665ecf`` are properties of a tracker and of history, not of this source tree,
+so nothing here can read them -- the same disclaimer the "no probe is planned"
+half carries above. The prose alone holds them.
+
+**The lock sweep's reach, stated as narrowly as the filesystem one's.** It reads
+whole module source, so a lock taken in a helper those modules merely import is
+not seen, and a lock taken under any other API -- ``portalocker``,
+``msvcrt.locking``, an advisory row in SQLite -- escapes the token list. It reads
+``application/project_service.py`` because that is where the pointer swap is
+published, which means a lock added there *for the canonical store* would fire
+this pin: a false RED whose remedy is to narrow the population, recorded rather
+than pre-empted.
+
+**No prose half in this module is a closure argument.** They are regression pins
+over the wording each claim has actually taken, and a rule that pins grammar
+always has a next grammar.
 """
 
 from __future__ import annotations
@@ -171,10 +281,25 @@ from write_lock_claims import (
     find_lock_on_database,
 )
 
+from theurian.application.project_service import write_active_index_pointer
 from theurian.application.setup_steps import STEPS
+from theurian.application.withdrawal_purge import publish_purge_for_withdrawal
+from theurian.domain.ports.index_store import IndexStore
 from theurian.domain.setup import StepId
+from theurian.infrastructure.sqlite.index_purge import purge_into
+from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 
 ADR_0018 = REPO_ROOT / "docs" / "adr" / "0018-single-writer-synchronous-in-m1.md"
+README = REPO_ROOT / "README.md"
+
+#: Every live record that states the NFS exclusion, and therefore every record
+#: that can drift back. The ADR is where the decision lives; README carries one
+#: line of it where an operator meets ``.theurian/`` for the first time. Both
+#: prose halves below sweep this tuple rather than one file, because a copy
+#: nobody reads is a copy that drifts. The governed corpus twin is deliberately
+#: absent -- see the module docstring for the reason, and for why that reason
+#: does not reach README.
+NFS_RECORDS: Final = (ADR_0018, README)
 
 
 def _module_of(function: object) -> ModuleType | None:
@@ -289,6 +414,70 @@ _NFS_OR_DOCTOR: Final = re.compile(r"\bnfs\b|\bdoctor\b")
 #: stops at every newline and a scan that ignores newlines are both wrong.
 _BLOCK_START: Final = re.compile(r"\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|\||```|---\s*$|>\s)")
 
+#: The heading of the section that lists what ADR-0018 still owes. The two
+#: bullets claim 3 reads live under it, and slicing to it first is what keeps the
+#: scans off the Decision's amendment -- which cites ``#15`` verbatim and is
+#: meant to.
+_COMPLIANCE_HEADING: Final = "## Compliance"
+
+#: The two "Still owed" bullets whose ``#15`` cite was corrected in place, keyed
+#: on the claim each opens with. Keyed that way on purpose: a key built from the
+#: pointer would stop matching the moment the pointer moved, which is the change
+#: these pins exist to observe, and the bullet would drop out of the population
+#: rather than fail.
+POINT_1_BULLET: Final = "nothing holds point 1"
+INDEX_CONTRACT_BULLET: Final = "the derived index has no single-writer contract at all"
+CORRECTED_BULLETS: Final = (POINT_1_BULLET, INDEX_CONTRACT_BULLET)
+
+#: The live owner of the owed single-writer work, as the link rather than the
+#: bare ``#439``. Same rule as :data:`TRACKED_BY`: owed work whose owner is not
+#: reachable from the record is work nobody can find again.
+LIVE_OWNER: Final = "issues/439"
+
+#: The closed tracker the bullets used to name, in both the forms ADR-0018 writes
+#: it -- the Markdown label ``[#15]`` and the bare ``#15`` -- and the link target
+#: ``issues/15``, which is how a cite that drops the label would still read.
+#: Word-bounded so ``#150`` and ``issues/150`` are not swept in.
+_CLOSED_TRACKER: Final = re.compile(r"#15\b|issues/15\b")
+
+#: Words that mark a mention of :data:`_CLOSED_TRACKER` as history rather than as
+#: an owner. The mirror of :data:`_DENIAL`, and it carries the same recorded
+#: weakness: these are the forms the retraction has actually taken, not a
+#: characterisation of every sentence that could carry one, and a re-acquired cite
+#: that happens to contain one of them escapes.
+#:
+#: The marker is required in the cite's own sentence and may sit on either side of
+#: it -- ADR-0018 writes both "the tracker it named, #15, closed on ..." and
+#: "this bullet named Milestone 6 and #15 until ...". A before-the-cite rule, the
+#: one :func:`_detection_claims_without_denial` needs, would refuse the first of
+#: those two on punctuation.
+_RETRACTED: Final = re.compile(r"\b(?:closed|named|until|no longer|passed|repointed)\b")
+
+#: The Milestone-5 amendment's standing cite of the closed tracker, which the
+#: bullet scans must never reach: that sentence is a dated record of what was
+#: believed in Milestone 5 and is left verbatim on purpose. Asserted absent from
+#: every extracted bullet, so a slice that widens fails at the premise instead of
+#: reporting the standing record as a defect.
+_AMENDMENT_STANDING_CITE: Final = "tracked with the index writer in"
+
+#: The lock APIs an index write lock would be taken through: ADR-0018's own
+#: pasted grep key minus ``write_lock``. That token is dropped because
+#: ``ProjectPaths.write_lock`` -- the *canonical* store's lock path -- is declared
+#: in one of the swept modules, so keeping it would make the sweep RED against a
+#: package that takes no index lock at all.
+#:
+#: Built from a token tuple rather than written as one alternation, because
+#: ``r"\blockf\b"`` reads as the word "blockf" to everyone who meets it and the
+#: next author to widen this list should not have to parse that.
+_LOCK_API_TOKENS: Final = ("flock", "lockf", "LOCK_EX")
+
+#: Matched case-insensitively and word-bounded, for the reason
+#: :data:`_FILESYSTEM_TYPE_API` records: a pin that fires on ordinary identifiers
+#: is one the next author deletes rather than reads.
+_LOCK_API: Final = re.compile(
+    "|".join(rf"\b{re.escape(token)}\b" for token in _LOCK_API_TOKENS), re.IGNORECASE
+)
+
 
 def _paragraphs(text: str) -> list[str]:
     """The document's paragraphs, soft wraps joined and block boundaries kept.
@@ -312,12 +501,13 @@ def _nfs_paragraphs(text: str) -> list[str]:
     return [paragraph for paragraph in _paragraphs(text) if _NFS_OR_DOCTOR.search(paragraph)]
 
 
-def _detection_claims_without_denial(text: str) -> list[str]:
+def _detection_claims_without_denial(paragraphs: list[str]) -> list[str]:
     """Every "X warns/detects" in an NFS paragraph that its own sentence does not deny.
 
-    "nothing detects that it is" is the sentence the ADR is supposed to contain,
-    so a claim denied within its own sentence is exactly right. What is left over
-    is a sentence telling a reader that something reports an NFS directory.
+    "nothing detects that it is" is the sentence both records are supposed to
+    contain, so a claim denied within its own sentence is exactly right. What is
+    left over is a sentence telling a reader that something reports an NFS
+    directory.
 
     **The denial must be in the claim's own sentence, before the verb.** An
     earlier version looked back a fixed six words, and a window that crosses a
@@ -326,9 +516,14 @@ def _detection_claims_without_denial(text: str) -> list[str]:
     "...is therefore told nothing by `doctor`." was measured GREEN, as was one
     other of four attachment points. A sentence is the unit the denial actually
     governs, so it is the unit the rule uses.
+
+    Takes the paragraphs rather than the document, so the caller that asserts the
+    scanned population is non-empty is holding the same list this reads. Handing
+    in raw text again would let the premise and the scan disagree about what was
+    swept, which is the shape the fact half's own history warns about.
     """
     claims: list[str] = []
-    for paragraph in _nfs_paragraphs(text):
+    for paragraph in paragraphs:
         for sentence in _SENTENCE_END.split(paragraph):
             for match in _DETECTION_CLAIM.finditer(sentence):
                 if not _DENIAL.search(sentence[: match.start()]):
@@ -364,55 +559,235 @@ def _decision_point_two(text: str) -> str:
     return points[0]
 
 
+def _compliance_section(text: str) -> str:
+    """Everything from ADR-0018's Compliance heading to the end of the document.
+
+    Sliced before any bullet is found, and that is the scoping decision claim 3
+    turns on: the Decision's Milestone-5 amendment cites ``#15`` and is meant to,
+    so a scan that could reach it would report a standing dated record as the
+    defect returning.
+
+    Compliance is the last section of this file, so the slice runs to the end
+    unless a later ``## `` heading is added; that case is handled rather than
+    assumed, because a slice that silently swallowed a new section would widen
+    every scan below without failing.
+    """
+    assert _COMPLIANCE_HEADING in text, (
+        f"ADR-0018 has no `{_COMPLIANCE_HEADING}` section, so the bullets claim 3 "
+        f"reads cannot be isolated and every scan over them would pass over nothing"
+    )
+    rest = text.split(_COMPLIANCE_HEADING, 1)[1]
+    following = rest.find("\n## ")
+    return rest if following < 0 else rest[:following]
+
+
+def _owed_bullets(text: str) -> list[str]:
+    """Every top-level bullet of the Compliance section, one collapsed string each.
+
+    Not ``test_adr_0027_claims.py``'s ``_list_items``, and the difference is the
+    reason this helper exists rather than importing that one. That version closes
+    an item at the first blank line, which is right for the eleven-line residue it
+    reads and wrong here: the point-1 bullet carries its repoint in a *second*
+    paragraph ("Measured, not argued: ...") and the index bullet carries its
+    correction in two indented blockquotes, so a blank-line rule would return the
+    half of each bullet that does not contain the pointer and report it clean.
+
+    An item therefore runs from a line starting with ``- `` at column 0 through
+    every blank or indented line that follows, and ends at the next unindented
+    non-blank line -- the next bullet, or the heading of whatever comes after.
+    """
+    bullets: list[str] = []
+    current: list[str] | None = None
+    for line in _compliance_section(text).splitlines():
+        if line.startswith("- "):
+            if current is not None:
+                bullets.append(collapsed(" ".join(current)))
+            current = [line]
+        elif current is not None:
+            if not line.strip() or line.startswith("  "):
+                current.append(line)
+            else:
+                bullets.append(collapsed(" ".join(current)))
+                current = None
+    if current is not None:
+        bullets.append(collapsed(" ".join(current)))
+    return bullets
+
+
+def _corrected_bullet(text: str, key: str) -> str:
+    """The one Compliance bullet opening on *key*, as a single collapsed string.
+
+    Exactly one must match. Zero means the bullet was rewritten past the claim it
+    is keyed on and the scans below are about to pass over nothing; more than one
+    means the key no longer identifies a single bullet and a scan would be
+    reporting on text it was never scoped to. This is
+    ``test_adr_0027_claims.py``'s ``_decision_two_residue`` rule, met again.
+
+    The amendment guard is defence in depth rather than a live risk:
+    :func:`_compliance_section` already cuts above the Decision, so the standing
+    Milestone-5 cite is out of reach unless that slice breaks. Asserted anyway,
+    because the failure it would cause -- a RED naming a sentence that is correct
+    and must not move -- is the one a reader would act on wrongly.
+    """
+    bullets = [bullet for bullet in _owed_bullets(text) if key in bullet]
+
+    assert len(bullets) == 1, (
+        f"ADR-0018's Compliance section has no single owed bullet keyed on "
+        f"`{key}`: found {len(bullets)}"
+    )
+    assert _AMENDMENT_STANDING_CITE not in bullets[0], (
+        f"the bullet keyed on `{key}` now reaches the Milestone-5 amendment, whose "
+        f"cite of the closed tracker stands by design; every scan below would "
+        f"report that dated record as a defect"
+    )
+    return bullets[0]
+
+
+def _owner_cites_of_the_closed_tracker(bullet: str) -> list[str]:
+    """Every mention of the closed tracker whose own sentence does not retract it.
+
+    The mirror of :func:`_detection_claims_without_denial`, and it discriminates
+    the same way: the corrected bullets *keep* ``#15`` on purpose, inside the
+    sentence that says it is dead, so a rule refusing the string outright would
+    demand the history be deleted rather than corrected. What is left over is a
+    sentence handing owed work to a closed issue.
+
+    The sentence is the unit, for the reason that function's docstring records --
+    a window that crosses a sentence boundary lets a re-acquired cite borrow the
+    retraction of the sentence in front of it.
+    """
+    return [
+        sentence.strip()
+        for sentence in _SENTENCE_END.split(bullet)
+        if _CLOSED_TRACKER.search(sentence) and not _RETRACTED.search(sentence)
+    ]
+
+
+def _lock_apis(text: str) -> list[str]:
+    """Every lock API named in a piece of source text."""
+    return _LOCK_API.findall(text)
+
+
+def _index_write_path_modules() -> tuple[ModuleType, ...]:
+    """The modules a published index is written through, derived from the symbols.
+
+    Not a hand-maintained tuple, for the reason :func:`_swept_modules` records
+    about the other sweep in this file: a written-down list cannot honour the
+    property a comment would claim for it, that a module which moves takes the
+    sweep with it. This walks from the use case ADR-0018's own correction names
+    (``publish_purge_for_withdrawal``), from both sides of the API it purges
+    through (``IndexStore.derive_purged`` and the SQLite adapter's), from the
+    function that writes the new file (``purge_into``), and from the pointer swap
+    that publishes it (``write_active_index_pointer``).
+
+    Sorted by name so the population, and any failure that reports it, is
+    deterministic rather than set-ordered.
+    """
+    written_through = (
+        publish_purge_for_withdrawal,
+        write_active_index_pointer,
+        IndexStore.derive_purged,
+        SqliteIndexStore.derive_purged,
+        purge_into,
+    )
+    modules = {
+        module for function in written_through if (module := _module_of(function)) is not None
+    }
+    return tuple(sorted(modules, key=lambda module: module.__name__))
+
+
 # -- The prose: ADR-0018's NFS acceptance ------------------------------------
 
 
-def test_adr_0018_says_nothing_detects_a_project_directory_on_nfs() -> None:
-    """RED means the stated absence is gone -- the correction undone or reworded.
+def test_every_record_of_the_nfs_exclusion_says_nothing_detects_it() -> None:
+    """RED means a record dropped the stated absence -- undone, reworded, or deleted.
 
     The positive half. It is not the negative one restated: a rewrite that drops
     the sentence entirely, or that softens it to "NFS is outside the supported
     configuration" with no statement about detection, makes no false claim and
     would pass
-    :func:`test_adr_0018_does_not_claim_anything_warns_about_or_detects_nfs`
-    while leaving ADR-0018 silent on the thing an operator needs to know.
+    :func:`test_no_record_of_the_nfs_exclusion_claims_anything_warns_about_it`
+    while leaving the reader with no idea that nothing will tell them.
+
+    **Both records, not just the ADR.** README carries the operator-facing copy,
+    and the reason it is read here is the failure mode this whole file set is
+    about: #432 corrected one document and left its restatement standing, and the
+    two disagreed until #433 found the copy. README's line was written in the same
+    PR as this pin for exactly that reason.
 
     The tracking reference is asserted in the same paragraph as the first
-    statement of the absence, because an exclusion enforced by nothing is a
-    decision that has to stay findable.
+    statement of the absence, in each record, because an exclusion enforced by
+    nothing is a decision that has to stay findable from wherever it is read.
 
-    **At least once, not exactly once.** An earlier version required a single
-    paragraph and would have failed on a document that restated the absence in,
-    say, a compliance section -- reporting "the correction is gone" about a file
-    that had just made the point twice. Saying a true thing twice is not the
-    drift this module exists to catch; the negative half below is what refuses
-    the false version.
+    **At least once per record, not exactly once.** An earlier version required a
+    single paragraph and would have failed on a document that restated the absence
+    in, say, a compliance section -- reporting "the correction is gone" about a
+    file that had just made the point twice. Saying a true thing twice is not the
+    drift this module exists to catch; the negative half below refuses the false
+    version.
     """
-    paragraphs = [
-        p for p in _nfs_paragraphs(ADR_0018.read_text(encoding="utf-8")) if NOTHING_DETECTS in p
-    ]
+    sources = {record.name: record.read_text(encoding="utf-8") for record in NFS_RECORDS}
+    assert len(sources) == len(NFS_RECORDS), (
+        f"two records share a filename, so one of them is not being read at all: "
+        f"{sorted(record.name for record in NFS_RECORDS)}"
+    )
 
-    assert paragraphs, "ADR-0018 no longer states that nothing detects a project directory on NFS"
-    assert TRACKED_BY in paragraphs[0], (
-        f"the bullet states the absence without naming the issue that tracks it: {paragraphs[0]}"
+    stating = {
+        name: [paragraph for paragraph in _nfs_paragraphs(text) if NOTHING_DETECTS in paragraph]
+        for name, text in sources.items()
+    }
+
+    silent = sorted(name for name, paragraphs in stating.items() if not paragraphs)
+    assert not silent, (
+        f"these records no longer state that nothing detects a project directory on NFS: {silent}"
+    )
+
+    untracked = sorted(name for name, found in stating.items() if TRACKED_BY not in found[0])
+    assert not untracked, (
+        f"these records state the absence without naming the issue that tracks it, "
+        f"so a reader who meets the exclusion cannot find the decision: {untracked}"
     )
 
 
-def test_adr_0018_does_not_claim_anything_warns_about_or_detects_nfs() -> None:
-    """RED means the phantom mitigation is back, in some tense.
+def test_no_record_of_the_nfs_exclusion_claims_anything_warns_about_it() -> None:
+    """RED means the phantom mitigation is back, in some tense, in some record.
 
-    The negative half, and it catches what the positive one cannot: a bullet that
+    The negative half, and it catches what the positive one cannot: a record that
     keeps "nothing detects that it is" and asserts the warning somewhere else in
     the file. The wording it took was ``doctor`` "will warn about it", so the
     future tense is refused alongside the present.
 
-    Scoped to ADR-0018 alone. The governed corpus snapshot of this document still
-    carries the retracted sentence by design -- see the module docstring -- so
-    widening this to a tree scan would report that anchor as drift.
-    """
-    claims = _detection_claims_without_denial(ADR_0018.read_text(encoding="utf-8"))
+    **README is swept as well as the ADR**, and the two need it for different
+    reasons: the ADR is where the claim was made and retracted, while README is
+    the file a later "quick start improvement" would helpfully add the mitigation
+    to, having read the ADR's own account of ``doctor``.
 
-    assert not claims, f"ADR-0018 claims something warns about or detects NFS: {claims}"
+    Scoped to those two records. The governed corpus snapshot of ADR-0018 still
+    carries ``doctor`` "will warn about it" by design -- see the module docstring
+    -- so widening this to a tree scan would report that anchor as drift.
+
+    The scanned population is asserted before it is scanned, which is what stops
+    a record that has lost its NFS paragraphs from passing as clean: a search over
+    no paragraphs reports the same empty list as a search over correct ones.
+    """
+    scanned = {
+        record.name: _nfs_paragraphs(record.read_text(encoding="utf-8")) for record in NFS_RECORDS
+    }
+
+    unscanned = sorted(name for name, paragraphs in scanned.items() if not paragraphs)
+    assert not unscanned, (
+        f"these records have no paragraph mentioning NFS or `doctor`, so this scan "
+        f"passes over nothing in them and would report a re-added claim as absent: "
+        f"{unscanned}"
+    )
+
+    claims = {
+        name: found
+        for name, paragraphs in scanned.items()
+        if (found := _detection_claims_without_denial(paragraphs))
+    }
+
+    assert not claims, f"a record claims something warns about or detects NFS: {claims}"
 
 
 # -- The fact: what the setup steps read -------------------------------------
@@ -587,4 +962,234 @@ def test_the_write_lock_resolves_outside_the_state_directory(tmp_path: pathlib.P
     """
     assert_the_lock_and_the_state_databases_resolve_apart(
         tmp_path / "repo", record="ADR-0018 Decision point 2"
+    )
+
+
+# -- The owner of the owed work: prose ---------------------------------------
+
+
+def test_both_corrected_compliance_bullets_name_the_live_owner_of_the_owed_work() -> None:
+    """RED means a repointed bullet stopped naming #439 -- the repoint undone.
+
+    The positive half of the third claim. It is not the negative one restated: a
+    bullet rewritten to say only "owed, unscheduled" names nothing dead and would
+    pass
+    :func:`test_neither_corrected_bullet_cites_the_closed_tracker_as_an_owner`
+    while leaving a reader who wants to know when the single write interface
+    arrives with nowhere to look -- which is the state #15's closure put this
+    document in.
+
+    The link is required rather than the bare ``#439``, for the reason
+    :data:`TRACKED_BY` is required of the NFS bullet: owed work whose owner is not
+    reachable from the record is work nobody finds again.
+
+    **"Names the live owner" is carried by this half and the next one together.**
+    Neither the owner phrase nor its position is matched here, because grammar
+    that is pinned has a next grammar; what makes ``#439`` the *owner* rather than
+    a passing mention is that no cite of the closed tracker stands beside it
+    unretracted, and that is what the negative half asserts.
+    """
+    text = ADR_0018.read_text(encoding="utf-8")
+
+    unowned = sorted(
+        key for key in CORRECTED_BULLETS if LIVE_OWNER not in _corrected_bullet(text, key)
+    )
+
+    assert not unowned, (
+        f"these owed bullets no longer name `{LIVE_OWNER}`, the live owner of the "
+        f"single-writer work: {unowned}"
+    )
+
+
+def test_neither_corrected_bullet_cites_the_closed_tracker_as_an_owner() -> None:
+    """RED means a dead pointer is standing again in a bullet that was corrected.
+
+    The negative half, and it catches what the positive one cannot: a bullet that
+    names #439 *and* re-acquires "Milestone 6, with #15" beside it, which is
+    exactly how both of these bullets read until 2026-08-31 -- #15 closed on
+    2026-08-10 by wiring ADR-0024 decision 5, which is neither the store's write
+    interface nor the index's contract.
+
+    **The cite is kept and the retraction is what is asserted.** Each corrected
+    bullet still contains ``#15``, inside the sentence recording what it named and
+    why that tracker is dead; a rule that refused the string outright would demand
+    the history be deleted rather than corrected, which is the opposite of what
+    this document does.
+
+    Scoped to the two bullets. The Milestone-5 amendment cites #15 in a sentence
+    left standing verbatim as a dated record, and both correction notes quote it
+    in order to retract it, so a file-wide scan would report three standing
+    records as the defect returning.
+    """
+    text = ADR_0018.read_text(encoding="utf-8")
+
+    standing = {
+        key: cites
+        for key in CORRECTED_BULLETS
+        if (cites := _owner_cites_of_the_closed_tracker(_corrected_bullet(text, key)))
+    }
+
+    assert not standing, (
+        f"these owed bullets hand work to the closed tracker again, in a sentence "
+        f"that does not retract it: {standing}"
+    )
+
+
+def test_the_closed_tracker_scan_catches_an_owner_cite_and_spares_a_retraction() -> None:
+    """RED means the scan stopped discriminating, so the test above passes over nothing.
+
+    Driven by synthetic input because the shipped document cannot drive it: the
+    scan's whole point is that it finds nothing today, so a
+    :func:`_owner_cites_of_the_closed_tracker` gutted to return an empty list
+    would be indistinguishable from a working one. That is the mutation this
+    catches -- measured on the ADR-0013 module, where deleting a scan's core left
+    every other test green.
+
+    The positives are the two forms the dead pointer actually took in this file,
+    quoted from the pre-correction revision, plus a bare link with no ``#15``
+    label -- the form a cite would take if someone pasted the URL. The negatives
+    are the two sentences the corrected bullets carry now, which must not fire:
+    a pin that punished the correction would be read as telling its author to
+    delete the history.
+    """
+    as_the_point_1_bullet_read = collapsed(
+        "Milestone 6, with [#15](https://github.com/theurian/theurian/issues/15) "
+        "— the interface has to exist before a test can pin its surface"
+    )
+    as_the_index_bullet_read = collapsed(
+        "- **The derived index has no single-writer contract at all** (Milestone 6, "
+        "[#15](https://github.com/theurian/theurian/issues/15))"
+    )
+    a_bare_link = collapsed("owed, tracked in https://github.com/theurian/theurian/issues/15")
+    as_the_point_1_bullet_reads_now = collapsed(
+        "This bullet named Milestone 6 and "
+        "[#15](https://github.com/theurian/theurian/issues/15) until 2026-08-31; "
+        "#15 closed on 2026-08-10 without shipping the interface"
+    )
+    as_the_index_bullet_reads_now = collapsed(
+        "The tracker it named, [#15](https://github.com/theurian/theurian/issues/15), "
+        "closed on 2026-08-10 by wiring ADR-0024 decision 5"
+    )
+
+    assert _owner_cites_of_the_closed_tracker(as_the_point_1_bullet_read), (
+        "the scan no longer catches `Milestone 6, with #15`, which is how the "
+        "point-1 bullet read until 2026-08-31"
+    )
+    assert _owner_cites_of_the_closed_tracker(as_the_index_bullet_read), (
+        "the scan no longer catches the parenthesised `(Milestone 6, #15)`, which "
+        "is how the index bullet read until 2026-08-31"
+    )
+    assert _owner_cites_of_the_closed_tracker(a_bare_link), (
+        "the scan reads only the `#15` label, so a cite that pastes the issue URL "
+        "instead escapes it"
+    )
+
+    assert not _owner_cites_of_the_closed_tracker(as_the_point_1_bullet_reads_now), (
+        "the scan fires on the sentence that retracts the pointer, so it asks for "
+        "the history to be deleted rather than corrected"
+    )
+    assert not _owner_cites_of_the_closed_tracker(as_the_index_bullet_reads_now), (
+        "the scan fires on the correction note's own retraction, which names the "
+        "tracker in order to say it is dead"
+    )
+
+
+# -- The owner of the owed work: fact ----------------------------------------
+
+
+def test_the_lock_api_sweep_catches_a_taken_lock_in_synthetic_source() -> None:
+    """RED means the sweep stopped matching, so the test below passes over nothing.
+
+    Driven by synthetic source for the same reason
+    :func:`test_the_filesystem_api_sweep_catches_a_probe_in_synthetic_source` is:
+    the sweep finds nothing today, so an implementation that always returned
+    nothing would look identical to a working one.
+
+    The samples are the two real shapes -- ``fcntl``'s blocking flock, as
+    ``connection.py`` and ``instance.py`` take it, and the POSIX ``lockf``
+    spelling -- and the constant is fed in lowercase, because the sweep is
+    case-insensitive and a probe written ``fcntl.lock_ex`` in a comment should
+    still be read.
+    """
+    an_flock = "import fcntl\n\ndef _hold(handle):\n    fcntl.flock(handle, fcntl.LOCK_EX)\n"
+    a_lockf = "    fcntl.lockf(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+
+    assert _lock_apis(an_flock), "the sweep no longer matches an `fcntl.flock` call"
+    assert _lock_apis(a_lockf), "the sweep no longer matches the `lockf` spelling"
+
+
+def test_the_lock_api_sweep_ignores_identifiers_that_merely_contain_a_token() -> None:
+    """RED means the sweep fires on ordinary code, and gets deleted for crying wolf.
+
+    ``lockf`` sits inside no word here by accident, but ``write_lock``,
+    ``lock_path`` and ``blockfile`` are all names the index and store modules use
+    or could use, and a sweep matching on substrings would fire on every one of
+    them. ``write_lock`` is the load-bearing case: it is a real property of
+    ``ProjectPaths``, declared in one of the swept modules, so an unbounded rule
+    would report the canonical store's lock as an index lock.
+    """
+    unrelated = "write_lock = paths.write_lock\nlock_path = 1\nblockfile = 2\nunlocked = 3\n"
+
+    assert not _lock_apis(unrelated), (
+        "the sweep fires on identifiers that merely contain one of its tokens, "
+        "starting with the canonical store's own `write_lock`"
+    )
+
+
+def test_no_index_write_path_module_takes_a_lock() -> None:
+    """RED means an index write lock landed -- and ADR-0018's index bullet must move.
+
+    The fact half of the third claim, and half of that claim: the bullet says the
+    index has no single-writer contract, and its correction blockquote rests that
+    on two absences. This holds the lock one. The other -- that no single write
+    interface has appeared on the ``CanonicalStore`` port -- is held live by
+    ``test_connection_claims.py::test_the_canonical_store_port_declares_no_single_write_interface``
+    and is cited rather than copied here.
+
+    A source-text search, because the claim is about an absence and an absence has
+    no return value to read. What that means for its reach is in the module
+    docstring, and it is narrower than "no index lock exists".
+
+    **The population is asserted before it is swept**, which is the finding this
+    shape exists to prevent: a search over no modules reports the same "no lock
+    found" as a search over clean ones. The premise also asserts that the module
+    ADR-0018's own correction names -- ``application/withdrawal_purge.py``, the
+    file it quotes "No new index-write lock is taken" from -- is still in the
+    swept set, so a rename that moved the purge out of this sweep fails here
+    rather than passing quietly.
+    """
+    swept = _index_write_path_modules()
+    assert swept, (
+        "the index write path resolves to no module at all, so the search below "
+        "would pass over nothing and report a landed lock as an absence"
+    )
+
+    names = {module.__name__ for module in swept}
+    assert "theurian.application.withdrawal_purge" in names, (
+        f"the module ADR-0018's index correction names, and quotes its own "
+        f"`No new index-write lock is taken` from, is no longer in the swept set: "
+        f"{sorted(names)}"
+    )
+
+    foreign = sorted(name for name in names if not name.startswith("theurian."))
+    assert not foreign, (
+        f"these index write path modules resolve outside the package, so the code "
+        f"behind them is not swept and a lock there would go unseen: {foreign}"
+    )
+
+    sources = {
+        module.__name__: pathlib.Path(module.__file__ or "").read_text(encoding="utf-8")
+        for module in swept
+    }
+    empty = sorted(name for name, text in sources.items() if not text.strip())
+    assert not empty, f"swept modules have no source to search: {empty}"
+
+    found = {
+        name: sorted(set(apis)) for name, text in sources.items() if (apis := _lock_apis(text))
+    }
+
+    assert not found, (
+        f"the index write path now takes a lock: {found}. ADR-0018's index bullet "
+        f"must stop saying there is no index write lock, and the work it hands to "
+        f"{LIVE_OWNER} has moved"
     )

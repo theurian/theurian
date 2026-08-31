@@ -217,8 +217,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `test_adr_0018_claims.py` pins the ADR's NFS sentence in both directions, and
   `test_connection_claims.py` derives the write-method count from the live port
   and prints it in a failure message, so no record keeps that number in step by
-  hand. The README's copy of the exclusion is held by its citation of ADR-0018
-  and by nothing executable. Residues owned: the engineering the repoints point
+  hand. The README's copy of the exclusion is held by the same two prose pins
+  that hold the ADR's sentence, which read both records rather than one.
+  Residues owned: the engineering the repoints point
   at ([#439](https://github.com/theurian/theurian/issues/439), filed without a
   milestone), and the served corpus twin under
   `.theurian/knowledge/architecture/`, which still carries the dead cites and

@@ -1228,13 +1228,29 @@ def test_the_canonical_store_port_declares_no_single_write_interface() -> None:
     recorded.
 
     The count is derived and printed rather than written down here. It was pasted
-    as "the thirteen" until #441's second review round, and that figure was the
-    correct one: the port publishes thirteen write methods, which the failure
-    message below derives live rather than repeating. The record that has drifted
-    is ADR-0018's own Milestone 5 amendment, which still says twelve -- stale by
-    one, and not this docstring's to correct: it is owned by PR #446's fold-in of
-    #439. A number that appears in prose is a copy of a measurement, and this file
-    set exists because copies drift, so this one keeps none of its own.
+    as a literal until #441's second review round, and the figure was right at the
+    time -- which is why removing it was still the fix: a correct copy is a copy,
+    and the failure message below derives the number live rather than repeating
+    one.
+
+    **ADR-0018's Milestone 5 amendment said *twelve*, and #436 corrected it in
+    place -- not as a record that had aged, but as one that was wrong when
+    written.** Counted by this file's own key, the port has published the same
+    number since ``261eff3`` (2026-08-01), the commit that introduced it, and
+    still did at ``f665ecf`` (2026-08-07), the commit that wrote the amendment; no
+    revision of ``domain/ports/canonical_store.py`` counts otherwise. "Stale by
+    one" was the wrong diagnosis as well as the wrong figure, and this docstring
+    carried both until #446 -- while saying, two sentences earlier, that the count
+    is not written down here.
+
+    **The correction names this test as where to re-derive the count rather than
+    asking a reader to trust its sentence, and no test pins that number as a
+    literal.** Nothing here should put one back, this docstring included: the
+    assertion message below is the one place it is produced, and every other
+    mention is a copy that can drift out of step with the port silently. A
+    CHANGELOG entry quoting the figure under a dated heading is a measurement of a
+    moment and is not that copy; a sentence asserting the count in the present
+    tense is.
 
     The premise comes first. A member walk that found nothing would report "no
     transaction-shaped member" about a port it never read, so the reads are
