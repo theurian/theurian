@@ -11,7 +11,10 @@ closed three faces and left three more open, including the only one a user meets
 without asking for it: the ``SessionStart`` hook, which prints its advice on every
 session.
 
-**All nine are corrected, and this module holds them three different ways.** Two
+**All nine are corrected, and this module holds them three different ways** --
+nine being the reach of the searches recorded in the T-16 table rather than a
+proven size of the class, which that table warns has been declared closed on a
+too-narrow key three times. Two
 are held where they are produced rather than as text -- ``setup_command.__doc__``
 by :func:`test_the_cli_docstring_denies_installing_core_and_names_the_installer`
 below, and ``domain/compatibility.py``'s ``CORE_MISSING`` verdict by

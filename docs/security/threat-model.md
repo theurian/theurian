@@ -2063,8 +2063,8 @@ corrected, and take the same three columns as the resolved rows above:
 
 | Surface | The premise it carried | Corrected in |
 | :-- | :-- | :-- |
-| `docs/integrations/claude-code.md:101` | the `SessionStart` flowchart: `theurian on PATH? --no--> warn: run /theurian:setup`, which also disagreed with the shipped script | [#421](https://github.com/theurian/theurian/issues/421) |
-| `docs/architecture/requirements-analysis.md`, the compatibility flowchart | its `CLI absent` branch: "Advise /theurian:setup. Do not install anything." | [#421](https://github.com/theurian/theurian/issues/421) |
+| `docs/integrations/claude-code.md:101` | the `SessionStart` flowchart: `theurian on PATH? --no--> warn: run /theurian:setup`, which also disagreed with the shipped script | [#421](https://github.com/theurian/theurian/issues/421), fixed by [#435](https://github.com/theurian/theurian/pull/435) |
+| `docs/architecture/requirements-analysis.md`, the compatibility flowchart | its `CLI absent` branch: "Advise /theurian:setup. Do not install anything." | [#421](https://github.com/theurian/theurian/issues/421), fixed by [#435](https://github.com/theurian/theurian/pull/435) |
 
 Both nodes now name the installer before `/theurian:setup`, in the order the
 shipped hook prints it — measured by running
