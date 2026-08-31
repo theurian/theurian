@@ -14,11 +14,23 @@ clause in ADR-0018; this copy was left naming the old object for a further PR,
 so the two ADRs disagreed about what the lock is taken on until
 https://github.com/theurian/theurian/issues/433 narrowed this one the same way.
 
+**Two bullets in this document concede that race, and only one of them is the
+clause above.** The one held here is the residue *inside* Decision 2, which
+spells the mechanism out ("ADR-0018 makes single-writer a contract ... enforced
+in Milestone 1 by an OS advisory file lock on ..."); that opening is what
+:data:`RESTATES_ADR_0018` keys on, and :func:`_decision_two_residue` requires it
+to match exactly one item. The other is the later "Concurrency between two
+``accept`` invocations" entry in the not-closed-here list, which hands the
+mechanism to ADR-0018 by reference ("the advisory lock ADR-0018 point 2
+describes") and names no lock object of its own. Nothing in that one can carry
+the retracted attachment, and nothing here reads it.
+
 **A copied claim is the failure mode, so the pin is shared rather than copied.**
-``LOCK_PATH``, ``STATE_DIR``, ``LOCK_ON_DATABASE`` and the one derivation that
-holds them against ``ProjectPaths`` live in ``write_lock_claims.py``;
-``test_adr_0018_claims.py`` and this module both import them. Move the lock in
-the code and both records go RED together -- which is precisely what did not
+``LOCK_PATH``, ``STATE_DIR``, :func:`find_lock_on_database` and the one
+derivation that holds them against ``ProjectPaths`` live in
+``write_lock_claims.py``; ``test_adr_0018_claims.py`` and this module both
+import them. Move the lock in the code and both records go RED together -- which
+is precisely what did not
 happen when #432 corrected one document and left its copy standing. What is
 *not* shared is the clause isolation: each pin finds its own document's clause,
 because a document-wide scan for the retracted wording would go RED on the
@@ -61,13 +73,13 @@ import pathlib
 from typing import Final
 
 from write_lock_claims import (
-    LOCK_ON_DATABASE,
     LOCK_PATH,
+    REPO_ROOT,
     STATE_DIR,
     assert_the_lock_and_the_state_databases_resolve_apart,
+    collapsed,
+    find_lock_on_database,
 )
-
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
 ADR_0027 = REPO_ROOT / "docs" / "adr" / "0027-accept-validates-before-it-moves.md"
 
@@ -84,11 +96,6 @@ RESTATES_ADR_0018: Final = "adr-0018 makes single-writer a contract"
 #: wrong object, so a rewrite that keeps the mechanism and drops the path is the
 #: same defect with the evidence removed.
 SEPARATE_LOCK_FILE: Final = "a separate lock file"
-
-
-def _collapsed(text: str) -> str:
-    """Lowercased with runs of whitespace flattened to single spaces."""
-    return " ".join(text.lower().split())
 
 
 def _list_items(text: str) -> list[str]:
@@ -111,16 +118,16 @@ def _list_items(text: str) -> list[str]:
     for line in text.splitlines():
         if line.startswith("- "):
             if current is not None:
-                items.append(_collapsed(" ".join(current)))
+                items.append(collapsed(" ".join(current)))
             current = [line]
         elif current is not None:
             if line.strip() and line.startswith("  "):
                 current.append(line)
             else:
-                items.append(_collapsed(" ".join(current)))
+                items.append(collapsed(" ".join(current)))
                 current = None
     if current is not None:
-        items.append(_collapsed(" ".join(current)))
+        items.append(collapsed(" ".join(current)))
     return items
 
 
@@ -190,7 +197,7 @@ def test_adr_0027_does_not_reattach_the_write_lock_to_a_database() -> None:
     """
     residue = _decision_two_residue(ADR_0027.read_text(encoding="utf-8"))
 
-    attachments = LOCK_ON_DATABASE.findall(residue)
+    attachments = find_lock_on_database(residue)
 
     assert not attachments, (
         f"ADR-0027's decision-2 residue attaches the write lock to a database again: {residue}"
@@ -202,27 +209,58 @@ def test_the_reattachment_scan_still_fires_on_the_wording_adr_0027_carried() -> 
 
     The one assertion here driven by synthetic input rather than by the shipped
     document, and it exists because the shipped document cannot drive it: the
-    scan's whole point is that it finds nothing today, so a ``LOCK_ON_DATABASE``
-    gutted to match nothing at all would leave every other test in this module
-    and in ``test_adr_0018_claims.py`` green. Both now depend on that one
-    pattern, so nothing else in the suite would notice.
+    scan's whole point is that it finds nothing today, so a
+    :func:`find_lock_on_database` gutted to match nothing at all would leave every
+    other test in this module and in ``test_adr_0018_claims.py`` green. Both now
+    depend on that one function, so nothing else in the suite would notice.
 
     The sample is the sentence ADR-0027 actually carried until #433, quoted from
     the pre-correction file, and a second phrasing without the "state" qualifier
-    -- the two shapes the window in ``LOCK_ON_DATABASE`` is sized for.
+    -- the two shapes the window inside the scan is sized for.
     """
-    as_shipped = _collapsed(
+    as_shipped = collapsed(
         "ADR-0018 makes single-writer a contract in the application layer, "
         "enforced in Milestone 1 by an OS advisory file lock on the state "
         "database — and the accept path's file moves are not under that lock."
     )
-    without_the_qualifier = _collapsed("the writer takes an advisory lock on the database")
+    without_the_qualifier = collapsed("the writer takes an advisory lock on the database")
 
-    assert LOCK_ON_DATABASE.findall(as_shipped), (
+    assert find_lock_on_database(as_shipped), (
         "the shared scan no longer matches the sentence ADR-0027 carried before #433"
     )
-    assert LOCK_ON_DATABASE.findall(without_the_qualifier), (
+    assert find_lock_on_database(without_the_qualifier), (
         "the shared scan no longer matches a lock attached to `the database`"
+    )
+
+
+def test_the_reattachment_scan_normalises_case_and_line_wraps_itself() -> None:
+    """RED means the scan is back to requiring a normalisation it never stated.
+
+    The driving test for :func:`find_lock_on_database`'s own contract, and it is
+    driven by synthetic input because no caller in this repository can drive it:
+    every one of them happens to hand in text that :func:`collapsed` has already
+    flattened, which is exactly what kept the missing precondition invisible.
+    The pattern behind the function is a lowercase, single-spaced rule, so
+    sentence case alone -- "an OS advisory file **L**ock on the **S**tate
+    **D**atabase" -- and a soft wrap between "on the" and "state database" each
+    returned no match, and a pin fed raw document text reported a clean record it
+    had never read.
+
+    Both perturbations are asserted separately. A function that lowercased but
+    did not flatten, or flattened but did not lowercase, would satisfy one and
+    fail the record on the other.
+    """
+    sentence_cased = "An OS Advisory File Lock On The State Database."
+    soft_wrapped = "enforced by an OS advisory file lock on the\n   state database."
+
+    assert find_lock_on_database(sentence_cased), (
+        "the scan no longer normalises case, so the same claim escapes it "
+        "sentence-cased -- which is how a Markdown heading or a title-cased "
+        "summary line would carry it"
+    )
+    assert find_lock_on_database(soft_wrapped), (
+        "the scan no longer flattens soft wraps, so a caller handing in raw "
+        "document text gets a clean report from a rule that never saw the clause"
     )
 
 

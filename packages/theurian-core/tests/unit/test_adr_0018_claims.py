@@ -116,9 +116,9 @@ record names the same objects.** ADR-0027's decision-2 residue restates this
 clause and carried the same retracted wording until
 https://github.com/theurian/theurian/issues/433 corrected it; its pin is
 ``test_adr_0027_claims.py``. Both modules import ``LOCK_PATH``, ``STATE_DIR``
-and ``LOCK_ON_DATABASE`` from that helper and both call the one assertion
-function, so a lock that moves fails both records together instead of failing
-whichever module its author remembered.
+and :func:`find_lock_on_database` from that helper and both call the one
+assertion function, so a lock that moves fails both records together instead of
+failing whichever module its author remembered.
 
 **What that fact pin enforces, and what it does not.** It holds where the lock
 and the databases *resolve to*, and that they resolve apart:
@@ -163,16 +163,16 @@ from types import ModuleType
 from typing import Final
 
 from write_lock_claims import (
-    LOCK_ON_DATABASE,
     LOCK_PATH,
+    REPO_ROOT,
     STATE_DIR,
     assert_the_lock_and_the_state_databases_resolve_apart,
+    collapsed,
+    find_lock_on_database,
 )
 
 from theurian.application.setup_steps import STEPS
 from theurian.domain.setup import StepId
-
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
 ADR_0018 = REPO_ROOT / "docs" / "adr" / "0018-single-writer-synchronous-in-m1.md"
 
@@ -220,7 +220,7 @@ def _swept_modules() -> tuple[ModuleType, ...]:
 
 
 #: The negation the corrected bullet turns on, as one sentence rather than as the
-#: two lines the file wraps it onto. Compared after :func:`_collapsed`: the claim
+#: two lines the file wraps it onto. Compared after :func:`collapsed`: the claim
 #: spans a line break -- "and nothing\n  detects that it is" -- and a substring
 #: search over the raw text passes while the sentence is being rewritten around
 #: it. The em dash before "and" is left out so the pin does not turn on
@@ -290,11 +290,6 @@ _NFS_OR_DOCTOR: Final = re.compile(r"\bnfs\b|\bdoctor\b")
 _BLOCK_START: Final = re.compile(r"\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|\||```|---\s*$|>\s)")
 
 
-def _collapsed(text: str) -> str:
-    """Lowercased with runs of whitespace flattened to single spaces."""
-    return " ".join(text.lower().split())
-
-
 def _paragraphs(text: str) -> list[str]:
     """The document's paragraphs, soft wraps joined and block boundaries kept.
 
@@ -309,7 +304,7 @@ def _paragraphs(text: str) -> list[str]:
             blocks.append([])
         blocks[-1].append(line)
 
-    return [collapsed for block in blocks if (collapsed := _collapsed(" ".join(block)))]
+    return [flattened for block in blocks if (flattened := collapsed(" ".join(block)))]
 
 
 def _nfs_paragraphs(text: str) -> list[str]:
@@ -566,7 +561,7 @@ def test_adr_0018_does_not_reattach_the_write_lock_to_a_database() -> None:
     """
     point = _decision_point_two(ADR_0018.read_text(encoding="utf-8"))
 
-    attachments = LOCK_ON_DATABASE.findall(point)
+    attachments = find_lock_on_database(point)
 
     assert not attachments, f"Decision point 2 attaches the write lock to a database again: {point}"
 
