@@ -122,17 +122,34 @@ def _upsert_revision(
     return operation, body_path, body
 
 
-def _write_migration(root: Path, migration_id: str, operations: list[dict[str, Any]]) -> str:
+def _write_migration(
+    root: Path,
+    migration_id: str,
+    operations: list[dict[str, Any]],
+    *,
+    depends_on: list[str] | None = None,
+) -> str:
     """A tracked migration file holding exactly ``operations``, in that order.
 
     File name and inner ``id`` are the same string here. HIGH-1 needs them to
-    differ -- see :func:`_write_migration_named`.
+    differ -- see :func:`_write_migration_named`. ``depends_on`` defaults to
+    ``None``, meaning the field is omitted from the document entirely -- every
+    caller before the dependsOn-refusal tests below relies on that, since a
+    document with no ``dependsOn`` key at all is the ordinary migration shape
+    this whole file otherwise builds.
     """
-    return _write_migration_named(root, migration_id, inner_id=migration_id, operations=operations)
+    return _write_migration_named(
+        root, migration_id, inner_id=migration_id, operations=operations, depends_on=depends_on
+    )
 
 
 def _write_migration_named(
-    root: Path, file_stem: str, *, inner_id: str, operations: list[dict[str, Any]]
+    root: Path,
+    file_stem: str,
+    *,
+    inner_id: str,
+    operations: list[dict[str, Any]],
+    depends_on: list[str] | None = None,
 ) -> str:
     """A tracked migration whose file name and inner ``id`` are independent.
 
@@ -145,16 +162,24 @@ def _write_migration_named(
     still applies, in ``id`` order, wherever the loader's walk puts it). A
     hand-renamed migration file is exactly where file order and ``id`` order
     can disagree.
+
+    ``depends_on`` is folded into the document only when it is not ``None``:
+    ``None`` omits the key entirely, ``[]`` declares it and leaves it empty.
+    The dependsOn-refusal tests need exactly that distinction -- the schema
+    places no ``minItems`` on ``dependsOn`` and gives it a default of ``[]``,
+    so "declared empty" and "never mentioned" are the same shape on the wire,
+    and a refusal keyed on key-presence rather than a real edge would treat
+    them differently anyway.
     """
+    document: dict[str, Any] = {
+        "apiVersion": "theurian.dev/v1",
+        "id": inner_id,
+        "operations": operations,
+    }
+    if depends_on is not None:
+        document["dependsOn"] = depends_on
     migration_path = f".theurian/migrations/{file_stem}.yaml"
-    _write(
-        root,
-        migration_path,
-        yaml.safe_dump(
-            {"apiVersion": "theurian.dev/v1", "id": inner_id, "operations": operations},
-            sort_keys=False,
-        ),
-    )
+    _write(root, migration_path, yaml.safe_dump(document, sort_keys=False))
     return migration_path
 
 
@@ -688,3 +713,112 @@ def test_a_yaml_anchor_and_alias_do_not_compare_one_revision_twice(tmp_path: Pat
     matching = [item for item in report.comparisons if item.revision_id == _MEDIUM4_REVISION]
     assert len(matching) == 1
     assert matching[0].verdict is Verdict.MATCHED
+
+
+# -- The dependsOn refusal: a limit this tool states, pinned from both sides -
+
+_DEPENDS_ON_ITEM = "architecture.depends-on-example"
+_DEPENDS_ON_DOCUMENT = "docs/adr/0009-depends-on-example.md"
+_DEPENDS_ON_TEXT = (
+    "# ADR-0009: DependsOn Example\n\nWhat the single upsert pins, matching the document.\n"
+)
+
+_DEPENDS_ON_MIGRATION_ID = "01MB4V3XKQ7ZPYE8R2NGT5HWFA"
+_DEPENDS_ON_REVISION = "01MB4V3XKQ7ZPYE8R2NGT5HWFB"
+#: A well-formed ULID edge -- what a schema-valid `dependsOn` entry looks
+#: like. Its target need not exist as a migration of its own:
+#: `_depends_on_refusal` fires on the declaration itself, before anything
+#: about the graph it names is resolved.
+_DEPENDS_ON_EDGE = "01MB4V3XKQ7ZPYE8R2NGT5HWGA"
+
+
+def _depends_on_corpus(tmp_path: Path, *, depends_on: list[str] | None) -> str:
+    """One tracked, otherwise-ordinary migration, with `dependsOn` set as given.
+
+    The upsert's own anchor matches the document written alongside it, so a
+    run that does *not* refuse compares clean. That is deliberate: it is the
+    only way the assertions below can tell "refused" apart from "compared,
+    and happened to find nothing wrong" -- a corpus that already drifted
+    would report `NOTHING_COMPARED` for the wrong reason on a mutant that
+    dropped the refusal but broke the comparison some other way.
+    """
+    operation, body_path, body = _upsert_revision(
+        item_id=_DEPENDS_ON_ITEM,
+        revision_id=_DEPENDS_ON_REVISION,
+        body=_DEPENDS_ON_TEXT,
+        file_path=_DEPENDS_ON_DOCUMENT,
+    )
+    migration = _write_migration(
+        tmp_path,
+        _DEPENDS_ON_MIGRATION_ID,
+        [
+            {"op": "createItem", "itemId": _DEPENDS_ON_ITEM, "kind": "architecture"},
+            operation,
+        ],
+        depends_on=depends_on,
+    )
+    _write(tmp_path, body_path, body)
+    _write(tmp_path, _DEPENDS_ON_DOCUMENT, _DEPENDS_ON_TEXT)
+    return migration
+
+
+def test_a_declared_dependson_edge_refuses_the_whole_run_even_under_advisory(
+    tmp_path: Path,
+) -> None:
+    """Pin the guard, direction one (PR #449 round two, item 1): a real edge must refuse.
+
+    Given one tracked migration declaring `dependsOn: ["<ulid>"]` -- one
+    well-formed edge, the shape the published schema allows -- when `scan`
+    runs, the whole run reports `NOTHING_COMPARED`, its detail naming
+    `dependsOn` as this tool's own limit rather than a finding about the
+    corpus, and `exit_code(report, advisory=True)` is still 2: the refusal is
+    not drift, so `--advisory` -- which downgrades drift, and only drift, to
+    exit 0 -- must not read it as green.
+
+    GREEN against the shipped code: this pins a guard that already exists
+    (`_depends_on_refusal`, landed in 7b17d8f) rather than driving one in --
+    it is not a RED driver. It goes RED the moment that guard is deleted or
+    weakened: deleting it lets this migration's own clean anchor straight
+    through `_compare`, so `scan` would report `CLEAN` -- not
+    `NOTHING_COMPARED` -- and `exit_code(..., advisory=True)` would read `0`.
+    Weakening it to key on the field's mere *presence* rather than a real
+    edge would still pass this test on its own; the test below is what tells
+    that mutation apart from the real guard.
+    """
+    migration = _depends_on_corpus(tmp_path, depends_on=[_DEPENDS_ON_EDGE])
+
+    report = scan(tmp_path, tracked=[migration])
+
+    assert report.status is Status.NOTHING_COMPARED
+    assert "dependsOn" in report.detail
+    assert "tool" in report.detail
+    assert corpus_drift.exit_code(report, advisory=True) == 2
+
+
+def test_a_declared_but_empty_dependson_does_not_refuse_the_run(tmp_path: Path) -> None:
+    """Pin the guard, direction two: no edges is not a declared dependency graph.
+
+    Given the same shape of migration with `dependsOn: []` -- declared, and
+    empty; the schema places no `minItems` on the field and its own default is
+    `[]`, so this is indistinguishable, on the wire, from a migration that
+    never mentions `dependsOn` at all -- when `scan` runs, the run proceeds
+    normally: the item's anchor is compared, and nothing is refused.
+
+    GREEN against the shipped code, a pin and not a RED driver, and the
+    deletion-direction case (a) above cannot cover by itself: a mutant that
+    weakens `_depends_on_refusal` to `"dependsOn" in document` (key presence)
+    rather than `bool(document.get("dependsOn"))` (a real edge) still passes
+    (a), because both readings refuse a non-empty list -- but that mutant
+    turns this migration's clean anchor into a false `NOTHING_COMPARED` here,
+    which is exactly the failure `_depends_on_refusal`'s own `not depends_on`
+    clause exists to avoid. `report.compared` is asserted, matching how AC-3
+    and AC-4 above check the same thing, and it is what a maintainer reading
+    the floor logic (`held_to_floor`) already holds this corpus to.
+    """
+    migration = _depends_on_corpus(tmp_path, depends_on=[])
+
+    report = scan(tmp_path, tracked=[migration])
+
+    assert report.status is Status.CLEAN
+    assert len(report.compared) > 0
+    assert report.compared[0].revision_id == _DEPENDS_ON_REVISION
