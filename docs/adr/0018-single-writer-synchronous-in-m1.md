@@ -29,13 +29,13 @@ Milestone 1. Only its enforcement mechanism changes.**
    context manager yielding a write handle. There is no other way to write, and
    `CanonicalStore` exposes no connection object.
 2. Milestone 1 enforces exclusivity with an **OS advisory file lock on a
-   separate lock file**, `.theurian/runtime/write.lock`, held for the duration
-   of a write transaction and guarding the state databases under
-   `.theurian/state/`. Two concurrent `theurian migrate apply` invocations
-   serialise **for the work that runs inside that transaction**: the loser waits
-   for the lock, then finds the other's migrations already applied and becomes a
-   no-op (idempotence, FR-K8). What each invocation writes outside the
-   transaction does not serialise, and the narrowing below says what that is.
+   separate lock file**, `.theurian/runtime/write.lock`, held across the whole
+   of `migrate apply`'s own critical section -- not only the write transaction,
+   but database creation, the provenance record and the pointer publish beside
+   it -- and guarding the state databases under `.theurian/state/`. Two
+   concurrent `theurian migrate apply` invocations serialise: the loser waits
+   for the lock, then finds the other's migrations already applied and becomes
+   a no-op (idempotence, FR-K8).
 3. Milestone 3 replaces the lock with an in-process asyncio queue owned by the
    daemon, plus the same file lock for any CLI invocation running alongside it.
    **`transaction()` keeps its signature**, so no application code changes.
@@ -149,6 +149,35 @@ each call site cannot.
 > #439 stays open for the single write interface the amendment above records as
 > owed — the Compliance section's "nothing runs two writers at once" bullet is
 > the missing evidence this measurement supplied by hand.
+>
+> **Closed on 2026-09-01 ([#468](https://github.com/theurian/theurian/issues/468)).**
+> The engineering half landed: `migrate apply` now holds one `WriteLock` across
+> the discard/create decision, `create_database`, the migration transaction,
+> the provenance record and the pointer publish, so the serialisation this
+> point promises covers the whole write, not only the migration content.
+> `record_state` moves ahead of the pointer publish too, so there is no window
+> where `active.json` names a state hash the serve-side provenance gate has
+> not yet been told about.
+>
+> **The first version of this fix did not do that, and a round of review found
+> the gap before it shipped.** Holding the two writes under two separate
+> acquire/release cycles of the same lock, sequential rather than one hold,
+> left `record_state` running after the pointer publish and outside any lock
+> at all — so a loser racing a faster winner could observe `has_state ==
+> false` for a database the winner had *already built and published*, take
+> the doctored-state discard branch meant for a shipped, untrusted
+> `.theurian/state/`, and delete and rebuild the winner's live database out
+> from under it. Measured: 13/78 raced pairs reported both processes
+> `databaseCreated: true`, one pair produced two winners. The single-hold
+> design above is the fix; re-measured with the same two-process harness this
+> narrowing used, and a synthetic stagger sweep built to reproduce the
+> two-winner shape directly: zero crashes, zero double-`databaseCreated`,
+> zero two-winner pairs.
+>
+> #468 is closed for both halves. #439 stays open for the single write
+> interface the Milestone-5 amendment above records as owed — unrelated to
+> what this narrowing was about, since a lock, not a shared interface, is
+> what this point's guarantee has always rested on.
 
 ## Consequences
 
@@ -161,7 +190,11 @@ each call site cannot.
   false on 2026-08-31**: the loser of two concurrent first `migrate apply` runs
   crashed in four runs of eight, on the writes each makes outside the lock
   ([#468](https://github.com/theurian/theurian/issues/468)). The narrowing under
-  the Decision has the mechanism and the three error shapes.
+  the Decision has the mechanism and the three error shapes. **Closed on
+  2026-09-01: the fix holds one lock across creation, the transaction, the
+  provenance record and the pointer publish, and "already safe" is true
+  again** -- re-measured with the same two-process harness, zero crashes
+  across five runs of eight pairs.
 - Milestone 3 changes one class rather than every write path.
 - Synchronous code is easier to reason about and to test where async buys
   nothing.
