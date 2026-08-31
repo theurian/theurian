@@ -91,11 +91,13 @@ each call site cannot.
 > (2026-08-07), the commit that wrote this amendment; a sweep of every commit
 > touching that file finds no other count. So the number is corrected in place
 > rather than left standing as a record that aged: it was wrong when written, not
-> stale by one. It is pinned as a literal nowhere and should not be —
-> `test_connection_claims.py` derives it from the live port and prints it in the
-> failure message of
-> `test_the_canonical_store_port_declares_no_single_write_interface`, which is
-> where to re-derive it rather than trust this sentence.
+> stale by one. **The count above is held against the port rather than by hand**:
+> `test_adr_0018_claims.py::test_the_amendment_spells_the_write_method_count_the_port_publishes`
+> reads the number out of that sentence and asserts it equals what
+> `_write_methods()` derives from the live `CanonicalStore` — the same derivation
+> `test_connection_claims.py` uses — so it goes RED whether this record drifts or
+> the port gains a write method. Re-derive it there rather than trusting this
+> sentence.
 >
 > GOVERNANCE says an accepted ADR is superseded rather than edited. This is
 > recorded as an amendment instead, and the judgement is deliberate: superseding
@@ -205,10 +207,27 @@ Still owed, with the issue or milestone that will satisfy it:
   runtime-checkable `Protocol`, has no implementation body, declares a member,
   annotates its methods. None of that is about *which* methods.
 
-  Measured, not argued: adding a `connection()` method to the `CanonicalStore`
-  Protocol leaves `test_ports.py` green at 90 passed, **and the whole suite green
-  at 1567 passed**. The escape hatch this ADR says cannot exist can be added and
-  nothing notices. Owed and unscheduled, tracked in
+  Measured in Milestone 5, when this bullet was written: adding a `connection()`
+  method to the `CanonicalStore` Protocol left `test_ports.py` and the whole
+  suite green, so the escape hatch this ADR says cannot exist could be added and
+  nothing noticed. The two counts this sentence used to quote are dropped rather
+  than refreshed — they were that suite's, and re-quoting a number nobody
+  re-measured is the defect this document keeps meeting.
+
+  **Re-measured on 2026-08-31 at `4e37097`, each spelling injected into the port
+  in a throwaway checkout, and two of the three now fail.**
+  `-> sqlite3.Connection`, the spelling anyone reaching for this hatch would
+  write, is RED under
+  `test_connection_claims.py::test_the_canonical_store_port_declares_no_single_write_interface`,
+  which reads it as a member returning a context manager. The unannotated
+  `def connection(self)` is RED under
+  `test_ports.py::test_port_methods_are_annotated[CanonicalStore]`. **`-> object`
+  is the residual**: with that member on the port the suite is green at 4,394
+  passed, which is the control's own result at the same commit. So this bullet's
+  heading is now narrower than it reads — what nothing holds is point 1's *first*
+  clause, that all writes go through one interface; the port surface its second
+  clause describes is watched in two spellings out of three. Owed and
+  unscheduled, tracked in
   [#439](https://github.com/theurian/theurian/issues/439) — the interface has to
   exist before a test can pin its surface. This bullet named Milestone 6 and
   [#15](https://github.com/theurian/theurian/issues/15) until 2026-08-31; #15

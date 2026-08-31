@@ -68,8 +68,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   to their parents once docstrings are stripped, and no behaviour changes.
   Residues owned: the single write interface ADR-0018 records as owed
   ([#439](https://github.com/theurian/theurian/issues/439)); ADR-0018's
-  Milestone 5 amendment, whose count of the port's write methods no longer
-  matches the port
+  Milestone 5 amendment, whose count of the port's write methods the port never
+  matched
   ([#446](https://github.com/theurian/theurian/pull/446)); and the served corpus
   twin under `.theurian/knowledge/architecture/`, which carries the retracted
   sentence byte-identically and moves only on a governed re-seed (#199 unit C) —
@@ -213,12 +213,24 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   creates, citing ADR-0018 rather than re-asserting the absence on its own
   authority. It promises no detection in any tense.
 
-  Prose only, and no behaviour changes. What holds these claims today:
-  `test_adr_0018_claims.py` pins the ADR's NFS sentence in both directions, and
-  `test_connection_claims.py` derives the write-method count from the live port
-  and prints it in a failure message, so no record keeps that number in step by
-  hand. The README's copy of the exclusion is held by the same two prose pins
-  that hold the ADR's sentence, which read both records rather than one.
+  **The point-1 escape hatch, re-measured.** The Compliance bullet for point 1
+  said that adding a `connection()` method to the port leaves the suite green
+  and nothing notices. Two of the three spellings now fail:
+  `-> sqlite3.Connection` under `test_connection_claims.py`'s port-shape pin,
+  which reads it as a member returning a context manager, and the unannotated
+  `def connection(self)` under
+  `test_ports.py`'s annotation rule. `-> object` still slips through, and the
+  bullet now records it as the residual, with every count re-taken at `4e37097`
+  in a throwaway checkout; the Milestone-5 figures it used to quote are dropped
+  rather than refreshed, since nothing here re-measured that suite.
+
+  Prose only, and no behaviour changes. What holds these claims:
+  `test_adr_0018_claims.py` pins the ADR's NFS sentence in both directions and
+  reads README's copy of it in the same sweep, so neither record can drift
+  alone; and the count spelled in the amendment is held against the live port by
+  `test_the_amendment_spells_the_write_method_count_the_port_publishes` in that
+  module, which goes RED whether the sentence drifts or the port gains a write
+  method — so the number is not a copy anyone keeps in step by hand.
   Residues owned: the engineering the repoints point
   at ([#439](https://github.com/theurian/theurian/issues/439), filed without a
   milestone), and the served corpus twin under
