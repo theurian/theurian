@@ -1065,12 +1065,14 @@ flowchart TB
 >     against it, and `tests/unit/test_schemas.py`, which checks one unrelated
 >     property, so `default: true` had never taken effect anywhere.
 >
->     *Two of those clauses have moved since, and the notes below say where.* The
->     schema declares `false` now — this decision landing, recorded in the landed
->     note. And the file has a reader, for `security.secretScan`, recorded in the
->     correction note. What has not moved is the key itself: nothing in `src/`
->     reads `raptor.enabled` today either, which is what the rest of this decision
->     rests on.
+>     *Three of those clauses have moved since, and the notes below say where.*
+>     The schema declares `false` now — this decision landing, recorded in the
+>     landed note. The file has a reader, for `security.secretScan`, recorded in
+>     the correction note. And the consumer list just above has grown, test-side
+>     only; it is left at the count it was taken with rather than re-counted, for
+>     the reason the correction note gives. What has not moved is the key itself:
+>     nothing in `src/` reads `raptor.enabled` today either, which is what the
+>     rest of this decision rests on.
 >
 >     A capability whose acceptance tests are owed and whose build cost is
 >     unmeasured (see the amendment to decision 3) ships opt-in, so that turning it
