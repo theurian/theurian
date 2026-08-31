@@ -3,8 +3,8 @@
 This repository dogfoods Theurian: `.theurian/` holds the committed knowledge
 items this repository dogfoods -- a floor of 26, measured 2026-08-31 at
 6b83be1, the same lower bound :data:`MINIMUM_COMPARED` holds this tree to, and
-one a re-seed grows rather than shrinks. Every one of them is a **verbatim,
-byte-frozen snapshot** of a document under `docs/`.
+a count a new item grows, never a re-seed of one already there. Every one of
+them is a **verbatim, byte-frozen snapshot** of a document under `docs/`.
 Each one records the file it was taken from (`sourceAnchors[].filePath`) and the
 commit it was taken at (`sourceAnchors[].commitSha`), plus the digest of the body
 itself (`contentSha256`).
@@ -40,14 +40,16 @@ Exit codes
     Drift. Suppressed by ``--advisory``; see that flag's help for the call.
 ``2``
     **The check did not check enough to mean anything.** No tracked migrations,
-    or git could not be asked what is tracked, or every anchor reached was
-    uncheckable, or fewer anchors were compared than the floor the tree is held
-    to -- 25 of 26 being the case a bare "compared nothing" never catches (see
-    ``--minimum-compared``). Each of those four keeps its own diagnosis: the
-    floor states its own only when the run had a verdict to overturn, never on
-    top of one of the first three. ``--advisory`` does *not* suppress this: a
-    checker that quietly stopped checking is a regression, not a pass, and it is
-    the one outcome that must never read as green.
+    or git could not be asked what is tracked, or a tracked migration declares
+    ``dependsOn`` (this tool's own limit -- see :func:`_depends_on_refusal`), or
+    every anchor reached was uncheckable, or fewer anchors were compared than
+    the floor the tree is held to -- 25 of 26 being the case a bare "compared
+    nothing" never catches (see ``--minimum-compared``). Each of those five
+    keeps its own diagnosis: the floor states its own only when the run had a
+    verdict to overturn, never on top of one of the other four. ``--advisory``
+    does *not* suppress this: a checker that quietly stopped checking is a
+    regression, not a pass, and it is the one outcome that must never read as
+    green.
 
 Corpus membership (mandatory declaration, per the class closure in f2f5d77)
 --------------------------------------------------------------------------
@@ -132,12 +134,13 @@ can disagree with the product.
 
 An anchor this tool cannot honestly compare is reported as **uncheckable** and
 named, never silently skipped. Three shapes reach that, and **none of them
-appears in the corpus as it stands** -- every committed anchor is compared
+appears in the corpus as it stands** -- every *current* anchor is compared
 (measured 2026-08-22 at 64e33da: 26 revisions, 26 anchors, one anchor each, none
 line-ranged, all 26 pinned, all 26 naming
 ``https://github.com/theurian/theurian.git`` and a path under ``docs/``; the run
-reported 26 compared, 0 uncheckable). They are enumerated because each is a way
-a future re-seed could take an item out of the compared set:
+reported 26 compared, 0 uncheckable -- before any re-seed existed, so current-only
+and every-revision counting still agreed). They are enumerated because each is a
+way a future re-seed could take a *current* item out of the compared set:
 
 - an anchor naming another repository, another provider, or no file at all;
 - **a line range.** `sourceAnchor` accepts `lineStart`/`lineEnd` (the published
@@ -147,6 +150,10 @@ a future re-seed could take an item out of the compared set:
   not produce;
 - **more than one comparable anchor on one revision.** One recorded digest
   cannot speak for two source files, so neither of them is compared.
+
+A fourth shape sits outside this list entirely: a *superseded* revision, muted
+by application order rather than by any clause of :func:`anchor_refusal` -- see
+"The compared population is each item's terminal revision" below.
 
 **Going uncheckable is not free.** A run that compares fewer anchors than the
 floor (``--minimum-compared``, 26 for this tree) is exit 2 whatever else it
@@ -216,6 +223,15 @@ THIS_REPOSITORY: Final = "https://github.com/theurian/theurian.git"
 #: **lower bound, not an equality**, because the corpus is expected to grow and
 #: the direction that is never routine is committed knowledge disappearing.
 #:
+#: **They bound different populations, and #317 is why that now matters.** This
+#: constant bounds anchors this run actually *compares* -- one per live item,
+#: since #317 restricted that to each item's terminal revision.
+#: ``MINIMUM_MIGRATIONS`` bounds *tracked migration files*, and a re-seed grows
+#: that population without growing this one: this repository's own corpus, after
+#: the ADR-0013 re-seed, is 27 tracked migrations and 26 compared anchors. "The
+#: same number and the same shape" describes the day both constants were set to
+#: 26 each, not a claim that the two populations stay equal.
+#:
 #: What it buys that ``NOTHING_COMPARED`` alone does not: that status fires only
 #: when the compared count reaches *zero*, so 25 of 26 anchors going uncheckable
 #: -- one re-seed at a time, each reported as a single notice on an advisory job
@@ -272,8 +288,11 @@ committed body, which is pinned verbatim.
         --source-commit "$(git rev-parse HEAD)" ...
     theurian propose accept <proposal-id>
 
-This re-seed clears the warning. Only each item's terminal revision -- the
-last upsertRevision for that itemId -- is compared, so the migration you just
+This re-seed clears the warning once the new migration is staged or
+committed -- this tool's population is `git ls-files --cached`, so an
+unstaged re-seed is not read yet and a run against it still reports the old
+warning. Once it is, only each item's terminal revision -- the last
+upsertRevision for that itemId -- is compared, so the migration you just
 added supersedes the one that pinned the stale digest, and the superseded
 revision stops being compared at all.
 
@@ -804,6 +823,11 @@ def scan(repo_root: Path = REPO_ROOT, *, tracked: Iterable[str] | None = None) -
     application_order = tuple(sorted(revisions_by_path, key=lambda path: inner_ids[path]))
 
     current = _current_operations(revisions_by_path, application_order)
+    superseded = sum(len(revisions) for revisions in revisions_by_path.values()) - len(current)
+    # Emitted in `revisions_by_path`'s own (population) order, not `application_order`:
+    # only *deciding* the winner needs application order, and `current` already carries
+    # that decision, so walking the winners back out in path order is cosmetic --
+    # emitted comparisons read grouped by file, the way a maintainer scans the corpus.
     for path, revisions in revisions_by_path.items():
         for index, operation in enumerate(revisions):
             item_id = str(operation.get("itemId", ""))
@@ -811,7 +835,7 @@ def scan(repo_root: Path = REPO_ROOT, *, tracked: Iterable[str] | None = None) -
                 continue  # superseded by a later position on the same item
             comparisons.extend(_compare(repo_root, path, operation))
 
-    return Report(tuple(comparisons), *_verdict(comparisons, len(paths)))
+    return Report(tuple(comparisons), *_verdict(comparisons, len(paths), superseded))
 
 
 @dataclass(frozen=True, slots=True)
@@ -922,8 +946,17 @@ def _current_operations(
     return current
 
 
-def _verdict(comparisons: Sequence[Comparison], migrations: int) -> tuple[Status, str]:
-    """The run's own status, which is not the same question as "is there drift?"."""
+def _verdict(
+    comparisons: Sequence[Comparison], migrations: int, superseded: int
+) -> tuple[Status, str]:
+    """The run's own status, which is not the same question as "is there drift?".
+
+    ``superseded`` is the count application order dropped before any of it reached
+    :func:`_compare` -- not visible in ``comparisons`` at all, since a superseded
+    revision produces no :class:`Comparison` (#317). Carried in only so a summary
+    like "26 across 27" names where the seventh migration went, rather than leaving
+    a reader to notice the arithmetic does not otherwise close.
+    """
     compared = [item for item in comparisons if item.verdict is not Verdict.UNCHECKABLE]
     if not compared:
         return (
@@ -934,7 +967,7 @@ def _verdict(comparisons: Sequence[Comparison], migrations: int) -> tuple[Status
     drifted = [item for item in compared if item.verdict is not Verdict.MATCHED]
     counted = (
         f"compared {len(compared)} anchor(s) across {migrations} committed migration(s); "
-        f"{len(comparisons) - len(compared)} uncheckable"
+        f"{len(comparisons) - len(compared)} uncheckable; {superseded} superseded"
     )
     if drifted:
         return Status.DRIFTED, f"{len(drifted)} drifted -- {counted}."
@@ -968,16 +1001,17 @@ def held_to_floor(report: Report, minimum: int) -> Report:
     rendered from them, and only the run's own verdict changes.
 
     **A report that is already ``NOTHING_COMPARED`` is returned as it stands.**
-    :func:`scan` reaches that status by three routes, each with a diagnosis of
+    :func:`scan` reaches that status by four routes, each with a diagnosis of
     its own: nothing tracked under ``.theurian/migrations/`` at all, git
-    declining to say what is tracked, and every anchor it did reach being
-    uncheckable. All three compare zero anchors, so without this the floor fires
-    over the top of them and replaces the one sentence saying what happened --
-    with text that then claims "Every anchor that stopped being comparable is
-    named in this report", when the first two routes name none because there are
-    none, and that offers "restore them, or lower the floor" as the remedy for a
-    git that would not answer. The exit status is 2 either way; what survives is *which*
-    failure a maintainer is looking at.
+    declining to say what is tracked, a tracked migration declaring
+    ``dependsOn`` (this tool's own limit, :func:`_depends_on_refusal`), and
+    every anchor it did reach being uncheckable. All four compare zero anchors,
+    so without this the floor fires over the top of them and replaces the one
+    sentence saying what happened with this function's own below-floor remedy --
+    built for anchors that went uncheckable one at a time, not for a git that
+    would not answer, or a dependency graph this tool refuses to walk. The exit
+    status is 2 either way; what survives is *which* failure a maintainer is
+    looking at.
 
     **The floor outranks drift**, which is deliberate and is the whole point of
     binding it here. ``--advisory`` turns drift into exit 0, so a run that found
@@ -1002,10 +1036,12 @@ def held_to_floor(report: Report, minimum: int) -> Report:
         f"compared {compared} anchor(s), fewer than the {minimum} this corpus is held to, so "
         f"most of it went unchecked and a clean result would prove almost nothing. Every anchor "
         f"that stopped being comparable is named in this report, one SKIP line each: restore "
-        f"them, or lower the floor in the same change that says why. A governed withdrawal that "
-        f"lowers the live-item count exits 2 by design -- that is this guard working, not "
-        f"failing -- so lower the floor constant in the same change that withdraws the item, "
-        f"with the reasoning recorded there.",
+        f"them. What actually shrinks this count: an anchor's sourceUri repointed off \""
+        f'{THIS_REPOSITORY}", or a migration leaving git tracking -- not a governed '
+        f"deprecation, which never touches an item's terminal upsertRevision and so cannot "
+        f"move this number at all (whether it should is issue #453, a design question, not "
+        f"answered here). If the shrink is deliberate, lower the floor constant in the same "
+        f"change, with the reasoning recorded.",
     )
 
 
