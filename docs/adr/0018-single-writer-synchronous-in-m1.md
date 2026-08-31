@@ -71,6 +71,17 @@ each call site cannot.
 > [#15](https://github.com/theurian/theurian/issues/15), which Milestone 6 has to
 > answer for both stores at once.
 >
+> **Repointed on 2026-08-31
+> ([#436](https://github.com/theurian/theurian/issues/436)): the sentence above
+> names a tracker that is closed and a milestone that has passed.** #15 closed on
+> 2026-08-10 (`66a43ae`) by wiring ADR-0024 decision 5, the withdrawal→purge
+> trigger — which is neither store's write interface. What this amendment records
+> as owed is still owed, and its live owner is
+> [#439](https://github.com/theurian/theurian/issues/439): the single write
+> interface, the Protocol-surface pin below, and the index's own contract, filed
+> without a milestone. The sentence is left standing rather than rewritten
+> because it is a dated record of what was believed in Milestone 5.
+>
 > GOVERNANCE says an accepted ADR is superseded rather than edited. This is
 > recorded as an amendment instead, and the judgement is deliberate: superseding
 > is for a decision that turned out wrong, and nothing here decided wrongly. What
@@ -167,7 +178,7 @@ each call site cannot.
   and `tests/integration/test_cli_commands.py::test_apply_is_idempotent` — a
   second application of the same migration set changes nothing.
 
-Still owed, with the milestone that will satisfy it:
+Still owed, with the issue or milestone that will satisfy it:
 
 - **Nothing holds point 1, and this section claimed a test that does not check
   it.** The bullet here read "`CanonicalStore` exposes no connection object and
@@ -182,9 +193,12 @@ Still owed, with the milestone that will satisfy it:
   Measured, not argued: adding a `connection()` method to the `CanonicalStore`
   Protocol leaves `test_ports.py` green at 90 passed, **and the whole suite green
   at 1567 passed**. The escape hatch this ADR says cannot exist can be added and
-  nothing notices. Milestone 6, with
-  [#15](https://github.com/theurian/theurian/issues/15) — the interface has to
-  exist before a test can pin its surface.
+  nothing notices. Owed and unscheduled, tracked in
+  [#439](https://github.com/theurian/theurian/issues/439) — the interface has to
+  exist before a test can pin its surface. This bullet named Milestone 6 and
+  [#15](https://github.com/theurian/theurian/issues/15) until 2026-08-31; #15
+  closed on 2026-08-10 without shipping the interface, and #439 is where the work
+  now lives ([#436](https://github.com/theurian/theurian/issues/436)).
 
 - **Nothing runs two writers at once.** This section claimed an integration test
   running N concurrent `migrate apply` processes against one project, asserting
@@ -195,7 +209,10 @@ Still owed, with the milestone that will satisfy it:
   ([#65](https://github.com/theurian/theurian/issues/65)). This is the ADR's
   central claim, so its evidence is the one that was missing: everything above
   holds that a *single* writer behaves, which is what an unserialised design
-  would also do. Milestone 6, with the index writer below.
+  would also do. The evidence stays bundled with the index writer below, whose
+  live owner is [#439](https://github.com/theurian/theurian/issues/439); this
+  bullet said Milestone 6, which has passed without the test being written
+  ([#436](https://github.com/theurian/theurian/issues/436)).
 - **`sqlite3` is not confined, and is already imported outside
   `infrastructure/sqlite/`.** This section claimed a lint check kept it there.
   There is none, and `cli/index_commands.py` imports it directly.
@@ -203,8 +220,8 @@ Still owed, with the milestone that will satisfy it:
   the rule and is parametrised over `sqlite_vec` and `mcp` only.
   [#66](https://github.com/theurian/theurian/issues/66).
 
-- **The derived index has no single-writer contract at all** (Milestone 6,
-  [#15](https://github.com/theurian/theurian/issues/15)). Everything above is
+- **The derived index has no single-writer contract at all** (owed,
+  [#439](https://github.com/theurian/theurian/issues/439)). Everything above is
   about `CanonicalStore`. Milestone 5 gave the product a second writable SQLite
   artifact — the retrieval index — and `theurian index build` is today its only
   writer, serialised by nothing but the fact that a person runs it. Point 1's
@@ -229,5 +246,23 @@ Still owed, with the milestone that will satisfy it:
   > ADR's point 1 applied to the index for the first time, and it is what
   > discharges this bullet when it lands. The `CanonicalStore.transaction()`
   > half above is untouched by it and still owed.
+
+  > **Repointed on 2026-08-31
+  > ([#436](https://github.com/theurian/theurian/issues/436)): Milestone 6 has
+  > passed and this bullet did not close.** The tracker it named,
+  > [#15](https://github.com/theurian/theurian/issues/15), closed on 2026-08-10
+  > (`66a43ae`) by wiring ADR-0024 decision 5 — the withdrawal→purge trigger — so
+  > the second writer the paragraph above predicted is here and the sentence
+  > calling `theurian index build` the index's only writer no longer holds:
+  > `migrate apply` publishes a purged build through
+  > `application/withdrawal_purge.py`. What it writes through is still not an
+  > interface. There is no index write lock in the package: at `6b83be1`,
+  > `git grep -nE "flock|lockf|LOCK_EX|write_lock" -- packages/theurian-core/src`
+  > returns ten lines, every one of them the canonical `ProjectPaths.write_lock`
+  > or the daemon's single-instance lock, and none of them in an index write
+  > path. The purge records the gap in its own source — "No new index-write lock
+  > is taken" — and rests on a fresh ULID and an `os.replace` instead. Owed and
+  > unscheduled, tracked in
+  > [#439](https://github.com/theurian/theurian/issues/439).
 - **NFR-4 is not discharged**, per the amendment above. It belongs with the same
   blue/green work.
