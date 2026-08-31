@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M1C8VS6C7SXBWJNBV3W5QEP7",
+  "migrationId": "01M1C8VS6C7SXBWJNBV3W5QEP8",
+  "itemId": "architecture.single-writer-synchronous-in-m1",
+  "agentId": "claude-code-theurian-python",
+  "taskId": "199-unit-c-second-wave",
+  "model": "claude-sonnet-5",
+  "reasoning": "Verbatim copy of the corrected ADR at the pinned commit; one revision carrying all source fixes landed since the seed.",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "5a9a1e554dd0e52f2d0232a4fe1f0a923b0aeb25",
+      "filePath": "docs/adr/0018-single-writer-synchronous-in-m1.md"
+    }
+  ]
+}
