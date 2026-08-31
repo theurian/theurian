@@ -316,9 +316,10 @@ the defect #429 exists to have corrected.
 measurement above is what got filed: **[#479](https://github.com/theurian/theurian/issues/479)**
 was opened for GitHub review ingestion, adopting this candidate table and its
 scoping — the ingestion path is #479's, the fetch controls stay #429's — and its
-body names these same four sites. This branch's follow-up commit — the last one,
-`docs(review)` — repoints all four, so the statements
-are *owned* rather than *unowned-with-candidates*. The four-candidate analysis is
+body names these same four files. `ea77745` repoints four of the five cites and
+`1f97a59` the fifth — the one in `test_findings_store_is_unreachable.py` that the
+file-keyed count above could not see — so the statements are *owned* rather than
+*unowned-with-candidates*. The four-candidate analysis is
 compressed at each site to the sentence that carries the point ("filed from this
 sweep's measurement after four nearer candidates were each read and verified not
 to cover it"); the table above stays here, in full, as the evidence behind it.
@@ -468,7 +469,9 @@ exists to prevent, committed inside the work log itself.
 | `1433a3d` `test(claims)` | 0 | The pin this sweep asked for, authored by the tests specialist: the roadmap's T-16 quotation held against the live threat-model row |
 | `da6231f` `docs(review)` | 0 | Round-1 fixes: the #80 successor clause carried to all four sites, this table re-derived, the fifth carrier named, `project_config.py`'s schedule clause dropped |
 | `1f97a59` `test(claims)` | 0 | Round-2 tests half: the correction marker scoped, and the fifth carrier repointed at #479 in the file itself |
-| `docs(review)`, last | 0 | Round-2 docs half: this row's own count settled at five, the table brought level with the branch again, the docstring-only claim narrowed to the commits it is true of |
+| `57c3da3` `docs(review)` | 0 | Round-2 docs half: the #479 count settled at five, the table brought level with the branch again, the docstring-only claim narrowed to the commits it is true of |
+| `9dc18a9` `test(claims)` | 0 | Round-2 tests half: the three rules that survived their own deletion, driven; the marker window measured and tightened to the number's span |
+| `docs(changelog)`, this one | 0 | The CHANGELOG entry, and these two rows |
 
 **No total is asserted for this table, deliberately.** Two rounds running, a
 figure here went stale the moment the next commit landed — "Eight commits" over
@@ -476,6 +479,14 @@ nine rows in round 1, twelve rows against thirteen commits in round 2. The row
 count is what `git log origin/main..HEAD` returns and is not restated in prose;
 the **Cites** column is the one number that is checked, because it is derived
 from the classifier and must equal 28 whatever the commit count does.
+
+**And the table is closed here, by class rather than by enumeration.** Commits
+after this row are the work-log-maintenance and CHANGELOG commits of the
+endgame; by construction they touch no cite and add no register member — a
+reader verifying this claim runs the classifier at the merge commit, not this
+table. Three times this branch tried to stay level with itself by appending a
+row, and three times the next commit landed first; the fourth answer is a claim
+the reader can re-derive rather than a list that has to be maintained.
 
 **Which commits touch Python, and how deeply**, measured per file by parsing both
 revisions rather than asserted over the branch. Three registers, because one
@@ -485,7 +496,7 @@ sentence covering all of them was false of the round:
 | :-- | :-- | :-- |
 | Docstring-only | `ast.dump` equal with module/class/function docstrings stripped | `8c48c32` (4 files), `ea77745`, `da6231f`'s `project_config.py`, `1f97a59`'s `test_examples.py` and `test_findings_store_is_unreachable.py` |
 | Literal-text-only | not docstring-only, but `ast.dump` equal with **every string constant blanked** — an assert message or a required-sentence tuple moved, no logic | `7e12caf` (3 files), `fd3829c`, `da6231f`'s `test_network_call_sites.py` |
-| Structure moved | neither holds; this is real code | `1433a3d` (`test_examples.py`, plus `test_roadmap_claims.py` as a new module) and `1f97a59`'s `test_roadmap_claims.py` |
+| Structure moved | neither holds; this is real code | `1433a3d` (`test_examples.py`, plus `test_roadmap_claims.py` as a new module), `1f97a59`'s `test_roadmap_claims.py`, and `9dc18a9`'s `test_examples.py` and `test_roadmap_claims.py` |
 
 The middle register exists because the earlier version of this sentence claimed
 docstring-only for the whole branch, and `7e12caf`, `fd3829c` and `da6231f` each
