@@ -35,5 +35,7 @@ Report what was ingested by source type and how many documents changed.
   protecting them.
 - `theurian ingest` generates no candidates and runs no summarization stage, so
   there is no partial result to report. When review ingestion lands
-  (Milestone 7, [#129](https://github.com/theurian/theurian/issues/129)), a
-  failure in candidate generation must not fail raw ingestion (FR-V5).
+  (Milestone 7 — no open issue owns it, and
+  [#129](https://github.com/theurian/theurian/issues/129), which this line used
+  to name, closed on the wording rather than on the adapter), a failure in
+  candidate generation must not fail raw ingestion (FR-V5).
