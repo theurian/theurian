@@ -2200,13 +2200,39 @@ one that ran, on every session, and the pass that fixed the unreachable face lef
 it in place. Ranking the faces by how wrong they read, rather than by which of
 them a user meets, is what produced that.
 
-**Two of those three files still carry the premise**, in documents
-[#40](https://github.com/theurian/theurian/pull/40) did not reach:
+**Two of those three files carried the premise on into documents
+[#40](https://github.com/theurian/theurian/pull/40) did not reach.** Both are
+corrected, and take the same three columns as the resolved rows above:
 
-| Surface | What it says | Owner |
+| Surface | The premise it carried | Corrected in |
 | :-- | :-- | :-- |
-| `docs/integrations/claude-code.md:101` | the `SessionStart` flowchart: `theurian on PATH? --no--> warn: run /theurian:setup`, which now also disagrees with the shipped script | — |
-| `docs/architecture/requirements-analysis.md`, the compatibility flowchart | its `CLI absent` branch: "Advise /theurian:setup. Do not install anything." | — |
+| `docs/integrations/claude-code.md:101` | the `SessionStart` flowchart: `theurian on PATH? --no--> warn: run /theurian:setup`, which also disagreed with the shipped script | [#421](https://github.com/theurian/theurian/issues/421), fixed by [#435](https://github.com/theurian/theurian/pull/435) |
+| `docs/architecture/requirements-analysis.md`, the compatibility flowchart | its `CLI absent` branch: "Advise /theurian:setup. Do not install anything." | [#421](https://github.com/theurian/theurian/issues/421), fixed by [#435](https://github.com/theurian/theurian/pull/435) |
+
+Both nodes now name the installer before `/theurian:setup`, in the order the
+shipped hook prints it — measured by running
+`plugins/claude-code/scripts/session-start.sh` with `theurian` off `PATH`, which
+is the branch's whole behaviour. The requirements-analysis branch keeps "Do not
+install anything": that half was true of the hook, which prints its advice and
+runs none of it. **Both corrections are now pinned, and by a node rule rather
+than by the tuple.** `packages/theurian-core/tests/unit/test_setup_claims.py`
+gained `test_the_session_start_flowchart_names_the_installers_before_setup` and
+`test_the_compatibility_flowchart_advises_an_installer_before_setup`, each
+keyed on the one Core-absent edge of its chart and each asserting that edge
+unique before reading it. `docs/integrations/claude-code.md` also joined
+`CORE_ARRIVAL_SURFACES`, on the block that now quotes the hook's line verbatim.
+
+**Membership alone would not have held either node, and that was measured
+rather than argued.** Reverting `claude-code.md:101` to `warn: run
+/theurian:setup` while leaving the quoted block in place kept all three
+tuple rules green: the literal rule reads the quotation, and the ordering rule
+skips the diagram because the diagram's own block names no installer for it to
+place. `requirements-analysis.md` stays outside the tuple entirely — its node
+advises "the installer" and points here rather than repeating the commands, so
+the verbatim rule would have nothing to find, and loosening that rule to accept
+a paraphrase is the supply-chain trade this entry exists over. The fact side —
+that these are the installers the product offers — stays where it was, on
+`INSTALLERS` checked against `probe_core`'s own words.
 
 Both *specify* corrected surfaces rather than being them, which is why a search
 over user-facing text does not reach them. Recorded here rather than left to
