@@ -1231,8 +1231,23 @@ flowchart TB
   > never builds a Domain node at all. The threshold is a `ForestOptions` field
   > defaulting to the schema's own value, pinned against
   > `schemas/config/project-config.schema.json` by
-  > `test_the_option_defaults_are_the_config_schemas_own`; nothing reads
-  > `.theurian/config.yaml`, so an operator cannot yet move it.
+  > `test_the_option_defaults_are_the_config_schemas_own`; no key in the `raptor`
+  > block has a reader in `src/`, so an operator cannot yet move it. The one
+  > reader `.theurian/config.yaml` has takes `security.secretScan` from it and
+  > nothing else (ADR-0027 decision 3), which is why "configurable" is still ahead
+  > of the code for *this* threshold in particular;
+  > `tests/unit/test_raptor_config_claims.py` holds the narrowed claim and
+  > `tests/unit/test_config_key_call_sites.py` holds the source tree to the one
+  > key that is read.
+  >
+  > > **Corrected in the same #426 pass that narrowed decision 10.** The clause
+  > > above reached "an operator cannot yet move it" from a premise about the
+  > > whole configuration file, which ADR-0027 decision 3 had already falsified.
+  > > The conclusion is unchanged and now rests on the `raptor` block alone, which
+  > > is the population that is still without a reader. The full account — what
+  > > the retracted sentences said, and why each conclusion survives its
+  > > narrowing — is the correction note under decision 10; it is not repeated
+  > > here, because one record of a class is what makes it findable.
   >
   > Shallow is now a property of this builder rather than of any column, which
   > matters outside this ADR: `index_schema.py` records that `CHECK (level BETWEEN

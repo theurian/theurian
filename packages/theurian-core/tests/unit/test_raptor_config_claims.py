@@ -174,25 +174,22 @@ DECISION_TEN_SENTENCES: Final = (
 #: The sentences of this class still carrying the retracted universal, as
 #: ``(where it is, a fragment that identifies it)``.
 #:
-#: **This is a debt ledger, not an allowlist.** #426 narrowed the two sentences
-#: its commit named — decision 10's rationale and its "switch is the CLI flag"
-#: note — and the same wording survives once more in the same file, in the
-#: amendment to decision 3, where it is the premise of a conclusion that is still
-#: true ("an operator cannot yet move it"). It is the same defect: a universal
-#: falsified by ADR-0027 decision 3, left standing.
+#: **This is a debt ledger, not an allowlist, and it is empty.** It held one row
+#: when this module landed: the amendment to ADR-0008 decision 3, where the same
+#: universal #426 narrowed in decision 10 survived as the premise of a conclusion
+#: that is still true ("an operator cannot yet move it"). Recording it here rather
+#: than scoping the scan to decision 10 is what kept it visible to the suite, and
+#: the row was discharged in the same PR — the sentence now reads "no key in the
+#: `raptor` block has a reader in `src/`", with the reader the file does have
+#: named beside it.
 #:
-#: It is recorded here rather than left outside the scan's reach because the
-#: alternative — scoping the scan to decision 10 — makes the survivor invisible
-#: to the suite and to whoever reads it next. The assertion below is an exact
-#: match in both directions, so **correcting the sentence makes this module RED**
-#: with an instruction to delete the row. That is intended: a ledger nobody has to
-#: empty is a ledger that grows.
-UNNARROWED_UNIVERSALS: Final[tuple[tuple[str, str], ...]] = (
-    (
-        "ADR-0008, the amendment to decision 3 (the `minChildrenPerSummary` threshold note)",
-        "nothing reads `.theurian/config.yaml`, so an operator cannot yet move it",
-    ),
-)
+#: The assertion below is an exact match in both directions, which is why the row
+#: could not be left behind: **correcting the sentence makes this module RED**
+#: with an instruction to delete the row. That is intended, and it is the reason
+#: this stays a tuple rather than becoming a comment — a ledger nobody has to
+#: empty is a ledger that grows, and the next survivor of this class is added
+#: here and discharged the same way.
+UNNARROWED_UNIVERSALS: Final[tuple[tuple[str, str], ...]] = ()
 
 #: One case per form the scan claims to catch, and per form it claims to let past.
 #:
