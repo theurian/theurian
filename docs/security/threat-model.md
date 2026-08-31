@@ -211,7 +211,7 @@ written, and that has not been characterised.
 | `theurian auth rotate` output | `…tests/integration/test_auth_rotate.py::test_the_new_token_never_appears_in_the_output` — also excludes the first eight characters |
 | the generated MCP configuration and env file | `…tests/integration/test_setup_service.py::test_the_mcp_entry_is_installed_without_the_literal_token` and `::test_the_env_file_references_the_token_rather_than_embedding_it` (T-8, SEC-5) |
 | `doctor --report`, against a token Theurian did not write | `…tests/integration/test_setup_report_withholding.py::test_a_bearer_token_in_the_installed_entry_never_reaches_a_report`, `::test_a_token_in_the_installed_plist_never_reaches_a_report`, and — through the *other* service manager, which is the one the defect was found in — `::test_a_token_on_a_unit_continuation_line_never_reaches_a_report` |
-| every step at once, rather than the routes known to be broken | `…test_setup_report_withholding.py::test_no_step_publishes_a_value_it_only_read` seeds a sentinel into all nine sources a step reads and does not own, and sweeps the whole payload; `::test_the_sweep_rings_for_a_step_that_forgets_to_withhold` is its alarm's own test |
+| every step at once, rather than the routes known to be broken | `…test_setup_report_withholding.py::test_no_step_publishes_a_value_it_only_read` seeds a sentinel into every source a step reads and does not own — the `seeds` dict in `_seed_every_external_source`, ten sources at `06de58a`, of which `_OBSERVED_SEEDS` names the six that carry a positive control — and sweeps the whole payload; `::test_the_sweep_rings_for_a_step_that_forgets_to_withhold` is its alarm's own test |
 | the setup journal, `~/.theurian/setup-journal.jsonl` — written beside the token by the run that mints it | `packages/theurian-core/tests/integration/test_setup_journal.py::test_the_journal_never_records_the_token_it_watched_being_minted`, which asserts the minting *is* recorded before asserting the value is not, so the prohibition cannot pass on an empty file |
 | the env-reference step's *conflict* detail, which the sweep above does not reach | `packages/theurian-core/tests/integration/test_setup_env_file.py::test_the_conflict_detail_carries_the_markers_and_the_remedy_and_no_other_line` |
 | the env-reference step's *satisfied* detail, the override warning — a detail hanging off a step that **passed**, which is a channel this sweep was written before there was one | the sweep's env-file seed was re-pointed at it: it now seeds a current block with `export THEURIAN_MCP_TOKEN=<sentinel>` under it, which is the shape that reaches this arm, and `…/test_setup_env_file.py::test_the_override_warning_names_the_variable_and_never_the_line_it_found` pins the message itself |
@@ -510,6 +510,74 @@ actor is the CP-2 escape this table's own row names: a `contentFile` naming a
 FIFO made `migrate validate --json` hang with no output and no exit (#215), and
 a hang cannot even be graded. Each is measured on the fix's own branch and
 pinned by tests that fail when the guard is removed.
+
+> **Amended in the #199 unit-A audit, re-measured after review (2026-08-31):
+> what the shipped ingestion path costs on an alias bomb, and what it does with
+> one.** This entry recorded #232's pre-fix cost and the constants that closed
+> it, but not which constant does the closing, and the guess on record was that
+> PyYAML's node cache bounds the breadth. **It does not.** `_walk` carries no
+> memo — unlike `_external_refs`'s `descended` — so a node reached by *n* paths
+> is entered *n* times: at 22 alias levels the parsed graph holds **48 objects**
+> while the walk enters **120,491**. The budget that bites is
+> `MAX_PROJECTION_CHARS`, charged in `_Spend.emit` during the walk;
+> `MAX_PROJECTION_NODES` is not reached on this shape.
+>
+> **The shipped path truncates; it does not refuse.** Ingestion calls
+> `normalization/projection.py::project` — `application/ingestion_service.py:225`,
+> inside `_to_document`. `project` cuts at `MAX_PROJECTION_CHARS` on a line
+> boundary, appends `SIZE_MARKER` (`[truncated: size limit]`) and **returns that
+> text to be indexed**. The refusing twin `project_checked`, and
+> `parsers/structured.py::build_projection` which wraps it, have **no production
+> caller at all** — `build_projection` has none anywhere, and `project_checked`
+> is reached only from it and from `tests/unit/test_projection.py`. So the
+> attacker's document is not rejected: a truncated projection of it enters the
+> index, and the bound is on work spent, not on admission.
+>
+> Measured on the shipped path (`YamlParser.parse` → `project`), **wall clock
+> taken clean — `tracemalloc` inflates it 5–8× and never runs in a timing pass**
+> — **CPython 3.13.3 arm64**, the version the package requires, self-reported by
+> the measuring process; one shape per process, because `ru_maxrss` is a
+> high-water mark and shapes measured together corrupt each other's memory
+> figures:
+>
+> | Document, widest admitted by the 4 MiB gate | Bytes | Parse | Project | Total | Parse share | RSS delta |
+> | :-- | --: | --: | --: | --: | --: | --: |
+> | block sequence of `- 1` entries | 4,194,291 | 12.961 s | 0.103 s | **13.064 s** | **99.2%** | **+666.2 MB** |
+> | flat mapping, one-character scalars | 4,194,280 | 10.272 s | 0.125 s | 10.397 s | 98.8% | +595.7 MB |
+> | nested-alias fan-out | 4,194,295 | 5.802 s | 0.376 s | 6.178 s | 93.9% | +178.7 MB |
+> | nested-alias chain, 1.29 MB | 1,289,309 | — | — | 2.180 s | 82.9% | +81.9 MB |
+>
+> Every row truncates and indexes a ~2.09-million-character projection. Python-heap
+> peak, separate `tracemalloc` pass on the flat-mapping row: **581.1 MB**.
+>
+> **Token density is the lever, not alias structure.** The `- 1` sequence spends
+> four bytes per node, so 4 MiB buys about 1.05 million of them; the alias fan's
+> entries cost ~13 bytes each. That is the whole difference between 13.06 s and
+> 6.18 s — and it *strengthens* this entry's conclusion rather than complicating
+> it, because `MAX_YAML_BYTES` is the bound that governs token count, while every
+> projection budget acts on a term worth under 3% of the total. `_StrictLoader`
+> derives from PyYAML's pure-Python `SafeLoader`, not `CSafeLoader`, so this is
+> interpreted scanning per token and libyaml never enters the shipped path.
+>
+> **The parse dominates, and that is the correction that matters.** An earlier
+> revision of this amendment timed the projection alone, under `tracemalloc`,
+> against the *refusing* function, and reported ~3.1 s as an ingestion-path cost.
+> All three were wrong: the walk is under 3% of end-to-end cost on the worst
+> shape, `MAX_YAML_BYTES` rather than any projection budget bounds the dominant
+> term, and the function measured is one ingestion never calls. That revision also
+> compared its figure to the 0.48 s `projection.py::MAX_PROJECTION_NODES` records
+> and called it ~6.5× larger; the comparison put an instrumented number against a
+> clean one. Clean on clean the two shapes are **0.95×** — indistinguishable — so
+> the comparison is withdrawn rather than restated.
+>
+> **Residual, as a figure and with its limits:** one clone-reachable document
+> admitted by the 4 MiB gate costs **~13 s of single-threaded CPU-bound work and
+> ~666 MB RSS** before its truncated projection is indexed. This is the worst
+> shape **found**, not an established maximum — no search over document shapes was
+> exhaustive, and the search has already moved the figure twice, from an
+> alias-structure shape to a token-density one. The bound is counted
+> and sized, not timed; the decision below that no ingestion-side timeout is
+> filed is unchanged, and what this amendment closes is the missing number.
 
 **Discharged: the `$ref` walk's path strings
 ([#328](https://github.com/theurian/theurian/issues/328)).** #245's memo
@@ -1151,11 +1219,40 @@ a further node that could hold a reference.
 
 *Future controls, not shipped:* the scheme allowlist, the rejection of
 private-network destinations, and the repository allowlist in
-`.theurian/config.yaml` are owed with review ingestion (Milestone 7,
-[#129](https://github.com/theurian/theurian/issues/129)). No reader of
-`.theurian/config.yaml` exists in `src/`, and `infrastructure/github/` is a
-docstring-only package with no HTTP client, so no code path performs any of the
-three.
+`.theurian/config.yaml` are owed with the first external fetch path, and are
+owned by [#429](https://github.com/theurian/theurian/issues/429).
+`security/project_config.py` reads that file, but for one key only —
+`security.secretScan`. Nothing in `src/` reads `providers.review.repositories`,
+and `infrastructure/github/` is a docstring-only package with no HTTP client, so
+no code path performs any of the three.
+
+> **Corrected in the #199 unit-A audit (2026-08-30, owner corrected again after
+> review).** This paragraph said "No reader of `.theurian/config.yaml` exists in
+> `src/`", which ADR-0027 decision 3 falsified:
+> `security/project_config.py::read_secret_scan_policy` reads that file on the
+> `propose accept` path (`application/proposal_service.py:1148`). The conclusion
+> is unchanged and rests on the narrower fact above — the reader is scoped to one
+> key by design, which `project_config.py`'s own module docstring states and
+> `tests/unit/test_config_key_call_sites.py::test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_ones`
+> pins as an equality over the whole source tree. **That pin reads names, and
+> records its own limit:** a key assembled at runtime, one reached through a
+> variable, or a whole-mapping read that never names the key all pass it — "a
+> floor on the review a new reader gets, not a proof that one cannot exist". So a
+> reader added the ordinary way reddens there; one added those three ways does
+> not, and this sentence is the only thing standing behind it.
+>
+> **The owner has now been wrong twice, in opposite directions.**
+> [#129](https://github.com/theurian/theurian/issues/129) was closed `COMPLETED`
+> on 2026-08-22 having corrected this entry's wording rather than building any of
+> the three controls, so this audit repointed the three at
+> [#368](https://github.com/theurian/theurian/issues/368) — the review-ingestion
+> epic. Review then found that #368 builds no fetch path either: it ingests
+> `Review-Finding` trailers out of git history and reaches no network, so it can
+> no more own a fetch control than the closed issue could.
+> [#429](https://github.com/theurian/theurian/issues/429) was opened to hold them
+> against whatever first performs an external fetch. The lesson is narrower than
+> "check the issue is open": **an owner has to be the change that would implement
+> the control, and an epic in the right milestone is not automatically that.**
 
 What stands in for all three is the absence of the request. *Never fetched* is
 pinned separately from the recording, because reading the recorded output cannot
@@ -2218,9 +2315,11 @@ neither file matches the bare key, measured 2026-08-23 by the `git grep` above.
 What a reader who follows either now gets is the `daemon` extra, so
 `theurian daemon start` does not fail on `uvicorn`, and an interpreter chosen by
 the flag rather than by whichever `python3` comes first — which on macOS is 3.9.
-The rest of the release gate stays open in
-[#39](https://github.com/theurian/theurian/issues/39): nothing yet hashes a
-downloaded artifact against `SHA256SUMS`.
+The rest of the release gate stays open, tracked at
+[#80](https://github.com/theurian/theurian/issues/80) since
+[#39](https://github.com/theurian/theurian/issues/39) closed on its
+documentation half: nothing yet hashes a downloaded artifact against
+`SHA256SUMS`.
 
 One surface is adjacent and is deliberately **not** counted among the nine:
 `docs/integrations/serena.md:172` diagnoses "Theurian tools missing" as "Setup
@@ -2345,10 +2444,11 @@ lines and the claim was at line 1140. Distant, and on the same page.
 **Both of those surfaces were corrected by #56, merged into `main` on
 2026-08-06**, which replaced the changelog's premise with "setup never obtains
 Core, so it holds no artifact to hash" and the README row with one that states
-the published records exist and that nothing in Theurian checks them. An earlier revision of this entry
-called #56 open, which it was when that revision was written and is not now. The
-mechanism it exercised is unchanged: `release-core.yml` still publishes that
-section verbatim, so a future edit to it reaches the release page the same way.
+the published records exist and that nothing in Theurian checks them. An earlier
+revision of this entry called #56 open, which it was when that revision was
+written and is not now. The mechanism it exercised is unchanged:
+`release-core.yml` still publishes that section verbatim, so a future edit to it
+reaches the release page the same way.
 Nothing in this repository holds any of the three to the step's own words — no
 test reads `README.md`, `packages/theurian-core/CHANGELOG.md` or this file, and
 `test_setup_claims.py` reads the *plugin's* README, not the root one — and that
@@ -2357,14 +2457,18 @@ is the gap #39 inherits.
 **Recorded as unmet, not accepted** — unlike T-17a, no argument is offered that
 this is tolerable. The requirement stands: OSS-11 requires the checksums and
 `requirements-analysis.md`'s threat table maps T-16 to OSS-7, OSS-11 and setup
-step 3. Filed at [#39](https://github.com/theurian/theurian/issues/39), which
-carries both the missing control and the release gate above. **The code no longer
-states a schedule**, and that is the lesson rather than a tidy-up: the retired
-`detail` promised "Artifact verification arrives with the first tagged release",
-which came due the moment `release-core.yml` landed, since a first tagged release
-is what that workflow exists to cut. An issue has an owner and can be reassigned;
-a string in a probe is read by users and paged by nobody. The severity stays
-Critical: the harm is
+step 3. Filed as [#39](https://github.com/theurian/theurian/issues/39), which is
+now **closed** — on its documentation half, on 2026-08-07, while the install-time
+control it also named stayed unbuilt: `application/setup_steps.py`'s
+`probe_artifact_integrity` returns an unconditional `NOT_APPLICABLE`. The live
+owner is [#80](https://github.com/theurian/theurian/issues/80), which diagnoses
+exactly that split and records that a successor issue for the control itself is
+still owed. **The code no longer states a schedule**, and that is the lesson
+rather than a tidy-up: the retired `detail` promised "Artifact verification
+arrives with the first tagged release", which came due the moment
+`release-core.yml` landed, since a first tagged release is what that workflow
+exists to cut. An issue has an owner and can be reassigned; a string in a probe
+is read by users and paged by nobody. The severity stays Critical: the harm is
 unchanged, an attacker who substitutes an artifact runs code as the user, and
 every control above acts on production rather than on what a user installs.
 
@@ -2409,9 +2513,10 @@ first abstractive adapter (#115).
 > enforcement mechanism.** It said "`executable` cannot be set true — the type
 > rejects it". The type exists and does reject it —
 > `domain.retrieval.SafetyMetadata.__post_init__` raises
-> `InvariantViolationError` — but `theurian.domain.retrieval` has **no importer
-> anywhere in `src/`**, so neither it nor `RetrievalResult` is on the path that
-> produces the wire value. What produces it is `mcp/results.py`'s `SAFETY`, a
+> `InvariantViolationError` — but **neither `SafetyMetadata` nor
+> `RetrievalResult` is named anywhere in `src/` outside `domain/retrieval.py`
+> itself**, so neither is on the path that produces the wire value. What produces
+> it is `mcp/results.py`'s `SAFETY`, a
 > plain module-level `dict` splatted into each payload. The property holds; the
 > control named for it was not the one holding it, which is the same defect shape
 > as T-9's "redaction at the logging sink". The controls above are what is there.
@@ -2429,6 +2534,20 @@ first abstractive adapter (#115).
 > step as the Milestone 6 design it is and states the interim residual; the
 > shipped controls in this entry are the safety triple and its wire-contract
 > test, and the summarization sentence is design, not a control.
+>
+> **Amended in the #199 unit-A audit (2026-08-30).** The premise above read
+> "`theurian.domain.retrieval` has **no importer anywhere in `src/`**", and the
+> module has five: `application/retrieval_service.py`, `domain/ports/index_store.py`,
+> `infrastructure/sqlite/index_forest.py`, `infrastructure/sqlite/index_store.py`
+> and — the one that matters here — `mcp/results.py`, the very module that
+> produces the wire value. What they import is `RaptorPathSegment`, `excerpt` and
+> `EXCERPT_CHARS`, never the two types this argument turns on, so the conclusion
+> is unchanged on the narrower fact now stated. The lesson is the one this block
+> was already about: a correction that replaces a wrong mechanism with a
+> module-level absence claim goes stale the first time anything else in that
+> module is imported. A premise that has to stay true belongs in a test that
+> reddens, not in a sentence — recorded as unpinned here, with the argument
+> resting on the symbols rather than the module in the meantime.
 
 **Residual risk:** **Theurian labels; it does not enforce.** An agent that
 ignores the label will be influenced. This is a shared responsibility with the
@@ -5207,7 +5326,7 @@ fix.
 | T-4 | Path traversal | I | Critical | SEC-7 |
 | T-5 | Symlink escape | I | Critical | SEC-7 |
 | T-6 | Resource exhaustion, at parse, at query, and at `accept` | D | Medium | SEC-8 |
-| T-7 | SSRF via external URL | I | Medium | SEC-10 — `$ref` recorded-never-fetched only; scheme allowlist, private-network rejection and repository allowlist owed with M7 ([#129](https://github.com/theurian/theurian/issues/129)) |
+| T-7 | SSRF via external URL | I | Medium | SEC-10 — `$ref` recorded-never-fetched only; scheme allowlist, private-network rejection and repository allowlist owed with the first external fetch path, owned by [#429](https://github.com/theurian/theurian/issues/429) (#129 closed on the wording, not the controls) |
 | T-8 | Token in a config file | I | High | SEC-5 |
 | T-9 | Token in a log | I | High | SEC-6 |
 | T-10 | Cross-sensitivity summary leak | I | High | SEC-14 |
@@ -5215,8 +5334,8 @@ fix.
 | T-12 | Agent rewrites approved knowledge | T | High | SEC-17 |
 | T-13 | Concurrent daemon corruption | T | High | NFR-1 |
 | T-14 | Setup overwrites configuration — the MCP entry, and `~/.theurian/env` since #128 | T | Medium | SEC-18 |
-| T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — `theurian propose accept` scans every body it would land **and the migration document's author-written fields** ([#336](https://github.com/theurian/theurian/issues/336)), `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it. The document's derived fields and a proposal's `evidence.json` are not read ([#330](https://github.com/theurian/theurian/issues/330)). Ingest-time and index-time scanning are separate controls and do not ship ([#198](https://github.com/theurian/theurian/issues/198)) |
-| T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet (#39) |
+| T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — `theurian propose accept` scans every body it would land **and the migration document's author-written fields** ([#336](https://github.com/theurian/theurian/issues/336)), `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it. The document's derived fields and a proposal's `evidence.json` are not read ([#330](https://github.com/theurian/theurian/issues/330)). Ingest-time and index-time scanning are separate controls and do not ship ([#329](https://github.com/theurian/theurian/issues/329); #198 is closed, having shipped the `propose accept` half) |
+| T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet ([#80](https://github.com/theurian/theurian/issues/80); #39 is closed, on its documentation half only) |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
 | T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15); closed for the sensitivity axis in #119 by exclusion at build plus a `changeSensitivity` purge trigger (ADR-0025 parts 1–2). The unpurged-build (purge-failed) cell — including its verbatim `--raptor` `raptorPath` face — is closed by GHSA-97q9-xxfg-33r6, which refuses to serve a purge-failed build (graded High: two non-default operator conditions), leaving only an in-flight request, a double disk fault, and a concurrent clean build reverted by the non-atomic taint write (all SAFE-direction, the last deferred to #113/ADR-0022); the free-page byte residue ([#344](https://github.com/theurian/theurian/issues/344)) is recorded |
 | T-18 | Reused revision id resolves to a withheld item's body | I | Critical | Closed in 0.1.0.dev3 — item-scoped `append_revision` + `put_item` store guards, `SCHEMA_VERSION` gate (GHSA-7997-g35f-q59h) |

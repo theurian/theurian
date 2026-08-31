@@ -10,7 +10,11 @@ classify, generalise, or call a model -- that separation is what lets raw
 ingestion succeed when candidate generation fails (FR-V5).
 
 Repositories must be allowlisted in ``.theurian/config.yaml`` before one is
-contacted (SEC-10). No reader of that file exists in ``src/`` today, so the
-allowlist is owed with the adapter rather than in force
-(`#129 <https://github.com/theurian/theurian/issues/129>`_).
+contacted (SEC-10). ``security/project_config.py`` reads that file, but for
+``security.secretScan`` alone; no reader of the allowlist key exists in ``src/``
+today, so the allowlist is owed with the adapter rather than in force
+(`#429 <https://github.com/theurian/theurian/issues/429>`_ owns it against the
+first external fetch path, as
+`#129 <https://github.com/theurian/theurian/issues/129>`_ closed on this
+sentence's wording rather than on the control).
 """

@@ -104,6 +104,51 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   produce proposals. It aligns the ADR with `docs/protocol/mcp-tools.md`, which
   already records that proposal ages are not in that response.
 
+- **The threat model's recorded claims are reconciled against `src/`**
+  ([#199](https://github.com/theurian/theurian/issues/199), unit A). An audit of
+  every control claim in `docs/security/threat-model.md` against
+  `packages/theurian-core/src/` found four false, each now narrowed to the fact
+  that is true rather than deleted. **C-1:** "No reader of `.theurian/config.yaml`
+  exists in `src/`" was falsified by ADR-0027 decision 3 —
+  `security/project_config.py::read_secret_scan_policy` reads it on the `propose
+  accept` path — and the conclusion survives on the narrower fact that nothing
+  reads `providers.review.repositories`. **C-2:** not-shipped controls named
+  CLOSED issues as their owners — two of them (#129, #39) closed on a
+  *documentation* fix while the control stayed unbuilt, and #198 on a different
+  root cause, having **shipped** its control in `1a38afe` while entries went on
+  citing it for the ingest-time and index-time siblings it never claimed. T-7's
+  three SSRF controls now point at #429 (opened for them; #368 ingests git
+  trailers and builds no fetch path, so it could not own a fetch control),
+  T-16's install-time verification at #80, and T-15's unshipped scanning halves
+  at #329 — all verified open. **C-3:** T-3's own correction blockquote claimed
+  `theurian.domain.retrieval` has no importer in `src/`; it has five, one of them
+  `mcp/results.py`, so the argument is restated on `SafetyMetadata` and
+  `RetrievalResult`, which are named nowhere outside their module. **C-4:** the
+  T-9 sweep row said "all nine sources" where an AST count over the test's own
+  `seeds` dict measures ten — wider than claimed, so nothing rested on it.
+  T-6 also gains the measurement #199 owed it, taken on the path ingestion
+  actually runs: `application/ingestion_service.py:225` calls
+  `projection.project`, which **truncates** at `MAX_PROJECTION_CHARS` and indexes
+  the result — the refusing `project_checked`, and the `build_projection` that
+  wraps it, have no production caller. The costliest document found within the
+  4 MiB `MAX_YAML_BYTES` gate — a block sequence of `- 1` entries, four bytes per
+  node — costs **13.06 s and ~666 MB RSS** end to end on CPython 3.13.3, of which
+  **99% is the YAML parse**, not the projection walk; the walk's own absent-memo
+  behaviour is real (48 parsed objects against 120,491 visits) but is under 3% of
+  the cost. **Token density rather than alias structure is the lever**, which is
+  why `MAX_YAML_BYTES` is the bound that governs this term. Recorded as the worst
+  shape *found*, not an established maximum — the figure moved twice under
+  search. The recorded decision that no ingestion-side timeout is filed is
+  unchanged. Three `src` docstrings carrying the correction class are fixed with
+  it — `index_purge.py::_restamp` on `index_metadata.index_build_id`, which
+  `SqliteIndexStore.add_nodes` does read back; `verify_state_provenance`, which
+  claimed two call sites and has one, the build path it also named being gated by
+  `BuildProvenance.has_state` in `cli/index_commands.py` instead; and
+  `infrastructure/github/__init__.py`'s config-reader sentence — all prose-only
+  and AST-identical once docstrings are stripped. The audit record, its
+  population keys and the escape space they leave are in
+  [`docs/work-logs/2026-08-30-199-unit-a-audit.md`](../../docs/work-logs/2026-08-30-199-unit-a-audit.md).
+
 ## [0.1.0.dev14] - 2026-08-28
 
 ### Fixed
