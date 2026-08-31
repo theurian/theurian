@@ -220,17 +220,41 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   which reads it as a member returning a context manager, and the unannotated
   `def connection(self)` under
   `test_ports.py`'s annotation rule. `-> object` still slips through, and the
-  bullet now records it as the residual, with every count re-taken at `4e37097`
-  in a throwaway checkout; the Milestone-5 figures it used to quote are dropped
-  rather than refreshed, since nothing here re-measured that suite.
+  bullet now records it as the residual. Every spelling was injected in a
+  throwaway checkout with a control run first, and the two failures were re-run
+  at `c3886db` — an ancestor on `main`, not a branch tip — so the anchor survives
+  the squash. The Milestone-5 figures the bullet used to quote are dropped rather
+  than refreshed, since nothing here re-measured that suite, and no new suite
+  total is quoted in their place.
 
-  Prose only, and no behaviour changes. What holds these claims:
-  `test_adr_0018_claims.py` pins the ADR's NFS sentence in both directions and
-  reads README's copy of it in the same sweep, so neither record can drift
-  alone; and the count spelled in the amendment is held against the live port by
-  `test_the_amendment_spells_the_write_method_count_the_port_publishes` in that
-  module, which goes RED whether the sentence drifts or the port gains a write
-  method — so the number is not a copy anyone keeps in step by hand.
+  **Point 2's serialisation claim is narrowed to the write transaction**
+  ([#468](https://github.com/theurian/theurian/issues/468)). The Decision said
+  two concurrent `theurian migrate apply` invocations serialise and the loser
+  becomes a no-op, and the Positive consequence called two concurrent CLI
+  invocations "already safe". Measured on eight real two-process runs, the loser
+  crashed in four of them, because `create_database` runs before the write
+  transaction opens and `write_active_state` publishes the pointer after it
+  commits — both outside the lock, both completing while another process holds
+  it. Point 2 now serialises the work inside the transaction and says so, the
+  Positive bullet records what was false, and a narrowing blockquote carries the
+  measurement and the control that the lock itself works. The record is narrowed
+  rather than the design changed: #468 owns bringing both writes inside the lock,
+  and stays open.
+
+  Prose only, and no behaviour changes. What holds these claims, all in
+  `test_adr_0018_claims.py`: the NFS sentence is pinned in both directions and
+  README's copy of it is read in the same sweep, so neither record can drift
+  alone; `test_both_corrected_compliance_bullets_name_the_live_owner_of_the_owed_work`
+  and `test_neither_corrected_bullet_cites_the_closed_tracker_as_an_owner` hold
+  the two repointed bullets — the first requires #439's link in each, the second
+  refuses a #15 mention whose own sentence does not retract it;
+  `test_no_index_write_path_module_takes_a_lock` sweeps the modules the published
+  index is written through, so the index bullet's "no lock" half moves when a
+  lock lands; and
+  `test_the_amendment_spells_the_write_method_count_the_port_publishes` holds the
+  count spelled in the amendment against the live port, RED whether the sentence
+  drifts or the port gains a write method — so the number is not a copy anyone
+  keeps in step by hand.
   Residues owned: the engineering the repoints point
   at ([#439](https://github.com/theurian/theurian/issues/439), filed without a
   milestone), and the served corpus twin under

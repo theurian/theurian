@@ -247,16 +247,21 @@ Still owed, with the issue or milestone that will satisfy it:
   than refreshed — they were that suite's, and re-quoting a number nobody
   re-measured is the defect this document keeps meeting.
 
-  **Re-measured on 2026-08-31 at `4e37097`, each spelling injected into the port
-  in a throwaway checkout, and two of the three now fail.**
+  **Re-measured on 2026-08-31, each spelling injected into the port in a
+  throwaway checkout with a control run first, and two of the three now fail.**
   `-> sqlite3.Connection`, the spelling anyone reaching for this hatch would
   write, is RED under
   `test_connection_claims.py::test_the_canonical_store_port_declares_no_single_write_interface`,
   which reads it as a member returning a context manager. The unannotated
   `def connection(self)` is RED under
-  `test_ports.py::test_port_methods_are_annotated[CanonicalStore]`. **`-> object`
-  is the residual**: with that member on the port the suite is green at 4,394
-  passed, which is the control's own result at the same commit. So this bullet's
+  `test_ports.py::test_port_methods_are_annotated[CanonicalStore]`. Both were
+  re-run at `c3886db` — the commit that introduced the first of those tests, and
+  an ancestor on `main` rather than a branch tip — with the same two failures, so
+  the anchor outlives the branch that measured it. **`-> object` is the
+  residual**: with that member on the port the whole suite is green, its result
+  identical to the control run on the same tree. No total is quoted, because a
+  total is a property of whichever tree the reader is standing on. So this
+  bullet's
   heading is now narrower than it reads — what nothing holds is point 1's *first*
   clause, that all writes go through one interface; the port surface its second
   clause describes is watched in two spellings out of three. Owed and
