@@ -69,10 +69,21 @@ def test_the_example_does_not_switch_the_raptor_forest_on() -> None:
 # Two keys in the sample config are a trap for a reader who copies the file, for
 # opposite reasons.
 #
-# `providers.review.repositories` (SEC-10's allowlist, #129) selects a control
+# `providers.review.repositories` (SEC-10's allowlist, #429) selects a control
 # that does not exist. It is kept as data on purpose -- the example teaches the
 # shape a reader will need once the control ships -- and a reader who copies it
 # reasonably concludes that repositories are allowlisted. They are not.
+#
+# Its annotation used to reach that conclusion through a false premise: "Nothing
+# in `src/` reads this file". The file *is* read -- `security/project_config.py`
+# opens it for `security.secretScan` (ADR-0027 decision 3) -- and the true fact
+# is narrower and key-scoped, so the annotation now names the reader module, what
+# the file is read for, and the key that has none. #429 owns the allowlist
+# against the first external fetch path; #129, the owner the annotation used to
+# name, closed on the wording rather than on the control. The retracted sentence
+# is refused by `test_raptor_config_claims.py`, which scans this file's comment
+# blocks; the rows below are the positive half and cannot see a sentence coming
+# back beside them.
 #
 # `security.secretScan` (SEC-11's policy, #198) is the mirror image since
 # ADR-0027 decision 3: it now selects real behaviour, and the trap is
@@ -92,10 +103,13 @@ def test_the_example_does_not_switch_the_raptor_forest_on() -> None:
 def _annotation_above(text: str, key: str) -> str:
     """The contiguous comment block immediately above ``key``'s line, joined.
 
-    Joined into one string because both annotations wrap across lines: the
-    `repositories` one splits "Nothing in `src/` reads / this file" over a line
-    break, and a per-line search would miss the sentence that is actually there.
-    Leading `#` and indentation are stripped from each line first.
+    Joined into one string, so that where an annotation happens to wrap is not
+    part of the contract. Both blocks run to several lines, and rewording one
+    reflows the rest of it: #426 narrowed the `repositories` claim and moved
+    every wrap in that block. A per-line search would have gone red on the
+    reflow while the sentence it pins was still there, and would pass while a
+    pinned sentence was broken in half. Leading `#` and indentation are
+    stripped from each line first.
 
     The key line is located by ``<indent><key>:``, and the caller asserts that
     exactly one such line exists -- a second occurrence would make "the comment
@@ -139,9 +153,34 @@ def _in_config(config: dict[str, Any], key: str) -> Any:
 #: opposite directions. ``repositories`` still reads nowhere, so its annotation
 #: has to say so. ``secretScan`` now reads somewhere, so its annotation has to
 #: say *how far* -- the approval gate, and not ``theurian ingest``.
+#:
+#: ``repositories``' four sentences are one claim in four parts, and the first two
+#: are there because the annotation used to get this wrong (#426). It said
+#: "Nothing in ``src/`` reads this file", which was true until ADR-0027 decision
+#: 3 and is now false: ``security/project_config.py`` opens the file for
+#: ``security.secretScan``. So the row pins **the reader by module**
+#: (``security/project_config.py``), **what the file is read for**
+#: (``security.secretScan``), **the key that has none** -- spelled in full,
+#: because the file-level sentence does not contain it and cannot satisfy this --
+#: and **the live owner**. #129 closed on the wording rather than on the control,
+#: which is why naming it is no longer enough to make the annotation somebody's.
+#:
+#: The module fragment is required *as well as* the key because the two are
+#: different facts and the annotation's job is to carry both. A rewrite naming
+#: only ``security.secretScan`` says what the file is read *for* and leaves a
+#: reader with nowhere to check it; it passed this row until round one.
 ANNOTATED_KEYS: tuple[tuple[str, Any, tuple[str, ...]], ...] = (
     ("secretScan", "block", ("propose accept", "best effort", "#198")),
-    ("repositories", ["acme/order-service"], ("Nothing in `src/` reads", "#129")),
+    (
+        "repositories",
+        ["acme/order-service"],
+        (
+            "`security/project_config.py`",
+            "security.secretScan",
+            "nothing in `src/` reads `providers.review.repositories`",
+            "#429",
+        ),
+    ),
 )
 
 
@@ -154,8 +193,21 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
     """The example is what a reader copies, so each key must state its own reach.
 
     `providers.review.repositories` selects nothing: SEC-10's allowlist is still
-    owed (#129), so a reader who copies it and believes repositories are
-    allowlisted is wrong, and the annotation is what tells them.
+    owed against the first external fetch path (#429), so a reader who copies it
+    and believes repositories are allowlisted is wrong, and the annotation is
+    what tells them. It has to say that with the *key* named, because the file
+    itself is read -- for `security.secretScan` and nothing else -- and the
+    file-level sentence the annotation used to carry was false (#426). The
+    reader's *module* is required with the key: "read for `security.secretScan`"
+    says what, `security/project_config.py` says where, and a reader who has to
+    grep for the second is back in the habit #426 was opened to break.
+
+    **The retracted sentence is refused, not merely superseded.**
+    `tests/unit/test_raptor_config_claims.py::test_no_scanned_surface_reasserts_that_nothing_in_src_reads_the_config_file`
+    scans this file's comment blocks for it, in the pronoun form the annotation
+    actually used ("Nothing in `src/` reads this file"). Without that half, the
+    sentence could be restored verbatim beside these required ones and every
+    test here would still pass -- measured in round one.
 
     `secretScan: block` is the other error. Until ADR-0027 decision 3 it selected
     nothing either, and this test required the annotation to say so. It now
@@ -206,8 +258,11 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
             f"A reader copies this file, and without that sentence `{key}` reads "
             f"as something it is not. `secretScan` is in force at `theurian "
             f"propose accept` and nowhere else, with a best-effort detector "
-            f"(#198); `providers.review.repositories` is read by nothing at all "
-            f"(#129). `tests/unit/test_config_key_call_sites.py` is the pin that "
+            f"(#198); `providers.review.repositories` is read by nothing, though "
+            f"the file it sits in is read for `security.secretScan` -- say the "
+            f"key, not the file, or the annotation is the false claim #426 "
+            f"corrected -- and #429 owns the allowlist against the first "
+            f"external fetch path. `tests/unit/test_config_key_call_sites.py` is the pin that "
             f"records which keys have readers, and the schema descriptions are "
             f"what change with them."
         )

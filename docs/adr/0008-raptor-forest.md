@@ -1056,13 +1056,23 @@ flowchart TB
 >
 
 > 10. **`raptor.enabled` defaults to `false` in the first release that ships the
->     forest.** `schemas/config/project-config.schema.json` declares
->     `"enabled": { "type": "boolean", "default": true }` today. That is not a
->     decision anyone took: nothing in `src/` reads it, or reads
->     `.theurian/config.yaml` at all. The schema's only consumers outside itself
->     are `tests/unit/test_examples.py`, which validates the example document
+>     forest.** *The state of things as this decision was taken, every clause of
+>     it:* `schemas/config/project-config.schema.json` declared
+>     `"enabled": { "type": "boolean", "default": true }`. That was not a decision
+>     anyone took — nothing in `src/` read it, and nothing read
+>     `.theurian/config.yaml` at all — and the schema's consumers outside itself
+>     were `tests/unit/test_examples.py`, which validates the example document
 >     against it, and `tests/unit/test_schemas.py`, which checks one unrelated
->     property — so `default: true` has never taken effect anywhere.
+>     property, so `default: true` had never taken effect anywhere.
+>
+>     *Three of those clauses have moved since, and the notes below say where.*
+>     The schema declares `false` now — this decision landing, recorded in the
+>     landed note. The file has a reader, for `security.secretScan`, recorded in
+>     the correction note. And the consumer list just above has grown, test-side
+>     only; it is left at the count it was taken with rather than re-counted, for
+>     the reason the correction note gives. What has not moved is the key itself:
+>     nothing in `src/` reads `raptor.enabled` today either, which is what the
+>     rest of this decision rests on.
 >
 >     A capability whose acceptance tests are owed and whose build cost is
 >     unmeasured (see the amendment to decision 3) ships opt-in, so that turning it
@@ -1091,9 +1101,10 @@ flowchart TB
 >     >
 >     > **The switch is the CLI flag, not the config key, and that is worth
 >     > stating because this decision is phrased in terms of a key nothing reads.**
->     > Nothing in `src/` reads `.theurian/config.yaml`, so flipping the default
->     > changes no behaviour; what turns a forest on is `theurian index build
->     > --raptor`, one build at a time. The guarantee that buys is *hard* rather
+>     > Nothing in `src/` reads `raptor.enabled`, nor any other key in the
+>     > `raptor` block, so flipping the default changes no behaviour; what turns
+>     > a forest on is `theurian index build --raptor`, one build at a time. The
+>     > guarantee that buys is *hard* rather
 >     > than filtered — a build without the flag writes zero node rows, held by
 >     > `test_a_build_without_the_raptor_flag_writes_no_summary_nodes` — which is
 >     > the same shape `--include-unapproved` has for drafts. When a config loader
@@ -1117,6 +1128,30 @@ flowchart TB
 >     > reports `"raptor": true`. The honest value is no longer `false`, because a
 >     > client reading `raptor: true` now does get a `raptorPath`. Pinned by
 >     > `tests/integration/test_forest_retrieval.py::test_capabilities_reports_raptor_supported`.
+>     >
+>     > **Corrected in the #199 unit-A follow-up
+>     > ([#426](https://github.com/theurian/theurian/issues/426)). The file has a
+>     > reader; the `raptor` block still does not.** Two sentences in this
+>     > decision — its rationale above and the "switch is the CLI flag" note —
+>     > said *nothing in `src/` reads `.theurian/config.yaml`*. Each was true
+>     > when written and stopped being true with
+>     > [ADR-0027](0027-accept-validates-before-it-moves.md) decision 3:
+>     > `security/project_config.py::read_secret_scan_policy` opens the file, and
+>     > `application/proposal_service.py` calls it at `theurian propose accept`.
+>     > Neither is deleted, and the two took different repairs: the "switch is
+>     > the CLI flag" note is **narrowed** to the population that is still
+>     > unread, while the rationale is **tensed** to the record it always was —
+>     > one narrowed, one tensed. Both conclusions survive either way, because
+>     > neither leaned on the file being unread, only on `raptor.enabled` being
+>     > unread, which it is. Measured at `6b83be1`: `git grep -n 'paths\.config'
+>     > packages/theurian-core/src` returns one line — `proposal_service.py`
+>     > handing the path to `read_secret_scan_policy` — and that function names
+>     > one published key, `SECRET_SCAN_KEY = "secretScan"`, under one block, so
+>     > no `raptor` key is reachable from the only reader the file has.
+>     > `tests/unit/test_config_key_call_sites.py` pins the one key that does
+>     > have a reader. The consumer list inside that record was left at the count
+>     > it was taken with rather than re-counted, since the schema has gained
+>     > test-side consumers only.
 
 ## Consequences
 
@@ -1208,8 +1243,23 @@ flowchart TB
   > never builds a Domain node at all. The threshold is a `ForestOptions` field
   > defaulting to the schema's own value, pinned against
   > `schemas/config/project-config.schema.json` by
-  > `test_the_option_defaults_are_the_config_schemas_own`; nothing reads
-  > `.theurian/config.yaml`, so an operator cannot yet move it.
+  > `test_the_option_defaults_are_the_config_schemas_own`; no key in the `raptor`
+  > block has a reader in `src/`, so an operator cannot yet move it. The one
+  > reader `.theurian/config.yaml` has takes `security.secretScan` from it and
+  > nothing else (ADR-0027 decision 3), which is why "configurable" is still ahead
+  > of the code for *this* threshold in particular;
+  > `tests/unit/test_raptor_config_claims.py` holds the narrowed claim and
+  > `tests/unit/test_config_key_call_sites.py` holds the source tree to the one
+  > key that is read.
+  >
+  > > **Corrected in the same #426 pass that narrowed decision 10.** The clause
+  > > above reached "an operator cannot yet move it" from a premise about the
+  > > whole configuration file, which ADR-0027 decision 3 had already falsified.
+  > > The conclusion is unchanged and now rests on the `raptor` block alone, which
+  > > is the population that is still without a reader. The full account — what
+  > > the retracted sentences said, and why each conclusion survives its
+  > > narrowing — is the correction note under decision 10; it is not repeated
+  > > here, because one record of a class is what makes it findable.
   >
   > Shallow is now a property of this builder rather than of any column, which
   > matters outside this ADR: `index_schema.py` records that `CHECK (level BETWEEN

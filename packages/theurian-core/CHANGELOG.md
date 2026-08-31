@@ -75,6 +75,100 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   sentence byte-identically and moves only on a governed re-seed (#199 unit C) —
   the same carry #417 and #432 record.
 
+- **The "nothing in `src/` reads `.theurian/config.yaml`" universals are narrowed
+  to the key populations that are still unread, and pinned**
+  ([#426](https://github.com/theurian/theurian/issues/426),
+  [#448](https://github.com/theurian/theurian/pull/448)). ADR-0027 decision 3
+  shipped `security/project_config.py::read_secret_scan_policy`, called from
+  `application/proposal_service.py` at `theurian propose accept`. A sentence that
+  had been true across several records stopped being true that day, and nothing
+  went red. Each is narrowed to the population that still has no reader rather
+  than deleted, and every conclusion that leaned on the retracted premise is
+  re-derived rather than carried over.
+
+  **The raptor family**: `docs/architecture/raptor.md`, and three sentences of
+  ADR-0008 — decision 10's rationale, its "switch is the CLI flag" note, and the
+  amendment to decision 3, the last found by the pin work after the first two
+  were fixed. What is unread is the `raptor` block, not the file, and both
+  conclusions hold on that narrower fact: the CLI flag is still the switch and
+  not the config key, and an operator still cannot move
+  `minChildrenPerSummary`. The rationale took a different repair from the other
+  two — it is *tensed* rather than narrowed, since it describes the state as the
+  decision was taken, and its own paragraph now says which of its clauses have
+  moved since and which have not.
+
+  **ADR-0024 decision 2** said nothing reads either `index_metadata` column back,
+  so a copy inheriting its parent's identity was "latent rather than broken".
+  That is true of `built_at` alone now: `SqliteIndexStore.add_nodes` selects
+  `index_build_id` out of the file it is writing into, to stamp each summary node
+  with the build it belongs to. The re-derivation is sharper than the retracted
+  version rather than merely narrower — the first reader the decision predicted
+  arrived *on the purge path itself*, because `purge_into` runs the forest
+  recompute before `_restamp`, so a `--raptor` purge writes nodes carrying the
+  parent's id and `_restamp`'s `UPDATE nodes` is what repairs them. The docstring
+  of `test_index_purge.py::test_a_purged_build_names_itself_in_its_own_metadata`
+  carries the same correction; its assertions are unchanged.
+
+  **The sample project's allowlist annotation** carried two defects in one
+  comment block: the file-level premise, and an owner that had closed.
+  `providers.review.repositories` still has no reader, but the file it sits in
+  does, so the annotation names the key rather than the file, and names the
+  reader the file has beside it. SEC-10's allowlist is owed against the first
+  external fetch path, which [#429](https://github.com/theurian/theurian/issues/429)
+  owns — [#129](https://github.com/theurian/theurian/issues/129) closed on the
+  wording rather than on the control, and this annotation had been left out of
+  the repoint [#425](https://github.com/theurian/theurian/pull/425) made to the
+  threat model, `docs/architecture/review-knowledge.md` and
+  `infrastructure/github/`.
+
+  **Every narrowed claim is held by something derived rather than restated, and
+  in both directions.** The `raptor` keys join `test_config_key_call_sites.py`'s
+  call-site watch with their spellings **derived from the schema** —
+  `properties.raptor.properties` in
+  `schemas/config/project-config.schema.json`, guarded by a population control
+  that reddens if the block is renamed or emptied — so the day a loader names one
+  of them, the enumeration reddens and these records must move with it.
+  `test_index_metadata_claims.py` scans the imported package for a consumer of
+  each `index_metadata` column, with the column population parsed out of
+  `INDEX_DDL` rather than transcribed, so a column added to the table is watched
+  from the moment it exists; the count the decision bounds its `built_at` claim
+  with is held beside it, since `metadata()` fetches every column and the claim
+  rests on neither of its two callers reading that one.
+  `test_index_build_id_read_back.py` drives the read
+  itself rather than asserting it: a file whose metadata row is missing is refused
+  with the product's own error, and `add_nodes` is pinned to take no build-id
+  argument, so the stamp cannot quietly become something a caller supplies.
+  `test_raptor_config_claims.py` holds the prose — each narrowed sentence
+  positively, plus a negative scan that reddens if the retracted wording returns —
+  with the dated correction notes scanned rather than skipped: only what a
+  retraction verb introduces is excised, inline code spans are neutralised first
+  so the asterisks of a `SELECT *` cannot swallow a live sentence between them,
+  and every scanned surface has a recorded note count so the exclusion cannot
+  widen unnoticed. `test_examples.py`'s `ANNOTATED_KEYS` row pins the sample
+  config's annotation in three parts: the reader the file has, the key that has
+  none, and the live owner.
+
+  Documentation and tests only — this change touches no file under
+  `packages/theurian-core/src/`. Two limits are recorded in the modules rather
+  than left implied. The column scan resolves only what sits between `SELECT` and
+  `FROM`, so a `WHERE`, `ORDER BY`, `GROUP BY`, `HAVING` or `DELETE` keyed on a
+  column is pinned as a deliberate miss: whether a filter or a delete key
+  "consumes the value" is a question ADR-0024 decision 2 has not answered, and the
+  shapes are recorded where the next reader sees the gap and the question
+  together. The note exclusion's backtick pairing is an approximation, and an
+  unbalanced backtick can leave a verb-led reassertion hidden — a false green,
+  bounded on the shipped surfaces by
+  `test_every_block_the_exclusion_runs_on_pairs_its_backticks`. Residues owned:
+  the members of this class outside the surfaces these modules scan —
+  [#447](https://github.com/theurian/theurian/issues/447) for the Python ones,
+  [#455](https://github.com/theurian/theurian/issues/455) for the wheel-shipped
+  root `description` in `schemas/config/project-config.schema.json`, and
+  [#461](https://github.com/theurian/theurian/issues/461) for a Markdown one under
+  `plugins/` — and the served corpus twins of ADR-0008 and ADR-0024 under
+  `.theurian/knowledge/architecture/`, which carry the retracted sentences
+  byte-identically and move only on a governed re-seed (#199 unit C), the same
+  carry #417, #432 and #441 record.
+
 ## [0.1.0.dev15] - 2026-08-31
 
 ### Added

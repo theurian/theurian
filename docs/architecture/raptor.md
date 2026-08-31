@@ -171,16 +171,29 @@ unreachable.
 
 A level is skipped when it has fewer than `minChildrenPerSummary` children:
 summarizing one document produces a paraphrase, which costs tokens and adds
-nothing. **The threshold is real now and the config file is still unread.**
+nothing. **The threshold is real now and no `raptor` key is read.**
 `ForestOptions` carries `max_levels` and `min_children_per_summary` with the
 defaults `schemas/config/project-config.schema.json` declares, and
 `tests/unit/test_forest_derivation.py::test_the_option_defaults_are_the_config_schemas_own`
 pins the two against that file so they cannot drift before a loader exists.
-Nothing in `src/` reads `.theurian/config.yaml`, so **the CLI flag is the switch
-and the config key is not** — `raptor.enabled` is declared `false` in the schema
-and set `false` in `examples/sample-project/.theurian/config.yaml` (ADR-0008
-decision 10's two places, both flipped by the builder change), and `theurian
-index build --raptor` is what actually turns a forest on, for one build.
+
+`.theurian/config.yaml` is not unread — `security/project_config.py` opens it
+for `security.secretScan` alone
+([ADR-0027](../adr/0027-accept-validates-before-it-moves.md) decision 3), and
+`tests/unit/test_config_key_call_sites.py` is what holds the source tree to
+that one key. What is unread is the `raptor` block, and that follows from the
+narrowness of the one reader rather than from an absence of hits. Measured at
+`6b83be1`: `git grep -n 'paths\.config' packages/theurian-core/src` returns one
+line — `proposal_service.py` handing the path to `read_secret_scan_policy` —
+and that function names one published key, `SECRET_SCAN_KEY = "secretScan"`,
+under one block. Those two — the single call site, and the single key it leads
+to — are the whole path from `src/` into `.theurian/config.yaml`, and no
+`raptor` key lies on it. So **the CLI flag is the switch and the config key is
+not** —
+`raptor.enabled` is declared `false` in the schema and set `false` in
+`examples/sample-project/.theurian/config.yaml` (ADR-0008 decision 10's two
+places, both flipped by the builder change), and `theurian index build --raptor`
+is what actually turns a forest on, for one build.
 
 `summary_max_tokens` is the third option and deliberately has no config key: it
 is a constant, never a share of anything the corpus decides, because a budget
