@@ -1,7 +1,10 @@
 """Has a `docs/` document moved out from under the corpus snapshot pinned to it?
 
-This repository dogfoods Theurian: `.theurian/` holds 26 committed knowledge
-items that are **verbatim, byte-frozen snapshots** of documents under `docs/`.
+This repository dogfoods Theurian: `.theurian/` holds the committed knowledge
+items this repository dogfoods -- a floor of 26, measured 2026-08-31 at
+6b83be1, the same lower bound :data:`MINIMUM_COMPARED` holds this tree to, and
+one a re-seed grows rather than shrinks. Every one of them is a **verbatim,
+byte-frozen snapshot** of a document under `docs/`.
 Each one records the file it was taken from (`sourceAnchors[].filePath`) and the
 commit it was taken at (`sourceAnchors[].commitSha`), plus the digest of the body
 itself (`contentSha256`).
@@ -53,6 +56,15 @@ walks rather than leaving a reader to find out.
 
 **The committed corpus under `.theurian/migrations/` is IN -- it is the
 subject.** Every tracked `*.yaml` directly under that directory is read.
+
+**Read population and compared population are not the same set.** Every
+tracked migration is read, and every ``upsertRevision`` in it is read too, but
+only each item's *terminal* one is compared: the last ``upsertRevision`` for a
+given ``itemId`` in application order (:func:`migration_paths`' own sort,
+applied the way :func:`theurian.domain.migration.current_revision_in` applies
+it for the state-rebuild path). A superseded ``upsertRevision`` is read, and
+then dropped before it reaches an anchor -- it is not compared and it is not
+reported, uncheckable included.
 
 **One further file is read, conditionally: a pinned body.** For a revision that
 declares no `contentSha256`, the body its own `contentFile` names is hashed
@@ -140,18 +152,20 @@ matched exactly, so one re-seed under ``git@github.com:theurian/theurian.git``,
 or under the same URL without the ``.git`` suffix, retires that item from the
 check permanently.
 
-**Every revision is compared, not only each item's current one -- so a re-seed
-does not clear the finding it answers.** The population is every
-``upsertRevision`` in every tracked migration, and migrations are append-only: a
-re-seed adds a migration, it does not retract the one it supersedes. The
-superseded revision's anchor therefore goes on being compared against a document
-that has moved, and goes on reporting DRIFT for good (reproduced 2026-08-22 with
-an old-migration + re-seed pair: 2 anchors compared, 1 drifted, the drift being
-the superseded revision). :data:`REMEDY` says so rather than promising an
-outcome it cannot deliver. Restricting the comparison to the terminal revision
-of each item's ``expectedRevision`` chain is #317, and it has to land before or
-with the ADR-0005 and ADR-0013 re-seed (#315), which would otherwise convert two
-temporary warnings into two permanent ones.
+**The compared population is each item's terminal revision, not every revision
+ever recorded -- so a re-seed clears the finding it answers.** :func:`scan`
+walks tracked migrations in application order and keeps, per ``itemId``, only
+the *last* ``upsertRevision`` it sees; every earlier one for that item is
+dropped before it ever reaches :func:`_compare`, so it is neither compared nor
+reported (#317; reproduced on PR #440's branch before this fix landed: 27
+anchors compared, 12 drifted, ADR-0013's warning still naming the superseded
+migration and surviving a re-seed that should have cleared it). A superseded
+revision's own pin is unaffected by this: `test_dogfood_corpus_governance.py`
+holds every revision this tool ever reads to its frozen half -- the committed
+body matches its ``contentSha256``, and matches the blob at its anchor commit
+-- current or superseded alike. What changed here is narrower: this tool stops
+holding a superseded snapshot to a document that has since moved on, which was
+never a finding about drift, only a revision nobody can act on any more.
 
 Not verified here at all: whether the corpus body still matches its own pin, and
 whether it matches the blob at its anchor commit. Those are
@@ -234,17 +248,14 @@ _SHA256: Final = re.compile(r"\A[0-9a-f]{64}\Z")
 #: rather than typed so the string a maintainer is told to pass cannot drift from
 #: the string it will be compared against.
 #:
-#: **It stops short of promising the warning goes away, because it does not.**
-#: :func:`scan` compares the anchors of every ``upsertRevision`` in every tracked
-#: migration, not the terminal revision of each item's ``expectedRevision``
-#: chain, and migrations are append-only -- so the superseded migration stays
-#: tracked, keeps pinning the old digest, and keeps reporting DRIFT after a
-#: correct re-seed (reproduced 2026-08-22 with an old-migration + re-seed pair:
-#: 2 anchors compared, 1 drifted, the drift being the superseded revision).
-#: Re-seeding is still the right first step -- it is what puts the current
-#: document back under governance -- so the commands stay; what changed is that
-#: the text no longer tells a maintainer they have cleared the finding when they
-#: have not. The mechanism fix is #317.
+#: **It now promises the warning clears, because it does.** :func:`scan`
+#: compares only each item's terminal revision -- the last ``upsertRevision``
+#: for that ``itemId`` in application order -- so the migration the commands
+#: below add supersedes the one that pinned the stale digest, and the
+#: superseded revision drops out of the run entirely rather than going on
+#: reporting DRIFT against a document it no longer describes (#317).
+#: Re-seeding was always the right first step -- it is what puts the current
+#: document back under governance -- and now it is also the whole remedy.
 REMEDY: Final = f"""\
 Fix: propose an update revision for the drifted item -- do not edit the
 committed body, which is pinned verbatim.
@@ -255,12 +266,10 @@ committed body, which is pinned verbatim.
         --source-commit "$(git rev-parse HEAD)" ...
     theurian propose accept <proposal-id>
 
-Expect this warning to survive the re-seed. Every upsertRevision in every
-tracked migration is compared, and migrations are append-only, so the
-superseded revision's anchor keeps pinning the old digest against the document
-you just updated. Restricting the comparison to each item's current revision is
-issue #317; until it lands, this finding persists by design and is not evidence
-the re-seed failed.
+This re-seed clears the warning. Only each item's terminal revision -- the
+last upsertRevision for that itemId -- is compared, so the migration you just
+added supersedes the one that pinned the stale digest, and the superseded
+revision stops being compared at all.
 
 Who owns the re-seed, and why an in-place edit is not an option, is recorded in
 docs/work-logs/2026-08-19-milestone-7-dogfooding-dev7-corpus.md."""
@@ -675,13 +684,20 @@ def _compare_one(  # noqa: PLR0913 -- every field is carried straight into the C
 
 
 def scan(repo_root: Path = REPO_ROOT, *, tracked: Iterable[str] | None = None) -> Report:
-    """Compare every comparable anchor in the committed corpus against `docs/` now.
+    """Compare each item's terminal revision's anchors against `docs/` now.
 
     ``tracked`` is the population, as repository-relative paths. Left ``None``
     it is taken from ``git ls-files --cached`` -- see the module docstring for
     why that, and not a filesystem glob, is the key. Passing it explicitly is
     the seam a test drives synthetic corpora through, and the only way to run
     this against a tree with no git.
+
+    Every tracked migration is read, but only each item's *terminal*
+    ``upsertRevision`` -- the last one for a given ``itemId`` in application
+    order, the rule :func:`_current_operations` applies -- reaches
+    :func:`_compare`. A superseded revision is read and then dropped before it
+    produces any :class:`Comparison` at all: not compared, not reported
+    uncheckable, simply not in the output (#317).
     """
     if tracked is None:
         tracked = tracked_paths(repo_root)
@@ -704,6 +720,7 @@ def scan(repo_root: Path = REPO_ROOT, *, tracked: Iterable[str] | None = None) -
         )
 
     comparisons: list[Comparison] = []
+    revisions_by_path: dict[str, tuple[Mapping[str, Any], ...]] = {}
     for path in paths:
         try:
             document = yaml.safe_load((repo_root / path).read_text(encoding="utf-8"))
@@ -725,10 +742,44 @@ def scan(repo_root: Path = REPO_ROOT, *, tracked: Iterable[str] | None = None) -
                 )
             )
             continue
+        revisions_by_path[path] = revisions
+
+    current = _current_operations(revisions_by_path)
+    for path, revisions in revisions_by_path.items():
         for operation in revisions:
+            item_id = str(operation.get("itemId", ""))
+            if current[item_id] is not operation:
+                continue  # superseded by a later upsertRevision on the same item
             comparisons.extend(_compare(repo_root, path, operation))
 
     return Report(tuple(comparisons), *_verdict(comparisons, len(paths)))
+
+
+def _current_operations(
+    revisions_by_path: Mapping[str, tuple[Mapping[str, Any], ...]],
+) -> dict[str, Mapping[str, Any]]:
+    """Each ``itemId``'s terminal ``upsertRevision`` operation, keyed by ``itemId``.
+
+    ``revisions_by_path`` must already be in application order -- the same
+    order :func:`migration_paths` sorts by, an operation's own position inside
+    its migration preserved -- because "terminal" means the *last* one reached
+    in that walk. This is the same rule
+    :func:`theurian.domain.migration.current_revision_in` states for the
+    state-rebuild path: only an ``upsertRevision`` moves an item's current
+    revision, and the last one for a given ``itemId`` wins.
+
+    Not derived from ``expectedRevision``: the field is optional on the
+    schema, and the original 26 seed migrations carry none at all, so a rule
+    keyed on it would leave the whole seeded corpus without a terminal
+    revision. Returns operation objects by identity, not by value, so a caller
+    can tell which physical operation in ``revisions_by_path`` is the winner
+    even when two upserts happen to be byte-identical.
+    """
+    current: dict[str, Mapping[str, Any]] = {}
+    for revisions in revisions_by_path.values():
+        for operation in revisions:
+            current[str(operation.get("itemId", ""))] = operation
+    return current
 
 
 def _verdict(comparisons: Sequence[Comparison], migrations: int) -> tuple[Status, str]:
@@ -811,7 +862,10 @@ def held_to_floor(report: Report, minimum: int) -> Report:
         f"compared {compared} anchor(s), fewer than the {minimum} this corpus is held to, so "
         f"most of it went unchecked and a clean result would prove almost nothing. Every anchor "
         f"that stopped being comparable is named in this report, one SKIP line each: restore "
-        f"them, or lower the floor in the same change that says why.",
+        f"them, or lower the floor in the same change that says why. A governed withdrawal that "
+        f"lowers the live-item count exits 2 by design -- that is this guard working, not "
+        f"failing -- so lower the floor constant in the same change that withdraws the item, "
+        f"with the reasoning recorded there.",
     )
 
 
