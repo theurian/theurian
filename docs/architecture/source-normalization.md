@@ -219,3 +219,13 @@ commit trailers and calls itself a git-history source, and
 fetch controls an adapter would need before its first outbound request.
 [#200](https://github.com/theurian/theurian/issues/200) owns the `Git commit` and
 `Git diff` rows of the table above and states that this row is not its scope.
+
+**Nothing in the suite holds this paragraph, and there is no way to make it.**
+Whether an issue is open is a fact about the tracker, and a test that asked would
+reach the network from the offline unit suite — the reason
+[#80](https://github.com/theurian/theurian/issues/80) records for why its own
+pin can assert that *an* issue is named and not that the issue is open. So this
+paragraph is a dated measurement (2026-09-01, over the 164 then-open issues) that
+a later reader has to re-run rather than a claim a check will defend, and the
+same is true of the identical statements in `theurian/review/__init__.py` and
+`plugins/claude-code/commands/ingest.md`.
