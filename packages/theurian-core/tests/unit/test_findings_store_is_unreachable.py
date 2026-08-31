@@ -22,7 +22,8 @@ any of them is scanned automatically with no list to fall out of date.
 ``review/`` is walked rather than acknowledged like most of the rest of the
 package (see below) because it is *not* an ordinary non-serving package: its
 own docstring names it the future home of review-knowledge serving code
-(Milestone 7, ``#129``), so a package-level acknowledgement there would wave
+(Milestone 7, owned by no open issue since ``#129`` closed on the wording), so a
+package-level acknowledgement there would wave
 through the exact file this whole test guards against -- measured by a
 round-two review, which planted ``review/findings_search.py`` importing the
 store and watched it pass the entire suite, because ``review/`` was in neither

@@ -98,8 +98,10 @@ _STRIPPED_AT_THE_ENDS: Final = "".join(chr(code) for code in range(0x21))
 #: The labels ``scheme`` carries for a reference that names no scheme of its own
 #: -- RFC 3986 §4.2's relative-reference forms, plus Windows's spelling of the
 #: first. Two groups, disjoint, and the split is the whole point of #203: the
-#: scheme allowlist T-7 owes (#129) will key on this field, and a target destined
-#: for a *host* must not arrive under a name that reads like a local file.
+#: scheme allowlist T-7 owes (#429, which owns it against the first external
+#: fetch path; #129 closed on the wording rather than the control) will key on
+#: this field, and a target destined for a *host* must not arrive under a name
+#: that reads like a local file.
 #:
 #: Nothing in ``src/`` consumes either set yet -- the gate that will is Milestone
 #: 7's. They are published so that gate and the fidelity table in
@@ -186,7 +188,7 @@ class OpenApiParser:
                 # carries `structured` into `IngestedDocument` and has no
                 # metadata field to carry these into, so the record that survives
                 # ingestion -- and the one a scheme allowlist will read (T-7,
-                # #129) -- is `structured["_index"]`: `externalRefs`, and
+                # #429) -- is `structured["_index"]`: `externalRefs`, and
                 # `refWalkTruncations` non-empty for exactly the documents this
                 # flag calls truncated.
                 "unresolvedRefCount": str(
@@ -529,7 +531,7 @@ def _names_an_authority(target: str) -> bool:
 def _ref_scheme(target: str) -> str:
     r"""Name what ``target`` points at, the way a fetcher would read it.
 
-    This value is what a scheme allowlist will key on (T-7, #129), so the failure
+    This value is what a scheme allowlist will key on (T-7, #429), so the failure
     that matters is a target destined for a host arriving under a label that
     reads like a file on this machine. Before #203 that was the *default*:
     anything ``urlsplit`` found no scheme in recorded ``relative-file``, which
