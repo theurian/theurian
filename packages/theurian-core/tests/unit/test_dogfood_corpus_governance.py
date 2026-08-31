@@ -94,11 +94,18 @@ rounded up.** Run against a tree that cannot be asked what it tracks, 21 of the
 module's own source. Those three assert something real about a tree with no
 corpus in it; the other 21 would not, which is why they refuse instead.
 
-**A floor, recorded as a lower bound rather than an exact count.** 26 is what
-this branch ships; the dogfood corpus is expected to grow, and every item added
-is fully governed by the rules below whether or not anyone updates the number
-here. What the bound catches is the direction that is never routine: committed
-knowledge disappearing.
+**A floor, recorded as a lower bound rather than an exact count.**
+:data:`MINIMUM_MIGRATIONS` is checked against
+:func:`test_the_committed_corpus_is_present_and_has_not_shrunk`'s
+``len(_migration_paths())`` -- a count of tracked migration files, not of
+live items, and the two are not the same number: this branch ships 27
+tracked migrations over 26 live items (measured 2026-08-31; the ADR-0013
+re-seed is a second migration, and a second revision, over an item that
+already existed -- see :data:`GOVERNED_OPERATIONS`). The constant itself
+stays 26 and stays a lower bound: the dogfood corpus is expected to grow,
+and every item or revision added is fully governed by the rules below
+whether or not anyone raises the number here. What the bound catches is
+the direction that is never routine: committed knowledge disappearing.
 
 **What is out of scope, and why.** A pinned body is compared against the blob at
 its own ``sourceAnchor.commitSha`` -- never against the *current* ``docs/`` file.
@@ -1459,11 +1466,18 @@ def test_the_committed_corpus_holds_one_evidence_file_per_migration() -> None:
     new one, so an item can hold more than one revision while this file still
     holds exactly one evidence record per migration. The proposal id is *not*
     derivable from the migration id -- the seed generated the first 26
-    monotonically, and 2 of them crossed a millisecond boundary, so
-    ``proposalId + 1 == migration.id`` holds for 24 of the 26 seed pairs and is
-    not a relation this can assert. Counts and uniqueness are what the data
-    actually supports, and asserting the false relation would be a rule that
-    goes RED on the next correctly-seeded item.
+    monotonically, and index-pairing the 26 seed proposal ids against the 26
+    seed migration ids, sorted ascending (identical whether the migration is
+    keyed by its parsed ``id`` or by its filename's ULID prefix -- measured
+    2026-08-31, the two never disagree across this corpus), only **1** of the
+    26 pairs crosses a millisecond boundary; ``proposalId + 1 ==
+    migration.id`` holds for **25** of the 26, not 24, and fails on exactly
+    the pair that crosses. Not a relation this can assert regardless: even one
+    failing pair means it is not universal, and it is not the seed's only
+    boundary crossing that will ever exist -- the next correctly-seeded item
+    can cross one too. Counts and uniqueness are what the data actually
+    supports, and asserting the false relation would be a rule that goes RED
+    on the next correctly-seeded item.
 
     An extra evidence directory is a proposal whose migration was never
     committed -- reasoning published for a decision the repository does not
