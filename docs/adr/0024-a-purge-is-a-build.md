@@ -184,11 +184,42 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    **The copy inherits the parent's identity, and the purge must overwrite it.**
    `Connection.backup` copies pages, so `index_metadata.index_build_id` in the
    new file still names the build it was copied from, and `built_at` still
-   records when *that* was made. Nothing in `src/` reads either back today —
-   `mcp/search.py` publishes `indexBuildId` from the pointer — so this is latent
-   rather than broken, which is exactly why it is written into the decision: the
-   first thing to read it would find a file whose own record of itself disagrees
-   with the pointer that names it, and would find it a long way from here.
+   records when *that* was made. Neither column is *served* — `mcp/search.py`
+   publishes `indexBuildId` from the pointer — so a disagreement here reaches no
+   caller. What separates the two columns is whether anything reads them at all:
+
+   - **`index_build_id` is read back.** `SqliteIndexStore.add_nodes` selects it
+     out of this file's own `index_metadata` to stamp each summary node with the
+     build it belongs to, rather than taking it as an argument that could
+     disagree with the file it writes into. The first reader this paragraph
+     predicted has arrived, and it arrived *inside the purge*: `purge_into` runs
+     the forest recompute before `_restamp`, so the nodes it writes are stamped
+     with the parent's id and `_restamp`'s second statement — `UPDATE nodes SET
+     index_build_id` — is what repairs them. That statement was added after a
+     purge was measured leaving a survivor naming the build it was copied from
+     (`test_restamp_updates_survivors_index_build_id_too`), which is this
+     paragraph's own prediction landing one level down.
+   - **`built_at` is written and never read**, so for that column the original
+     reasoning stands: the first thing to read it would find a file whose own
+     record of itself disagrees with the pointer that names it, and would find it
+     a long way from here. Measured at `6b83be1`, `git grep -nw built_at
+     packages/theurian-core/src` returns six lines: the `index_metadata` column
+     declaration, the `create` INSERT and the `_restamp` UPDATE, plus three on
+     the unrelated `findings_metadata` table — a declaration, a comment and an
+     INSERT. No SELECT of it anywhere. `metadata()` does `SELECT *`, so the
+     value is fetched, but neither of its two callers
+     (`retrieval_service.py`, `withdrawal_purge.py`) reads that key.
+
+   > **Corrected in the #199 unit-A follow-up
+   > ([#426](https://github.com/theurian/theurian/issues/426)).** This paragraph
+   > said "nothing in `src/` reads either back today — so this is latent rather
+   > than broken". That was true of both columns when the decision was written
+   > and is now true of `built_at` only. The restamp discipline this decision
+   > asked for is what kept the record honest across the change: the reader
+   > arrived on the purge path itself, met the stale id exactly as predicted, and
+   > was already covered because `_restamp` had been extended to `nodes`. So the
+   > conclusion is unaffected; only its premise had to be split per column, and
+   > the "latent rather than broken" framing now belongs to `built_at` alone.
 
 3. **The copy is `sqlite3.Connection.backup`, not `shutil.copyfile` and not
    `VACUUM INTO`.** Measured on a 49.2 MB index with rowid gaps — the state every

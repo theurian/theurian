@@ -262,10 +262,21 @@ def test_a_purged_build_names_itself_in_its_own_metadata(
 ) -> None:
     """`Connection.backup` copies pages, so the copy inherits the parent's identity.
 
-    Nothing in `src/` reads `index_metadata.index_build_id` back today, which is
-    what makes this cheap to get wrong and expensive to find: the first thing to
-    read it would meet a file whose own record of itself disagrees with the
-    pointer that names it (ADR-0024 decision 2).
+    `index_metadata.index_build_id` has a reader in `src/`, and it is a writer:
+    `SqliteIndexStore.add_nodes` selects the column out of the file it is writing
+    into, to stamp each summary node with the build it belongs to. Nothing
+    *serves* it -- `mcp/search.py` publishes `indexBuildId` from the pointer -- so
+    a copy that kept the parent's id discloses nothing and instead mis-stamps
+    provenance, which is what makes this cheap to get wrong and expensive to find
+    (ADR-0024 decision 2).
+
+    That reader sits on this very path: `purge_into` runs the forest recompute
+    before `_restamp`, so a `--raptor` purge writes nodes carrying the parent's id
+    and `_restamp`'s `UPDATE nodes` is what repairs them
+    (`test_index_purge_nodes.py::test_restamp_updates_survivors_index_build_id_too`
+    pins that half). This test pins the `index_metadata` half, and it is the half
+    the reader consults. `built_at`, the other column the backup carries over, is
+    still written and never read.
     """
     stale, _, withdrawn = corpora
     purged_path = tmp_path / "theurian-index-purged.sqlite"
