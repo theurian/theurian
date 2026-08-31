@@ -49,6 +49,16 @@ the correction from the retraction the moment either is reverted while ids
 stay pinned, and a *future*, legitimate re-seed changes the current revision
 id again without this test's other assertions changing at all.
 
+**The same class recurs, pre-empted rather than re-found.** #199 unit C's
+second wave (#471) re-seeds three more items the same way #416 re-seeded
+ADR-0013 -- ``propose``/``accept`` through the real write path -- and the
+#440 round's ADV-RC MEDIUM-1 lesson generalises immediately: reverting any of
+the three wave commits (payload, not ``expectedRevision``) would leave this
+whole suite green at the same test count, for the identical reason the
+ADR-0013 revert did. So each of the three gets its own content-shaped pin
+below, pre-emptively, rather than waiting for a round to rediscover the same
+class a fourth time.
+
 **Population, and why it is narrower than the governance module's.** Loads
 the real directory listing, but only after confirming -- via ``git``, never
 the ``tools/mutate.py`` manifest -- that the listing holds nothing git does
@@ -107,6 +117,33 @@ MINIMUM_KNOWLEDGE_ITEMS: Final = 26
 #: corpus a from-empty apply must resolve to something other than its own
 #: first ``upsertRevision``.
 _RESEEDED_ITEM: Final = ItemId("architecture.ai-writes-produce-proposals")
+
+#: #199 unit C's second wave (#471): three more items re-seeded through
+#: propose/accept, and a literal string each corrected body carries that its
+#: superseded body does not -- pre-empted from the ADV-RC MEDIUM-1 class the
+#: #440 round found (a reverted re-seed payload leaves the whole suite green
+#: at the same test count, because a revision-id check alone cannot tell a
+#: correction from a reverted one).
+#:
+#: Wrap-safe single tokens, deliberately: ``write.lock`` and ``ADR-0025``
+#: cannot split across a Markdown line wrap the way a multi-word phrase can
+#: (the ``#414``/"owed, not shipped" trap the ADR-0013 check above already
+#: works around by checking two substrings rather than one contiguous
+#: phrase).
+#:
+#: Measured 2026-09-01, ``grep -c <marker> <superseded body> <current body>``:
+#:
+#: - ``architecture.single-writer-synchronous-in-m1`` / ``write.lock``: 0 -> 8
+#:   (the #432-corrected lock-file claim).
+#: - ``architecture.raptor-forest`` / ``ADR-0025``: 0 -> 1 (the #448/#119
+#:   sensitivity-enforcement amendment).
+#: - ``architecture.a-purge-is-a-build`` / ``ADR-0025``: 0 -> 1 (same
+#:   amendment family as the previous entry).
+_SECOND_WAVE_MARKERS: Final[tuple[tuple[ItemId, str], ...]] = (
+    (ItemId("architecture.single-writer-synchronous-in-m1"), "write.lock"),
+    (ItemId("architecture.raptor-forest"), "ADR-0025"),
+    (ItemId("architecture.a-purge-is-a-build"), "ADR-0025"),
+)
 
 #: Frozen rather than ``datetime.now()``: a project row's ``registered_at`` is
 #: metadata this test never reads back, but ``Project.__post_init__`` still
@@ -182,6 +219,44 @@ def _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files(
         )
 
 
+def _current_body(database: Path, project_id: ProjectId, item_id: ItemId) -> str:
+    """The applied store's current body for ``item_id``.
+
+    The same two-hop read the ADR-0013 check below performs inline --
+    ``knowledge_items`` for the pointer, ``knowledge_revisions`` for what it
+    points at -- pulled out once so each of the second-wave pins is two
+    lines: fetch the body, assert its marker. Not used by the ADR-0013 check
+    itself, which additionally cross-checks the pointer against
+    :func:`current_revision_in` and stays as originally written rather than
+    being rewired through a helper introduced for a later item.
+    """
+    with closing(open_read_connection(database)) as connection:
+        row = connection.execute(
+            "SELECT current_revision_id FROM knowledge_items WHERE project_id = ? AND item_id = ?",
+            (project_id.value, item_id.value),
+        ).fetchone()
+        assert row is not None, (
+            f"{item_id.value} has no row in knowledge_items after applying. Every "
+            f"migration that names it as a createItem target should have created it."
+        )
+        current_revision = row["current_revision_id"]
+        assert current_revision is not None, (
+            f"{item_id.value} has no current revision after applying, so there is no "
+            f"body to check its content."
+        )
+        body_row = connection.execute(
+            "SELECT body FROM knowledge_revisions WHERE project_id = ? AND revision_id = ?",
+            (project_id.value, current_revision),
+        ).fetchone()
+        assert body_row is not None, (
+            f"knowledge_revisions holds no row for {current_revision!r}, the revision "
+            f"knowledge_items.current_revision_id just named for {item_id.value}. A "
+            f"pointer with nothing behind it is a store the engine's own write "
+            f"transaction should never produce."
+        )
+        return str(body_row["body"])
+
+
 def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: Path) -> None:
     """A from-empty apply of every tracked migration lands the corpus with none refused.
 
@@ -209,6 +284,14 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
     correction rather than merely being reachable at the expected id -- see
     the module docstring's third check for why an id match alone is not
     enough (ADV-RC MEDIUM-1).
+
+    A fourth family, added for #199 unit C's second wave (#471): the same
+    content-shaped pin, once per :data:`_SECOND_WAVE_MARKERS` entry, run
+    pre-emptively rather than waiting for a round to reproduce ADV-RC
+    MEDIUM-1 a second time against a different item. Each reverts its own
+    item's re-seed commit RED and nothing else's -- see the entries'
+    docstring for the measured old/new discrimination each marker was
+    chosen for.
     """
     _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files()
 
@@ -313,3 +396,18 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
         f"the applied body for {_RESEEDED_ITEM.value} (revision {current_revision}) still "
         f"carries the retracted claim 'warns past a threshold' (#252)."
     )
+
+    # Pre-empted from the same class: #199 unit C's second wave (#471)
+    # re-seeded three more items through the real write path, and reverting
+    # any one wave commit's payload would leave the suite green at the same
+    # test count for the identical reason the ADR-0013 revert above did --
+    # see :data:`_SECOND_WAVE_MARKERS`'s docstring for the measured
+    # old/new discrimination behind each marker.
+    for item_id, marker in _SECOND_WAVE_MARKERS:
+        second_wave_body = _current_body(database, project.project_id, item_id)
+        assert marker in second_wave_body, (
+            f"the applied body for {item_id.value} does not carry {marker!r}. Reverting "
+            f"this item's #471 re-seed payload -- the body, not its expectedRevision pin -- "
+            f"would leave this assertion the only one in this test file to notice, per the "
+            f"ADV-RC MEDIUM-1 class the #440 round found."
+        )
