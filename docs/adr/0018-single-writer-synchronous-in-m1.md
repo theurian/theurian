@@ -32,8 +32,10 @@ Milestone 1. Only its enforcement mechanism changes.**
    separate lock file**, `.theurian/runtime/write.lock`, held for the duration
    of a write transaction and guarding the state databases under
    `.theurian/state/`. Two concurrent `theurian migrate apply` invocations
-   serialise; the loser waits, then observes the other's work and becomes a
-   no-op (idempotence, FR-K8).
+   serialise **for the work that runs inside that transaction**: the loser waits
+   for the lock, then finds the other's migrations already applied and becomes a
+   no-op (idempotence, FR-K8). What each invocation writes outside the
+   transaction does not serialise, and the narrowing below says what that is.
 3. Milestone 3 replaces the lock with an in-process asyncio queue owned by the
    daemon, plus the same file lock for any CLI invocation running alongside it.
    **`transaction()` keeps its signature**, so no application code changes.
@@ -123,13 +125,43 @@ each call site cannot.
 > [#420](https://github.com/theurian/theurian/pull/420), so the two halves of
 > this document disagreed until now.
 
+> **Narrowed on 2026-08-31 against a measurement
+> ([#468](https://github.com/theurian/theurian/issues/468) owns both the
+> engineering and this record).** Point 2 said, without the boundary it now
+> carries, that two concurrent `theurian migrate apply` invocations serialise and
+> the loser becomes a no-op. Measured on eight real two-process runs against a
+> fresh project, **the loser crashed in four of the eight** — three distinct
+> unhandled errors (`table schema_metadata already exists`, `database is locked`,
+> and one `disk I/O error`), each exiting 1 with a traceback rather than the
+> CLI's failure envelope, with `--json` requested.
+>
+> What holds is the transaction. The lock itself works: a second holder gets
+> `WriteLockTimeoutError`. What does not hold is what `migrate apply` writes
+> around it — `create_database` at `cli/commands.py:1328` runs before the
+> transaction opens, and `write_active_state` at `:1403` publishes the pointer
+> after it commits; both complete while another process holds the lock. So the
+> serialisation this point promises covers the migration content, and not the
+> database's creation or the pointer's publication.
+>
+> The decision is not superseded: one writer is still the design, and the answer
+> is to bring both writes inside the lock rather than to weaken the claim. Until
+> that lands the record states what is true. #468 stays open for both halves, and
+> #439 stays open for the single write interface the amendment above records as
+> owed — the Compliance section's "nothing runs two writers at once" bullet is
+> the missing evidence this measurement supplied by hand.
+
 ## Consequences
 
 ### Positive
 
 - Milestone 1 ships without async plumbing that has no caller.
-- Two concurrent CLI invocations are already safe, which is a real scenario:
-  an editor plugin and a terminal, or a shell script and a watcher.
+- Two concurrent CLI invocations serialise their write transactions, which is a
+  real scenario: an editor plugin and a terminal, or a shell script and a
+  watcher. **This bullet said they are "already safe", and that was measured
+  false on 2026-08-31**: the loser of two concurrent first `migrate apply` runs
+  crashed in four runs of eight, on the writes each makes outside the lock
+  ([#468](https://github.com/theurian/theurian/issues/468)). The narrowing under
+  the Decision has the mechanism and the three error shapes.
 - Milestone 3 changes one class rather than every write path.
 - Synchronous code is easier to reason about and to test where async buys
   nothing.
@@ -146,10 +178,10 @@ each call site cannot.
   its default step set, and
   `tests/integration/test_setup_service.py::test_every_specified_step_is_reported`
   pins the reported set equal to `StepId`. No probe is planned either — building
-  one is rejected rather than deferred, for want of a portable detection design,
-  per the disposition recorded on #417. An operator whose project directory sits
-  on NFS is therefore told nothing by `doctor`. Nothing enforces the exclusion:
-  no step reads a filesystem type. The disposition behind that is recorded on
+  one is rejected rather than deferred, for want of a portable detection design.
+  An operator whose project directory sits on NFS is therefore told nothing by
+  `doctor`. Nothing enforces the exclusion: no step reads a filesystem type. The
+  disposition is recorded on
   [#417](https://github.com/theurian/theurian/issues/417).
 - Two enforcement mechanisms exist between Milestone 3 and 1.0 — the queue for
   in-daemon writes and the lock for CLI writes. Both are required, because a CLI
