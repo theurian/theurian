@@ -160,7 +160,11 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   scanning halves, each closed issue named for what it actually closed on. The
   owner-cite fragments were extracted from both files and diffed rather than
   compared by eye; nothing else in either row moved, and the rest of #428's twin
-  sweep stays open.
+  sweep stays open. That diff is now a test —
+  `tests/unit/test_threat_model_twins.py` re-extracts both fragments and fails
+  when either side moves alone — and it holds **these two rows**, not the two
+  tables: the general row-by-row pin needs the copy's differently shaped Control
+  column reconciled first, and that is a documents change.
 
 ## [0.1.0.dev14] - 2026-08-28
 
