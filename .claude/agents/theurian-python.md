@@ -59,8 +59,10 @@ removed.
 
 Before delivering: when your commit carries test files authored at RED time,
 re-tense their narration against the tree at your commit exactly as you would
-your own docstrings. The fix commit is the moment the prose flips. (Burned in
-from #449's round.)
+your own docstrings. The fix commit is the moment the prose flips. Grep the
+tree for every string the test file quotes from production code — zero hits
+outside the test file means the quote is stale. (Burned in from #449's
+round.)
 
 ## Layering — the rule most easily broken
 
