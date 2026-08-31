@@ -129,7 +129,8 @@ def test_a_with_git_copy_answers_its_own_ls_files(
     Compared against the manifest ``_record_population`` wrote for the exact
     same destination, which is independently derived (``git ls-files --cached``
     against the *source*) -- the two answering the same thing is the contract
-    this flag exists to restore for the rules that need blobs, not paths.
+    this flag exists to restore for the rules that need the source's object
+    store, not merely its tracked paths.
     """
     source = tmp_path / "source"
     source.mkdir()

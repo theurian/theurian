@@ -69,15 +69,22 @@ verdict at all: it prints a path, never a KILLED or a SURVIVED. What you see
 inside a prepared tree is a lead. Turn it into a verdict on the verdict path.
 
 **Add ``--with-git`` to either mode when the question touches the corpus's
-four blob-reading rules** -- the corpus byte-identity pin, the root-corpus
-applicability test, and two rules in ``test_git_trailer_source.py`` (the full,
-dated list is in ``_lend_git_objects``'s docstring). Without the flag every
-copy skips all four, so a mutation whose only killer is one of them reports
+four rules that need the source's object store** -- the corpus byte-identity
+pin, the root-corpus applicability test, and two rules in
+``test_git_trailer_source.py`` (the full, dated list is in
+``_lend_git_objects``'s docstring; only two of the four actually read a
+blob, the other two need ``ls-files``/refs). Without the flag every copy
+skips all four, so a mutation whose only killer is one of them reports
 SURVIVED with no sign the harness never ran the test that would have caught
-it. The cost is small and per-tree, not per-batch: ~104 KB of copied ``.git``
-bytes against a working copy of ~13 MB either way (measured 2026-08-31) --
-it is not the default because most mutations are nowhere near the corpus, and
-every verdict-path run pays that cost on every tree it builds, mutated or not.
+it. The cost is per-tree, not per-batch, and the durable figure is
+machine-independent -- ~104 KB of copied ``.git`` bytes (measured
+2026-08-31). The working copy itself is not: ~13 MB on a clean checkout,
+measured up to ~124 MB on a developer machine carrying other agents'
+worktrees and local ``.theurian/`` knowledge that ``_COPY_IGNORE`` does not
+filter (see ``_lend_git_objects``'s docstring for both readings). Not the
+default because most mutations are nowhere near the corpus, and every
+verdict-path run pays the ``--with-git`` cost on every tree it builds,
+mutated or not.
 
 Why it is built this way
 ------------------------
@@ -194,9 +201,12 @@ Same eight verdicts either way, and the faster run does strictly more work: it
 adds the unmutated control. Building the four trees cost under a second each,
 because the copy was 3.8 MB without ``.git`` and ``.venv`` at 1407 tests, and
 ``uv sync --frozen`` restores the virtualenv from cache in about 0.8 s. The
-corpus and the suite have both grown since: re-measured at ~13 MB, 2026-08-31
-(see ``_lend_git_objects``'s docstring for the current figure and its ratio to
-the source ``.git`` it lends objects from).
+corpus and the suite have both grown since, and the figure is also
+machine-dependent: re-measured 2026-08-31 at ~13 MB on a clean clone and on
+this machine's own checkout, but as high as ~124 MB on a developer machine
+carrying other agents' worktrees and local ``.theurian/`` knowledge that
+``_COPY_IGNORE`` does not filter (see ``_lend_git_objects``'s docstring for
+both readings and the one figure that does not move with either).
 
 The two modes on one mutation -- ``3-scan-tiebreak-gone``, dropping the
 ``chunks.chunk_id`` tiebreak from the below-floor scan -- at 1431 tests:
@@ -465,15 +475,21 @@ def _lend_git_objects(destination: Path) -> None:
     break -- comes back SURVIVED from a harness that never ran the test that
     holds it, and the reader has no way to tell that verdict from a real one.
 
-    **Why objects are lent rather than copied.** Measured 2026-08-31 on this
-    checkout: the source's ``.git`` is ~60 MB (``du -sk``) against ~13 MB for
-    the whole working copy excluding ``.git``/``.venv`` -- both figures grow
-    with the corpus and the test suite, so read the *ratio* (roughly 4-5x) as
-    the durable claim, not the digits. The harness's cost claim is load-bearing
-    (see ``_COPY_IGNORE``), and ``objects/info/alternates`` makes every object
-    in the source readable from the copy without moving a byte -- confirmed at
-    104 KB actually copied into each tree's own ``.git`` (``du -sk``, same
-    date) -- while the index and refs are small enough to copy outright.
+    **Why objects are lent rather than copied.** Measured 2026-08-31, on two
+    machines: a scratch clone and this machine's own checkout root both copy
+    to ~13 MB excluding ``.git``/``.venv`` (``du -sk``), against a working
+    developer checkout carrying other agents' ``.claude/worktrees/`` and
+    machine-local ``.theurian/`` knowledge -- neither filtered by
+    ``_COPY_IGNORE`` -- measured at ~124 MB the same day. Both figures grow
+    with the corpus, the test suite and how a given machine has been used, so
+    the *ratio* between source and copy is not the durable claim; the figure
+    that held on every machine measured is ``objects/info/alternates`` making
+    every object in the source readable from the copy without moving a byte,
+    confirmed at 104 KB actually copied into each tree's own ``.git``
+    (``du -sk``, same date) regardless of how large the source or the working
+    copy is. The harness's cost claim is load-bearing (see ``_COPY_IGNORE``),
+    and 104 KB per tree is the part of it this flag must not move. The index
+    and refs are small enough to copy outright.
 
     **The copy still answers for itself.** The borrowed directory is objects
     only -- content-addressed, so nothing in it can name the source's paths.
@@ -485,16 +501,20 @@ def _lend_git_objects(destination: Path) -> None:
     **The source's object store must outlive the batch.** Objects are lent, not
     copied, so a source-side ``git gc --prune=now`` (or any other history
     rewrite) that runs *during* a batch can remove an object a lent copy still
-    references, after which reading it fails or -- worse, for an already-open
-    pack -- returns whatever bytes happen to still be on disk.
+    references. Do not run one against ``REPO_ROOT`` while a batch using
+    ``--with-git`` is in flight.
     """
     git_dir = REPO_ROOT / ".git"
     if not git_dir.is_dir():
         raise HarnessError(
             f"--with-git needs a plain repository at {git_dir}; a linked worktree or a "
-            "bare checkout does not carry the index this lends. Run the batch from a "
-            "plain clone of this checkout instead, or drop --with-git and accept that "
-            "the four rules it unblocks (see this function's docstring) skip."
+            "bare checkout does not carry the index this lends. Drop --with-git and "
+            "accept that the four rules it unblocks (see this function's docstring) "
+            "skip, or run the batch from the plain checkout this worktree belongs to "
+            "-- its own committed history and its own working tree, not this "
+            "worktree's uncommitted or untracked changes. A fresh clone loses those "
+            "the same way `git worktree add HEAD` does (see this module's docstring), "
+            "so it is not offered here."
         )
 
     version_probe = _git_in_source("config", "--get", "core.repositoryformatversion")
@@ -505,13 +525,15 @@ def _lend_git_objects(destination: Path) -> None:
     )
     if format_version != "0":
         raise HarnessError(
-            f"--with-git only lends a repositoryformatversion=0 (SHA-1) source; {git_dir} is "
-            f"format {format_version!r} (a --object-format=sha256 repository sets "
-            "repositoryformatversion=1, for example). Lending its objects under a "
-            "hardcoded repositoryformatversion=0 config would make the copy's git misread "
-            "every object's hash algorithm instead of failing loudly -- exactly the "
-            "binary-garbage-with-exit-0 shape the population guards elsewhere in this file "
-            "exist to avoid."
+            f"--with-git only lends a repositoryformatversion=0 source; {git_dir} is format "
+            f"{format_version!r}, a format this lend does not reproduce. A non-zero format "
+            "declares an extension this function does not read, and more than one sets "
+            "format 1 for a different reason -- a --object-format=sha256 repository (a "
+            "different object hash algorithm) and a reftable refs backend (plain SHA-1 "
+            "objects, but refs stored outside refs/ and packed-refs) both do, and this "
+            "hardcoded config would handle neither correctly. Drop --with-git and accept "
+            "that the four rules it unblocks (see this function's docstring) skip, or run "
+            "the batch against a repositoryformatversion=0 clone of this source instead."
         )
 
     borrowed = destination / ".git"
@@ -787,8 +809,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help=(
             "give each copy a .git that borrows the source's objects, so the four rules "
-            "that read a blob (corpus byte-identity, root-corpus apply, and two "
-            "test_git_trailer_source.py rules) run instead of skipping"
+            "that need the source's object store (corpus byte-identity, root-corpus "
+            "apply, and two test_git_trailer_source.py rules) run instead of skipping"
         ),
     )
     parser.add_argument(
