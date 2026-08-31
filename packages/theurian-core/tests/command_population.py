@@ -13,9 +13,10 @@ its own knowledge under ``.theurian/``, excluded through ``.git/info/exclude``
 and never committed; a directory-name rule descended into it and the suite
 failed on a handoff note quoting ``theurian upgrade`` that no clone will ever
 hold. The same class had already been patched once by name: the mutation
-harness runs the suite with ``TMPDIR`` inside its copy of the tree, and a run
-left 12,734 fixture files under ``.mutate-tmp/`` that the scan read, turning the
-unmutated control RED and every verdict in that batch with it. Git answers both,
+harness used to run the suite with ``TMPDIR`` inside its copy of the tree
+(moved to a sibling of the copy in #452), and a run left 12,734 fixture files
+under ``.mutate-tmp/`` that the scan read, turning the unmutated control RED
+and every verdict in that batch with it. Git answers both,
 and answers the residual the name list recorded and could not close --
 ``plugins/claude-code/.claude-plugin/`` is a fourth shipped dot directory the
 three-entry list did not name, and the population picked up its ``plugin.json``
