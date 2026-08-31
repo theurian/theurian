@@ -12,6 +12,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0.dev15] - 2026-08-31
+
 ### Added
 
 - **`knowledge.search` gains an admission cap on the retrieval path**
