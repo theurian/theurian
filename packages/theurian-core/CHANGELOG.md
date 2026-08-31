@@ -12,7 +12,68 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
-Nothing yet.
+### Documentation
+
+- **ADR-0027 and the SQLite write path no longer repeat ADR-0018's corrected
+  lock clause or its retracted single-interface claim**
+  ([#433](https://github.com/theurian/theurian/issues/433),
+  [#434](https://github.com/theurian/theurian/issues/434),
+  [#441](https://github.com/theurian/theurian/pull/441)). Two records carried
+  copies of claims that [#432](https://github.com/theurian/theurian/pull/432)
+  and ADR-0018's own Milestone 5 amendment had already retracted, and nothing
+  tied a copy to its original.
+
+  **ADR-0027's decision-2 residue** described the Milestone 1 mechanism as "an
+  OS advisory file lock on the state database" while reasoning about the accept
+  path's file moves. It is narrowed the way #432 narrowed ADR-0018 point 2 — the
+  lock is taken on the separate `.theurian/runtime/write.lock` and guards the
+  state databases under `.theurian/state/` — and the reasoning built on it is
+  unchanged, because it never depended on which object was locked: the accept
+  path's file moves are outside that lock either way.
+
+  **`connection.py` and `store.py`** asserted that writes go through one
+  interface. In `connection.py` the module docstring said so and
+  `write_transaction`'s called itself "The only way to write", adding that
+  "`CanonicalStore` exposes no connection"; `store.py` carried three more faces,
+  the last of which — "there is no way to build one otherwise, so the
+  single-writer guarantee cannot be sidestepped by reaching for this class" —
+  was not merely overstated: `SqliteWriter(sqlite3.connect(":memory:"))` builds
+  a writer from any connection, with no lock and no transaction. All five
+  docstrings now state the mechanism that is real — `write_transaction` takes
+  the advisory flock on `lock_path` and holds it for the transaction — and the
+  guarantee as the amendment records it: held by convention at each call site,
+  because the `CanonicalStore` port publishes its write methods directly. What
+  the read/write split does buy is kept and made checkable rather than asserted:
+  `SqliteCanonicalStore` publishes no write method and reads through
+  `open_read_connection`, which passes `mode=ro`, so SQLite refuses a write
+  issued on that connection. `write_transaction`'s `Raises:` now documents
+  `WriteLockTimeoutError` beside `StateDatabaseUnreadableError`, and the
+  ADR-0018 point 3 citation carries both of that point's mechanisms — the
+  daemon-owned queue *and* the file lock a CLI invocation running alongside it
+  still needs.
+
+  **Both corrections are pinned in both directions**, so drifting back and the
+  owed mechanism landing each turn a test RED: `test_adr_0027_claims.py` and
+  `test_connection_claims.py` hold the prose, a shared
+  `tests/write_lock_claims.py` derives the two paths once from the live
+  `ProjectPaths` for every record that names them, and the port's shape is read
+  live rather than restated — the day a single write interface lands, "held by
+  convention" must move with it. One limit is stated rather than implied: the
+  docstrings say two processes entering `write_transaction` serialise, which is
+  inherited from `fcntl.flock` rather than measured here, since the one test
+  that builds the lock directly runs two `WriteLock` objects in a single
+  interpreter.
+
+  Prose and docstrings only — `connection.py` and `store.py` are AST-identical
+  to their parents once docstrings are stripped, and no behaviour changes.
+  Residues owned: the single write interface ADR-0018 records as owed
+  ([#439](https://github.com/theurian/theurian/issues/439)); ADR-0018's
+  Milestone 5 amendment, whose count of the port's write methods no longer
+  matches the port
+  ([#446](https://github.com/theurian/theurian/pull/446)); and the served corpus
+  twin under `.theurian/knowledge/architecture/`, which carries the retracted
+  sentence byte-identically and moves only on a governed re-seed (#199 unit C) —
+  the same carry #417 and #432 record.
 
 ## [0.1.0.dev15] - 2026-08-31
 
