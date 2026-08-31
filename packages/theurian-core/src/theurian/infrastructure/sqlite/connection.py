@@ -12,8 +12,10 @@ than behind a single interface. ADR-0018 records this in its Milestone 5
 amendment, which retracted the single-interface claim this docstring used to
 repeat.
 
-Milestone 3 plans to replace the lock with a daemon-owned queue (ADR-0018
-point 3).
+Milestone 3 adds a daemon-owned asyncio queue for in-daemon writes and keeps this
+lock for CLI invocations running alongside it (ADR-0018 point 3). Both are
+required between Milestone 3 and 1.0, because a CLI invocation is a separate
+process that a queue inside the daemon cannot reach.
 """
 
 from __future__ import annotations
