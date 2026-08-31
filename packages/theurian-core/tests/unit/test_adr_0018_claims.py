@@ -55,13 +55,18 @@ alone.
 **The two records are read on different keys, and the asymmetry is measured.**
 ADR-0018 is swept on ``nfs`` *or* ``doctor``, because ``doctor`` is the command
 the retracted sentence attached the phantom mitigation to and a re-added claim
-could name it without naming the filesystem. README is swept on ``nfs`` alone:
-it is not where the claim lived, its one line of the exclusion names NFS, and a
-key that also selected ``doctor`` turned every true sentence about that command
-into a false RED -- "``theurian doctor`` warns when the daemon is not running"
-read as the mitigation returning. Both directions are held by
+could name it without naming the filesystem. README is swept on the filesystem
+without the command -- ``nfs`` *or* ``network filesystem``: it is not where the
+claim lived, its one line of the exclusion names the filesystem in both
+spellings, and a key that also selected ``doctor`` turned every true sentence
+about that command into a false RED -- "``theurian doctor`` warns when the daemon
+is not running" read as the mitigation returning. Both directions are held by
 :func:`test_readme_is_not_swept_for_true_sentences_about_doctor`, so the
-narrowing cannot travel to the ADR.
+narrowing cannot travel to the ADR. The second spelling is on README's key
+because "network filesystem" is the wording an operator writing this hazard
+reaches for first, and a key on the acronym alone would drop the whole paragraph
+out of the population if a rewrite kept the hazard in words -- which every scan
+below would report as the correction being absent rather than gone.
 
 **Fenced code blocks are outside every prose population here.** README's quick
 start runs ``theurian doctor`` inside an ``sh`` block, and until #446's first
@@ -69,6 +74,14 @@ review round that block was a member of the NFS population -- a shell transcript
 in a scan whose rule is about what a *sentence* claims. Nothing in a command
 sample can state or retract the exclusion, so :func:`_without_code_fences`
 removes them before any key is applied.
+
+That removal is toggle-driven, so an **odd** number of fence delimiters in a
+record makes it swallow the whole tail of the document -- and the tail is where a
+re-added claim would sit, below the paragraph the key selects. #446's second
+review round demonstrated it: a phantom mitigation plus one stray ``` line left
+both prose halves green. Each of them now asserts fence parity per record before
+it reads a paragraph, so the unbalanced fence fails naming the file instead of
+blinding the scan under it.
 
 **The corpus twin stays excluded, and its reason does not reach README.**
 ``.theurian/knowledge/architecture/single-writer-synchronous-in-m1.<ulid>.md`` is
@@ -317,18 +330,46 @@ correction note reports what the port published at ``261eff3`` and ``f665ecf``,
 and quotes the *twelve* it retracted. Those are measurements of named moments,
 which is the one form of a written number this file set accepts.
 
-**Three correction blockquotes are presence-pinned, because deleting one is how
-a corrected claim comes back for free.** Every bullet scan above is keyed on what
-a bullet *asserts*, while a correction note carries the *retraction* -- so
-removing a note leaves the bullet head's ``(owed, #439)`` satisfying
-:data:`LIVE_OWNER` and the closed-tracker scan passing over a bullet that
-retracts nothing. #446's first review round measured all three deletions green.
-:data:`CORRECTION_NOTES` names what each one's removal resurrects, and the
-point-1 bullet's re-measurement paragraph -- prose rather than a blockquote, and
-free to delete for exactly the same reason -- is held by
-:func:`test_the_point_1_bullet_keeps_the_re_measurement_that_narrows_its_own_claim`.
-Which blockquotes are outside that set, and why, is recorded on
-:data:`_UNPINNED_BLOCKQUOTES`.
+**Seven correction paragraphs are pinned, because deleting one is how a
+corrected claim comes back for free.** Every bullet scan above is keyed on what a
+bullet *asserts*, while a correction note carries the *retraction* -- so removing
+a note leaves the bullet head's ``(owed, #439)`` satisfying :data:`LIVE_OWNER`
+and the closed-tracker scan passing over a bullet that retracts nothing. #446's
+first review round measured three deletions green and its second measured three
+more: the Neutral point's NFR-4 amendment, and the Milestone-5 amendment's two
+opening retraction paragraphs -- materially the pre-#441 record, each deletion
+re-run here on 2026-08-31 with the pre-fix module's twenty tests green.
+:data:`CORRECTION_NOTES` names what each removal resurrects.
+
+**Presence is half of it, and the second round found the other half.** An anchor
+is a short fragment, so a paragraph cut down to it passed, and so did one
+rewritten around it to assert the very diagnosis the correction retracted.
+:data:`CorrectionNote.load_bearing` requires the content each correction turns
+on, and
+:func:`test_every_correction_note_still_carries_what_makes_it_a_correction`
+holds it. Which paragraphs are outside the set, and why -- including the ones
+*inside* pinned blockquotes, since the unit is a paragraph and not a quote -- is
+recorded on :data:`_UNPINNED_BLOCKQUOTES`.
+
+**Three corrections live outside a blockquote and need their own pins.** The
+point-1 bullet's re-measurement paragraph is held by
+:func:`test_the_point_1_bullet_keeps_the_re_measurement_that_narrows_its_own_claim`;
+the #468 narrowing of Decision point 2 reaches three places, and only one of them
+is a blockquote, so
+:func:`test_decision_point_2_says_what_its_serialisation_promise_does_not_cover`
+holds the boundary clause a reader meets in the Decision itself and
+:func:`test_the_positive_consequence_records_that_already_safe_was_measured_false`
+holds the Consequences bullet that argues for relying on it.
+
+**The record's pointers are evidence, so they are resolved.**
+:data:`ADR_SYMBOL_POINTERS` lists every ``module.py::symbol`` reference ADR-0018
+makes and
+:func:`test_every_symbol_pointer_in_the_adr_resolves_to_something_live` reads
+each one out of the live module. #446's second review round renamed
+``write_methods`` and found the record still naming the old symbol; re-run here
+on 2026-08-31 against the pre-fix tree, every test in this module,
+``test_connection_claims.py`` and ``test_ports.py`` was green while the ADR
+pointed at a function that no longer existed.
 
 **The lock sweep's reach, stated as narrowly as the filesystem one's.** It reads
 whole module source, so a lock taken in a helper those modules merely import is
@@ -346,12 +387,13 @@ always has a next grammar.
 
 from __future__ import annotations
 
+import ast
 import functools
 import pathlib
 import re
 import sys
 from types import ModuleType
-from typing import Final
+from typing import Final, NamedTuple
 
 from canonical_store_surface import write_methods
 from write_lock_claims import (
@@ -368,6 +410,7 @@ from theurian.application.project_service import write_active_index_pointer
 from theurian.application.setup_steps import STEPS
 from theurian.application.withdrawal_purge import publish_purge_for_withdrawal
 from theurian.cli.index_commands import _publish
+from theurian.domain import ports
 from theurian.domain.ports.index_store import IndexStore
 from theurian.domain.setup import StepId
 from theurian.infrastructure.sqlite.index_purge import purge_into
@@ -385,20 +428,33 @@ README = REPO_ROOT / "README.md"
 #: filesystem and would still have to be caught.
 _NFS_OR_DOCTOR: Final = re.compile(r"\bnfs\b|\bdoctor\b")
 
-#: The key README is read on, and it is narrower for a measured reason. README is
-#: not where the retracted claim lived: it carries one operator-facing line of the
-#: exclusion, and that line names NFS. Keying it on ``doctor`` as well puts every
-#: true sentence about that command into a population whose rule refuses an
-#: undenied ``warns`` or ``detects`` -- so "``theurian doctor`` warns when the
-#: daemon is not running", a sentence this README is entitled to write, went RED
-#: as the phantom NFS mitigation returning. That false RED is what #446's first
-#: review round reported, and a pin that fires on an unrelated true sentence is
-#: one the next author deletes rather than reads.
+#: The key README is read on: the filesystem, without ``doctor``. It drops the
+#: command for a measured reason. README is not where the retracted claim lived:
+#: it carries one operator-facing line of the exclusion, and that line names the
+#: filesystem. Keying it on ``doctor`` as well puts every true sentence about that
+#: command into a population whose rule refuses an undenied ``warns`` or
+#: ``detects`` -- so "``theurian doctor`` warns when the daemon is not running", a
+#: sentence this README is entitled to write, went RED as the phantom NFS
+#: mitigation returning. That false RED is what #446's first review round
+#: reported, and a pin that fires on an unrelated true sentence is one the next
+#: author deletes rather than reads.
+#:
+#: **Both phrasings, and the second is not decoration.** README's paragraph opens
+#: on "advisory locks behave inconsistently on network filesystems" and reaches
+#: the acronym one clause later, and "network filesystem" is the wording an
+#: operator writing the quick-start hazard would reach for first. A key on the
+#: acronym alone selects that paragraph today only because the acronym happens to
+#: be in it; a rewrite that kept the hazard in words would drop the whole
+#: paragraph out of the population and every scan below would report the
+#: correction as absent rather than as gone. Unbounded on the right, so the plural
+#: README actually writes is matched.
 #:
 #: Measured 2026-08-31: README's only ``doctor`` mention is the comment inside the
 #: quick start's ``sh`` block, which :func:`_without_code_fences` removes from the
-#: population anyway, so the narrowing loses no paragraph this scan was reading.
-_NFS_ONLY: Final = re.compile(r"\bnfs\b")
+#: population anyway, so the narrowing loses no paragraph this scan was reading;
+#: and "network filesystem" appears in README only in that same NFS paragraph, so
+#: widening to it adds no paragraph either.
+_NFS_WITHOUT_DOCTOR: Final = re.compile(r"\bnfs\b|\bnetwork filesystem")
 
 #: Every live record that states the NFS exclusion, and therefore every record
 #: that can drift back, mapped to the key each one is read on. The ADR is where
@@ -408,10 +464,10 @@ _NFS_ONLY: Final = re.compile(r"\bnfs\b")
 #: governed corpus twin is deliberately absent -- see the module docstring for
 #: the reason, and for why that reason does not reach README.
 #:
-#: The keys are :data:`_NFS_OR_DOCTOR` and :data:`_NFS_ONLY`, and they differ for
-#: the reason recorded on the second: only one of these two records is where the
-#: phantom ``doctor`` warning lived.
-NFS_RECORDS: Final = {ADR_0018: _NFS_OR_DOCTOR, README: _NFS_ONLY}
+#: The keys are :data:`_NFS_OR_DOCTOR` and :data:`_NFS_WITHOUT_DOCTOR`, and they
+#: differ for the reason recorded on the second: only one of these two records is
+#: where the phantom ``doctor`` warning lived.
+NFS_RECORDS: Final = {ADR_0018: _NFS_OR_DOCTOR, README: _NFS_WITHOUT_DOCTOR}
 
 
 def _module_of(function: object) -> ModuleType | None:
@@ -554,6 +610,18 @@ _SPELLED_COUNT: Final = re.compile(r"\bpublishes its ([a-z]+) write methods\b")
 #: would punish the wording that states the absence.
 _DETECTION_CLAIM: Final = re.compile(r"\b(?:warns|detects|will\s+warn|will\s+detect)\b")
 
+#: The false-RED probe's own words, so the diagnostic that appends it to a live
+#: record can tell its own sample from the record's real prose.
+#:
+#: :func:`test_readme_is_not_swept_for_true_sentences_about_doctor` reads the
+#: shipped README plus this sentence, and until #446's second review round it
+#: asserted over the whole result -- so a genuine phantom mitigation written into
+#: README would have failed the key diagnostic as well as the claim scan, sending
+#: the next reader at a key that was fine. Chosen as a sentence about ``doctor``
+#: that says nothing about a filesystem: it is exactly what the narrowed README
+#: key must *not* select, and exactly what the ADR key must.
+_PROBE_SENTENCE: Final = "warns when the daemon is not running"
+
 #: Words that turn a detection claim into the sentence this module wants. Taken
 #: from ``test_setup_claims.py``, along with its recorded weakness: ``nothing``
 #: counts as a denial, so the rule is weakest exactly where the claim is most
@@ -602,50 +670,154 @@ CORRECTED_BULLETS: Final = (POINT_1_BULLET, INDEX_CONTRACT_BULLET)
 #: reachable from the record is work nobody can find again.
 LIVE_OWNER: Final = "issues/439"
 
-#: The correction blockquotes this module's claims rest on, keyed by an anchor
-#: from each one's own load-bearing sentence and mapped to what deleting it would
-#: silently undo. Every value below is a claim that goes back to being *true in
-#: the record and false in the code* the moment its note is gone.
+
+class CorrectionNote(NamedTuple):
+    """What one anchored blockquote paragraph owes the record.
+
+    ``resurrects`` is what its deletion would silently undo -- printed in the
+    failure so a RED says which claim just came back, not only that a string is
+    missing. ``load_bearing`` is the content that makes it a *correction* rather
+    than a heading: fragments from the same paragraph, so a note gutted to its
+    anchor, or rewritten around the anchor to say something else, fails.
+    """
+
+    resurrects: str
+    load_bearing: tuple[str, ...]
+
+
+#: The correction blockquote paragraphs this module's claims rest on, keyed by an
+#: anchor out of each one's own text. Every ``resurrects`` below is a claim that
+#: goes back to being *true in the record and false in the code* the moment its
+#: paragraph is gone.
 #:
-#: They are presence-pinned because #446's first review round measured that all
-#: three could be deleted with every other pin in this module green. The bullet
-#: scans are the reason: they are keyed on what a bullet *asserts*, and a
-#: correction note carries the retraction rather than the assertion, so the
-#: bullet head's ``(owed, #439)`` alone satisfies :data:`LIVE_OWNER` and the
-#: closed-tracker scan passes over a bullet that no longer retracts anything.
+#: They are pinned because #446's first review round measured that the first three
+#: could be deleted with every other pin in this module green, and its second
+#: round measured the same of three more. The bullet scans are the reason: they
+#: are keyed on what a bullet *asserts*, and a correction note carries the
+#: retraction rather than the assertion, so the bullet head's ``(owed, #439)``
+#: alone satisfies :data:`LIVE_OWNER` and the closed-tracker scan passes over a
+#: bullet that no longer retracts anything.
 #:
-#: The anchor is a sentence fragment rather than a date. A note that is
-#: re-measured later gets a new date and must not go RED for it; a note that
-#: stops saying the thing it exists to say must.
-CORRECTION_NOTES: Final = {
-    "the sentence above names a tracker that is closed": (
-        "the Milestone-5 amendment's standing `#15` cite loses its retraction, so the "
-        "ADR hands owed work to a closed tracker with nothing marking it dead"
+#: **Presence alone was not enough either, and that is the second round's other
+#: finding.** An anchor is a short fragment, so a note cut down to just that
+#: fragment passed, and so did one rewritten around it to assert the diagnosis the
+#: correction had *retracted* -- "the count above said *twelve*, merely stale by
+#: one and refreshed here". ``load_bearing`` is what closes that: each paragraph
+#: must still carry the content its correction turns on. The count note's is the
+#: retracted-versus-stale distinction and the pointer to what holds the number
+#: against the port, which are exactly the two things a "merely stale" rewrite
+#: drops.
+#:
+#: The anchor and the fragments are sentence text rather than dates. A note
+#: re-measured later gets a new date and must not go RED for it.
+#:
+#: **Every string here is lowercase, and that is a requirement rather than a
+#: style.** :func:`_quoted_notes` collapses through ``write_lock_claims.collapsed``,
+#: which lowercases; a capital in an anchor makes its note report as *deleted*
+#: whatever the record says. The premise in
+#: :func:`test_every_correction_blockquote_is_still_in_the_record` refuses that
+#: shape by name, because the failure it otherwise produces reads as prose drift.
+#:
+#: **What this can and cannot hold, stated rather than implied.** It holds the
+#: paragraph's presence and the presence of the fragments named here. It does not
+#: hold the sentences around them: a paragraph reworded everywhere except these
+#: fragments still passes, and no string pin can do better. What it converts is a
+#: silent deletion into a RED that names the resurrected claim.
+CORRECTION_NOTES: Final[dict[str, CorrectionNote]] = {
+    "there is no such method, and there never has been": CorrectionNote(
+        resurrects=(
+            "the Milestone-5 amendment loses its own opening retraction, so points 1 and 3 "
+            "name `CanonicalStore.transaction()` under an amendment that no longer says "
+            "the method was never built"
+        ),
+        load_bearing=('git grep "def transaction"',),
     ),
-    "the count above said": (
-        "the amendment's write-method count loses the record that it was wrong when "
-        "written rather than stale, and `twelve` reads as a figure that merely aged"
+    "writes do not go through one interface": CorrectionNote(
+        resurrects=(
+            "the amendment stops retracting point 1's durability claim, leaving the "
+            "Decision's own rule -- a guarantee behind one interface can change mechanism "
+            "-- reading as satisfied"
+        ),
+        load_bearing=("held by convention at each call site",),
     ),
-    "the index's only writer no longer holds": (
-        "`theurian index build is today its only writer` is resurrected, in a section "
-        "whose own paragraph predicts the second writer that has since landed"
+    "the sentence above names a tracker that is closed": CorrectionNote(
+        resurrects=(
+            "the Milestone-5 amendment's standing `#15` cite loses its retraction, so the "
+            "ADR hands owed work to a closed tracker with nothing marking it dead"
+        ),
+        load_bearing=(LIVE_OWNER, "left standing rather than rewritten"),
+    ),
+    "the count above said": CorrectionNote(
+        resurrects=(
+            "the amendment's write-method count loses the record that it was wrong when "
+            "written rather than stale, and `twelve` reads as a figure that merely aged"
+        ),
+        load_bearing=(
+            "wrong when written",
+            "test_adr_0018_claims.py::"
+            "test_the_amendment_spells_the_write_method_count_the_port_publishes",
+        ),
+    ),
+    "point 2 said, without the boundary it now carries": CorrectionNote(
+        resurrects=(
+            "point 2's narrowing loses the measurement behind it, so `for the work that "
+            "runs inside that transaction` reads as a clarification rather than as a "
+            "boundary eight real two-process runs put there"
+        ),
+        load_bearing=("crashed in four of the eight", "issues/468"),
+    ),
+    "the citation of nfr-4": CorrectionNote(
+        resurrects=(
+            "the Neutral point's `WAL ... lets search keep serving during a rebuild "
+            "(NFR-4)` stands unamended, and the Compliance section's `NFR-4 is not "
+            "discharged, per the amendment above` points at nothing"
+        ),
+        load_bearing=("names a requirement that is currently unmet",),
+    ),
+    "the index's only writer no longer holds": CorrectionNote(
+        resurrects=(
+            "`theurian index build is today its only writer` is resurrected, in a section "
+            "whose own paragraph predicts the second writer that has since landed"
+        ),
+        load_bearing=("application/withdrawal_purge.py", LIVE_OWNER),
     ),
 }
 
-#: Two blockquotes in ADR-0018 are deliberately **not** in the mapping above, and
-#: neither is an oversight:
+#: What is outside the mapping above, and why. The name says *blockquotes*, and
+#: the unit is really a **paragraph**: :func:`_quoted_notes` breaks a blockquote at
+#: every bare ``>``, so an anchor holds the paragraph it sits in and nothing else.
+#: Both residues below are stated at that granularity.
+#:
+#: Whole blockquotes deliberately unpinned:
 #:
 #: - the blue/green note under the index bullet, which records a decision owned by
 #:   ADR-0024 rather than correcting a claim this module holds;
-#: - the Neutral point's Milestone 5 amendment about NFR-4, which is ADR-0022's
-#:   subject and is cited from there.
+#: - the #424 note that corrected Decision point 2, which is a judgement rather
+#:   than a category: its deletion removes provenance but resurrects nothing,
+#:   because point 2 was corrected *in place* and is held in both directions by
+#:   :func:`test_adr_0018_says_the_write_lock_is_a_separate_file_and_names_it` and
+#:   :func:`test_adr_0018_does_not_reattach_the_write_lock_to_a_database`.
 #:
-#: The #424 note that corrected Decision point 2 is also absent, and that one is
-#: a judgement rather than a category: its deletion removes provenance but
-#: resurrects nothing, because point 2 was corrected *in place* and is held in
-#: both directions by
-#: :func:`test_adr_0018_says_the_write_lock_is_a_separate_file_and_names_it` and
-#: :func:`test_adr_0018_does_not_reattach_the_write_lock_to_a_database`.
+#: **The Neutral point's NFR-4 amendment used to be on that list, and the reason
+#: given was refuted.** It said the amendment is ADR-0022's subject and cited from
+#: there; #446's second review round deleted the blockquote and ran the whole
+#: suite green, resurrecting "WAL ... (NFR-4)" with the Compliance bullet's "per
+#: the amendment above" pointing at nothing. It is pinned above now.
+#:
+#: Unpinned **paragraphs inside pinned blockquotes**, which is the residue the
+#: unit above creates, measured 2026-08-31 against the sixteen paragraphs
+#: :func:`_quoted_notes` returns for this record. The Milestone-5 amendment is
+#: seven of them: four are anchored above, a fifth is held by
+#: :data:`AMENDMENT_COUNT_NOTE`, and two are not -- the "decision is not
+#: superseded" paragraph carrying the standing ``#15`` cite, and the GOVERNANCE
+#: note. The #468 narrowing is three: one anchored, and its mechanism and
+#: not-superseded paragraphs unpinned. Each of those four was deleted on
+#: 2026-08-31 in a throwaway checkout and every test in this module stayed green,
+#: so the residue is measured rather than assumed. They are recorded rather than
+#: pinned because each restates
+#: something an anchored paragraph or a live pin already carries, and a pin per
+#: paragraph would go RED on every ordinary rewrite of a record that is rewritten
+#: often.
 _UNPINNED_BLOCKQUOTES: Final = "recorded above, not enumerated in code"
 
 #: The two things the point-1 bullet's re-measurement has to keep saying. Not
@@ -663,6 +835,140 @@ _UNPINNED_BLOCKQUOTES: Final = "recorded above, not enumerated in code"
 #: re-measurement may move the date without going RED, and may not quietly drop
 #: the residual it found.
 POINT_1_REMEASUREMENT: Final = ("re-measured", "`-> object` is the residual")
+
+#: What Decision point 2 must keep saying after #468. The narrowing landed as one
+#: added clause and one added sentence, both inside the numbered point, and
+#: neither is a blockquote -- so :data:`CORRECTION_NOTES` cannot reach them and
+#: nothing else in this module keys on them.
+#:
+#: Deleting either restores the promise eight real two-process runs falsified: the
+#: loser of two concurrent `migrate apply` invocations crashed in four of them, on
+#: `create_database` and `write_active_state`, which run outside the transaction.
+#: The boundary clause is what makes the surviving sentence true, and the second
+#: fragment is what stops the point being read as *everything* serialising.
+#:
+#: Both are held against the isolated point rather than the file, because the
+#: narrowing blockquote below quotes the old promise verbatim in order to retract
+#: it, and a file-wide search would read that quotation as the claim returning.
+#:
+#: Lowercase, for the reason :data:`CORRECTION_NOTES` records: everything these
+#: are matched against has been through ``collapsed``.
+POINT_2_BOUNDARY: Final = (
+    "for the work that runs inside that transaction",
+    "does not serialise",
+)
+
+#: The Positive consequence the same narrowing corrected, keyed on the scenario
+#: rather than on the retraction, for :func:`_the_one_paragraph_carrying`'s reason.
+#: Lowercase, like every other key matched against collapsed prose here.
+POSITIVE_CONSEQUENCE: Final = "two concurrent cli invocations"
+
+#: What that bullet must keep saying. It called two concurrent CLI invocations
+#: "already safe" until 2026-08-31 and the measurement refused it, so the quoted
+#: phrase now has to appear *as something the bullet said*, with the refusal and
+#: the owner beside it. Dropping any of the three leaves the bullet reading as a
+#: plain statement of fact again -- which is what it was, and what was false.
+POSITIVE_CONSEQUENCE_RETRACTION: Final = ('"already safe"', "measured false", "issues/468")
+
+_SOURCE_ROOT: Final = REPO_ROOT / "packages" / "theurian-core" / "src" / "theurian"
+
+_TESTS_ROOT: Final = REPO_ROOT / "packages" / "theurian-core" / "tests"
+
+
+class SymbolPointer(NamedTuple):
+    """One ``module.py::symbol`` reference ADR-0018 hands a reader.
+
+    ``cited`` is the reference exactly as the record writes it, so the pin fails
+    when the ADR stops carrying it rather than passing over a pointer that is no
+    longer there. ``module`` and ``symbol`` are what it has to resolve to.
+    """
+
+    cited: str
+    module: pathlib.Path
+    symbol: str
+
+
+#: Every ``module.py::symbol`` reference in ADR-0018, as a literal tuple.
+#:
+#: **Written out rather than harvested by a pattern**, and that is the same choice
+#: :data:`CORRECTED_BULLETS` makes for the same reason. A walker over the record
+#: would find whatever the record happens to contain, so a reference deleted from
+#: the ADR leaves the walker with nothing to check and the test green: the pin
+#: would be strongest exactly when the document was intact and vacuous when it was
+#: not. A hand-written population fails in that direction instead -- if a pointer
+#: is removed or reworded, ``cited`` stops matching and the list has to be brought
+#: back into step by a person who can see what happened.
+#:
+#: Nine references, measured 2026-08-31 with
+#: ``grep -oE '[A-Za-z0-9_/.]+\\.py::[A-Za-z0-9_]+(\\[[A-Za-z0-9_]+\\])?'`` over the
+#: record and deduplicated. #446's second review round found the class open in
+#: both directions: renaming ``write_methods`` left the suite green while the ADR
+#: went on naming the old symbol, and nothing anywhere read the other eight
+#: either.
+#:
+#: ``write_methods()`` is cited with its call parentheses and the rest without,
+#: which is why ``cited`` and ``symbol`` are separate fields rather than one
+#: string split on ``::``. ``[CanonicalStore]`` is a pytest parametrisation id,
+#: not a symbol, and it is resolved separately against ``ALL_PORTS`` --
+#: :func:`test_every_symbol_pointer_in_the_adr_resolves_to_something_live` says
+#: how.
+ADR_SYMBOL_POINTERS: Final = (
+    SymbolPointer(
+        "application/setup_steps.py::STEPS",
+        _SOURCE_ROOT / "application" / "setup_steps.py",
+        "STEPS",
+    ),
+    SymbolPointer(
+        "cli/setup_commands.py::doctor_command",
+        _SOURCE_ROOT / "cli" / "setup_commands.py",
+        "doctor_command",
+    ),
+    SymbolPointer(
+        "canonical_store_surface.py::write_methods()",
+        _TESTS_ROOT / "canonical_store_surface.py",
+        "write_methods",
+    ),
+    SymbolPointer(
+        "test_adr_0018_claims.py::"
+        "test_the_amendment_spells_the_write_method_count_the_port_publishes",
+        _TESTS_ROOT / "unit" / "test_adr_0018_claims.py",
+        "test_the_amendment_spells_the_write_method_count_the_port_publishes",
+    ),
+    SymbolPointer(
+        "test_connection_claims.py::"
+        "test_the_canonical_store_port_declares_no_single_write_interface",
+        _TESTS_ROOT / "unit" / "test_connection_claims.py",
+        "test_the_canonical_store_port_declares_no_single_write_interface",
+    ),
+    SymbolPointer(
+        "test_ports.py::test_port_methods_are_annotated[CanonicalStore]",
+        _TESTS_ROOT / "unit" / "test_ports.py",
+        "test_port_methods_are_annotated",
+    ),
+    SymbolPointer(
+        "tests/integration/test_cli_commands.py::test_apply_is_idempotent",
+        _TESTS_ROOT / "integration" / "test_cli_commands.py",
+        "test_apply_is_idempotent",
+    ),
+    SymbolPointer(
+        "tests/integration/test_setup_service.py::test_every_specified_step_is_reported",
+        _TESTS_ROOT / "integration" / "test_setup_service.py",
+        "test_every_specified_step_is_reported",
+    ),
+    SymbolPointer(
+        "tests/unit/test_migration_engine.py::test_reapplying_the_same_set_is_a_no_op",
+        _TESTS_ROOT / "unit" / "test_migration_engine.py",
+        "test_reapplying_the_same_set_is_a_no_op",
+    ),
+)
+
+#: The one pytest parametrisation id ADR-0018 cites, and the population it has to
+#: be a member of. ``test_ports.py`` parametrises over ``ports.ALL_PORTS`` with
+#: ``ids=lambda p: p.__name__``, so ``[CanonicalStore]`` names a real test node
+#: only while that port is in the list -- and the ADR's whole point 1 is about
+#: that port, so a port dropped from ``ALL_PORTS`` would take the record's
+#: evidence with it while every symbol above still resolved.
+CITED_PARAMETRISATION: Final = "CanonicalStore"
 
 #: The closed tracker the bullets used to name, in both the forms ADR-0018 writes
 #: it -- the Markdown label ``[#15]`` and the bare ``#15`` -- and the link target
@@ -775,11 +1081,14 @@ def _without_code_fences(text: str) -> str:
     that means nothing, while a scan that skips one loses no sentence a reader
     would take as a claim.
 
-    An unterminated fence would swallow the rest of the document. That fails at
-    the premise rather than passing quietly: every caller asserts its population
-    is non-empty before searching it, so a record whose paragraphs all vanished
-    reports "this record has no paragraph mentioning NFS" instead of "no claim
-    found".
+    **An unterminated fence swallows the rest of the document, and the
+    non-empty-population premise does not catch it.** This docstring said it did
+    until #446's second review round, which measured the opposite: the fence has
+    to sit *below* the paragraph the key selects for the damage to matter, and by
+    then the population is non-empty and the premise is satisfied. A phantom
+    mitigation plus one stray ``` line left both prose halves green. What catches
+    it is :func:`_fence_delimiters` and the parity assertion every caller now
+    makes before it reads a paragraph.
     """
     kept: list[str] = []
     inside = False
@@ -792,12 +1101,66 @@ def _without_code_fences(text: str) -> str:
     return "\n".join(kept)
 
 
+def _fence_delimiters(text: str) -> list[str]:
+    """Every code-fence delimiter line in *text*, in document order.
+
+    The parity of this list is what makes :func:`_without_code_fences` a filter
+    rather than a truncation. An odd count means the last fence opens a block that
+    never closes, so every line after it is dropped as fenced -- and a scan whose
+    population was selected *above* that fence reports the tail as clean without
+    ever having read it.
+    """
+    return [line for line in text.splitlines() if _CODE_FENCE.match(line)]
+
+
+def _records_with_an_unbalanced_fence(sources: dict[str, str]) -> dict[str, int]:
+    """Each named record whose fences do not close, mapped to its delimiter count.
+
+    Split out from the premise below and given a mapping rather than the record
+    paths, so
+    :func:`test_an_unclosed_fence_eats_the_tail_and_the_parity_count_is_what_sees_it`
+    can drive it with synthetic sources. Both shipped records are balanced today,
+    so a classifier rewritten to answer "nothing is unbalanced" would be
+    indistinguishable from this one against the tree it ships with -- the
+    guard-no-input-reaches shape, met one layer in.
+    """
+    return {
+        name: len(fences)
+        for name, text in sources.items()
+        if len(fences := _fence_delimiters(text)) % 2
+    }
+
+
+def _scanned_nfs_paragraphs() -> dict[str, list[str]]:
+    """Each NFS record's selected paragraphs, keyed by filename, fences checked first.
+
+    The parity check is the premise, and it is a premise rather than a test of its
+    own because it has to hold *for the scan that is about to run*. Both prose
+    halves below read this, so neither can scan a record whose tail
+    :func:`_without_code_fences` has silently eaten.
+    """
+    sources = {record.name: record.read_text(encoding="utf-8") for record in NFS_RECORDS}
+
+    unbalanced = _records_with_an_unbalanced_fence(sources)
+    assert not unbalanced, (
+        f"these records carry an odd number of code-fence delimiters, so the last "
+        f"fence never closes and every line below it is dropped before any key is "
+        f"applied: {unbalanced}. A claim re-added under that fence would be reported "
+        f"as absent rather than found"
+    )
+
+    return {
+        record.name: _nfs_paragraphs(sources[record.name], key)
+        for record, key in NFS_RECORDS.items()
+    }
+
+
 def _nfs_paragraphs(text: str, key: re.Pattern[str]) -> list[str]:
     """The prose paragraphs of one record that its own *key* selects.
 
-    The key is per-record rather than shared, and :data:`_NFS_ONLY` records the
-    measurement behind that. Code blocks are out of the population before the key
-    is applied at all.
+    The key is per-record rather than shared, and :data:`_NFS_WITHOUT_DOCTOR`
+    records the measurement behind that. Code blocks are out of the population
+    before the key is applied at all.
     """
     return [
         paragraph for paragraph in _paragraphs(_without_code_fences(text)) if key.search(paragraph)
@@ -838,6 +1201,57 @@ def _detection_claims_without_denial(paragraphs: list[str]) -> list[str]:
 def _filesystem_type_apis(text: str) -> list[str]:
     """Every filesystem-type API named in a piece of source text."""
     return _FILESYSTEM_TYPE_API.findall(text)
+
+
+def _top_level_definitions(module: pathlib.Path) -> frozenset[str]:
+    """Every name a module binds at module level: functions, classes, constants.
+
+    Parsed rather than imported. Importing ``test_ports.py`` or
+    ``test_migration_engine.py`` to ask ``hasattr`` would run their module-level
+    code inside this test, and a pin that has side effects on the thing it reads
+    is one the next author disables rather than debugs.
+
+    Constants are read as well as callables because a pointer may name one:
+    ADR-0018 cites ``application/setup_steps.py::STEPS``, which is an assignment.
+    A definition set that held only ``def`` and ``class`` would report that
+    reference as broken while it resolves perfectly well.
+    """
+    tree = ast.parse(module.read_text(encoding="utf-8"))
+
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(target.id for target in node.targets if isinstance(target, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return frozenset(names)
+
+
+def _the_one_paragraph_carrying(text: str, key: str) -> str:
+    """The single paragraph of *text* containing *key*, collapsed.
+
+    :func:`_corrected_bullet`'s rule applied outside the Compliance section, for
+    the prose the #468 narrowing corrected in place: the Consequences bullet is an
+    ordinary list item and :func:`_paragraphs` already returns a bullet and its
+    wrapped continuation as one string.
+
+    Exactly one must match, and the key is chosen from the *scenario* the
+    paragraph describes rather than from the correction it now carries -- the same
+    reason :data:`CORRECTED_BULLETS` gives. A key built from the retraction stops
+    matching the moment the retraction goes, so the paragraph drops out of the
+    population instead of failing.
+    """
+    found = [paragraph for paragraph in _paragraphs(text) if key in paragraph]
+
+    assert len(found) == 1, (
+        f"`{key}` no longer identifies exactly one paragraph of ADR-0018: found "
+        f"{len(found)}. Zero means the paragraph was deleted or reworded past the "
+        f"scenario it is keyed on; more than one means anything read out of it is "
+        f"about text this module never chose"
+    )
+    return found[0]
 
 
 def _decision_point_two(text: str) -> str:
@@ -933,16 +1347,28 @@ def _quoted_notes(text: str) -> list[str]:
 def _correction_note(text: str, anchor: str) -> str:
     """The one blockquote note carrying *anchor*, as a single collapsed string.
 
-    Exactly one must match, the :func:`_corrected_bullet` rule met again. Zero
-    means the note was deleted or rewritten past the sentence it exists to carry,
-    which is the whole point of the presence pin; more than one means the anchor
-    no longer identifies a single note and anything read out of it is about text
-    this module was never scoped to.
+    Exactly one must match, the :func:`_corrected_bullet` rule met again.
+
+    **Zero has two causes and the message names both**, because they call for
+    opposite responses. The note may have been *deleted*, which is the drift these
+    pins exist to catch; or the anchored sentence may have *moved* -- promoted
+    into another blockquote, or reflowed so that :func:`_quoted_notes` returns it
+    under a different paragraph -- in which case the record is intact and the
+    anchor is what needs correcting. The message said "has no single correction
+    note carrying" until #446's second review round, which reads as the first and
+    sends a reader to restore prose that is already there.
+
+    More than one means the anchor no longer identifies a single paragraph, and
+    anything read out of it is about text this module never chose.
     """
     notes = [note for note in _quoted_notes(text) if anchor in note]
 
     assert len(notes) == 1, (
-        f"ADR-0018 has no single correction note carrying `{anchor}`: found {len(notes)}"
+        f"`{anchor}` no longer identifies exactly one blockquote paragraph in "
+        f"ADR-0018: found {len(notes)}. Zero means the paragraph was deleted, or "
+        f"that its sentence moved into another note and this anchor is the thing "
+        f"that has to be repointed; more than one means the anchor is shared and "
+        f"neither paragraph is the one this pin is holding"
     )
     return notes[0]
 
@@ -1114,11 +1540,13 @@ def test_every_record_of_the_nfs_exclusion_says_nothing_detects_it() -> None:
     file that had just made the point twice. Saying a true thing twice is not the
     drift this module exists to catch; the negative half below refuses the false
     version.
+
+    The paragraphs come from :func:`_scanned_nfs_paragraphs`, which asserts each
+    record's code fences balance before it selects anything -- an odd fence count
+    truncates a record silently, and a truncated record has no statement of the
+    absence for this half to find.
     """
-    scanned = {
-        record.name: _nfs_paragraphs(record.read_text(encoding="utf-8"), key)
-        for record, key in NFS_RECORDS.items()
-    }
+    scanned = _scanned_nfs_paragraphs()
     assert len(scanned) == len(NFS_RECORDS), (
         f"two records share a filename, so one of them is not being read at all: "
         f"{sorted(record.name for record in NFS_RECORDS)}"
@@ -1161,11 +1589,15 @@ def test_no_record_of_the_nfs_exclusion_claims_anything_warns_about_it() -> None
     The scanned population is asserted before it is scanned, which is what stops
     a record that has lost its NFS paragraphs from passing as clean: a search over
     no paragraphs reports the same empty list as a search over correct ones.
+
+    **A non-empty population is not enough, and #446's second review round proved
+    it.** The selected paragraph sits near the top of each record, so a stray
+    fence *below* it truncates everything after while leaving this premise
+    satisfied -- a phantom mitigation plus one unmatched ``` line was measured
+    green here. :func:`_scanned_nfs_paragraphs` asserts fence parity per record
+    first, so that shape now fails naming the file.
     """
-    scanned = {
-        record.name: _nfs_paragraphs(record.read_text(encoding="utf-8"), key)
-        for record, key in NFS_RECORDS.items()
-    }
+    scanned = _scanned_nfs_paragraphs()
 
     unscanned = sorted(name for name, paragraphs in scanned.items() if not paragraphs)
     assert not unscanned, (
@@ -1225,6 +1657,61 @@ def test_the_prose_population_skips_command_samples_and_keeps_the_sentences() ->
     )
 
 
+def test_an_unclosed_fence_eats_the_tail_and_the_parity_count_is_what_sees_it() -> None:
+    """RED means an unbalanced fence can blind a prose scan again.
+
+    Driven by synthetic input because neither shipped record can drive it:
+    measured 2026-08-31, ``README.md`` carries twenty-two fence delimiters and
+    ADR-0018 none, both even, so a parity check that always answered "balanced"
+    would be indistinguishable from a working one.
+
+    **Two halves, and the second is why the first is worth asserting.** The
+    classifier the premise actually calls is driven on both answers;
+    :func:`_without_code_fences` is then shown actually losing the sentence under
+    the unmatched fence. A test that asserted only the arithmetic would pin a
+    number with no consequence attached, and the consequence is the finding:
+    #446's second review round appended a phantom mitigation plus one stray ```
+    line to a record and both prose halves stayed green, because the paragraph
+    their key selects sits above the fence and the population premise was
+    satisfied before the damage began.
+
+    :func:`_records_with_an_unbalanced_fence` is called rather than
+    :func:`_fence_delimiters`, so a premise rewritten to classify nothing as
+    unbalanced fails here and not only in the record that meets it next.
+
+    The truncating sample is that shape, minimised -- the claim the negative half
+    exists to refuse, placed below a fence that never closes.
+    """
+    balanced = (
+        "Nothing detects that it is.\n\n```sh\ntheurian doctor\n```\n\nNFS stays unsupported.\n"
+    )
+    truncating = (
+        "Nothing detects that it is.\n\n```sh\ntheurian doctor\n\n`doctor` warns about NFS.\n"
+    )
+
+    assert _records_with_an_unbalanced_fence({"balanced.md": balanced}) == {}, (
+        "the fence premise reads a closed block as unbalanced, so every record "
+        "would fail it for a reason that is not there"
+    )
+    assert _records_with_an_unbalanced_fence({"truncating.md": truncating}) == {
+        "truncating.md": 1
+    }, (
+        "the fence premise no longer sees an unmatched fence, so it passes over the "
+        "shape it was written for and the scan below it goes back to reading a "
+        "truncated document"
+    )
+
+    assert "NFS stays unsupported" in _without_code_fences(balanced), (
+        "the fence filter drops prose below a closed block, so the parity premise "
+        "would be guarding a truncation that happens either way"
+    )
+    assert "warns about NFS" not in _without_code_fences(truncating), (
+        "the fence filter no longer swallows the tail after an unmatched fence, so "
+        "the parity premise has nothing left to protect -- and this test, not the "
+        "premise, is the one to delete if that is now true"
+    )
+
+
 def test_readme_is_not_swept_for_true_sentences_about_doctor() -> None:
     """RED means README's key is back to selecting every ``doctor`` paragraph.
 
@@ -1240,23 +1727,37 @@ def test_readme_is_not_swept_for_true_sentences_about_doctor() -> None:
     record is actually read on. ADR-0018 is checked in the same breath, because
     the narrowing must not travel: ``doctor`` is where its retracted claim
     attached, and a key change that removed it there would delete the pin.
+
+    **Both halves are scoped to the appended sentence, and that is #446's second
+    review round.** Reading the whole document made this test fail for two
+    unrelated reasons: a widened key, which is what it is about, and a genuine
+    phantom mitigation added to README's own prose, which is
+    :func:`test_no_record_of_the_nfs_exclusion_claims_anything_warns_about_it`'s.
+    A diagnostic that fires on someone else's defect sends the next reader at the
+    key when the key is fine. Filtering to :data:`_PROBE_SENTENCE` leaves each
+    half answering exactly one question -- and it strengthens the ADR half, which
+    previously asserted only that *some* claim was found and would have been
+    satisfied by a real one.
     """
-    a_true_doctor_sentence = "\n\n`theurian doctor` warns when the daemon is not running.\n"
+    a_true_doctor_sentence = f"\n\n`theurian doctor` {_PROBE_SENTENCE}.\n"
     readme = README.read_text(encoding="utf-8") + a_true_doctor_sentence
 
     claims = _detection_claims_without_denial(_nfs_paragraphs(readme, NFS_RECORDS[README]))
+    from_the_probe = [claim for claim in claims if _PROBE_SENTENCE in claim]
 
-    assert not claims, (
+    assert not from_the_probe, (
         f"README's NFS scan fires on a true sentence about `doctor`, so an ordinary "
         f"addition to the quick start goes RED as the phantom NFS mitigation "
-        f"returning: {claims}"
+        f"returning: {from_the_probe}"
     )
 
     adr = ADR_0018.read_text(encoding="utf-8") + a_true_doctor_sentence
-    assert _detection_claims_without_denial(_nfs_paragraphs(adr, NFS_RECORDS[ADR_0018])), (
-        "ADR-0018's key no longer selects a paragraph on `doctor` alone, so the "
-        "record where the phantom mitigation actually lived is no longer swept for "
-        "it returning"
+    adr_claims = _detection_claims_without_denial(_nfs_paragraphs(adr, NFS_RECORDS[ADR_0018]))
+
+    assert any(_PROBE_SENTENCE in claim for claim in adr_claims), (
+        f"ADR-0018's key no longer selects a paragraph on `doctor` alone, so the "
+        f"record where the phantom mitigation actually lived is no longer swept for "
+        f"it returning: {adr_claims}"
     )
 
 
@@ -1510,17 +2011,26 @@ def test_every_correction_blockquote_is_still_in_the_record() -> None:
     module is keyed on what a bullet *asserts*; a correction note carries the
     *retraction*, so deleting one leaves the bullet head's ``(owed, #439)``
     satisfying :data:`LIVE_OWNER` and the closed-tracker scan passing over a
-    bullet that no longer retracts anything. #446's first review round measured
-    exactly that: all three notes could be removed with every other test in this
-    file green.
+    bullet that no longer retracts anything. #446's two review rounds measured
+    exactly that, six times: the three notes in the first round, and in the second
+    the NFR-4 amendment, the Milestone-5 amendment's two opening retraction
+    paragraphs, and the #468 narrowing -- each deletable with every other test in
+    this file green.
 
     :data:`CORRECTION_NOTES` names, per anchor, what the deletion would silently
     undo, and the failure message prints it -- so a RED here says which claim just
     came back rather than only that a string is missing.
 
-    Presence is all this asserts. A note reworded around its anchor still passes,
-    which is the same limit every grammar pin in this file records; what it
-    refuses is the deletion, which is the move that was measured to be free.
+    **Deletion is all this half asserts, and the ambiguity check is why it can
+    say so.** An anchor matching two paragraphs would report both as present while
+    identifying neither, so the pin would be about text nobody chose;
+    :func:`test_every_correction_note_still_carries_what_makes_it_a_correction`
+    holds the other half, that the paragraph still says what it exists to say.
+
+    **The case premise is here because it was hit while this pin was written.**
+    ``collapsed`` lowercases, so an anchor carrying a capital matches nothing and
+    the deletion assertion reports a note that is sitting in the record untouched
+    -- a RED naming the wrong cause, which is the one a reader acts on wrongly.
     """
     text = ADR_0018.read_text(encoding="utf-8")
     notes = _quoted_notes(text)
@@ -1530,15 +2040,75 @@ def test_every_correction_blockquote_is_still_in_the_record() -> None:
         "correction note as deleted, or none"
     )
 
+    miscased = sorted(
+        needle
+        for needle in (
+            *CORRECTION_NOTES,
+            *(f for note in CORRECTION_NOTES.values() for f in note.load_bearing),
+        )
+        if needle != needle.lower()
+    )
+    assert not miscased, (
+        f"these anchors or fragments carry capitals, and every paragraph they are "
+        f"matched against has been lowercased by `collapsed`, so each would report "
+        f"its note as deleted whatever ADR-0018 says: {miscased}"
+    )
+
+    matched = {anchor: [note for note in notes if anchor in note] for anchor in CORRECTION_NOTES}
+
     deleted = {
-        anchor: resurrects
-        for anchor, resurrects in CORRECTION_NOTES.items()
-        if not any(anchor in note for note in notes)
+        anchor: CORRECTION_NOTES[anchor].resurrects
+        for anchor, found in matched.items()
+        if not found
     }
 
     assert not deleted, (
-        f"these correction notes are gone from ADR-0018, and with each one the "
-        f"claim it retracts is standing again: {deleted}"
+        f"these anchors match no blockquote paragraph in ADR-0018 -- either the "
+        f"paragraph was deleted, or its sentence moved and the anchor is what has to "
+        f"be repointed. If it is the first, the claim each one retracts is standing "
+        f"again: {deleted}"
+    )
+
+    ambiguous = {anchor: len(found) for anchor, found in matched.items() if len(found) > 1}
+
+    assert not ambiguous, (
+        f"these anchors now match more than one blockquote paragraph, so neither "
+        f"this pin nor the content one below can say which paragraph it is holding: "
+        f"{ambiguous}"
+    )
+
+
+def test_every_correction_note_still_carries_what_makes_it_a_correction() -> None:
+    """RED means a correction note was gutted or rewritten past its own retraction.
+
+    The other half, and it is not the first restated. #446's second review round
+    measured two moves that the presence pin alone admits: a note **cut down to
+    its anchor fragment**, and a note **rewritten around the anchor** to assert
+    the diagnosis the correction had retracted -- "the count above said *twelve*,
+    merely stale by one and refreshed here" passed while saying the opposite of
+    what the note exists to say.
+
+    :data:`CorrectionNote.load_bearing` is what closes both: the content each
+    paragraph's correction turns on, required in that same paragraph. For the
+    count note it is the wrong-when-written distinction and the pointer to the
+    test that holds the number against the live port -- exactly the two things a
+    "merely stale" rewrite drops.
+
+    Reach: these are string fragments. A paragraph reworded everywhere except
+    them still passes, and no presence pin can do better;
+    :data:`_UNPINNED_BLOCKQUOTES` records the paragraph-level residue beside it.
+    """
+    text = ADR_0018.read_text(encoding="utf-8")
+
+    gutted = {
+        anchor: missing
+        for anchor, note in CORRECTION_NOTES.items()
+        if (missing := [f for f in note.load_bearing if f not in _correction_note(text, anchor)])
+    }
+
+    assert not gutted, (
+        f"these correction notes have lost the content their correction rests on, "
+        f"so each is now a heading over a claim it no longer retracts: {gutted}"
     )
 
 
@@ -1564,6 +2134,134 @@ def test_the_point_1_bullet_keeps_the_re_measurement_that_narrows_its_own_claim(
         f"the point-1 bullet no longer carries its re-measurement: {missing}. "
         f"Without it the bullet's Milestone-5 sentence stands alone, and that "
         f"measurement was falsified on 2026-08-31 in two spellings of three"
+    )
+
+
+def test_decision_point_2_says_what_its_serialisation_promise_does_not_cover() -> None:
+    """RED means point 2 promises unqualified serialisation again, which is false.
+
+    The claim as it stood -- two concurrent ``theurian migrate apply`` invocations
+    serialise and the loser becomes a no-op -- was measured false by #446's second
+    review round on eight real two-process runs: the loser crashed in four, on
+    ``create_database`` before the transaction opens and ``write_active_state``
+    after it commits, both outside the lock
+    ([#468](https://github.com/theurian/theurian/issues/468)).
+
+    What made the record true again is a boundary inside the point itself, and a
+    boundary is deleted by an edit that reads like tightening prose. The narrowing
+    blockquote below it is pinned separately in :data:`CORRECTION_NOTES`; this
+    holds the sentence a reader who stops at the Decision actually reads, which is
+    the one the blockquote cannot rescue.
+
+    Scoped to the isolated point rather than to the file, because that blockquote
+    quotes the old promise verbatim in order to retract it -- the trap
+    :func:`_decision_point_two` exists for, met again.
+    """
+    point = _decision_point_two(ADR_0018.read_text(encoding="utf-8"))
+
+    missing = sorted(fragment for fragment in POINT_2_BOUNDARY if fragment not in point)
+
+    assert not missing, (
+        f"Decision point 2 no longer bounds what it serialises: {missing}. Without "
+        f"that boundary the point promises what four of eight real two-process runs "
+        f"refused -- the loser crashing rather than becoming a no-op (#468)"
+    )
+
+
+def test_the_positive_consequence_records_that_already_safe_was_measured_false() -> None:
+    """RED means the ADR calls two concurrent CLI invocations safe again.
+
+    The Positive bullet is the second place a reader meets the claim #468
+    falsified, and it is the place they meet it as a *reason to rely on it*: "two
+    concurrent CLI invocations are already safe, which is a real scenario -- an
+    editor plugin and a terminal". Narrowing the Decision and leaving this bullet
+    alone would have left the ADR arguing for the behaviour on one screen and
+    retracting it on another, which is the two-halves-disagreeing defect this
+    module was written for.
+
+    Three fragments, and each carries a different part of the retraction: the
+    quoted phrase, so the bullet says what it *said*; the refusal, so a reader
+    knows it was measured rather than reconsidered; and the owner, so the
+    engineering that would restore the claim is findable. Any one of them dropped
+    leaves the bullet reading as a plain statement of fact again.
+
+    Not a blockquote, so :data:`CORRECTION_NOTES` cannot reach it, and outside the
+    Compliance section, so :func:`_corrected_bullet` cannot either.
+    """
+    bullet = _the_one_paragraph_carrying(ADR_0018.read_text(encoding="utf-8"), POSITIVE_CONSEQUENCE)
+
+    missing = sorted(
+        fragment for fragment in POSITIVE_CONSEQUENCE_RETRACTION if fragment not in bullet
+    )
+
+    assert not missing, (
+        f"the Positive consequence no longer records that `already safe` was "
+        f"measured false: {missing}. The bullet is where a reader is told to rely "
+        f"on the behaviour, and four of eight real two-process runs refused it (#468)"
+    )
+
+
+def test_every_symbol_pointer_in_the_adr_resolves_to_something_live() -> None:
+    """RED means ADR-0018 sends a reader to a symbol that is not there.
+
+    The record's evidence is its pointers. "The count above is held against the
+    port rather than by hand" is worth nothing to a reader who cannot find the
+    test it names, and a rename is exactly the edit that breaks such a pointer
+    without touching the record: #446's second review round renamed
+    ``write_methods`` while ADR-0018 went on citing the old symbol, and the
+    rename was re-run here on 2026-08-31 against the pre-fix tree with every test
+    in this module, ``test_connection_claims.py`` and ``test_ports.py`` green.
+    Nothing anywhere read the other eight references either.
+
+    **Three assertions, in the order a failure should be read.** The population
+    premise comes first, because :data:`ADR_SYMBOL_POINTERS` is hand-written: a
+    reference removed from the record leaves an entry here pointing at prose that
+    is gone, and that is a defect in this list rather than in the ADR. Then the
+    files, so a moved module fails naming the path rather than raising out of
+    :func:`_top_level_definitions`. Then the symbols.
+
+    The parametrisation id is the fourth, and it is the same claim rather than a
+    different one: ``test_ports.py::test_port_methods_are_annotated[CanonicalStore]``
+    resolves to a real test node only while ``CanonicalStore`` is in
+    ``ALL_PORTS``, which is what makes ``[CanonicalStore]`` a pytest id and not
+    decoration.
+
+    Reach: a name existing at module level is not the same as a test that runs --
+    a function collected under a different node id, or skipped, satisfies this.
+    What it refuses is the pointer that resolves to nothing at all, which is the
+    failure a rename produces.
+    """
+    adr = ADR_0018.read_text(encoding="utf-8")
+
+    uncited = sorted(pointer.cited for pointer in ADR_SYMBOL_POINTERS if pointer.cited not in adr)
+    assert not uncited, (
+        f"these references are in this module's list but no longer in ADR-0018, so "
+        f"the list is checking pointers the record does not make: {uncited}. Reword "
+        f"or drop the entry rather than the reference"
+    )
+
+    missing_files = sorted(
+        pointer.cited for pointer in ADR_SYMBOL_POINTERS if not pointer.module.is_file()
+    )
+    assert not missing_files, f"ADR-0018 points at modules that are not on disk: {missing_files}"
+
+    unresolved = sorted(
+        pointer.cited
+        for pointer in ADR_SYMBOL_POINTERS
+        if pointer.symbol not in _top_level_definitions(pointer.module)
+    )
+    assert not unresolved, (
+        f"ADR-0018 names symbols that do not exist in the modules it names: "
+        f"{unresolved}. Whichever side moved, the record and the code have to be "
+        f"brought back into step -- a pointer that resolves to nothing is evidence "
+        f"a reader cannot check"
+    )
+
+    port_ids = {port.__name__ for port in ports.ALL_PORTS}
+    assert CITED_PARAMETRISATION in port_ids, (
+        f"`{CITED_PARAMETRISATION}` is no longer a `test_ports.py` parametrisation "
+        f"id, so ADR-0018's `test_port_methods_are_annotated[{CITED_PARAMETRISATION}]` "
+        f"names a test node that is never collected: {sorted(port_ids)}"
     )
 
 
