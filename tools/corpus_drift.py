@@ -959,11 +959,22 @@ def _verdict(
 ) -> tuple[Status, str]:
     """The run's own status, which is not the same question as "is there drift?".
 
-    ``superseded`` is the count application order dropped before any of it reached
-    :func:`_compare` -- not visible in ``comparisons`` at all, since a superseded
-    revision produces no :class:`Comparison` (#317). Carried in only so a summary
-    like "26 across 27" names where the seventh migration went, rather than leaving
-    a reader to notice the arithmetic does not otherwise close.
+    ``superseded`` counts *revisions*, not migrations: every ``upsertRevision``
+    application order dropped before it reached :func:`_compare`, one per
+    superseded revision -- not visible in ``comparisons`` at all, since a
+    superseded revision produces no :class:`Comparison` (#317).
+
+    **It does not close** ``migrations - compared`` **in general.** That only
+    happens to hold when every migration carries exactly one upsert -- true of
+    this repository's own corpus today, but not a shape the loader requires:
+    one migration legally carries several upserts, for the same item or
+    different ones. Three tracked migrations where the third carries two
+    upserts, each superseding one revision from the first two, produce
+    "compared 2 anchor(s) across 3 committed migration(s); 0 uncheckable; 2
+    superseded" -- 2 + 0 + 2 = 4 against 3 migrations, not 3, because the two
+    superseded revisions came from two *different* migrations while both
+    winners share one. Carried in so the summary can name the number, not so
+    it makes ``migrations`` and ``compared`` add up.
     """
     compared = [item for item in comparisons if item.verdict is not Verdict.UNCHECKABLE]
     if not compared:
