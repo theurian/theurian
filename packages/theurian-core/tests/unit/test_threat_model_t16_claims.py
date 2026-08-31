@@ -1,31 +1,44 @@
-"""T-16's corrected claim about which tests read the three release-claim surfaces.
+r"""T-16's corrected claim about which tests read the three release-claim surfaces.
 
 ``docs/security/threat-model.md``'s T-16 entry carried a parenthetical that was
 **measured false** and corrected in place by
 https://github.com/theurian/theurian/pull/470. It said, of ``README.md``,
 ``packages/theurian-core/CHANGELOG.md`` and the threat model itself, that *no test
 reads* any of them, and that ``test_setup_claims.py`` reads the *plugin's* README
-rather than the root one. Both limbs were wrong: seven files under
-``packages/theurian-core/tests`` name ``README.md``, and ``test_setup_claims.py``
-carries the **root** ``README.md`` in its own ``CORE_ARRIVAL_SURFACES`` tuple --
-which the entry already recorded twenty lines further up, so the document
-contradicted itself.
+rather than the root one. Both limbs were wrong: files under
+``packages/theurian-core/tests`` do name ``README.md`` -- seven at `5a9a1e5` and
+eight at `9d51a04` on the entry's loose key, five at both on the strict root-only
+key this module computes -- and ``test_setup_claims.py`` carries the **root**
+``README.md`` in its own ``CORE_ARRIVAL_SURFACES`` tuple, which the entry already
+recorded twenty lines further up, so the document contradicted itself.
 
-The conclusion survived on a narrower fact, and that narrower fact is what the
-entry now states: only two test modules name the setup probe at all, and neither
-reads any of the three. This module holds both sides of that correction.
+The conclusion survived on a narrower fact, and the entry now states it **on two
+keys**, because the two answer differently: one module names the probe
+*function*, two name the *step id*, and neither of the two ties the probe to any
+of the three surfaces. This module holds both sides of that correction, over the
+step-id key -- the one the entry says the pin holds.
 
 **The prose side.** The retracted wording must stay retracted. Its two limbs are
 :data:`RETRACTED_CLAIMS`, and the rule is not "these words appear nowhere" --
 they appear in the entry today, inside the quotation that records the
 correction, and a rule that refused them would report the fix as the defect.
 The rule is that **every occurrence inside T-16 sits inside a quotation, in a
-block that says the quotation is retracted**. A drift back to the false claim
-would be plain prose, so it is caught by the quotation half even when it lands
-in the same block as the correction record -- which matters here, because the
-corrected sentence shares one blank-line block with the ``#56`` paragraph above
-it and a block-level rule alone would have let a fresh denial in beside the
-marker.
+block that says the quotation is retracted**, and it takes two halves to hold
+because either one alone has a hole the other covers:
+
+- **Quotation, over every block.** A drift back to the false claim would be
+  plain prose, so an unquoted match is a defect wherever it lands -- including
+  in the correction's own block, which matters here, because the corrected
+  sentence shares one blank-line block with the ``#56`` paragraph above it and a
+  block-level rule alone would let a fresh denial in beside the marker.
+- **Marker, over every block that carries the wording.** Requiring the marker of
+  only the block the correction record is *anchored* in leaves the symmetric
+  hole, and it was open until #470's round one measured it: a second block
+  reasserting the claim in quotation form -- ``A later summary: "no test reads
+  ..." remains the shape of the concern.`` -- is quoted, so the first half does
+  not reach it, and is not the anchored block, so the marker rule never read it.
+  Driven through the document against the shipped rules, that sentence left the
+  module green. The requirement is now over the population.
 
 **The fact side, recomputed rather than restated.** Two derivations, and each is
 the point at which the record would have to move from *stated* to *held*:
@@ -34,10 +47,12 @@ the point at which the record would have to move from *stated* to *held*:
   repository root. Read out of that module's source (see
   :func:`_literal_string_tuple`) rather than copied here, so the pin fails when
   the constant loses the root README instead of agreeing with a memory of it.
-- Exactly two modules under ``packages/theurian-core/tests`` may name the probe,
-  and neither may name any of the three surfaces. A third naming module, or a
-  member that starts reading one of the three, is the moment the entry's
-  "narrower fact" stops holding.
+- Exactly two modules under ``packages/theurian-core/tests`` may name the **step
+  id**, and neither may name any of the three surfaces. Two is the step-id key's
+  answer, not the probe function's -- the entry tabulates both, and says the
+  step-id key is the one the pin holds. A third naming module, or a member that
+  starts reading one of the three, is the moment the entry's "narrower fact"
+  stops holding.
 
 **This module must not join the population it measures**, and the way it does
 that is the one thing here that looks like a trick. The entry publishes its own
@@ -55,29 +70,64 @@ name) is built from that derivation instead. The exclusion is asserted, not
 assumed, by
 :func:`test_this_module_is_not_a_member_of_the_population_it_measures`.
 
-The residue, recorded rather than chased: ``git grep -lni`` -- case-insensitive
--- answers three, because this file names the step id in upper case. The entry's
-key is case-sensitive and the count it publishes is the count that key returns.
+The residue, **measured rather than reasoned** -- the first version of this
+paragraph gave a cause that the numbers do not support, and #470's round one
+caught it. ``git grep -lni`` -- case-insensitive -- does not answer two, and this
+file is not why:
 
-**Reach.** This module holds (1) that T-16 does not re-assert the retracted
-claim unquoted, (2) that the record of the correction is still there and still
-marked as a correction, (3) that the root README is still a member of
-``CORE_ARRIVAL_SURFACES``, (4) that the probe-naming population is exactly two
-named modules, (5) that neither names any of the three surfaces, and (6) that
-each of the three surfaces is named by some *other* module under the core tests
-tree.
+- At `5a9a1e5`, the anchor the entry's own table names and a commit at which this
+  module did not yet exist, it already answered **three**: the two modules the
+  entry names, plus ``tests/integration/test_setup_service.py``, whose line 152
+  asserts over ``StepId.ARTIFACT_INTEGRITY`` in upper case.
+- At `99d1f4b` it answers **four** -- those three, plus this file, which spells
+  the constant in upper case in its prose and its derivation.
+
+So the upper-case population is a different key with its own answer, and this
+module moved that answer by one rather than creating the gap. The entry's key is
+case-sensitive, its published count is the count that key returns, and it is
+unaffected either way:
+:func:`test_this_module_is_not_a_member_of_the_population_it_measures` is what
+holds that, by this file's bytes rather than by this paragraph.
+
+**Reach.** This module holds (1) that T-16 does not re-assert **the recorded
+wording** of the retracted claim unquoted -- ``RETRACTED_CLAIMS`` is two regexes,
+not a paraphrase detector, so (1) reaches that wording and rewordings that keep
+the subject inside its window, and no further; (2) that every block carrying that
+wording marks it retracted, and that the record is still findable at its anchor;
+(3) that the root README is still a member of ``CORE_ARRIVAL_SURFACES``; (4) that
+the step-id-naming population is exactly two named modules; (5) that neither
+names any of the three surfaces; and (6) that each of the three surfaces is named
+by some *other* module under the core tests tree.
+
+**What the two keys do not reach, measured 2026-09-01 at `99d1f4b`.** The
+``no-test-reads`` key is ``\bno test\b[^.]{0,40}?\breads?\b``. A subject longer
+than that window escapes it -- *"no test anywhere under
+packages/theurian-core/tests, at any level, reads README.md"* puts 59 characters
+between the two anchors and does not match -- and so does any rewording that
+drops the words *no test*: *"nothing in this repository reads README.md"*, *"not
+one test reads"* and *"no automated check reads"* were each run against the key
+and each escaped. The ``plugin-readme-not-the-root`` key is the recorded sentence
+almost verbatim, so it reaches that sentence and near-nothing else: *"reads the
+plugin README rather than the root one"* escapes it. Widening either key trades
+those misses for false positives across an entry that discusses READMEs and tests
+in most of its paragraphs, and a rule that cries wolf is deleted by the next
+author. Recorded rather than closed; the fact side above is the half that does
+not depend on wording, and it is what a reworded denial still has to get past.
 
 It does **not** hold: that any test *reads* a surface it names -- a text scan
 cannot tell a path constant from a ``read_text`` -- so the entry's "All three
 files are read under ``packages/theurian-core/tests/``" is pinned only in its
 weaker *named* form, except for the root README, whose read follows from
 ``test_setup_claims``'s own rules over the tuple. It does not hold the entry's
-"seven files name ``README.md``" figure, which is a count and would churn on
-every new member. It does not judge the tracker facts in the entry (#39 closed,
-#80 live, the gap unowned): those are prose about an issue tracker, outside
-anything a test can settle. And it does not claim the cross-surface
-artifact-integrity gap is *closed* -- the entry states that gap as unowned, and
-this module is a pin over the sentence, not a control that discharges it.
+loose-key ``README.md`` figures (seven at `5a9a1e5`, eight at `9d51a04`): they
+are counts over a key that is not this module's, and they churn on every new
+member. The strict root-only count this module does compute appears in a failure
+message and is asserted nowhere. It does not judge the tracker facts in the entry
+(#39 closed, #80 live, the gap owned by #472): those are prose about an issue
+tracker, outside anything a test can settle. And it does not claim the
+cross-surface artifact-integrity gap is *closed* -- the entry states that gap as
+owned rather than held, and this module is a pin over the sentence, not a control
+that discharges it.
 """
 
 from __future__ import annotations
@@ -103,6 +153,20 @@ _ENTRY_HEADING: Final = "\n#### T-16 "
 #: Every heading level that ends the entry. ``"\n## "`` does not match ``"\n### "``
 #: because the space is part of the marker, so the three are disjoint and the
 #: earliest of them is the end of the slice.
+#:
+#: **The three omitted levels, and why the omission is not a gap.** ``h5`` and
+#: ``h6`` are *deeper* than T-16's own ``h4``, so a ``##### `` inside the entry is
+#: a subsection **of** it and belongs in the slice; stopping there would be the
+#: silent truncation
+#: :func:`test_the_t16_slice_starts_at_its_heading_and_stops_at_the_next` exists
+#: to catch, not a fix for one. ``h1`` is the only real omission, and it is
+#: harmless by measurement rather than by argument: the file's sole ``# `` line is
+#: its title at line 1, 1665 lines above T-16 (measured 2026-09-01 at `99d1f4b`),
+#: so it never falls inside the text this slices. Adding it would not be free --
+#: :func:`_entry` slices the *raw* text, before :func:`_without_code_fences`, so a
+#: ``"\n# "`` marker would also match a shell comment line inside any of T-16's
+#: eleven fenced blocks and truncate the entry silently. Zero such lines today
+#: (same measurement); the trade is recorded rather than taken.
 _HEADING_MARKERS: Final = ("\n## ", "\n### ", "\n#### ")
 
 _CODE_FENCE: Final = re.compile(r"^\s*```")
@@ -445,6 +509,26 @@ def _the_one_block_carrying(blocks: list[str], key: str) -> str:
     return found[0]
 
 
+def _retraction_audit(blocks: list[str]) -> tuple[dict[int, list[str]], list[str]]:
+    """Which blocks carry a retracted limb, and which of those carry no marker.
+
+    Extracted rather than written inline so the synthetic driver below runs
+    *this* predicate instead of a copy of it. A driver that restated the rule
+    would go RED on its own restatement and stay green whatever the rule did.
+    """
+    carrying = {
+        index: sorted(family for family, key in RETRACTED_CLAIMS.items() if key.search(block))
+        for index, block in enumerate(blocks)
+        if any(key.search(block) for key in RETRACTED_CLAIMS.values())
+    }
+    unmarked = [
+        f"block {index} carries {families}: {blocks[index][:300]}"
+        for index, families in carrying.items()
+        if not any(marker in blocks[index] for marker in RETRACTION_MARKERS)
+    ]
+    return carrying, unmarked
+
+
 def test_the_three_surfaces_are_the_ones_the_retracted_quotation_names() -> None:
     """The premise every other rule here rests on: the tuple and the entry agree.
 
@@ -457,17 +541,26 @@ def test_the_three_surfaces_are_the_ones_the_retracted_quotation_names() -> None
 
     Each surface is also required to exist. A rule that scanned for references to
     a file that was renamed would report every module as clean.
+
+    **Scoped to the block, not to the quotation span inside it**, and the name of
+    the local says so. ``phrase not in record_block`` is also satisfied by a
+    surface named in the block's unquoted prose rather than inside the quotation;
+    ``README.md`` appears both ways today. Narrowing it to the span is available
+    and deliberately not taken: it would couple this premise to
+    :func:`_quoted_spans`'s pairing, so a stray quote anywhere in the block would
+    take the premise and the prose rules RED together and the first failure a
+    reader saw would name the wrong cause.
     """
-    quotation = _the_one_block_carrying(_entry_blocks(), STANDING_CLAIM_KEY)
+    record_block = _the_one_block_carrying(_entry_blocks(), STANDING_CLAIM_KEY)
 
     missing = [
-        surface for surface, phrase in RELEASE_CLAIM_SURFACES.items() if phrase not in quotation
+        surface for surface, phrase in RELEASE_CLAIM_SURFACES.items() if phrase not in record_block
     ]
 
     assert not missing, (
-        f"T-16's corrected sentence no longer names {missing}, so this module's "
-        f"idea of the three release-claim surfaces has drifted from the entry's: "
-        f"{quotation[:400]}"
+        f"the T-16 block that carries the correction record no longer names "
+        f"{missing}, so this module's idea of the three release-claim surfaces "
+        f"has drifted from the entry's: {record_block[:400]}"
     )
     absent = [surface for surface in THREE_SURFACES if not (REPO_ROOT / surface).is_file()]
     assert not absent, f"these release-claim surfaces do not exist to be read: {absent}"
@@ -476,32 +569,71 @@ def test_the_three_surfaces_are_the_ones_the_retracted_quotation_names() -> None
 def test_t16_still_records_that_the_no_test_reads_claim_was_measured_false() -> None:
     """The correction record must survive, or a reader meets the false claim alone.
 
-    Two things have to be there together. The retracted wording, because a
-    correction that deletes what it corrects leaves a reader unable to tell which
-    of two revisions they are looking at -- and because the rule below has
-    nothing to judge if the quotation goes. And a marker saying it is retracted,
-    because the quotation on its own **is** the false claim.
+    The retracted wording has to stay quoted at its anchor, because a correction
+    that deletes what it corrects leaves a reader unable to tell which of two
+    revisions they are looking at -- and because the rules below have nothing to
+    judge if the quotation goes.
 
-    RED in both directions. Delete the record and the key finds nothing. Revert
-    the sentence to its false form -- the key is in that form too, deliberately --
-    and the block comes back without a marker.
+    **Only the record's survival is checked here.** Whether a quotation is marked
+    as retracted is a property of *every* block that carries the wording, not of
+    this one, and it is held by
+    :func:`test_every_t16_block_that_carries_the_retracted_wording_marks_it_retracted`.
+    That split is the fix for a measured escape and not a tidy-up: with the
+    marker required only of the block this key selects, a second block quoting
+    the claim carried no marker and was never read.
+
+    RED when the record goes: delete the quotation and the key finds nothing.
     """
     block = _the_one_block_carrying(_entry_blocks(), STANDING_CLAIM_KEY)
 
     unrecorded = sorted(family for family, key in RETRACTED_CLAIMS.items() if not key.search(block))
-    markers = [marker for marker in RETRACTION_MARKERS if marker in block]
 
     assert not unrecorded, (
         f"T-16 no longer quotes the retracted claim's {unrecorded} limb, so the "
         f"record of what was measured false is gone and nothing tells a reader "
         f"the sentence above replaced anything: {block[:400]}"
     )
-    assert markers, (
-        f"T-16 quotes the retracted claim but no longer marks it retracted "
-        f"(none of {list(RETRACTION_MARKERS)} appears), so the quotation now "
-        f"reads as an assertion. Either the record was deleted -- restore it -- "
-        f"or it was reworded and `RETRACTION_MARKERS` is what has to move: "
-        f"{block[:400]}"
+
+
+def test_every_t16_block_that_carries_the_retracted_wording_marks_it_retracted() -> None:
+    """A block may carry the false claim only if it says the claim is retracted.
+
+    The rule used to be narrower, and the hole was exactly the width of the
+    narrowing. The marker was required of the **one** block located by
+    :data:`STANDING_CLAIM_KEY`, so a second block reasserting the claim in
+    quotation form -- ``A later summary: "no test reads ..." remains the shape of
+    the concern.`` -- escaped both halves at once: quoted, so
+    :func:`test_no_unquoted_prose_in_t16_denies_that_a_test_reads_those_surfaces`
+    saw nothing, and not the anchored block, so the marker rule never read it.
+    Measured against the shipped module by appending that sentence to T-16 in a
+    throwaway checkout: the file stayed green, 16 passed.
+
+    So the requirement is over the population. Together the two halves cover the
+    wording either way it is written -- unquoted anywhere is a defect outright,
+    quoted is a defect unless its own block records the retraction -- and that is
+    the sentence the module docstring makes: *every occurrence sits inside a
+    quotation, in a block that says the quotation is retracted*.
+
+    The two failure causes need opposite responses, so the message names both:
+    a record deleted is restored, a record reworded past all of
+    :data:`RETRACTION_MARKERS` moves the markers instead.
+    """
+    carrying, unmarked = _retraction_audit(_entry_blocks())
+
+    assert carrying, (
+        "no block of T-16 carries the retracted wording at all, so this rule "
+        "read an empty population and would pass over any document. The record "
+        "itself is what is gone, and "
+        "`test_t16_still_records_that_the_no_test_reads_claim_was_measured_false` "
+        "says that in the form a reader can act on"
+    )
+    assert not unmarked, (
+        f"{len(unmarked)} block(s) of T-16 carry the retracted claim and say "
+        f"nothing about it being retracted, so a reader meets the false wording "
+        f"as a live statement. Every block quoting it must carry one of "
+        f"{list(RETRACTION_MARKERS)}; either the marker was deleted -- restore "
+        f"it -- or the record was reworded and `RETRACTION_MARKERS` is what has "
+        f"to move: {unmarked}"
     )
 
 
@@ -529,15 +661,18 @@ def test_no_unquoted_prose_in_t16_denies_that_a_test_reads_those_surfaces(family
         f"T-16 asserts the retracted `{family}` claim outside any quotation: "
         f"{offenders}. It is false, and the counter-evidence is measured here "
         f"rather than quoted from the entry: {len(_modules_naming('README.md'))} "
-        f"modules under packages/theurian-core/tests name the *root* README.md "
-        f"(the entry's own count of seven is over a looser key that also matches "
-        f"plugins/claude-code/README.md), and `{ARRIVAL_SURFACES_CONSTANT}` "
-        f"carries the root one. What survived the correction is the narrower "
-        f"fact about the setup probe"
+        f"modules under packages/theurian-core/tests name the *root* README.md, "
+        f"counted here on the strict key the entry says the pin computes. Do not "
+        f"read that against the entry's larger loose-key figure: "
+        f"`git grep -ln 'README.md'` also matches path-prefixed namesakes -- "
+        f"plugins/claude-code/README.md and tests/e2e/README.md -- and does not "
+        f"exclude this module from its own population. "
+        f"`{ARRIVAL_SURFACES_CONSTANT}` carries the root one. What survived the "
+        f"correction is the narrower fact about the setup probe"
     )
 
 
-def test_the_retracted_wording_is_caught_when_it_comes_back_as_plain_prose() -> None:
+def test_the_no_test_reads_limb_is_caught_when_it_comes_back_as_plain_prose() -> None:
     """RED means the rule above cannot fail, whatever the document says.
 
     Driven with synthetic text, because the shipped document is compliant and a
@@ -559,6 +694,77 @@ def test_the_retracted_wording_is_caught_when_it_comes_back_as_plain_prose() -> 
         "the retracted claim written as plain prose was not caught, so the rule "
         "over the shipped entry passes for a reason that has nothing to do with "
         "the entry"
+    )
+
+
+def test_the_plugin_readme_limb_is_caught_when_it_comes_back_as_plain_prose() -> None:
+    """The second limb needs its own driver, and did not have one.
+
+    ``RETRACTED_CLAIMS`` is parametrized over both families, so the rule *runs*
+    for both -- but running is not failing. Only the ``no-test-reads`` limb had a
+    synthetic case proving its key can match, which left the
+    ``plugin-readme-not-the-root`` key indistinguishable from one that matches
+    nothing: a typo in it would have shown up as a green test.
+
+    Same arrangement as its sibling: the limb unquoted, with the quotation that
+    legitimately carries it in the same block, so the quotation discriminator has
+    to separate them rather than reject the block wholesale.
+
+    **What this pins is the recorded sentence, not the claim.** The key is that
+    sentence almost verbatim, and *"reads the plugin README rather than the root
+    one"* -- the same assertion reworded -- escapes it. Recorded in the module
+    docstring's reach paragraph with the other measured escapes; not closed,
+    because widening it would fire on an entry that discusses READMEs throughout.
+    """
+    reverted = _prose(
+        "Nothing in this repository holds any of the three to the step's own "
+        "words -- `test_setup_claims.py` reads the *plugin's* README, not the "
+        "root one -- and it said \"`test_setup_claims.py` reads the *plugin's* "
+        'README, not the root one", which was false.'
+    )
+
+    offenders = _unquoted_matches(reverted, RETRACTED_CLAIMS["plugin-readme-not-the-root"])
+
+    assert offenders, (
+        "the plugin-readme limb written as plain prose was not caught, so the "
+        "parametrized rule runs for this family without being able to fail on it"
+    )
+
+
+def test_a_quoted_reassertion_in_a_marker_less_block_is_caught() -> None:
+    """The escape sec-M3 measured, driven both directions through the real rule.
+
+    Shape B, as the reviewer wrote it: the retracted wording quoted -- so the
+    unquoted rule sees nothing -- in a block that is not the one
+    :data:`STANDING_CLAIM_KEY` selects, which is how it also missed the marker
+    rule before that rule was widened to the population. Both halves green, the
+    claim reasserted.
+
+    Driven through :func:`_retraction_audit`, the predicate the document rule
+    calls, so this measures the shipped rule rather than a restatement of it. The
+    second half is what stops the assertion being satisfiable by a rule that
+    refuses every quotation: the *same sentence* with a marker in its block is
+    required to come back clean, which is what keeps the correction record itself
+    legal.
+    """
+    shape_b = _prose(
+        'A later summary: "no test reads `README.md`, '
+        '`packages/theurian-core/CHANGELOG.md` or this file" remains the shape '
+        "of the concern."
+    )
+
+    _, unmarked = _retraction_audit([shape_b])
+
+    assert unmarked, (
+        "a block quoting the retracted claim with nothing marking it retracted "
+        "was not caught, so the widened marker rule is green over the shipped "
+        "entry for a reason that has nothing to do with the entry"
+    )
+    _, still_legal = _retraction_audit([f"{shape_b} {RETRACTION_MARKERS[0]}."])
+    assert not still_legal, (
+        f"the same sentence in a block carrying `{RETRACTION_MARKERS[0]}` was "
+        f"also refused, so the rule rejects quotation rather than the absence of "
+        f"a marker -- and the entry's own correction record would be the defect"
     )
 
 
