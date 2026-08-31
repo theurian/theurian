@@ -60,11 +60,17 @@ subject.** Every tracked `*.yaml` directly under that directory is read.
 **Read population and compared population are not the same set.** Every
 tracked migration is read, and every ``upsertRevision`` in it is read too, but
 only each item's *terminal* one is compared: the last ``upsertRevision`` for a
-given ``itemId`` in application order (:func:`migration_paths`' own sort,
-applied the way :func:`theurian.domain.migration.current_revision_in` applies
-it for the state-rebuild path). A superseded ``upsertRevision`` is read, and
-then dropped before it reaches an anchor -- it is not compared and it is not
-reported, uncheckable included.
+given ``itemId`` in **application order** -- the loader's real apply order,
+never :func:`migration_paths`' path sort. That sort is the *population* key
+(which files are read at all), a question this tool answers the same way for
+every purpose; application order is a different question, applied the way
+:func:`theurian.domain.migration.current_revision_in` applies it for the
+state-rebuild path. It is a Kahn walk over ``dependsOn``, tie-broken by each
+migration's own inner ``id`` -- and this tool implements only the walk's
+degenerate case, an ``id``-ascending sort, refusing outright when a tracked
+migration declares ``dependsOn`` at all (:func:`_depends_on_refusal`). A
+superseded ``upsertRevision`` is read, and then dropped before it reaches an
+anchor -- it is not compared and it is not reported, uncheckable included.
 
 **One further file is read, conditionally: a pinned body.** For a revision that
 declares no `contentSha256`, the body its own `contentFile` names is hashed
@@ -532,6 +538,67 @@ def _revisions(document: Any) -> tuple[Mapping[str, Any], ...]:
     )
 
 
+def _depends_on_refusal(path: str, document: Any) -> str | None:
+    """Why this tool refuses the whole corpus, or ``None`` if ``document`` is fine.
+
+    The loader's real application order is a Kahn walk over ``dependsOn``, tie-broken
+    by each migration's own inner ``id`` (``theurian.domain.migration.MigrationSet
+    ._topological_order``). With no ``dependsOn`` declared anywhere, every migration is
+    "ready" in the same pass, so Kahn's walk degenerates to exactly one thing: a plain
+    ascending sort on ``id`` -- which is what :func:`_current_operations` implements.
+
+    A *declared* ``dependsOn`` is where that degenerate case stops being honest: it can
+    reorder migrations relative to their ``id``, and reproducing that correctly means
+    reimplementing the topological sort (and its cycle/missing-dependency errors) a
+    second time in a tool that does not otherwise validate anything. Refusing the run
+    is the smaller, honest mechanism -- a limit of this tool, not a finding about the
+    corpus -- and it costs nothing today: measured 2026-08-31, no tracked migration in
+    this repository's corpus declares ``dependsOn`` at all.
+    """
+    if not isinstance(document, Mapping):
+        return None
+    depends_on = document.get("dependsOn")
+    if not isinstance(depends_on, Sequence) or isinstance(depends_on, str) or not depends_on:
+        return None
+    return (
+        f"{path} declares dependsOn, which this tool does not follow: its application "
+        f"order is the id-ascending walk a dependency graph with no edges produces, not "
+        f"the migration engine's Kahn walk over dependsOn. Reproducing a declared "
+        f"dependency graph correctly would mean reimplementing that walk a second time "
+        f"in a tool that validates nothing else, so this run refuses rather than guess "
+        f"at which revision is terminal. Remove the dependsOn declaration, or extend "
+        f"this tool to walk it (this is the tool's limit, not a corpus problem)."
+    )
+
+
+def _inner_id(document: Any) -> str:
+    """This migration's own ``id`` -- the key application order sorts by absent ``dependsOn``.
+
+    Falls back to ``""`` when the field is missing or not a string, a shape the schema
+    forbids but this tool does not validate against (the same stance :func:`_expected_digest`
+    already takes on a missing pin). An empty key sorts first among any real ULIDs, which
+    is a deterministic placement and not a claim about where the migration engine would
+    apply it.
+    """
+    inner_id = document.get("id") if isinstance(document, Mapping) else None
+    return inner_id if isinstance(inner_id, str) else ""
+
+
+def _item_id_refusal(operation: Mapping[str, Any]) -> str | None:
+    """Why this ``upsertRevision`` cannot be placed in any item's revision history.
+
+    ``None`` when ``itemId`` is a string -- including ``""``, which is still a string
+    and is left to participate as its own (unusual) item key, the same way the rest of
+    this tool leaves a value it does not validate. Missing or non-string is the shape
+    that must not be folded onto a shared placeholder key: two such operations from
+    different migrations would otherwise collide on it, and whichever is read last would
+    silently erase the other from the run -- reported nowhere, not even uncheckable.
+    """
+    if isinstance(operation.get("itemId"), str):
+        return None
+    return "declares no itemId, so it cannot be placed in an item's revision history"
+
+
 def _expected_digest(repo_root: Path, migration: str, operation: Mapping[str, Any]) -> str | None:
     """The digest the corpus records for this revision's body, or ``None``.
 
@@ -721,64 +788,137 @@ def scan(repo_root: Path = REPO_ROOT, *, tracked: Iterable[str] | None = None) -
 
     comparisons: list[Comparison] = []
     revisions_by_path: dict[str, tuple[Mapping[str, Any], ...]] = {}
+    inner_ids: dict[str, str] = {}
     for path in paths:
-        try:
-            document = yaml.safe_load((repo_root / path).read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError) as error:
-            comparisons.append(
-                Comparison(path, "", "", "", Verdict.UNCHECKABLE, detail=f"unreadable: {error}")
-            )
-            continue
-        revisions = _revisions(document)
-        if not revisions:
-            comparisons.append(
-                Comparison(
-                    path,
-                    "",
-                    "",
-                    "",
-                    Verdict.UNCHECKABLE,
-                    detail="declares no upsertRevision, so it pins no body to any document",
-                )
-            )
-            continue
-        revisions_by_path[path] = revisions
+        read = _read_migration(repo_root, path)
+        if read.refusal is not None:
+            return Report((), Status.NOTHING_COMPARED, read.refusal)
+        comparisons.extend(read.comparisons)
+        if read.revisions:
+            revisions_by_path[path] = read.revisions
+            inner_ids[path] = read.inner_id
 
-    current = _current_operations(revisions_by_path)
+    # Application order, not `paths`' population order: a Kahn walk over `dependsOn`
+    # degenerates to this plain ascending sort on the inner `id` when nothing declares
+    # one (see `_depends_on_refusal`), which is the only case this tool implements.
+    application_order = tuple(sorted(revisions_by_path, key=lambda path: inner_ids[path]))
+
+    current = _current_operations(revisions_by_path, application_order)
     for path, revisions in revisions_by_path.items():
-        for operation in revisions:
+        for index, operation in enumerate(revisions):
             item_id = str(operation.get("itemId", ""))
-            if current[item_id] is not operation:
-                continue  # superseded by a later upsertRevision on the same item
+            if current[item_id] != (path, index):
+                continue  # superseded by a later position on the same item
             comparisons.extend(_compare(repo_root, path, operation))
 
     return Report(tuple(comparisons), *_verdict(comparisons, len(paths)))
 
 
+@dataclass(frozen=True, slots=True)
+class _MigrationRead:
+    """What reading one tracked migration file produced.
+
+    ``refusal`` set means the *whole run* stops -- :func:`_depends_on_refusal`'s
+    kind of finding, not one this migration's own comparisons can carry. Every
+    other outcome is additive: ``comparisons`` holds whatever this migration
+    resolved on its own (unreadable, no ``upsertRevision``, an itemId-less
+    operation), and ``revisions``/``inner_id`` are only non-empty when at least
+    one operation here can participate in per-item terminality.
+    """
+
+    comparisons: tuple[Comparison, ...]
+    refusal: str | None = None
+    revisions: tuple[Mapping[str, Any], ...] = ()
+    inner_id: str = ""
+
+
+def _read_migration(repo_root: Path, path: str) -> _MigrationRead:
+    """Parse one tracked migration and sort its ``upsertRevision`` operations.
+
+    Split out of :func:`scan` to keep that function's own branching within the
+    linter's limit -- this is where every per-file outcome (unreadable YAML, a
+    declared ``dependsOn``, no ``upsertRevision`` at all, an itemId-less
+    operation) is judged, one migration at a time.
+    """
+    try:
+        document = yaml.safe_load((repo_root / path).read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        unreadable = Comparison(
+            path, "", "", "", Verdict.UNCHECKABLE, detail=f"unreadable: {error}"
+        )
+        return _MigrationRead((unreadable,))
+
+    refusal = _depends_on_refusal(path, document)
+    if refusal is not None:
+        return _MigrationRead((), refusal=refusal)
+
+    raw_revisions = _revisions(document)
+    if not raw_revisions:
+        empty = Comparison(
+            path,
+            "",
+            "",
+            "",
+            Verdict.UNCHECKABLE,
+            detail="declares no upsertRevision, so it pins no body to any document",
+        )
+        return _MigrationRead((empty,))
+
+    comparisons: list[Comparison] = []
+    placeable: list[Mapping[str, Any]] = []
+    for operation in raw_revisions:
+        item_id_refusal = _item_id_refusal(operation)
+        if item_id_refusal is None:
+            placeable.append(operation)
+            continue
+        comparisons.append(
+            Comparison(
+                migration=path,
+                item_id="",
+                revision_id=str(operation.get("revisionId", "")),
+                file_path="",
+                verdict=Verdict.UNCHECKABLE,
+                detail=item_id_refusal,
+            )
+        )
+    if not placeable:
+        return _MigrationRead(tuple(comparisons))
+    return _MigrationRead(
+        tuple(comparisons), revisions=tuple(placeable), inner_id=_inner_id(document)
+    )
+
+
 def _current_operations(
     revisions_by_path: Mapping[str, tuple[Mapping[str, Any], ...]],
-) -> dict[str, Mapping[str, Any]]:
-    """Each ``itemId``'s terminal ``upsertRevision`` operation, keyed by ``itemId``.
+    application_order: Sequence[str],
+) -> dict[str, tuple[str, int]]:
+    """Each ``itemId``'s terminal position, as ``(path, index into revisions_by_path[path])``.
 
-    ``revisions_by_path`` must already be in application order -- the same
-    order :func:`migration_paths` sorts by, an operation's own position inside
-    its migration preserved -- because "terminal" means the *last* one reached
-    in that walk. This is the same rule
-    :func:`theurian.domain.migration.current_revision_in` states for the
-    state-rebuild path: only an ``upsertRevision`` moves an item's current
-    revision, and the last one for a given ``itemId`` wins.
+    ``application_order`` is the loader's real apply order -- the inner ``id``-ascending
+    walk :func:`_depends_on_refusal` documents, never ``migration_paths``' path sort,
+    which is a population filter and not a claim about apply order (a migration renamed
+    ``seed-adr-0005.yaml`` still loads, and still applies, in ``id`` order, wherever that
+    puts it -- see :func:`migration_paths`' own docstring). This is the same rule
+    :func:`theurian.domain.migration.current_revision_in` states for the state-rebuild
+    path: only an ``upsertRevision`` moves an item's current revision, and the last one
+    for a given ``itemId`` wins.
 
-    Not derived from ``expectedRevision``: the field is optional on the
-    schema, and the original 26 seed migrations carry none at all, so a rule
-    keyed on it would leave the whole seeded corpus without a terminal
-    revision. Returns operation objects by identity, not by value, so a caller
-    can tell which physical operation in ``revisions_by_path`` is the winner
-    even when two upserts happen to be byte-identical.
+    Not derived from ``expectedRevision``: the field is optional on the schema, and the
+    original 26 seed migrations carry none at all, so a rule keyed on it would leave the
+    whole seeded corpus without a terminal revision.
+
+    **A position, not the operation object.** A repeated YAML anchor/alias --
+    ``- &up {...}`` then ``- *up`` -- round-trips through ``yaml.safe_load`` to the
+    *identical* object at two list positions (confirmed empirically: ``ops[i] is
+    ops[j]`` is ``True``), so object identity alone cannot tell the winning position
+    from its own second appearance; both would satisfy an ``is`` check. Keying on the
+    position instead means only the *last* position reached in ``application_order``
+    is ever the winner, whatever object sits there.
     """
-    current: dict[str, Mapping[str, Any]] = {}
-    for revisions in revisions_by_path.values():
-        for operation in revisions:
-            current[str(operation.get("itemId", ""))] = operation
+    current: dict[str, tuple[str, int]] = {}
+    for path in application_order:
+        for index, operation in enumerate(revisions_by_path[path]):
+            current[str(operation.get("itemId", ""))] = (path, index)
     return current
 
 

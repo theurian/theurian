@@ -40,6 +40,23 @@ current for which item -- an implementation keyed on the corpus's last
 migration, rather than per-item terminality in application order, would pass
 AC-1 through AC-4 (both only ever touch one item) and fail only here; the
 shipped fix passes it too.
+
+PR #449 round one found three more gaps the mechanism fix above does not yet
+close, each with its own driving test below. **HIGH-1** is a wrong ordering
+key: ``_current_operations`` walks migrations in ``migration_paths``' PATH-
+sorted order, not the loader's actual application order (a Kahn walk over
+``dependsOn``, tie-broken by the migration's own inner ``id``), so a
+hand-renamed migration file can flip which revision the checker treats as
+current -- reproduced on the real corpus with a ``git mv`` to ``zz-...``.
+**MEDIUM-1** is an ``upsertRevision`` with no ``itemId``: it collapses onto
+the ``""`` key alongside every other itemId-less upsert, and only the last
+one survives -- the earlier one, and any drift it carried, silently vanishes
+rather than being reported uncheckable. **MEDIUM-4** is
+``_current_operations``' own identity check defeated by a YAML anchor and
+alias: two positions in one migration's ``operations`` list that reference
+the *same* Python object (as a repeated anchor/alias construct produces) both
+satisfy ``current[item_id] is operation``, so one item's terminal revision is
+compared twice. All three are RED against the mechanism fix as it stands.
 """
 
 from __future__ import annotations
@@ -51,7 +68,7 @@ from typing import Any
 import corpus_drift
 import pytest
 import yaml
-from corpus_drift import Status, held_to_floor, scan
+from corpus_drift import Status, Verdict, held_to_floor, scan
 
 pytestmark = pytest.mark.integration
 
@@ -106,13 +123,35 @@ def _upsert_revision(
 
 
 def _write_migration(root: Path, migration_id: str, operations: list[dict[str, Any]]) -> str:
-    """A tracked migration file holding exactly ``operations``, in that order."""
-    migration_path = f".theurian/migrations/{migration_id}.yaml"
+    """A tracked migration file holding exactly ``operations``, in that order.
+
+    File name and inner ``id`` are the same string here. HIGH-1 needs them to
+    differ -- see :func:`_write_migration_named`.
+    """
+    return _write_migration_named(root, migration_id, inner_id=migration_id, operations=operations)
+
+
+def _write_migration_named(
+    root: Path, file_stem: str, *, inner_id: str, operations: list[dict[str, Any]]
+) -> str:
+    """A tracked migration whose file name and inner ``id`` are independent.
+
+    :func:`_write_migration` ties the two together, which is exactly what
+    HIGH-1's fixture needs to *not* do: the loader's application order is
+    keyed on the document's own ``id`` (a Kahn walk over ``dependsOn``, ULID
+    tie-break), never on the file's name -- ``migration_paths`` sorting by
+    path is a population filter, not a claim about apply order (see its own
+    docstring: a migration renamed ``seed-adr-0005.yaml`` still loads and
+    still applies, in ``id`` order, wherever the loader's walk puts it). A
+    hand-renamed migration file is exactly where file order and ``id`` order
+    can disagree.
+    """
+    migration_path = f".theurian/migrations/{file_stem}.yaml"
     _write(
         root,
         migration_path,
         yaml.safe_dump(
-            {"apiVersion": "theurian.dev/v1", "id": migration_id, "operations": operations},
+            {"apiVersion": "theurian.dev/v1", "id": inner_id, "operations": operations},
             sort_keys=False,
         ),
     )
@@ -439,3 +478,213 @@ def test_per_item_terminality_disagrees_with_last_migration_and_the_fix_must_fol
         item.revision_id not in {_A_STALE_REVISION, _B_STALE_REVISION}
         for item in report.comparisons
     )
+
+
+# -- HIGH-1: terminality follows the inner migration id, not the file name ---
+
+_HIGH1_ITEM = "architecture.reordered-example"
+_HIGH1_DOCUMENT = "docs/adr/0005-reordered-example.md"
+
+#: What the original seed pinned.
+_HIGH1_STALE_TEXT = "# ADR-0005: Reordered Example\n\nThe text as the original pinned it.\n"
+#: What the re-seed pins, and what the document now reads.
+_HIGH1_CURRENT_TEXT = (
+    _HIGH1_STALE_TEXT + "\n## Consequences\n\nWhat the re-seed pins, and the document now reads.\n"
+)
+
+#: The re-seed's inner `id` sorts AFTER the original's -- real ULID chronology
+#: -- even though the file it is written to sorts BEFORE the original's file
+#: by name. `migration_paths` sorts by path; the loader applies by `id`.
+_HIGH1_ORIGINAL_ID = "01MB4V3XKQ7ZPYE8R2NGT5HW8A"
+_HIGH1_ORIGINAL_REVISION = "01MB4V3XKQ7ZPYE8R2NGT5HW8B"
+_HIGH1_RESEED_ID = "01MB4V3XKQ7ZPYE8R2NGT5HW9A"
+_HIGH1_RESEED_REVISION = "01MB4V3XKQ7ZPYE8R2NGT5HW9B"
+
+
+def test_terminality_follows_the_inner_migration_id_not_the_file_name_sort(
+    tmp_path: Path,
+) -> None:
+    """HIGH-1 (PR #449 round one): a hand-renamed migration file must not flip apply order.
+
+    Given the original seed -- the earlier inner `id` -- written to a file
+    that sorts LAST by name (`zzz-original.yaml`), and the re-seed -- the
+    later inner `id`, carrying the `expectedRevision` it supersedes -- written
+    to a file that sorts FIRST (`aaa-reseed.yaml`), both legal:
+    `migration_paths` admits any tracked `*.yaml` directly under the
+    migrations directory, named or renamed, and never reads the name to
+    decide order (`test_corpus_drift_population.py`'s `seed-adr-0005.yaml`
+    case is the same shape on the real loader). When `scan` runs, the
+    re-seed's revision is terminal -- its anchor matches the document, and
+    the original's stale anchor is not compared at all.
+
+    RED against the mechanism fix as it stands: `_current_operations` walks
+    `revisions_by_path` in `migration_paths`' PATH-sorted order, not the
+    document's own `id`, so `zzz-original.yaml` -- sorted last by name -- is
+    read last and wins as "current" even though its `id` is the earlier one.
+    The true current revision (`aaa-reseed.yaml`) is dropped as if
+    superseded, and the stale original is compared and reported DRIFTED
+    against the document it no longer describes. Reproduced by the
+    orchestrator on the real corpus with a `git mv` to `zz-...` (PR #449
+    round-one HIGH-1).
+    """
+    original_op, original_body_path, original_body = _upsert_revision(
+        item_id=_HIGH1_ITEM,
+        revision_id=_HIGH1_ORIGINAL_REVISION,
+        body=_HIGH1_STALE_TEXT,
+        file_path=_HIGH1_DOCUMENT,
+    )
+    original = _write_migration_named(
+        tmp_path,
+        "zzz-original",
+        inner_id=_HIGH1_ORIGINAL_ID,
+        operations=[
+            {"op": "createItem", "itemId": _HIGH1_ITEM, "kind": "architecture"},
+            original_op,
+        ],
+    )
+    _write(tmp_path, original_body_path, original_body)
+
+    reseed_op, reseed_body_path, reseed_body = _upsert_revision(
+        item_id=_HIGH1_ITEM,
+        revision_id=_HIGH1_RESEED_REVISION,
+        body=_HIGH1_CURRENT_TEXT,
+        file_path=_HIGH1_DOCUMENT,
+    )
+    reseed = _write_migration_named(
+        tmp_path,
+        "aaa-reseed",
+        inner_id=_HIGH1_RESEED_ID,
+        operations=[{**reseed_op, "expectedRevision": _HIGH1_ORIGINAL_REVISION}],
+    )
+    _write(tmp_path, reseed_body_path, reseed_body)
+
+    _write(tmp_path, _HIGH1_DOCUMENT, _HIGH1_CURRENT_TEXT)
+
+    report = scan(tmp_path, tracked=[original, reseed])
+
+    assert report.status is Status.CLEAN
+    assert len(report.compared) == 1
+    assert report.compared[0].revision_id == _HIGH1_RESEED_REVISION
+    assert all(item.revision_id != _HIGH1_ORIGINAL_REVISION for item in report.comparisons)
+
+
+# -- MEDIUM-1: a missing itemId must not collapse two upserts onto one bucket -
+
+_MEDIUM1_DOCUMENT_A = "docs/adr/0006-anonymous-a.md"
+_MEDIUM1_DOCUMENT_B = "docs/adr/0007-anonymous-b.md"
+
+#: A's pin is stale against the document written below -- real drift, on an
+#: operation this fixture never gives an `itemId`.
+_MEDIUM1_PINNED_TEXT_A = "# Anonymous A\n\nWhat migration A's upsert pins.\n"
+_MEDIUM1_ACTUAL_TEXT_A = (
+    _MEDIUM1_PINNED_TEXT_A + "\n## Drifted\n\nThe document has moved since A pinned it.\n"
+)
+#: B's pin matches its document -- a clean control, so a report that reads
+#: CLEAN overall (because only B survived the collision) is visibly wrong.
+_MEDIUM1_TEXT_B = "# Anonymous B\n\nWhat migration B's upsert pins, and the document still reads.\n"
+
+_MEDIUM1_MIGRATION_A_ID = "01MB4V3XKQ7ZPYE8R2NGT5HWCA"
+_MEDIUM1_MIGRATION_B_ID = "01MB4V3XKQ7ZPYE8R2NGT5HWDA"
+_MEDIUM1_REVISION_A = "01MB4V3XKQ7ZPYE8R2NGT5HWCB"
+_MEDIUM1_REVISION_B = "01MB4V3XKQ7ZPYE8R2NGT5HWDB"
+
+
+def test_an_upsert_with_no_itemid_is_uncheckable_not_silently_dropped(tmp_path: Path) -> None:
+    """MEDIUM-1 (PR #449 round one): a missing `itemId` must not erase another item's finding.
+
+    Given two migrations, each carrying one `upsertRevision` with no `itemId`
+    key at all and a distinct body, and the first one's document drifted from
+    its pin, when `scan` runs, both are reported UNCHECKABLE -- neither
+    participates in per-item terminality, because neither names an item to be
+    terminal *for*.
+
+    RED against the mechanism fix as it stands: `_current_operations` keys on
+    `str(operation.get("itemId", ""))`, so both itemId-less upserts collapse
+    onto the same `""` bucket. Only the physically last one (B, by
+    `migration_paths`' path order) satisfies the `is operation` identity
+    check; A's operation is silently dropped from `revisions_by_path`'s walk
+    before it ever reaches `_compare` -- not compared, not reported
+    uncheckable, simply absent. Because B's own document matches its pin, the
+    report reads CLEAN overall, and A's real drift vanishes without a trace.
+    """
+    a_op, a_body_path, a_body = _upsert_revision(
+        item_id="placeholder",
+        revision_id=_MEDIUM1_REVISION_A,
+        body=_MEDIUM1_PINNED_TEXT_A,
+        file_path=_MEDIUM1_DOCUMENT_A,
+    )
+    del a_op["itemId"]
+    migration_a = _write_migration(tmp_path, _MEDIUM1_MIGRATION_A_ID, [a_op])
+    _write(tmp_path, a_body_path, a_body)
+    _write(tmp_path, _MEDIUM1_DOCUMENT_A, _MEDIUM1_ACTUAL_TEXT_A)
+
+    b_op, b_body_path, b_body = _upsert_revision(
+        item_id="placeholder",
+        revision_id=_MEDIUM1_REVISION_B,
+        body=_MEDIUM1_TEXT_B,
+        file_path=_MEDIUM1_DOCUMENT_B,
+    )
+    del b_op["itemId"]
+    migration_b = _write_migration(tmp_path, _MEDIUM1_MIGRATION_B_ID, [b_op])
+    _write(tmp_path, b_body_path, b_body)
+    _write(tmp_path, _MEDIUM1_DOCUMENT_B, _MEDIUM1_TEXT_B)
+
+    report = scan(tmp_path, tracked=[migration_a, migration_b])
+
+    verdicts_by_revision = {item.revision_id: item.verdict for item in report.comparisons}
+    assert verdicts_by_revision.get(_MEDIUM1_REVISION_A) is Verdict.UNCHECKABLE
+    assert verdicts_by_revision.get(_MEDIUM1_REVISION_B) is Verdict.UNCHECKABLE
+    assert len(report.comparisons) == 2
+
+
+# -- MEDIUM-4: a YAML anchor/alias must not compare one revision twice -------
+
+_MEDIUM4_ITEM = "architecture.aliased-example"
+_MEDIUM4_DOCUMENT = "docs/adr/0008-aliased-example.md"
+_MEDIUM4_TEXT = "# ADR-0008: Aliased Example\n\nWhat the single upsert pins, unchanged.\n"
+
+_MEDIUM4_MIGRATION_ID = "01MB4V3XKQ7ZPYE8R2NGT5HWEA"
+_MEDIUM4_REVISION = "01MB4V3XKQ7ZPYE8R2NGT5HWEB"
+
+
+def test_a_yaml_anchor_and_alias_do_not_compare_one_revision_twice(tmp_path: Path) -> None:
+    """MEDIUM-4 (PR #449 round one): the same operation object at two positions is one revision.
+
+    Given one migration whose `operations` list places the *same* Python
+    object at two positions -- `- &up {op: upsertRevision, ...}` then
+    `- *up`, which is what a repeated YAML anchor/alias round-trips to
+    through `yaml.safe_load` (confirmed empirically: `ops[i] is ops[j]` is
+    `True` for the two positions) -- when `scan` runs, the item's terminal
+    revision produces exactly one `Comparison`.
+
+    RED against the mechanism fix as it stands: `_current_operations` picks
+    the winner by identity (`current[item_id] is operation`), on the
+    assumption that two *distinct* objects are never the same object even
+    when byte-identical. A YAML alias defeats that assumption directly: both
+    positions in `revisions` reference the identical object `current[item_id]`
+    was set to, so the identity check is `True` at *both* positions, and both
+    are compared -- one revision, two `Comparison` entries.
+    """
+    shared_op, body_path, body = _upsert_revision(
+        item_id=_MEDIUM4_ITEM,
+        revision_id=_MEDIUM4_REVISION,
+        body=_MEDIUM4_TEXT,
+        file_path=_MEDIUM4_DOCUMENT,
+    )
+    migration = _write_migration(
+        tmp_path,
+        _MEDIUM4_MIGRATION_ID,
+        [
+            {"op": "createItem", "itemId": _MEDIUM4_ITEM, "kind": "architecture"},
+            shared_op,
+            shared_op,  # same object, twice -- what a YAML anchor/alias round-trips to
+        ],
+    )
+    _write(tmp_path, body_path, body)
+    _write(tmp_path, _MEDIUM4_DOCUMENT, _MEDIUM4_TEXT)
+
+    report = scan(tmp_path, tracked=[migration])
+
+    matching = [item for item in report.comparisons if item.revision_id == _MEDIUM4_REVISION]
+    assert len(matching) == 1
+    assert matching[0].verdict is Verdict.MATCHED
