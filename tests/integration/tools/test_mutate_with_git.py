@@ -26,6 +26,7 @@ nothing puts it back unless asked).
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -90,6 +91,20 @@ def _checkout(root: Path) -> None:
     (root / "docs" / "untracked.md").write_text("run `theurian init`\n", encoding="utf-8")
     _git("-C", str(root), "add", "docs/tracked.md")
     _git("-C", str(root), "commit", "-q", "-m", "seed")
+
+
+def _hash_tree(root: Path) -> dict[str, str]:
+    """Every regular file under ``root``, by relative path, to its sha256.
+
+    A directory listing alone would miss a file rewritten in place with the
+    same name -- exactly the shape of mistake this guards against (a write
+    aimed at ``config`` or ``index`` that already exists in the source).
+    """
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
 
 
 def _stub_uv(tmp_path: Path) -> Path:
@@ -180,6 +195,37 @@ def test_the_alternates_file_names_the_source_object_store_and_nothing_else(
         .strip()
     )
     assert alternates == str((source / ".git" / "objects").resolve())
+
+
+def test_lending_never_writes_a_single_byte_into_the_sources_own_git_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The direct check: not one of the four files this function writes is aimed at the source.
+
+    ``_lend_git_objects`` writes ``config`` and ``objects/info/alternates``
+    into ``destination``, and reads (never writes) ``HEAD``/``index``/
+    ``packed-refs``/``shallow``/``refs`` from ``source``. A copy-paste slip
+    that aimed any one of those writes at ``git_dir`` instead of ``borrowed``
+    -- swapped in a refactor, or a variable renamed halfway -- would corrupt
+    the one ``.git`` every other test and every real mutation batch shares.
+    Caught by hashing the source's own ``.git`` directory (every regular file
+    inside it, not merely ``config``) before and after.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    _checkout(source)
+    before = _hash_tree(source / ".git")
+    destination = tmp_path / "copy"
+    destination.mkdir()
+    monkeypatch.setattr(mutate, "REPO_ROOT", source)
+
+    mutate._lend_git_objects(destination)
+
+    after = _hash_tree(source / ".git")
+    assert after == before, (
+        "the source's own .git directory changed after lending its objects to a copy -- "
+        "lending must only ever read from the source, never write to it"
+    )
 
 
 def test_a_mutation_inside_a_with_git_copy_never_touches_the_source_tree(
