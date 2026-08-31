@@ -409,11 +409,68 @@ def _record_population(destination: Path) -> None:
     )
 
 
-def _build_tree(destination: Path, cache_dir: Path) -> Path:
+def _lend_git_objects(destination: Path) -> None:
+    """Give the copy a repository of its own, borrowing the source's objects.
+
+    **Why a copy needs one at all.** ``_COPY_IGNORE`` drops ``.git`` and
+    :func:`_record_population` hands the suite a path list instead, which is
+    enough for every rule that reads a *path* or the bytes in the working tree.
+    It is not enough for a rule that reads a **blob**, and the corpus has one:
+    ``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical
+    _to_its_source_anchor_commit`` compares a committed body against
+    ``git cat-file blob <commitSha>:<filePath>``. In a copy that rule reaches
+    ``_requires_git_objects``, sees the population came from the manifest, and
+    **skips**. So a mutation whose only killer is that rule -- an anchor
+    repointed at another commit, a body re-pinned consistently in both places --
+    comes back SURVIVED from a harness that never ran the one test that holds
+    it, and the reader has no way to tell that verdict from a real one.
+
+    **Why objects are lent rather than copied.** The source's ``.git`` is 55 MB
+    against 3.8 MB for the whole working copy, and the harness's cost claim is
+    load-bearing (see ``_COPY_IGNORE``). ``objects/info/alternates`` makes every
+    object in the source readable from the copy without moving a byte, and the
+    index and refs are small enough to copy outright.
+
+    **The copy still answers for itself.** The borrowed directory is objects
+    only -- content-addressed, so nothing in it can name the source's paths.
+    ``HEAD``, the refs and the index are the copy's own, and its worktree is the
+    copy, so ``ls-files`` reports the source's *tracked set* against the copy's
+    *bytes*, which is exactly what the rules want. Nothing here writes to the
+    source, and no rule in the suite runs a git command that would.
+    """
+    git_dir = REPO_ROOT / ".git"
+    if not git_dir.is_dir():
+        raise HarnessError(
+            f"--with-git needs a plain repository at {git_dir}; a linked worktree or a "
+            "bare checkout does not carry the index this lends."
+        )
+
+    borrowed = destination / ".git"
+    (borrowed / "objects" / "info").mkdir(parents=True, exist_ok=True)
+    (borrowed / "objects" / "info" / "alternates").write_text(
+        f"{(git_dir / 'objects').resolve()}\n", encoding="utf-8"
+    )
+    (borrowed / "config").write_text(
+        "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n",
+        encoding="utf-8",
+    )
+    for name in ("HEAD", "index", "packed-refs", "shallow"):
+        source = git_dir / name
+        if source.is_file():
+            shutil.copy2(source, borrowed / name)
+    if (git_dir / "refs").is_dir():
+        shutil.copytree(git_dir / "refs", borrowed / "refs", dirs_exist_ok=True)
+    if not (borrowed / "index").is_file():
+        raise HarnessError(f"--with-git found no index in {git_dir}; the copy could not be asked")
+
+
+def _build_tree(destination: Path, cache_dir: Path, *, with_git: bool = False) -> Path:
     """Copy the checkout and give the copy its own virtualenv."""
     shutil.rmtree(destination, ignore_errors=True)
     shutil.copytree(REPO_ROOT, destination, ignore=_COPY_IGNORE, symlinks=True)
     _record_population(destination)
+    if with_git:
+        _lend_git_objects(destination)
     completed = subprocess.run(  # noqa: S603 - argv is harness-owned, never user input
         [_uv(), "sync", "--frozen"],
         cwd=destination,
@@ -482,7 +539,7 @@ def _execute(mutations: tuple[Mutation, ...], options: Options) -> list[Outcome]
     trees: queue.Queue[Path] = queue.Queue()
     try:
         for index in range(workers):
-            trees.put(_build_tree(root / f"tree-{index}", cache_dir))
+            trees.put(_build_tree(root / f"tree-{index}", cache_dir, with_git=options.with_git))
 
         outcomes: list[Outcome] = []
 
@@ -616,7 +673,7 @@ def _prepare_mode(args: argparse.Namespace, options: Options) -> int:
     cache_dir = _cache_dir()
     root = _work_root(options)
     try:
-        tree = _build_tree(root / "tree-0", cache_dir)
+        tree = _build_tree(root / "tree-0", cache_dir, with_git=options.with_git)
         land = _apply_to_prepared(tree, mutation)
     except HarnessError:
         shutil.rmtree(root, ignore_errors=True)
@@ -656,6 +713,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--json", dest="json_path", help="write results here after every mutation")
     parser.add_argument("--work-dir", help="where to build the isolated trees")
     parser.add_argument("--keep-trees", action="store_true", help="do not delete the copies")
+    parser.add_argument(
+        "--with-git",
+        action="store_true",
+        help=(
+            "give each copy a .git that borrows the source's objects, so the rules "
+            "that read a blob (the corpus byte-identity pin) run instead of skipping"
+        ),
+    )
     parser.add_argument(
         "--prepare-tree",
         action="store_true",
@@ -719,6 +784,7 @@ def main(argv: list[str] | None = None) -> int:
         keep_trees=bool(args.keep_trees),
         json_path=Path(args.json_path) if args.json_path else None,
         work_dir=Path(args.work_dir) if args.work_dir else None,
+        with_git=bool(args.with_git),
     )
     try:
         if args.prepare_tree:
