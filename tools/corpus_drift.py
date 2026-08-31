@@ -41,8 +41,9 @@ Exit codes
 ``2``
     **The check did not check enough to mean anything.** No tracked migrations,
     or git could not be asked what is tracked, or a tracked migration declares
-    ``dependsOn`` (this tool's own limit -- see :func:`_depends_on_refusal`), or
-    every anchor reached was uncheckable, or fewer anchors were compared than
+    a ``dependsOn`` edge (this tool's own limit -- see :func:`_depends_on_refusal`;
+    a declared-but-empty list is walked normally), or every anchor reached was
+    uncheckable, or fewer anchors were compared than
     the floor the tree is held to -- 25 of 26 being the case a bare "compared
     nothing" never catches (see ``--minimum-compared``). Each of those five
     keeps its own diagnosis: the floor states its own only when the run had a
@@ -70,9 +71,11 @@ every purpose; application order is a different question, applied the way
 state-rebuild path. It is a Kahn walk over ``dependsOn``, tie-broken by each
 migration's own inner ``id`` -- and this tool implements only the walk's
 degenerate case, an ``id``-ascending sort, refusing outright when a tracked
-migration declares ``dependsOn`` at all (:func:`_depends_on_refusal`). A
-superseded ``upsertRevision`` is read, and then dropped before it reaches an
-anchor -- it is not compared and it is not reported, uncheckable included.
+migration declares a ``dependsOn`` **edge** (:func:`_depends_on_refusal`). A
+declared-but-empty list -- the schema's own default -- is walked normally: no
+edges is no edges, however the field got there. A superseded ``upsertRevision``
+is read, and then dropped before it reaches an anchor -- it is not compared
+and it is not reported, uncheckable included.
 
 **One further file is read, conditionally: a pinned body.** For a revision that
 declares no `contentSha256`, the body its own `contentFile` names is hashed
@@ -562,17 +565,22 @@ def _depends_on_refusal(path: str, document: Any) -> str | None:
 
     The loader's real application order is a Kahn walk over ``dependsOn``, tie-broken
     by each migration's own inner ``id`` (``theurian.domain.migration.MigrationSet
-    ._topological_order``). With no ``dependsOn`` declared anywhere, every migration is
-    "ready" in the same pass, so Kahn's walk degenerates to exactly one thing: a plain
-    ascending sort on ``id`` -- which is what :func:`_current_operations` implements.
+    ._topological_order``). With no *edge* anywhere in the walk -- ``dependsOn`` never
+    mentioned, or declared and empty; the schema places no ``minItems`` on the field
+    and its own default is ``[]``, so the two are the same shape on the wire -- every
+    migration is "ready" in the same pass, and Kahn's walk degenerates to exactly one
+    thing: a plain ascending sort on ``id`` -- which is what :func:`_current_operations`
+    implements.
 
-    A *declared* ``dependsOn`` is where that degenerate case stops being honest: it can
-    reorder migrations relative to their ``id``, and reproducing that correctly means
-    reimplementing the topological sort (and its cycle/missing-dependency errors) a
-    second time in a tool that does not otherwise validate anything. Refusing the run
+    A declared dependsOn **edge** is where that degenerate case stops being honest: it
+    can reorder migrations relative to their ``id``, and reproducing that correctly
+    means reimplementing the topological sort (and its cycle/missing-dependency errors)
+    a second time in a tool that does not otherwise validate anything. Refusing the run
     is the smaller, honest mechanism -- a limit of this tool, not a finding about the
-    corpus -- and it costs nothing today: measured 2026-08-31, no tracked migration in
-    this repository's corpus declares ``dependsOn`` at all.
+    corpus -- and it walks a declared-but-empty list normally rather than refusing that
+    too, which would turn the schema's own default into a false positive on every
+    migration that writes it. It costs nothing today: measured 2026-08-31, no tracked
+    migration in this repository's corpus declares a dependsOn edge.
     """
     if not isinstance(document, Mapping):
         return None
@@ -591,7 +599,7 @@ def _depends_on_refusal(path: str, document: Any) -> str | None:
 
 
 def _inner_id(document: Any) -> str:
-    """This migration's own ``id`` -- the key application order sorts by absent ``dependsOn``.
+    """This migration's own ``id`` -- application order's sort key, absent a ``dependsOn`` edge.
 
     Falls back to ``""`` when the field is missing or not a string, a shape the schema
     forbids but this tool does not validate against (the same stance :func:`_expected_digest`
@@ -861,7 +869,7 @@ def _read_migration(repo_root: Path, path: str) -> _MigrationRead:
 
     Split out of :func:`scan` to keep that function's own branching within the
     linter's limit -- this is where every per-file outcome (unreadable YAML, a
-    declared ``dependsOn``, no ``upsertRevision`` at all, an itemId-less
+    declared ``dependsOn`` edge, no ``upsertRevision`` at all, an itemId-less
     operation) is judged, one migration at a time.
     """
     try:
@@ -1003,9 +1011,9 @@ def held_to_floor(report: Report, minimum: int) -> Report:
     **A report that is already ``NOTHING_COMPARED`` is returned as it stands.**
     :func:`scan` reaches that status by four routes, each with a diagnosis of
     its own: nothing tracked under ``.theurian/migrations/`` at all, git
-    declining to say what is tracked, a tracked migration declaring
-    ``dependsOn`` (this tool's own limit, :func:`_depends_on_refusal`), and
-    every anchor it did reach being uncheckable. All four compare zero anchors,
+    declining to say what is tracked, a tracked migration declaring a
+    ``dependsOn`` edge (this tool's own limit, :func:`_depends_on_refusal`),
+    and every anchor it did reach being uncheckable. All four compare zero anchors,
     so without this the floor fires over the top of them and replaces the one
     sentence saying what happened with this function's own below-floor remedy --
     built for anchors that went uncheckable one at a time, not for a git that
