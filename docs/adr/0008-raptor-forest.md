@@ -1058,11 +1058,11 @@ flowchart TB
 > 10. **`raptor.enabled` defaults to `false` in the first release that ships the
 >     forest.** `schemas/config/project-config.schema.json` declares
 >     `"enabled": { "type": "boolean", "default": true }` today. That is not a
->     decision anyone took: nothing in `src/` reads it, or reads
->     `.theurian/config.yaml` at all. The schema's only consumers outside itself
->     are `tests/unit/test_examples.py`, which validates the example document
->     against it, and `tests/unit/test_schemas.py`, which checks one unrelated
->     property — so `default: true` has never taken effect anywhere.
+>     decision anyone took: nothing in `src/` reads it, and when this was written
+>     nothing read `.theurian/config.yaml` at all. The schema's consumers outside
+>     itself were `tests/unit/test_examples.py`, which validates the example
+>     document against it, and `tests/unit/test_schemas.py`, which checks one
+>     unrelated property — so `default: true` has never taken effect anywhere.
 >
 >     A capability whose acceptance tests are owed and whose build cost is
 >     unmeasured (see the amendment to decision 3) ships opt-in, so that turning it
@@ -1091,9 +1091,10 @@ flowchart TB
 >     >
 >     > **The switch is the CLI flag, not the config key, and that is worth
 >     > stating because this decision is phrased in terms of a key nothing reads.**
->     > Nothing in `src/` reads `.theurian/config.yaml`, so flipping the default
->     > changes no behaviour; what turns a forest on is `theurian index build
->     > --raptor`, one build at a time. The guarantee that buys is *hard* rather
+>     > Nothing in `src/` reads `raptor.enabled`, nor any other key in the
+>     > `raptor` block, so flipping the default changes no behaviour; what turns
+>     > a forest on is `theurian index build --raptor`, one build at a time. The
+>     > guarantee that buys is *hard* rather
 >     > than filtered — a build without the flag writes zero node rows, held by
 >     > `test_a_build_without_the_raptor_flag_writes_no_summary_nodes` — which is
 >     > the same shape `--include-unapproved` has for drafts. When a config loader
@@ -1117,6 +1118,28 @@ flowchart TB
 >     > reports `"raptor": true`. The honest value is no longer `false`, because a
 >     > client reading `raptor: true` now does get a `raptorPath`. Pinned by
 >     > `tests/integration/test_forest_retrieval.py::test_capabilities_reports_raptor_supported`.
+>     >
+>     > **Corrected in the #199 unit-A follow-up
+>     > ([#426](https://github.com/theurian/theurian/issues/426)). The file has a
+>     > reader; the `raptor` block still does not.** Two sentences in this
+>     > decision — its rationale above and the "switch is the CLI flag" note —
+>     > said *nothing in `src/` reads `.theurian/config.yaml`*. Each was true
+>     > when written and stopped being true with
+>     > [ADR-0027](0027-accept-validates-before-it-moves.md) decision 3:
+>     > `security/project_config.py::read_secret_scan_policy` opens the file, and
+>     > `application/proposal_service.py` calls it at `theurian propose accept`.
+>     > Both sentences are narrowed to the population that is still unread rather
+>     > than deleted, and both conclusions survive that narrowing, because
+>     > neither leaned on the file being unread — only on `raptor.enabled` being
+>     > unread, which it is. Measured at `6b83be1`: `git grep -n 'paths\.config'
+>     > packages/theurian-core/src` returns one line — `proposal_service.py`
+>     > handing the path to `read_secret_scan_policy` — and that function names
+>     > one published key, `SECRET_SCAN_KEY = "secretScan"`, under one block, so
+>     > no `raptor` key is reachable from the only reader the file has.
+>     > `tests/unit/test_config_key_call_sites.py` pins the one key that does
+>     > have a reader. The consumer enumeration in the rationale is
+>     > tensed to when it was taken rather than re-counted, since the schema has
+>     > gained test-side consumers only.
 
 ## Consequences
 
