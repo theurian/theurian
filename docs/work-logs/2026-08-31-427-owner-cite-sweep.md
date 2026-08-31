@@ -28,30 +28,37 @@ escape space (bare #N, outside the key): 97 mentions over 37 distinct numbers
 classified on its own context; #40 is cited eight times in one table. 114 rows,
 not 56.
 
-**The bracket key and the URL key select the same population here**, and the
-script says so on every run rather than leaving it assumed: every `[#N]` in this
-file is a Markdown link to a `github.com/theurian/theurian/{issues,pull}/N`
-target, and no such target is reachable under any other label. If those two
-numbers ever diverge, the key has stopped covering the file.
+**Every tracker link in this file is bracket-labelled**, and the script says so
+on every run rather than leaving it assumed: 114 URL occurrences over 56 distinct
+numbers, against 114 cites over the same 56. It compares **both** figures,
+because neither implies the other — a prose-labelled link to a number the file
+already cites (`[the fetch-control issue](…/issues/429)`) leaves the distinct
+sets equal while adding an occurrence, which is exactly how this guard was found
+false in #470's round one. That is the whole of what the line asserts. It does
+**not** assert that every cite is linked: a bare `#N` is neither bracketed nor
+linked, and is counted on its own line.
 
 **The escape space is bare `#N`** — 97 mentions, outside the key. It is measured
 rather than assumed because #427 exists over a cite the previous two keys did not
 reach, and stopping at the stated key would be the same failure one level over.
-Two of the three defects this sweep fixed live in that escape space, and no
-bracket key would have found them. Sweeping it is recorded in
+**Three** of the seven defective cites this sweep fixed live in that escape
+space, and no bracket key would have found them. Sweeping it is recorded in
 [its own section](#the-escape-space-97-bare-mentions) below.
 
 ## Classification, and how each label is earned
 
 | Label | Rule | Count |
 | :-- | :-- | --: |
-| **(b) history** | "fixed in #N", "found by #N's round", "since #N", a provenance cite for a shipped guard. A CLOSED owner is correct and expected | 87 |
+| **(b) history** | "fixed in #N", "found by #N's round", "since #N", a provenance cite for a shipped guard. A CLOSED owner is correct and expected | 88 |
 | **(a) open** | owner-of-a-residual or future-control, and the cited issue is OPEN | 20 |
-| **(a) accepted** | owner-shaped, cited issue CLOSED, and the text is an *explicit acceptance record* whose closure is recorded at the entry's own head — the stated exemption | 3 |
+| **(a) accepted** | owner-shaped, cited issue CLOSED, and the text is an *explicit acceptance record* whose closure is recorded at the entry's own head — the stated exemption | 2 |
 | **(a) DEAD** | owner-shaped, and the cited thing cannot receive work: a CLOSED issue, or a merged PR (the #444-recorded PR-as-owner shape) | **4** |
 
-114 total. The four defects are `#198:1639` and `#15` at `:3970`, `:4108`,
-`:4184`.
+114 total, in the bracketed Key A population. The four defects are `#198:1639`
+and `#15` at `:3970`, `:4108`, `:4184`. Three more sit in the bare-mention escape
+space (`:2624`, `:4492`, `:5509`), which is not part of this 114 — **seven
+defective cites fixed in all**, and the two populations are added nowhere except
+in that sentence, deliberately.
 
 These four numbers are counted off [the full table below](#the-full-key-a-table),
 not asserted: the table's `(number, line)` pairs were checked against the
@@ -127,11 +134,11 @@ repository measured that.
 
 Recorded because a later reader will re-open each of them otherwise.
 
-| Cite | Why it is not a defect |
-| :-- | :-- |
-| `#15:4794`, `#15:4808` | the three conditions of a **Milestone 5 acceptance**, inside T-17a, whose heading and opening blockquote both record the closure. The stated exemption: "the text an explicit acceptance record". Rewriting the conditions would delete the acceptance |
-| `#119:4928` | "**Accepted, with the acceptance recorded.** The decision is on [#119]" — a cite to *where a decision is recorded*, which is history, not an owner |
-| `#119:4398` | "deferred to [#119]" inside a paragraph the very next line marks as preserved: "**Amended in #119 (2026-08-24)** … The paragraph above is the Milestone 6 record and stays" |
+| Cite | Class | Why it is not a defect |
+| :-- | :-- | :-- |
+| `#15:4794`, `#15:4808` | (a) acc | the three conditions of a **Milestone 5 acceptance**, inside T-17a, whose heading and opening blockquote both record the closure. The stated exemption: "the text an explicit acceptance record". Rewriting the conditions would delete the acceptance |
+| `#119:4928` | (b) | "**Accepted, with the acceptance recorded.** The decision is on [#119]" — the live text points at *where a decision is recorded*, which is history. It reads as an acceptance record, and the bold label above it is one; the **cite** is not part of the acceptance, it is the pointer to it. Graded on the cite, so (b) — the exemption is for cites the record *makes*, not for cites that name where the record lives |
+| `#119:4398` | (b) | "deferred to [#119]" inside a paragraph the very next line marks as preserved: "**Amended in #119 (2026-08-24)** … The paragraph above is the Milestone 6 record and stays" |
 
 ## Key B members in this file (#428's accounting)
 
@@ -228,10 +235,14 @@ for exactly this widening. Known false positives, left in rather than
 special-cased: Mermaid hex colours (`fill:#1f6f4a`) and in-document ordinals
 (`residual #2`, `residual #1`).
 
-**Two (a)-DEAD members, both the same claim, both PR-as-owner:**
+**Three (a)-DEAD members.** Two are the same claim twice, both PR-as-owner; the
+third is a Key B member and is written up in full in
+[the Key B section](#2624-and-the-false-evidence-it-carried) above rather than
+here, so that #428's accounting and this one cannot disagree about it.
 
 | Line | Context | Action |
 | :-- | :-- | :-- |
+| 2624 | "and that is the gap **#39** inherits" | corrected in place; the gap stated as owned by #472 (Key B member — full write-up above) |
 | 4492 | "a recorded MEDIUM deferred to **#113** (ADR-0022), whose compare-and-swap pointer write is its scope, not this fix's" | repointed to **#439**, mechanism reference (ADR-0022/ADR-0018) kept |
 | 5509 | T-17a summary row: "all SAFE-direction, the last deferred to **#113**/ADR-0022" | same |
 
@@ -259,10 +270,26 @@ discipline that caught #429 covering the allowlist:
 The threat-model twins are #427's (this file); the source twin stays #444's and
 was not touched.
 
-**Everything else in the escape space classified (b) or (a)-open.** The dense
-clusters are `#30` (14), `#158` (11), `#119` (8) — all historical, all "since
-#N" / "#N closed it" / "#N PR2" forms — and `#338`/`#329` in owner position with
-both issues OPEN.
+**Everything else in the escape space — that is, every bare mention besides
+`:4492`, `:5509` and `:2624`, the last of which is accounted in the Key B table
+above — classified (b) or (a)-open.** The dense clusters are `#30` (14), `#158`
+(11), `#119` (8) — all historical, all "since #N" / "#N closed it" / "#N PR2"
+forms — and `#338`/`#329` in owner position with both issues OPEN.
+
+### The borderline escape members, recorded
+
+The two that read as owner-shaped and are not, written down the way Key A
+records its not-defects, so the next sweep does not re-open them:
+
+| Line | Text | Reading, and why it is not a defect |
+| :-- | :-- | :-- |
+| `#115:2679` | "that step comes due with the first abstractive adapter (#115)" | Owner-shaped — a future control, and #115 is CLOSED. But #115 is a **class name**, not a work item: its title is "Class: security documents claim controls whose implementing component does not exist", and the entry itself uses it that way twenty-three lines later — "the #115 class" (`:2702`). The sentence attributes a *shape* to the residual, not an owner to it. Read as (b) |
+| `#30:3306` | "and, since PR2, every position of #30's silent class but one" | Same shape, same reason: `#30` names the `SILENTLY_EMPTIED` class, and the clause is a statement about that class's positions, in the past tense of a shipped PR2. Its one genuinely open position is named in the very next sentence, without an owner cite. Read as (b) |
+
+Both would be defects if the cited number were being asked to *hold* the
+residual. Neither is, and the discriminator is the same in both cases: the number
+names a class the document reasons about, and the class survives its issue
+closing. Recorded rather than argued each time it comes up.
 
 ## The full Key A table
 
@@ -295,13 +322,13 @@ the defect.
 | 400 | 1191 | same sentence | (b) |
 | 203 | 1279 | "with the scheme a fetcher would use ([#203])" | (b) |
 | 245 | 1312 | "now costs 1.5 ms ([#245], measured 2026-08-24 and pinned by …)" | (b) |
-| 328 | 1317 | "unpriced and quadratic … ([#328]) — that residual is discharged now too" | (b) |
+| 328 | 1317 | "unpriced and quadratic […] ([#328], measured under T-6 above) — that residual is discharged now too" | (b) |
 | 246 | 1325 | "`$dynamicRef`, `operationRef` … outside this walk entirely ([#246])" | (a) open |
 | 203 | 1332 | "which is the property [#203] needed" | (b) |
 | 429 | 1366 | "*Future controls, not shipped* … owned by [#429]" | (a) open |
 | 129 | 1388 | "[#129] was closed `COMPLETED` … having corrected this entry's wording" | (b) |
 | 368 | 1391 | "this audit repointed the three at [#368] … Review then found" | (b) |
-| 429 | 1395 | "[#429] was opened to hold them against whatever first performs a fetch" | (a) open |
+| 429 | 1395 | "[#429] was opened to hold them against whatever first performs an external fetch" | (a) open |
 | 329 | 1456 | "runs no scan — shipped behaviour today, not a future gap ([#329])" | (a) open |
 | 330 | 1459 | "Draft time is … advisory territory ([#330])" | (a) open |
 | 336 | 1472 | "the accept-path scan has read it since [#336]" | (b) |
@@ -370,7 +397,7 @@ the defect.
 | 15 | 4794 | "filed at HIGH against Milestone 6 as [#15]" | (a) acc |
 | 15 | 4808 | "**Issue [#15] carries both channels.**" | (a) acc |
 | 338 | 4922 | "invalidates every existing state database — owned by [#338]" | (a) open |
-| 119 | 4928 | "**Accepted, with the acceptance recorded.** The decision is on [#119]" | (a) acc |
+| 119 | 4928 | "**Accepted, with the acceptance recorded.** The decision is on [#119]" | (b) |
 | 119 | 5153 | "sensitivity was still deferred to [#119] … #119 has since added" | (b) |
 | 210 | 5160 | "fixed in 0.1.0.dev5 (GHSA-w5cm-cqf9-vm7r, [#210])" | (b) |
 | 128 | 5405 | "overwritten whole … until [#128]" | (b) |

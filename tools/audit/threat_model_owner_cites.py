@@ -10,8 +10,18 @@ because the classification is a property of the *context*, not of the number.
 At the anchor commit every ``[#N]`` in this file is a Markdown link whose target
 is a ``github.com/theurian/theurian/{issues,pull}/N`` URL, and no such URL is
 reachable under any other label -- so the bracket form and the URL form select
-the same population here. The script reports both counts; if they ever diverge,
-the key has stopped covering the file.
+the same population here.
+
+**The coverage line, and exactly what it rules out.** The script counts tracker
+URLs beside the cites and compares them **as occurrences and as distinct
+numbers**. Both halves are needed and neither implies the other: a
+prose-labelled link (``[the fetch-control issue](.../issues/429)`` where #429 is
+already cited elsewhere) adds a URL occurrence without adding a number, so the
+distinct-set comparison alone answers "same population" while a cite has escaped
+the bracket key -- which is how this guard was found false in #470's round one.
+A verdict of ``same population`` therefore means *every tracker link in the file
+is bracket-labelled*. It does **not** mean every cite in the file is linked:
+a bare ``#N`` is neither, and is counted separately below.
 
 **What the script cannot do, and why classification lives elsewhere.** Whether a
 cite is (a) an owner-of-a-residual -- "[#N] removes this face", which is a defect
@@ -26,8 +36,9 @@ hand in
 
 **Escape space, measured rather than assumed.** Bare ``#N`` mentions -- not
 bracketed, not linked -- are outside this key. The script counts them separately
-so the gap is a number rather than a silence, and the #427 sweep found two
-(a)-class defects there that the bracket key does not reach.
+so the gap is a number rather than a silence, and the #427 sweep found **three**
+(a)-class defects there that the bracket key does not reach: two PR-as-owner
+cites of merged ``#113``, and one dead-owner ``#39``.
 
 Known false positives in that escape count, recorded rather than special-cased:
 a Mermaid hex colour (``fill:#1f6f4a``) and an in-document ordinal (``residual
@@ -106,17 +117,26 @@ def main() -> int:
 
     cites = _cites(lines)
     numbers = sorted({cite.number for cite in cites})
-    url_numbers = sorted({int(match.group("number")) for match in URL.finditer(text)})
+    url_matches = list(URL.finditer(text))
+    url_numbers = sorted({int(match.group("number")) for match in url_matches})
     bare = [
         (line_no, int(match.group("number")))
         for line_no, line in enumerate(lines, start=1)
         for match in BARE.finditer(line)
     ]
 
+    # Occurrences *and* distinct numbers. A prose-labelled link to an issue the
+    # file already cites elsewhere leaves the distinct sets equal while adding an
+    # unbracketed occurrence, so the set comparison alone reports coverage the
+    # key does not have.
+    covered = url_numbers == numbers and len(url_matches) == len(cites)
+    coverage = "same population" if covered else "KEY NO LONGER COVERS THE FILE"
     print(f"POP-2 CITES: {len(cites)} occurrences over {len(numbers)} distinct numbers")
     print(f"lines carrying at least one cite: {len({cite.line_no for cite in cites})}")
-    coverage = "same population" if url_numbers == numbers else "KEY NO LONGER COVERS THE FILE"
-    print(f"tracker URLs reach {len(url_numbers)} distinct numbers -- {coverage}")
+    print(
+        f"tracker URLs: {len(url_matches)} occurrences over "
+        f"{len(url_numbers)} distinct numbers -- {coverage}"
+    )
     print(
         f"escape space (bare #N, outside the key): {len(bare)} mentions "
         f"over {len({number for _, number in bare})} distinct numbers"
