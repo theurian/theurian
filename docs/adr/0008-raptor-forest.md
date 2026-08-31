@@ -682,8 +682,13 @@ flowchart TB
    > Named by its root cause rather than by what it emits, that class is
    > **content the caller may not read influencing a derived artifact no purge
    > reaches**. T-17a's root cause is a different one — *the index still holds
-   > the withdrawn rows* — and [#15](https://github.com/theurian/theurian/issues/15)
-   > removes those rows, which is why deleting them restores equality there. Here
+   > the withdrawn rows* — and the withdrawal→purge trigger
+   > [#15](https://github.com/theurian/theurian/issues/15) shipped on 2026-08-10
+   > (`66a43ae`) removes those rows, which is why deleting them restores equality
+   > there. This read "#15 removes those rows" until 2026-09-01, naming an open
+   > tracker as the actor; the actor is `application/withdrawal_purge.py` and
+   > this is history, not owed work
+   > ([#464](https://github.com/theurian/theurian/issues/464)). Here
    > deletion restores nothing, because what carries the influence is text that
    > was already written. The two look alike in their observable and want
    > opposite remedies, which is the reason for naming them apart.
