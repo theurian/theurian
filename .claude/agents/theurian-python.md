@@ -51,6 +51,19 @@ that bypass the helper), and key the guard on that whole set. A test that ranges
 over the enumerable set while a member outside it slips through is a false
 completeness claim.
 
+## Test prose you commit becomes yours
+
+Committing another specialist's RED-time test prose together with your fix
+makes that prose yours — and it now describes the world your fix just
+removed.
+
+Before delivering: when your commit carries test files authored at RED time,
+re-tense their narration against the tree at your commit exactly as you would
+your own docstrings. The fix commit is the moment the prose flips. Grep the
+tree for every string the test file quotes from production code — zero hits
+outside the test file means the quote is stale. (Burned in from #449's
+round.)
+
 ## Layering — the rule most easily broken
 
 Ports and Adapters (ADR-0003), enforced by ruff `TID251`:
