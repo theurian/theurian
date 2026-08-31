@@ -1,4 +1,13 @@
-"""What ADR-0018 says about NFS detection, against what the setup steps read.
+"""What ADR-0018 claims about its own mechanisms, against what the code does.
+
+**Two corrected claims are held here, and they are independent.** The Consequences
+bullet said ``doctor`` warns about NFS; the Decision said the write lock is taken
+on the state database. Both were false, both were corrected in place, and each
+gets a prose pin and a fact pin below. They share this module because they share
+a document and a failure mode -- a durable record describing a mechanism nobody
+re-read against the code -- not because one implies the other.
+
+-- 1. The NFS warning (#417) ------------------------------------------------
 
 ADR-0018's Consequences accepted the advisory lock's behaviour on network
 filesystems on the grounds that a ``.theurian/state/`` directory on NFS "is
@@ -78,6 +87,48 @@ over the modules the step registry currently resolves to, so:
   ``tests/integration/test_setup_service.py::test_every_specified_step_is_reported``
   rather than restated here.
 
+-- 2. What the write lock is taken on (#424) --------------------------------
+
+Decision point 2 said Milestone 1 enforces exclusivity with an OS advisory file
+lock **on the state database**. It never was: ``ProjectPaths.write_lock`` is
+``.theurian/runtime/write.lock`` and ``ProjectPaths.database_for`` puts databases
+under ``.theurian/state/``, so ``write_transaction(database_path, lock_path)``
+flocks a file that is not a database. Exclusivity held throughout -- only the
+object the record named was wrong -- so the clause was corrected in place.
+
+This one is worth pinning for a reason the NFS claim did not have: **the document
+disagreed with itself for a whole milestone.** The Milestone 5 amendment re-read
+point 2 and called the mechanism "real and works", having checked that a lock is
+taken and not what it is taken on, while the Negative consequence below it had
+named both paths correctly since #420. A record that contradicts itself is read
+by whichever half the reader reaches first.
+
+The fact pin here is a genuine derivation rather than a search: the paths come
+from a real ``ProjectPaths`` built on a throwaway root -- no fake, because
+``ProjectPaths.of`` resolves a root that need not exist -- and the literals the
+ADR names are asserted *equal* to what the code derives. That is the
+``test_setup_claims.py`` shape: two independently written strings held equal, so
+the pin fails when either side moves rather than being green for whatever the
+code happens to say.
+
+**What that fact pin enforces, and what it does not.** It holds where the lock
+and the databases *resolve to*, and that they resolve apart:
+
+- Move the lock under ``state/``, rename it to a database filename, or collapse
+  ``runtime`` and ``state`` into one directory, and the fact pin goes RED and the
+  Decision must move with it.
+- It does **not** prove a lock is taken, or taken on that file. Whether
+  ``write_transaction`` flocks ``lock_path`` rather than the database is a
+  property of ``infrastructure/sqlite/connection.py``, held by its own tests, not
+  by path arithmetic here. This module would stay green against a build that
+  computed the right lock path and then never used it -- so the claim it holds is
+  *where the lock file is*, not *that the lock works*.
+- The prose half refuses the retracted attachment in the form it has actually
+  taken -- a lock "on the state database". Measured escapes it does not catch:
+  "on the SQLite file", "on the state db", "against the database", and
+  "database-level lock". Recorded rather than chased, for the same reason as
+  every other grammar pin in this file.
+
 **One ADR file, and the corpus twin is deliberately not part of the prose scan.**
 ``.theurian/knowledge/architecture/single-writer-synchronous-in-m1.<ulid>.md``
 still carries the retracted sentence byte-identically. That is not drift: the
@@ -102,12 +153,22 @@ import sys
 from types import ModuleType
 from typing import Final
 
+from theurian.application.project_service import ProjectPaths
 from theurian.application.setup_steps import STEPS
 from theurian.domain.setup import StepId
+from theurian.domain.state import StateHash
+from theurian.domain.values import ContentHash
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
 ADR_0018 = REPO_ROOT / "docs" / "adr" / "0018-single-writer-synchronous-in-m1.md"
+
+#: A throwaway state hash, only so ``database_for`` has an argument. Its value
+#: never reaches an assertion: what is asserted is the *directory* the database
+#: lands in and that the lock does not share it, neither of which depends on the
+#: hash. The same constant and the same reasoning as
+#: ``test_project_paths_containment.py``, which builds it identically.
+_SAMPLE_STATE_HASH: Final = StateHash(ContentHash("a" * 64))
 
 
 def _module_of(function: object) -> ModuleType | None:
@@ -208,6 +269,30 @@ _DETECTION_CLAIM: Final = re.compile(r"\b(?:warns|detects|will\s+warn|will\s+det
 #: likely to return.
 _DENIAL: Final = re.compile(r"\b(?:not|never|cannot|no|nothing|neither|nor)\b")
 
+#: The lock file Decision point 2 names, as a repository-relative POSIX path.
+#: Written here independently and asserted *equal* to what ``ProjectPaths``
+#: derives, rather than extracted from it: a constant read out of the code would
+#: make this module green for whatever the code says, which is the drift the pin
+#: exists to catch. The same shape as ``INSTALLERS`` in ``test_setup_claims.py``.
+LOCK_PATH: Final = ".theurian/runtime/write.lock"
+
+#: The directory Decision point 2 says the lock *guards*, held to
+#: ``ProjectPaths.state`` the same way. The trailing slash is how the ADR writes
+#: it, and it is stripped before the comparison rather than being asserted of the
+#: filesystem.
+STATE_DIR: Final = ".theurian/state/"
+
+#: The retracted attachment: a lock taken *on* a database. The window admits the
+#: markup the sentence carried (``file lock** on the state database``) and a few
+#: words, and stops at a period so it cannot span sentences.
+#:
+#: **Scoped to Decision point 2, never the whole file.** The correction note
+#: quotes the retracted phrase verbatim -- "Point 2 said the lock is taken **on
+#: the state database**" -- so a document-wide scan for this pattern would go RED
+#: on the amendment that fixed the defect. See the module docstring for the
+#: escapes it does not catch.
+_LOCK_ON_DATABASE: Final = re.compile(r"\block\b[^.]{0,30}?\bon the (?:state )?database\b")
+
 #: The end of a sentence, which is not every period: the bullet closes on a
 #: Markdown link, and ``https://github.com/...`` carries dots that end nothing.
 #: The same trap the ADR-0013 module records, met again here.
@@ -278,6 +363,28 @@ def _detection_claims_without_denial(text: str) -> list[str]:
 def _filesystem_type_apis(text: str) -> list[str]:
     """Every filesystem-type API named in a piece of source text."""
     return _FILESYSTEM_TYPE_API.findall(text)
+
+
+def _decision_point_two(text: str) -> str:
+    """The Decision's second numbered point, as one collapsed paragraph.
+
+    Isolated rather than scanned for across the document, because the correction
+    note that *fixed* this claim quotes the retracted wording verbatim. A
+    file-wide scan would read that quotation as the defect returning and go RED
+    on the amendment -- the same trap the corpus twin sets for the NFS pin, met
+    here inside a single file.
+
+    ``_BLOCK_START`` treats a numbered item and a blockquote line as new blocks,
+    so the point, the amendment and the correction note are separate paragraphs.
+    """
+    points = [
+        paragraph
+        for paragraph in _paragraphs(text)
+        if paragraph.startswith("2.") and "enforces exclusivity" in paragraph
+    ]
+
+    assert len(points) == 1, f"Decision point 2 is not findable as one paragraph: {points}"
+    return points[0]
 
 
 # -- The prose: ADR-0018's NFS acceptance ------------------------------------
@@ -436,3 +543,97 @@ def test_no_setup_step_source_reads_a_filesystem_type() -> None:
         f"a setup step now reads a filesystem type: {found}. ADR-0018's Consequences "
         f"bullet must stop saying nothing detects a project directory on NFS"
     )
+
+
+# -- The lock's location: prose ----------------------------------------------
+
+
+def test_adr_0018_says_the_write_lock_is_a_separate_file_and_names_it() -> None:
+    """RED means Decision point 2 stopped naming the file the lock is taken on.
+
+    The positive half of the second claim. The mechanism phrase and the path are
+    asserted together because either alone is what the record used to be: the
+    retracted point named a mechanism ("an OS advisory file lock") and attached it
+    to the wrong object, so a rewrite that keeps the mechanism and drops the path
+    is the same defect with the evidence removed.
+
+    ``STATE_DIR`` is required too -- the point says what the lock *guards*, and
+    that half is what makes "separate" mean something rather than merely "not
+    here".
+    """
+    point = _decision_point_two(ADR_0018.read_text(encoding="utf-8"))
+
+    assert "separate lock file" in point, (
+        "Decision point 2 no longer says the lock is taken on a separate lock file"
+    )
+    assert LOCK_PATH in point, f"Decision point 2 no longer names `{LOCK_PATH}`"
+    assert STATE_DIR in point, f"Decision point 2 no longer names the `{STATE_DIR}` it guards"
+
+
+def test_adr_0018_does_not_reattach_the_write_lock_to_a_database() -> None:
+    """RED means the retracted attachment is back in Decision point 2.
+
+    The negative half, and it catches what the positive one cannot: a point that
+    names the lock file and *also* says the lock is taken on the database, which
+    is how the document read for a milestone -- point 2 attached it to the
+    database while the Negative consequence named both paths correctly.
+
+    Scoped to point 2. The correction note quotes the retracted phrase to explain
+    it, and a scan that read the whole document would report the fix as the
+    defect.
+    """
+    point = _decision_point_two(ADR_0018.read_text(encoding="utf-8"))
+
+    attachments = _LOCK_ON_DATABASE.findall(point)
+
+    assert not attachments, f"Decision point 2 attaches the write lock to a database again: {point}"
+
+
+# -- The lock's location: fact -----------------------------------------------
+
+
+def test_the_write_lock_resolves_outside_the_state_directory(tmp_path: pathlib.Path) -> None:
+    """RED means the lock moved -- and Decision point 2 must move with it.
+
+    Derived from a real ``ProjectPaths`` rather than from path strings. No fake is
+    needed and none is used: ``ProjectPaths.of`` resolves a root that does not
+    have to exist, so a throwaway ``tmp_path`` gives the genuine production
+    derivation, containment checks included.
+
+    The premises come first, per this module's own rule. ``runtime`` and ``state``
+    must be different directories before "the parents are disjoint" asserts
+    anything, and both paths must sit under the root before ``relative_to`` can
+    express them as the strings the ADR names.
+
+    The literals are asserted **equal** to the derivation rather than searched for
+    in it. ``LOCK_PATH`` is written independently in this file and required in the
+    ADR by the prose test above, so the ADR, this module and ``ProjectPaths`` are
+    held to one string: move the lock in the code and this goes RED; rename it in
+    the ADR and the prose test does.
+    """
+    paths = ProjectPaths.of(tmp_path / "repo")
+    database = paths.database_for(_SAMPLE_STATE_HASH)
+    lock = paths.write_lock
+
+    assert paths.runtime != paths.state, (
+        "runtime and state resolve to one directory, so `separate lock file` "
+        "would be true of nothing"
+    )
+    assert lock.is_relative_to(paths.root) and database.is_relative_to(paths.root), (
+        "the lock or the database resolves outside the project root; the ADR's "
+        "repository-relative wording cannot describe that"
+    )
+
+    assert lock.relative_to(paths.root).as_posix() == LOCK_PATH, (
+        f"the write lock is no longer `{LOCK_PATH}`, which ADR-0018 Decision "
+        f"point 2 names: {lock.relative_to(paths.root).as_posix()}"
+    )
+    assert paths.state.relative_to(paths.root).as_posix() == STATE_DIR.rstrip("/"), (
+        f"the state databases no longer live under `{STATE_DIR}`, which "
+        f"ADR-0018 Decision point 2 names as what the lock guards"
+    )
+    assert lock.parent != database.parent, (
+        f"the write lock now shares a directory with the state databases, so it "
+        f"is no longer a separate lock file: {lock.parent}"
+    )
+    assert lock.name != database.name, f"the write lock is named like a state database: {lock.name}"
