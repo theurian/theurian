@@ -48,7 +48,7 @@ dependencies = [
 # The MCP daemon. Split out so `pip install theurian` stays usable in CI
 # images and pre-commit hooks that only need the CLI and migration engine.
 daemon = [
-    "mcp==2.0.0",
+    "mcp==2.1.1",
     "uvicorn==0.52.4",
     "watchfiles==1.2.0",
 ]
