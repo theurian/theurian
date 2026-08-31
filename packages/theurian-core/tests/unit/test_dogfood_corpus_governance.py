@@ -211,10 +211,10 @@ EVIDENCE_KEYS: Final = frozenset(
 #: inferring it from which files are left in the directory, which was wrong in
 #: both directions (#253). ``itemId`` is the cross-check that stops a forged
 #: ``migrationId`` (pointing at another proposal's landed migration) from reading
-#: as accepted. Optional and not required, because all 26 committed proposals
-#: predate both fields, and a required key would take the corpus RED for a field
-#: the tool did not write when they were drafted. Every proposal drafted since
-#: carries both.
+#: as accepted. Optional and not required, because the 26 original seed
+#: proposals predate both fields, and a required key would take the corpus RED
+#: for a field the tool did not write when they were drafted. Every proposal
+#: drafted since carries both.
 #:
 #: This is an allowance for *these* keys and not a relaxation of the rule: the
 #: escape the rule below closes is an evidence file carrying a field nothing reads
@@ -1283,12 +1283,14 @@ def test_the_evidence_key_rule_admits_the_optional_key_and_nothing_else(
 ) -> None:
     """The rule above, driven by input rather than by the corpus it reads.
 
-    Every committed evidence file predates ``migrationId``, so the corpus cannot
-    exercise the allowance that admits it: get the allowance wrong -- widen it to
-    any key, or make the new field required -- and the rule above stays green
-    until the first proposal drafted since #253 is committed, which is the run
-    where a wrong rule is most expensive. These five cases are the ones the
-    allowance has to separate.
+    The 26 original seed files predate ``migrationId`` and ``itemId``; the 27th,
+    re-seeded through ``propose``/``accept`` in
+    https://github.com/theurian/theurian/issues/416, carries both -- the first
+    real exercise of the *admitting* half of the allowance. What landing more
+    proposals never exercises is the *refusal* half: `propose` does not write a
+    stray key like ``notes`` or ``handoff``, so an allowance wrongly widened to
+    admit any key would stay green however large the corpus grows. These five
+    cases are the ones the allowance has to separate.
     """
     assert _evidence_key_difference(dict.fromkeys(keys, "value")) == expected
 
