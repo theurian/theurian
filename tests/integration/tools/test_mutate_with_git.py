@@ -7,11 +7,13 @@ for a rule that reads a **blob** --
 ``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_
 its_source_anchor_commit`` compares a committed body against ``git cat-file
 blob <commitSha>:<filePath>``, and a manifest has no blob to hand over. That
-rule -- and ``test_root_corpus_applies.py``, which needs ``git ls-files`` to
-confirm the migrations directory holds nothing untracked -- both skip loudly in
-every ordinary ``tools/mutate.py`` copy (#452's finding), so a mutation whose
-only killer is either one comes back SURVIVED with no sign that the harness
-never ran the rule that would have caught it.
+rule is one of **four** measured to skip loudly in every ordinary
+``tools/mutate.py`` copy (#452's finding; ``_lend_git_objects``'s docstring in
+``tools/mutate.py`` carries the dated, named list -- the other three are
+``test_root_corpus_applies.py`` and two rules in
+``test_git_trailer_source.py``), so a mutation whose only killer is any one of
+them comes back SURVIVED with no sign that the harness never ran the rule that
+would have caught it.
 
 ``--with-git`` gives the copy its own ``.git``, borrowing the source's objects
 through ``objects/info/alternates`` rather than copying them, with ``HEAD``,
@@ -233,12 +235,20 @@ def test_a_mutation_inside_a_with_git_copy_never_touches_the_source_tree(
 ) -> None:
     """Objects are lent, not shared write access -- the copy's ``git`` never writes upstream.
 
-    A caller reading only the alternates line could still wonder whether the
-    borrowed store is somehow writable back into the source. It is not:
-    editing a tracked file inside the copy is invisible to ``git status`` run
-    against the source, which is the same guarantee the harness's own
-    isolated-copy design (see ``tools/mutate.py``'s module docstring) already
-    gives every rule -- this just confirms ``--with-git`` does not weaken it.
+    Asserts what the code actually decides, not an incidental consequence of
+    it: ``git -C <copy> rev-parse --show-toplevel`` must resolve to the copy
+    itself, and the lent ``config`` must set no explicit ``core.worktree`` --
+    if it named the source instead (a plausible future slip: someone "fixing"
+    a git command that misbehaves inside the copy by pointing ``worktree`` at
+    the real tree), every git *write* run against the copy would land in the
+    source's actual files, not the copy's. A previous version of this test
+    wrote the mutated file directly with Python rather than through git and
+    checked the source's ``git status`` afterwards -- which passed even with
+    ``_lend_git_objects`` entirely no-opped (mutation-tested while landing this
+    fix), because a plain filesystem write was never going to reach the
+    source either way. This version reads what ``_lend_git_objects`` itself
+    decided, so a regression in the decision -- not merely in some unrelated
+    write path -- is what turns it RED.
     """
     source = tmp_path / "source"
     source.mkdir()
@@ -246,16 +256,20 @@ def test_a_mutation_inside_a_with_git_copy_never_touches_the_source_tree(
     destination = tmp_path / "copy"
     destination.mkdir()
     monkeypatch.setattr(mutate, "REPO_ROOT", source)
-    mutate._record_population(destination)
+
     mutate._lend_git_objects(destination)
-    (destination / "docs").mkdir()
-    (destination / "docs" / "tracked.md").write_text("mutated in the copy\n", encoding="utf-8")
 
-    source_status = _git("-C", str(source), "status", "--short", "--", "docs/tracked.md").stdout
-
-    assert source_status == "", (
-        f"the source's own tracked.md reports {source_status!r} after the copy's was "
-        f"overwritten; the two are supposed to share objects, not a working tree"
+    toplevel = _git("-C", str(destination), "rev-parse", "--show-toplevel").stdout.strip()
+    assert Path(toplevel).resolve() == destination.resolve(), (
+        f"the copy's own git resolved its toplevel to {toplevel!r}, not the copy "
+        f"({destination}) -- a misconfigured core.worktree would redirect every git write "
+        f"run against the copy into the source's real files"
+    )
+    config_text = (destination / ".git" / "config").read_text(encoding="utf-8")
+    assert "worktree" not in config_text.lower(), (
+        f"the lent config names an explicit core.worktree ({config_text!r}); left unset, "
+        f"git infers the copy's own directory -- named explicitly, it could point anywhere, "
+        f"including back at the source"
     )
 
 
@@ -287,6 +301,61 @@ def test_a_linked_worktree_source_is_refused_rather_than_lent_from_wrong(
     assert not (destination / ".git").exists()
 
 
+def _checkout_sha256_format(root: Path) -> bool:
+    """A real repository using git's SHA-256 object format, not SHA-1.
+
+    Returns whether it could be built at all -- older git binaries do not
+    support ``--object-format``, and the test calling this skips rather than
+    fails when that is what is on the machine running it.
+    """
+    git = shutil.which("git")
+    if git is None:
+        return False
+    initialised = subprocess.run(  # noqa: S603 - argv is written here, never user input
+        [git, "init", "-q", "--object-format=sha256", str(root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if initialised.returncode != 0:
+        return False
+    _git("-C", str(root), "config", "user.email", "mutate-tests@example.invalid")
+    _git("-C", str(root), "config", "user.name", "mutate tests")
+    (root / "docs").mkdir()
+    (root / "docs" / "tracked.md").write_text("run `theurian init`\n", encoding="utf-8")
+    _git("-C", str(root), "add", "docs/tracked.md")
+    _git("-C", str(root), "commit", "-q", "-m", "seed")
+    return True
+
+
+def test_a_sha256_object_format_source_is_refused_not_silently_misdescribed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M3: a non-SHA-1 source must not be lent under a hardcoded repositoryformatversion=0.
+
+    ``git init --object-format=sha256`` writes ``repositoryformatversion = 1``
+    and ``[extensions] objectformat = sha256``. Lending such a source's
+    objects while the borrowed ``config`` still hardcodes
+    ``repositoryformatversion = 0`` would not fail loudly: every git read
+    against the copy would exit 0 while misinterpreting each borrowed object's
+    hash algorithm -- silent corruption, and the exact
+    binary-garbage-with-exit-0 shape the population guards elsewhere in this
+    module were built to avoid.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    if not _checkout_sha256_format(source):
+        pytest.skip("this git does not support --object-format=sha256")
+    destination = tmp_path / "copy"
+    destination.mkdir()
+    monkeypatch.setattr(mutate, "REPO_ROOT", source)
+
+    with pytest.raises(HarnessError, match="only lends a repositoryformatversion=0"):
+        mutate._lend_git_objects(destination)
+
+    assert not (destination / ".git").exists()
+
+
 def test_without_the_flag_a_built_tree_carries_no_git(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -297,8 +366,9 @@ def test_without_the_flag_a_built_tree_carries_no_git(
     exists to add an *opt-in* escape hatch from, not to change. Mutation
     would find this: dropping the ``with_git`` guard so ``_lend_git_objects``
     always ran would leave every test in this file green while breaking the
-    documented default every other mutation batch relies on for its 3.8 MB
-    cost claim.
+    documented default every other mutation batch relies on for its working-
+    tree-size cost claim (``_lend_git_objects``'s docstring carries the current
+    dated figure).
     """
     source = tmp_path / "source"
     source.mkdir()

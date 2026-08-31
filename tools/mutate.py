@@ -68,6 +68,17 @@ The two are not interchangeable, which is why the prepared tree reports no
 verdict at all: it prints a path, never a KILLED or a SURVIVED. What you see
 inside a prepared tree is a lead. Turn it into a verdict on the verdict path.
 
+**Add ``--with-git`` to either mode when the question touches the corpus's
+four blob-reading rules** -- the corpus byte-identity pin, the root-corpus
+applicability test, and two rules in ``test_git_trailer_source.py`` (the full,
+dated list is in ``_lend_git_objects``'s docstring). Without the flag every
+copy skips all four, so a mutation whose only killer is one of them reports
+SURVIVED with no sign the harness never ran the test that would have caught
+it. The cost is small and per-tree, not per-batch: ~104 KB of copied ``.git``
+bytes against a working copy of ~13 MB either way (measured 2026-08-31) --
+it is not the default because most mutations are nowhere near the corpus, and
+every verdict-path run pays that cost on every tree it builds, mutated or not.
+
 Why it is built this way
 ------------------------
 Each of the following cost this repository a wrong answer at least once. Only
@@ -108,7 +119,12 @@ source files -- during Milestone 5 that was ``index_scan.py``, ``index_query.py`
 ``visibility.py`` and ``index_builder.py`` -- and a worktree cut from ``HEAD``
 lacks them, so every run inside it is garbage that looks like a result. The copy
 also means the real checkout is never written to, which is what makes running
-batches concurrently safe.
+batches concurrently safe. ``.git`` is excluded from the copy for the same
+"garbage that looks like a result" reason a worktree is refused -- see
+``_COPY_IGNORE`` -- and ``--with-git`` (:func:`_lend_git_objects`) is the
+opt-in way back in for the rules that need one, without reintroducing either
+hazard: objects are borrowed read-only, and the copy still gets its own
+``HEAD``/index/refs.
 
 **``PYTHONDONTWRITEBYTECODE=1``, and ``__pycache__`` is cleared.** CPython
 validates a cached ``.pyc`` against ``(source mtime in whole seconds, source
@@ -176,8 +192,11 @@ the suite catches, one it does not -- on an Apple silicon laptop, 1407 tests:
 
 Same eight verdicts either way, and the faster run does strictly more work: it
 adds the unmutated control. Building the four trees cost under a second each,
-because the copy is 3.8 MB without ``.git`` and ``.venv``, and ``uv sync
---frozen`` restores the virtualenv from cache in about 0.8 s.
+because the copy was 3.8 MB without ``.git`` and ``.venv`` at 1407 tests, and
+``uv sync --frozen`` restores the virtualenv from cache in about 0.8 s. The
+corpus and the suite have both grown since: re-measured at ~13 MB, 2026-08-31
+(see ``_lend_git_objects``'s docstring for the current figure and its ratio to
+the source ``.git`` it lends objects from).
 
 The two modes on one mutation -- ``3-scan-tiebreak-gone``, dropping the
 ``chunks.chunk_id`` tiebreak from the below-floor scan -- at 1431 tests:
@@ -227,10 +246,13 @@ from mutate_spec import _mutations_from
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 
 # `.git` is excluded deliberately: the copy is not a repository, and the suite
-# has been run without one. `.venv` is excluded because `uv sync --frozen`
-# rebuilds it from uv's cache in under a second, against several seconds to
-# copy 149 MB -- and a copied venv keeps an editable `.pth` pointing back at
-# the real checkout, which would make every mutation a silent no-op.
+# has been run without one -- unless `--with-git` lends one back; see
+# `_lend_git_objects`, which gives the copy a `.git` of its own after this
+# ignore pattern has already dropped whatever the source's copytree carried.
+# `.venv` is excluded because `uv sync --frozen` rebuilds it from uv's cache in
+# under a second, against several seconds to copy 149 MB -- and a copied venv
+# keeps an editable `.pth` pointing back at the real checkout, which would
+# make every mutation a silent no-op.
 _COPY_IGNORE: Final = shutil.ignore_patterns(
     "__pycache__",
     ".git",
@@ -415,21 +437,43 @@ def _lend_git_objects(destination: Path) -> None:
     **Why a copy needs one at all.** ``_COPY_IGNORE`` drops ``.git`` and
     :func:`_record_population` hands the suite a path list instead, which is
     enough for every rule that reads a *path* or the bytes in the working tree.
-    It is not enough for a rule that reads a **blob**, and the corpus has one:
-    ``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical
-    _to_its_source_anchor_commit`` compares a committed body against
-    ``git cat-file blob <commitSha>:<filePath>``. In a copy that rule reaches
-    ``_requires_git_objects``, sees the population came from the manifest, and
-    **skips**. So a mutation whose only killer is that rule -- an anchor
-    repointed at another commit, a body re-pinned consistently in both places --
-    comes back SURVIVED from a harness that never ran the one test that holds
-    it, and the reader has no way to tell that verdict from a real one.
+    It is not enough for a rule that reads a **blob**, and this suite has four
+    of them -- measured 2026-08-31 at f1b6711, ``pytest -rs`` inside a copy with
+    and without this flag, diffing which SKIPs disappear:
 
-    **Why objects are lent rather than copied.** The source's ``.git`` is 55 MB
-    against 3.8 MB for the whole working copy, and the harness's cost claim is
-    load-bearing (see ``_COPY_IGNORE``). ``objects/info/alternates`` makes every
-    object in the source readable from the copy without moving a byte, and the
-    index and refs are small enough to copy outright.
+    - ``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical
+      _to_its_source_anchor_commit`` -- a committed body against
+      ``git cat-file blob <commitSha>:<filePath>``.
+    - ``test_root_corpus_applies.py::test_the_committed_root_corpus_applies
+      _cleanly_to_an_empty_store`` -- ``git ls-files`` confirming the migrations
+      directory holds nothing untracked, before applying the corpus through the
+      real engine.
+    - ``test_git_trailer_source.py::test_frozen_4c4a784_pins_the_parsed_corpus``
+      -- a second, independent blob read, pinning trailer counts parsed from a
+      frozen historical commit.
+    - ``test_git_trailer_source.py::test_live_origin_main_accounts_for_every
+      _trailer_loss_free`` -- reads ``refs/remotes/origin/main``. Its
+      availability inside a copy therefore depends on the *source*'s own fetch
+      state, not on this flag alone: a source with no ``origin`` remote-tracking
+      ref still skips it under ``--with-git``.
+
+    In a copy without this flag, each of the four reaches its own git-shaped
+    guard, sees the population came from the manifest (or finds no ``.git`` at
+    all), and **skips**. So a mutation whose only killer is one of the four --
+    an anchor repointed at another commit, a body re-pinned consistently in both
+    places, a frozen-corpus trailer count perturbed, a live-tip accounting
+    break -- comes back SURVIVED from a harness that never ran the test that
+    holds it, and the reader has no way to tell that verdict from a real one.
+
+    **Why objects are lent rather than copied.** Measured 2026-08-31 on this
+    checkout: the source's ``.git`` is ~60 MB (``du -sk``) against ~13 MB for
+    the whole working copy excluding ``.git``/``.venv`` -- both figures grow
+    with the corpus and the test suite, so read the *ratio* (roughly 4-5x) as
+    the durable claim, not the digits. The harness's cost claim is load-bearing
+    (see ``_COPY_IGNORE``), and ``objects/info/alternates`` makes every object
+    in the source readable from the copy without moving a byte -- confirmed at
+    104 KB actually copied into each tree's own ``.git`` (``du -sk``, same
+    date) -- while the index and refs are small enough to copy outright.
 
     **The copy still answers for itself.** The borrowed directory is objects
     only -- content-addressed, so nothing in it can name the source's paths.
@@ -437,12 +481,37 @@ def _lend_git_objects(destination: Path) -> None:
     copy, so ``ls-files`` reports the source's *tracked set* against the copy's
     *bytes*, which is exactly what the rules want. Nothing here writes to the
     source, and no rule in the suite runs a git command that would.
+
+    **The source's object store must outlive the batch.** Objects are lent, not
+    copied, so a source-side ``git gc --prune=now`` (or any other history
+    rewrite) that runs *during* a batch can remove an object a lent copy still
+    references, after which reading it fails or -- worse, for an already-open
+    pack -- returns whatever bytes happen to still be on disk.
     """
     git_dir = REPO_ROOT / ".git"
     if not git_dir.is_dir():
         raise HarnessError(
             f"--with-git needs a plain repository at {git_dir}; a linked worktree or a "
-            "bare checkout does not carry the index this lends."
+            "bare checkout does not carry the index this lends. Run the batch from a "
+            "plain clone of this checkout instead, or drop --with-git and accept that "
+            "the four rules it unblocks (see this function's docstring) skip."
+        )
+
+    version_probe = _git_in_source("config", "--get", "core.repositoryformatversion")
+    format_version = (
+        version_probe.stdout.decode("utf-8", "replace").strip()
+        if version_probe is not None and version_probe.returncode == 0
+        else "0"
+    )
+    if format_version != "0":
+        raise HarnessError(
+            f"--with-git only lends a repositoryformatversion=0 (SHA-1) source; {git_dir} is "
+            f"format {format_version!r} (a --object-format=sha256 repository sets "
+            "repositoryformatversion=1, for example). Lending its objects under a "
+            "hardcoded repositoryformatversion=0 config would make the copy's git misread "
+            "every object's hash algorithm instead of failing loudly -- exactly the "
+            "binary-garbage-with-exit-0 shape the population guards elsewhere in this file "
+            "exist to avoid."
         )
 
     borrowed = destination / ".git"
@@ -717,8 +786,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--with-git",
         action="store_true",
         help=(
-            "give each copy a .git that borrows the source's objects, so the rules "
-            "that read a blob (the corpus byte-identity pin) run instead of skipping"
+            "give each copy a .git that borrows the source's objects, so the four rules "
+            "that read a blob (corpus byte-identity, root-corpus apply, and two "
+            "test_git_trailer_source.py rules) run instead of skipping"
         ),
     )
     parser.add_argument(
