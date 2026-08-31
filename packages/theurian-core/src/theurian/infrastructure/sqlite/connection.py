@@ -312,6 +312,10 @@ def write_transaction(database_path: Path, lock_path: Path) -> Iterator[sqlite3.
         StateDatabaseUnreadableError: If the file cannot be interpreted far
             enough to start a transaction. Raised before ``BEGIN IMMEDIATE`` and
             never after it -- see :func:`_prepare`.
+        WriteLockTimeoutError: If another holder keeps the advisory lock on
+            ``lock_path`` past ``WRITE_LOCK_TIMEOUT_SECONDS``, the default this
+            path takes. Raised before the database is opened, so no transaction
+            has begun -- see :meth:`WriteLock._acquire`.
     """
     lock = WriteLock(lock_path)
     with lock.held():
