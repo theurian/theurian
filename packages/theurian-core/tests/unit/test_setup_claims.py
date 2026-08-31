@@ -11,14 +11,33 @@ closed three faces and left three more open, including the only one a user meets
 without asking for it: the ``SessionStart`` hook, which prints its advice on every
 session.
 
-**Seven of the nine are corrected, and this module does not check all seven.** Two
+**All nine are corrected, and this module holds them three different ways.** Two
 are held where they are produced rather than as text -- ``setup_command.__doc__``
 by :func:`test_the_cli_docstring_denies_installing_core_and_names_the_installer`
 below, and ``domain/compatibility.py``'s ``CORE_MISSING`` verdict by
 ``test_compatibility.py::test_missing_core_is_reported_as_install_then_setup``.
-The remaining five are read from disk and listed in
-:data:`CORE_ARRIVAL_SURFACES`. **Two are not corrected at all**, and are
-recorded with line numbers in T-16 of ``docs/security/threat-model.md``.
+Six are read from disk and listed in :data:`CORE_ARRIVAL_SURFACES`. The ninth,
+``docs/architecture/requirements-analysis.md``, names no installer command to
+match against and is held by
+:func:`test_the_compatibility_flowchart_advises_an_installer_before_setup` alone,
+which pins the order of its ``CLI absent`` branch and nothing else. The
+corrections and the two that arrived last are recorded in T-16 of
+``docs/security/threat-model.md``.
+
+The last two arrived as *flowcharts*, and a flowchart needs its own rule: a
+whole-file check is satisfied by any paragraph, so a document can name the
+installer correctly in prose while its picture still sends a Core-less reader
+straight to ``/theurian:setup``. Measured, not assumed -- see
+:data:`CORE_ARRIVAL_SURFACES`. Both nodes are therefore held one at a time, by
+:func:`test_the_session_start_flowchart_names_the_installers_before_setup` and
+:func:`test_the_compatibility_flowchart_advises_an_installer_before_setup`.
+
+An earlier version of these two paragraphs said seven of the nine were corrected
+and **two not at all**, naming ``docs/integrations/claude-code.md`` and
+``docs/architecture/requirements-analysis.md``. Both flowcharts were corrected
+afterwards, and nothing executable broke when they were -- which is why the
+sentence had to be rewritten by hand rather than caught here. A deferral list
+outlives the deferral.
 
 These pin fact and prose to each other in both directions. The fact, so that a
 setup which one day really did install Core fails here rather than quietly
@@ -70,14 +89,39 @@ from theurian.infrastructure.secrets.file_store import FileSecretStore
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
-#: The five corrected surfaces this module reads from disk, as repository-relative
+#: The six corrected surfaces this module reads from disk, as repository-relative
 #: paths. **This is not the class and it is not a closure argument.** Two more
 #: corrected surfaces are checked where they are produced -- see the module
-#: docstring -- and two are not corrected at all:
-#: ``docs/integrations/claude-code.md`` and
-#: ``docs/architecture/requirements-analysis.md``, each carrying the "Core is
-#: absent" premise beside a ``/theurian:setup`` remedy, enumerated with line
-#: numbers in T-16 of ``docs/security/threat-model.md``.
+#: docstring -- and the ninth,
+#: ``docs/architecture/requirements-analysis.md``, is held by
+#: :func:`test_the_compatibility_flowchart_advises_an_installer_before_setup`
+#: instead: its ``CLI absent`` node advises "the installer" and points at the
+#: document that quotes the hook's line verbatim, so it has no literal for the
+#: rules here to find, and loosening them to accept a paraphrase was rejected
+#: for the reason recorded below. All nine are enumerated in T-16 of
+#: ``docs/security/threat-model.md``.
+#:
+#: ``docs/integrations/claude-code.md`` is the sixth, and it is the first member
+#: whose Core-absent advice lives inside a Mermaid diagram rather than in prose.
+#: Two rules met that shape for the first time when it joined, and both readings
+#: were wrong rather than lenient: ``<br/>`` glued ``installed.<br/>Install``
+#: into one token and hid the denial four words to its left, and the sequence
+#: diagram's short ``/plugin install theurian`` read as an unnamed installer of
+#: Theurian. The fixes are in :data:`_LINE_BREAK_TAG` and
+#: :data:`_INSTALL_COMMANDS`, both narrowed to the prose scan; the verbatim rule
+#: still requires the two :data:`INSTALLERS` literals contiguously, and the file
+#: satisfies it through the block under its ``SessionStart`` flowchart that
+#: quotes the shipped hook's line.
+#:
+#: **Membership pins that quotation and not the flowchart above it, measured
+#: rather than assumed.** Reverting the ``theurian on PATH? --no-->`` node to its
+#: old ``warn: run /theurian:setup`` -- the correction this file was added for --
+#: left all three rules green: the literal rule reads the quoted block, and the
+#: ordering rule skips the diagram because that block has no ``<installer>`` in
+#: it to place. Adding a file to this tuple is not the same as pinning the
+#: sentence that made you add it, and the difference is one paragraph boundary
+#: wide. :func:`test_the_session_start_flowchart_names_the_installers_before_setup`
+#: is what holds the node.
 #:
 #: ``README.md`` is the fifth, and it joins after three successive exclusions
 #: that each expired in turn. It used to install Core from the checkout, because
@@ -104,8 +148,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 #: so the README's command is a verbatim match, the file is in the tuple, and
 #: there is no exclusion left to justify or to expire.
 #:
-#: Appended rather than inserted: :data:`PLUGIN_SETUP_DOC` and
-#: :data:`SESSION_START_HOOK` index into this tuple by position.
+#: Appended rather than inserted: :data:`PLUGIN_SETUP_DOC`,
+#: :data:`SESSION_START_HOOK` and :data:`SESSION_START_FLOWCHART` index into this
+#: tuple by position.
 #:
 #: An earlier version of this comment claimed no other file in the tree paired
 #: that premise with a remedy. Three do, and ``domain/compatibility.py``'s own
@@ -119,10 +164,26 @@ CORE_ARRIVAL_SURFACES: Final = (
     "plugins/claude-code/scripts/session-start.sh",
     "docs/protocol/plugin-core-compatibility.md",
     "README.md",
+    "docs/integrations/claude-code.md",
 )
 
 PLUGIN_SETUP_DOC: Final = REPO_ROOT / CORE_ARRIVAL_SURFACES[0]
 SESSION_START_HOOK: Final = REPO_ROOT / CORE_ARRIVAL_SURFACES[2]
+SESSION_START_FLOWCHART: Final = REPO_ROOT / CORE_ARRIVAL_SURFACES[5]
+
+#: The ninth surface, and the one corrected surface that is deliberately outside
+#: the tuple above: its compatibility flowchart advises "the installer"
+#: generically and a rule beneath it points at the document that quotes the
+#: hook's line verbatim, rather than repeating the two commands. Held by
+#: :func:`test_the_compatibility_flowchart_advises_an_installer_before_setup`.
+COMPATIBILITY_FLOWCHART: Final = REPO_ROOT / "docs/architecture/requirements-analysis.md"
+
+#: The Core-absent edge of each of the two flowcharts that *specify* the
+#: ``SessionStart`` branch, keyed on the arrow rather than on the node text they
+#: are checked for. The key is asserted to match exactly one line, so a renamed
+#: node id fails loudly instead of leaving a rule asserting over nothing.
+_CLI_ABSENT_EDGE: Final = "|CLI absent|"
+_NOT_ON_PATH_EDGE: Final = "A -->|no|"
 
 #: The two installers :func:`theurian.application.setup_steps.probe_core` names.
 #: Every surface in :data:`CORE_ARRIVAL_SURFACES` must name these rather than
@@ -148,13 +209,38 @@ INSTALLERS: Final = (
     "pipx install --python 3.13 'theurian[daemon]'",
 )
 
+#: The program each of those invokes -- ``uv`` and ``pipx`` -- derived rather
+#: than repeated, so replacing an installer moves this with it.
+#:
+#: A flowchart node is a box, not a paragraph: the ``SessionStart`` chart names
+#: the two tools and leaves the commands themselves to the block beneath it that
+#: quotes the shipped hook verbatim. This is what "names the installer" can mean
+#: inside a box, and it is **strictly weaker than the verbatim rule** -- it would
+#: accept a node naming ``uv`` with arguments that install something else. The
+#: verbatim rule is what covers that, on the same file, one block down.
+_INSTALLER_TOOLS: Final = tuple(installer.split()[0] for installer in INSTALLERS)
+
 #: Commands that legitimately contain "install theurian": the two Core
 #: installers, and Claude Code's own plugin installer. Masked out before the
 #: scan below, so that it reads prose about *who installs Theurian* rather than
 #: the commands the prose is recommending.
+#:
+#: **The plugin installer is here twice, spelled long and short.** Prose that
+#: instructs a user writes ``/plugin install theurian@theurian-plugins``; a
+#: sequence diagram that *depicts* the same act writes the short form, and
+#: ``docs/integrations/claude-code.md``'s installation flow does exactly that.
+#: Unmasked, the short form reads as "something installs Theurian, naming no
+#: installer" -- which is what it looked like when that file joined
+#: :data:`CORE_ARRIVAL_SURFACES`, and it is Claude Code installing the *plugin*,
+#: the act the next node in that diagram annotates "Nothing happens." The order
+#: is not load-bearing -- measured, by swapping the two entries and re-running
+#: this module green: the long form is a superset, so masking it first leaves
+#: nothing for the short one, and masking it second still leaves ``<installer>``
+#: in the text at the same offset.
 _INSTALL_COMMANDS: Final = (
     *INSTALLERS,
     "/plugin install theurian@theurian-plugins",
+    "/plugin install theurian",
     "/plugin marketplace add theurian/theurian-plugins",
 )
 
@@ -205,6 +291,46 @@ _SUBCOMMAND: Final = re.compile(r"`(theurian [a-z][a-z ]*[a-z])`")
 #: A line that begins a new block rather than continuing the one above it:
 #: a heading, a list item, a table row, a fence, a front-matter rule.
 _BLOCK_START: Final = re.compile(r"\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|\||```|---\s*$)")
+
+#: A Mermaid node label's line break. Normalised to a space by
+#: :func:`_paragraphs` for the same reason :func:`_collapsed` flattens newlines:
+#: a sentence that wraps is still one sentence, and a scan that cannot see
+#: across the wrap reads the wrong words on either side of it.
+#:
+#: Measured, on the node this file's own class turns on. The ``SessionStart``
+#: flowchart in ``docs/integrations/claude-code.md`` says
+#: ``warn: Core is not installed.<br/>Install it with uv tool or pipx,<br/>then
+#: run /theurian:setup``. Without this, ``installed.<br/>Install`` is one token,
+#: so the ``lead`` group of :data:`_INSTALLS_THEURIAN` -- which can only start
+#: after whitespace -- matches empty, the denial four words earlier is invisible,
+#: and the node is reported as a claim that something unnamed installs Theurian.
+#: The tag is a wrap, not a word.
+#:
+#: **This is not applied in :func:`_collapsed`**, so the verbatim rule in
+#: :func:`test_every_surface_that_says_how_core_arrives_names_the_installer` is
+#: untouched: an installer command split across a ``<br/>`` still fails it, which
+#: is what "verbatim" has to mean for the supply-chain sentence T-16 records.
+_LINE_BREAK_TAG: Final = re.compile(r"<br\s*/?>", re.IGNORECASE)
+
+#: A Mermaid edge label -- the ``|no|`` in ``A -->|no| W1["..."]``. Dropped by
+#: :func:`_paragraphs`, because it is a branch name and not a word anyone wrote
+#: into a sentence.
+#:
+#: **This is not tidying; without it the tag above opens a hole.** Once ``<br/>``
+#: is a space, the six-token ``lead`` window of :data:`_INSTALLS_THEURIAN` can
+#: reach back out of a node label and into the arrow that points at it -- and
+#: ``no`` is one of :data:`_DENIAL`'s words, so *every* branch drawn with a
+#: ``-->|no|`` edge would read as a denial. Measured on the mutation that found
+#: it: a node saying ``warn: setup<br/>installs Theurian Core.<br/>Run
+#: /theurian:setup`` -- the very claim this module exists over, in a Mermaid box
+#: -- was reported before the ``<br/>`` change, survived it, and is reported
+#: again with this. Both mutations are in the file's history; neither is
+#: hypothetical.
+#:
+#: Keyed on ``>|`` rather than on a bare ``|...|``, so a Markdown table row keeps
+#: its cells and ``--python`` keeps its dashes: the install commands are masked
+#: from the same string a moment later, and a mangled flag would unmask them.
+_DIAGRAM_EDGE_LABEL: Final = re.compile(r">\|[^|]*\|")
 
 
 def _steps_that_act() -> frozenset[StepId]:
@@ -341,7 +467,12 @@ def _paragraphs(text: str) -> list[str]:
     or a block marker ends a paragraph; a soft wrap does not.
 
     The legitimate install commands are masked here, so what is scanned is prose
-    about who installs Theurian rather than the commands it recommends.
+    about who installs Theurian rather than the commands it recommends. Two
+    pieces of diagram syntax are normalised away first, and they only make sense
+    as a pair: :data:`_LINE_BREAK_TAG` so a Mermaid node label reads as the lines
+    it renders as, and :data:`_DIAGRAM_EDGE_LABEL` so the window that reads
+    around a claim cannot then walk out of the label and mistake the arrow's
+    ``|no|`` for someone's denial.
     """
     blocks: list[list[str]] = [[]]
     for line in text.splitlines():
@@ -351,7 +482,8 @@ def _paragraphs(text: str) -> list[str]:
 
     paragraphs: list[str] = []
     for block in blocks:
-        collapsed = _collapsed(" ".join(block))
+        wrapped = _LINE_BREAK_TAG.sub(" ", " ".join(block))
+        collapsed = _collapsed(_DIAGRAM_EDGE_LABEL.sub("> ", wrapped))
         for command in _INSTALL_COMMANDS:
             collapsed = collapsed.replace(command.lower(), "<installer>")
         if collapsed:
@@ -698,6 +830,93 @@ def test_no_surface_offers_setup_before_the_installer() -> None:
             assert paragraph.index("<installer>") < paragraph.index("/theurian:setup"), (
                 f"{name} offers /theurian:setup before the installer: {paragraph}"
             )
+
+
+def _sole_edge(path: pathlib.Path, key: str) -> str:
+    """The one line of ``path`` containing ``key``, collapsed.
+
+    Uniqueness is asserted rather than assumed. Both callers key a flowchart
+    branch on its arrow, and a renamed node id would otherwise leave them
+    asserting over an empty list -- a rule that reports safety it does not have,
+    which is the exact defect this module exists over.
+    """
+    rows = [line for line in path.read_text(encoding="utf-8").splitlines() if key in line]
+
+    assert len(rows) == 1, f"{path.name} no longer has exactly one `{key}` edge: {rows}"
+    return _collapsed(rows[0])
+
+
+def test_the_session_start_flowchart_names_the_installers_before_setup() -> None:
+    """The corrected node itself, which membership in the tuple does not reach.
+
+    ``docs/integrations/claude-code.md`` joined :data:`CORE_ARRIVAL_SURFACES`
+    for the block that quotes the shipped hook's line verbatim, and **that is
+    the only thing the three tuple rules see**. Measured: reverting the
+    ``theurian on PATH? --no-->`` node to its old ``warn: run /theurian:setup``
+    while leaving the quoted block in place kept all three green, because the
+    quote satisfies the literal rule and the flowchart's own block contains no
+    installer for the ordering rule to place. So the file's membership pins the
+    quotation and this pins the picture, and neither substitutes for the other.
+
+    What the node has to say is the hook's order: the two installers, then
+    ``/theurian:setup``. Naming the command on its own is advice nobody can
+    follow -- it shells out to the ``theurian`` binary whose absence produced
+    the warning.
+
+    :data:`_INSTALLER_TOOLS` is what a box can carry and is weaker than the
+    literal by design; the fact side -- that these are the installers the
+    product actually offers -- is held by
+    :func:`test_the_installers_pinned_here_are_the_ones_the_step_reports`
+    against ``probe_core``'s own detail, and nothing is repeated here.
+    """
+    node = _sole_edge(SESSION_START_FLOWCHART, _NOT_ON_PATH_EDGE)
+
+    assert "/theurian:setup" in node, f"the Core-absent node no longer advises setup: {node}"
+    for tool in _INSTALLER_TOOLS:
+        found = re.search(rf"\b{re.escape(tool)}\b", node)
+        assert found is not None, f"the Core-absent node does not name `{tool}`: {node}"
+        assert found.start() < node.index("/theurian:setup"), (
+            f"the Core-absent node offers /theurian:setup before `{tool}`: {node}"
+        )
+
+
+def test_the_compatibility_flowchart_advises_an_installer_before_setup() -> None:
+    """The ninth surface, held by order alone -- it names no installer to pin.
+
+    ``requirements-analysis.md``'s compatibility flowchart *specifies* the same
+    ``SessionStart`` branch the hook runs, and it used to say "Advise
+    ``/theurian:setup``. Do not install anything." -- advice a reader cannot
+    carry out, because that command shells out to the ``theurian`` binary whose
+    absence produced the message. Its ``CLI absent`` node now advises the
+    installer first, in the order the hook prints.
+
+    **It stays outside :data:`CORE_ARRIVAL_SURFACES` on purpose, and this is the
+    weaker rule that buys that.** The node says "the installer" and a rule
+    beneath it points at the one place the hook's line is quoted verbatim, so
+    :func:`test_every_surface_that_says_how_core_arrives_names_the_installer`
+    would have nothing to find; loosening that rule to accept a paraphrase was
+    the alternative, and verbatim is the whole of what it is. So what is pinned
+    here is one edge and one ordering -- *an* installer before
+    ``/theurian:setup`` -- and **not which installer**. Nothing in this test
+    would notice the node naming a wrong one.
+
+    That fact side is already held, and is not repeated here:
+    :func:`test_the_installers_pinned_here_are_the_ones_the_step_reports` holds
+    :data:`INSTALLERS` to ``probe_core``'s own detail, which composes it from
+    ``domain/extras.py``'s ``DAEMON_INSTALLERS``.
+
+    The edge is asserted unique by :func:`_sole_edge` before it is read.
+    """
+    node = _sole_edge(COMPATIBILITY_FLOWCHART, _CLI_ABSENT_EDGE)
+
+    assert "installer" in node, f"the CLI-absent branch names no installer at all: {node}"
+    assert "/theurian:setup" in node, (
+        f"the CLI-absent branch no longer mentions /theurian:setup, so this rule "
+        f"describes an edge that has changed meaning: {node}"
+    )
+    assert node.index("installer") < node.index("/theurian:setup"), (
+        f"the CLI-absent branch offers /theurian:setup before the installer it needs: {node}"
+    )
 
 
 # -- `/theurian:setup` ------------------------------------------------------

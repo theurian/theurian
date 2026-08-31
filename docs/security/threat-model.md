@@ -2071,12 +2071,25 @@ shipped hook prints it — measured by running
 `plugins/claude-code/scripts/session-start.sh` with `theurian` off `PATH`, which
 is the branch's whole behaviour. The requirements-analysis branch keeps "Do not
 install anything": that half was true of the hook, which prints its advice and
-runs none of it. **Neither correction is pinned by a test.** The two files are
-absent from `CORE_ARRIVAL_SURFACES` in
-`packages/theurian-core/tests/unit/test_setup_claims.py`, whose module docstring
-still counts them as the two of nine that are uncorrected; that tuple, and the
-`INSTALLERS` it checks against `probe_core`'s own words, are the fact side these
-rows would be pinned to.
+runs none of it. **Both corrections are now pinned, and by a node rule rather
+than by the tuple.** `packages/theurian-core/tests/unit/test_setup_claims.py`
+gained `test_the_session_start_flowchart_names_the_installers_before_setup` and
+`test_the_compatibility_flowchart_advises_an_installer_before_setup`, each
+keyed on the one Core-absent edge of its chart and each asserting that edge
+unique before reading it. `docs/integrations/claude-code.md` also joined
+`CORE_ARRIVAL_SURFACES`, on the block that now quotes the hook's line verbatim.
+
+**Membership alone would not have held either node, and that was measured
+rather than argued.** Reverting `claude-code.md:101` to `warn: run
+/theurian:setup` while leaving the quoted block in place kept all three
+tuple rules green: the literal rule reads the quotation, and the ordering rule
+skips the diagram because the diagram's own block names no installer for it to
+place. `requirements-analysis.md` stays outside the tuple entirely — its node
+advises "the installer" and points here rather than repeating the commands, so
+the verbatim rule would have nothing to find, and loosening that rule to accept
+a paraphrase is the supply-chain trade this entry exists over. The fact side —
+that these are the installers the product offers — stays where it was, on
+`INSTALLERS` checked against `probe_core`'s own words.
 
 Both *specify* corrected surfaces rather than being them, which is why a search
 over user-facing text does not reach them. Recorded here rather than left to
