@@ -108,9 +108,12 @@ MIGRATIONS_DIRECTORY: Final = REPO_ROOT / ".theurian" / "migrations"
 #: every item a future migration adds is fully governed whether or not this
 #: number is ever updated. Mirrors ``test_dogfood_corpus_governance.py``'s
 #: ``MINIMUM_MIGRATIONS`` (26) as an independent measurement, not an import:
-#: the two floors happen to share a value today only because the corpus's one
-#: multi-revision item (the ADR-0013 re-seed) has no multi-revision sibling
-#: yet, and a second one would grow migrations without growing items.
+#: the two floors still share a value because a re-seed adds a revision, never
+#: an item -- migrations and evidence files grow with each one, items do not.
+#: Measured 2026-09-01 at 7b2ca67: four items now carry two revisions each --
+#: the ADR-0013 re-seed (#416) plus the three #199 unit C second-wave
+#: re-seeds (#471, :data:`_SECOND_WAVE_MARKERS`) -- and the corpus still holds
+#: exactly 26 distinct items.
 MINIMUM_KNOWLEDGE_ITEMS: Final = 26
 
 #: The item the #416 re-seed gave a second revision -- the one member of this
