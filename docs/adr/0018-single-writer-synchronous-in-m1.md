@@ -52,7 +52,7 @@ each call site cannot.
 > **There is no such method, and there never has been** —
 > `git grep "def transaction" -- packages/theurian-core/src` returns nothing.
 >
-> What implementing it revealed: the port publishes its twelve write methods
+> What implementing it revealed: the port publishes its thirteen write methods
 > directly (`append_revision`, `put_item`, `add_relation`, …), and exclusivity
 > lives one layer down, in `write_transaction()` in
 > `infrastructure/sqlite/connection.py`, a context manager that takes the OS
@@ -81,6 +81,21 @@ each call site cannot.
 > interface, the Protocol-surface pin below, and the index's own contract, filed
 > without a milestone. The sentence is left standing rather than rewritten
 > because it is a dated record of what was believed in Milestone 5.
+>
+> **Corrected on 2026-08-31
+> ([#436](https://github.com/theurian/theurian/issues/436)): the count above said
+> *twelve*, and no revision of the port has ever published twelve.** Counted by
+> the key `test_connection_claims.py` uses — `CanonicalStore`'s public members
+> that declare no return value — it has published thirteen since `261eff3`
+> (2026-08-01), the commit that introduced the port, and still did at `f665ecf`
+> (2026-08-07), the commit that wrote this amendment; a sweep of every commit
+> touching that file finds no other count. So the number is corrected in place
+> rather than left standing as a record that aged: it was wrong when written, not
+> stale by one. It is pinned as a literal nowhere and should not be —
+> `test_connection_claims.py` derives it from the live port and prints it in the
+> failure message of
+> `test_the_canonical_store_port_declares_no_single_write_interface`, which is
+> where to re-derive it rather than trust this sentence.
 >
 > GOVERNANCE says an accepted ADR is superseded rather than edited. This is
 > recorded as an amendment instead, and the judgement is deliberate: superseding
