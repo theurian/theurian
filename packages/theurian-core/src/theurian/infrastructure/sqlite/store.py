@@ -1,7 +1,11 @@
 """SQLite implementation of the CanonicalStore port.
 
-Writes happen only inside :func:`write_transaction` (ADR-0018). Reads open their
-own WAL connection, so a search never blocks on a running rebuild (NFR-4, NFR-7).
+Writes are intended to happen inside :func:`write_transaction` (ADR-0018), which
+takes the advisory lock and yields the connection :class:`SqliteWriter` is built
+from. Nothing here enforces that pairing -- :meth:`SqliteWriter.__init__` takes
+any connection -- so it is held by convention at each call site, per ADR-0018's
+Milestone 5 amendment. Reads open their own WAL connection, so a search never
+blocks on a running rebuild (NFR-4, NFR-7).
 
 Every line here that turns a stored cell into a value goes through
 :func:`_reading`, which answers for the whole class of ways this file can fail to
@@ -170,10 +174,15 @@ def _opt_dt(value: str | None) -> datetime | None:
 class SqliteCanonicalStore:
     """Reads canonical state from one state database.
 
-    Read-only by construction: every write goes through
-    :class:`SqliteWriter`, which requires an open write transaction. Splitting
-    them means a caller cannot write by accident, and the single-writer rule is
-    visible in the type rather than in a comment.
+    The read half of the split, and what the split does buy: no method here
+    writes, and :meth:`_conn` opens through :func:`open_read_connection`, which
+    passes ``mode=ro`` -- SQLite refuses a write issued on that connection. So a
+    caller cannot write by accident through this type; reaching for
+    :class:`SqliteWriter` is a deliberate act.
+
+    What the split does not buy is the single-writer guarantee. Pairing a writer
+    with an open write transaction is held by convention at each call site
+    (ADR-0018, amended in Milestone 5) -- see :class:`SqliteWriter`.
     """
 
     def __init__(self, database_path: Path) -> None:
@@ -786,11 +795,24 @@ class SqliteCanonicalStore:
 
 @final
 class SqliteWriter:
-    """Append-only writes, valid only inside an open write transaction.
+    """Writes to one state database: appends, updates and deletes.
 
-    Constructed from a connection that the caller obtained via
-    ``write_transaction``. There is no way to build one otherwise, so the
-    single-writer guarantee cannot be sidestepped by reaching for this class.
+    Built by convention from the connection :func:`write_transaction` yields,
+    which holds the advisory lock for the duration of the transaction. The
+    constructor takes any :class:`sqlite3.Connection`, so what pairs a writer
+    with an open transaction is each call site rather than this type --
+    ``git grep -n 'SqliteWriter(' -- packages/theurian-core/src ':!*/sqlite/store.py'``
+    lists the sites that have to hold it. The exclusion is not decoration: the
+    key without it matches this very line, so the docstring would count itself as
+    a call site. That is ADR-0018's guarantee held by convention
+    at each call site, per its Milestone 5 amendment; the single interface the
+    ADR leaves owed is tracked in
+    https://github.com/theurian/theurian/issues/439.
+
+    Revisions are the append-only part (INV-1), not the class: see
+    :meth:`append_revision`, and :meth:`remove_relation` and
+    :meth:`supersede_specification` for the delete and the update this surface
+    also carries.
     """
 
     def __init__(self, connection: sqlite3.Connection) -> None:

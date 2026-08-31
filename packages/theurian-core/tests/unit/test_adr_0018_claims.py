@@ -111,6 +111,15 @@ ADR names are asserted *equal* to what the code derives. That is the
 the pin fails when either side moves rather than being green for whatever the
 code happens to say.
 
+**That derivation lives in ``write_lock_claims.py``, not here, because a second
+record names the same objects.** ADR-0027's decision-2 residue restates this
+clause and carried the same retracted wording until
+https://github.com/theurian/theurian/issues/433 corrected it; its pin is
+``test_adr_0027_claims.py``. Both modules import ``LOCK_PATH``, ``STATE_DIR``
+and :func:`find_lock_on_database` from that helper and both call the one
+assertion function, so a lock that moves fails both records together instead of
+failing whichever module its author remembered.
+
 **What that fact pin enforces, and what it does not.** It holds where the lock
 and the databases *resolve to*, and that they resolve apart:
 
@@ -153,22 +162,19 @@ import sys
 from types import ModuleType
 from typing import Final
 
-from theurian.application.project_service import ProjectPaths
+from write_lock_claims import (
+    LOCK_PATH,
+    REPO_ROOT,
+    STATE_DIR,
+    assert_the_lock_and_the_state_databases_resolve_apart,
+    collapsed,
+    find_lock_on_database,
+)
+
 from theurian.application.setup_steps import STEPS
 from theurian.domain.setup import StepId
-from theurian.domain.state import StateHash
-from theurian.domain.values import ContentHash
-
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
 ADR_0018 = REPO_ROOT / "docs" / "adr" / "0018-single-writer-synchronous-in-m1.md"
-
-#: A throwaway state hash, only so ``database_for`` has an argument. Its value
-#: never reaches an assertion: what is asserted is the *directory* the database
-#: lands in and that the lock does not share it, neither of which depends on the
-#: hash. The same constant and the same reasoning as
-#: ``test_project_paths_containment.py``, which builds it identically.
-_SAMPLE_STATE_HASH: Final = StateHash(ContentHash("a" * 64))
 
 
 def _module_of(function: object) -> ModuleType | None:
@@ -214,7 +220,7 @@ def _swept_modules() -> tuple[ModuleType, ...]:
 
 
 #: The negation the corrected bullet turns on, as one sentence rather than as the
-#: two lines the file wraps it onto. Compared after :func:`_collapsed`: the claim
+#: two lines the file wraps it onto. Compared after :func:`collapsed`: the claim
 #: spans a line break -- "and nothing\n  detects that it is" -- and a substring
 #: search over the raw text passes while the sentence is being rewritten around
 #: it. The em dash before "and" is left out so the pin does not turn on
@@ -269,30 +275,6 @@ _DETECTION_CLAIM: Final = re.compile(r"\b(?:warns|detects|will\s+warn|will\s+det
 #: likely to return.
 _DENIAL: Final = re.compile(r"\b(?:not|never|cannot|no|nothing|neither|nor)\b")
 
-#: The lock file Decision point 2 names, as a repository-relative POSIX path.
-#: Written here independently and asserted *equal* to what ``ProjectPaths``
-#: derives, rather than extracted from it: a constant read out of the code would
-#: make this module green for whatever the code says, which is the drift the pin
-#: exists to catch. The same shape as ``INSTALLERS`` in ``test_setup_claims.py``.
-LOCK_PATH: Final = ".theurian/runtime/write.lock"
-
-#: The directory Decision point 2 says the lock *guards*, held to
-#: ``ProjectPaths.state`` the same way. The trailing slash is how the ADR writes
-#: it, and it is stripped before the comparison rather than being asserted of the
-#: filesystem.
-STATE_DIR: Final = ".theurian/state/"
-
-#: The retracted attachment: a lock taken *on* a database. The window admits the
-#: markup the sentence carried (``file lock** on the state database``) and a few
-#: words, and stops at a period so it cannot span sentences.
-#:
-#: **Scoped to Decision point 2, never the whole file.** The correction note
-#: quotes the retracted phrase verbatim -- "Point 2 said the lock is taken **on
-#: the state database**" -- so a document-wide scan for this pattern would go RED
-#: on the amendment that fixed the defect. See the module docstring for the
-#: escapes it does not catch.
-_LOCK_ON_DATABASE: Final = re.compile(r"\block\b[^.]{0,30}?\bon the (?:state )?database\b")
-
 #: The end of a sentence, which is not every period: the bullet closes on a
 #: Markdown link, and ``https://github.com/...`` carries dots that end nothing.
 #: The same trap the ADR-0013 module records, met again here.
@@ -306,11 +288,6 @@ _NFS_OR_DOCTOR: Final = re.compile(r"\bnfs\b|\bdoctor\b")
 #: Copied from ``test_setup_claims.py``, whose docstring records why a scan that
 #: stops at every newline and a scan that ignores newlines are both wrong.
 _BLOCK_START: Final = re.compile(r"\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|\||```|---\s*$|>\s)")
-
-
-def _collapsed(text: str) -> str:
-    """Lowercased with runs of whitespace flattened to single spaces."""
-    return " ".join(text.lower().split())
 
 
 def _paragraphs(text: str) -> list[str]:
@@ -327,7 +304,7 @@ def _paragraphs(text: str) -> list[str]:
             blocks.append([])
         blocks[-1].append(line)
 
-    return [collapsed for block in blocks if (collapsed := _collapsed(" ".join(block)))]
+    return [flattened for block in blocks if (flattened := collapsed(" ".join(block)))]
 
 
 def _nfs_paragraphs(text: str) -> list[str]:
@@ -584,7 +561,7 @@ def test_adr_0018_does_not_reattach_the_write_lock_to_a_database() -> None:
     """
     point = _decision_point_two(ADR_0018.read_text(encoding="utf-8"))
 
-    attachments = _LOCK_ON_DATABASE.findall(point)
+    attachments = find_lock_on_database(point)
 
     assert not attachments, f"Decision point 2 attaches the write lock to a database again: {point}"
 
@@ -595,45 +572,19 @@ def test_adr_0018_does_not_reattach_the_write_lock_to_a_database() -> None:
 def test_the_write_lock_resolves_outside_the_state_directory(tmp_path: pathlib.Path) -> None:
     """RED means the lock moved -- and Decision point 2 must move with it.
 
-    Derived from a real ``ProjectPaths`` rather than from path strings. No fake is
-    needed and none is used: ``ProjectPaths.of`` resolves a root that does not
-    have to exist, so a throwaway ``tmp_path`` gives the genuine production
-    derivation, containment checks included.
-
-    The premises come first, per this module's own rule. ``runtime`` and ``state``
-    must be different directories before "the parents are disjoint" asserts
-    anything, and both paths must sit under the root before ``relative_to`` can
-    express them as the strings the ADR names.
+    Derived from a real ``ProjectPaths`` rather than from path strings, in
+    ``write_lock_claims.py`` rather than here. The derivation is shared because a
+    second record -- ADR-0027's decision-2 residue -- names the same two objects,
+    and a copy of this arithmetic in each pin would fail whichever module its
+    author remembered to update. ``test_adr_0027_claims.py`` calls the same
+    function, so a lock that moves takes both documents RED together.
 
     The literals are asserted **equal** to the derivation rather than searched for
-    in it. ``LOCK_PATH`` is written independently in this file and required in the
-    ADR by the prose test above, so the ADR, this module and ``ProjectPaths`` are
-    held to one string: move the lock in the code and this goes RED; rename it in
-    the ADR and the prose test does.
+    in it. ``LOCK_PATH`` is written independently in the helper and required in
+    the ADR by the prose test above, so the ADR, that helper and ``ProjectPaths``
+    are held to one string: move the lock in the code and this goes RED; rename it
+    in the ADR and the prose test does.
     """
-    paths = ProjectPaths.of(tmp_path / "repo")
-    database = paths.database_for(_SAMPLE_STATE_HASH)
-    lock = paths.write_lock
-
-    assert paths.runtime != paths.state, (
-        "runtime and state resolve to one directory, so `separate lock file` "
-        "would be true of nothing"
+    assert_the_lock_and_the_state_databases_resolve_apart(
+        tmp_path / "repo", record="ADR-0018 Decision point 2"
     )
-    assert lock.is_relative_to(paths.root) and database.is_relative_to(paths.root), (
-        "the lock or the database resolves outside the project root; the ADR's "
-        "repository-relative wording cannot describe that"
-    )
-
-    assert lock.relative_to(paths.root).as_posix() == LOCK_PATH, (
-        f"the write lock is no longer `{LOCK_PATH}`, which ADR-0018 Decision "
-        f"point 2 names: {lock.relative_to(paths.root).as_posix()}"
-    )
-    assert paths.state.relative_to(paths.root).as_posix() == STATE_DIR.rstrip("/"), (
-        f"the state databases no longer live under `{STATE_DIR}`, which "
-        f"ADR-0018 Decision point 2 names as what the lock guards"
-    )
-    assert lock.parent != database.parent, (
-        f"the write lock now shares a directory with the state databases, so it "
-        f"is no longer a separate lock file: {lock.parent}"
-    )
-    assert lock.name != database.name, f"the write lock is named like a state database: {lock.name}"

@@ -1,9 +1,21 @@
-"""Connection management and the single-writer guarantee (ADR-0018, NFR-7).
+"""Connection management and the write lock (ADR-0018, NFR-7).
 
-Reads use independent WAL connections. Writes go through one interface holding
-an OS advisory lock, so two concurrent processes serialise rather than corrupt.
-Milestone 3 replaces the lock with a daemon-owned queue without changing the
-interface.
+Reads open independent WAL connections through :func:`open_read_connection`.
+A write runs inside :func:`write_transaction`, which holds an OS advisory lock
+on its ``lock_path`` for the duration of the transaction, so two processes that
+both enter it serialise rather than corrupt.
+
+Entering it is what carries the guarantee. ``CanonicalStore`` publishes its
+write methods -- ``append_revision``, ``put_item``, ``add_relation`` and the
+rest -- directly, so exclusivity is held by convention at each call site rather
+than behind a single interface. ADR-0018 records this in its Milestone 5
+amendment, which retracted the single-interface claim this docstring used to
+repeat.
+
+Milestone 3 adds a daemon-owned asyncio queue for in-daemon writes and keeps this
+lock for CLI invocations running alongside it (ADR-0018 point 3). Both are
+required between Milestone 3 and 1.0, because a CLI invocation is a separate
+process that a queue inside the daemon cannot reach.
 """
 
 from __future__ import annotations
@@ -289,9 +301,12 @@ class WriteLock:
 def write_transaction(database_path: Path, lock_path: Path) -> Iterator[sqlite3.Connection]:
     """Open an exclusive write transaction.
 
-    The only way to write. ``CanonicalStore`` exposes no connection, so the
-    single-writer guarantee lives in one place and can change mechanism in
-    Milestone 3 without touching application code (ADR-0018).
+    The lock-holding write path: an OS advisory lock is taken on ``lock_path``
+    and held for the duration of the transaction, so two processes that both
+    enter here serialise. A caller that writes without entering is outside that
+    guarantee -- ``CanonicalStore`` publishes its write methods directly, so
+    exclusivity is held by convention at each call site (ADR-0018, amended in
+    Milestone 5).
 
     NFR-8: no external I/O inside. Read and hash content files *before* entering.
 
@@ -299,6 +314,10 @@ def write_transaction(database_path: Path, lock_path: Path) -> Iterator[sqlite3.
         StateDatabaseUnreadableError: If the file cannot be interpreted far
             enough to start a transaction. Raised before ``BEGIN IMMEDIATE`` and
             never after it -- see :func:`_prepare`.
+        WriteLockTimeoutError: If another holder keeps the advisory lock on
+            ``lock_path`` past ``WRITE_LOCK_TIMEOUT_SECONDS``, the default this
+            path takes. Raised before the database is opened, so no transaction
+            has begun -- see :meth:`WriteLock._acquire`.
     """
     lock = WriteLock(lock_path)
     with lock.held():
