@@ -1,21 +1,24 @@
 """A re-seed must be able to clear the drift it answers (#317).
 
-``scan`` currently compares the anchors of **every** ``upsertRevision`` across
-every tracked migration, and migrations are append-only: a governed re-seed
-*adds* a migration, it never retracts the one it supersedes. Reproduced on a
-real branch (PR #440, 2026-08-31): 27 anchors compared, 12 drifted, ADR-0013's
-warning still naming the superseded ``01M0D5GZ...K3N`` migration while the new
-revision compares clean right beside it -- a warning the re-seed can never
-clear, exactly as :data:`corpus_drift.REMEDY` now admits in its own text
-("Expect this warning to survive the re-seed ... issue #317").
+**Before this fix**, ``scan`` compared the anchors of **every**
+``upsertRevision`` across every tracked migration, and migrations are
+append-only: a governed re-seed *adds* a migration, it never retracts the one
+it supersedes. Reproduced on a real branch (PR #440, 2026-08-31): 27 anchors
+compared, 12 drifted, ADR-0013's warning still naming the superseded
+``01M0D5GZ...K3N`` migration while the new revision compared clean right
+beside it -- a warning the re-seed could never clear. :data:`corpus_drift.REMEDY`
+now promises the opposite -- that a re-seed clears the warning -- and says why
+in its own text; see that string, not a quotation of it here, since a copy in
+this file would drift the moment the source is reworded again.
 
-The fix (out of scope here) restricts the comparison to each item's *current*
-revision: the **last** ``upsertRevision`` for that ``itemId`` in application
-order -- the loader's own order, which ``migration_paths`` already sorts by
-(see ``theurian.domain.migration.current_revision_in``, the same rule stated
-for the state-rebuild path). Not derived from ``expectedRevision`` chains: the
-26 original seed migrations carry no ``expectedRevision`` field at all, so a
-fix keyed off that field would leave the whole corpus uncompared.
+**The fix landed in this same tree.** It restricts the comparison to each
+item's *current* revision: the **last** ``upsertRevision`` for that ``itemId``
+in application order -- the loader's own order, which ``migration_paths``
+already sorts by (see ``theurian.domain.migration.current_revision_in``, the
+same rule stated for the state-rebuild path). Not derived from
+``expectedRevision`` chains: the 26 original seed migrations carry no
+``expectedRevision`` field at all, so a fix keyed off that field would leave
+the whole corpus uncompared.
 
 Every test below builds a synthetic migration corpus on a real ``tmp_path``
 and drives it through the public ``scan`` seam, the same way
@@ -24,18 +27,19 @@ lower seam to unit-test against: the current/superseded split has to be read
 out of tracked migration files naming the same ``itemId``, and nothing below
 ``scan`` sees more than one file at a time.
 
-**AC-1** and **AC-3** are RED against today's implementation, on purpose --
-that failure is the reproduction, not a mistake. **AC-2** passes both before
-and after the fix: it is the check that the fix mutes the superseded revision
-and *only* the superseded revision, not every revision an item has ever had.
-**AC-4** is the floor interaction the brief calls out by name: a corpus whose
-total anchors clear a floor today must not go on clearing it once superseded
-anchors stop padding the count. **AC-5** interleaves two items across three
-migrations so that "the last tracked migration" and "each item's own last
-upsert" disagree about which file is current for which item -- an
-implementation keyed on the corpus's last migration, rather than per-item
-terminality in application order, passes AC-1 through AC-4 (both only ever
-touch one item) and fails here.
+**AC-1** and **AC-3** drove the fix: RED before it landed, GREEN now that it
+has, and that transition is the reproduction and its close, not a mistake.
+**AC-2** passed both before and after the fix: it is the check that the fix
+mutes the superseded revision and *only* the superseded revision, not every
+revision an item has ever had. **AC-4** is the floor interaction the brief
+calls out by name: a corpus whose total anchors cleared a floor before the fix
+no longer clears it once superseded anchors stop padding the count. **AC-5**
+interleaves two items across three migrations so that "the last tracked
+migration" and "each item's own last upsert" disagree about which file is
+current for which item -- an implementation keyed on the corpus's last
+migration, rather than per-item terminality in application order, would pass
+AC-1 through AC-4 (both only ever touch one item) and fail only here; the
+shipped fix passes it too.
 """
 
 from __future__ import annotations
@@ -204,10 +208,11 @@ def test_a_superseded_revisions_stale_anchor_is_not_compared_after_a_reseed(
     `_RESEEDED_TEXT`, when `scan` runs, the superseded revision must not be
     compared at all -- not reported drifted, not reported anywhere.
 
-    RED against today's implementation: `scan` compares every `upsertRevision`
-    in every tracked migration, so the original seed's stale pin is compared
-    against the current document and reported `DRIFTED`, permanently, exactly
-    as reproduced on PR #440's branch (27 compared, 12 drifted).
+    RED before the fix, GREEN after: before it landed, `scan` compared every
+    `upsertRevision` in every tracked migration, so the original seed's stale
+    pin was compared against the current document and reported `DRIFTED`,
+    permanently, exactly as reproduced on PR #440's branch (27 compared, 12
+    drifted).
     """
     original, reseed = _reseeded_corpus(tmp_path)
 
@@ -223,9 +228,10 @@ def test_the_compared_population_after_a_reseed_is_current_revisions_only(
 ) -> None:
     """AC-3: the floor-relevant count is current revisions only, not every revision.
 
-    RED against today's implementation: both the original seed's anchor and
-    the re-seed's anchor are compared, so `len(report.compared) == 2` today --
-    padding the count with a revision nobody can act on any more.
+    RED before the fix, GREEN after: before it landed, both the original
+    seed's anchor and the re-seed's anchor were compared, so
+    `len(report.compared) == 2` -- padding the count with a revision nobody
+    can act on any more.
     """
     original, reseed = _reseeded_corpus(tmp_path)
 
@@ -309,14 +315,15 @@ def test_a_reseed_that_drops_below_the_floor_once_superseded_anchors_are_exclude
     """AC-4: a corpus clearing a floor only because a superseded anchor pads the count.
 
     The re-seed corpus above has 2 total anchors and 1 current one. Held to a
-    floor of 2, today's `scan` compares both (the superseded one included) and
-    clears the floor -- so this exits 1 (drift), not 2. Once the superseded
-    anchor stops being compared, only 1 anchor clears the floor of 2, and the
-    run must report `NOTHING_COMPARED` and exit 2 -- the floor existing
-    precisely to catch a run that is quietly checking less than it claims.
+    floor of 2, `scan` before the fix compared both (the superseded one
+    included) and cleared the floor -- so this exited 1 (drift), not 2. Once
+    the superseded anchor stops being compared, only 1 anchor clears the floor
+    of 2, and the run must report `NOTHING_COMPARED` and exit 2 -- the floor
+    existing precisely to catch a run that is quietly checking less than it
+    claims.
 
-    RED against today's implementation for that reason: `held_to_floor` itself
-    is unmodified by the fix and is not the defect -- what changes is how many
+    RED before the fix, GREEN after, for that reason: `held_to_floor` itself
+    is unmodified by the fix and is not the defect -- what changed is how many
     anchors reach it from the same two tracked migrations.
     """
     original, reseed = _reseeded_corpus(tmp_path)
@@ -375,10 +382,10 @@ def test_per_item_terminality_disagrees_with_last_migration_and_the_fix_must_fol
     revision (in m2) as if it were superseded, while still correctly muting
     A's and B's stale m1 revisions -- passes all four and fails only here.
 
-    RED against today's implementation: `scan` compares every `upsertRevision`
-    in every tracked migration, so all four anchors are compared -- both
-    items' stale and current revisions -- and 2 of them (the stale ones) are
-    reported drifted.
+    RED before the fix, GREEN after: before it landed, `scan` compared every
+    `upsertRevision` in every tracked migration, so all four anchors were
+    compared -- both items' stale and current revisions -- and 2 of them (the
+    stale ones) were reported drifted.
     """
     a_stale, a_stale_body_path, a_stale_body = _upsert_revision(
         item_id=_ITEM_A, revision_id=_A_STALE_REVISION, body=_STALE_TEXT_A, file_path=_DOCUMENT_A
