@@ -142,7 +142,7 @@ import pathlib
 import re
 import stat
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from types import MappingProxyType
@@ -964,7 +964,12 @@ def _revisions_in_application_order() -> tuple[Revision, ...]:
     (it walks :func:`_migration_paths` outer, ``operations`` inner), so
     sorting by ``migration_document_id`` regroups those blocks by the correct
     key while stability leaves each migration's own operations in their
-    original, correct, document order.
+    original, correct, document order. The sort itself is
+    :func:`_sorted_by_application_order`, pulled out so it can be pinned
+    directly against a hand-built clash between the two keys
+    (ADV-RC MEDIUM-2) rather than only through the committed corpus, where
+    every file name happens to embed its own id and the two keys never
+    disagree.
     """
     for path in _migration_paths():
         depends_on = _document(path).get("dependsOn")
@@ -976,7 +981,73 @@ def _revisions_in_application_order() -> tuple[Revision, ...]:
                 f"(zero dependsOn declarations). Widen this helper before trusting the "
                 f"chain rule again once one is committed."
             )
-    return tuple(sorted(_revisions(), key=lambda revision: revision.migration_document_id))
+    return _sorted_by_application_order(_revisions())
+
+
+def _sorted_by_application_order(revisions: Iterable[Revision]) -> tuple[Revision, ...]:
+    """The pure fold key: a stable sort on ``migration_document_id``, never on
+    ``migration`` (the tracked file path).
+
+    Split out of :func:`_revisions_in_application_order` so the key itself is
+    directly testable against hand-built input, independent of the real
+    corpus's ``dependsOn`` check and its ``_revisions()`` read -- on the
+    committed corpus the two keys never disagree (every file name embeds its
+    own id), so a test that only ever exercises this through the corpus
+    cannot tell a correct fold from one that quietly reverted to the file
+    path, which is exactly what happened once (see the module docstring's
+    "Corrected from a false equivalence").
+    """
+    return tuple(sorted(revisions, key=lambda revision: revision.migration_document_id))
+
+
+def test_the_fold_key_orders_by_the_migration_document_id_not_the_file_name() -> None:
+    """The corrected fold key (cdef404), pinned against a clash the real corpus cannot pose.
+
+    ADV-RC MEDIUM-2: on the committed corpus every migration's file name
+    embeds its own inner id, so reverting :func:`_sorted_by_application_order`
+    back to ``key=lambda revision: revision.migration`` -- the mistake this
+    module shipped once -- survives the whole suite; the two keys never
+    disagree there. Smallest honest pin: two hand-built :class:`Revision`
+    objects whose file-name order is the *opposite* of their
+    ``migration_document_id`` order, fed straight into the pure sort rather
+    than through the real corpus, its ``dependsOn`` check or its
+    ``_migration_paths()`` population.
+    """
+    sorts_last_by_name_first_by_id = Revision(
+        migration="zzz-sorts-last-by-file-name.yaml",
+        item_id="test.fold-key-item",
+        revision_id="rev-applied-first",
+        content_file="a.md",
+        content_sha256="a" * 64,
+        metadata=MappingProxyType({}),
+        expected_revision=None,
+        migration_document_id="01-sorts-first-by-id",
+    )
+    sorts_first_by_name_second_by_id = Revision(
+        migration="aaa-sorts-first-by-file-name.yaml",
+        item_id="test.fold-key-item",
+        revision_id="rev-applied-second",
+        content_file="a.md",
+        content_sha256="a" * 64,
+        metadata=MappingProxyType({}),
+        expected_revision="rev-applied-first",
+        migration_document_id="02-sorts-second-by-id",
+    )
+
+    ordered = _sorted_by_application_order(
+        (sorts_first_by_name_second_by_id, sorts_last_by_name_first_by_id)
+    )
+
+    assert [revision.revision_id for revision in ordered] == [
+        "rev-applied-first",
+        "rev-applied-second",
+    ], (
+        f"sorted by application order: {[r.revision_id for r in ordered]}. Folding by "
+        f"revision.migration (file name) would give ['rev-applied-second', "
+        f"'rev-applied-first'] instead, because 'aaa-...' sorts before 'zzz-...'; the "
+        f"corrected key sorts by migration_document_id, which orders '01-...' before "
+        f"'02-...' regardless of file name."
+    )
 
 
 def test_every_expected_revision_names_the_chain_the_migrations_construct() -> None:
@@ -1531,6 +1602,73 @@ def test_every_evidence_anchor_is_one_a_committed_migration_also_names() -> None
         f"evidence anchors no committed migration names: {uncited}. Only the migrations' "
         f"anchors are verified against a blob, so an anchor that appears only here has been "
         f"published and never checked -- and a path is a disclosure before it is a pin."
+    )
+
+
+def test_every_evidence_migration_claim_resolves_against_a_committed_migration() -> None:
+    """The corpus half of #253's own cross-check, unchecked until now (ADV-RC MEDIUM-3).
+
+    ``propose accept`` treats a committed ``evidence.json``'s optional
+    ``migrationId``/``itemId`` as a *claim*, not as ground truth: it looks the
+    named migration up in the loaded set and confirms the migration's own
+    operations -- ``createItem`` and ``upsertRevision``, the two
+    :data:`GOVERNED_OPERATIONS` permit, matching ``ProposalService``'s
+    ``_migration_item_ids`` exactly -- actually name the claimed item before
+    treating the proposal as accepted (``_landed_state``). Nothing here
+    re-derived that on the *committed* data: a hand-edited ``evidence.json``
+    could claim a ``migrationId`` naming nothing, or a real migration that
+    operates on a different item, and every rule in this module stayed
+    green -- the same shape as the anchor cross-check just above, applied to
+    the other cross-check field pair.
+
+    ``migrationId`` gates the check; ``itemId`` is checked only when also
+    present. Both fields are independently optional
+    (:data:`OPTIONAL_EVIDENCE_KEYS`, admitted one at a time), and a record
+    with neither makes no claim for this rule to resolve.
+    """
+    item_ids_by_migration_id: dict[str, frozenset[str]] = {}
+    for path in _migration_paths():
+        document = _document(path)
+        migration_id = document.get("id")
+        if not isinstance(migration_id, str):
+            continue
+        operations = document.get("operations", [])
+        item_ids_by_migration_id[migration_id] = frozenset(
+            str(operation["itemId"])
+            for operation in operations
+            if isinstance(operation, Mapping)
+            and operation.get("op") in {"createItem", "upsertRevision"}
+            and isinstance(operation.get("itemId"), str)
+        )
+
+    unresolved = []
+    for evidence in _evidence():
+        migration_id = evidence.document.get("migrationId")
+        if migration_id is None:
+            continue
+        if not isinstance(migration_id, str) or migration_id not in item_ids_by_migration_id:
+            unresolved.append(
+                (evidence.path, "migrationId", migration_id, "names no committed migration")
+            )
+            continue
+        item_id = evidence.document.get("itemId")
+        if item_id is None:
+            continue
+        if not isinstance(item_id, str) or item_id not in item_ids_by_migration_id[migration_id]:
+            unresolved.append(
+                (
+                    evidence.path,
+                    "itemId",
+                    item_id,
+                    f"is not an item migration {migration_id} operates on",
+                )
+            )
+
+    assert not unresolved, (
+        f"evidence records whose migrationId/itemId cross-check does not resolve against the "
+        f"committed migrations: {unresolved}. `propose accept` confirms these fields against "
+        f"the loaded migration set before treating a proposal as accepted; a claim nothing "
+        f"here checks could be wrong in the committed corpus and nothing would notice."
     )
 
 

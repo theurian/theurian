@@ -33,6 +33,22 @@ That is the general guard the static rule cannot be: whatever the engine
 enforces that nobody has hand-modelled yet, this still catches, the day it is
 added to the engine.
 
+**A third, content-shaped check, and why the first two are not enough.** The
+adversarial re-confirmation reproduced the gap directly: ``git revert
+--no-commit d515bef`` (the ADR-0013 re-seed's *payload* -- the body and the
+migration's ``contentSha256``, not its ``expectedRevision`` pin) leaves the
+whole suite green at the same test count, because both the revision-id
+equality above and the static chain rule key on *identifiers*, and a reverted
+payload still carries the seed's own identifiers. Content, not an id, is what
+actually moved; the applied store's current body for the re-seeded item is
+therefore also checked for the corrected claim (``#414`` and the wording it
+introduced) and against neither retracted pattern the source ADR corrected
+(``reports proposal age``, ``warns past a threshold``). Content-shaped rather
+than revision-id-shaped, deliberately: an id-keyed check stops distinguishing
+the correction from the retraction the moment either is reverted while ids
+stay pinned, and a *future*, legitimate re-seed changes the current revision
+id again without this test's other assertions changing at all.
+
 **Population, and why it is narrower than the governance module's.** Loads
 the real directory listing, but only after confirming -- via ``git``, never
 the ``tools/mutate.py`` manifest -- that the listing holds nothing git does
@@ -149,7 +165,13 @@ def _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files(
         for entry in completed.stdout.decode("utf-8", "surrogateescape").split("\0")
         if entry
     }
-    on_disk_names = {path.name for path in MIGRATIONS_DIRECTORY.iterdir() if path.suffix == ".yaml"}
+    # `name.endswith(".yaml")`, matching the loader's own filter exactly
+    # (`migration_loader.py`'s `candidates` line): `path.suffix` would miss a
+    # bare `.yaml` filename (`Path(".yaml").suffix == ""`), which the loader
+    # still accepts.
+    on_disk_names = {
+        path.name for path in MIGRATIONS_DIRECTORY.iterdir() if path.name.endswith(".yaml")
+    }
     untracked = sorted(on_disk_names - tracked_names)
     if untracked:
         pytest.skip(
@@ -175,15 +197,18 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
     active pointer a real project would compute all live under the real
     ``.theurian/``, and this test writes none of them.
 
-    Two cheap checks after the apply, not a full read-model comparison: the
+    Three cheap checks after the apply, not a full read-model comparison: the
     applied count matches the migration count with nothing skipped (a skip on
     an empty store is itself a defect -- every migration should be new), the
-    surfaceable item count clears the floor, and the re-seeded item's
+    surfaceable item count clears the floor, the re-seeded item's
     ``current_revision_id`` is exactly what :func:`current_revision_in` -- the
     same pure function ``propose accept``'s pre-check calls -- derives from
-    the loaded set's own application order. That last one is the one the
-    static chain rule now also holds; this is its dynamic twin, unmodelled and
-    reading the real engine's own answer.
+    the loaded set's own application order (the one the static chain rule now
+    also holds; this is its dynamic twin, unmodelled and reading the real
+    engine's own answer), and the applied body's *content* carries the
+    correction rather than merely being reachable at the expected id -- see
+    the module docstring's third check for why an id match alone is not
+    enough (ADV-RC MEDIUM-1).
     """
     _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files()
 
@@ -237,9 +262,10 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
     )
 
     assert row is not None, (
-        f"{_RESEEDED_ITEM.value} was not created by the applied migrations. The ADR-0013 "
-        f"re-seed (#416) revises this exact item, so its absence means the corpus this test "
-        f"loaded is not the one #416 shipped."
+        f"{_RESEEDED_ITEM.value} has no row in knowledge_items after applying. Every seed "
+        f"migration creates this item via createItem, so its absence means the migrations "
+        f"this test loaded never ran at all -- not, by itself, anything about whether the "
+        f"#416 correction is present. The content check below carries that claim."
     )
     current_revision = row["current_revision_id"]
     expected_revision = current_revision_in(loaded.migration_set, _RESEEDED_ITEM)
@@ -251,4 +277,39 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
         f"{expected_revision!r} from the same loaded set's application order. A mismatch here "
         f"means the engine's replay and the production helper that reasons about it without "
         f"replaying have quietly disagreed."
+    )
+
+    assert current_revision is not None, (
+        f"{_RESEEDED_ITEM.value} has no current revision after applying, so there is no body "
+        f"to check for the #416 correction."
+    )
+    with closing(open_read_connection(database)) as connection:
+        body_row = connection.execute(
+            "SELECT body FROM knowledge_revisions WHERE project_id = ? AND revision_id = ?",
+            (project.project_id.value, current_revision),
+        ).fetchone()
+    assert body_row is not None, (
+        f"knowledge_revisions holds no row for {current_revision!r}, the revision "
+        f"knowledge_items.current_revision_id just named. A pointer with nothing behind it is "
+        f"a store the engine's own write transaction should never produce."
+    )
+    body = body_row["body"]
+
+    # `#414` and `owed, not` never wrap onto separate lines within themselves (unlike `owed,
+    # not shipped`, which does in the source Markdown), so each is checked as its own
+    # substring rather than as one contiguous phrase spanning the wrap.
+    assert "#414" in body and "owed, not" in body, (
+        f"the applied body for {_RESEEDED_ITEM.value} (revision {current_revision}) does not "
+        f"carry the #414 correction ('#414' and 'owed, not' both expected as substrings). "
+        f"`git revert --no-commit d515bef` -- the re-seed's payload, not its expectedRevision "
+        f"pin -- leaves every other assertion in this test green at the same revision id; "
+        f"this is the check ADV-RC MEDIUM-1 asked for that would not."
+    )
+    assert "reports proposal age" not in body, (
+        f"the applied body for {_RESEEDED_ITEM.value} (revision {current_revision}) still "
+        f"carries the retracted claim 'reports proposal age' (#252)."
+    )
+    assert "warns past a threshold" not in body, (
+        f"the applied body for {_RESEEDED_ITEM.value} (revision {current_revision}) still "
+        f"carries the retracted claim 'warns past a threshold' (#252)."
     )
