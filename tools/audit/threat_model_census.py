@@ -40,11 +40,79 @@ VERBS = re.compile(
     re.IGNORECASE,
 )
 
+#: The header patterns that select a control-claim table (POP-1b). A table is a
+#: member iff its header row matches one of these; every data row is then a
+#: member. Stated here because a population is only re-runnable if its selection
+#: rule is, and this one was prose until #199's review asked for it.
+TABLE_HEADERS = (
+    re.compile(r"^\|\s*Surface\s*\|\s*Assertion\s*\|"),
+    re.compile(r"^\|\s*Bound\s*\|\s*Symbol\s*\|"),
+    re.compile(r"^\|\s*Member\s*\|.*\|\s*Bounded by\s*\|"),
+    re.compile(r"^\|\s*Quantity\s*\|\s*What would bound it\s*\|"),
+    re.compile(r"^\|\s*Defense\s*\|\s*Why no test can fail without it\s*\|"),
+    re.compile(r"^\|\s*ID\s*\|\s*Threat\s*\|\s*STRIDE\s*\|"),
+    re.compile(r"^\|\s*Surface\s*\|\s*What it says\s*\|\s*Owner\s*\|"),
+    re.compile(r"^\|\s*Path\s*\|.*ranking.*\|\s*Bounded by\s*\|"),
+    re.compile(r"^\|\s*Result field\s*\|\s*Source\s*\|\s*Disposition\s*\|"),
+)
+
+FUTURE_CONTROLS = re.compile(r"^\*Future controls")
+RETRACTION = re.compile(
+    r"^[ \t>]*\*\*(Corrected|Correction|Amended|Amendment|Retracted|Resolved|Revised"
+    r"|Superseded|Withdrawn|Discharged|Closed|This sentence|What (this|it) (entry )?said)\b",
+    re.IGNORECASE,
+)
+
 _LABEL_WIDTH = 70
 #: ``argv`` is the program plus exactly one Markdown path.
 _EXPECTED_ARGV = 2
 #: The first line has no predecessor to inspect.
 _FIRST_LINE = 2
+
+
+def _block_extent(lines: list[str], start: int) -> range:
+    """A bold-labelled paragraph or blockquote runs to the next blank non-quote line."""
+    quoted = lines[start - 1].lstrip().startswith(">")
+    index = start
+    while index < len(lines):
+        nxt = lines[index]
+        if quoted:
+            if not nxt.lstrip().startswith(">"):
+                break
+        elif not nxt.strip():
+            break
+        index += 1
+    return range(start, index + 1)
+
+
+def _table_extent(lines: list[str], header: int) -> range:
+    index = header
+    while index < len(lines) and lines[index].lstrip().startswith("|"):
+        index += 1
+    return range(header, index + 1)
+
+
+def _covered(lines: list[str]) -> set[int]:
+    """Every line inside a keyed member, by the keys that are *derivable*.
+
+    1a (``**Controls`` blocks), 1b (tables matching :data:`TABLE_HEADERS`),
+    1d (``*Future controls`` paragraphs) and 1e (retraction blocks) all follow
+    from a rule and are recomputed here. **POP-1c is not included**: those eleven
+    floating prose assertions were selected by hand from the verb sweep, so no
+    rule reproduces them, and a tool that pretended otherwise would be asserting
+    a key it does not have.
+    """
+    covered: set[int] = set()
+    for line_no, line in enumerate(lines, start=1):
+        stripped = line.lstrip("> ").rstrip()
+        opens_block = (
+            CONTROLS_LABEL.search(line) or FUTURE_CONTROLS.match(stripped) or RETRACTION.match(line)
+        )
+        if opens_block:
+            covered.update(_block_extent(lines, line_no))
+        elif any(header.match(stripped) for header in TABLE_HEADERS):
+            covered.update(_table_extent(lines, line_no))
+    return covered
 
 
 def _opens_a_block(lines: list[str], line_no: int) -> bool:
@@ -92,9 +160,27 @@ def main() -> int:
     for line_no, label in singular:
         print(f"    :{line_no:<5} {label}")
 
+    covered = _covered(lines)
+    inside = [(n, label) for n, label in openers if n in covered]
+    outside = [(n, label) for n, label in openers if n not in covered]
+    candidates = [
+        (n, label)
+        for n, label in outside
+        if any(SRC_SYMBOL.search(lines[i - 1]) for i in _block_extent(lines, n) if i <= len(lines))
+        and any(VERBS.search(lines[i - 1]) for i in _block_extent(lines, n) if i <= len(lines))
+    ]
+    print("\n  triage against the derivable keys (1a, 1b, 1d, 1e -- not 1c):")
+    print(f"    inside a key   : {len(inside)}")
+    print(f"    outside every key: {len(outside)}")
+    print(f"    ...of which name a src symbol AND a control verb (candidates): {len(candidates)}")
+    share = 100 * len(covered) / len(lines)
+    print(f"    keyed lines: {len(covered)} of {len(lines)} ({share:.1f}%)")
+
     print(f"\n=== VERB SWEEP: {len(verb_hits)} hits over {VERBS.pattern.count('|') + 1} stems ===")
     with_symbol = [n for n in verb_hits if SRC_SYMBOL.search(lines[n - 1])]
     print(f"  hits whose line also names a src symbol: {len(with_symbol)}")
+    print(f"  hits inside a keyed member: {len([n for n in verb_hits if n in covered])}")
+    print(f"  hits outside every key: {len([n for n in verb_hits if n not in covered])}")
     return 0
 
 

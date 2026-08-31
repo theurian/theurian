@@ -91,12 +91,15 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   actually runs: `application/ingestion_service.py:225` calls
   `projection.project`, which **truncates** at `MAX_PROJECTION_CHARS` and indexes
   the result — the refusing `project_checked`, and the `build_projection` that
-  wraps it, have no production caller. The widest document the 4 MiB
-  `MAX_YAML_BYTES` gate admits costs **6.32 s and ~158 MB RSS** end to end, of
-  which **94% is the YAML parse**, not the projection walk; the walk's own
-  absent-memo behaviour is real (48 parsed objects against 120,491 visits) but is
-  ~6% of the cost. Recorded as the worst shape *found*, not an established
-  maximum. The recorded decision that no ingestion-side timeout is filed is
+  wraps it, have no production caller. The costliest document found within the
+  4 MiB `MAX_YAML_BYTES` gate — a block sequence of `- 1` entries, four bytes per
+  node — costs **13.06 s and ~666 MB RSS** end to end on CPython 3.13.3, of which
+  **99% is the YAML parse**, not the projection walk; the walk's own absent-memo
+  behaviour is real (48 parsed objects against 120,491 visits) but is under 3% of
+  the cost. **Token density rather than alias structure is the lever**, which is
+  why `MAX_YAML_BYTES` is the bound that governs this term. Recorded as the worst
+  shape *found*, not an established maximum — the figure moved twice under
+  search. The recorded decision that no ingestion-side timeout is filed is
   unchanged. Three `src` docstrings carrying the correction class are fixed with
   it — `index_purge.py::_restamp` on `index_metadata.index_build_id`, which
   `SqliteIndexStore.add_nodes` does read back; `verify_state_provenance`, which

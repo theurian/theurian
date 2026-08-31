@@ -19,7 +19,7 @@ re-runnable rather than merely reported.
 | Script | Key | Work-log figure |
 | :-- | :-- | --: |
 | `threat_model_1e.py` | retraction/discharge blocks, structurally: a marker is a member iff it *opens* a block not already inside one | 21 members, 7 continuations |
-| `threat_model_census.py` | the container census (bold-labelled block openers) and the active-voice verb sweep | 276 openers, 88 keyed, 188 outside; 134 verb hits |
+| `threat_model_census.py` | the container census (bold-labelled block openers) and the active-voice verb sweep | 276 openers, 88 keyed, 188 outside, 14 candidates; 134 verb hits split 33 / 101 |
 | `threat_model_escape.py` | the **independent** third key used to measure the escape space — mermaid labels, every table, asserting headings, and src-symbol prose that is neither bold-opened nor verb-bearing | 43 tables/182 rows; 120 escape lines |
 
 Run them against a specific commit by extracting the file first, so the counts

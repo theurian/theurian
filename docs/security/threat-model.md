@@ -534,34 +534,48 @@ pinned by tests that fail when the guard is removed.
 > index, and the bound is on work spent, not on admission.
 >
 > Measured on the shipped path (`YamlParser.parse` → `project`), **wall clock
-> taken clean — `tracemalloc` inflates it 6.4–7.6× and never runs in a timing
-> pass** — CPython 3.12.2, macOS arm64, at this commit:
+> taken clean — `tracemalloc` inflates it 5–8× and never runs in a timing pass**
+> — **CPython 3.13.3 arm64**, the version the package requires, self-reported by
+> the measuring process; one shape per process, because `ru_maxrss` is a
+> high-water mark and shapes measured together corrupt each other's memory
+> figures:
 >
-> | Document | Bytes | Parse | Project | Total | Parse share | RSS delta |
+> | Document, widest admitted by the 4 MiB gate | Bytes | Parse | Project | Total | Parse share | RSS delta |
 > | :-- | --: | --: | --: | --: | --: | --: |
-> | worst shape **found** | 1,289,309 | 1.886 s | 0.384 s | **2.270 s** | 83.1% | +80.6 MB |
-> | widest the 4 MiB gate admits | 4,194,295 | 5.941 s | 0.375 s | **6.316 s** | **94.1%** | +157.7 MB |
+> | block sequence of `- 1` entries | 4,194,291 | 12.961 s | 0.103 s | **13.064 s** | **99.2%** | **+666.2 MB** |
+> | flat mapping, one-character scalars | 4,194,280 | 10.272 s | 0.125 s | 10.397 s | 98.8% | +595.7 MB |
+> | nested-alias fan-out | 4,194,295 | 5.802 s | 0.376 s | 6.178 s | 93.9% | +178.7 MB |
+> | nested-alias chain, 1.29 MB | 1,289,309 | — | — | 2.180 s | 82.9% | +81.9 MB |
 >
-> Python-heap peak for the second row, measured in a separate `tracemalloc` pass:
-> **226.2 MB**. Both rows truncate and index a 2,097,127-character projection.
+> Every row truncates and indexes a ~2.09-million-character projection. Python-heap
+> peak, separate `tracemalloc` pass on the flat-mapping row: **581.1 MB**.
+>
+> **Token density is the lever, not alias structure.** The `- 1` sequence spends
+> four bytes per node, so 4 MiB buys about 1.05 million of them; the alias fan's
+> entries cost ~13 bytes each. That is the whole difference between 13.06 s and
+> 6.18 s — and it *strengthens* this entry's conclusion rather than complicating
+> it, because `MAX_YAML_BYTES` is the bound that governs token count, while every
+> projection budget acts on a term worth under 3% of the total. `_StrictLoader`
+> derives from PyYAML's pure-Python `SafeLoader`, not `CSafeLoader`, so this is
+> interpreted scanning per token and libyaml never enters the shipped path.
 >
 > **The parse dominates, and that is the correction that matters.** An earlier
 > revision of this amendment timed the projection alone, under `tracemalloc`,
 > against the *refusing* function, and reported ~3.1 s as an ingestion-path cost.
-> All three were wrong: the walk is 6% of the end-to-end cost at the gate's
-> ceiling, `MAX_YAML_BYTES` rather than any projection budget is what bounds the
-> dominant term, and the function measured is one ingestion never calls. That
-> revision also compared its figure to the 0.48 s
-> `projection.py::MAX_PROJECTION_NODES` records and called it ~6.5× larger; the
-> comparison put an instrumented number against a clean one. Clean on clean the
-> two shapes are **0.95×** — indistinguishable — so the comparison is withdrawn
-> rather than restated.
+> All three were wrong: the walk is under 3% of end-to-end cost on the worst
+> shape, `MAX_YAML_BYTES` rather than any projection budget bounds the dominant
+> term, and the function measured is one ingestion never calls. That revision also
+> compared its figure to the 0.48 s `projection.py::MAX_PROJECTION_NODES` records
+> and called it ~6.5× larger; the comparison put an instrumented number against a
+> clean one. Clean on clean the two shapes are **0.95×** — indistinguishable — so
+> the comparison is withdrawn rather than restated.
 >
 > **Residual, as a figure and with its limits:** one clone-reachable document
-> admitted by the 4 MiB gate costs ~6.3 s of single-threaded CPU-bound work and
-> ~158 MB RSS before its truncated projection is indexed. This is the worst shape
-> **found**, not an established maximum — no search over document shapes was
-> exhaustive, and a cheaper-per-byte parse shape may exist. The bound is counted
+> admitted by the 4 MiB gate costs **~13 s of single-threaded CPU-bound work and
+> ~666 MB RSS** before its truncated projection is indexed. This is the worst
+> shape **found**, not an established maximum — no search over document shapes was
+> exhaustive, and the search has already moved the figure twice, from an
+> alias-structure shape to a token-density one. The bound is counted
 > and sized, not timed; the decision below that no ingestion-side timeout is
 > filed is unchanged, and what this amendment closes is the missing number.
 
@@ -2452,10 +2466,9 @@ exactly that split and records that a successor issue for the control itself is
 still owed. **The code no longer states a schedule**, and that is the lesson
 rather than a tidy-up: the retired `detail` promised "Artifact verification
 arrives with the first tagged release", which came due the moment
-`release-core.yml` landed, since a first tagged release
-is what that workflow exists to cut. An issue has an owner and can be reassigned;
-a string in a probe is read by users and paged by nobody. The severity stays
-Critical: the harm is
+`release-core.yml` landed, since a first tagged release is what that workflow
+exists to cut. An issue has an owner and can be reassigned; a string in a probe
+is read by users and paged by nobody. The severity stays Critical: the harm is
 unchanged, an attacker who substitutes an artifact runs code as the user, and
 every control above acts on production rather than on what a user installs.
 
