@@ -67,6 +67,7 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
     loaded: LoadedMigrations,
     clock: Clock,
     database_created: bool,
+    already_locked: bool = False,
 ) -> ApplyReport:
     """Apply ``loaded`` into ``database``, inside one write transaction.
 
@@ -82,6 +83,16 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
     apply has run, which is why the condition is evaluated here rather than by
     the caller.
 
+    ``already_locked`` is forwarded to :func:`write_transaction` unchanged and
+    defaults to ``False`` for the same reason it does there: this function does
+    not know, and must not guess, whether its caller already holds
+    ``write_lock``. ``migrate apply``'s own composition-root code passes
+    ``True`` (#468), because its critical section acquires the lock itself
+    before calling in here, to cover the database creation and pointer publish
+    this function never sees. :func:`rehearse_migration_set` below passes
+    neither -- it takes the default, against a throwaway lock file no other
+    process can contend for.
+
     Raises:
         MigrationChecksumMismatchError: If an applied migration's file changed.
         RevisionConflictError: If an operation's ``expectedRevision`` does not
@@ -89,9 +100,10 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
         UnenforceableScopeError, DuplicateContentFileError,
             AliasItemCollisionError: From the engine's own whole-set guards.
         StateDatabaseUnreadableError, WriteLockTimeoutError: From the
-            transaction itself.
+            transaction itself. ``WriteLockTimeoutError`` cannot be raised when
+            ``already_locked`` is ``True``.
     """
-    with write_transaction(database, write_lock) as connection:
+    with write_transaction(database, write_lock, already_locked=already_locked) as connection:
         writer = SqliteWriter(connection)
         writer.register_project(project)
         engine = MigrationEngine(clock, loaded.content_by_hash)

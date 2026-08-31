@@ -161,7 +161,17 @@ def _is_crash(result: subprocess.CompletedProcess[str]) -> bool:
 
 
 def _classify_success(result: subprocess.CompletedProcess[str]) -> str:
-    """``result`` given `result.returncode == 0` and a non-empty stdout."""
+    """``result`` given `result.returncode == 0` and a non-empty stdout.
+
+    ``loser-noop`` additionally requires ``databaseCreated is False`` (#478
+    round one): without it, a raced pair where BOTH processes created the
+    database -- the HIGH-1 shape the round found, where the loser observed
+    nothing and rebuilt the winner's live database instead -- would still
+    read as ``{"winner", "loser-noop"}`` and pass AC-1, because neither
+    `applied`/`skipped`/`changed` moves when the content each process writes
+    is identical. `databaseCreated` is the one field this label was missing
+    that actually distinguishes "observed" from "recreated".
+    """
     payload: dict[str, Any] = json.loads(result.stdout)
     if payload.get("applied") == [MIGRATION_ID] and payload.get("changed") is True:
         return "winner"
@@ -169,6 +179,7 @@ def _classify_success(result: subprocess.CompletedProcess[str]) -> str:
         payload.get("applied") == []
         and payload.get("skipped") == [MIGRATION_ID]
         and payload.get("changed") is False
+        and payload.get("databaseCreated") is False
     ):
         return "loser-noop"
     return f"unexpected-success:{result.stdout.strip()[:200]}"
