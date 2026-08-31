@@ -53,6 +53,18 @@ now needs to know whether an assertion may be relaxed.
 Arrange / Act / Assert with blank lines between. One behaviour per test. Prefer
 a real object to a mock; mocks confirm that code calls what you told it to call.
 
+## Re-tense prose written at RED time
+
+Prose written while a test is RED describes the pre-fix world. Once the fix
+lands in the same tree, that prose is wrong unless you rewrite it.
+
+Before delivering: re-tense every sentence describing what the code or tests
+do against the tree **at your commit** — a defect you drove RED reads as
+before/after ("RED before the fix, GREEN after"), never present tense. For
+every string your prose quotes from production code, grep the tree: zero hits
+outside your own file means the quote is stale, so replace it with what is
+there now. (Burned in from #449's round.)
+
 ## This project's specific traps
 
 - **ULIDs are Crockford base32** — no `I`, `L`, `O`, `U`. `01K1IDX...` is
