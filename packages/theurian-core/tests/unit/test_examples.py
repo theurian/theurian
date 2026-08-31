@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import json
 import pathlib
-from typing import Any
+import re
+from typing import Any, Final
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -176,6 +177,32 @@ def _in_config(config: dict[str, Any], key: str) -> Any:
 #: different facts and the annotation's job is to carry both. A rewrite naming
 #: only ``security.secretScan`` says what the file is read *for* and leaves a
 #: reader with nowhere to check it; it passed this row until round one.
+#: A required sentence that is nothing but an issue number -- the rows' "the
+#: annotation stays a claim someone owns" half, and the only one the rule below
+#: applies to. A sentence carrying prose as well says something a closed issue can
+#: still be the correct authority for.
+_ISSUE_CITE: Final = re.compile(r"^#\d+$")
+
+#: The same cite described as closed, within one clause of itself. This is what
+#: makes *naming* an issue different from naming a **live** one, and it is keyed on
+#: the required cite rather than on the annotation at large: these annotations
+#: name closed issues on purpose, as the history that explains the live owner.
+#:
+#: The window stops at a full stop or a semicolon, which is what keeps the shipped
+#: text legal: ``#329 owns those two; #198 is closed`` puts the semicolon between
+#: the required cite and the word, and ``#429 owns it; #129 was closed`` does the
+#: same one row down. Measured 2026-09-01 -- both rows green as written, and the
+#: defect shape (``#500 owns those two; #198 is closed``, with ``#198`` still
+#: required) RED.
+#:
+#: **Escapes measured in both directions, recorded rather than chased.** A closure
+#: written past the window -- ``#329 owns those two, and after a long paragraph of
+#: qualification it is closed`` -- is not caught, and a live owner whose clause
+#: happens to carry the word as an adjective -- ``#329 owns the closed-loop pass``
+#: -- is caught although it is correct. Neither shape is in the file today. The
+#: rule is a cheap second signal beside the substring test, not a classifier.
+_CITE_SAID_TO_BE_CLOSED: Final = r"{cite}\b[^.;]{{0,30}}?\bclosed\b"
+
 ANNOTATED_KEYS: tuple[tuple[str, Any, tuple[str, ...]], ...] = (
     ("secretScan", "block", ("propose accept", "best effort", "#329")),
     (
@@ -234,6 +261,19 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
     re-read what the example is promising rather than pass unremarked. The issue
     reference is required beside them so the annotation stays a claim someone
     owns.
+
+    **A named issue is not a live one, and the substring test alone cannot tell
+    them apart.** ``sentence in annotation`` is satisfied by the number appearing
+    anywhere in the block -- including inside a sentence saying that issue is
+    closed. That is not hypothetical: #428 found the ``secretScan`` row satisfied
+    by a closed #198 and moved it to #329, and the naive coordinated change did
+    not go RED. Measured again here, 2026-09-01, one number over: with the
+    annotation rewritten to *"(#500 owns those two; #329 is closed, having
+    shipped ...)"* and the row still requiring ``"#329"``, this module reported
+    **16 passed** while the live owner it names had changed. So a required
+    sentence that is *only* an issue number must also not be described as closed
+    within its own clause. The rows' history cites are untouched -- they sit on
+    the far side of a semicolon, and the window stops there.
     """
     text = CONFIG.read_text(encoding="utf-8")
     config = load_yaml_mapping(text)
@@ -273,6 +313,25 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
             f"records which keys have readers, and the schema descriptions are "
             f"what change with them."
         )
+
+    retired = {
+        sentence: found.group(0)
+        for sentence in required
+        if _ISSUE_CITE.match(sentence)
+        and (
+            found := re.search(_CITE_SAID_TO_BE_CLOSED.format(cite=re.escape(sentence)), annotation)
+        )
+    }
+
+    assert not retired, (
+        f"the annotation above `{key}` names {sorted(retired)} and says in the "
+        f"same clause that it is closed: {retired}. This row requires that token "
+        f"so the gap it states stays somebody's, and a closed issue owns nothing "
+        f"-- the substring test alone cannot tell the owner from the history "
+        f"beside it, which is how a closed #198 satisfied this row until #428. "
+        f"Move the requirement to whichever issue the annotation now names as "
+        f"the owner."
+    )
 
 
 @pytest.mark.parametrize("path", MIGRATIONS, ids=lambda p: p.name)
