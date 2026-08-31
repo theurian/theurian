@@ -7,8 +7,9 @@ https://github.com/theurian/theurian/pull/470. It said, of ``README.md``,
 reads* any of them, and that ``test_setup_claims.py`` reads the *plugin's* README
 rather than the root one. Both limbs were wrong: files under
 ``packages/theurian-core/tests`` do name ``README.md`` -- seven at `5a9a1e5` and
-eight at `9d51a04` on the entry's loose key, five at both on the strict root-only
-key this module computes -- and ``test_setup_claims.py`` carries the **root**
+eight from the commit of #470 that added this module, on the entry's loose key;
+five at `5a9a1e5` and at every commit of #470 on the strict root-only key this
+module computes -- and ``test_setup_claims.py`` carries the **root**
 ``README.md`` in its own ``CORE_ARRIVAL_SURFACES`` tuple, which the entry already
 recorded twenty lines further up, so the document contradicted itself.
 
@@ -79,8 +80,8 @@ file is not why:
   module did not yet exist, it already answered **three**: the two modules the
   entry names, plus ``tests/integration/test_setup_service.py``, whose line 152
   asserts over ``StepId.ARTIFACT_INTEGRITY`` in upper case.
-- At `99d1f4b` it answers **four** -- those three, plus this file, which spells
-  the constant in upper case in its prose and its derivation.
+- At this PR's tip (#470) it answers **four** -- those three, plus this file,
+  which spells the constant in upper case in its prose and its derivation.
 
 So the upper-case population is a different key with its own answer, and this
 module moved that answer by one rather than creating the gap. The entry's key is
@@ -99,9 +100,9 @@ the step-id-naming population is exactly two named modules; (5) that neither
 names any of the three surfaces; and (6) that each of the three surfaces is named
 by some *other* module under the core tests tree.
 
-**What the two keys do not reach, measured 2026-09-01 at `99d1f4b`.** The
-``no-test-reads`` key is ``\bno test\b[^.]{0,40}?\breads?\b``. A subject longer
-than that window escapes it -- *"no test anywhere under
+**What the two keys do not reach, measured 2026-09-01 at this PR's tip (#470).**
+The ``no-test-reads`` key is ``\bno test\b[^.]{0,40}?\breads?\b``. A subject
+longer than that window escapes it -- *"no test anywhere under
 packages/theurian-core/tests, at any level, reads README.md"* puts 60 characters
 between the two anchors and does not match -- and so does any rewording that
 drops the words *no test*: *"nothing in this repository reads README.md"*, *"not
@@ -119,7 +120,7 @@ cannot tell a path constant from a ``read_text`` -- so the entry's "All three
 files are read under ``packages/theurian-core/tests/``" is pinned only in its
 weaker *named* form, except for the root README, whose read follows from
 ``test_setup_claims``'s own rules over the tuple. It does not hold the entry's
-loose-key ``README.md`` figures (seven at `5a9a1e5`, eight at `9d51a04`): they
+loose-key ``README.md`` figures (seven at `5a9a1e5`, eight at this PR's tip): they
 are counts over a key that is not this module's, and they churn on every new
 member. The strict root-only count this module does compute appears in a failure
 message and is asserted nowhere. It does not judge the tracker facts in the entry
@@ -161,12 +162,13 @@ _ENTRY_HEADING: Final = "\n#### T-16 "
 #: :func:`test_the_t16_slice_starts_at_its_heading_and_stops_at_the_next` exists
 #: to catch, not a fix for one. ``h1`` is the only real omission, and it is
 #: harmless by measurement rather than by argument: the file's sole ``# `` line is
-#: its title at line 1, 1665 lines above T-16 (measured 2026-09-01 at `99d1f4b`),
-#: so it never falls inside the text this slices. Adding it would not be free --
-#: :func:`_entry` slices the *raw* text, before :func:`_without_code_fences`, so a
-#: ``"\n# "`` marker would also match a shell comment line inside any of T-16's
-#: eleven fenced blocks and truncate the entry silently. Zero such lines today
-#: (same measurement); the trade is recorded rather than taken.
+#: its title at line 1, 1665 lines above T-16 (measured 2026-09-01 at this PR's
+#: tip, #470), so it never falls inside the text this slices. Adding it would not
+#: be free -- :func:`_entry` slices the *raw* text, before
+#: :func:`_without_code_fences`, so a ``"\n# "`` marker would also match a shell
+#: comment line inside any of T-16's eleven fenced blocks and truncate the entry
+#: silently. Zero such lines today (same measurement); the trade is recorded
+#: rather than taken.
 _HEADING_MARKERS: Final = ("\n## ", "\n### ", "\n#### ")
 
 _CODE_FENCE: Final = re.compile(r"^\s*```")
@@ -230,7 +232,7 @@ THREE_SURFACES: Final = tuple(RELEASE_CLAIM_SURFACES)
 #: The module that carries ``CORE_ARRIVAL_SURFACES``, and the constant's name.
 #:
 #: **Read as source rather than imported, and the reason is measured.** Taken
-#: 2026-09-01 at `b080a9a` from inside a test run: the ``conftest`` puts
+#: 2026-09-01 during #470 from inside a test run: the ``conftest`` puts
 #: ``packages/theurian-core/tests`` on ``sys.path`` and *not* ``tests/unit``, and
 #: pytest's ``importlib`` mode has already imported this file under the name
 #: ``packages.theurian-core.tests.unit.test_setup_claims`` -- which no ``import``
@@ -423,7 +425,7 @@ def _test_modules() -> dict[str, str]:
 
     A filesystem walk rather than ``git grep``: it is a superset of the tracked
     population the entry's key reads, so a third probe-naming module goes RED
-    here *before* it is committed. Measured 2026-09-01 at `b080a9a`: every
+    here *before* it is committed. Measured 2026-09-01 during #470: every
     tracked file under this tree is a ``.py`` file, so the two populations differ
     only by untracked sources.
 
@@ -606,11 +608,12 @@ def test_every_t16_block_that_carries_the_retracted_wording_marks_it_retracted()
     :func:`test_no_unquoted_prose_in_t16_denies_that_a_test_reads_those_surfaces`
     saw nothing, and not the anchored block, so the marker rule never read it.
     Measured both sides in a throwaway checkout, by appending that sentence
-    inside T-16 and running this module alone. At ``9d51a04``, before the rule
-    was widened, the module collected 14 and the append left it **14 passed** --
-    the escape. This module now collects 17, and the same append takes it to
-    **1 failed, 16 passed**. The two figures come from two different modules, so
-    neither run's total can be quoted for the other.
+    inside T-16 and running this module alone. At ``9d51a04`` (a commit of #470,
+    rewritten at the squash), before the rule was widened, the module collected
+    14 and the append left it **14 passed** -- the escape. This module now
+    collects 17, and the same append takes it to **1 failed, 16 passed**. The two
+    figures come from two different modules, so neither run's total can be quoted
+    for the other.
 
     **Append inside the slice, or the demo measures nothing.** :func:`_entry`
     stops at the next heading of *any* level, and the one after T-16 is
@@ -934,11 +937,15 @@ def test_this_module_is_not_a_member_of_the_population_it_measures() -> None:
     which is a thing that can be checked rather than intended.
 
     **The pathspec is load-bearing in both keys and is published with them.** Run
-    unscoped, the same two commands answer 8 and 9 against the whole repository
-    -- this module, the entry, the work log and the source all name the step id
-    -- and neither figure is what the entry states. That is a measurement, at
-    ``54236b4``; the scoped figures were 1 and 2 at ``5a9a1e5``, ``9d51a04`` and
-    ``54236b4`` alike.
+    unscoped, these two commands count every prose mention of the step id
+    anywhere in the repository -- the entry, two work logs, the CHANGELOG, two
+    further docs, the release workflow and the source name it alongside the two
+    modules the scoped key returns, and this module does not, since it carries
+    the constant only in upper case and both keys are case-sensitive -- so the
+    unscoped pair moved twice inside #470: 7 and 8 at `5a9a1e5`, 8 and 9 when
+    this paragraph was first written, 9 and 10 at the tip. The scoped pair did
+    not move at all: 1 and 2 at `5a9a1e5` and at every commit of #470. Unscoped
+    is not a population, and the pin's self-exclusion rests on the scoped form.
 
     RED is not a defect in the rules above: it means someone wrote the token into
     this file, this module joined the population, and either the token goes or
