@@ -543,6 +543,39 @@ def _requires_git_objects(what: str) -> Index:
 
 # -- The population ----------------------------------------------------------
 
+#: The one *live* record of the corpus's population -- the rest of this
+#: module's prose (the module docstring's "30 tracked migrations over 26 live
+#: items", the comment above :data:`MINIMUM_MIGRATIONS`, :data:`EVIDENCE_KEYS`
+#: and :data:`GOVERNED_OPERATIONS`) narrates the same numbers as dated
+#: measurements that intentionally freeze at the commit named beside them --
+#: the anchor-counts convention -- and none of those sites is checked against
+#: the tree. This mapping is checked, by
+#: :func:`test_the_corpus_population_matches_its_recorded_expectation`, which
+#: recomputes every key from the same population helpers every rule in this
+#: module already reads: :func:`_migration_paths`, :func:`_corpus_paths`,
+#: :func:`_evidence_paths`, :func:`_family`, :func:`_revisions`. No new I/O
+#: path is opened for it.
+#:
+#: The stale-count class this closes opened three times across the #440 and
+#: #471 review rounds -- the same seven numbers, hand-carried across roughly a
+#: dozen prose sites, went stale in both directions of hand maintenance: stale
+#: when written, and mis-copied when re-scoped
+#: (https://github.com/theurian/theurian/issues/458). A future re-seed or a
+#: new item moves at least one of these numbers; the fix from here on is a
+#: one-line, deliberate update to this mapping in the same change that moves
+#: the corpus, not a sweep across however many places happened to narrate it.
+EXPECTED_CORPUS_POPULATION: Final[Mapping[str, int]] = MappingProxyType(
+    {
+        "tracked_migrations": 30,
+        "bodies": 30,
+        "evidence_files": 30,
+        "gitkeep_placeholders": 3,
+        "tracked_paths": 93,
+        "distinct_items": 26,
+        "multi_revision_items": 4,
+    }
+)
+
 
 @functools.cache
 def _corpus_paths() -> tuple[str, ...]:
@@ -795,6 +828,51 @@ def test_the_committed_corpus_is_present_and_has_not_shrunk() -> None:
         f"{MINIMUM_MIGRATIONS} it shipped with. Committed knowledge does not go missing "
         f"routinely: either restore it, or lower this bound in the same change that says why."
     )
+
+
+def test_the_corpus_population_matches_its_recorded_expectation() -> None:
+    """The corpus's population is derived here once, not narrated by hand a dozen times.
+
+    Companion to :func:`test_the_committed_corpus_is_present_and_has_not_shrunk`: that rule
+    is a floor (``>=``), because the corpus is expected to grow between reads of this
+    module's own prose. This rule is the exact count (``==``) that prose kept trying and
+    failing to state by hand -- #458, split from #440's re-confirmation round, after the
+    stale-count class had produced roughly a dozen hand-fixed prose sites across the #440
+    and #471 rounds, wrong in both directions: stale when written, mis-copied when
+    re-scoped (the seed-pair figure "2 crossings / holds for 24" was actually 1 / 25 the
+    day it was written).
+
+    Every number below is computed from the same population helpers every other rule in
+    this module reads -- :func:`_migration_paths`, :func:`_corpus_paths`,
+    :func:`_evidence_paths`, :func:`_family`, :func:`_revisions` -- and checked against
+    :data:`EXPECTED_CORPUS_POPULATION`, the one mapping this module asks a human to keep
+    current. Everywhere else a count appears in this module's prose, it is a dated
+    measurement that intentionally freezes (the anchor-counts convention) and is not
+    re-checked here; this is the one place a divergence goes RED instead of stale.
+    """
+    corpus = _corpus_paths()
+    revisions_by_item: dict[str, list[Revision]] = {}
+    for revision in _revisions():
+        revisions_by_item.setdefault(revision.item_id, []).append(revision)
+
+    measured: dict[str, int] = {
+        "tracked_migrations": len(_migration_paths()),
+        "bodies": sum(1 for path in corpus if _family(path) == "body"),
+        "evidence_files": len(_evidence_paths()),
+        "gitkeep_placeholders": sum(1 for path in corpus if _family(path) == "gitkeep"),
+        "tracked_paths": len(corpus),
+        "distinct_items": len(revisions_by_item),
+        "multi_revision_items": sum(
+            1 for revisions in revisions_by_item.values() if len(revisions) > 1
+        ),
+    }
+
+    for key, expected in EXPECTED_CORPUS_POPULATION.items():
+        assert measured[key] == expected, (
+            f"{key} measured {measured[key]}, EXPECTED_CORPUS_POPULATION records {expected} -- "
+            f"a re-seed or new item moved the population -- update the EXPECTED mapping in "
+            f"the same change, deliberately."
+        )
 
 
 def test_every_tracked_corpus_path_belongs_to_a_family_this_module_governs() -> None:
