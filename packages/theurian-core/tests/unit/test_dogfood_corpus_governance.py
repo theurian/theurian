@@ -179,6 +179,12 @@ GOVERNED_METADATA: Final[Mapping[str, str]] = MappingProxyType(
 #: 26 migrations, each ``createItem`` then ``upsertRevision`` and nothing else
 #: (measured 2026-08-20).
 #:
+#: **A governed re-seed does not violate that pin.** It is a second migration
+#: over the same item -- ``createItem`` (idempotent under FR-K8 against an item
+#: that already exists) then ``upsertRevision`` carrying ``expectedRevision`` --
+#: not an edit, so the pinned tuple continues to hold
+#: (https://github.com/theurian/theurian/issues/416).
+#:
 #: **This is what stops an appended operation from moving governance behind the
 #: rules' backs.** Every governance rule here reads ``upsertRevision.metadata``;
 #: a trailing ``changeSensitivity`` op would reclassify the same item to
@@ -230,10 +236,11 @@ ANCHOR_KEYS: Final = frozenset({"provider", "sourceUri", "commitSha", "filePath"
 #: that can start failing for reasons that have nothing to do with the corpus.
 _FULL_OBJECT_NAME: Final = re.compile(r"\A[0-9a-fA-F]{40}\Z")
 
-#: The corpus holds 26 migrations, 26 bodies, 26 ``evidence.json`` files and 3
-#: ``.gitkeep`` placeholders -- 81 tracked paths under the root ``.theurian/``
-#: (measured 2026-08-20). Recorded as content rather than as a branch SHA: a
-#: squash merge destroys the branch commit a reader would go looking for.
+#: The corpus holds 27 migrations, 27 bodies, 27 ``evidence.json`` files and 3
+#: ``.gitkeep`` placeholders -- 84 tracked paths under the root ``.theurian/``
+#: (measured 2026-08-31 at 7e7074c). Recorded as content rather than as a
+#: branch SHA: a squash merge destroys the branch commit a reader would go
+#: looking for.
 #:
 #: A lower bound; see the module docstring for why it is not an equality.
 MINIMUM_MIGRATIONS: Final = 26
@@ -1289,7 +1296,7 @@ def test_the_evidence_key_rule_admits_the_optional_key_and_nothing_else(
     real exercise of the *admitting* half of the allowance. What landing more
     proposals never exercises is the *refusal* half: `propose` does not write a
     stray key like ``notes`` or ``handoff``, so an allowance wrongly widened to
-    admit any key would stay green however large the corpus grows. These five
+    admit any key would stay green however large the corpus grows. These eight
     cases are the ones the allowance has to separate.
     """
     assert _evidence_key_difference(dict.fromkeys(keys, "value")) == expected
@@ -1308,11 +1315,17 @@ def _evidence_key_difference(document: Mapping[str, object]) -> list[str]:
 def test_the_committed_corpus_holds_one_evidence_file_per_migration() -> None:
     """Provenance for every item, and no proposal directory left over.
 
-    The corpus is one item per proposal per migration by construction: 26 and 26
-    (measured 2026-08-20). The proposal id is *not* derivable from the migration
-    id -- the seed generated them monotonically, and 2 of the 26 crossed a
-    millisecond boundary, so ``proposalId + 1 == migration.id`` holds for 24 and
-    is not a relation this can assert. Counts and uniqueness are what the data
+    The corpus is one proposal per migration by construction: 27 and 27 (dated
+    2026-08-31). That is no longer the same claim as one item per proposal: the
+    ADR-0013 re-seed (https://github.com/theurian/theurian/issues/416) landed a
+    27th proposal and a 27th migration whose ``upsertRevision`` names an
+    *existing* item (``architecture.ai-writes-produce-proposals``) rather than a
+    new one, so an item can hold more than one revision while this file still
+    holds exactly one evidence record per migration. The proposal id is *not*
+    derivable from the migration id -- the seed generated the first 26
+    monotonically, and 2 of them crossed a millisecond boundary, so
+    ``proposalId + 1 == migration.id`` holds for 24 of the 26 seed pairs and is
+    not a relation this can assert. Counts and uniqueness are what the data
     actually supports, and asserting the false relation would be a rule that
     goes RED on the next correctly-seeded item.
 
