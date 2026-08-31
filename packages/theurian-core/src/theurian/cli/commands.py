@@ -7,6 +7,7 @@ the Claude Code plugin depends on (CP-2), validated by ``tests/contract/``.
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -89,6 +90,7 @@ from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
     StateDatabaseUnreadableError,
+    WriteLock,
     WriteLockTimeoutError,
     create_database,
     write_transaction,
@@ -1289,12 +1291,69 @@ def migrate_validate(as_json: JsonOption = False) -> None:
     )
 
 
+#: The remedy for a raw ``OSError``/``sqlite3.Error`` reaching either of
+#: :func:`migrate_apply`'s two lock-held writer sections (issue #468). Both
+#: are now inside :class:`~theurian.infrastructure.sqlite.connection.WriteLock`
+#: and re-check their own precondition after acquiring it, so the process-level
+#: race #468 measured (`table schema_metadata already exists`, `database is
+#: locked`, `disk I/O error`) is closed at the source; this is the residual
+#: backstop -- an unrelated filesystem fault, or the advisory lock's own
+#: documented NFS caveat (ADR-0018 Negative consequence) -- that turns
+#: whatever reaches it into the same `_fail` envelope every other locked write
+#: gets, rather than a raw traceback.
+_LOCKED_WRITE_FAULT_REMEDY = (
+    "Wait for the other `theurian` process to finish, then retry. If none is running, "
+    "this may be a filesystem fault -- check that `.theurian/state/` is writable and on a "
+    "supported filesystem (not NFS; ADR-0018), then retry."
+)
+
+
 @migrate_app.command("apply")
-def migrate_apply(as_json: JsonOption = False) -> None:
+def migrate_apply(  # noqa: PLR0911 -- one early return per distinguishable failure shape (#468 adds two: a locked create_database fault, a locked write_active_state fault)
+    as_json: JsonOption = False,
+) -> None:
     """Apply pending migrations to the canonical store.
 
     Idempotent: applying an unchanged set again reports zero applied and changes
     nothing (FR-K8).
+
+    **Both writes this command makes outside the migration transaction are now
+    inside the advisory lock too (issue #468).** `write_transaction` (entered
+    through `apply_migration_set` below) already serialises the migration
+    content write -- ADR-0018 point 2's promise held there from the start. It
+    never covered `create_database`, which used to run *before* that
+    transaction opens, or `write_active_state`, which runs *after* it commits.
+    Measured on eight real two-process runs against a fresh project: the loser
+    crashed in four, three distinct unhandled `sqlite3` errors (`table
+    schema_metadata already exists`, `database is locked`, `disk I/O error`),
+    because two processes both passed the same unlocked `not
+    database.exists()` check and then both raced `sqlite3.connect()` against
+    the same path. `write_active_state`'s own write (`os.replace`, atomic
+    per-file) was never the unsafe part -- it is what the published pointer
+    could end up *naming*: a database another, slower process was still
+    mid-creating, unlocked, when this one's `os.replace` ran.
+
+    The fix takes the same `WriteLock` both writes already competed for, in
+    two separate acquire/release cycles rather than one held across the whole
+    command. `apply_migration_set` acquires this exact lock again, internally,
+    for the transaction -- and a process that re-opens and `flock`s a lock
+    file it is already holding self-blocks for the full timeout: `flock`
+    locks an *open file description*, not a process or a path, so two
+    separate `Path.open()` calls from the same process are two separate
+    descriptions that contend with each other exactly as two processes would.
+    So `create_database`'s locked section below closes *before*
+    `apply_migration_set` is called, and `write_active_state`'s opens only
+    *after* it returns; the two never nest, and neither nests inside the
+    transaction's own lock.
+
+    Each locked section re-checks its own precondition after acquiring the
+    lock, which is what makes the loser *observe* the winner's write instead
+    of racing it: `create_database` raises `FileExistsError` on a file that
+    already exists, so a loser that skipped the re-check would still crash on
+    that call alone, lock or no lock. The re-check is FR-K8's idempotent-noop
+    path pulled one step earlier -- the same shape `MigrationEngine.apply`
+    already uses *inside* the transaction for the migration content itself,
+    now applied to the write that happens before that transaction opens.
     """
     context, database = _require_project(as_json)
 
@@ -1312,21 +1371,40 @@ def migrate_apply(as_json: JsonOption = False) -> None:
     provenance = BuildProvenance.default()
 
     created = False
-    if database.exists() and not provenance.has_state(context.paths.root, str(context.state_hash)):
-        # A database file at the name this build would use, that this
-        # installation did not produce -- a doctored `.theurian/state/` shipped in
-        # the repository past its ADR-0004 ignore. Applying migrations *into* it
-        # would leave its injected rows untouched (an idempotent replay writes
-        # nothing) and then stamp the result as this install's build. Discard it,
-        # sidecars included, and rebuild from the Git-tracked migrations, which
-        # are the trusted source. `git rm --cached` is still the user's job for a
-        # tracked copy (the refusal on the serve side names it); this only stops
-        # the untrusted bytes from being adopted here.
-        _discard_untrusted_state(database)
+    try:
+        with WriteLock(context.paths.write_lock).held():
+            # Re-checked here, not only inside `create_database`'s own
+            # `if database_path.exists()` guard: both processes in a raced
+            # pair can pass the unlocked check above before either acquires
+            # the lock, so the loser has to ask again once it *is* holding
+            # the lock, or it calls `create_database` on a file the winner
+            # just created and gets `FileExistsError` -- a different crash,
+            # not the fix (#468).
+            if database.exists() and not provenance.has_state(
+                context.paths.root, str(context.state_hash)
+            ):
+                # A database file at the name this build would use, that this
+                # installation did not produce -- a doctored `.theurian/state/`
+                # shipped in the repository past its ADR-0004 ignore. Applying
+                # migrations *into* it would leave its injected rows untouched
+                # (an idempotent replay writes nothing) and then stamp the
+                # result as this install's build. Discard it, sidecars
+                # included, and rebuild from the Git-tracked migrations, which
+                # are the trusted source. `git rm --cached` is still the
+                # user's job for a tracked copy (the refusal on the serve side
+                # names it); this only stops the untrusted bytes from being
+                # adopted here.
+                _discard_untrusted_state(database)
 
-    if not database.exists():
-        create_database(database, str(context.state_hash), MIGRATION_ENGINE_VERSION)
-        created = True
+            if not database.exists():
+                create_database(database, str(context.state_hash), MIGRATION_ENGINE_VERSION)
+                created = True
+    except TheurianError as exc:
+        _fail(str(exc), remedy=_state_remedy(exc), as_json=as_json, code=EXIT_STATE_ERROR)
+        return
+    except (OSError, sqlite3.Error) as exc:
+        _fail(str(exc), remedy=_LOCKED_WRITE_FAULT_REMEDY, as_json=as_json, code=EXIT_STATE_ERROR)
+        return
 
     project = Project(
         project_id=context.project_id,
@@ -1400,9 +1478,26 @@ def migrate_apply(as_json: JsonOption = False) -> None:
         _fail(str(exc), remedy=_state_remedy(exc), as_json=as_json, code=EXIT_STATE_ERROR)
         return
 
-    active = write_active_state(
-        context.paths, context.state_hash, len(context.loaded.migration_set), context.clock
-    )
+    # Locked (#468): the pointer this publishes names `database` by its
+    # deterministic, state-hash-derived filename, and without the lock this
+    # write could complete while another process's `create_database` for that
+    # same path was still mid-flight -- see this command's own docstring above.
+    # With `create_database` itself now serialised, this window is closed;
+    # this lock is the second half of the same guarantee, not a distinct fix,
+    # and it is what keeps two concurrent publishes of the *same* content
+    # (`os.replace`'s own temp file is one fixed path, not process-unique)
+    # from ever writing that temp file at the same time.
+    try:
+        with WriteLock(context.paths.write_lock).held():
+            active = write_active_state(
+                context.paths, context.state_hash, len(context.loaded.migration_set), context.clock
+            )
+    except TheurianError as exc:
+        _fail(str(exc), remedy=_state_remedy(exc), as_json=as_json, code=EXIT_STATE_ERROR)
+        return
+    except (OSError, sqlite3.Error) as exc:
+        _fail(str(exc), remedy=_LOCKED_WRITE_FAULT_REMEDY, as_json=as_json, code=EXIT_STATE_ERROR)
+        return
 
     # Record that this installation built this canonical state, out of the
     # repository tree, the instant the pointer that publishes it is written
