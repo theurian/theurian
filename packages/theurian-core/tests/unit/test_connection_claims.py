@@ -396,6 +396,20 @@ _RUNS_A_PROCESS_ALONGSIDE_ITSELF: Final = re.compile(
 #: is to fail on deletion rather than on rewording.
 HELD_BY_CONVENTION: Final = "held by convention at each call site"
 
+#: The call-site key ``store.py``'s docstring hands the reader, in the form that
+#: excludes the docstring quoting it. Required of ``store.py`` **and** of this
+#: module's own prose, because the two are a mirrored pair and #441's second round
+#: found them mirroring the wrong form: without the pathspec the key matches its
+#: own line, so it reported three call sites where the tree has two.
+#:
+#: Pinned as text rather than by running the command. That is the same choice
+#: :data:`TEST_ROOTS` records -- the mutation harness copies the tree without a
+#: ``.git``, so a git-keyed assertion would fail every mutation run for a reason
+#: unrelated to the mutation.
+STORE_CALL_SITE_KEY: Final = (
+    "``git grep -n 'SqliteWriter(' -- packages/theurian-core/src ':!*/sqlite/store.py'``"
+)
+
 #: Required of ``connection.py`` alone, because they name that module's own
 #: mechanism: the object flocked, and how long it is held.
 CONNECTION_MECHANISM_PHRASES: Final = (
@@ -853,6 +867,43 @@ def test_connection_py_still_states_the_lock_holding_write_path() -> None:
         )
 
 
+def test_both_copies_of_the_call_site_key_exclude_the_docstring_that_quotes_them() -> None:
+    """RED means a mirrored call-site key is back to counting its own prose.
+
+    ``store.py`` sends the reader to a live command instead of a line number,
+    which is right -- and the command it sent them to matched the very docstring
+    line printing it, so it reported three call sites where the tree has two. The
+    same key is quoted again in this module's own docstring, which is what makes
+    it a *mirrored* string and therefore the shape this whole file set exists for:
+    a correction applied to one copy and not the other.
+
+    Both copies are asserted here rather than one, and that is the point. Fixing
+    ``store.py`` alone would leave a reader of this module running the unexcluded
+    key; fixing this module alone would leave the one the shipped docstring
+    publishes. Requiring the pathspec in both is what stops them drifting apart
+    the way ``connection.py`` and ``store.py`` did before #434.
+
+    The premise comes first: the parse must have returned docstrings at all,
+    otherwise ``any(...)`` reports "the key is gone" about a file that still
+    carries it.
+    """
+    expected = collapsed(STORE_CALL_SITE_KEY)
+
+    store_docstrings = [collapsed(text) for text in _docstrings(STORE_MODULE.read_text("utf-8"))]
+    assert store_docstrings, "no docstring was parsed out of store.py; this test read nothing"
+    assert any(expected in docstring for docstring in store_docstrings), (
+        f"store.py's docstring no longer hands the reader the self-excluding call "
+        f"site key `{STORE_CALL_SITE_KEY}`; without the pathspec the command "
+        f"matches the docstring line that prints it"
+    )
+
+    assert __doc__ is not None, "this module has no docstring, so the mirror is unread"
+    assert expected in collapsed(__doc__), (
+        f"this module's docstring quotes a call-site key that is not the "
+        f"self-excluding one store.py publishes: `{STORE_CALL_SITE_KEY}`"
+    )
+
+
 def test_the_docstring_scan_reads_docstrings_and_not_code() -> None:
     """RED means the scan started reading comments and string constants.
 
@@ -1283,9 +1334,13 @@ def test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself() ->
     every new one and be deleted; the exact-list discipline lives in the narrow
     tier, where the population is one file.
 
-    **The premises come first.** A population that came back empty would satisfy
-    "no member spawns" while measuring nothing, and one that had lost the file
-    which actually exercises the lock would not be reading the write path at all.
+    **The premises come first**, and one of them is that this tier is not the
+    narrow one wearing a different name. A population that came back empty would
+    satisfy "no member spawns" while measuring nothing; one that had lost the file
+    which actually exercises the lock would not be reading the write path at all;
+    and one reaching nothing the ``WriteLock`` key already reaches would leave
+    every ``write_transaction`` acquisition unwatched while looking like coverage,
+    which is the state this test was written to end.
 
     Reach: it is a text search over two symbols. A test whose only acquisition is
     inside a spawned CLI names neither and is invisible here -- the e2e migration
@@ -1309,6 +1364,13 @@ def test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself() ->
         f"the write-path population no longer contains {WRITE_LOCK_EXERCISE}, the "
         f"file that actually exercises the lock, so it is not the population this "
         f"test claims to read: {population}"
+    )
+
+    beyond_the_narrow_key = [path for path in population if "WriteLock" not in sources[path]]
+    assert beyond_the_narrow_key, (
+        f"the write-path population reaches nothing the `WriteLock` key does not, "
+        f"so this tier has collapsed into the narrow one and every "
+        f"`write_transaction` acquisition is unwatched again: {population}"
     )
 
     concurrent = {
