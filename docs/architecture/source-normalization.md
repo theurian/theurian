@@ -167,7 +167,7 @@ query-side timeout that is still owed.
 | OpenAPI | summaries and descriptions | paths, operations, parameters, responses |
 | Git commit | subject and body | author, tree, parents, changed paths |
 | Git diff | hunk content | file paths, line ranges, change type |
-| GitHub review — **not built**, owed with review ingestion (Milestone 7, [#129](https://github.com/theurian/theurian/issues/129)) | comment bodies | thread structure, resolution, target lines, fix commit |
+| GitHub review — **not built**, owed with review ingestion (Milestone 7); no open issue owns it, and the paragraph under *Failure isolation* below says which issues do not | comment bodies | thread structure, resolution, target lines, fix commit |
 
 ## Ingestion pipeline
 
@@ -203,8 +203,19 @@ other 199 from being available. Failures are reported per document with the path
 and the reason, and the run's exit status reflects that some documents were
 skipped.
 
-The same principle is owed further up, when review ingestion lands (Milestone 7,
-[#129](https://github.com/theurian/theurian/issues/129)): if LLM-based candidate
-generation fails, raw review ingestion must still succeed (FR-V5). Evidence
-collection and interpretation are to stay separate steps precisely so the fragile
-one cannot take down the reliable one.
+The same principle is owed further up, when review ingestion lands (Milestone 7):
+if LLM-based candidate generation fails, raw review ingestion must still succeed
+(FR-V5). Evidence collection and interpretation are to stay separate steps
+precisely so the fragile one cannot take down the reliable one.
+
+**No open issue owns that work, and saying so is deliberate rather than an
+omission.** Both cites above used to name
+[#129](https://github.com/theurian/theurian/issues/129), which closed
+`COMPLETED` on the wording of documents like this one rather than on a parser.
+The two nearest open issues do not cover it either:
+[#368](https://github.com/theurian/theurian/issues/368) ingests `Review-Finding:`
+commit trailers and calls itself a git-history source, and
+[#429](https://github.com/theurian/theurian/issues/429) owns only the SEC-10
+fetch controls an adapter would need before its first outbound request.
+[#200](https://github.com/theurian/theurian/issues/200) owns the `Git commit` and
+`Git diff` rows of the table above and states that this row is not its scope.
