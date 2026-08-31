@@ -330,16 +330,28 @@ correction note reports what the port published at ``261eff3`` and ``f665ecf``,
 and quotes the *twelve* it retracted. Those are measurements of named moments,
 which is the one form of a written number this file set accepts.
 
-**Seven correction paragraphs are pinned, because deleting one is how a
+**Eight correction paragraphs are pinned, because deleting one is how a
 corrected claim comes back for free.** Every bullet scan above is keyed on what a
 bullet *asserts*, while a correction note carries the *retraction* -- so removing
 a note leaves the bullet head's ``(owed, #439)`` satisfying :data:`LIVE_OWNER`
-and the closed-tracker scan passing over a bullet that retracts nothing. #446's
-first review round measured three deletions green and its second measured three
-more: the Neutral point's NFR-4 amendment, and the Milestone-5 amendment's two
-opening retraction paragraphs -- materially the pre-#441 record, each deletion
-re-run here on 2026-08-31 with the pre-fix module's twenty tests green.
+and the closed-tracker scan passing over a bullet that retracts nothing. Seven of
+the eight were measured deletable before they were pinned: three in #446's first
+review round, three in its second -- the Neutral point's NFR-4 amendment heading
+and the Milestone-5 amendment's two opening retraction paragraphs, materially the
+pre-#441 record -- and one in its third, the NFR-4 amendment's *body*, which the
+Compliance section's "NFR-4 is not discharged, per the amendment above" points
+at. The third was measured at ``155dc08`` on 2026-08-31 with all twenty-five
+tests of this module green; the earlier two rounds re-ran theirs against the tree
+that preceded each fix. The eighth pin, the #468 narrowing, is not a measured
+deletion: it arrived as new prose on this branch and was pinned with it.
 :data:`CORRECTION_NOTES` names what each removal resurrects.
+
+**That "eight" is derived, not typed.**
+:func:`test_this_modules_count_of_its_own_pins_is_derived_from_the_mapping` reads
+the word out of this docstring and asserts it equals ``len(CORRECTION_NOTES)``.
+The rule the amendment's write-method count is held to, turned on this file:
+#446's third review round found a hand-kept "six times" over a seven-item list
+here, which is the same defect one layer in.
 
 **Presence is half of it, and the second round found the other half.** An anchor
 is a short fragment, so a paragraph cut down to it passed, and so did one
@@ -370,6 +382,14 @@ each one out of the live module. #446's second review round renamed
 on 2026-08-31 against the pre-fix tree, every test in this module,
 ``test_connection_claims.py`` and ``test_ports.py`` was green while the ADR
 pointed at a function that no longer existed.
+
+That "every" is held rather than asserted. The list is compared for **equality**
+against the references :data:`_SYMBOL_REFERENCE` harvests out of the record, so a
+reference *added* to the ADR fails as loudly as one renamed out of the code.
+#446's third review round appended a fabricated
+``application/nonexistent_module.py`` reference to the Compliance section; re-run
+here on 2026-08-31 against the pre-fix tree at ``155dc08``, all twenty-five tests
+of this module were green.
 
 **The lock sweep's reach, stated as narrowly as the filesystem one's.** It reads
 whole module source, so a lock taken in a helper those modules merely import is
@@ -690,9 +710,11 @@ class CorrectionNote(NamedTuple):
 #: goes back to being *true in the record and false in the code* the moment its
 #: paragraph is gone.
 #:
-#: They are pinned because #446's first review round measured that the first three
-#: could be deleted with every other pin in this module green, and its second
-#: round measured the same of three more. The bullet scans are the reason: they
+#: They are pinned because #446's first review round measured that three of them
+#: could be deleted with every other pin in this module green, its second round
+#: measured the same of three more, and its third of one more -- the NFR-4
+#: amendment's body. The eighth, the #468 narrowing, arrived as new prose on this
+#: branch and was pinned with it. The bullet scans are the reason: they
 #: are keyed on what a bullet *asserts*, and a correction note carries the
 #: retraction rather than the assertion, so the bullet head's ``(owed, #439)``
 #: alone satisfies :data:`LIVE_OWNER` and the closed-tracker scan passes over a
@@ -717,6 +739,15 @@ class CorrectionNote(NamedTuple):
 #: whatever the record says. The premise in
 #: :func:`test_every_correction_blockquote_is_still_in_the_record` refuses that
 #: shape by name, because the failure it otherwise produces reads as prose drift.
+#:
+#: **``load_bearing`` is scoped to the anchor's own paragraph, not to its
+#: blockquote**, and that is worth stating because it decides how a multi-paragraph
+#: amendment is pinned. :func:`_correction_note` returns the one paragraph carrying
+#: the anchor, so a fragment from a sibling paragraph of the same blockquote is
+#: reported *missing* -- measured 2026-08-31 at ``155dc08`` by hanging the NFR-4
+#: body's "is owed to milestone 6's ..." off the ``the citation of nfr-4`` anchor,
+#: which went RED on the content pin. A second paragraph is therefore pinned by a
+#: second entry with its own anchor, which is what the pair below does.
 #:
 #: **What this can and cannot hold, stated rather than implied.** It holds the
 #: paragraph's presence and the presence of the fragments named here. It does not
@@ -774,6 +805,16 @@ CORRECTION_NOTES: Final[dict[str, CorrectionNote]] = {
         ),
         load_bearing=("names a requirement that is currently unmet",),
     ),
+    "what this point is right about is the canonical store": CorrectionNote(
+        resurrects=(
+            "the NFR-4 amendment keeps its heading and loses the half that says where the "
+            "requirement actually belongs, so the Compliance section's `NFR-4 is not "
+            "discharged, per the amendment above. It belongs with the same blue/green "
+            "work` cites an amendment that no longer names the work or the milestone, and "
+            "an unmet requirement is left with no owner a reader can follow"
+        ),
+        load_bearing=("is owed to milestone 6's blue/green work and is not discharged here",),
+    ),
     "the index's only writer no longer holds": CorrectionNote(
         resurrects=(
             "`theurian index build is today its only writer` is resurrected, in a section "
@@ -805,16 +846,32 @@ CORRECTION_NOTES: Final[dict[str, CorrectionNote]] = {
 #: the amendment above" pointing at nothing. It is pinned above now.
 #:
 #: Unpinned **paragraphs inside pinned blockquotes**, which is the residue the
-#: unit above creates, measured 2026-08-31 against the sixteen paragraphs
-#: :func:`_quoted_notes` returns for this record. The Milestone-5 amendment is
-#: seven of them: four are anchored above, a fifth is held by
-#: :data:`AMENDMENT_COUNT_NOTE`, and two are not -- the "decision is not
-#: superseded" paragraph carrying the standing ``#15`` cite, and the GOVERNANCE
-#: note. The #468 narrowing is three: one anchored, and its mechanism and
-#: not-superseded paragraphs unpinned. Each of those four was deleted on
-#: 2026-08-31 in a throwaway checkout and every test in this module stayed green,
-#: so the residue is measured rather than assumed. They are recorded rather than
-#: pinned because each restates
+#: unit above creates. **Measured by deletion rather than derived by reading**, and
+#: that distinction is the finding: #446's third review round found this
+#: enumeration naming four when the sweep found six, and an enumeration that says
+#: "measured" while it was reasoned is the same defect the pins above exist for.
+#: The method, re-runnable: delete each of the paragraphs :func:`_quoted_notes`
+#: returns for this record, one at a time, and run this module.
+#:
+#: At ``155dc08`` that was sixteen paragraphs, of which eight deletions stayed
+#: green -- the two whole blockquotes listed above, plus six paragraphs inside a
+#: pinned blockquote. One of those six is now pinned: the NFR-4 amendment's body,
+#: which the Compliance section cites and which is anchored above on "what this
+#: point is right about is the canonical store". Re-run after that pin against
+#: this module's twenty-six tests, seven deletions stay green and the residue
+#: inside pinned blockquotes is **five**:
+#:
+#: - the Milestone-5 amendment's "decision is not superseded" paragraph, carrying
+#:   the standing ``#15`` cite, and its GOVERNANCE note. That amendment is seven
+#:   paragraphs: four anchored above, a fifth held by
+#:   :data:`AMENDMENT_COUNT_NOTE`, and these two;
+#: - the #468 narrowing's mechanism and not-superseded paragraphs. That blockquote
+#:   is three: one anchored, and these two;
+#: - the NFR-4 amendment's "this point said WAL is ..." paragraph, which argues
+#:   for the retraction its heading states. That blockquote is three, and the other
+#:   two are anchored above.
+#:
+#: They are recorded rather than pinned because each restates
 #: something an anchored paragraph or a live pin already carries, and a pin per
 #: paragraph would go RED on every ordinary rewrite of a record that is rewritten
 #: often.
@@ -890,26 +947,34 @@ class SymbolPointer(NamedTuple):
 
 #: Every ``module.py::symbol`` reference in ADR-0018, as a literal tuple.
 #:
-#: **Written out rather than harvested by a pattern**, and that is the same choice
-#: :data:`CORRECTED_BULLETS` makes for the same reason. A walker over the record
-#: would find whatever the record happens to contain, so a reference deleted from
-#: the ADR leaves the walker with nothing to check and the test green: the pin
-#: would be strongest exactly when the document was intact and vacuous when it was
-#: not. A hand-written population fails in that direction instead -- if a pointer
-#: is removed or reworded, ``cited`` stops matching and the list has to be brought
-#: back into step by a person who can see what happened.
+#: **Written out and then held equal to a harvest**, which is not the same thing as
+#: choosing one over the other. Neither half is sufficient alone: a harvest by
+#: itself checks whatever the record happens to contain, so a reference deleted
+#: from the ADR leaves nothing to check and the test green; a hand-written tuple by
+#: itself never sees a reference *added*, which is how a fabricated
+#: ``application/nonexistent_module.py`` pointer passed #446's third review round.
+#: An equality between the two fails in **both** directions and is vacuous in
+#: neither: a removed reference fails as a listed entry with nothing to match, an
+#: added one fails as a harvested reference nobody resolved, and each names which
+#: side moved. The extra fields -- ``module`` and ``symbol`` -- are the part a
+#: harvest cannot supply, and they are what turns a reference into a resolution.
 #:
-#: Nine references, measured 2026-08-31 with
-#: ``grep -oE '[A-Za-z0-9_/.]+\\.py::[A-Za-z0-9_]+(\\[[A-Za-z0-9_]+\\])?'`` over the
-#: record and deduplicated. #446's second review round found the class open in
-#: both directions: renaming ``write_methods`` left the suite green while the ADR
-#: went on naming the old symbol, and nothing anywhere read the other eight
-#: either.
+#: Nine references, measured 2026-08-31 at ``155dc08`` with
+#: ``grep -oE '[A-Za-z0-9_/.]+\\.py::[A-Za-z0-9_]+(\\[[A-Za-z0-9_]+\\])?(\\(\\))?'``
+#: over the record and deduplicated -- :data:`_SYMBOL_REFERENCE` is that pattern,
+#: and the equality is what keeps this comment's "nine" from being a number kept in
+#: step by hand. #446's second review round found the class open in the *rename*
+#: direction: renaming ``write_methods`` left the suite green while the ADR went on
+#: naming the old symbol, and nothing anywhere read the other eight either.
 #:
 #: ``write_methods()`` is cited with its call parentheses and the rest without,
 #: which is why ``cited`` and ``symbol`` are separate fields rather than one
-#: string split on ``::``. ``[CanonicalStore]`` is a pytest parametrisation id,
-#: not a symbol, and it is resolved separately against ``ALL_PORTS`` --
+#: string split on ``::``. It is also why :data:`_SYMBOL_REFERENCE` carries an
+#: optional ``()`` group: without it the harvest returns ``write_methods`` where
+#: the record writes ``write_methods()``, and the equality would fail on a
+#: difference the ADR does not have. ``[CanonicalStore]`` is a pytest
+#: parametrisation id, not a symbol, and it is resolved separately against
+#: ``ALL_PORTS`` --
 #: :func:`test_every_symbol_pointer_in_the_adr_resolves_to_something_live` says
 #: how.
 ADR_SYMBOL_POINTERS: Final = (
@@ -962,6 +1027,24 @@ ADR_SYMBOL_POINTERS: Final = (
     ),
 )
 
+#: One ``module.py::symbol`` reference as ADR-0018 writes it, so the record can be
+#: harvested and the harvest held equal to :data:`ADR_SYMBOL_POINTERS`.
+#:
+#: Faithful to the record rather than normalising it, which is what makes the
+#: equality mean something: the optional ``()`` keeps ``write_methods()`` whole and
+#: the optional ``[...]`` keeps the parametrisation id on
+#: ``test_port_methods_are_annotated[CanonicalStore]``. Comparing on a stripped key
+#: instead would let ``cited`` drift on exactly the punctuation the field exists to
+#: preserve.
+#:
+#: Reach: it reads the whole record, code fences included. A ``.py::`` reference
+#: written into a command sample is harvested and has to join the list or leave the
+#: sample -- a false RED with a visible remedy, chosen over a sweep that silently
+#: skips the one place a pointer is most often pasted.
+_SYMBOL_REFERENCE: Final = re.compile(
+    r"[A-Za-z0-9_/.]+\.py::[A-Za-z0-9_]+(?:\[[A-Za-z0-9_]+\])?(?:\(\))?"
+)
+
 #: The one pytest parametrisation id ADR-0018 cites, and the population it has to
 #: be a member of. ``test_ports.py`` parametrises over ``ports.ALL_PORTS`` with
 #: ``ids=lambda p: p.__name__``, so ``[CanonicalStore]`` names a real test node
@@ -1009,6 +1092,59 @@ _RETRACTED: Final = re.compile(r"\b(?:closed|named|until|no longer|passed|repoin
 #: reporting the standing record as a defect.
 _AMENDMENT_STANDING_CITE: Final = "tracked with the index writer in"
 
+#: Every key in this module that is matched against prose ``collapsed`` has
+#: lowercased, keyed by the constant a failure has to name.
+#:
+#: **A capital in any of them is unmatchable, and the failure it produces names the
+#: wrong cause.** ``collapsed`` lowercases both the record and, at every call site
+#: below, nothing else -- so a key carrying a capital matches no paragraph however
+#: intact the record is, and the pin that reads it reports the prose as deleted,
+#: gutted or reworded. A reader acts on that by restoring text that is already
+#: there. :func:`_assert_the_keys_are_lowercase` refuses the shape *before* the pin
+#: runs, so the RED says "this key can never match" instead.
+#:
+#: The premise covered :data:`CORRECTION_NOTES` alone until #446's third review
+#: round, which is why this registry exists: capitalising ``POINT_2_BOUNDARY[0]``
+#: at ``155dc08`` produced "Decision point 2 no longer bounds what it serialises"
+#: -- a report of prose drift over a record nothing had touched -- because the
+#: premise lived in a different test. Ten entries here, eight of them families
+#: that guard was reaching past; every one is now checked at the pin that reads
+#: it.
+#:
+#: ``_AMENDMENT_STANDING_CITE`` is the worst of them and is guarded inside
+#: :func:`_corrected_bullet`: it is asserted **absent**, so a capital there does
+#: not produce a wrong-cause RED at all -- it produces a guard that passes over
+#: everything.
+#:
+#: Reach: opt-in. A key added to this module and not to this mapping is unguarded
+#: again, and nothing derives the membership -- there is no property of a string
+#: that says it will be matched against collapsed prose.
+#: How this module's own docstring states how many paragraphs it pins, as the
+#: phrase rather than as a bare number word -- :data:`_SPELLED_COUNT`'s rule
+#: applied to this file instead of to the record.
+#:
+#: It exists because #446's third review round found "measured exactly that, six
+#: times" written over a seven-item list, two screens below a docstring that said
+#: six and meant it. Both were hand-kept counts over a mapping that grows every
+#: round, which is the defect every pin in this file exists to catch, committed in
+#: the file that catches it.
+_PINNED_PARAGRAPH_COUNT: Final = re.compile(r"\*\*([A-Za-z]+) correction paragraphs are pinned")
+
+_LOWERCASE_REQUIRED: Final[dict[str, tuple[str, ...]]] = {
+    "AMENDMENT_COUNT_NOTE": (AMENDMENT_COUNT_NOTE,),
+    "CORRECTED_BULLETS": CORRECTED_BULLETS,
+    "CORRECTION_NOTES anchors": tuple(CORRECTION_NOTES),
+    "CORRECTION_NOTES load_bearing": tuple(
+        fragment for note in CORRECTION_NOTES.values() for fragment in note.load_bearing
+    ),
+    "LIVE_OWNER": (LIVE_OWNER,),
+    "POINT_1_REMEASUREMENT": POINT_1_REMEASUREMENT,
+    "POINT_2_BOUNDARY": POINT_2_BOUNDARY,
+    "POSITIVE_CONSEQUENCE": (POSITIVE_CONSEQUENCE,),
+    "POSITIVE_CONSEQUENCE_RETRACTION": POSITIVE_CONSEQUENCE_RETRACTION,
+    "_AMENDMENT_STANDING_CITE": (_AMENDMENT_STANDING_CITE,),
+}
+
 #: The lock APIs an index write lock would be taken through: ADR-0018's own
 #: pasted grep key minus ``write_lock``. That token is dropped because
 #: ``ProjectPaths.write_lock`` -- the *canonical* store's lock path -- is declared
@@ -1048,6 +1184,29 @@ REQUIRED_INDEX_WRITERS: Final = (
     "theurian.application.withdrawal_purge",
     "theurian.cli.index_commands",
 )
+
+
+def _assert_the_keys_are_lowercase(*families: str) -> None:
+    """Refuse a key ``collapsed`` can never match, before the pin reading it runs.
+
+    Named families out of :data:`_LOWERCASE_REQUIRED`, called first in every test
+    that reads one. Ordering is the whole point: the assertion below and the pin
+    after it fail on the same edit, and only this one names the cause. A pin left
+    to fail on its own reports the record as deleted or gutted, which sends a
+    reader to restore prose that is sitting there untouched.
+    """
+    for family in families:
+        assert family in _LOWERCASE_REQUIRED, (
+            f"`{family}` is not a family in `_LOWERCASE_REQUIRED`, so this premise "
+            f"checked nothing: {sorted(_LOWERCASE_REQUIRED)}"
+        )
+
+        miscased = sorted(key for key in _LOWERCASE_REQUIRED[family] if key != key.lower())
+        assert not miscased, (
+            f"these `{family}` keys carry capitals, and every paragraph they are "
+            f"matched against has been lowercased by `collapsed`, so each would "
+            f"report its prose as missing whatever ADR-0018 says: {miscased}"
+        )
 
 
 def _paragraphs(text: str) -> list[str]:
@@ -1420,7 +1579,14 @@ def _corrected_bullet(text: str, key: str) -> str:
     Milestone-5 cite is out of reach unless that slice breaks. Asserted anyway,
     because the failure it would cause -- a RED naming a sentence that is correct
     and must not move -- is the one a reader would act on wrongly.
+
+    The case premise is here rather than in the callers because this guard is a
+    **negative** assertion: a capital in :data:`_AMENDMENT_STANDING_CITE` makes it
+    match nothing, and a ``not in`` over a key that matches nothing passes
+    silently. The other families in :data:`_LOWERCASE_REQUIRED` at least go RED.
     """
+    _assert_the_keys_are_lowercase("_AMENDMENT_STANDING_CITE")
+
     bullets = [bullet for bullet in _owed_bullets(text) if key in bullet]
 
     assert len(bullets) == 1, (
@@ -1974,6 +2140,8 @@ def test_the_amendment_spells_the_write_method_count_the_port_publishes() -> Non
     at all would make the read side empty -- each has to fail naming itself
     rather than arriving at the comparison as a bare mismatch.
     """
+    _assert_the_keys_are_lowercase("AMENDMENT_COUNT_NOTE")
+
     note = _correction_note(ADR_0018.read_text(encoding="utf-8"), AMENDMENT_COUNT_NOTE)
 
     spelled = _SPELLED_COUNT.findall(note)
@@ -2011,11 +2179,13 @@ def test_every_correction_blockquote_is_still_in_the_record() -> None:
     module is keyed on what a bullet *asserts*; a correction note carries the
     *retraction*, so deleting one leaves the bullet head's ``(owed, #439)``
     satisfying :data:`LIVE_OWNER` and the closed-tracker scan passing over a
-    bullet that no longer retracts anything. #446's two review rounds measured
-    exactly that, six times: the three notes in the first round, and in the second
-    the NFR-4 amendment, the Milestone-5 amendment's two opening retraction
-    paragraphs, and the #468 narrowing -- each deletable with every other test in
-    this file green.
+    bullet that no longer retracts anything. #446's three review rounds measured
+    exactly that, seven times: the three notes in the first round, in the second
+    the NFR-4 amendment heading and the Milestone-5 amendment's two opening
+    retraction paragraphs, and in the third the NFR-4 amendment's body -- each
+    deletable with every other test in this file green. The eighth anchor, the
+    #468 narrowing, is not one of the seven: it is pinned as new prose rather than
+    as a measured deletion, having arrived on this branch already pinned.
 
     :data:`CORRECTION_NOTES` names, per anchor, what the deletion would silently
     undo, and the failure message prints it -- so a RED here says which claim just
@@ -2027,31 +2197,23 @@ def test_every_correction_blockquote_is_still_in_the_record() -> None:
     :func:`test_every_correction_note_still_carries_what_makes_it_a_correction`
     holds the other half, that the paragraph still says what it exists to say.
 
-    **The case premise is here because it was hit while this pin was written.**
-    ``collapsed`` lowercases, so an anchor carrying a capital matches nothing and
-    the deletion assertion reports a note that is sitting in the record untouched
-    -- a RED naming the wrong cause, which is the one a reader acts on wrongly.
+    **The case premise comes first, because it was hit while this pin was
+    written.** ``collapsed`` lowercases, so an anchor carrying a capital matches
+    nothing and the deletion assertion reports a note that is sitting in the record
+    untouched -- a RED naming the wrong cause, which is the one a reader acts on
+    wrongly. It lived inline here until #446's third review round found the same
+    shape unguarded on eight further families; it is now
+    :func:`_assert_the_keys_are_lowercase` over :data:`_LOWERCASE_REQUIRED`, called
+    from each pin that reads a family.
     """
+    _assert_the_keys_are_lowercase("CORRECTION_NOTES anchors", "CORRECTION_NOTES load_bearing")
+
     text = ADR_0018.read_text(encoding="utf-8")
     notes = _quoted_notes(text)
 
     assert notes, (
         "no blockquote was parsed out of ADR-0018, so this test would report every "
         "correction note as deleted, or none"
-    )
-
-    miscased = sorted(
-        needle
-        for needle in (
-            *CORRECTION_NOTES,
-            *(f for note in CORRECTION_NOTES.values() for f in note.load_bearing),
-        )
-        if needle != needle.lower()
-    )
-    assert not miscased, (
-        f"these anchors or fragments carry capitals, and every paragraph they are "
-        f"matched against has been lowercased by `collapsed`, so each would report "
-        f"its note as deleted whatever ADR-0018 says: {miscased}"
     )
 
     matched = {anchor: [note for note in notes if anchor in note] for anchor in CORRECTION_NOTES}
@@ -2078,6 +2240,48 @@ def test_every_correction_blockquote_is_still_in_the_record() -> None:
     )
 
 
+def test_this_modules_count_of_its_own_pins_is_derived_from_the_mapping() -> None:
+    """RED means this module's prose counts its own pins wrong.
+
+    The count of pinned paragraphs is stated three times in this file and was kept
+    in step by hand until #446's third review round, which found "six times" over a
+    seven-item list contradicting a module docstring two screens up. A number a
+    person maintains against a mapping that grows every round is the exact defect
+    :func:`test_the_amendment_spells_the_write_method_count_the_port_publishes`
+    holds ADR-0018 to -- so the same rule is turned on this file.
+
+    The opening sentence is the one derived: the spelled number in "Eight
+    correction paragraphs are pinned" must equal ``len(CORRECTION_NOTES)``. Adding
+    an entry without moving the sentence fails here, naming both sides.
+
+    Reach: one sentence, and only the total. The per-round breakdown beside it --
+    three, three and one, with the #468 narrowing pinned as new prose rather than
+    as a measured deletion -- is history, and nothing in the code knows which round
+    pinned which anchor. The premises come first for
+    :data:`AMENDMENT_COUNT_NOTE`'s reason: a docstring that stopped spelling the
+    number at all would leave this comparing nothing.
+    """
+    assert __doc__ is not None, (
+        "this module has no docstring, so the claim this test holds is about nothing"
+    )
+
+    spelled = _PINNED_PARAGRAPH_COUNT.findall(__doc__)
+    assert len(spelled) == 1, (
+        f"this module's docstring no longer states its pinned-paragraph count as one "
+        f"spelled number, so nothing holds it against `CORRECTION_NOTES`: {spelled}"
+    )
+    assert spelled[0].lower() in _SPELLED_NUMBERS, (
+        f"the docstring spells its pinned-paragraph count as `{spelled[0]}`, which is "
+        f"not a number this pin can read"
+    )
+
+    assert _SPELLED_NUMBERS[spelled[0].lower()] == len(CORRECTION_NOTES), (
+        f"this module's docstring says `{spelled[0]}` correction paragraphs are "
+        f"pinned; `CORRECTION_NOTES` holds {len(CORRECTION_NOTES)}: "
+        f"{sorted(CORRECTION_NOTES)}"
+    )
+
+
 def test_every_correction_note_still_carries_what_makes_it_a_correction() -> None:
     """RED means a correction note was gutted or rewritten past its own retraction.
 
@@ -2097,7 +2301,14 @@ def test_every_correction_note_still_carries_what_makes_it_a_correction() -> Non
     Reach: these are string fragments. A paragraph reworded everywhere except
     them still passes, and no presence pin can do better;
     :data:`_UNPINNED_BLOCKQUOTES` records the paragraph-level residue beside it.
+
+    **Scoped to the anchor's own paragraph.** :func:`_correction_note` returns one
+    paragraph, so a fragment belonging to a sibling paragraph of the same
+    blockquote fails here -- which is why the NFR-4 amendment's body carries its
+    own anchor rather than hanging off the heading's.
     """
+    _assert_the_keys_are_lowercase("CORRECTION_NOTES anchors", "CORRECTION_NOTES load_bearing")
+
     text = ADR_0018.read_text(encoding="utf-8")
 
     gutted = {
@@ -2126,6 +2337,8 @@ def test_the_point_1_bullet_keeps_the_re_measurement_that_narrows_its_own_claim(
     Anchored on the marker and on the residual rather than on a date, so a later
     re-measurement may move the date freely and may not quietly drop the finding.
     """
+    _assert_the_keys_are_lowercase("CORRECTED_BULLETS", "POINT_1_REMEASUREMENT")
+
     bullet = _corrected_bullet(ADR_0018.read_text(encoding="utf-8"), POINT_1_BULLET)
 
     missing = sorted(anchor for anchor in POINT_1_REMEASUREMENT if anchor not in bullet)
@@ -2157,6 +2370,8 @@ def test_decision_point_2_says_what_its_serialisation_promise_does_not_cover() -
     quotes the old promise verbatim in order to retract it -- the trap
     :func:`_decision_point_two` exists for, met again.
     """
+    _assert_the_keys_are_lowercase("POINT_2_BOUNDARY")
+
     point = _decision_point_two(ADR_0018.read_text(encoding="utf-8"))
 
     missing = sorted(fragment for fragment in POINT_2_BOUNDARY if fragment not in point)
@@ -2188,6 +2403,8 @@ def test_the_positive_consequence_records_that_already_safe_was_measured_false()
     Not a blockquote, so :data:`CORRECTION_NOTES` cannot reach it, and outside the
     Compliance section, so :func:`_corrected_bullet` cannot either.
     """
+    _assert_the_keys_are_lowercase("POSITIVE_CONSEQUENCE", "POSITIVE_CONSEQUENCE_RETRACTION")
+
     bullet = _the_one_paragraph_carrying(ADR_0018.read_text(encoding="utf-8"), POSITIVE_CONSEQUENCE)
 
     missing = sorted(
@@ -2214,9 +2431,14 @@ def test_every_symbol_pointer_in_the_adr_resolves_to_something_live() -> None:
     Nothing anywhere read the other eight references either.
 
     **Three assertions, in the order a failure should be read.** The population
-    premise comes first, because :data:`ADR_SYMBOL_POINTERS` is hand-written: a
-    reference removed from the record leaves an entry here pointing at prose that
-    is gone, and that is a defect in this list rather than in the ADR. Then the
+    premise comes first, and it is an **equality** rather than a containment: the
+    references :data:`_SYMBOL_REFERENCE` harvests out of the record must be exactly
+    the set :data:`ADR_SYMBOL_POINTERS` lists. A containment held only one
+    direction, and #446's third review round measured the open one: appending
+    ``application/nonexistent_module.py::totally_made_up`` to the Compliance
+    section left all twenty-five tests of this module green at ``155dc08``,
+    because a fabricated reference is nobody's list entry and so nothing looked
+    for it. Re-run against this assertion, the same append goes RED. Then the
     files, so a moved module fails naming the path rather than raising out of
     :func:`_top_level_definitions`. Then the symbols.
 
@@ -2229,15 +2451,19 @@ def test_every_symbol_pointer_in_the_adr_resolves_to_something_live() -> None:
     Reach: a name existing at module level is not the same as a test that runs --
     a function collected under a different node id, or skipped, satisfies this.
     What it refuses is the pointer that resolves to nothing at all, which is the
-    failure a rename produces.
+    failure a rename produces. The equality's own reach is on
+    :data:`_SYMBOL_REFERENCE`: it reads the record whole, code fences included.
     """
     adr = ADR_0018.read_text(encoding="utf-8")
 
-    uncited = sorted(pointer.cited for pointer in ADR_SYMBOL_POINTERS if pointer.cited not in adr)
-    assert not uncited, (
-        f"these references are in this module's list but no longer in ADR-0018, so "
-        f"the list is checking pointers the record does not make: {uncited}. Reword "
-        f"or drop the entry rather than the reference"
+    harvested = set(_SYMBOL_REFERENCE.findall(adr))
+    listed = {pointer.cited for pointer in ADR_SYMBOL_POINTERS}
+
+    assert harvested == listed, (
+        f"ADR-0018's `module.py::symbol` references and this module's list have "
+        f"diverged. In the record but unlisted, so nothing resolves them: "
+        f"{sorted(harvested - listed)}. Listed but no longer in the record, so each "
+        f"entry checks a pointer the ADR does not make: {sorted(listed - harvested)}"
     )
 
     missing_files = sorted(
@@ -2329,6 +2555,8 @@ def test_both_corrected_compliance_bullets_name_the_live_owner_of_the_owed_work(
     a passing mention is that no cite of the closed tracker stands beside it
     unretracted, and that is what the negative half asserts.
     """
+    _assert_the_keys_are_lowercase("CORRECTED_BULLETS", "LIVE_OWNER")
+
     text = ADR_0018.read_text(encoding="utf-8")
 
     unowned = sorted(
@@ -2361,6 +2589,8 @@ def test_neither_corrected_bullet_cites_the_closed_tracker_as_an_owner() -> None
     in order to retract it, so a file-wide scan would report three standing
     records as the defect returning.
     """
+    _assert_the_keys_are_lowercase("CORRECTED_BULLETS")
+
     text = ADR_0018.read_text(encoding="utf-8")
 
     standing = {

@@ -255,6 +255,21 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   count spelled in the amendment against the live port, RED whether the sentence
   drifts or the port gains a write method — so the number is not a copy anyone
   keeps in step by hand.
+  The review rounds added four more, each closing a deletion or an edit measured
+  green against the tree before it:
+  `test_decision_point_2_says_what_its_serialisation_promise_does_not_cover`
+  holds the boundary clause inside the point a reader who stops at the Decision
+  actually reads, and
+  `test_the_positive_consequence_records_that_already_safe_was_measured_false`
+  holds the three fragments that keep that bullet a retraction rather than a
+  statement of fact;
+  `test_every_correction_note_still_carries_what_makes_it_a_correction` requires
+  the content each correction blockquote turns on, so a note cannot be cut down
+  to its anchor or rewritten around it to assert what it retracted; and
+  `test_every_symbol_pointer_in_the_adr_resolves_to_something_live` reads every
+  `module.py::symbol` the record hands a reader out of the live module, with the
+  harvested set of those references held **equal** to the list — so a reference
+  added to the ADR fails as loudly as one renamed out of the code.
   Residues owned: the engineering the repoints point
   at ([#439](https://github.com/theurian/theurian/issues/439), filed without a
   milestone), and the served corpus twin under
