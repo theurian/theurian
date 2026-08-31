@@ -385,6 +385,115 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   members of the `#129`/`#39`/`#198` population are discharged here and listed
   separately in the work log for #428's accounting.
 
+- **Every repo-wide cite of closed `#129`, `#39` and `#198` is classified, and
+  the 28 that named a closed issue as the owner of unbuilt work are repointed or
+  stated**
+  ([#428](https://github.com/theurian/theurian/issues/428),
+  [#482](https://github.com/theurian/theurian/pull/482)). #427 swept one file for
+  every number; this is the other half of that split — three numbers, the whole
+  tree. All three are closed, and all three were still being cited as the owner
+  of controls that do not ship.
+
+  **The population, keyed and anchored.** The key is the one pasted on the issue,
+  run with `git grep` rather than `rg` because this repository serves a tracked
+  corpus under a dot directory: `214 cite-rows over 199 lines in 47 files` at
+  `e546c15`. The unit is a **cite**, not a line and not a number — one roadmap
+  line carries a `#129` cite and a `#198` cite repointed at different issues, and
+  a Markdown link spells one cite twice — so both counts are stated where either
+  appears. Classified per the closure-reason rule, which is what makes the fix
+  set 28 and not 199: **#129** and **#39** closed on *documentation* fixes with
+  their controls unbuilt, so every owner cite is stale; **#198** closed by
+  *shipping* `propose accept`'s scan, so its cites are stale only where they
+  point at the unshipped ingest-time and index-time siblings. 28 dead, 8 routed
+  to the slices that own them, 177 history, 1 false positive — `&#39;`, the HTML
+  entity for an apostrophe inside a Mermaid label, left in the population and
+  classified rather than special-cased.
+
+  **The tallies are a script's output, not a reading.** The classifier is pasted
+  whole into `docs/work-logs/2026-09-01-428-closed-owner-aggregate.md`, holds the
+  classification as data, fails loudly if a classified row is not in the
+  population, and was re-extracted from the Markdown and re-run to reproduce its
+  own three lines. `(b)` is its default rather than 177 typed judgements.
+
+  **Where each dead owner went, each target read before it was named** — the
+  repoint that is not verified is how #429 came to exist, after T-7 was pointed
+  at an issue whose scope reaches no fetch path. 14 cites to
+  [#429](https://github.com/theurian/theurian/issues/429), which owns the scheme
+  allowlist, private-network rejection and repository allowlist against the first
+  external fetch path; 4 to
+  [#329](https://github.com/theurian/theurian/issues/329), whose body quotes
+  #198's own measurement of the unscanned ingest path; 4 to
+  [#80](https://github.com/theurian/theurian/issues/80) for T-16, each carrying
+  the successor clause the threat model already used, because #80 owns the stale
+  pointer and *records that an issue for the control itself is still owed* — a
+  partial cover, said as one; and **five cites over four files** to
+  [#479](https://github.com/theurian/theurian/issues/479).
+
+  **That five is the entry's own instrument turned on itself.** The count was
+  first written as three, corrected to four, and is five. Both wrong answers came
+  from keying it on *files* rather than on what each fix targets, and the member
+  that kept dropping out — `test_findings_store_is_unreachable.py:25` — reads
+  `(Milestone 7, #129)` at the base commit, the same owner-cite shape as the other
+  four. It looked like a paraphrase only because an earlier commit *on this
+  branch* had already re-shaped it, so the count could no longer see what it was
+  counting. The work log's row is now the single authority for the vocabulary,
+  derived from the rows whose repoint target is #479 and tabulated with all five
+  base texts.
+
+  **What could not be repointed is stated, not invented.** No open issue owned
+  GitHub review ingestion. Measured over the full open set (164 issues,
+  2026-09-01) by title and body on eight keys, with the four nearest candidates
+  each read and rejected — #368 calls itself a git-history source, #223 is
+  external tools, #429 gates but does not ingest, and #200's body says the
+  `GitHub review` row is outside its scope. The sites said so, with the table
+  behind them, until the measurement was filed as #479 and they were repointed at
+  it; the absence is kept in the work log rather than replaced by its answer,
+  because the record of measuring it is what made the issue fileable.
+
+  **Two pins, both bidirectional.** `docs/roadmap.md` asserted that the threat
+  model's T-16 summary row "still points at #39", which stopped being true at
+  `efd30fe`; the sentence now quotes what that row reads today and
+  `test_roadmap_claims.py` holds it from both sides — the fact rule reads the live
+  row out of `docs/security/threat-model.md` rather than a copy, selects the
+  quotation by the row's own link labels so the selection moves when the row does,
+  and enforces a minimum quotation length so a trivial substring cannot satisfy
+  it; the prose rule refuses the retired assertion coming back, with its excusing
+  window measured and then narrowed to the cited number's own span after four
+  ordinary-English escapes were demonstrated green. And `test_examples.py`'s
+  `ANNOTATED_KEYS` required an issue number that a **closed** number satisfied —
+  measured one number over, 16 passed — so a required cite may no longer be
+  described as closed within its own clause, which keeps the annotations naming
+  closed issues as the history that explains the live owner. Every rule shipped
+  in these two modules is now driven from both directions; the last one to lack a
+  driver survived deleting its own iteration, and that is recorded rather than
+  smoothed over.
+
+  **Discharges accounted, not re-fixed.** The threat model's 12 cites are #470's
+  and were re-measured here as all history-shaped with zero defects surviving —
+  the figure #470's own log predicted. Three wheel-shipped schema descriptions and
+  the two `WATCHED_KEY_DESCRIPTIONS` rows that pin them ride
+  [#455](https://github.com/theurian/theurian/issues/455)/#199 unit B, and two of
+  those five were named in no recorded exclusion until this sweep found them. The
+  `ISSUE_URL` triple — the shipped probe string, its byte-identical transcript in
+  `release.md`, and the pin comparing them — is #80's, and moving one without the
+  others breaks the pin.
+
+  **What the sweep found and did not fold in.**
+  [#479](https://github.com/theurian/theurian/issues/479) and
+  [#480](https://github.com/theurian/theurian/issues/480) were filed from it (the
+  76 lines still anchoring plans to a milestone the project stopped trusting),
+  and the shared instrument's own "model output" exemplar was corrected on #199 —
+  it offered `docs/roadmap.md:630` as the correct modern form, and that line
+  carried two dead cites.
+
+  **The classification never moved; the prose about it did.** Every count this
+  entry corrects — three→four→five, 27→28, a fixes table stale by one commit in
+  each of two rounds — was prose *about* the branch, written from a list rather
+  than derived from the branch's own diff. The 214/28/8/177/1 classification
+  survived two review rounds unchanged. That is the distinction worth carrying
+  out of this entry: the machinery held, and what failed each time was a sentence
+  counting the machinery's work by hand.
+
 ## [0.1.0.dev15] - 2026-08-31
 
 ### Added

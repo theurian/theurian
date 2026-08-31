@@ -1972,7 +1972,7 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "would offer a feature no code path performs. Flipping it is a "
         "security-relevant change and not a feature flag -- the T-7 entry in "
         "docs/security/threat-model.md cites this `false` as what stands in for "
-        "the repository allowlist while SEC-10's reader is owed (#129), so the "
+        "the repository allowlist while SEC-10's reader is owed (#429), so the "
         "change that flips it owes the allowlist as well."
     )
     assert result["capabilities"]["traceability"] is False, (

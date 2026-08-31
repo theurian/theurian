@@ -415,10 +415,15 @@ verifies an artifact.
 
 Both rows stand as requirements. Row 3 is the setup-step half of T-16, which
 §19's threat table maps to OSS-7, OSS-11 and this row; OSS-11 itself — artifacts
-carry checksums — ships. The gap is filed as
-[#39](https://github.com/theurian/theurian/issues/39), and why closing it is a
-change to how Theurian is obtained rather than a probe added here is recorded
-under [T-16](../security/threat-model.md).
+carry checksums — ships. The gap is tracked at
+[#80](https://github.com/theurian/theurian/issues/80), which diagnoses exactly
+that split and records that a successor issue for the control itself is
+[still owed](https://github.com/theurian/theurian/issues/80#issuecomment-5484550422)
+— so this row is owned as a *record*, not as scheduled work. It was filed as
+[#39](https://github.com/theurian/theurian/issues/39), which closed on its
+documentation half while the install-time control stayed unbuilt. Why closing it
+is a change to how Theurian is obtained rather than a probe added here is
+recorded under [T-16](../security/threat-model.md).
 
 **Row 7's "the Theurian-owned block only" ships, and its tri-state is not where
 this table first put it.** `probe_env_reference` compares the marked block and

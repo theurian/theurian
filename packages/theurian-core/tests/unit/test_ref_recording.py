@@ -7,7 +7,8 @@ file, because a document that reaches no network while quietly dropping its
 references is exactly as silent as one that has none.
 
 Fidelity matters here for a reason that has not arrived yet: the scheme allowlist
-T-7 owes (#129, Milestone 7) will key on the recorded ``scheme``. Every defect
+T-7 owes (#429, against the first external fetch path) will key on the recorded
+``scheme``. Every defect
 below was measured against ``_external_refs`` before it was fixed, and the first
 two are the ones that would have made that future gate fail *open* --
 
@@ -155,7 +156,7 @@ SCHEME_CASES: Final[tuple[tuple[str, str], ...]] = (
 
 @pytest.mark.parametrize(("ref", "expected"), SCHEME_CASES, ids=[case[0] for case in SCHEME_CASES])
 def test_a_ref_records_the_scheme_a_fetcher_would_use(ref: str, expected: str) -> None:
-    """The recorded ``scheme`` is what T-7's future allowlist will read (#129)."""
+    """The recorded ``scheme`` is what T-7's future allowlist will read (#429)."""
     assert _record(ref)["scheme"] == expected, (
         f"{ref!r} recorded scheme {_record(ref)['scheme']!r}, expected {expected!r}. "
         f"This field is what the Milestone 7 scheme allowlist keys on: a target "
@@ -189,7 +190,7 @@ def test_no_network_destined_ref_records_a_local_file_scheme(ref: str) -> None:
     assert scheme not in LOCAL_PATH_SCHEMES, (
         f"{ref!r} names a host and recorded {scheme!r}, which is one of the "
         f"local-file labels {sorted(LOCAL_PATH_SCHEMES)}. An allowlist of local "
-        f"schemes would pass it (T-7, #129)."
+        f"schemes would pass it (T-7, #429)."
     )
 
 
@@ -968,7 +969,7 @@ def test_the_one_reference_the_memo_can_lose_always_arrives_with_a_truncation() 
     drops a reference, a truncation says the walk stopped looking. A change that
     makes ``found`` empty *without* a truncation turns that into a silent "no
     external references", which is exactly the #203 defect this file was opened
-    for -- and the scheme allowlist T-7 owes (#129) reads ``refWalkTruncations``
+    for -- and the scheme allowlist T-7 owes (#429) reads ``refWalkTruncations``
     rather than the count for the same reason.
 
     Asserted in one test rather than two because either half alone is satisfiable
