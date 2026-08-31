@@ -531,8 +531,10 @@ or renaming a tool is breaking and bumps it. See
 [plugin-core-compatibility.md](plugin-core-compatibility.md).
 
 `knowledge.search`'s admission refusal (see Errors, above) is a behaviour of
-the shipped surface as of this change — a new error message on an existing
-tool, additive rather than breaking, so it does not bump `protocolVersion`.
+the shipped surface as of this change. It is a client-visible behaviour
+change — a call that once queued can now be refused (the CHANGELOG records it
+under Changed, not Added) — but it alters no schema and no message shape, so
+it does not bump `protocolVersion`.
 
 **`protocolVersion` is still `theurian/v1` after Milestone 5 and #206, which
 between them made four breaking changes to this contract.** That is a
