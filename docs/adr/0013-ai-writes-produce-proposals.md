@@ -209,8 +209,9 @@ it" is precisely the knowledge that gets lost otherwise. Recording it uses the
 
 - A human is in the loop for every knowledge change, which bounds throughput.
   This is the product, not a limitation of it.
-- Proposals can accumulate unreviewed. `knowledge.status` reports proposal age,
-  and `doctor` warns past a threshold.
+- Proposals can accumulate unreviewed. A proposal-age report in
+  `knowledge.status` and a `doctor` warning past a threshold are owed, not
+  shipped ([#414](https://github.com/theurian/theurian/issues/414)).
 
 ### Neutral
 
