@@ -28,10 +28,12 @@ Milestone 1. Only its enforcement mechanism changes.**
 1. All writes go through one interface: `CanonicalStore.transaction()`, a
    context manager yielding a write handle. There is no other way to write, and
    `CanonicalStore` exposes no connection object.
-2. Milestone 1 enforces exclusivity with an **OS advisory file lock** on the
-   state database, acquired for the duration of a write transaction. Two
-   concurrent `theurian migrate apply` invocations serialise; the loser waits,
-   then observes the other's work and becomes a no-op (idempotence, FR-K8).
+2. Milestone 1 enforces exclusivity with an **OS advisory file lock on a
+   separate lock file**, `.theurian/runtime/write.lock`, held for the duration
+   of a write transaction and guarding the state databases under
+   `.theurian/state/`. Two concurrent `theurian migrate apply` invocations
+   serialise; the loser waits, then observes the other's work and becomes a
+   no-op (idempotence, FR-K8).
 3. Milestone 3 replaces the lock with an in-process asyncio queue owned by the
    daemon, plus the same file lock for any CLI invocation running alongside it.
    **`transaction()` keeps its signature**, so no application code changes.
@@ -76,6 +78,21 @@ each call site cannot.
 > Decision text above is left standing so the amendment has something to amend;
 > a reader who takes point 1 at face value and stops reading gets the same wrong
 > answer as before, which is the cost of this choice and the reason it is stated.
+
+> **Corrected in the #199 unit-A follow-up
+> ([#424](https://github.com/theurian/theurian/issues/424)).** Point 2 said the
+> lock is taken **on the state database**. It never was: in
+> `application/project_service.py`, `ProjectPaths.write_lock` is
+> `.theurian/runtime/write.lock` and `ProjectPaths.database_for` puts the
+> databases under `.theurian/state/`, so `write_transaction(database_path,
+> lock_path)` in `infrastructure/sqlite/connection.py` flocks a file that is not
+> a database. Exclusivity held the whole time — only the object the record named
+> was wrong — so the clause is corrected in place rather than superseded. The
+> Milestone 5 amendment above compounded it by re-reading point 2 as accurate,
+> having checked that a lock is taken and not what it is taken on; the Negative
+> consequence below has named both paths correctly since
+> [#420](https://github.com/theurian/theurian/pull/420), so the two halves of
+> this document disagreed until now.
 
 ## Consequences
 

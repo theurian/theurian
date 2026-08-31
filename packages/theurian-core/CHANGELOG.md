@@ -47,6 +47,31 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Documentation
 
+- **ADR-0018 Decision point 2 no longer places the write lock on the state
+  database** ([#424](https://github.com/theurian/theurian/issues/424)). The
+  point said Milestone 1 "enforces exclusivity with an **OS advisory file lock**
+  on the state database". No lock is ever taken on a database file:
+  `ProjectPaths.write_lock` (`application/project_service.py`) is
+  `.theurian/runtime/write.lock`, `ProjectPaths.database_for` puts the state
+  databases under `.theurian/state/`, and `write_transaction(database_path,
+  lock_path)` (`infrastructure/sqlite/connection.py`) flocks the lock file
+  before it opens a connection to the database and releases it after the commit.
+  Mutual exclusion was never in doubt — the record named the wrong object — so
+  the clause is corrected in place and a short blockquote records the drift,
+  rather than the decision being superseded. The correction also names what the
+  Milestone 5 amendment got wrong: it re-read point 2 as accurate after checking
+  that a lock is taken and not what it is taken on, so the Decision disagreed
+  with the Consequences > Negative bullet that
+  [#420](https://github.com/theurian/theurian/pull/420) had already corrected to
+  name both paths. Same class as the #417, #252, #198 and #129 corrections — a
+  durable record asserting a mechanism the codebase does not contain — and found
+  by the same #199 unit-A audit.
+  `docs/adr/0027-accept-validates-before-it-moves.md` repeats the retracted
+  phrasing in its decision-2 residue and is left for its own change; the served
+  corpus twin under `.theurian/knowledge/architecture/` carries the retracted
+  sentence byte-identically and moves only on a governed re-seed (#199 unit C),
+  the same carry #417 records.
+
 - **ADR-0018 no longer cites a `doctor` NFS warning as the mitigation for an
   accepted risk** ([#417](https://github.com/theurian/theurian/issues/417)). Its
   Consequences > Negative accepted the advisory lock's behaviour on network
