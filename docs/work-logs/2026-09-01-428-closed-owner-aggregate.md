@@ -278,9 +278,23 @@ no open issue owns that. Measured 2026-09-01 over the full open set (164 issues,
 | #200 | owns the `Git commit` and `Git diff` rows of the same table, and its body says the `GitHub review` row "is the review-ingestion face" and is *not* its scope |
 
 So `source-normalization.md` (both cites), `review/__init__.py` and
-`ingest.md` state the absence instead of naming a successor. Naming an issue that
-does not cover the work is the same defect one number over, and it is the defect
-#429 exists to have corrected.
+`ingest.md` first stated the absence instead of naming a successor. Naming an
+issue that does not cover the work is the same defect one number over, and it is
+the defect #429 exists to have corrected.
+
+**Resolved inside this branch, and recorded rather than rewritten.** The
+measurement above is what got filed: **[#479](https://github.com/theurian/theurian/issues/479)**
+was opened for GitHub review ingestion, adopting this candidate table and its
+scoping — the ingestion path is #479's, the fetch controls stay #429's — and its
+body names these same four sites. This branch's follow-up commit — the last one,
+`docs(review)` — repoints all four, so the statements
+are *owned* rather than *unowned-with-candidates*. The four-candidate analysis is
+compressed at each site to the sentence that carries the point ("filed from this
+sweep's measurement after four nearer candidates were each read and verified not
+to cover it"); the table above stays here, in full, as the evidence behind it.
+
+The absence was real when it was measured, and the record of measuring it is what
+made the issue fileable — so it is kept above rather than replaced by its answer.
 
 ## The one member that is not an owner cite
 
@@ -307,17 +321,21 @@ model's T-16 summary row, which goes RED from either direction.
 
 ## The claims that cannot be pinned, and why that is recorded
 
-"No open issue owns it" is a fact about the tracker, not about this repository.
-#80 already records why nothing offline can hold one — a liveness check "would
-reach the network from the unit suite, which this project does not do" — which is
-why its own pin asserts that *an* issue is named rather than that the issue is
-open, and why that pointer went stale within a day of shipping.
+Who owns a gap is a fact about the tracker, not about this repository, and
+**filing #479 did not change that** — "owned by #479" is exactly as unpinnable as
+"owned by nobody" was, and for the same reason. #80 records it: a liveness check
+"would reach the network from the unit suite, which this project does not do",
+which is why its own pin asserts that *an* issue is named rather than that the
+issue is open — and why that pointer went stale within a day of shipping. An
+owner cite is the shape that rots; this sweep exists because thirty-six of them
+did.
 
 `source-normalization.md` says so in the correction itself, names the two other
-places carrying the same statement (`review/__init__.py`,
-`plugins/claude-code/commands/ingest.md`), and gives the measurement its date.
-The corrected-claim rule asks for a pin or the recorded reason there is none;
-that paragraph is the recorded reason.
+places carrying the same cite (`review/__init__.py`,
+`plugins/claude-code/commands/ingest.md`), and gives the claim its date. The
+corrected-claim rule asks for a pin or the recorded reason there is none; that
+paragraph is the recorded reason, and it survives the repoint unchanged in
+substance.
 
 ## The coordinated pin, and the second defect it exposed
 
@@ -396,11 +414,13 @@ Eight commits, split by the files rather than by the number.
 | `118212b` `docs(integrations)` | 1 | `ingest.md`'s FR-V5 bullet → a stated absence. Its `:33`–`:35` neighbour is #461's face and was not touched |
 | `fd3829c` `docs(examples)` | 2 | The sample config's `secretScan` annotation → #329, with `ANNOTATED_KEYS` in the same commit |
 | `8aa488a` `docs(architecture)` | 0 | Records that the unowned-review-ingestion note has no pin, and why |
+| `docs(review)`, last | 0 | The four stated-unowned sites → #479, once the gap this sweep measured was filed as an issue. Adds no cite to the population: #479 is not #129, #39 or #198 |
 
-`docs(core)`'s and `docs(tests)`' Python changes are docstring- and
-comment-only. Verified rather than asserted: each changed module was parsed
+`docs(core)`'s, `docs(tests)`' and `docs(review)`'s Python changes are docstring-
+and comment-only. Verified rather than asserted: each changed module was parsed
 before and after, its module/class/function docstrings stripped, and the
-resulting `ast.dump` compared — all four **AST-identical**.
+resulting `ast.dump` compared — **AST-identical** every time, `review/__init__.py`
+across both of its commits.
 
 Four of the `#429` repoints also dropped a schedule clause ("owed with Milestone
 7", "owed with review ingestion"). #429's body records itself as "open,
@@ -435,7 +455,12 @@ was searched for each before it was written down.
    stopped being trustworthy"; `docs/roadmap.md` places review ingestion in
    Phase B. Documents that still say "owed with Milestone 7" point at a frame
    that is no longer the plan of record.
-4. **GitHub review ingestion has no owner at all.** Not a cite defect but the
-   gap behind three of them: the feature is in the roadmap's Phase B and in no
-   issue. The four candidates and why each fails are tabulated above, so a
-   successor issue has its premises already measured.
+4. **GitHub review ingestion had no owner at all — now filed as
+   [#479](https://github.com/theurian/theurian/issues/479), and closed.** Not a
+   cite defect but the gap behind three of them: the feature was in the
+   roadmap's Phase B and in no issue. Filed from the candidate table above,
+   adopting its scoping (ingestion path #479's, fetch controls #429's); all four
+   sites repointed in this branch's `docs(review)` commit. The only item on this
+   list that did not survive
+   the branch, and it is kept here because the measurement is why it could be
+   filed at all.

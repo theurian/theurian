@@ -167,7 +167,7 @@ query-side timeout that is still owed.
 | OpenAPI | summaries and descriptions | paths, operations, parameters, responses |
 | Git commit | subject and body | author, tree, parents, changed paths |
 | Git diff | hunk content | file paths, line ranges, change type |
-| GitHub review — **not built**, owed with review ingestion (Milestone 7); no open issue owns it, and the paragraph under *Failure isolation* below says which issues do not | comment bodies | thread structure, resolution, target lines, fix commit |
+| GitHub review — **not built**, owed with review ingestion (Milestone 7), owned by [#479](https://github.com/theurian/theurian/issues/479) | comment bodies | thread structure, resolution, target lines, fix commit |
 
 ## Ingestion pipeline
 
@@ -208,24 +208,25 @@ if LLM-based candidate generation fails, raw review ingestion must still succeed
 (FR-V5). Evidence collection and interpretation are to stay separate steps
 precisely so the fragile one cannot take down the reliable one.
 
-**No open issue owns that work, and saying so is deliberate rather than an
-omission.** Both cites above used to name
+**That work is owned by
+[#479](https://github.com/theurian/theurian/issues/479)**, which was filed from
+this sweep's own measurement after four nearer candidates were each read and
+verified not to cover it — among them
+[#429](https://github.com/theurian/theurian/issues/429), which gates the first
+outbound request but ingests nothing, and
+[#200](https://github.com/theurian/theurian/issues/200), which owns the
+`Git commit` and `Git diff` rows of the table above and says this row is not its
+scope. Both cites above used to name
 [#129](https://github.com/theurian/theurian/issues/129), which closed
 `COMPLETED` on the wording of documents like this one rather than on a parser.
-The two nearest open issues do not cover it either:
-[#368](https://github.com/theurian/theurian/issues/368) ingests `Review-Finding:`
-commit trailers and calls itself a git-history source, and
-[#429](https://github.com/theurian/theurian/issues/429) owns only the SEC-10
-fetch controls an adapter would need before its first outbound request.
-[#200](https://github.com/theurian/theurian/issues/200) owns the `Git commit` and
-`Git diff` rows of the table above and states that this row is not its scope.
 
 **Nothing in the suite holds this paragraph, and there is no way to make it.**
 Whether an issue is open is a fact about the tracker, and a test that asked would
 reach the network from the offline unit suite — the reason
 [#80](https://github.com/theurian/theurian/issues/80) records for why its own
-pin can assert that *an* issue is named and not that the issue is open. So this
-paragraph is a dated measurement (2026-09-01, over the 164 then-open issues) that
-a later reader has to re-run rather than a claim a check will defend, and the
-same is true of the identical statements in `theurian/review/__init__.py` and
-`plugins/claude-code/commands/ingest.md`.
+pin can assert that *an* issue is named and not that the issue is open. That is
+not a hypothetical: #80 exists because the pointer it pins went stale within a
+day of shipping. So "owned by #479" is a dated claim (2026-09-01, measured over
+the 164 then-open issues) that a later reader has to re-check rather than one a
+check will defend, and the same is true of the same cite in
+`theurian/review/__init__.py` and `plugins/claude-code/commands/ingest.md`.
