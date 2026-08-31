@@ -280,7 +280,15 @@ def _frozen(value: Any) -> Any:
 
 @dataclass(frozen=True, slots=True)
 class Revision:
-    """One ``upsertRevision`` operation, as the committed document declares it."""
+    """One ``upsertRevision`` operation, as the committed document declares it.
+
+    ``migration`` is the tracked *path*; ``migration_document_id`` is the
+    document's own ``id`` field. The two are not the same key: the loader
+    orders migrations by the parsed ``id`` (Kahn's algorithm, ULID tie-break,
+    see :func:`_application_order`), never by file name, and every committed
+    file's name happening to embed its own ``id`` is a convention this module
+    does not enforce anywhere else.
+    """
 
     migration: str
     item_id: str
@@ -289,6 +297,7 @@ class Revision:
     content_sha256: str
     metadata: Mapping[str, Any]
     expected_revision: str | None
+    migration_document_id: str
 
     @property
     def anchors(self) -> tuple[Any, ...]:
@@ -579,8 +588,10 @@ def _revisions() -> tuple[Revision, ...]:
     """Every ``upsertRevision`` the committed corpus declares, in path order."""
     found: list[Revision] = []
     for path in _migration_paths():
-        operations = _document(path).get("operations", [])
+        document = _document(path)
+        operations = document.get("operations", [])
         assert isinstance(operations, list), f"{path} declares no `operations` list"
+        document_id = document.get("id")
         for operation in operations:
             if not isinstance(operation, dict) or operation.get("op") != "upsertRevision":
                 continue
@@ -597,6 +608,7 @@ def _revisions() -> tuple[Revision, ...]:
                     if isinstance(metadata, dict)
                     else MappingProxyType({}),
                     expected_revision=expected if isinstance(expected, str) else None,
+                    migration_document_id=str(document_id) if isinstance(document_id, str) else "",
                 )
             )
     assert found, (
@@ -917,6 +929,49 @@ def test_every_committed_revision_id_is_unique_across_the_corpus() -> None:
     )
 
 
+def _revisions_in_application_order() -> tuple[Revision, ...]:
+    """:func:`_revisions`, reordered to the loader's real application order.
+
+    **Corrected from a false equivalence.** This module first folded by
+    :func:`_migration_paths`'s file-name sort, on the claim that it was "the
+    same order ``load_migrations`` applies in". It is not.
+    :meth:`~theurian.domain.migration.MigrationSet._topological_order` runs
+    Kahn's algorithm over ``dependsOn``, with each round's ready set broken by
+    the migration document's own ``id`` -- never by file name -- and the
+    orchestrator reproduced the miss on this branch: renaming the re-seed
+    migration's inner ``id`` to sort before the seed's, file name left
+    untouched, left every rule in this module green while ``migrate apply``
+    would apply the re-seed first and refuse it (its ``expectedRevision``
+    would then name a revision that does not exist yet).
+
+    No committed migration declares ``dependsOn`` today (checked below, and
+    skipped loudly rather than assumed), so every migration is "ready" in
+    Kahn's first and only round and the whole ordering collapses to one sort
+    key: the document's own ``id``, ascending. That every committed file's
+    *name* happens to embed the same ``id`` is a convention this module does
+    not enforce anywhere -- it is not what the loader reads.
+
+    A stable sort over :func:`_revisions`' existing sequence is sufficient
+    to derive that order without reproducing the loader: :func:`_revisions`
+    already emits one migration's operations contiguously before the next
+    (it walks :func:`_migration_paths` outer, ``operations`` inner), so
+    sorting by ``migration_document_id`` regroups those blocks by the correct
+    key while stability leaves each migration's own operations in their
+    original, correct, document order.
+    """
+    for path in _migration_paths():
+        depends_on = _document(path).get("dependsOn")
+        if depends_on:
+            pytest.skip(
+                f"{path} declares dependsOn ({depends_on!r}). Reproducing the loader's "
+                f"Kahn ordering under a real dependency graph is out of this rule's scope; "
+                f"it only re-derives the id-tie-break case the corpus has exercised so far "
+                f"(zero dependsOn declarations). Widen this helper before trusting the "
+                f"chain rule again once one is committed."
+            )
+    return tuple(sorted(_revisions(), key=lambda revision: revision.migration_document_id))
+
+
 def test_every_expected_revision_names_the_chain_the_migrations_construct() -> None:
     """``expectedRevision`` is the corpus's first optimistic-concurrency pin, and
     nothing static held it before this rule.
@@ -933,11 +988,12 @@ def test_every_expected_revision_names_the_chain_the_migrations_construct() -> N
     :func:`test_every_committed_revision_id_is_unique_across_the_corpus` just
     above.
 
-    Application order is :func:`_migration_paths`'s sort, the same order
-    ``load_migrations`` applies in: the loader lists ``.theurian/migrations/``
-    and keeps every ``.yaml`` entry in the directory listing's sorted order,
-    which is chronological because a ULID prefix is. Folding ``upsertRevision``
-    by ``itemId`` in that order, "current" is last-upsert-wins: whichever
+    Application order is :func:`_revisions_in_application_order`'s -- the
+    loader's own Kahn-ordered sequence, folded by the migration document's
+    ``id``, not by file name; see that function's docstring for why the two
+    are not the same key and for the adversarial finding (ADV MEDIUM) that
+    caught this rule folding by the wrong one. Folding ``upsertRevision`` by
+    ``itemId`` in that order, "current" is last-upsert-wins: whichever
     revision the most recent prior ``upsertRevision`` for an item declared is
     what the *next* one for that item has to name.
 
@@ -953,11 +1009,16 @@ def test_every_expected_revision_names_the_chain_the_migrations_construct() -> N
     :func:`test_every_committed_revision_id_is_unique_across_the_corpus` above
     already forbids across this corpus, so it cannot arise while walking the
     committed migrations once from empty.
+
+    This is the static half. The applicability test in
+    ``tests/integration/test_root_corpus_applies.py`` catches the same face
+    dynamically -- the real loader and engine, not a reconstruction of them --
+    so a defect that escapes one of these mechanisms still meets the other.
     """
     current: dict[str, str] = {}
     wrong_pin: list[str] = []
     not_first: list[str] = []
-    for revision in _revisions():
+    for revision in _revisions_in_application_order():
         preceding = current.get(revision.item_id)
         if revision.expected_revision is None:
             if preceding is not None:
