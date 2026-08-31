@@ -11,7 +11,7 @@ https://github.com/theurian/theurian/issues/433 corrected them -- separately,
 because nothing tied the copy to the original.
 
 The third is the **served-corpus twin**,
-``.theurian/knowledge/architecture/single-writer-synchronous-in-m1.<ulid>.md:30``,
+``.theurian/knowledge/architecture/single-writer-synchronous-in-m1.<ulid>.md:31``,
 which still carries the retracted wording and is meant to: the dogfood corpus is
 held byte-identical to its source anchor commit by
 ``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``,
@@ -20,6 +20,18 @@ outside both pins on purpose -- a scan that reached it would report the
 governance guard doing its job as drift. Recorded here rather than left to a
 reader who greps the tree for the old sentence, finds a third copy, and has to
 guess which of the three is the defect.
+
+The line number is worth getting right because its neighbour carries a
+*different* retracted claim. Measured 2026-08-31 against
+``01M0D5H1ZW7YW97TFNBPVG7HB1``: line 31 is point 2's "an **OS advisory file
+lock** on the state database", the attachment this module pins; lines 28-30 are
+point 1's "There is no other way to write, and ``CanonicalStore`` exposes no
+connection object", the single-interface claim that ADR-0018's Milestone 5
+amendment retracted and that
+https://github.com/theurian/theurian/issues/434 corrected in the write path's
+own docstrings. Both are frozen in the twin for the same reason and both leave
+on the same re-seed; citing the pair is what stops a reader who lands on :30
+concluding this module's derivation is about it.
 
 **That is why the derivation lives here rather than inside either pin.**
 ``tests/unit/test_adr_0018_claims.py`` and ``tests/unit/test_adr_0027_claims.py``
@@ -92,18 +104,27 @@ _SAMPLE_STATE_HASH: Final = StateHash(ContentHash("a" * 64))
 #: words, and stops at a period so it cannot span sentences.
 #:
 #: Private, and reached through :func:`find_lock_on_database`, because the
-#: pattern alone had an unstated precondition: it was case-sensitive over a
+#: pattern alone has an unstated precondition: it is case-sensitive over a
 #: whitespace-collapsed lowercase string, so "an OS advisory file **L**ock on the
-#: **S**tate **D**atabase" -- the same claim, sentence-cased -- returned no match
-#: and every pin over it stayed green. The callers all happened to hand in
+#: **S**tate **D**atabase" -- the same claim, sentence-cased -- returns no match
+#: and every pin over it stays green. The callers all happened to hand in
 #: lowercased text, which is what made the defect invisible rather than absent.
+#:
+#: **The case rule is held once, by :func:`collapsed`, and deliberately not
+#: twice.** This pattern carried ``re.IGNORECASE`` as well until #441's second
+#: review round, and the second holder is what made the first untestable: with
+#: the flag on, a :func:`collapsed` that stopped lowercasing left every pin in
+#: this file set green, so
+#: ``test_the_reattachment_scan_normalises_case_and_line_wraps_itself`` asserted
+#: a normalisation it could not fail on. The flag was safe to drop because
+#: :func:`find_lock_on_database` is the pattern's only caller and it collapses
+#: first -- the sole use is at the bottom of this module, and
+#: ``git grep -n '_LOCK_ON_DATABASE' -- packages tests`` finds no other.
 #:
 #: Measured escapes, recorded rather than chased: "on the SQLite file", "on the
 #: state db", "against the database", "database-level lock". A rule that pins
 #: grammar always has a next grammar.
-_LOCK_ON_DATABASE: Final = re.compile(
-    r"\block\b[^.]{0,30}?\bon the (?:state )?database\b", re.IGNORECASE
-)
+_LOCK_ON_DATABASE: Final = re.compile(r"\block\b[^.]{0,30}?\bon the (?:state )?database\b")
 
 
 def collapsed(text: str) -> str:

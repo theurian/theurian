@@ -14,16 +14,28 @@ clause in ADR-0018; this copy was left naming the old object for a further PR,
 so the two ADRs disagreed about what the lock is taken on until
 https://github.com/theurian/theurian/issues/433 narrowed this one the same way.
 
-**Two bullets in this document concede that race, and only one of them is the
-clause above.** The one held here is the residue *inside* Decision 2, which
-spells the mechanism out ("ADR-0018 makes single-writer a contract ... enforced
-in Milestone 1 by an OS advisory file lock on ..."); that opening is what
-:data:`RESTATES_ADR_0018` keys on, and :func:`_decision_two_residue` requires it
-to match exactly one item. The other is the later "Concurrency between two
-``accept`` invocations" entry in the not-closed-here list, which hands the
-mechanism to ADR-0018 by reference ("the advisory lock ADR-0018 point 2
-describes") and names no lock object of its own. Nothing in that one can carry
-the retracted attachment, and nothing here reads it.
+**Three places in this document concede that race, and only one of them is the
+clause above** (measured 2026-08-31; population key
+``grep -n 'racing at the process level\\|Concurrency between two'
+docs/adr/0027-accept-validates-before-it-moves.md``):
+
+- ``:346``, the residue *inside* Decision 2 -- **the one held here**. It spells
+  the mechanism out ("ADR-0018 makes single-writer a contract ... enforced in
+  Milestone 1 by an OS advisory file lock on ..."), which is what
+  :data:`RESTATES_ADR_0018` keys on and what :func:`_decision_two_residue`
+  requires to match exactly one item.
+- ``:656``, numbered item 3 of the Negative consequences, which states the
+  concession and defers the mechanism to "decision 2's third residue". It is a
+  numbered item rather than a ``-`` bullet, so :func:`_list_items` -- which opens
+  an item only on ``- `` -- never sees it at all.
+- ``:897``, the "Concurrency between two ``accept`` invocations" entry in the
+  not-closed-here list. That one *is* a ``- `` bullet and does reach
+  :func:`_list_items`, but it hands the mechanism to ADR-0018 by reference ("the
+  advisory lock ADR-0018 point 2 describes") and names no lock object of its own,
+  so the key does not select it.
+
+Neither of the latter two can carry the retracted attachment, and nothing here
+reads them.
 
 **A copied claim is the failure mode, so the pin is shared rather than copied.**
 ``LOCK_PATH``, ``STATE_DIR``, :func:`find_lock_on_database` and the one
@@ -246,9 +258,17 @@ def test_the_reattachment_scan_normalises_case_and_line_wraps_itself() -> None:
     returned no match, and a pin fed raw document text reported a clean record it
     had never read.
 
-    Both perturbations are asserted separately. A function that lowercased but
-    did not flatten, or flattened but did not lowercase, would satisfy one and
-    fail the record on the other.
+    Both perturbations are asserted separately, and each leg keys on exactly one
+    mechanism inside :func:`collapsed`: with ``.lower()`` deleted the
+    sentence-cased assertion goes RED and the soft-wrapped one stays green, and
+    with the whitespace flattening deleted it is the other way round.
+
+    **That was not true until #441's second review round.**
+    :data:`_LOCK_ON_DATABASE` also carried ``re.IGNORECASE``, which held the case
+    rule a second time, so the sentence-cased leg stayed green with ``.lower()``
+    gone -- this docstring described a discriminator that could not discriminate,
+    and the assertion under it could not fail on the mechanism it names. Dropping
+    the flag is what makes the leg a test rather than a sentence.
     """
     sentence_cased = "An OS Advisory File Lock On The State Database."
     soft_wrapped = "enforced by an OS advisory file lock on the\n   state database."
