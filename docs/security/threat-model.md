@@ -2626,19 +2626,44 @@ evidence for that is narrower than what this paragraph used to offer, which was
 false: it said "no test reads `README.md`,
 `packages/theurian-core/CHANGELOG.md` or this file, and `test_setup_claims.py`
 reads the *plugin's* README, not the root one". All three files are read under
-`packages/theurian-core/tests/` — seven files name `README.md` alone — and
-`test_setup_claims.py` carries the root `README.md` in `CORE_ARRIVAL_SURFACES`,
-which the #323 paragraph further up this entry already records ("the file joined
-the tuple in the same change"). What holds is the narrower fact: only two test
-modules name `probe_artifact_integrity` at all, and neither reads any of the
-three — `test_artifact_integrity_claim.py` compares the probe against
-`docs/contributing/release.md`, and `test_dogfood_corpus_governance.py` is about
-corpus membership (`git grep -ln artifact_integrity -- packages/theurian-core/tests`,
-2026-08-31 at `5a9a1e5`). **That gap is not #39's.** #39 is closed, so it
-inherits nothing; the paragraph below names the live owner. What that owner
-covers is the shipped probe string and the question of what the string's pin
-should assert — not a test tying these three surfaces to the probe's words, so
-the cross-surface pin has no owner and is stated here rather than attributed.
+`packages/theurian-core/tests/`, and `test_setup_claims.py` carries the root
+`README.md` in `CORE_ARRIVAL_SURFACES`, which the #323 paragraph further up this
+entry already records ("the file joined the tuple in the same change").
+
+**Every count below carries its key and its commit, because the loose and strict
+keys give different answers and the difference is the whole point.**
+`git grep -ln 'README\.md' -- packages/theurian-core/tests` is the loose key: it
+also matches `plugins/claude-code/README.md`, and it answers **seven at
+`5a9a1e5`, eight at `9d51a04`** — the eighth being
+`test_threat_model_t16_claims.py`, the module that pins this very paragraph, so
+the figure moved because of this correction rather than despite it. The strict
+key — the *root* `README.md`, nothing path-like before it, and that pin module
+excluded from its own population — answers **five**, and is the one the pin
+computes.
+
+What survived the correction is the narrower fact about the setup probe, and it
+is stated on both keys for the same reason:
+
+| Key | Modules under `packages/theurian-core/tests` | At |
+| :-- | --: | :-- |
+| `git grep -ln 'probe_artifact_integrity'` — the probe function itself | 1 — `test_artifact_integrity_claim.py` | `5a9a1e5` and `9d51a04` |
+| `git grep -ln 'artifact_integrity'` — the step id, which is what the pin holds | 2 — the above, plus `test_dogfood_corpus_governance.py` | `5a9a1e5` and `9d51a04` |
+
+The second module is a member of the looser key **only because it names the
+first one's file name** in prose; it reaches no probe. Neither module ties the
+probe to any of the three surfaces: `test_artifact_integrity_claim.py` compares
+the probe against `docs/contributing/release.md` and builds no other path off
+the repository root, and the corpus-governance module is about corpus
+membership. Both limbs are pinned in
+`tests/unit/test_threat_model_t16_claims.py`, over the two-module key.
+
+**That gap is not #39's.** #39 is closed, so it inherits nothing; the paragraph
+below names the live owner. What that owner covers is the shipped probe string
+and the question of what the string's pin should assert — not a test tying these
+three surfaces to the probe's words. That cross-surface pin is **owned by
+[#472](https://github.com/theurian/theurian/issues/472)**, which was opened for
+it: the gap is accurate and was left unowned by the correction that found it,
+which is a residue and not a closure.
 
 **Recorded as unmet, not accepted** — unlike T-17a, no argument is offered that
 this is tolerable. The requirement stands: OSS-11 requires the checksums and
@@ -4212,8 +4237,12 @@ extraction takes and not ceilings.
 > **The fix those three records name has shipped, and the owner cite is
 > discharged (2026-08-31, #427's owner-cite sweep).** Three places above hand
 > this residual to [#15](https://github.com/theurian/theurian/issues/15) as
-> future work: the round-five argument's `the purge did not remove it` row, and
-> the closing sentence of each of the round-six and round-seven corrections. #15
+> future work, located by the phrase each ends on rather than by a line number:
+> the round-five argument's row *"the purge did not remove it"* and the sentence
+> under it, *"removed by the same change and by nothing smaller"*; the round-six
+> correction's *"removes this face and T-17a's collection statistics together"*;
+> and the round-seven correction's *"removes the withheld term from
+> `|ranking|`"*. #15
 > closed `COMPLETED` on 2026-08-10. What it shipped is `66a43ae`:
 > `migrate apply` publishes a purged build synchronously on any withdrawal
 > (`application/withdrawal_purge.py::publish_purge_for_withdrawal`, called from
@@ -4229,8 +4258,13 @@ extraction takes and not ceilings.
 >
 > **This note does not re-take the measurements above.** Every figure in the
 > round-five, round-six and round-seven records was taken against a build that
-> still held withdrawn rows; none has been re-run against a purged build, and no
-> open issue owns that re-measurement.
+> still held withdrawn rows, and none has been re-run against a purged build. So
+> a Critical entry goes on publishing pre-purge numbers with a caveat and no
+> scheduled correction: an accurate residue, and one the discharge created rather
+> than closed. It is **owned by
+> [#472](https://github.com/theurian/theurian/issues/472)**, face B, sequenced
+> with #445's ADR-0024 reconciliation because both need the same purge-path
+> ground truth.
 
 **`SqliteIndexStore._scan_cache` is a mitigation with an expiry date, not an
 optimisation, and calling it the wrong thing is how it survives past its
