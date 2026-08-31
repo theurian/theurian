@@ -1,0 +1,38 @@
+apiVersion: theurian.dev/v1
+id: 01M1B1XCAVJZKQQ6FWNADKRM68
+createdAt: '2026-08-31T04:40:47+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0013 twin: the previous revision still asserts the proposal-age claim
+  #252 falsified and #415 corrected in the source ADR (#416).'
+operations:
+- op: createItem
+  itemId: architecture.ai-writes-produce-proposals
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.ai-writes-produce-proposals
+  revisionId: 01M1B1XCAVJZKQQ6FWNADKRM69
+  expectedRevision: 01M0D5GZD9VSWC2JNVH51P8K3P
+  contentFile: ../knowledge/architecture/ai-writes-produce-proposals.01M1B1XCAVJZKQQ6FWNADKRM69.md
+  contentSha256: 9e5540a268c8184057afd4321f17728ff404391304750ac740ca1ed42ad9e9ee
+  metadata:
+    title: 'ADR-0013: AI writes produce proposals, never approved state'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0013
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 6b83be1ecc3455c39ed00e461f35d2a589169ef8
+      filePath: docs/adr/0013-ai-writes-produce-proposals.md

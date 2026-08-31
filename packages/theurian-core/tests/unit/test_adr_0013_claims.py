@@ -52,15 +52,26 @@ recorded here instead, because a reader deciding whether this module covers them
 must not be told it covers more than it does.
 
 **Two named files, and the corpus twin is deliberately not one of them.**
-``.theurian/knowledge/architecture/ai-writes-produce-proposals.<ulid>.md`` is a
-governed snapshot of this ADR and still carries the uncorrected sentence. That is
-not drift and must not be repaired by widening a scan here: the dogfood corpus is
-held byte-identical to its source anchor commit by
+``.theurian/knowledge/architecture/ai-writes-produce-proposals.<ulid>.md`` now
+glob-matches two revision bodies of this ADR, not one. The **served** revision --
+re-seeded through ``propose``/``accept`` in
+https://github.com/theurian/theurian/issues/416 -- carries the corrected text and
+no longer carries the uncorrected sentence: a reader of ``knowledge.get`` on that
+item sees the same "owed, not shipped" wording this file pins. The
+**superseded** body,
+``ai-writes-produce-proposals.01M0D5GZD9VSWC2JNVH51P8K3P.md``, still carries the
+uncorrected sentence, byte-frozen as history rather than left there by drift.
+That is correct *for its own anchor* and required by replay-from-empty (FR-K4):
+the dogfood corpus is held byte-identical to its source anchor commit by
 ``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``,
-so the snapshot is correct *for its anchor* and only a new revision can move it.
-A repo-wide walker over this wording would go RED on that file on the day it was
-written. Recorded rather than closed, and recorded here because a reader who
-greps the tree for the old sentence finds it and needs to know why it stays.
+and a rebuild from an empty database has to reproduce that superseded body
+exactly, uncorrected sentence included, because that is what the anchor commit
+actually said. A repo-wide walker over this wording would still go RED on that
+file. Recorded rather than closed, and recorded here because a reader who greps
+the tree for the old sentence finds the superseded body and needs to know why it
+stays. The scan below is still deliberately not widened over the corpus to check
+either body: it holds the ADR document itself, and the corpus twins are the
+governance suite's claim, not this one's.
 
 **Neither half is a closure argument.** The prose test is a regression pin over
 the one wording this claim has actually taken, and a rule that pins grammar

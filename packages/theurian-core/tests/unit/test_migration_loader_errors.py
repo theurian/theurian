@@ -3768,13 +3768,13 @@ def test_a_schema_rejection_bounds_and_escapes_a_hostile_location_segment() -> N
 #
 # The #289 change replaced `jsonschema`'s `exc.message` with "keyword name + echo
 # of the instance", which discarded the fact the message carried: the expected
-# `const`, the `pattern`, the unexpected key. On all 26 of this repository's
-# committed migrations a single top-level typo (`dependsOnn`) rendered "does not
-# satisfy 'additionalProperties'; the value there is {...}" with the offending
-# key past the 1,000-character echo cap and truncated off -- strictly worse
-# diagnosis than the `('dependsOnn' was unexpected)` it replaced. These pin that
-# the schema-side fact is back: the unexpected key, the missing `required` names,
-# and each keyword's `validator_value`.
+# `const`, the `pattern`, the unexpected key. On all 27 of this repository's
+# committed migrations (2026-08-31) a single top-level typo (`dependsOnn`)
+# rendered "does not satisfy 'additionalProperties'; the value there is {...}"
+# with the offending key past the 1,000-character echo cap and truncated off --
+# strictly worse diagnosis than the `('dependsOnn' was unexpected)` it
+# replaced. These pin that the schema-side fact is back: the unexpected key,
+# the missing `required` names, and each keyword's `validator_value`.
 
 
 def _rejection_message(document: dict[str, Any]) -> str:
@@ -3791,9 +3791,9 @@ def test_a_schema_rejection_names_the_unexpected_key_it_used_to_truncate() -> No
     A valid 1,500-character ``description`` (the schema allows 2,000) pushes the
     root instance well past the echo cap, and the one fault -- a ``dependsOnn``
     typo of ``dependsOn`` -- is added last, so the generic wording truncated it
-    away exactly as it did on all 26 committed migrations. The rejection must
-    name the key from the *schema* (the key not in its ``properties``), not from
-    the echo.
+    away exactly as it did on all 27 committed migrations (2026-08-31). The
+    rejection must name the key from the *schema* (the key not in its
+    ``properties``), not from the echo.
     """
     document = _document_with()
     document["description"] = "a" * 1500
