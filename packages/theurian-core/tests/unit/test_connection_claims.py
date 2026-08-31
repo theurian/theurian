@@ -86,6 +86,15 @@ anything only the write path can hand out. A caller holding domain values can
 therefore call a write without entering ``write_transaction``, which is exactly
 what "held by convention at each call site" means.
 
+**That reading lives in ``canonical_store_surface.py``, not here, because a
+second record counts the same methods.** ADR-0018's Milestone 5 amendment spells
+the count in prose, and ``test_adr_0018_claims.py`` holds the spelled word equal
+to ``len(write_methods())``. Both modules import :func:`write_methods` and
+:func:`public_methods` from that helper, so a write method that arrives or leaves
+fails both records together instead of failing whichever module its author
+remembered -- the reason ``write_lock_claims.py`` exists, applied to a second
+derivation.
+
 **The port is held by two assertions, because either alone has a hole.**
 https://github.com/theurian/theurian/issues/439 consolidates writes behind a
 single interface -- the contract ADR-0018 records as owed, spelled in its point 1
@@ -152,16 +161,24 @@ great deal of ordinary port surface, and a pin that fires on it gets deleted.
     objects **inside one interpreter**, which does exercise the real ``flock``
     path, since contention is per open file description rather than per process.
   - ``test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself``
-    keys on ``WriteLock|write_transaction`` -- nine files, measured 2026-08-31 --
-    and refuses only a construct by which a second OS process can be **running
-    while the test is**. Four of the nine name ``subprocess``, and that is not a
-    finding: every one of them uses ``subprocess.run``, which blocks until the
-    child exits, so the child cannot be holding the lock while the parent is. A
-    rule that refused ``subprocess`` outright would report four false positives
-    and teach the next author to delete it. This tier asserts a property rather
-    than an exact file list, because ``write_transaction`` is how an ordinary
-    integration test seeds a database and pinning that list would churn on every
-    new one.
+    keys on ``WriteLock|write_transaction`` and refuses only a construct by which
+    a second OS process can be **running while the test is**. Eleven files, and
+    the number is a dated measurement rather than a property -- taken 2026-08-31
+    at #446 by ``git grep -lP '\\bWriteLock\\b|\\bwrite_transaction\\b' --
+    packages/theurian-core/tests tests``, which is the key this tier compiles.
+    The figure written here said *nine* and the tree held ten before this PR
+    added ``canonical_store_surface.py``; a count in prose churns on every new
+    member, which is why the test asserts a property and not this list.
+
+    Five of the eleven name ``subprocess``, and that is not a finding. Four are
+    integration tests and every one of them uses ``subprocess.run``, which blocks
+    until the child exits, so the child cannot be holding the lock while the
+    parent is; the fifth is this module, which names the word only in the prose
+    you are reading. A rule that refused ``subprocess`` outright would report
+    five false positives and teach the next author to delete it. This tier
+    asserts a property rather than an exact file list, because
+    ``write_transaction`` is how an ordinary integration test seeds a database
+    and pinning that list would churn on every new one.
 
   So the cross-process wording these docstrings carry ("two processes that both
   enter here serialise") remains a property of ``fcntl.flock`` rather than
@@ -209,14 +226,14 @@ from __future__ import annotations
 
 import ast
 import contextlib
-import inspect
 import pathlib
 import re
 import sqlite3
 from collections.abc import AsyncIterator, Iterator
 from contextlib import AbstractContextManager
-from typing import Any, Final, Protocol, get_args, get_origin, get_type_hints
+from typing import Final, Protocol, get_args, get_origin, get_type_hints
 
+from canonical_store_surface import public_methods, write_methods
 from write_lock_claims import REPO_ROOT, collapsed
 
 from theurian.domain.knowledge import KnowledgeRevision
@@ -308,12 +325,6 @@ SENTENCE_END: Final = re.compile(r"\.(?=\s|$)")
 #: declared on the port -- so a rename on either side is a RED rather than a
 #: quiet disagreement between a docstring and the thing it describes.
 CITED_WRITE_METHODS: Final = frozenset({"append_revision", "put_item", "add_relation"})
-
-#: The modules the MRO scaffolding comes from. ``typing`` holds ``Protocol`` and
-#: ``Generic``; ``builtins`` holds ``object``. A port's own bases -- the shipped
-#: ones under ``theurian.domain.ports``, the synthetic ones in this module --
-#: come from neither, so :func:`_public_methods` reads them and skips these.
-_MRO_LIBRARY: Final = frozenset({"typing", "builtins"})
 
 #: Reads used as the population premise. If the member walk stops returning
 #: these, it is reading a narrowed surface and every conclusion drawn from it is
@@ -629,46 +640,6 @@ def _module_source(*docstrings: str) -> str:
     return "\n\n".join(parts) + "\n"
 
 
-def _public_methods(port: type) -> dict[str, Any]:
-    """Every public method a port Protocol declares, its base Protocols included.
-
-    Takes the port rather than reading ``CanonicalStore`` directly, so the rules
-    built on it can be driven by a synthetic Protocol through the same walk the
-    shipped one takes. That matters for
-    :func:`_transaction_shaped_members`, whose whole point is that it finds
-    nothing today: a rule that always returned nothing would be indistinguishable
-    from it unless something can be shown to make it fire.
-
-    **The walk is over the MRO, not over ``vars(port)``, and that is the whole
-    difference between a net and a hole.** ``vars`` reports only what a class
-    body declares, so a ``transaction()`` reached through a base Protocol --
-    ADR-0018 point 1's own spelling, and the natural shape for the port #439
-    splits into reads and writes -- was invisible to every rule built on this
-    function. Measured 2026-08-31 on a two-line Protocol pair: ``"transaction" in
-    vars(port)`` is ``False`` while ``"transaction" in dir(port)`` is ``True``,
-    so :func:`_transaction_shaped_members` reported a clean port that declared
-    exactly the member it watches for.
-
-    The scaffolding is skipped by the module it comes from, :data:`_MRO_LIBRARY`.
-    Every Protocol drags ``typing.Protocol``, ``typing.Generic`` and
-    ``builtins.object`` into its MRO, and none of the three is anything a port
-    declares. They are excluded by name rather than left to the public-function
-    filter because "they happen to expose none" is the sort of unstated premise
-    this file set exists to refuse -- measured 2026-08-31 they expose zero apiece,
-    and the skip means a future one that did would still not be read as a port
-    member. The MRO is walked in reverse so a subclass declaration overwrites the
-    base's, which is the resolution order Python itself uses.
-    """
-    methods: dict[str, Any] = {}
-    for klass in reversed(port.__mro__):
-        if klass.__module__ in _MRO_LIBRARY:
-            continue
-        for name, member in vars(klass).items():
-            if not name.startswith("_") and inspect.isfunction(member):
-                methods[name] = member
-    return methods
-
-
 def _returns_a_context_manager(annotation: object) -> bool:
     """Whether an annotation says the member hands back a context manager."""
     origin = get_origin(annotation) or annotation
@@ -708,16 +679,16 @@ def _transaction_shaped_members(port: type) -> dict[str, str]:
     Names, not signatures, are what a rename escapes -- and a return annotation is
     what an untyped stub escapes. Neither reaches a ``begin()`` that hands back a
     writer object, nor a ``transaction`` spelled as a ``@property`` or as a bare
-    attribute annotation, because :func:`_public_methods` classifies functions;
+    attribute annotation, because :func:`public_methods` classifies functions;
     the module docstring records all three as the shapes both nets miss.
 
-    Both nets read :func:`_public_methods`, so both see a member declared on a
+    Both nets read :func:`public_methods`, so both see a member declared on a
     base Protocol. That is not incidental: the interface #439 owes lands beside
     the reads most plausibly by splitting the port, and a rule reading only a
     class's own body would report exactly that arrangement as clean.
     """
     shaped: dict[str, str] = {}
-    for name, method in sorted(_public_methods(port).items()):
+    for name, method in sorted(public_methods(port).items()):
         annotation = get_type_hints(method).get("return")
         reasons = [
             reason
@@ -734,24 +705,6 @@ def _transaction_shaped_members(port: type) -> dict[str, str]:
         if reasons:
             shaped[name] = ", ".join(reasons)
     return shaped
-
-
-def _write_methods() -> dict[str, Any]:
-    """The public methods that declare no return value.
-
-    The classification is derived from the live annotations rather than from a
-    list of names, and its reach is exactly that: on this port every mutating
-    method is annotated ``-> None`` and every read returns a value, so "declares
-    no return value" and "writes" coincide today. A future write that returned
-    the id it wrote would drop out of this population, and the count assertion
-    below would go RED rather than silently narrow -- which is the direction an
-    imprecise rule should fail in.
-    """
-    return {
-        name: method
-        for name, method in _public_methods(CanonicalStore).items()
-        if get_type_hints(method).get("return") is type(None)
-    }
 
 
 def _mentioned_types(annotation: object) -> list[object]:
@@ -853,7 +806,7 @@ class _ScaffoldingDeclaringAPublicMember(Protocol):
 
     The module is forged in the class body rather than a real ``typing`` base
     being used, because no real one drives the skip: ``Protocol``, ``Generic``
-    and ``object`` expose no public function apiece, so :data:`_MRO_LIBRARY`
+    and ``object`` expose no public function apiece, so :data:`MRO_LIBRARY`
     could be emptied and every member walk would return the same members --
     which is exactly the state #441's third round measured. "They happen to
     expose none" is the unstated premise the skip exists to refuse, and only a
@@ -1136,9 +1089,9 @@ def test_the_member_walk_skips_library_scaffolding_and_reads_a_ports_own_base() 
 
     Driven by synthetic Protocols because the shipped tower cannot drive it, and
     that is the defect this test closes rather than a convenience: measured
-    2026-08-31, emptying :data:`_MRO_LIBRARY` left all 31 tests in this file set
+    2026-08-31, emptying :data:`MRO_LIBRARY` left all 31 tests in this file set
     green. The skip was a guard no input reached, which is a guard that survives
-    its own deletion -- and :func:`_public_methods` is the premise under the write
+    its own deletion -- and :func:`public_methods` is the premise under the write
     method count, the transaction-shape net and the handle rule alike, so a walk
     that quietly started reading ``typing`` would take all three with it.
 
@@ -1152,7 +1105,7 @@ def test_the_member_walk_skips_library_scaffolding_and_reads_a_ports_own_base() 
     The premise comes first: a walk that returned nothing at all would satisfy
     "the scaffolding member is absent" while reading no port.
     """
-    members = _public_methods(_PortOverLibraryScaffolding)
+    members = public_methods(_PortOverLibraryScaffolding)
 
     assert "get_item" in members, (
         f"the member walk no longer reads a port's own class body, so it is not "
@@ -1166,7 +1119,7 @@ def test_the_member_walk_skips_library_scaffolding_and_reads_a_ports_own_base() 
 
     assert "scaffolding_member" not in members, (
         f"the member walk now reads what a `typing` base declares as a port "
-        f"member, so `_MRO_LIBRARY` is no longer skipping library scaffolding "
+        f"member, so `MRO_LIBRARY` is no longer skipping library scaffolding "
         f"and every count and net built on this walk is measuring the scaffolding "
         f"too: {sorted(members)}"
     )
@@ -1184,7 +1137,7 @@ def test_the_canonical_store_port_publishes_more_than_one_write_method() -> None
     does **not** notice an interface that lands *beside* the write methods it
     counts -- which is the state ADR-0018's own Compliance section measured, a
     contract recorded as owed while the port went on publishing every way round
-    it. How many those are is left to :func:`_write_methods` and printed by the
+    it. How many those are is left to :func:`write_methods` and printed by the
     complement's failure message; a number written into this prose would be a
     second record of it, drifting the day the port grows a write.
     :func:`test_the_canonical_store_port_declares_no_single_write_interface` is
@@ -1196,13 +1149,13 @@ def test_the_canonical_store_port_publishes_more_than_one_write_method() -> None
     so the walk is required to still find the reads, and the classification is
     required to still exclude them.
     """
-    public = _public_methods(CanonicalStore)
+    public = public_methods(CanonicalStore)
     assert set(public) >= KNOWN_READS, (
         f"the Protocol member walk no longer finds {sorted(KNOWN_READS)}, so it is "
         f"not reading the port this test claims to read: {sorted(public)}"
     )
 
-    writes = _write_methods()
+    writes = write_methods()
     assert not (KNOWN_READS & set(writes)), (
         f"the write classification now admits reads, so its count says nothing "
         f"about writes: {sorted(KNOWN_READS & set(writes))}"
@@ -1235,7 +1188,7 @@ def test_the_canonical_store_port_declares_no_single_write_interface() -> None:
 
     **ADR-0018's Milestone 5 amendment said *twelve*, and #436 corrected it in
     place -- not as a record that had aged, but as one that was wrong when
-    written.** Counted by this file's own key, the port has published the same
+    written.** Counted by :func:`write_methods`, the port has published the same
     number since ``261eff3`` (2026-08-01), the commit that introduced it, and
     still did at ``f665ecf`` (2026-08-07), the commit that wrote the amendment; no
     revision of ``domain/ports/canonical_store.py`` counts otherwise. "Stale by
@@ -1243,20 +1196,29 @@ def test_the_canonical_store_port_declares_no_single_write_interface() -> None:
     carried both until #446 -- while saying, two sentences earlier, that the count
     is not written down here.
 
-    **The correction names this test as where to re-derive the count rather than
-    asking a reader to trust its sentence, and no test pins that number as a
-    literal.** Nothing here should put one back, this docstring included: the
-    assertion message below is the one place it is produced, and every other
-    mention is a copy that can drift out of step with the port silently. A
-    CHANGELOG entry quoting the figure under a dated heading is a measurement of a
-    moment and is not that copy; a sentence asserting the count in the present
-    tense is.
+    **What holds the ADR's spelled number is not this test.** It was, until #446's
+    first review round measured what that arrangement actually enforced: the
+    correction pointed a reader at the failure message below, which renders only
+    on failure, so reverting the word to *twelve* and adding a fourteenth write
+    method both left the suite green. The pin is
+    ``test_adr_0018_claims.py::test_the_amendment_spells_the_write_method_count_the_port_publishes``,
+    which reads the word out of the amendment and asserts it equals
+    ``len(write_methods())`` -- the derivation this module and that one now share
+    through ``canonical_store_surface.py`` rather than each deriving their own.
+
+    **No test pins that number as a literal, and nothing here should put one
+    back, this docstring included.** The assertion message below is the one place
+    it is produced by this module, and every other mention is a copy that can
+    drift out of step with the port silently. A CHANGELOG entry quoting the figure
+    under a dated heading is a measurement of a moment and is not that copy; a
+    sentence asserting the count in the present tense is -- which is why ADR-0018's
+    is held against the port rather than left to a reader.
 
     The premise comes first. A member walk that found nothing would report "no
     transaction-shaped member" about a port it never read, so the reads are
     required to still be there before their absence means anything.
     """
-    public = _public_methods(CanonicalStore)
+    public = public_methods(CanonicalStore)
     assert set(public) >= KNOWN_READS, (
         f"the Protocol member walk no longer finds {sorted(KNOWN_READS)}, so it is "
         f"not reading the port this test claims to read: {sorted(public)}"
@@ -1267,7 +1229,7 @@ def test_the_canonical_store_port_declares_no_single_write_interface() -> None:
     assert not shaped, (
         f"`CanonicalStore` now declares a member shaped like the single write "
         f"interface ADR-0018 records as owed: {shaped}. It has landed beside the "
-        f"{len(_write_methods())} write methods the port still publishes, which "
+        f"{len(write_methods())} write methods the port still publishes, which "
         f"is the arrangement the write-method count cannot see. connection.py's "
         f"and store.py's docstrings must stop saying exclusivity is held by "
         f"convention at each call site"
@@ -1345,7 +1307,7 @@ def test_the_write_methods_connection_py_names_are_declared_on_the_port() -> Non
             f"the port publishes its write methods directly"
         )
 
-    writes = set(_write_methods())
+    writes = set(write_methods())
     assert writes >= CITED_WRITE_METHODS, (
         f"connection.py's docstrings name write methods `CanonicalStore` does not "
         f"declare: {sorted(CITED_WRITE_METHODS - writes)}"
@@ -1365,7 +1327,7 @@ def test_no_canonical_store_write_method_asks_for_a_handle_from_the_write_path()
     The premise is that the rule reads something: a walk that returned no
     annotations would report every write as clean.
     """
-    writes = _write_methods()
+    writes = write_methods()
     assert writes, "no write method was found; the rule below would read nothing"
 
     inspected: list[object] = []

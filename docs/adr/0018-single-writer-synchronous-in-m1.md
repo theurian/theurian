@@ -94,10 +94,11 @@ each call site cannot.
 > stale by one. **The count above is held against the port rather than by hand**:
 > `test_adr_0018_claims.py::test_the_amendment_spells_the_write_method_count_the_port_publishes`
 > reads the number out of that sentence and asserts it equals what
-> `_write_methods()` derives from the live `CanonicalStore` — the same derivation
-> `test_connection_claims.py` uses — so it goes RED whether this record drifts or
-> the port gains a write method. Re-derive it there rather than trusting this
-> sentence.
+> `canonical_store_surface.py::write_methods()` derives from the live
+> `CanonicalStore` — the same derivation `test_connection_claims.py` imports, so
+> the two records cannot disagree about the port — and it goes RED whether this
+> record drifts or the port gains a write method. Re-derive it there rather than
+> trusting this sentence.
 >
 > GOVERNANCE says an accepted ADR is superseded rather than edited. This is
 > recorded as an amendment instead, and the judgement is deliberate: superseding
