@@ -13,12 +13,14 @@ this file would drift the moment the source is reworded again.
 
 **The fix landed in this same tree.** It restricts the comparison to each
 item's *current* revision: the **last** ``upsertRevision`` for that ``itemId``
-in application order -- the loader's own order, which ``migration_paths``
-already sorts by (see ``theurian.domain.migration.current_revision_in``, the
-same rule stated for the state-rebuild path). Not derived from
-``expectedRevision`` chains: the 26 original seed migrations carry no
-``expectedRevision`` field at all, so a fix keyed off that field would leave
-the whole corpus uncompared.
+in application order -- the loader's own order, keyed on each migration's own
+inner ``id`` (a Kahn walk over ``dependsOn``, ULID tie-break when nothing
+declares one), never on ``migration_paths``' path sort, which is a population
+filter and a different question (see
+``theurian.domain.migration.current_revision_in``, the same rule stated for
+the state-rebuild path). Not derived from ``expectedRevision`` chains: the 26
+original seed migrations carry no ``expectedRevision`` field at all, so a fix
+keyed off that field would leave the whole corpus uncompared.
 
 Every test below builds a synthetic migration corpus on a real ``tmp_path``
 and drives it through the public ``scan`` seam, the same way
@@ -41,22 +43,23 @@ migration, rather than per-item terminality in application order, would pass
 AC-1 through AC-4 (both only ever touch one item) and fail only here; the
 shipped fix passes it too.
 
-PR #449 round one found three more gaps the mechanism fix above does not yet
-close, each with its own driving test below. **HIGH-1** is a wrong ordering
-key: ``_current_operations`` walks migrations in ``migration_paths``' PATH-
-sorted order, not the loader's actual application order (a Kahn walk over
-``dependsOn``, tie-broken by the migration's own inner ``id``), so a
-hand-renamed migration file can flip which revision the checker treats as
-current -- reproduced on the real corpus with a ``git mv`` to ``zz-...``.
-**MEDIUM-1** is an ``upsertRevision`` with no ``itemId``: it collapses onto
-the ``""`` key alongside every other itemId-less upsert, and only the last
-one survives -- the earlier one, and any drift it carried, silently vanishes
-rather than being reported uncheckable. **MEDIUM-4** is
-``_current_operations``' own identity check defeated by a YAML anchor and
-alias: two positions in one migration's ``operations`` list that reference
-the *same* Python object (as a repeated anchor/alias construct produces) both
-satisfy ``current[item_id] is operation``, so one item's terminal revision is
-compared twice. All three are RED against the mechanism fix as it stands.
+PR #449 round one found three more gaps in the mechanism fix above, each
+pinned by its own driving test below and closed in 7b17d8f. **HIGH-1** was a
+wrong ordering key: pre-fix, ``_current_operations`` walked migrations in
+``migration_paths``' PATH-sorted order, not the loader's actual application
+order (a Kahn walk over ``dependsOn``, tie-broken by the migration's own inner
+``id``), so a hand-renamed migration file could flip which revision the
+checker treated as current -- reproduced on the real corpus with a ``git mv``
+to ``zz-...``. **MEDIUM-1** was an ``upsertRevision`` with no ``itemId``:
+pre-fix, it collapsed onto the ``""`` key alongside every other itemId-less
+upsert, and only the last one survived -- the earlier one, and any drift it
+carried, silently vanished rather than being reported uncheckable.
+**MEDIUM-4** was ``_current_operations``' own identity check defeated by a
+YAML anchor and alias: two positions in one migration's ``operations`` list
+that reference the *same* Python object (as a repeated anchor/alias construct
+produces) both satisfied ``current[item_id] is operation``, so one item's
+terminal revision was compared twice. All three drove 7b17d8f: RED before it
+landed, GREEN after.
 """
 
 from __future__ import annotations
@@ -225,9 +228,12 @@ _ORIGINAL_TEXT = "# ADR-0001: Reseeded Example\n\nThe text as it stood at the or
 #: The text after the ADR was edited, and as the re-seed pinned it.
 _RESEEDED_TEXT = _ORIGINAL_TEXT + "\n## Consequences\n\nA section added since the original seed.\n"
 
-#: Sorted ahead of the re-seed IDs below, matching a real ULID's chronology --
-#: `migration_paths` sorts by this same string, and it is the key
-#: `current_revision_in` calls "application order" (see the module docstring).
+#: Sorted ahead of the re-seed IDs below, matching a real ULID's chronology.
+#: `_write_migration` gives each migration the same string as its file name
+#: and its inner `id`, so this also happens to sort by path here -- but it is
+#: the inner `id`, not `migration_paths`' path sort, that `current_revision_in`
+#: calls "application order" (see the module docstring; HIGH-1 below is the
+#: test where the two orders are made to disagree).
 _ORIGINAL_MIGRATION_ID = "01MB4V3XKQ7ZPYE8R2NGT5HW1A"
 _ORIGINAL_REVISION = "01MB4V3XKQ7ZPYE8R2NGT5HW1B"
 _RESEED_MIGRATION_ID = "01MB4V3XKQ7ZPYE8R2NGT5HW2A"
@@ -296,6 +302,15 @@ def test_the_compared_population_after_a_reseed_is_current_revisions_only(
     seed's anchor and the re-seed's anchor were compared, so
     `len(report.compared) == 2` -- padding the count with a revision nobody
     can act on any more.
+
+    The `report.detail` assertion is PR #449 round two's MEDIUM-A: the
+    "; K superseded" clause `_verdict` prints was pinned by nothing --
+    mutating `superseded` to a constant `0`, and to `superseded * 2`, both
+    survived the full battery before this assertion existed. `"1 superseded"`
+    is the exact count for this corpus (two migrations, one item, one
+    superseded op), so either mutation now changes the printed digit and this
+    line goes RED: `0` renders "0 superseded" and `superseded * 2` renders "2
+    superseded", neither of which contains the substring asserted here.
     """
     original, reseed = _reseeded_corpus(tmp_path)
 
@@ -304,6 +319,7 @@ def test_the_compared_population_after_a_reseed_is_current_revisions_only(
     assert len(report.compared) == 1
     assert report.compared[0].revision_id == _RESEED_REVISION
     assert report.compared[0].migration == reseed
+    assert "1 superseded" in report.detail
 
 
 # -- AC-2: the guard survives the fix, it does not survive by luck -----------
@@ -542,12 +558,12 @@ def test_terminality_follows_the_inner_migration_id_not_the_file_name_sort(
     re-seed's revision is terminal -- its anchor matches the document, and
     the original's stale anchor is not compared at all.
 
-    RED against the mechanism fix as it stands: `_current_operations` walks
+    RED before 7b17d8f, GREEN after: pre-fix, `_current_operations` walked
     `revisions_by_path` in `migration_paths`' PATH-sorted order, not the
-    document's own `id`, so `zzz-original.yaml` -- sorted last by name -- is
-    read last and wins as "current" even though its `id` is the earlier one.
-    The true current revision (`aaa-reseed.yaml`) is dropped as if
-    superseded, and the stale original is compared and reported DRIFTED
+    document's own `id`, so `zzz-original.yaml` -- sorted last by name -- was
+    read last and won as "current" even though its `id` is the earlier one.
+    The true current revision (`aaa-reseed.yaml`) was dropped as if
+    superseded, and the stale original was compared and reported DRIFTED
     against the document it no longer describes. Reproduced by the
     orchestrator on the real corpus with a `git mv` to `zz-...` (PR #449
     round-one HIGH-1).
@@ -623,14 +639,14 @@ def test_an_upsert_with_no_itemid_is_uncheckable_not_silently_dropped(tmp_path: 
     participates in per-item terminality, because neither names an item to be
     terminal *for*.
 
-    RED against the mechanism fix as it stands: `_current_operations` keys on
-    `str(operation.get("itemId", ""))`, so both itemId-less upserts collapse
+    RED before 7b17d8f, GREEN after: pre-fix, `_current_operations` keyed on
+    `str(operation.get("itemId", ""))`, so both itemId-less upserts collapsed
     onto the same `""` bucket. Only the physically last one (B, by
-    `migration_paths`' path order) satisfies the `is operation` identity
-    check; A's operation is silently dropped from `revisions_by_path`'s walk
-    before it ever reaches `_compare` -- not compared, not reported
-    uncheckable, simply absent. Because B's own document matches its pin, the
-    report reads CLEAN overall, and A's real drift vanishes without a trace.
+    `migration_paths`' path order) satisfied the `is operation` identity
+    check; A's operation was silently dropped from `revisions_by_path`'s walk
+    before it ever reached `_compare` -- not compared, not reported
+    uncheckable, simply absent. Because B's own document matched its pin, the
+    report read CLEAN overall, and A's real drift vanished without a trace.
     """
     a_op, a_body_path, a_body = _upsert_revision(
         item_id="placeholder",
@@ -682,13 +698,13 @@ def test_a_yaml_anchor_and_alias_do_not_compare_one_revision_twice(tmp_path: Pat
     `True` for the two positions) -- when `scan` runs, the item's terminal
     revision produces exactly one `Comparison`.
 
-    RED against the mechanism fix as it stands: `_current_operations` picks
+    RED before 7b17d8f, GREEN after: pre-fix, `_current_operations` picked
     the winner by identity (`current[item_id] is operation`), on the
     assumption that two *distinct* objects are never the same object even
-    when byte-identical. A YAML alias defeats that assumption directly: both
-    positions in `revisions` reference the identical object `current[item_id]`
-    was set to, so the identity check is `True` at *both* positions, and both
-    are compared -- one revision, two `Comparison` entries.
+    when byte-identical. A YAML alias defeated that assumption directly: both
+    positions in `revisions` referenced the identical object `current[item_id]`
+    was set to, so the identity check was `True` at *both* positions, and both
+    were compared -- one revision, two `Comparison` entries.
     """
     shared_op, body_path, body = _upsert_revision(
         item_id=_MEDIUM4_ITEM,
