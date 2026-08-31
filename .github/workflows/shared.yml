@@ -219,7 +219,7 @@ jobs:
           # top of the tree holds its own corpus: verbatim, byte-frozen
           # snapshots of documents that live under `docs/`, each pinned by a
           # contentSha256 and by a source anchor naming the file and the commit
-          # it was taken from (all 26 at 2a98d4c). Their relative links were
+          # it was taken from (27 bodies: 26 at 2a98d4c, one -- the ADR-0013 re-seed -- at 6b83be1; measured 2026-08-31). Their relative links were
           # resolved at that source location -- `../security/threat-model.md`
           # from `docs/work-logs/`, `0024-a-purge-is-a-build.md` from
           # `docs/adr/` -- and resolve from nowhere else. Checking them here
@@ -265,8 +265,9 @@ jobs:
           print("All relative links resolve.")
           PY
 
-  # The corpus under `.theurian/` is 26 verbatim snapshots of documents under
-  # `docs/`. `test_dogfood_corpus_governance.py` keeps each snapshot honest
+  # The corpus under `.theurian/` is 27 verbatim snapshots of 26 documents
+  # under `docs/` (the ADR-0013 item holds two revisions; measured
+  # 2026-08-31). `test_dogfood_corpus_governance.py` keeps each snapshot honest
   # against its own pin and against the blob at its own anchor commit, and both
   # of those compare a fixed object to a fixed object -- so neither notices when
   # the ADR itself is edited. This is the live half (#263): the document each
@@ -287,7 +288,8 @@ jobs:
   # What is NOT advisory, and this is the part worth reading before touching the
   # step below. The checker exits 2 when it compared too little to mean anything
   # -- no tracked migrations, git unable to say what is tracked, or fewer
-  # anchors compared than `MINIMUM_COMPARED` (26, the corpus as it stands) --
+  # anchors compared than `MINIMUM_COMPARED` (26, the live item count -- an
+  # item may hold more than one revision; measured 2026-08-31) --
   # and `--advisory` deliberately does not suppress that. A checker that has
   # stopped checking is a regression, not a pass, and it stops one item at a
   # time: an anchor re-seeded under an SSH remote is uncheckable for good, so
