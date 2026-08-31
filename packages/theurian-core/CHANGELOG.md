@@ -167,6 +167,62 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `plugins/` — and the served corpus twins of ADR-0008 and ADR-0024 under
   `.theurian/knowledge/architecture/`, which carry the retracted sentences
   byte-identically and move only on a governed re-seed (#199 unit C), the same
+- **ADR-0018's owed single-writer work names a live owner, its write-method
+  count matches the port, and the README states the NFS exclusion**
+  ([#436](https://github.com/theurian/theurian/issues/436),
+  [#417](https://github.com/theurian/theurian/issues/417),
+  [#446](https://github.com/theurian/theurian/pull/446)). One document was
+  pointing owed work at a closed issue, naming a count the port has never had,
+  and keeping an operator-facing exclusion in records operators do not read.
+
+  **The owner-cites.** ADR-0018 cited
+  [#15](https://github.com/theurian/theurian/issues/15) three times as the
+  Milestone-6 owner of owed work: the `CanonicalStore` single write interface,
+  the Protocol-surface pin that waits on it, and the derived index's missing
+  contract. #15 closed on 2026-08-10 (`66a43ae`) by wiring ADR-0024 decision
+  5 — the withdrawal→purge trigger — which is none of those three, and Milestone
+  6 is past. Each cite is classified by what that closure shipped and repointed
+  at [#439](https://github.com/theurian/theurian/issues/439), filed for the work
+  itself: the two Compliance cites are corrected in place, each keeping the
+  retracted pointer inside the sentence that corrects it, while the Milestone-5
+  amendment's sentence stays verbatim under a dated note, because that
+  blockquote is a record of what was believed then. The index bullet now records
+  what did land — `migrate apply` publishes a purged build through
+  `application/withdrawal_purge.py`, so `theurian index build` is no longer the
+  index's only writer — and what did not: no index write lock exists anywhere
+  under `packages/theurian-core/src` (measured at `6b83be1`, unchanged at
+  `c3886db`), which the purge states of itself in its own source.
+
+  **The write-method count.** The Milestone-5 amendment said the port publishes
+  "twelve write methods directly". It publishes thirteen, and the measurement
+  refutes the obvious reading that the port grew one: counted by the key
+  `test_connection_claims.py` uses — `CanonicalStore`'s public members that
+  declare no return value — the port has published thirteen since `261eff3`
+  (2026-08-01), the commit that introduced it, and still did at `f665ecf`
+  (2026-08-07), the commit that wrote the amendment, with no revision of that
+  file counting otherwise. So it is corrected in place under a dated note rather
+  than left standing as a record that aged. This discharges the residue the
+  entry above records, and corrects that entry's framing: the count never
+  matched, rather than stopped matching.
+
+  **The NFS exclusion, where an operator meets it.** ADR-0018 accepts the
+  advisory lock's behaviour on network filesystems by putting a `.theurian/`
+  directory on NFS outside the supported configuration, records that nothing
+  detects that it is, and rejects rather than defers building a probe. README's
+  quick start now carries one line of that, immediately after what `init`
+  creates, citing ADR-0018 rather than re-asserting the absence on its own
+  authority. It promises no detection in any tense.
+
+  Prose only, and no behaviour changes. What holds these claims today:
+  `test_adr_0018_claims.py` pins the ADR's NFS sentence in both directions, and
+  `test_connection_claims.py` derives the write-method count from the live port
+  and prints it in a failure message, so no record keeps that number in step by
+  hand. The README's copy of the exclusion is held by its citation of ADR-0018
+  and by nothing executable. Residues owned: the engineering the repoints point
+  at ([#439](https://github.com/theurian/theurian/issues/439), filed without a
+  milestone), and the served corpus twin under
+  `.theurian/knowledge/architecture/`, which still carries the dead cites and
+  the old count and moves only on a governed re-seed (#199 unit C) — the same
   carry #417, #432 and #441 record.
 
 ## [0.1.0.dev15] - 2026-08-31
