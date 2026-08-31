@@ -167,7 +167,7 @@ query-side timeout that is still owed.
 | OpenAPI | summaries and descriptions | paths, operations, parameters, responses |
 | Git commit | subject and body | author, tree, parents, changed paths |
 | Git diff | hunk content | file paths, line ranges, change type |
-| GitHub review — **not built**, owed with review ingestion (Milestone 7), owned by [#479](https://github.com/theurian/theurian/issues/479) | comment bodies | thread structure, resolution, target lines, fix commit |
+| GitHub review — **not built**, owed with review ingestion (roadmap Phase B), owned by [#479](https://github.com/theurian/theurian/issues/479) | comment bodies | thread structure, resolution, target lines, fix commit |
 
 ## Ingestion pipeline
 
@@ -220,13 +220,24 @@ scope. Both cites above used to name
 [#129](https://github.com/theurian/theurian/issues/129), which closed
 `COMPLETED` on the wording of documents like this one rather than on a parser.
 
-**Nothing in the suite holds this paragraph, and there is no way to make it.**
-Whether an issue is open is a fact about the tracker, and a test that asked would
-reach the network from the offline unit suite — the reason
+**The tracker half of this cannot be pinned. The consistency half can be, and is
+not.** Whether an issue is open is a fact about the tracker, and a test that
+asked would reach the network from the offline unit suite — the reason
 [#80](https://github.com/theurian/theurian/issues/80) records for why its own
 pin can assert that *an* issue is named and not that the issue is open. That is
 not a hypothetical: #80 exists because the pointer it pins went stale within a
 day of shipping. So "owned by #479" is a dated claim (2026-09-01, measured over
 the 164 then-open issues) that a later reader has to re-check rather than one a
-check will defend, and the same is true of the same cite in
-`theurian/review/__init__.py` and `plugins/claude-code/commands/ingest.md`.
+check will defend.
+
+**What is makeable and not built is the check across the carriers.** Four files
+carry this cite — this one, `theurian/review/__init__.py`,
+`plugins/claude-code/commands/ingest.md`, and
+`tests/unit/test_findings_store_is_unreachable.py`, which paraphrases the second
+— and asserting that they name the *same* number needs no network at all. Its
+absence is not theoretical either: the review of the change that repointed them
+found the fourth carrier still reading "owned by no open issue" after the other
+three had moved. Recorded rather than built, because a new mechanism mid-review
+is a new claim to attack; a same-number check across carriers belongs with
+[#199](https://github.com/theurian/theurian/issues/199) unit B's object-keyed
+census, which already walks the sites this one would.

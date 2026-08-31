@@ -544,7 +544,9 @@ def test_no_module_outside_the_daemon_health_probe_reaches_a_network_client() ->
         + "\n".join(f"  {module} :: {name}" for module, name in sorted(NETWORK_CLIENT_SITES))
         + "\n\nT-7 (SSRF) has no scheme allowlist, no private-network rejection "
         "and no repository allowlist -- #129 established that all three are owed "
-        "with review ingestion in Milestone 7. What stands in for them is that "
+        "with review ingestion in Milestone 7, which is what #129 established "
+        "and not a live schedule: #429 owns them now, unscheduled, against the "
+        "first external fetch path. What stands in for them is that "
         "nothing outside the daemon's loopback health probe can issue a request "
         "at all: docs/security/threat-model.md (T-7) and the "
         "infrastructure/github/ package docstring state that outright, and every "

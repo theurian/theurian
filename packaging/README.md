@@ -30,7 +30,10 @@ Installers for the platforms Theurian supports at 1.0.
    setup step 3 in
    [§6.2 of the requirements](../docs/architecture/requirements-analysis.md);
    T-16 is open on it, tracked at
-   [#80](https://github.com/theurian/theurian/issues/80) — it was filed as
+   [#80](https://github.com/theurian/theurian/issues/80) — which diagnoses the
+   split and records that an issue for the control itself is
+   [still owed](https://github.com/theurian/theurian/issues/80#issuecomment-5484550422),
+   so no packaging target is waiting on scheduled work. It was filed as
    [#39](https://github.com/theurian/theurian/issues/39), which closed on its
    documentation half while the install-time control stayed unbuilt. See
    [the release process](../docs/contributing/release.md) for what is published

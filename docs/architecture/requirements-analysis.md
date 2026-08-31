@@ -416,7 +416,10 @@ verifies an artifact.
 Both rows stand as requirements. Row 3 is the setup-step half of T-16, which
 §19's threat table maps to OSS-7, OSS-11 and this row; OSS-11 itself — artifacts
 carry checksums — ships. The gap is tracked at
-[#80](https://github.com/theurian/theurian/issues/80); it was filed as
+[#80](https://github.com/theurian/theurian/issues/80), which diagnoses exactly
+that split and records that a successor issue for the control itself is
+[still owed](https://github.com/theurian/theurian/issues/80#issuecomment-5484550422)
+— so this row is owned as a *record*, not as scheduled work. It was filed as
 [#39](https://github.com/theurian/theurian/issues/39), which closed on its
 documentation half while the install-time control stayed unbuilt. Why closing it
 is a change to how Theurian is obtained rather than a probe added here is

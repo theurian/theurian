@@ -264,8 +264,16 @@ which is the form the threat model's T-16 entry already uses at `:2685`.
 
 ### Where no repoint was available
 
-Three cites named #129 as the owner of unbuilt **GitHub review ingestion**, and
-no open issue owns that. Measured 2026-09-01 over the full open set (164 issues,
+**Four** cites named #129 as the owner of unbuilt **GitHub review ingestion** —
+`source-normalization.md` ×2, `review/__init__.py`, `ingest.md`, which is the
+classifier's own count for those files — and no open issue owned that. This
+sentence said "three" until the review re-derived it, and #479's body inherited
+the wrong number from here before this sweep's own discipline was applied to it;
+both are
+[corrected on #479](https://github.com/theurian/theurian/issues/479#issuecomment-5484550729),
+which also records the fifth statement, the paraphrase in
+`test_findings_store_is_unreachable.py`. Measured 2026-09-01 over the full open
+set (164 issues,
 `gh issue list --state open --limit 500`), by title and body, for
 `reviewIngestion`, `KnowledgeCandidate`, `ReviewProvider`, `ReviewThread`,
 `PromotionGate`, `FR-V5`, `Phase B` and `review ingestion`:
@@ -313,11 +321,23 @@ $ git show efd30fe -- docs/security/threat-model.md | grep '^[-+]| T-16'
 +| T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet ([#80](https://github.com/theurian/theurian/issues/80); #39 is closed, on its documentation half only) |
 ```
 
-The sentence now quotes what that row reads today. **This is a corrected claim
-about what the codebase contains, so it owes a bidirectional pin — requested in
-the report, not authored here**, and unlike the tracker claims below it *has* a
-fact side: the string the roadmap quotes must be a substring of the threat
-model's T-16 summary row, which goes RED from either direction.
+The sentence now quotes what that row reads today. This is a corrected claim
+about what the codebase contains, so it owed a bidirectional pin, and unlike the
+tracker claims below it *has* a fact side: the string the roadmap quotes must
+match the threat model's T-16 summary row, which goes RED from either direction.
+
+**That pin is authored, not merely requested** — `1433a3d`, by the tests
+specialist, in
+`packages/theurian-core/tests/unit/test_roadmap_claims.py`. Both directions are
+held, each on a premise asserted first rather than assumed:
+`test_the_roadmap_quotes_what_the_t16_summary_row_reads_today` is the fact side,
+reading the live row out of `docs/security/threat-model.md` rather than a copy of
+it, so the record has to move when the row does; and the prose side refuses a
+drift back to "the summary table still points at #39" unmarked.
+`test_the_roadmap_carries_exactly_one_t16_release_gate_block` and
+`test_the_threat_model_carries_exactly_one_t16_summary_row` hold the uniqueness
+premises both rules rest on — a second block or a second row would let either
+rule select the wrong text and pass.
 
 ## The claims that cannot be pinned, and why that is recorded
 
@@ -382,7 +402,8 @@ them, and it does not count them as its own.
 | Population members | Owner | Evidence |
 | :-- | :-- | :-- |
 | `docs/security/threat-model.md`, **12 cites** | **#470** | Its work log's *Key B members in this file* section classifies all of them and fixes the two defects (`:1639` #198 → #329, `:2624` #39 → stated unowned). Re-measured here at `e546c15`: 12 cites, all (b), zero defects surviving. #470's log predicted exactly this — 11 at `5a9a1e5`, 12 after its own fix added a `#39` mention |
-| `schemas/config/project-config.schema.json` `:5`, `:74`, `:147`, `:154` and the `WATCHED_KEY_DESCRIPTIONS` pin rows `:562`, `:571` | **#455 / #199 unit B** | Wheel-shipped (hatch force-include) and pinned, so description and pin must move together. `test_config_key_call_sites.py`'s own docstring already records that both "stay outside this PR because they land on `project-config.schema.json`, which #199 unit B owns" |
+| `schemas/config/project-config.schema.json` `:5`, `:74`, `:147` and the `WATCHED_KEY_DESCRIPTIONS` pin rows `:562`, `:571` | **#455 / #199 unit B** | Wheel-shipped (hatch force-include) and pinned, so description and pin must move together. `test_config_key_call_sites.py`'s own docstring already records that both "stay outside this PR because they land on `project-config.schema.json`, which #199 unit B owns" |
+| `schemas/config/project-config.schema.json` `:154` | **nobody — nothing to discharge** | Classified **(b)**, so it is listed here only because the issue body named it beside `:74`. A correct history cite needs no owner and no follow-up; it is in this table to stop the next reader re-opening it, not because it is owed |
 | `examples/sample-project/.theurian/config.yaml` `:23` (the `repositories` row) | **#448**, landed | Reads the model form today: "(#429 owns it; #129 was closed on the wording rather than the control)". Classified (b) |
 | `application/setup_steps.py:339`, `docs/contributing/release.md:309`, `test_artifact_integrity_claim.py:124` | **#80** | The shipped `probe_artifact_integrity` detail, its byte-identical transcript, and `ISSUE_URL`. `test_the_release_document_quotes_what_setup_actually_publishes` compares the transcript to the published step, so the three move in one change — and that change is #80's stated scope, "the shipped probe string and what that string's pin should assert" |
 
@@ -391,7 +412,8 @@ holds four schema rows, not two.** `:5` is #455's own subject (the root
 description's unnarrowed "Nothing in src/ reads this file") and `:147` is a live
 (a)-DEAD #198 cite — "`theurian ingest` and index building run no scan
 (https://.../issues/198)" — in the same wheel-shipped file, named in no recorded
-exclusion. Both are routed with the other two rather than silently dropped.
+exclusion. Both are routed alongside `:74` rather than silently dropped — three
+routed rows, not four, because `:154` is not one of them.
 
 `:154` is the one schema row classified **(b)**: "Nothing reads this key, so
 changing the value here has no effect on that limit (#129)" cites #129 as the
@@ -402,11 +424,16 @@ are not the same class.
 
 ## The fixes
 
-Eight commits, split by the files rather than by the number.
+Split by the files rather than by the number. The **Cites** column is derived,
+not typed: each `a-dead` row in the classifier is mapped to the first commit that
+touched its file, and the column sums to the classifier's own 28. The first
+version of this table typed the numbers and summed to 27 — `packaging/README.md`
+was missing from `16784ca`'s row — which is the defect the rest of this work log
+exists to prevent, committed inside the work log itself.
 
 | Commit | Cites | What changed |
 | :-- | --: | :-- |
-| `16784ca` `docs(readme)` | 2 | The quick-start install note and the posture table's artifact-verification row name #80; the row keeps #39 as the filing that closed on its documentation half |
+| `16784ca` `docs(readme)` | 3 | The quick-start install note, the posture table's artifact-verification row and `packaging/README.md`'s OSS-11 paragraph name #80; each keeps #39 as the filing that closed on its documentation half |
 | `15e065f` `docs(architecture)` | 3 | `requirements-analysis.md` §6.2 → #80. `source-normalization.md`'s `GitHub review` row and FR-V5 paragraph → a stated absence, with the four candidate issues and why none covers it |
 | `9ec5e45` `docs(roadmap)` | 5 | SEC-10 rows → #429; SEC-11 rows drop #198 from owner position beside #329/#330; the T-16 paragraph quotes what the summary row reads today |
 | `8c48c32` `docs(core)` | 6 | `openapi.py` ×3 and `project_config.py` → #429; `review/__init__.py` → a stated absence; `test_findings_store_is_unreachable.py` moves with it because it paraphrases that docstring's cite |
@@ -414,30 +441,70 @@ Eight commits, split by the files rather than by the number.
 | `118212b` `docs(integrations)` | 1 | `ingest.md`'s FR-V5 bullet → a stated absence. Its `:33`–`:35` neighbour is #461's face and was not touched |
 | `fd3829c` `docs(examples)` | 2 | The sample config's `secretScan` annotation → #329, with `ANNOTATED_KEYS` in the same commit |
 | `8aa488a` `docs(architecture)` | 0 | Records that the unowned-review-ingestion note has no pin, and why |
-| `docs(review)`, last | 0 | The four stated-unowned sites → #479, once the gap this sweep measured was filed as an issue. Adds no cite to the population: #479 is not #129, #39 or #198 |
+| `9aacded` `docs(work-logs)` | 0 | This file |
+| `ea77745` `docs(review)` | 0 | The four stated-unowned sites → #479, once the gap this sweep measured was filed as an issue. Adds no cite to the population: #479 is not #129, #39 or #198 |
+| `1433a3d` `test(claims)` | 0 | The pin this sweep asked for, authored by the tests specialist: the roadmap's T-16 quotation held against the live threat-model row |
+| `docs(review)`, last | 0 | Round-1 fixes: the #80 successor clause carried to all four sites, this table re-derived, the fifth carrier named, `project_config.py`'s schedule clause dropped |
 
-`docs(core)`'s, `docs(tests)`' and `docs(review)`'s Python changes are docstring-
-and comment-only. Verified rather than asserted: each changed module was parsed
-before and after, its module/class/function docstrings stripped, and the
-resulting `ast.dump` compared — **AST-identical** every time, `review/__init__.py`
-across both of its commits.
+`docs(core)`'s, `docs(tests)`', `docs(review)`'s and this round's Python changes
+are docstring- and comment-only. Verified rather than asserted: each changed
+module was parsed before and after, its module/class/function docstrings
+stripped, and the resulting `ast.dump` compared — **AST-identical** every time,
+`review/__init__.py` and `security/project_config.py` across each of their
+commits.
 
-Four of the `#429` repoints also dropped a schedule clause ("owed with Milestone
-7", "owed with review ingestion"). #429's body records itself as "open,
+**Five** of the `#429` repoints also dropped a schedule clause ("owed with
+Milestone 7", "owed with review ingestion") — four counted from the removed
+lines of `git diff origin/main..HEAD` over `src` and `tests`, plus
+`security/project_config.py`, which kept its clause until the review caught the
+inconsistency and this round dropped it. #429's body records itself as "open,
 unscheduled, activated by the first fetch-path design", so carrying the old
 clause across would have asserted something the new owner denies. Recorded
 because it is a wording change beyond the cite itself.
 
+Its `(b)`-classified twin — `test_network_call_sites.py`'s "#129 established that
+all three are owed with review ingestion in Milestone 7" — keeps its schedule,
+because it reports what #129 established rather than what is scheduled now. One
+clause was added beside it saying exactly that, so a developer reading the
+failure is not left to infer which of the two registers they are in.
+
 The wider **"Milestone 7"** planning anchor was left alone everywhere it was not
-inside a clause being rewritten. It is its own class — `git grep -n "Milestone 7"`
+inside a clause being rewritten. It is its own class, filed as
+[#480](https://github.com/theurian/theurian/issues/480) — `git grep -n "Milestone 7"`
 returns 76 lines at `e546c15`, against a README that says "Forward planning moved
 from milestone numbers to phases on 2026-08-20" — and folding it in would have
-been the box-split rule broken. Reported instead.
+been the box-split rule broken.
+
+**The two forward anchors this branch newly *authored* are its own to fix, and
+were.** `source-normalization.md`'s `GitHub review` row and `ingest.md`'s FR-V5
+bullet each paired "Milestone 7" with #479 in a sentence written here; per
+#480's rule that forward anchors repoint at phases or live issues, they now read
+"roadmap Phase B" and "#479, which carries `phase-b`" (label verified, not
+assumed). Their bare neighbours — `source-normalization.md:206`,
+`ingest.md:32` — predate this branch and stay #480's. The line is *authored
+here*, not *nearby*: a pairing this sweep wrote is this sweep's defect, and one
+it merely stood next to is not.
+
+### The ratchet this round bought
+
+**A follow-up's population is the diff's added lines, not the table the first
+pass wrote.** `ea77745` repointed the four sites its own pre-written candidate
+table named and missed a fifth,
+`tests/unit/test_findings_store_is_unreachable.py`, which had been *given* its
+"owned by no open issue" wording by `8c48c32` earlier on this same branch — so
+the branch shipped a coverage claim its own later commit falsified. The key was
+run once, at the base, and never re-run over what the branch had since written.
+So: **after a follow-up that changes a claim, re-run the population key over
+`git diff <base>...HEAD`'s added lines, not only over the base.** The offline
+same-number check across carriers, recorded in `source-normalization.md`, is the
+mechanical form of the same guard and is #199 unit B's to build.
 
 ## Out of scope, found and not fixed
 
 Reported to the orchestrator for box-splitting rather than folded in. The tracker
-was searched for each before it was written down.
+was searched for each before it was written down. Two of the four left this list
+inside the branch — recorded rather than deleted, because what a sweep declined
+to fold in and then folded in anyway is part of its record.
 
 1. **The shared instrument's model output is itself a defect.** The #199 Key B
    note says: "Note `docs/roadmap.md:630` shows the CORRECT modern form (owed
@@ -445,12 +512,19 @@ was searched for each before it was written down.
    that line carried two (a)-DEAD cites, both fixed in `9ec5e45`. A measurement
    comment that hands the next sweep a wrong exemplar is worse than one that
    hands it nothing.
-2. **`ANNOTATED_KEYS` pins that an issue is *named*, not that it is live.** The
-   substring match above is general: any row's issue token is satisfied by the
-   number appearing anywhere in the annotation block, including in a sentence
-   saying the issue is closed. Same shape as the gap #80 records for
-   `test_the_step_names_the_issue_that_owns_the_gap`, one file over.
-3. **"Milestone 7" as a planning anchor, 76 lines.** The README records that
+2. ~~**`ANNOTATED_KEYS` pins that an issue is *named*, not that it is live.**~~
+   **Fixed in `1433a3d`, not deferred.** The finding stands as recorded — any
+   row's issue token was satisfied by the number appearing anywhere in the
+   annotation, including inside a sentence saying the issue is closed — and the
+   tests specialist closed it in this branch rather than filing it: a required
+   cite may now not be described as closed *within its own clause*, keyed on the
+   cite and windowed to a full stop or semicolon, so the annotations keep naming
+   closed issues as the history that explains the live owner. Re-measured one
+   number over (#500 as owner, #329 as closed history): 16 passed before, 1
+   failed / 15 passed after. The same shape #80 records for
+   `test_the_step_names_the_issue_that_owns_the_gap` is still open one file over.
+3. **"Milestone 7" as a planning anchor, 76 lines** — filed as
+   [#480](https://github.com/theurian/theurian/issues/480). The README records that
    forward planning moved to phases on 2026-08-20 and that "the numbers had
    stopped being trustworthy"; `docs/roadmap.md` places review ingestion in
    Phase B. Documents that still say "owed with Milestone 7" point at a frame
