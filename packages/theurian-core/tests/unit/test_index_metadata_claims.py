@@ -40,21 +40,31 @@ broken extractor cannot produce them.
    with a colliding key would be a false RED, which costs a read, where a false
    green costs the claim.
 
-**What it cannot see, and these are the limits the docstring is here to state.**
-The first three are Python-side; the next three are SQL-side, were found by
-round-one review, and are recorded rather than closed -- each has a case in
-:data:`PROJECTION_CASES` or :data:`KEYED_CASES` asserting the miss, so the list
-is a measurement and not a recollection.
+**What it cannot see.** Every entry below has a case in
+:data:`PROJECTION_CASES` or :data:`KEYED_CASES` asserting the miss, which is what
+makes this list checked rather than remembered: a change that closed one of them
+turns its case RED and the entry has to move out of this list in the same commit.
+The one exception is the last, which is a scope bound rather than a shape and has
+nothing to assert against.
 
-- A ``SELECT *`` whose row is consumed without the key ever being written down --
-  ``for column, value in store.metadata().items()``, or ``dict(row)`` handed to
-  something positional. This is the nearest miss, because ``metadata()`` returns
-  exactly such a mapping.
-- A key assembled or indirected at runtime: ``row["built" + "_at"]``, or a column
-  name held in a variable or a tuple.
-- Attribute access -- ``row.built_at``. ``sqlite3.Row`` offers no attribute
+Python-side, where a value fetched by ``metadata()``'s ``SELECT *`` is consumed:
+
+- A row consumed **without the key ever being written down** -- ``for column,
+  value in store.metadata().items()``, or ``dict(row)`` handed to something
+  positional. This is the nearest miss, because ``metadata()`` returns exactly
+  such a mapping.
+- A key **assembled or indirected at runtime**: ``row["built" + "_at"]``, or a
+  column name held in a variable or a tuple.
+- **Attribute access** -- ``row.built_at``. ``sqlite3.Row`` offers no attribute
   access and nothing maps this row onto a dataclass today, so the shape does not
   exist in the tree; if one lands, this scan is blind to it.
+
+SQL-side, where the column is named in the statement itself. The schema-qualified,
+join-or-CTE and string-formatting entries were found by round-one review; the
+delimited-name, outside-the-projection and no-projection entries by round two,
+which is the reason this list is now built from cases rather than from what the
+last reader remembered:
+
 - A **schema-qualified table**: ``FROM main.index_metadata``. The projection
   pattern requires the bare table name directly after ``FROM``.
 - ``index_metadata`` reached through a **join or a CTE** rather than named by the
@@ -62,14 +72,36 @@ is a measurement and not a recollection.
   index_metadata) SELECT built_at FROM m``, or ``FROM nodes JOIN index_metadata
   im`` with ``im.built_at`` in the projection. The inner ``SELECT *`` is still
   seen; the outer ``built_at`` is not.
-- A **scalar subquery in a position that is not a projection**: ``UPDATE nodes
-  SET x = (SELECT built_at FROM index_metadata)`` is seen, because the inner
-  ``SELECT`` matches on its own, but a query whose only reference to the table is
-  built by string formatting is not -- the constant never contains the finished
-  statement.
+- A statement **assembled by string formatting**: an f-string reaches this as its
+  literal fragments, and ``"SELECT {} FROM index_metadata".format(...)`` reaches
+  it with a placeholder where the column goes. Neither constant carries the
+  finished statement.
+- A **delimited table name**: ``FROM "index_metadata"`` or ``FROM
+  [index_metadata]``. SQLite accepts both and the pattern requires the bare name.
+- The column consumed **outside the projection** -- ``WHERE built_at > ?``,
+  ``ORDER BY built_at``, ``GROUP BY built_at``, ``HAVING max(built_at) < ?``.
+  Each of those reads the column as surely as selecting it does; the scan only
+  resolves what sits between ``SELECT`` and ``FROM``.
+- A statement **with no projection at all**: ``DELETE FROM index_metadata WHERE
+  built_at < ?`` keys a delete on the column and matches nothing here.
 - Anything outside the imported package: ``tools/``, ``plugins/`` and the tests
   themselves are not scanned, the same bound ``test_config_key_call_sites.py`` and
   ``test_network_call_sites.py`` each record for their own.
+
+**The last two families are left open on purpose, and this is the record of that
+decision.** Reading the clause tail after ``FROM index_metadata`` would catch
+them, and it is a different scan rather than a wider one: a column in a ``WHERE``
+is a *filter*, a column in a ``DELETE`` is a *key*, and neither is the "consumes
+the value" that ADR-0024 decision 2's second bullet is about. Deciding which of
+those counts is a decision the decision itself has not taken, so the shapes are
+pinned as misses instead, where the next reader can see both the gap and the
+question.
+
+**What the scan does see that is easy to mistake for a miss.** A scalar subquery
+in a non-projection position -- ``UPDATE nodes SET x = (SELECT built_at FROM
+index_metadata)`` -- **is** reported as a consumer, because the inner ``SELECT``
+matches on its own terms, and that is the right answer: the value leaves the
+table. Its case is in :data:`PROJECTION_CASES` with the writes.
 
 It is a floor on the review a new consumer gets, not a proof that one cannot
 exist.
@@ -90,7 +122,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import Final
 
 import pytest
@@ -386,9 +418,9 @@ PROJECTION_CASES: Final[tuple[tuple[str, frozenset[str]], ...]] = (
         frozenset({"*"}),
     ),
     # -- recorded blind spots, asserted rather than only described -----------
-    # The module docstring lists what this cannot see; these three pin the SQL
-    # half of that list so it stays a measurement. A schema-qualified table name,
-    # a table reached through a CTE, and a table reached through a JOIN alias all
+    # The module docstring lists what this cannot see; these cases pin the SQL
+    # half of that list so it stays checked. A schema-qualified table name, a
+    # table reached through a CTE, and a table reached through a JOIN alias all
     # leave `FROM index_metadata` unmatched by the projection that consumes the
     # column, so a consumer written any of those ways passes. The CTE case still
     # reports the inner `SELECT *`, which is why its expectation is `*` and not
@@ -399,6 +431,30 @@ PROJECTION_CASES: Final[tuple[tuple[str, frozenset[str]], ...]] = (
         frozenset({"*"}),
     ),
     ('"SELECT im.built_at FROM nodes JOIN index_metadata im ON 1 = 1"', frozenset()),
+    # A delimited table name. SQLite accepts both spellings; the pattern demands
+    # the bare identifier straight after `FROM`, so either hides the projection.
+    ("'SELECT built_at FROM \"index_metadata\" WHERE id = 1'", frozenset()),
+    ('"SELECT built_at FROM [index_metadata] WHERE id = 1"', frozenset()),
+    # -- the column consumed outside the projection --------------------------
+    # Round two. Each of these reads `built_at` as surely as selecting it does,
+    # and the scan resolves only what sits between `SELECT` and `FROM`, so each
+    # reports the projected column and misses the consumed one. Closing this
+    # would mean reading the clause tail, which is a different question -- see
+    # the module docstring, which records the decision rather than the gap alone.
+    ('"SELECT id FROM index_metadata WHERE built_at > ?"', frozenset({"id"})),
+    ('"SELECT id FROM index_metadata ORDER BY built_at DESC"', frozenset({"id"})),
+    (
+        '"SELECT COUNT(*) FROM index_metadata GROUP BY built_at HAVING COUNT(*) > 1"',
+        frozenset(),
+    ),
+    # A statement with no projection at all, keyed on the column.
+    ('"DELETE FROM index_metadata WHERE built_at < ?"', frozenset()),
+    # -- a statement the constant never carries whole ------------------------
+    # An f-string reaches the AST as its literal fragments, neither of which holds
+    # a `SELECT ... FROM index_metadata`; `.format` reaches it with a placeholder
+    # where the column name goes, and a placeholder is not an identifier.
+    ('sql = f"SELECT {column} FROM index_metadata WHERE id = 1"', frozenset()),
+    ('sql = "SELECT {} FROM index_metadata".format(column)', frozenset()),
     # -- two statements, and the span between them ---------------------------
     # The regression this case exists for, measured rather than imagined: with
     # the pattern applied to module text instead of to one string constant at a
@@ -426,6 +482,14 @@ KEYED_CASES: Final[tuple[tuple[str, frozenset[str]], ...]] = (
     ("made = row[column]", frozenset()),
     ("made = store.metadata().get(column)", frozenset()),
     ('"""`built_at` records when that was made."""', frozenset()),
+    # -- the recorded Python-side blind spots, asserted rather than described -
+    # The nearest miss of all: `metadata()` returns a mapping, and a consumer
+    # that walks it never writes the key down. Round two added the other two --
+    # a key built at runtime reaches the AST as a `BinOp` rather than a constant,
+    # and attribute access names no key at all.
+    ("for column, value in store.metadata().items(): pass", frozenset()),
+    ('made = row["built" + "_at"]', frozenset()),
+    ("made = row.built_at", frozenset()),
 )
 
 
@@ -613,27 +677,64 @@ _BLOCK_START: Final = re.compile(r"[ \t]*(?:#{1,6}\s|[-*+]\s|\d+\.\s|\||```|---\
 #: ``test_adr_0018_claims.py`` records for ``_decision_point_two``.
 _CORRECTION_NOTE: Final = re.compile(r"\bissues/426\b", re.IGNORECASE)
 
-#: An HTML comment, removed before a positive pin reads Decision point 2.
+#: An HTML comment, removed before a positive pin reads Decision point 2 --
+#: **closed or not**.
+#:
 #: Markdown renders nothing inside one, so a decision whose sentences live in a
 #: comment is a silent decision that a substring pin over raw text still passes.
-_HTML_COMMENT: Final = re.compile(r"<!--.*?-->", re.DOTALL)
+#: The second alternative is round two's E2: a ``<!--`` that is never closed opens
+#: an HTML block running to the next line carrying ``-->`` or, if there is none,
+#: to the end of the document. Measured on ADR-0024 with such a marker inserted
+#: above decision 2 -- with a pattern demanding the closing delimiter,
+#: :func:`_decision_two` still found its region and the suite passed over a
+#: decision the page did not show. The closed form is tried first, so a real
+#: comment ends at its own ``-->``, and
+#: :func:`test_adr_0024_carries_no_html_comment_today` holds the claim that this
+#: pattern is a no-op on the shipped document. ``test_raptor_config_claims.py``
+#: takes the same closure and carries the rest of the measurement.
+_HTML_COMMENT: Final = re.compile(r"<!--.*?-->|<!--.*", re.DOTALL)
 
-#: Bold markers, removed before :data:`_QUOTATION` looks for italic spans:
-#: ``**bold**`` would otherwise read as an italic span, and a live reassertion
-#: written in bold inside a note would be excised with the quotations.
-_EMPHASIS: Final = re.compile(r"\*\*")
+#: Bold markers, removed before :data:`_QUOTED_RETRACTION` looks for italic
+#: spans: ``**bold**`` would otherwise read as an italic span, and a live
+#: reassertion written in bold inside a note would be excised with the
+#: quotations.
+_BOLD: Final = re.compile(r"\*\*")
 
-#: A quoted span inside a dated correction note.
+#: A single emphasis marker, removed from every paragraph after the excision so
+#: that an italicised word is scanned as the word. ``\breads\b\s+`` does not
+#: match ``*reads*``, and ``\breads\b\s+(?:either|both|them)`` does not match
+#: ``reads *either*``, so a live reassertion italicised anywhere across its own
+#: verb or object was invisible whatever the exclusion did (round two).
+_EMPHASIS: Final = re.compile(r"\*")
+
+#: The verbs a dated note uses to introduce the sentence it retracts. ``read``
+#: and ``reads`` are absent for the reason :data:`_QUOTED_RETRACTION` records.
+_RETRACTION_LEAD: Final = (
+    r"said|says|say|stated|states|quoted|quotes|carried|carries|asserted|asserts"
+    r"|claimed|claims|wrote"
+)
+
+#: A quoted span a retraction verb introduces inside a dated correction note.
 #:
 #: The exclusion this feeds used to skip the whole note paragraph, which bought a
 #: blind spot the size of the note: round-one mutation A7 put a *live*
 #: reassertion inside ADR-0024's correction note and nothing saw it, while the
-#: same sentence one paragraph away was caught. A note is now scanned with its
-#: quoted spans excised -- ADR-0024's note quotes in double quotes, ADR-0008's
-#: decision-10 note quotes in italics, so both forms are here -- which hides what
-#: a note *quotes* and not what it *asserts*. The same construction and the same
-#: fix are in ``test_raptor_config_claims.py``.
-_QUOTATION: Final = re.compile(r"\*[^*]+\*|\"[^\"]+\"|“[^”]+”")
+#: same sentence one paragraph away was caught. Excising *every* quoted span
+#: closed A7 and bought a smaller blind spot of the same kind -- round two's E1
+#: put a live reassertion between the asterisks of two ``SELECT *`` spans and the
+#: full-suite mutation run reported it SURVIVED, in a document whose own decision
+#: is *about* ``SELECT *``.
+#:
+#: So the excision is scoped to a quotation a retraction verb introduces. ADR-0024's
+#: note quotes in double quotes after ``said`` and ADR-0008's decision-10 note in
+#: italics after ``said``, so both stay excised; a quoted span with no retraction
+#: verb in front of it is the note talking. ``read``/``reads`` are excluded from
+#: the lead because they are the verb of the claim itself, and admitting them
+#: would excise the object of *nothing reads "index_build_id"*. The same
+#: construction and the same measurement are in ``test_raptor_config_claims.py``.
+_QUOTED_RETRACTION: Final = re.compile(
+    rf"(?P<lead>\b(?:{_RETRACTION_LEAD})\b[^\n]{{0,40}}?)" r"(?:\*[^*]+\*|\"[^\"]+\"|“[^”]+”)"
+)
 
 #: The retracted claim: that *both* columns are unread.
 #:
@@ -652,9 +753,15 @@ _READS_NEITHER_COLUMN: Final = re.compile(
 #: ``index_build_id`` has no reader. This is the sentence the integration test's
 #: docstring carried until #426, and the one a future edit is most likely to
 #: restore from memory.
+#: The delimiter in front of the column name is any of a backtick, a double
+#: quote, a single quote and a curly opening quote rather than a backtick alone,
+#: for the reason ``test_raptor_config_claims.py`` measured on its own path
+#: pattern: a sentence that writes the name in quotes rather than in code markup
+#: read as acceptable wording, and the verb-scoped excision now leaves that
+#: sentence in place for this pattern to meet.
 _INDEX_BUILD_ID_UNREAD: Final = re.compile(
     r"\b(?:nothing|nobody|no code|no module)\b[^\n]{0,60}?"
-    r"\breads\b\s+(?:the\s+)?`?(?:index_metadata\.)?index_build_id",
+    r"\breads\b\s+(?:the\s+)?[\"'`“]?(?:index_metadata\.)?index_build_id",
     re.IGNORECASE,
 )
 
@@ -693,6 +800,74 @@ RETRACTION_CASES: Final[tuple[tuple[str, bool], ...]] = (
     ("No SELECT of it anywhere", False),
 )
 
+#: The opening every case in :data:`NOTE_EXCLUSION_CASES` shares: the link form
+#: :data:`_CORRECTION_NOTE` keys on, so each case is scanned as a note.
+_NOTE_OPENING: Final = (
+    "Corrected in the #199 unit-A follow-up (https://github.com/theurian/theurian/issues/426)."
+)
+
+#: One case per shape a live reassertion inside the correction note can take, and
+#: per shape the note actually quotes in, as ``(what the shape is, the note, is it
+#: an assertion the scan must report)``.
+#:
+#: The positives are the measured misses of the blanket rule this replaced: A7's
+#: plain sentence was the only one it caught. The E1 case is the one that matters
+#: most here, because ``SELECT *`` is the phrase this decision is written around
+#: -- two of them in one paragraph is not a contrived input, and everything
+#: between their asterisks was excised as an italic span.
+#:
+#: The negatives are transcribed from the shipped note's quoting style, plus the
+#: italic style ADR-0008's decision-10 note uses, so a rule covering only one of
+#: the two would be RED against one of the documents on a clean tree.
+NOTE_EXCLUSION_CASES: Final[tuple[tuple[str, str, bool], ...]] = (
+    (
+        "a plain live reassertion (round-one A7)",
+        f"{_NOTE_OPENING} Nothing in `src/` reads either back today, so this is latent "
+        "rather than broken.",
+        True,
+    ),
+    (
+        "a live reassertion italicised on its object",
+        f"{_NOTE_OPENING} Nothing in `src/` reads *either* back today.",
+        True,
+    ),
+    (
+        "a live reassertion bracketed by two `SELECT *` asterisks (E1)",
+        f"{_NOTE_OPENING} `metadata()` does `SELECT *`, and nothing in `src/` reads "
+        "either back today, so `SELECT *` is the only fetch.",
+        True,
+    ),
+    (
+        "a live reassertion about the column, in bold",
+        f"{_NOTE_OPENING} **Nothing in `src/` reads `index_build_id`** back today.",
+        True,
+    ),
+    (
+        "a live reassertion whose column name is in double quotes",
+        f'{_NOTE_OPENING} Nothing in `src/` reads "index_build_id" back today.',
+        True,
+    ),
+    # -- the notes' own quoting styles, which must stay hidden ---------------
+    (
+        "the double-quoted quotation ADR-0024's note carries",
+        f'{_NOTE_OPENING} This paragraph said "nothing in `src/` reads either back '
+        'today". That was true of both columns.',
+        False,
+    ),
+    (
+        "the italic style ADR-0008's decision-10 note quotes in",
+        f"{_NOTE_OPENING} This paragraph said *nothing in `src/` reads either back "
+        "today*. That was true of both columns.",
+        False,
+    ),
+    (
+        "the same quotation in curly quotes",
+        f"{_NOTE_OPENING} This paragraph said “nothing in `src/` reads either back "
+        "today”. That was true of both columns.",
+        False,
+    ),
+)
+
 
 def _collapsed(text: str) -> str:
     """Runs of whitespace flattened to single spaces, case preserved.
@@ -706,14 +881,43 @@ def _collapsed(text: str) -> str:
 
 
 def _without_quotations(text: str) -> str:
-    """``text`` with its quoted spans replaced by a space.
+    """``text`` with the quoted spans a retraction verb introduces replaced by a space.
 
     Applied to a dated correction note before the note is scanned, so that the
     retracted sentence the note quotes is invisible while anything the note
-    *asserts* is not. Emphasis markers go first, for the reason
-    :data:`_EMPHASIS` records.
+    *asserts* is not. Bold markers go first, for the reason :data:`_BOLD` records;
+    the lead verb is kept, so only the quotation leaves.
     """
-    return _QUOTATION.sub(" ", _EMPHASIS.sub("", text))
+    return _QUOTED_RETRACTION.sub(lambda match: f"{match.group('lead')} ", _BOLD.sub("", text))
+
+
+def _scanned(paragraph: str) -> str:
+    """``paragraph`` as the retraction patterns read it.
+
+    One function so the exclusion test and the negative pin exercise the same
+    path: a note has its retraction-led quotations excised, every paragraph has
+    its emphasis markers removed, and what is left is what the patterns see.
+    """
+    excised = _without_quotations(paragraph) if _CORRECTION_NOTE.search(paragraph) else paragraph
+    return _EMPHASIS.sub("", excised)
+
+
+def _retraction_claims(paragraphs: Sequence[str]) -> list[str]:
+    """Every paragraph of ``paragraphs`` that reads as the retracted merged claim.
+
+    Whole paragraphs rather than sentences, unlike
+    ``test_raptor_config_claims.py``: the two patterns here carry their own
+    bounded gaps and Decision point 2 is five paragraphs, so there is no sentence
+    split to get the order of. What excision can still do is bring a denial and a
+    verb within the gap of each other, which is the same family one step smaller
+    and is why the exclusion is verb-scoped rather than blanket.
+    """
+    return [
+        scanned
+        for paragraph in paragraphs
+        if (scanned := _scanned(paragraph))
+        and (_READS_NEITHER_COLUMN.search(scanned) or _INDEX_BUILD_ID_UNREAD.search(scanned))
+    ]
 
 
 def _paragraphs(text: str) -> list[str]:
@@ -802,34 +1006,117 @@ def test_the_retraction_scans_see_the_old_wording_and_not_the_split_one(
     )
 
 
-def test_the_correction_note_exclusion_hides_a_quotation_and_not_an_assertion() -> None:
-    """RED means the note exclusion is back to skipping whole paragraphs.
+@pytest.mark.parametrize(
+    ("shape", "note", "is_a_live_assertion"),
+    NOTE_EXCLUSION_CASES,
+    ids=[case[0] for case in NOTE_EXCLUSION_CASES],
+)
+def test_the_correction_note_exclusion_hides_a_quotation_and_not_an_assertion(
+    shape: str, note: str, is_a_live_assertion: bool
+) -> None:
+    """RED means the note exclusion is hiding what a note asserts, not what it quotes.
 
     Round-one mutation A7: a live reassertion placed inside the correction note
-    was invisible, while the identical sentence one paragraph away was caught. The
-    exclusion is quotation-shaped now, so both halves of that shape are asserted
-    here against synthetic notes rather than against the shipped ADR -- the
-    shipped ADR has no live reassertion in it, and an exclusion that had stopped
-    excluding anything would look identical there.
+    was invisible, while the identical sentence one paragraph away was caught.
+    Excising the note's quoted spans closed that, and round two measured that a
+    blanket quotation rule reopened it in narrower shapes -- E1 in particular,
+    where the reassertion's only cover was the asterisks of two ``SELECT *``
+    spans, in a decision whose own subject is ``SELECT *``. That mutation SURVIVED
+    a full-suite run. The exclusion is verb-scoped now, and these cases are what
+    makes that a measurement.
+
+    Asserted against synthetic notes rather than against the shipped ADR: the
+    shipped ADR has no live reassertion in it, so an exclusion that had stopped
+    excluding anything would look identical there. The negatives are the shipped
+    notes' own quoting styles, so a rule that stopped covering one would be RED on
+    a clean tree with no wording that made it green again.
     """
-    quoting = (
-        "Corrected in the #199 unit-A follow-up "
-        "(https://github.com/theurian/theurian/issues/426). This paragraph said "
-        '"nothing in `src/` reads either back today". That was true of both columns.'
-    )
-    asserting = (
-        "Corrected in the #199 unit-A follow-up "
-        "(https://github.com/theurian/theurian/issues/426). Nothing in `src/` reads "
-        "either back today, so this is latent rather than broken."
+    claims = _retraction_claims([note])
+
+    assert bool(claims) is is_a_live_assertion, (
+        f"a correction note with {shape} was read as "
+        f"{'a live reassertion' if claims else 'a quotation'}, expected the opposite.\n\n"
+        f"  note    : {note}\n"
+        f"  scanned : {_scanned(note)}\n\n"
+        f"If a positive stopped firing, the exclusion widened and a reassertion inside a "
+        f"note is invisible again (round-one A7, round-two E1). If a negative started "
+        f"firing, the exclusion no longer covers a shape a shipped note uses and "
+        f"`test_adr_0024_does_not_reassert_that_neither_metadata_column_is_read` is RED "
+        f"on a clean tree."
     )
 
-    assert not _READS_NEITHER_COLUMN.search(_without_quotations(quoting)), (
-        "the quoted retraction is reported as the merged claim returning, so the note "
-        "that records the fix reads as the defect and this module is RED on a clean tree"
+
+def test_decision_two_does_not_read_a_bullet_that_lives_in_an_html_comment() -> None:
+    """RED means round-one mutation A6 is open on ADR-0024.
+
+    Markdown renders nothing inside ``<!-- -->``, so a bullet moved into a comment
+    leaves the decision silent while a substring match over the raw text still
+    finds it. :func:`_decision_two` strips comments first; ADR-0024 carries none,
+    so without a synthetic document that strip is the identity on every shipped
+    input and deleting it changes no test in the suite -- which is what round two
+    measured.
+    """
+    document = (
+        "2. **A purge build is derived from the previous build.**\n\n"
+        "   - **`index_build_id` is read back.**\n\n"
+        "<!-- - **`built_at` is written and never read**, and this renders as nothing. -->\n"
     )
-    assert _READS_NEITHER_COLUMN.search(_without_quotations(asserting)), (
-        "a live reassertion inside a correction note is invisible, which is round-one "
-        "mutation A7. The exclusion must hide the note's quotations, not the note."
+
+    decision = " ".join(_decision_two(document))
+
+    assert "**`index_build_id` is read back.**" in decision, (
+        f"the rendered bullet was lost along with the comment: {decision!r}"
+    )
+    assert "written and never read" not in decision, (
+        f"a bullet inside an HTML comment was read as part of the decision, so a record "
+        f"that renders as nothing would satisfy the positive pin: {decision!r}"
+    )
+
+
+def test_decision_two_commented_out_with_an_unclosed_marker_is_not_findable() -> None:
+    """RED means E2 is open: a ``<!--`` with no ``-->`` hides the decision and nothing says so.
+
+    An unclosed ``<!--`` opens an HTML block that runs to the end of the document
+    when no later line carries ``-->``. ADR-0024 carries no ``-->`` at all, so the
+    whole file after such a marker renders as nothing -- and a pattern that
+    demanded the closing delimiter matched nothing, left :func:`_decision_two`
+    finding its region, and let the full suite pass over an invisible decision.
+
+    The reader is asserted to *refuse* rather than to return an empty region: an
+    empty region would make the positive pin fail with "the sentence is gone",
+    which reads as a wording change rather than as a document that renders as
+    nothing.
+    """
+    document = (
+        "<!-- everything from here is an unclosed HTML block\n\n"
+        "2. **A purge build is derived from the previous build.**\n\n"
+        "   - **`index_build_id` is read back.**\n"
+    )
+
+    with pytest.raises(AssertionError, match="not findable"):
+        _decision_two(document)
+
+
+def test_adr_0024_carries_no_html_comment_today() -> None:
+    """RED means ADR-0024 gained an HTML comment, and someone has to look at it.
+
+    :func:`_decision_two` records that the comment strip is a no-op on the shipped
+    document and a closed door on mutation A6. This is what makes that a
+    measurement rather than a recollection. It catches a comment appearing; it
+    catches a widening of the pattern only when the widening starts matching
+    something ADR-0024 contains, which ``test_raptor_config_claims.py`` measured
+    on its own surfaces and records there.
+
+    A deliberate comment is not a defect. The remedy is to check that no sentence
+    in :data:`DECISION_TWO_SENTENCES` has moved into it -- Markdown renders
+    nothing there -- and then to record it.
+    """
+    text = ADR_0024.read_text(encoding="utf-8")
+
+    assert _HTML_COMMENT.sub(" ", text) == text, (
+        "ADR-0024 now carries an HTML comment. Check first that no sentence in "
+        "`DECISION_TWO_SENTENCES` has moved into it (round-one mutation A6); if the "
+        "comment is deliberate and holds none of them, record it here."
     )
 
 
@@ -869,14 +1156,22 @@ def test_adr_0024_does_not_reassert_that_neither_metadata_column_is_read() -> No
     the same point, which is how the paragraph read for a milestone after
     ``add_nodes`` started selecting the column out of the file it writes into.
 
-    Scoped to Decision point 2, with the dated correction note's **quotations**
-    excised rather than the note skipped. The note quotes the retracted sentence
-    in order to retract it, so a scan that read the quotation would report the fix
-    as the defect; skipping the paragraph closed that at the cost of a blind spot
-    the size of the note, which round-one mutation A7 walked straight into. The
-    served corpus twin ``.theurian/knowledge/architecture/a-purge-is-a-build.<ulid>.md``
-    still carries the retracted sentence byte-identically by design (#199 unit C),
+    Scoped to Decision point 2, with the dated correction note's
+    **retraction-led quotations** excised rather than the note skipped. The note
+    quotes the retracted sentence in order to retract it, so a scan that read the
+    quotation would report the fix as the defect; skipping the paragraph closed
+    that at the cost of a blind spot the size of the note, which round-one
+    mutation A7 walked straight into, and excising every quoted span left a
+    smaller one that round two's E1 walked into in turn. The served corpus twin
+    ``.theurian/knowledge/architecture/a-purge-is-a-build.<ulid>.md`` still
+    carries the retracted sentence byte-identically by design (#199 unit C),
     which is why this is not a repo-wide walk either way.
+
+    The note count below is the exclusion's own control, and Decision point 2 is
+    the only region this module scans, so counting inside it is counting
+    everywhere the exclusion can reach. A note appearing elsewhere in ADR-0024
+    changes nothing here; one appearing *in* this decision, or the shipped one
+    losing its link, moves what is scanned with quotations hidden.
     """
     paragraphs = _decision_two(ADR_0024.read_text(encoding="utf-8"))
 
@@ -888,16 +1183,7 @@ def test_adr_0024_does_not_reassert_that_neither_metadata_column_is_read() -> No
         f"excision below is defined by that note, so it cannot be checked without it"
     )
 
-    claims = [
-        scanned
-        for paragraph in paragraphs
-        if (
-            scanned := (
-                _without_quotations(paragraph) if _CORRECTION_NOTE.search(paragraph) else paragraph
-            )
-        )
-        and (_READS_NEITHER_COLUMN.search(scanned) or _INDEX_BUILD_ID_UNREAD.search(scanned))
-    ]
+    claims = _retraction_claims(paragraphs)
 
     assert not claims, (
         "ADR-0024 Decision point 2 asserts again that nothing in `src/` reads the "

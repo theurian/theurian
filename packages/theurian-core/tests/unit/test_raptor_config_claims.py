@@ -87,32 +87,54 @@ byte-identical to their source anchor commits by
 (#199 unit C). A tree scan for this wording would go RED on those files on the
 day it was written.
 
-**The dated correction notes are excluded by quotation, not by paragraph.** A
-note quotes the retracted sentence in order to retract it, so a scan that read
-the quotation would report the fix as the defect. Skipping the whole note
-paragraph closed that at the cost of a blind spot the size of the note: round-one
-mutation A7 put a *live* reassertion inside ADR-0008's twenty-line note and
-nothing saw it, while the same sentence one paragraph away was caught. So a note
-paragraph is scanned with its quoted spans — italic ``*…*``, ``"…"`` — excised
-first, and the note is asserted to exist rather than assumed, so the exclusion
-cannot silently widen.
+**The dated correction notes are excluded by the quotation a retraction verb
+introduces, not by paragraph and not by quotation marks alone.** A note quotes
+the retracted sentence in order to retract it, so a scan that read the quotation
+would report the fix as the defect. Skipping the whole note paragraph closed that
+at the cost of a blind spot the size of the note: round-one mutation A7 put a
+*live* reassertion inside ADR-0008's twenty-line note and nothing saw it, while
+the same sentence one paragraph away was caught. Excising *every* quoted span
+instead bought a smaller blind spot of the same kind, and round two measured the
+shapes inside it: an assertion italicised anywhere in it (``*Nothing*``,
+``*reads*``), one whose path is written in double quotes, and one bracketed by
+the two asterisks of two ``SELECT *`` spans — that last a live reassertion the
+full-suite mutation run reported as SURVIVED. So the excision is now scoped to a
+quotation a **retraction verb** introduces — ``said``, ``stated``, ``quoted``,
+``carried`` and the rest of :data:`_RETRACTION_LEAD` — and every remaining
+emphasis marker is removed before the patterns run. Both shipped notes quote with
+``said``, so both stay excised; no probe shape does, so each is seen. The
+measurement is :data:`NOTE_EXCLUSION_CASES`, which carries the probes and the
+shipped quoting styles as one parametrized set.
+
+``read`` and ``reads`` are deliberately **not** retraction verbs. They are the
+verb of the claim itself, so admitting them would excise the quoted path in
+*Nothing in ``src/`` reads ".theurian/config.yaml"* — the double-quoted-path
+probe — and hand back the hole this scoping exists to close. The cost is the
+opposite direction: a future note that writes *the paragraph read "…"* has its
+quotation left in place and is reported as the universal returning. That is a
+false RED on a fix, which costs a read; the shape it refuses to trade for costs
+the claim.
+
+**The population of this class outside the three files scanned here is tracked
+in the issues, not counted here.** #447 holds the Python members, #455 the
+wheel-shipped root ``description`` in
+``schemas/config/project-config.schema.json``, and #461 a Markdown member in
+``plugins/``. Two attempts to state that population as a number have been wrong —
+round one said the schema string was the only one outside ``src/``, and round two
+found the ``plugins/`` member outside every key either attempt had used — so this
+docstring names the issues and stops counting. What is asserted here, because
+this module's own patterns decide it, is #455's member: the schema's root
+``description`` sentence is invisible to :data:`_FILE_UNREAD`, which requires the
+path after the verb, and visible to :data:`_THIS_FILE_UNREAD`, which is confined
+to the sample config because the pronoun's referent is only unambiguous there.
+That sentence rides both case tables as its own row, transcribed from the schema
+at ``5a14145`` (byte-identical there to ``8286336``), so which pattern would see
+it is a test result rather than a paragraph. Extending the pronoun pattern past
+the sample config is #199 unit B's, with the file; #455 carries the
+delimiter-tolerant sweep key that found it.
 
 **The ledger is empty, and that is a measured state rather than a scope
-boundary** — see :data:`UNNARROWED_UNIVERSALS`. Four sentences of this class are
-live outside the three files scanned here, none of them reachable from this
-module:
-
-- ``application/forest_builder.py``, ``tests/unit/test_forest_derivation.py`` and
-  ``tests/unit/test_schemas.py`` (#447) — Python, not the Markdown and YAML this
-  module reads.
-- the wheel-shipped root ``description`` in
-  ``schemas/config/project-config.schema.json`` (#455) — a JSON string, not one of
-  the three files scanned here. Measured at ``f205735``, its sentence "Nothing in
-  src/ reads this file" is invisible to :data:`_FILE_UNREAD`, which requires the
-  path after the verb, and visible to :data:`_THIS_FILE_UNREAD`, which is confined
-  to the sample config because the pronoun's referent is only unambiguous there.
-  Extending that pattern to the schema is #199 unit B's, with the file: #455
-  carries the delimiter-tolerant sweep key that found it in the first place.
+boundary** — see :data:`UNNARROWED_UNIVERSALS`.
 
 Pure: it reads two Markdown files and one YAML file as text, and opens no
 database, no socket and no temporary directory.
@@ -160,6 +182,14 @@ _BLOCK_START: Final = re.compile(r"[ \t]*(?:#{1,6}\s|[-*+]\s|\d+\.\s|\||```|---\
 #: demands whitespace.
 _SENTENCE_END: Final = re.compile(r"\.(?=\s|$)")
 
+#: A comment that shares its line with a key, in the sample config.
+#:
+#: A ``#`` opens a comment when it follows whitespace, which is YAML's own rule
+#: for the unquoted case; the whole-line form is handled before this is reached.
+#: The first such ``#`` wins, so the rest of the line — including any further
+#: ``#`` — is the comment's own text.
+_INLINE_COMMENT: Final = re.compile(r"\s#(?P<comment>.*)$")
+
 #: An ATX heading at depth two, which is what bounds a section of ``raptor.md``.
 #:
 #: ``\s`` after the two hashes is what keeps ``### Negative`` from reading as a
@@ -168,25 +198,81 @@ _SENTENCE_END: Final = re.compile(r"\.(?=\s|$)")
 #: safe direction, and the reason this is not defended further.
 _SECTION_HEADING: Final = re.compile(r"^##[ \t]+(?P<title>.+?)[ \t]*$", re.MULTILINE)
 
-#: An HTML comment, removed before a positive pin reads a section.
+#: An HTML comment, removed before a positive pin reads a section — **closed or
+#: not**.
 #:
 #: Markdown renders nothing inside one, so a record whose sentences live in a
 #: comment is a silent record. Round-one mutation A6 moved all four of
 #: ``raptor.md``'s pinned sentences into a comment and both halves of this module
 #: stayed green.
-_HTML_COMMENT: Final = re.compile(r"<!--.*?-->", re.DOTALL)
+#:
+#: The second alternative is round two's E2. A ``<!--`` that is never closed is
+#: an HTML block that runs to the next line carrying ``-->`` or, if there is
+#: none, to the end of the document — so GitHub renders nothing after it, while a
+#: pattern demanding the closing delimiter matches nothing and every pin here
+#: stays green. Measured on ADR-0008 with an unclosed ``<!--`` inserted above
+#: decision 10: with one alternative :func:`_decision_ten` and
+#: :func:`_decision_three_amendment` both still found their regions; with two
+#: both raise. Ordered alternation is what keeps this faithful — the closed form
+#: is tried first, so a real comment ends at its own ``-->`` and the runaway form
+#: only fires when no ``-->`` follows at all. Both Markdown documents scanned here
+#: carry ``-->`` arrows in their mermaid diagrams; none of them starts a match,
+#: which :func:`test_a_mermaid_arrow_does_not_open_an_html_comment` holds, and
+#: substituting this pattern into the shipped surfaces leaves each of them
+#: byte-identical, which
+#: :func:`test_no_scanned_surface_carries_an_html_comment_today` holds.
+_HTML_COMMENT: Final = re.compile(r"<!--.*?-->|<!--.*", re.DOTALL)
 
 #: Bold markers, which are emphasis rather than quotation and are removed before
-#: :data:`_QUOTATION` looks for italic spans — otherwise ``**bold**`` reads as an
-#: italic span and a live claim written in bold inside a correction note would be
-#: excised along with the quotations.
-_EMPHASIS: Final = re.compile(r"\*\*")
+#: :data:`_QUOTED_RETRACTION` looks for italic spans — otherwise ``**bold**``
+#: reads as an italic span and a live claim written in bold inside a correction
+#: note would be excised along with the quotations.
+_BOLD: Final = re.compile(r"\*\*")
 
-#: A quoted span inside a dated correction note: an italic run or a double-quoted
-#: run. Both are the forms the notes actually use — ADR-0008's decision-10 note
-#: quotes in italics, ADR-0024's decision-2 note quotes in double quotes — and
-#: excising them is what lets a note be *scanned* rather than skipped whole.
-_QUOTATION: Final = re.compile(r"\*[^*]+\*|\"[^\"]+\"|“[^”]+”")
+#: A single emphasis marker, removed from **every** block after the excision.
+#:
+#: An asterisk is not part of the sentence a reader sees, and leaving it in makes
+#: the patterns depend on typography: ``\breads\b\s+`` does not match ``*reads*``
+#: because the closing asterisk sits where the space has to be, so a live
+#: reassertion italicised on its verb was invisible whether or not it was excised
+#: (round two, probe 2). Removing every marker is also what closes E1 — a live
+#: reassertion bracketed by the asterisks of two ``SELECT *`` spans is no longer
+#: an italic span for :data:`_QUOTED_RETRACTION` to find, and what is left is the
+#: sentence.
+_EMPHASIS: Final = re.compile(r"\*")
+
+#: The verbs a dated note uses to introduce the sentence it retracts.
+#:
+#: ``read`` and ``reads`` are absent on purpose and :data:`_QUOTED_RETRACTION`
+#: records why.
+_RETRACTION_LEAD: Final = (
+    r"said|says|say|stated|states|quoted|quotes|carried|carries|asserted|asserts"
+    r"|claimed|claims|wrote"
+)
+
+#: A quoted span a retraction verb introduces inside a dated correction note: an
+#: italic run, a double-quoted run or a curly-quoted run, within forty characters
+#: of the verb.
+#:
+#: Both shipped notes take this shape — ADR-0008's decision-10 note quotes in
+#: italics after ``said``, ADR-0024's decision-2 note in double quotes after
+#: ``said`` — so both stay excised, which is the constraint this scoping had to
+#: keep. What it gives up is the blanket rule: a quoted span with no retraction
+#: verb in front of it is *the note talking*, and round two demonstrated four
+#: live reassertions the blanket rule hid (:data:`NOTE_EXCLUSION_CASES`).
+#:
+#: ``read``/``reads`` are excluded from :data:`_RETRACTION_LEAD` because they are
+#: the verb of the claim itself: with them, *Nothing in ``src/`` reads
+#: ".theurian/config.yaml"* has its object excised and the reassertion is hidden
+#: again. The residue is a note that writes *the paragraph read "…"*, whose
+#: quotation stays in place and is reported — a false RED on a fix, which is the
+#: direction that costs a read rather than the claim.
+#:
+#: The lead is preserved by the substitution, so the excision removes the
+#: quotation and not the sentence around it.
+_QUOTED_RETRACTION: Final = re.compile(
+    rf"(?P<lead>\b(?:{_RETRACTION_LEAD})\b[^\n]{{0,40}}?)" r"(?:\*[^*]+\*|\"[^\"]+\"|“[^”]+”)"
+)
 
 #: The retracted universal, in the two shapes it took in the Markdown documents.
 #:
@@ -208,10 +294,18 @@ _QUOTATION: Final = re.compile(r"\*[^*]+\*|\"[^\"]+\"|“[^”]+”")
 #:
 #: The second alternative refuses "is unread" and deliberately not "is not
 #: unread", which is how ``raptor.md`` now opens its narrowing paragraph.
+#:
+#: The delimiter in front of the path is any of a backtick, a double quote, a
+#: single quote and a curly opening quote, rather than a backtick alone. Round
+#: two's third probe wrote the path in double quotes — *Nothing in ``src/`` reads
+#: ".theurian/config.yaml"* — and a backtick-only rule read that as acceptable
+#: wording while the verb-scoped excision left the sentence in place for it. Both
+#: halves had to move for the probe to be seen, which is why they are recorded
+#: together.
 _FILE_UNREAD: Final = re.compile(
     r"\b(?:nothing|nobody|none|no code|no module)\b[^\n]{0,40}?"
-    r"\breads\b\s+(?:the\s+)?`?\.?theurian/config\.yaml"
-    r"|`?\.?theurian/config\.yaml`?[^.]{0,20}\bis\s+(?:still\s+)?unread\b"
+    r"\breads\b\s+(?:the\s+)?[\"'`“]?\.?theurian/config\.yaml"
+    r"|[\"'`“]?\.?theurian/config\.yaml`?[^.]{0,20}\bis\s+(?:still\s+)?unread\b"
     r"|\bconfig(?:uration)?\s+file\s+is\s+(?:still\s+)?unread\b",
     re.IGNORECASE,
 )
@@ -234,9 +328,15 @@ _THIS_FILE_UNREAD: Final = re.compile(
 #: The dated correction note, identified by the issue that owns it.
 #:
 #: Keyed on the ``issues/426`` **link form** rather than on the words "corrected
-#: in", because ADR-0008 carries six paragraphs opening with a correction or
-#: landing note and excluding all six would blind the scan to most of the
-#: document.
+#: in". ADR-0008 is an amended document whose paragraphs routinely open with a
+#: correction, an amendment or a landing note, so a words-based key excludes a
+#: share of the document that grows with every amendment — and it is a share
+#: nobody can state, because it moves with the wording chosen for the key: the
+#: candidate keys tried during round two returned a different population each
+#: time. The link form is keyed on a link the note has to carry to be findable at
+#: all, and the per-surface note count below — see
+#: :data:`CORRECTION_NOTES_PER_SURFACE` — measures what it selects rather than
+#: leaving this comment to guess.
 #:
 #: The bare ``#426`` spelling is deliberately outside this key, and ADR-0008
 #: carries one paragraph in that form — the note under the amendment to decision
@@ -371,6 +471,18 @@ UNIVERSAL_CASES: Final[tuple[tuple[str, bool], ...]] = (
         "`tests/unit/test_config_key_call_sites.py` is what holds the source tree to that one key",
         False,
     ),
+    # -- #455's member, transcribed from the schema at `5a14145` -------------
+    # The wheel-shipped root `description` in
+    # `schemas/config/project-config.schema.json`. It is a live member of this
+    # class outside the three files scanned here, and it names no path, so this
+    # pattern is blind to it -- the half of the module docstring's #455 note that
+    # this table makes a test result rather than a sentence. Its other half is the
+    # matching row in `PRONOUN_CASES`.
+    (
+        "Nothing in src/ reads this file, so no value in it takes effect today: where a "
+        "default here is also honoured by the product, the code carries its own copy.",
+        False,
+    ),
 )
 
 #: One case per form the sample config's pronoun scan claims to catch, and per
@@ -388,6 +500,17 @@ PRONOUN_CASES: Final[tuple[tuple[str, bool], ...]] = (
     ),
     ("No module reads that configuration file", True),
     ("nothing in `src/` reads the file", True),
+    # #455's member, transcribed from `schemas/config/project-config.schema.json`
+    # at `5a14145`. It is in this table and *not* pinned against the schema file,
+    # because the pattern is confined to the sample config on purpose
+    # (:data:`_THIS_FILE_UNREAD` records why) -- what this row asserts is that the
+    # pattern would see the sentence, which is what #199 unit B needs to know
+    # before it takes the file.
+    (
+        "Nothing in src/ reads this file, so no value in it takes effect today: where a "
+        "default here is also honoured by the product, the code carries its own copy.",
+        True,
+    ),
     # -- the annotation the example carries now, which must keep passing -----
     (
         "This file is read -- `security/project_config.py` opens it for "
@@ -401,6 +524,83 @@ PRONOUN_CASES: Final[tuple[tuple[str, bool], ...]] = (
         False,
     ),
     ("Every provider defaults to a deterministic in-tree implementation.", False),
+)
+
+#: The opening every case in :data:`NOTE_EXCLUSION_CASES` shares: the link form
+#: :data:`_CORRECTION_NOTE` keys on, so each case is scanned as a note.
+_NOTE_OPENING: Final = (
+    "Corrected in the #199 unit-A follow-up (https://github.com/theurian/theurian/issues/426)."
+)
+
+#: One case per shape a live reassertion inside a correction note can take, and
+#: per shape the two shipped notes actually quote in, as
+#: ``(what the shape is, the note, is it an assertion the scan must report)``.
+#:
+#: **The positives are the measured misses of the rule this replaced.** Excising
+#: every quoted span hid all five: the plain sentence was the only one it caught.
+#: Round-one mutation A7 is the first, round two's probes are the next four, and
+#: the ``SELECT *`` one is E1 — a live reassertion whose only protection was two
+#: asterisks belonging to two unrelated SQL fragments, which the full-suite
+#: mutation run reported as SURVIVED.
+#:
+#: **The negatives are transcribed from the shipped notes' quoting styles**, so a
+#: rule that stopped covering one of them would be RED against ADR-0008 or
+#: ADR-0024 on a clean tree. The curly-quote case is not a style either note uses
+#: today; it is here because a Markdown renderer and an editor both produce it
+#: from a typed ``"``, and a note reflowed through one would otherwise lose its
+#: exclusion silently.
+NOTE_EXCLUSION_CASES: Final[tuple[tuple[str, str, bool], ...]] = (
+    (
+        "a plain live reassertion (round-one A7)",
+        f"{_NOTE_OPENING} Nothing in `src/` reads `.theurian/config.yaml` today. "
+        "That is why the default is safe to flip.",
+        True,
+    ),
+    (
+        "a live reassertion italicised on its subject",
+        f"{_NOTE_OPENING} *Nothing* in `src/` reads `.theurian/config.yaml` today.",
+        True,
+    ),
+    (
+        "a live reassertion italicised on its verb",
+        f"{_NOTE_OPENING} Nothing in `src/` *reads* `.theurian/config.yaml` today.",
+        True,
+    ),
+    (
+        "a live reassertion whose path is in double quotes",
+        f'{_NOTE_OPENING} Nothing in `src/` reads ".theurian/config.yaml" today.',
+        True,
+    ),
+    (
+        "a live reassertion bracketed by two `SELECT *` asterisks (E1)",
+        f"{_NOTE_OPENING} `metadata()` does `SELECT *`, and nothing in `src/` reads "
+        "`.theurian/config.yaml` today, which is why `SELECT *` fetches it.",
+        True,
+    ),
+    (
+        "a live reassertion in bold",
+        f"{_NOTE_OPENING} **Nothing in `src/` reads `.theurian/config.yaml`** today.",
+        True,
+    ),
+    # -- the shipped notes' own quoting styles, which must stay hidden --------
+    (
+        "the italic quotation ADR-0008's note carries",
+        f"{_NOTE_OPENING} Two sentences said *nothing in `src/` reads "
+        "`.theurian/config.yaml`*. Each was true when written.",
+        False,
+    ),
+    (
+        "the double-quoted quotation ADR-0024's note carries",
+        f'{_NOTE_OPENING} This paragraph said "nothing in `src/` reads '
+        '`.theurian/config.yaml`". That was true when written.',
+        False,
+    ),
+    (
+        "the same quotation in curly quotes",
+        f"{_NOTE_OPENING} This paragraph said “nothing in `src/` reads "
+        "`.theurian/config.yaml`”. That was true when written.",
+        False,
+    ),
 )
 
 
@@ -436,55 +636,86 @@ def _paragraphs(text: str) -> list[str]:
 
 
 def _comment_blocks(text: str) -> list[str]:
-    """A YAML document's contiguous runs of ``#`` comment lines, joined and collapsed.
+    """A YAML document's comment prose, joined and collapsed, one block per run.
 
     The unit :func:`_paragraphs` is for Markdown, in the shape the sample config
     takes: its annotations are comment blocks, each broken across four or five
     lines, and a per-line scan would never see a sentence whole.
 
-    **Comments only, which is the recorded bound.** A YAML *value* asserting that
-    nothing reads the file is not a shape this reads — the file's prose lives in
-    its annotations, and the keys it sets are booleans, integers and enumerated
-    strings.
+    **Whole-line and inline comments both** (round two, E3). A run of whole-line
+    ``#`` comments is one block, because a sentence wraps across it. An *inline*
+    comment is its own block and ends the run above it: it annotates the one key
+    it sits on, and joining it to the paragraph above would let a sentence borrow
+    half of an unrelated annotation. Reading whole lines only was a measured hole
+    rather than a theoretical one — the pronoun sentence moved to
+    ``repositories:  # Nothing in `src/` reads this file`` was invisible to this
+    module while the block-comment form was caught.
+
+    **What a ``#`` is taken to mean, which is the remaining bound.** A ``#`` that
+    opens a line, or that follows whitespace, opens a comment. YAML also lets a
+    ``#`` sit inside a quoted scalar, where it is data; this reads that as a
+    comment and would report a value whose text happened to carry the retracted
+    sentence. That over-approximates in the RED direction, which costs a read —
+    and the file's values are booleans, integers and enumerated strings, so no
+    such scalar exists here today.
     """
     blocks: list[list[str]] = [[]]
     for raw in text.splitlines():
         stripped = raw.strip()
         if stripped.startswith("#"):
             blocks[-1].append(stripped.lstrip("#").strip())
-        else:
-            blocks.append([])
+            continue
+
+        inline = _INLINE_COMMENT.search(raw)
+        blocks.append([inline.group("comment").strip()] if inline else [])
+        blocks.append([])
 
     return [collapsed for block in blocks if (collapsed := _collapsed(" ".join(block)))]
 
 
 def _without_quotations(text: str) -> str:
-    """``text`` with its quoted spans replaced by a space.
+    """``text`` with the quoted spans a retraction verb introduces replaced by a space.
 
     Applied to a dated correction note before the note is scanned, so that the
     retracted sentence the note quotes is invisible while anything the note
-    *asserts* is not. Emphasis markers go first: ``**bold**`` would otherwise read
-    as an italic span, and a live reassertion written in bold would be excised
-    with the quotations — which is the hole this function exists to close, not one
-    to reintroduce.
+    *asserts* is not. Bold markers go first: ``**bold**`` would otherwise read as
+    an italic span, and a live reassertion written in bold would be excised with
+    the quotations — which is the hole this function exists to close, not one to
+    reintroduce.
+
+    The retraction verb is what separates the two, and :data:`_QUOTED_RETRACTION`
+    records the trade. The lead is kept and only the quotation is replaced, so a
+    sentence the note goes on to assert is still there to be read.
     """
-    return _QUOTATION.sub(" ", _EMPHASIS.sub("", text))
+    return _QUOTED_RETRACTION.sub(lambda match: f"{match.group('lead')} ", _BOLD.sub("", text))
 
 
 def _unread_claims(blocks: Sequence[str], patterns: Sequence[re.Pattern[str]]) -> list[str]:
     """Every sentence in ``blocks`` that one of ``patterns`` reads as the retracted claim.
 
-    A dated correction note is scanned with its quotations excised rather than
-    skipped whole. Sentences are split *after* the excision, so a quotation
-    removed from the middle of a paragraph cannot join two neighbouring sentences
-    into one that matches across the seam.
+    A dated correction note is scanned with the quotations a retraction verb
+    introduces excised, rather than skipped whole. Emphasis markers are then
+    removed from every block, note or not, so that an italicised word is scanned
+    as the word.
+
+    **The excision runs before the sentence split, and that order is a trade
+    rather than a safeguard.** Removing a quotation that carries a sentence end
+    joins its two neighbours into one span, which can then match across the seam:
+    measured, and pinned by
+    :func:`test_a_quotation_carrying_a_sentence_end_joins_across_the_seam`, which
+    prints both orders. The reverse order — split, then excise within each
+    sentence — does not join, and instead *breaks* an assertion whose middle
+    carries such a quotation into two halves that neither match. The failure this
+    order takes is a false RED on a paragraph that quotes; the failure it refuses
+    is a live reassertion going unseen, which is what this module exists to
+    prevent. So the order stays and the docstring says which way it fails.
     """
     claims: list[str] = []
     for block in blocks:
         scanned = _without_quotations(block) if _CORRECTION_NOTE.search(block) else block
         claims.extend(
             sentence.strip()
-            for sentence in _SENTENCE_END.split(scanned)
+            for sentence in _SENTENCE_END.split(_EMPHASIS.sub("", scanned))
             if any(pattern.search(sentence) for pattern in patterns)
         )
     return claims
@@ -621,6 +852,28 @@ SCANNED_SURFACES: Final[
     (SAMPLE_CONFIG, _comment_blocks, (_FILE_UNREAD, _THIS_FILE_UNREAD)),
 )
 
+#: How many ``issues/426`` correction notes each scanned surface carries.
+#:
+#: **One per surface, not one in total**, which is round two's half of this
+#: control. The excision defined by :data:`_CORRECTION_NOTE` can widen on *any*
+#: surface it is applied to, and only ADR-0008's count was asserted: a note link
+#: written into ``raptor.md``'s narrowing paragraph or into the sample config's
+#: annotation would have started excising the quoted spans there with nothing
+#: saying so. The zeroes are as load-bearing as the one.
+#:
+#: Both directions redden. A note deleted, or its link form dropped, makes the
+#: excision stop matching the paragraph it was defined for — the scan then
+#: *widens*, and the quotation it was hiding is reported as the universal
+#: returning. A note added anywhere else narrows the scan by exactly one
+#: paragraph, silently.
+CORRECTION_NOTES_PER_SURFACE: Final[
+    tuple[tuple[pathlib.Path, Callable[[str], list[str]], int], ...]
+] = (
+    (ADR_0008, _paragraphs, 1),
+    (RAPTOR_MD, _paragraphs, 0),
+    (SAMPLE_CONFIG, _comment_blocks, 0),
+)
+
 
 # -- The scanners, which the absence pins below are worthless without ---------
 
@@ -685,34 +938,95 @@ def test_the_pronoun_scan_sees_the_sample_configs_retracted_wording(
     )
 
 
-def test_the_correction_note_exclusion_hides_a_quotation_and_not_an_assertion() -> None:
-    """RED means the note exclusion is back to skipping whole paragraphs.
+@pytest.mark.parametrize(
+    ("shape", "note", "is_a_live_assertion"),
+    NOTE_EXCLUSION_CASES,
+    ids=[case[0] for case in NOTE_EXCLUSION_CASES],
+)
+def test_the_correction_note_exclusion_hides_a_quotation_and_not_an_assertion(
+    shape: str, note: str, is_a_live_assertion: bool
+) -> None:
+    """RED means the note exclusion is hiding what a note asserts, not what it quotes.
 
     Round-one mutation A7: a live reassertion placed inside ADR-0008's twenty-line
     correction note was invisible, while the identical sentence one paragraph away
-    was caught. The exclusion is now quotation-shaped, so this asserts both halves
-    of that shape against synthetic notes rather than against the shipped file —
-    the shipped file has no live reassertion in it, and a scan that had stopped
-    excluding anything would look identical there.
+    was caught. Excising the note's quoted spans closed that — and round two
+    measured that a blanket quotation rule reopened it in four narrower shapes,
+    one of which (E1, the reassertion bracketed by two ``SELECT *`` asterisks)
+    SURVIVED a full-suite mutation run. The excision is scoped to a quotation a
+    retraction verb introduces, and every emphasis marker is removed afterwards;
+    these cases are what makes that statement a measurement.
+
+    The positives and the negatives are load-bearing in opposite directions. A
+    positive that stops firing is a live reassertion the record no longer catches.
+    A negative that starts firing is the *fix* being reported as the defect, which
+    would make this module RED on a clean tree — and the last three are the two
+    shipped notes' own quoting styles, so there would be no wording that made it
+    green again short of deleting the notes.
+
+    Asserted against synthetic notes rather than against the shipped documents,
+    because neither shipped note carries a live reassertion: an exclusion that had
+    stopped excluding anything would look identical there.
     """
-    quoting = (
-        "Corrected in the #199 unit-A follow-up "
-        "(https://github.com/theurian/theurian/issues/426). This paragraph said "
-        '"nothing in `src/` reads `.theurian/config.yaml`". That was true when written.'
-    )
-    asserting = (
-        "Corrected in the #199 unit-A follow-up "
-        "(https://github.com/theurian/theurian/issues/426). Nothing in `src/` reads "
-        "`.theurian/config.yaml` today. That is why the default is safe to flip."
+    claims = _unread_claims([note], (_FILE_UNREAD,))
+
+    assert bool(claims) is is_a_live_assertion, (
+        f"a correction note with {shape} was read as "
+        f"{'a live reassertion' if claims else 'a quotation'}, expected the opposite.\n\n"
+        f"  note    : {note}\n"
+        f"  excised : {_without_quotations(note)}\n"
+        f"  claims  : {claims}\n\n"
+        f"The exclusion must hide what a note quotes and show what it asserts. If a "
+        f"positive stopped firing, `_QUOTED_RETRACTION` or `_EMPHASIS` widened and a "
+        f"reassertion inside a note is invisible again (round-one A7, round-two E1). If "
+        f"a negative started firing, the excision no longer covers the shape a shipped "
+        f"note actually uses and "
+        f"`test_no_scanned_surface_reasserts_that_nothing_in_src_reads_the_config_file` "
+        f"is RED on a clean tree."
     )
 
-    assert not _unread_claims([quoting], (_FILE_UNREAD,)), (
-        "the quoted retraction is reported as the universal returning, so the note that "
-        "records the fix reads as the defect and this module is RED on a clean tree"
+
+def test_a_quotation_carrying_a_sentence_end_joins_across_the_seam() -> None:
+    """RED means the excision/split order moved, and :func:`_unread_claims` says otherwise.
+
+    The order is a trade and this is the measurement of it, landed because round
+    two produced three disagreeing answers about whether a seam join was possible
+    at all. It is.
+
+    Excising a quotation that carries a sentence end removes the boundary between
+    the two sentences around it, so the pattern's bounded gap can span what were
+    two sentences — reported here as a claim the paragraph does not make. The
+    reverse order is computed alongside and finds nothing, which is the other half
+    of the trade: splitting first would instead cut an assertion whose middle
+    carries such a quotation into halves that neither match, and a live
+    reassertion going unseen is the failure this module exists to prevent. So the
+    shipped order is the sensitive one, its cost is a false RED on a paragraph
+    that quotes, and swapping it reddens here with both outputs printed.
+    """
+    note = (
+        "Corrected in the #199 unit-A follow-up "
+        "(https://github.com/theurian/theurian/issues/426). The note said nothing "
+        '"at the time. It was fine" reads `.theurian/config.yaml` at all.'
     )
-    assert _unread_claims([asserting], (_FILE_UNREAD,)), (
-        "a live reassertion inside a correction note is invisible, which is round-one "
-        "mutation A7. The exclusion must hide the note's quotations, not the note."
+
+    joined = _unread_claims([note], (_FILE_UNREAD,))
+    split_first = [
+        sentence
+        for sentence in _SENTENCE_END.split(note)
+        if _FILE_UNREAD.search(_EMPHASIS.sub("", _without_quotations(sentence)))
+    ]
+
+    assert [_collapsed(claim) for claim in joined] == [
+        "The note said nothing reads `.theurian/config.yaml` at all"
+    ], (
+        f"the excision no longer joins the two sentences a quoted sentence end "
+        f"separated, so `_unread_claims`'s docstring describes an order it does not "
+        f"take: {joined}"
+    )
+    assert not split_first, (
+        f"splitting before the excision found the same span, so the two orders no "
+        f"longer differ and the trade the docstring records is not the one in the "
+        f"code: {split_first}"
     )
 
 
@@ -940,44 +1254,232 @@ def test_no_scanned_surface_reasserts_that_nothing_in_src_reads_the_config_file(
     )
 
 
-def test_the_correction_note_that_bounds_the_scan_is_actually_there() -> None:
-    """RED means the exclusion above stopped being about anything, and widened silently.
+@pytest.mark.parametrize(
+    ("path", "blocks", "expected"),
+    CORRECTION_NOTES_PER_SURFACE,
+    ids=[path.name for path, _, _ in CORRECTION_NOTES_PER_SURFACE],
+)
+def test_each_scanned_surface_carries_the_notes_the_exclusion_is_defined_for(
+    path: pathlib.Path, blocks: Callable[[str], list[str]], expected: int
+) -> None:
+    """RED means the exclusion stopped being about anything, or covers a surface nobody chose.
 
     :func:`_unread_claims` excises the quoted spans of paragraphs naming issue
     #426 in its ``issues/426`` link form, because the dated correction note quotes
     the retracted sentence in order to retract it and a scan that read the
     quotation would report the fix as the defect.
 
-    An exclusion nobody checks is the same shape as a population nobody counts.
-    If the note is deleted or its issue reference is dropped, the excision stops
-    matching that paragraph -- which would make the scan *wider*, not narrower,
-    and the quoted universal there would be reported as new. Asserting the note
-    exists is what keeps the exclusion honest and keeps the record findable: the
-    only place ADR-0008 says why those two sentences changed.
+    An exclusion nobody checks is the same shape as a population nobody counts,
+    and both directions cost something. If ADR-0008's note is deleted or its issue
+    reference is dropped, the excision stops matching that paragraph -- the scan
+    then *widens*, and the quoted universal there is reported as new. If a note
+    link appears on a surface that has none, the excision starts hiding the quoted
+    spans of a paragraph nobody decided it should, and it does that silently.
 
-    **Exactly one, and the second note is why the count is checked.** ADR-0008
-    also carries a correction note under the amendment to decision 3, written with
-    the bare ``#426`` spelling; it quotes nothing retracted, so it needs no
-    excision and is deliberately outside the key. Rewriting it to the link form
-    would make this RED -- correctly, because the excision would then cover a
-    paragraph nobody decided it should.
+    **Counted per surface, which is round two's half of this.** Only ADR-0008's
+    count was asserted before, so ``raptor.md`` and the sample config could each
+    have gained a note -- and with it an unreviewed exclusion -- with every test
+    here green. The zeroes are pins, not documentation.
+
+    **Exactly one for ADR-0008, and its second note is why the count is checked.**
+    ADR-0008 also carries a correction note under the amendment to decision 3,
+    written with the bare ``#426`` spelling; it quotes nothing retracted, so it
+    needs no excision and is deliberately outside the key. Rewriting it to the
+    link form would make this RED -- correctly.
     """
     notes = [
-        paragraph
-        for paragraph in _paragraphs(ADR_0008.read_text(encoding="utf-8"))
-        if _CORRECTION_NOTE.search(paragraph)
+        block
+        for block in blocks(path.read_text(encoding="utf-8"))
+        if _CORRECTION_NOTE.search(block)
     ]
 
-    assert len(notes) == 1, (
-        f"ADR-0008 carries {len(notes)} paragraphs naming issue #426 in its "
-        f"`issues/426` link form, expected exactly one -- the dated correction note "
-        f"that records what decision 10's two `nothing in `src/` reads "
-        f"`.theurian/config.yaml`` sentences said and why the conclusions survive their "
-        f"narrowing. The amendment to decision 3 carries a second note in the bare "
-        f"`#426` spelling, which quotes nothing retracted and is outside this key on "
-        f"purpose"
+    assert len(notes) == expected, (
+        f"{path.name} carries {len(notes)} blocks naming issue #426 in its "
+        f"`issues/426` link form, expected {expected}.\n\n"
+        f"That key is what `_unread_claims` excises quotations inside, so this count "
+        f"decides how much of each surface is scanned with its quotations hidden. "
+        f"ADR-0008 owns the one dated correction note that records what decision 10's "
+        f"two `nothing in `src/` reads `.theurian/config.yaml`` sentences said; its "
+        f"second note, under the amendment to decision 3, uses the bare `#426` spelling "
+        f"and is outside this key on purpose. `raptor.md` and the sample config carry "
+        f"none: a note added to either widens the exclusion there, so add it here in the "
+        f"same change and say why the paragraph needs one.\n\n"
+        + "\n".join(f"  {note[:120]}" for note in notes)
     )
-    assert "ADR-0027" in notes[0], (
-        f"the correction note no longer names ADR-0027, which is what falsified the "
-        f"retracted sentences: {notes[0]}"
+    if expected:
+        assert all("ADR-0027" in note for note in notes), (
+            f"a correction note in {path.name} no longer names ADR-0027, which is what "
+            f"falsified the retracted sentences: {notes}"
+        )
+
+
+# -- The region readers: a record that renders as nothing is a silent record --
+
+
+def test_a_section_does_not_read_a_sentence_that_lives_in_an_html_comment() -> None:
+    """RED means round-one mutation A6 is open again on ``raptor.md``.
+
+    Markdown renders nothing inside ``<!-- -->``, so a pinned sentence moved into
+    a comment leaves the record silent while a substring match over the raw text
+    still finds it. :func:`_section` strips comments first; without a synthetic
+    document that puts a sentence in one, that strip is the identity on every
+    shipped input and deleting it changes no test in the suite -- which is what
+    round two measured.
+    """
+    document = (
+        "## Three levels\n\n"
+        "**The threshold is real now and no `raptor` key is read.**\n\n"
+        "<!-- What is unread is the `raptor` block, and this sentence renders as "
+        "nothing. -->\n"
+    )
+
+    section = _section(document, _THREE_LEVELS)
+
+    assert "**The threshold is real now and no `raptor` key is read.**" in section, (
+        f"the rendered sentence was lost along with the comment: {section!r}"
+    )
+    assert "What is unread is the `raptor` block" not in section, (
+        f"a sentence inside an HTML comment was read as part of the section, so a "
+        f"record that renders as nothing would satisfy the positive pins: {section!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("region", "reader"),
+    (
+        ("`## Three levels`", lambda text: _section(text, _THREE_LEVELS)),
+        ("ADR-0008 decision 10", _decision_ten),
+        ("ADR-0008's amendment to decision 3", _decision_three_amendment),
+    ),
+    ids=["section", "decision-ten", "decision-three-amendment"],
+)
+def test_a_region_commented_out_with_an_unclosed_marker_is_not_findable(
+    region: str, reader: Callable[[str], str]
+) -> None:
+    """RED means E2 is open: a ``<!--`` with no ``-->`` hides the region and nothing says so.
+
+    An unclosed ``<!--`` opens an HTML block that runs to the end of the document
+    when no line carries ``-->``, so GitHub renders nothing from there on. Measured
+    on ADR-0008 with the marker inserted above decision 10: with a pattern that
+    demanded the closing delimiter, :func:`_decision_ten` and
+    :func:`_decision_three_amendment` both still found their regions and every test
+    in the suite passed while the decision was invisible on the page.
+
+    Each region reader is asserted to *refuse* rather than to return something
+    empty. A reader that quietly returned an empty region would let the positive
+    pins fail with "the sentence is gone", which reads as a wording change rather
+    than as a document that renders as nothing.
+    """
+    document = (
+        "<!-- everything from here is an unclosed HTML block\n\n"
+        "## Three levels\n\n"
+        "**The threshold is real now and no `raptor` key is read.**\n\n"
+        "10. **`raptor.enabled` defaults to `false`.** `schemas/config/"
+        "project-config.schema.json` declared it.\n\n"
+        "**Amended in Milestone 6, by the forest-builder CL. The skip is real** and the "
+        "threshold is a `ForestOptions` field.\n"
+    )
+
+    with pytest.raises(AssertionError, match="not findable"):
+        reader(document)
+
+
+def test_a_mermaid_arrow_does_not_open_an_html_comment() -> None:
+    """RED means the unclosed-comment alternative reads a diagram edge as a comment.
+
+    ``raptor.md`` carries twenty ``-->`` arrows and ADR-0008 eight. None of them
+    is preceded by a ``<!--``, so none may start a match -- and the direction that
+    would go wrong is a false RED on a document whose prose is intact, which is
+    the failure mode that gets a pin deleted rather than fixed.
+    """
+    diagram = 'flowchart TB\n    A["Query"] --> B["Pre-filter"]\n    B --> C["Search"]\n'
+
+    assert _HTML_COMMENT.sub(" ", diagram) == diagram, (
+        "a mermaid arrow was stripped as an HTML comment; the closed form must be "
+        "tried first and the unclosed form must need a `<!--` of its own"
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [path for path, _, _ in SCANNED_SURFACES],
+    ids=[path.name for path, _, _ in SCANNED_SURFACES],
+)
+def test_no_scanned_surface_carries_an_html_comment_today(path: pathlib.Path) -> None:
+    """RED means a scanned surface gained an HTML comment, and someone has to look at it.
+
+    The comment strip is asserted to be a no-op on every shipped surface, which is
+    what makes the region readers' "this is a no-op today and a closed door on the
+    mutation" a measurement rather than a recollection.
+
+    **It catches a comment appearing, and only some of the ways the pattern could
+    widen** -- a widening is caught here exactly when it starts matching something
+    the documents contain. Measured: replacing the runaway ``<!--`` alternative
+    with ``<`` reddens this, because ``raptor.md`` carries ``<br/>``; replacing it
+    with ``<!`` does not, because no surface carries a bare ``<!``. The widening
+    that actually threatens these pins -- a ``-->`` opening a comment nobody
+    opened -- has its own case in
+    :func:`test_a_mermaid_arrow_does_not_open_an_html_comment`.
+
+    A comment added on purpose is not a defect, and the remedy is not to delete
+    it. It is to check that no pinned sentence is inside it -- Markdown renders
+    nothing there -- and then to record the comment here, because a surface with
+    a comment is a surface where the difference between "the record says it" and
+    "a reader sees it" has stopped being free.
+    """
+    text = path.read_text(encoding="utf-8")
+
+    assert _HTML_COMMENT.sub(" ", text) == text, (
+        f"{path.name} now carries an HTML comment. Markdown renders nothing inside "
+        f"one, so check first that no sentence this module pins -- "
+        f"`RAPTOR_MD_SENTENCES`, `DECISION_TEN_SENTENCES`, `DECISION_THREE_SENTENCES` "
+        f"or the sample config's annotation -- has moved into it (round-one mutation "
+        f"A6). If the comment is deliberate and holds none of them, record it here."
+    )
+
+
+def test_the_sample_config_reader_sees_an_inline_comment_as_well_as_a_block() -> None:
+    """RED means E3 is open: the retracted sentence hides on the key line it annotates.
+
+    :func:`_comment_blocks` read whole-line comments only, so the pronoun sentence
+    moved to ``repositories:  # Nothing in `src/` reads this file`` was invisible
+    to this module while the block-comment form one line up was caught -- measured
+    as a surviving mutation against the shipped sample config.
+
+    The block boundaries are asserted, not just the text, because an inline
+    comment that merged into the run above it would let a sentence be assembled
+    out of two annotations that a reader sees as separate.
+    """
+    document = (
+        "providers:\n"
+        "  review:\n"
+        "    # The allowlist review ingestion will read (SEC-10).\n"
+        "    # This file is read for `security.secretScan` alone.\n"
+        "    repositories:  # Nothing in `src/` reads this file.\n"
+        "      - acme/order-service\n"
+    )
+
+    blocks = _comment_blocks(document)
+
+    assert blocks == [
+        "The allowlist review ingestion will read (SEC-10). This file is read for "
+        "`security.secretScan` alone.",
+        "Nothing in `src/` reads this file.",
+    ], f"the sample config's comment prose was not blocked as expected: {blocks}"
+    assert _unread_claims(blocks, (_FILE_UNREAD, _THIS_FILE_UNREAD)) == [
+        "Nothing in `src/` reads this file"
+    ], "the retracted pronoun sentence written as an inline comment was not reported"
+
+
+def test_the_sample_config_reader_does_not_read_a_value_as_a_comment() -> None:
+    """RED means a key line with no comment ends up in the prose the scan reads.
+
+    The other direction of the same reader. A line that carries no ``#`` is data,
+    and a reader that treated the whole line as prose would report the sample
+    config's own values as sentences -- noise that would get the pin silenced.
+    """
+    document = "providers:\n  review:\n    adapter: none\n    repositories:\n"
+
+    assert _comment_blocks(document) == [], (
+        f"a YAML document with no comments produced prose: {_comment_blocks(document)}"
     )
