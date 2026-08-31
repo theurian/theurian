@@ -288,6 +288,7 @@ class Revision:
     content_file: str
     content_sha256: str
     metadata: Mapping[str, Any]
+    expected_revision: str | None
 
     @property
     def anchors(self) -> tuple[Any, ...]:
@@ -584,6 +585,7 @@ def _revisions() -> tuple[Revision, ...]:
             if not isinstance(operation, dict) or operation.get("op") != "upsertRevision":
                 continue
             metadata = operation.get("metadata")
+            expected = operation.get("expectedRevision")
             found.append(
                 Revision(
                     migration=path,
@@ -594,6 +596,7 @@ def _revisions() -> tuple[Revision, ...]:
                     metadata=_frozen(metadata)
                     if isinstance(metadata, dict)
                     else MappingProxyType({}),
+                    expected_revision=expected if isinstance(expected, str) else None,
                 )
             )
     assert found, (
@@ -911,6 +914,78 @@ def test_every_committed_revision_id_is_unique_across_the_corpus() -> None:
         f"revision ids declared by more than one committed migration: {duplicated}. A "
         f"revision id is an identity; two migrations claiming one means a reader following "
         f"it reaches whichever the store kept."
+    )
+
+
+def test_every_expected_revision_names_the_chain_the_migrations_construct() -> None:
+    """``expectedRevision`` is the corpus's first optimistic-concurrency pin, and
+    nothing static held it before this rule.
+
+    Reproduced by the orchestrator (code-review MEDIUM): mutate a committed
+    migration's ``expectedRevision`` to a well-formed ULID no revision holds,
+    and the whole static surface stays green -- this module (32 tests, before
+    this rule existed) and ``theurian migrate validate`` both pass, because
+    neither reconstructs the chain the field claims to extend; the schema only
+    checks the *shape* of the value (a well-formed ULID, or ``null``), never
+    what it names. Only ``theurian migrate apply`` refuses, with a revision
+    conflict, on whichever machine applies the corpus next -- the run where a
+    wrong pin is most expensive, same reasoning as
+    :func:`test_every_committed_revision_id_is_unique_across_the_corpus` just
+    above.
+
+    Application order is :func:`_migration_paths`'s sort, the same order
+    ``load_migrations`` applies in: the loader lists ``.theurian/migrations/``
+    and keeps every ``.yaml`` entry in the directory listing's sorted order,
+    which is chronological because a ULID prefix is. Folding ``upsertRevision``
+    by ``itemId`` in that order, "current" is last-upsert-wins: whichever
+    revision the most recent prior ``upsertRevision`` for an item declared is
+    what the *next* one for that item has to name.
+
+    Two branches, and they are exhaustive over this corpus: a revision naming
+    ``expectedRevision`` has to match what the fold above left current for its
+    item, and one naming none has to be that item's *first* ``upsertRevision``
+    -- optimistic concurrency has nothing to check against before an item holds
+    a revision at all, which is why ``expectedRevision`` is absent from all 26
+    seed migrations by design. The published schema also allows a third
+    absence -- FR-K8's idempotent re-run of an operation whose own
+    ``revisionId`` the item already holds -- but that requires two migrations
+    naming the same ``revisionId``, which
+    :func:`test_every_committed_revision_id_is_unique_across_the_corpus` above
+    already forbids across this corpus, so it cannot arise while walking the
+    committed migrations once from empty.
+    """
+    current: dict[str, str] = {}
+    wrong_pin: list[str] = []
+    not_first: list[str] = []
+    for revision in _revisions():
+        preceding = current.get(revision.item_id)
+        if revision.expected_revision is None:
+            if preceding is not None:
+                not_first.append(
+                    f"{revision.migration}: upsertRevision {revision.revision_id} on "
+                    f"{revision.item_id} carries no expectedRevision, but the preceding "
+                    f"migrations already left {preceding} current for that item"
+                )
+        elif revision.expected_revision != preceding:
+            wrong_pin.append(
+                f"{revision.migration}: upsertRevision {revision.revision_id} on "
+                f"{revision.item_id} names expectedRevision {revision.expected_revision!r}, "
+                f"but the preceding migrations left {preceding!r} current for that item"
+            )
+        current[revision.item_id] = revision.revision_id
+
+    assert not wrong_pin, (
+        f"upsertRevision operations whose expectedRevision does not name the revision the "
+        f"preceding migrations left current for that item: {wrong_pin}. `migrate apply` "
+        f"refuses every one of these with a revision conflict; nothing static did before "
+        f"this rule."
+    )
+    assert not not_first, (
+        f"upsertRevision operations with no expectedRevision that are not their item's "
+        f"first revision: {not_first}. Optimistic concurrency has nothing to check against "
+        f"on a first revision, but a later one silently skipping the field means "
+        f"`migrate apply` accepts whatever happens to be current with no confirmation at "
+        f"all."
     )
 
 
