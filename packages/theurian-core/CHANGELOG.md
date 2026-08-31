@@ -167,6 +167,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `plugins/` — and the served corpus twins of ADR-0008 and ADR-0024 under
   `.theurian/knowledge/architecture/`, which carry the retracted sentences
   byte-identically and move only on a governed re-seed (#199 unit C), the same
+  carry #417 and #432 record.
+
 - **ADR-0018's owed single-writer work names a live owner, its write-method
   count matches the port, and the README states the NFS exclusion**
   ([#436](https://github.com/theurian/theurian/issues/436),
@@ -346,13 +348,16 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   words" was that no test reads `README.md`, `packages/theurian-core/CHANGELOG.md`
   or the threat model. Measured false: seven files under
   `packages/theurian-core/tests` named the root README at `5a9a1e5` and eight do
-  at `7ea5840` — the eighth being the pin module itself — and
+  at this PR's tip (#470) — the eighth being the pin module itself — and
   `test_setup_claims.CORE_ARRIVAL_SURFACES` carries the root README, which the
   same entry recorded twenty lines further up. The conclusion survives on a
-  narrower fact and is now stated on both keys with the pathspec in each, since
-  run unscoped they answer 8 and 9 against the whole repository:
-  `probe_artifact_integrity` reaches one module and the step id reaches two, at
-  `5a9a1e5` and `7ea5840` alike. `test_threat_model_t16_claims.py` holds both
+  narrower fact and is now stated on both keys **with the pathspec in each**,
+  because the unscoped pair is not a population at all: it counts every prose
+  mention of the step id anywhere in the repository, so it read 8 and 9 while
+  this change was in flight and 9 and 10 once this entry named the token. Scoped,
+  it holds: `probe_artifact_integrity` reaches one module and the step id reaches
+  two, at `5a9a1e5` and at this PR's tip alike.
+  `test_threat_model_t16_claims.py` holds both
   directions — the retracted wording refused as an assertion while legal as a
   quotation, every block carrying it required to mark it retracted, and the
   narrow fact held as an exact set so a third module naming the probe is the

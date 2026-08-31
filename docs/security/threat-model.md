@@ -2634,25 +2634,30 @@ entry already records ("the file joined the tuple in the same change").
 keys give different answers and the difference is the whole point.**
 `git grep -ln 'README\.md' -- packages/theurian-core/tests` is the loose key: it
 also matches `plugins/claude-code/README.md`, and it answers **seven at
-`5a9a1e5`, eight at `9d51a04`** — the eighth being
-`test_threat_model_t16_claims.py`, the module that pins this very paragraph, so
-the figure moved because of this correction rather than despite it. The strict
-key — the *root* `README.md`, nothing path-like before it, and that pin module
-excluded from its own population — answers **five at `5a9a1e5`, at `9d51a04` and
-at `54236b4`**. It is the shape the pin computes in its own failure message, and
-like the two figures above it is a measurement no test holds: nothing goes RED if
-a sixth module starts naming the root README.
+`5a9a1e5` and eight from the commit in
+[#470](https://github.com/theurian/theurian/pull/470) that added
+`test_threat_model_t16_claims.py`** — the eighth file being that module, the one
+which pins this very paragraph, so the figure moved because of this correction
+rather than despite it. The strict key — the *root* `README.md`, nothing
+path-like before it, and that pin module excluded from its own population —
+answers **five at `5a9a1e5` and five at every commit of #470**. It is the shape the pin computes in
+its own failure message, and like the two figures above it is a measurement no
+test holds: nothing goes RED if a sixth module starts naming the root README.
 
 What survived the correction is the narrower fact about the setup probe, and it
 is stated on both keys for the same reason. **The pathspec is part of each key,
-not decoration from the column header** — run without it, the same two commands
-answer 8 and 9 against the whole repository, and the pin module's self-exclusion
-rests on the scoped form:
+not decoration from the column header**, and the reason is sharper than
+tidiness: unscoped, these two commands count every prose mention of the step id
+anywhere in the repository — this entry, the work log, the CHANGELOG, the source
+and the pin module all name it — so the unscoped pair read 8 and 9 partway
+through #470 and 9 and 10 by its tip, while the scoped pair did not move at all.
+Only the scoped form is a population, and the pin module's self-exclusion rests
+on it:
 
 | Key | Modules | At |
 | :-- | --: | :-- |
-| `git grep -ln 'probe_artifact_integrity' -- packages/theurian-core/tests` — the probe function itself | 1 — `test_artifact_integrity_claim.py` | `5a9a1e5`, `9d51a04`, `54236b4` |
-| `git grep -ln 'artifact_integrity' -- packages/theurian-core/tests` — the step id, which is what the pin holds | 2 — the above, plus `test_dogfood_corpus_governance.py` | `5a9a1e5`, `9d51a04`, `54236b4` |
+| `git grep -ln 'probe_artifact_integrity' -- packages/theurian-core/tests` — the probe function itself | 1 — `test_artifact_integrity_claim.py` | `5a9a1e5`, and every commit of #470 |
+| `git grep -ln 'artifact_integrity' -- packages/theurian-core/tests` — the step id, which is what the pin holds | 2 — the above, plus `test_dogfood_corpus_governance.py` | `5a9a1e5`, and every commit of #470 |
 
 The second module is a member of the looser key **only because it names the
 first one's file name** in prose; it reaches no probe. Neither module ties the

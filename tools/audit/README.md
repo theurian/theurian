@@ -27,9 +27,9 @@ their key here on the same terms; each row names the work log its figure is in.
 **A figure in that column is a measurement, not an invariant.** It is what the
 key answered at the commit its row names, and the working tree moves it — the
 #427 sweep's own fixes to the threat model took its row from 114/56/110/97 at
-`5a9a1e5` to 119/57/114/109 at `5c5bad7`, in the same branch. Read a row against
-the commit it names, or re-run it and record the new anchor beside the new
-number.
+`5a9a1e5` to 119/57/114/109 at the tip of the branch that made them
+([#470](https://github.com/theurian/theurian/pull/470)). Read a row against the
+commit it names, or re-run it and record the new anchor beside the new number.
 
 Run them against a specific commit by extracting the file first, so the counts
 are anchored:
