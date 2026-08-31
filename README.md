@@ -230,7 +230,7 @@ carries a `SHA256SUMS`, and comparing your download against
 manual step you have to choose to take. It is also narrower than it looks — the
 posture table below says what it catches and what it does not (T-16,
 [#80](https://github.com/theurian/theurian/issues/80), which tracks the gap and
-records that an issue for the check itself is still owed).
+records that an issue for the control itself is still owed).
 
 **Both additions earn their place.** `[daemon]` is what carries the MCP daemon:
 `uvicorn` and the MCP SDK live in that extra, so a plain install gives you the

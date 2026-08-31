@@ -203,8 +203,9 @@ other 199 from being available. Failures are reported per document with the path
 and the reason, and the run's exit status reflects that some documents were
 skipped.
 
-The same principle is owed further up, when review ingestion lands (Milestone 7):
-if LLM-based candidate generation fails, raw review ingestion must still succeed
+The same principle is owed further up, when review ingestion lands (roadmap
+Phase B): if LLM-based candidate generation fails, raw review ingestion must
+still succeed
 (FR-V5). Evidence collection and interpretation are to stay separate steps
 precisely so the fragile one cannot take down the reliable one.
 
@@ -230,14 +231,24 @@ day of shipping. So "owned by #479" is a dated claim (2026-09-01, measured over
 the 164 then-open issues) that a later reader has to re-check rather than one a
 check will defend.
 
-**What is makeable and not built is the check across the carriers.** Four files
-carry this cite — this one, `theurian/review/__init__.py`,
+**What is makeable and not built is the check across the carriers.** Five cites
+over four files carry this owner — two here, `theurian/review/__init__.py`,
 `plugins/claude-code/commands/ingest.md`, and
-`tests/unit/test_findings_store_is_unreachable.py`, which paraphrases the second
+`tests/unit/test_findings_store_is_unreachable.py`, which paraphrases the third
 — and asserting that they name the *same* number needs no network at all. Its
 absence is not theoretical either: the review of the change that repointed them
-found the fourth carrier still reading "owned by no open issue" after the other
-three had moved. Recorded rather than built, because a new mechanism mid-review
-is a new claim to attack; a same-number check across carriers belongs with
+found the last carrier still reading "owned by no open issue" after the others
+had moved.
+
+**The same gap holds for T-16's successor clause**, and for the same reason.
+Five sites say that #80 owns the artifact-verification gap and that an issue for
+the control itself is still owed — `README.md` ×2, `packaging/README.md`,
+`docs/architecture/requirements-analysis.md`, and the threat model's T-16 entry
+they were all carried from. Nothing checks that those five agree, and nothing
+can check that #80 is still the live owner; a same-number check across them is
+as makeable, and as absent, as the one above.
+
+Both are recorded rather than built, because a new mechanism mid-review is a new
+claim to attack. A same-number check across carriers belongs with
 [#199](https://github.com/theurian/theurian/issues/199) unit B's object-keyed
-census, which already walks the sites this one would.
+census, which already walks the sites either one would.

@@ -264,15 +264,37 @@ which is the form the threat model's T-16 entry already uses at `:2685`.
 
 ### Where no repoint was available
 
-**Four** cites named #129 as the owner of unbuilt **GitHub review ingestion** —
-`source-normalization.md` ×2, `review/__init__.py`, `ingest.md`, which is the
-classifier's own count for those files — and no open issue owned that. This
-sentence said "three" until the review re-derived it, and #479's body inherited
-the wrong number from here before this sweep's own discipline was applied to it;
-both are
-[corrected on #479](https://github.com/theurian/theurian/issues/479#issuecomment-5484550729),
-which also records the fifth statement, the paraphrase in
-`test_findings_store_is_unreachable.py`. Measured 2026-09-01 over the full open
+**Five cites over four files** named #129 as the owner of unbuilt **GitHub review
+ingestion**, and no open issue owned that. **This paragraph is the authority for
+that count**, and the vocabulary is settled here rather than per-site: it is
+*five cites*, and where *four* appears it is the file count. Derived by asking
+which `a-dead` rows repoint at #479 — not by listing files:
+
+| Row at `e546c15` | Its base text |
+| :-- | :-- |
+| `source-normalization.md:170` | `owed with review ingestion (Milestone 7, [#129])` |
+| `source-normalization.md:207` | `when review ingestion lands (Milestone 7, [#129])` |
+| `review/__init__.py:8` | `` (`#129 <…/issues/129>`_) `` |
+| `ingest.md:38` | `(Milestone 7, [#129])` |
+| `test_findings_store_is_unreachable.py:25` | `` (Milestone 7, ``#129``) `` |
+
+All five are the same shape. The fifth is an **owner cite** at base, not a
+paraphrase — it became one because **this branch re-shaped it**, in `8c48c32`,
+and the count was taken afterwards.
+
+That is the same construction error twice. The sentence first said "three",
+counting sites a pre-written table named. Corrected, it said "four … which is the
+classifier's own count for those files" — a true statement about those files, and
+still the wrong number, because keying the count on *files* let a member drop
+out: `test_findings_store_is_unreachable.py` was not on the list, and it was not
+on the list because by the time the sentence was written its text was already a
+paraphrase. The branch's own edit had erased the shape the count was looking for.
+A count keyed on **what each fix targets** cannot do that, which is why the table
+above is keyed that way. Both corrections are recorded on #479
+([first](https://github.com/theurian/theurian/issues/479#issuecomment-5484550729),
+[second](https://github.com/theurian/theurian/issues/479#issuecomment-5485164975)).
+
+Measured 2026-09-01 over the full open
 set (164 issues,
 `gh issue list --state open --limit 500`), by title and body, for
 `reviewIngestion`, `KnowledgeCandidate`, `ReviewProvider`, `ReviewThread`,
@@ -444,14 +466,45 @@ exists to prevent, committed inside the work log itself.
 | `9aacded` `docs(work-logs)` | 0 | This file |
 | `ea77745` `docs(review)` | 0 | The four stated-unowned sites → #479, once the gap this sweep measured was filed as an issue. Adds no cite to the population: #479 is not #129, #39 or #198 |
 | `1433a3d` `test(claims)` | 0 | The pin this sweep asked for, authored by the tests specialist: the roadmap's T-16 quotation held against the live threat-model row |
-| `docs(review)`, last | 0 | Round-1 fixes: the #80 successor clause carried to all four sites, this table re-derived, the fifth carrier named, `project_config.py`'s schedule clause dropped |
+| `da6231f` `docs(review)` | 0 | Round-1 fixes: the #80 successor clause carried to all four sites, this table re-derived, the fifth carrier named, `project_config.py`'s schedule clause dropped |
+| `1f97a59` `test(claims)` | 0 | Round-2 tests half: the correction marker scoped, and the fifth carrier repointed at #479 in the file itself |
+| `docs(review)`, last | 0 | Round-2 docs half: this row's own count settled at five, the table brought level with the branch again, the docstring-only claim narrowed to the commits it is true of |
 
-`docs(core)`'s, `docs(tests)`', `docs(review)`'s and this round's Python changes
-are docstring- and comment-only. Verified rather than asserted: each changed
-module was parsed before and after, its module/class/function docstrings
-stripped, and the resulting `ast.dump` compared — **AST-identical** every time,
-`review/__init__.py` and `security/project_config.py` across each of their
-commits.
+**No total is asserted for this table, deliberately.** Two rounds running, a
+figure here went stale the moment the next commit landed — "Eight commits" over
+nine rows in round 1, twelve rows against thirteen commits in round 2. The row
+count is what `git log origin/main..HEAD` returns and is not restated in prose;
+the **Cites** column is the one number that is checked, because it is derived
+from the classifier and must equal 28 whatever the commit count does.
+
+**Which commits touch Python, and how deeply**, measured per file by parsing both
+revisions rather than asserted over the branch. Three registers, because one
+sentence covering all of them was false of the round:
+
+| Register | Check that holds it | Commits |
+| :-- | :-- | :-- |
+| Docstring-only | `ast.dump` equal with module/class/function docstrings stripped | `8c48c32` (4 files), `ea77745`, `da6231f`'s `project_config.py`, `1f97a59`'s `test_examples.py` and `test_findings_store_is_unreachable.py` |
+| Literal-text-only | not docstring-only, but `ast.dump` equal with **every string constant blanked** — an assert message or a required-sentence tuple moved, no logic | `7e12caf` (3 files), `fd3829c`, `da6231f`'s `test_network_call_sites.py` |
+| Structure moved | neither holds; this is real code | `1433a3d` (`test_examples.py`, plus `test_roadmap_claims.py` as a new module) and `1f97a59`'s `test_roadmap_claims.py` |
+
+The middle register exists because the earlier version of this sentence claimed
+docstring-only for the whole branch, and `7e12caf`, `fd3829c` and `da6231f` each
+move an assert message or a pin's required sentence — text a reader sees only on
+failure, but not a docstring. Calling that "docstring-only" was false in the same
+direction each time: a check that fits the edit, rather than the edit described
+by the check that was to hand. **`1433a3d` and `1f97a59` are the round's real
+code changes**, and no docstring-only claim covers them.
+
+### The ratchet, applied to this table
+
+The rule this work log records — *a follow-up's population is the diff's added
+lines, not the table the first pass wrote* — **caught this table twice, having
+been written to prevent exactly that.** Round 1 found it heading nine rows with
+"Eight commits"; round 2 found twelve rows against thirteen commits, `1f97a59`
+missing. Both times the table was re-derived from the base rather than from what
+the branch had since committed, which is the failure the ratchet names, in the
+document that names it. The response is structural rather than another promise:
+the row count is no longer stated in prose, so there is no number to go stale.
 
 **Five** of the `#429` repoints also dropped a schedule clause ("owed with
 Milestone 7", "owed with review ingestion") — four counted from the removed
@@ -475,15 +528,24 @@ returns 76 lines at `e546c15`, against a README that says "Forward planning move
 from milestone numbers to phases on 2026-08-20" — and folding it in would have
 been the box-split rule broken.
 
-**The two forward anchors this branch newly *authored* are its own to fix, and
-were.** `source-normalization.md`'s `GitHub review` row and `ingest.md`'s FR-V5
-bullet each paired "Milestone 7" with #479 in a sentence written here; per
-#480's rule that forward anchors repoint at phases or live issues, they now read
-"roadmap Phase B" and "#479, which carries `phase-b`" (label verified, not
-assumed). Their bare neighbours — `source-normalization.md:206`,
-`ingest.md:32` — predate this branch and stay #480's. The line is *authored
-here*, not *nearby*: a pairing this sweep wrote is this sweep's defect, and one
-it merely stood next to is not.
+**The forward anchors this branch newly *authored* are its own to fix, and are
+fixed.** Three of them, not two — the count was wrong here for the same reason
+the review-ingestion count was, a list written from what was salient rather than
+from what the branch's diff touched:
+
+| Line | What the branch did to it | Now reads |
+| :-- | :-- | :-- |
+| `source-normalization.md:170` | `15e065f` rewrote the cell, pairing "Milestone 7" with a new claim | `(roadmap Phase B)` |
+| `source-normalization.md:206` | `15e065f` rewrote the parenthetical, removing `[#129]` and **leaving the bare anchor** | `(roadmap Phase B)` |
+| `ingest.md:38` | `118212b`/`ea77745` rewrote the bullet, pairing "Milestone 7" with #479 | `#479, which carries `phase-b`` (label verified, not assumed) |
+
+An earlier version of this paragraph called `:206` a "bare neighbour" that
+"predates this branch". It does not: `git show 15e065f -- docs/architecture/source-normalization.md`
+shows the clause being rewritten here, and a clause this branch rewrote is this
+branch's, whatever survived inside it. **`ingest.md:32` genuinely does predate
+it** — untouched by `git diff origin/main..HEAD` — and stays #480's. The line is
+*authored here*, not *nearby*: a sentence this sweep wrote is this sweep's
+defect, and one it merely stood next to is not.
 
 ### The ratchet this round bought
 
