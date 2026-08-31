@@ -3,10 +3,10 @@
 ``scan(root, tracked=...)`` is the seam the implementer left for exactly this:
 with ``tracked`` passed explicitly the function never shells out to git, so a
 directory holding ``.theurian/migrations/one.yaml`` and ``docs/one.md`` is a
-complete, self-contained corpus. Nothing here reads this repository's own 26
-migrations -- a test keyed to live content would flip the day somebody re-seeds
-ADR-0005, and would say nothing about the branches no committed anchor happens
-to exercise.
+complete, self-contained corpus. Nothing here reads this repository's own
+committed migrations -- a test keyed to live content would flip the day
+somebody re-seeds ADR-0005, and would say nothing about the branches no
+committed anchor happens to exercise.
 
 **The expected digest is computed with `hashlib.sha256`, not with
 `ContentHash.of_bytes`.** The tool deliberately reuses the product's own call so

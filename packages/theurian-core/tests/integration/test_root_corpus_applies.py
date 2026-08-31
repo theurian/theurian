@@ -11,9 +11,9 @@ ADR-0013 re-seed migration (``expectedRevision`` set to a well-formed ULID no
 revision holds, the field deleted outright, the migration's inner ``id``
 rewritten to sort before the item's earlier revision) each survived the
 *whole* suite, ``theurian migrate validate`` included, while making
-``theurian migrate apply`` refuse **all 27 migrations, transactionally** --
-one failing operation rolls back the entire run (ADR-0006), so a fresh
-install lands zero knowledge items, not 26.
+``theurian migrate apply`` refuse **all 27 migrations the corpus then held,
+transactionally** -- one failing operation rolls back the entire run
+(ADR-0006), so a fresh install lands zero knowledge items, not 26.
 
 **Why apply is strictly stronger than schema validity.** The published schema
 checks *shape*: a migration document parses, its fields match their types, an

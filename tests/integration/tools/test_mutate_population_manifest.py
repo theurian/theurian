@@ -7,9 +7,10 @@ end is ``_manifest_listing`` in
 ``packages/theurian-core/tests/command_population.py``.
 
 Without it the suite inside the copy falls back to a name-based guess that
-refuses the repository-root ``.theurian/`` wholesale. On ``dogfood/dev7-corpus``
-that is 81 tracked files -- 26 knowledge documents, 27 migrations, 27 proposals,
-one specification -- 78 of them with a suffix the scan reads, out of a scanned
+refuses the repository-root ``.theurian/`` wholesale. On the corpus-seeding
+commit ``e165e4e`` that is 81 tracked files -- 26 knowledge documents, 26
+migrations, 26 proposal evidence files and 3 ``.gitkeep`` placeholders (measured
+2026-08-20) -- 78 of them with a suffix the scan reads, out of a scanned
 population of 321. Every verdict in a batch would be graded against 24% less
 than the gate the batch stands in for, silently, because a smaller population
 fails nothing.
