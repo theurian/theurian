@@ -1,0 +1,38 @@
+apiVersion: theurian.dev/v1
+id: 01M1C9111NGF0PFSGQKT8XP7SF
+createdAt: '2026-08-31T16:04:21+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0008 twin: its source corrections (#426 via #448) are on main (#199
+  unit C).'
+operations:
+- op: createItem
+  itemId: architecture.raptor-forest
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.raptor-forest
+  revisionId: 01M1C9111NGF0PFSGQKT8XP7SG
+  expectedRevision: 01M0D5GWW8NAQH4FKYY8GGB6ZB
+  contentFile: ../knowledge/architecture/raptor-forest.01M1C9111NGF0PFSGQKT8XP7SG.md
+  contentSha256: a44e22fd7da33650a889c480c289237d07564e42259c1fd7ebec8def97e8ad1d
+  metadata:
+    title: 'ADR-0008: A RAPTOR forest, not a single tree'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0008
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 37495813bb0a19f6ecc845f6aaf74c8164cc6d8b
+      filePath: docs/adr/0008-raptor-forest.md
