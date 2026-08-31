@@ -705,7 +705,49 @@ _BOLD: Final = re.compile(r"\*\*")
 #: match ``*reads*``, and ``\breads\b\s+(?:either|both|them)`` does not match
 #: ``reads *either*``, so a live reassertion italicised anywhere across its own
 #: verb or object was invisible whatever the exclusion did (round two).
+#:
+#: **Scannability is all it buys, and in particular it does not close E1.** The
+#: strip runs *after* :data:`_QUOTED_RETRACTION` — :func:`_scanned` is where the
+#: order is — so the excision reads every asterisk the paragraph carries,
+#: ``SELECT *`` included. :data:`_CODE_SPAN` is what closes E1, and moving this
+#: strip ahead of the excision instead would make ADR-0008's italic quotation read
+#: as a live reassertion, because a quotation whose markers are already gone is
+#: one the excision can no longer find. ``test_raptor_config_claims.py`` carries
+#: the measurement; its twin of this comment claimed the opposite from
+#: ``5d97f93`` until round three, which is H-1.
 _EMPHASIS: Final = re.compile(r"\*")
+
+#: An inline code span, matched by its own backtick fence.
+#:
+#: **The asterisks inside one are neutralised before :data:`_QUOTED_RETRACTION`
+#: runs**, which is round three's H-1 remedy. CommonMark cannot open emphasis from
+#: inside a code span, so the ``*`` of ``SELECT *`` is a character and never a
+#: delimiter — while the excision's italic alternative ``\*[^*]+\*`` read the
+#: asterisks of two such spans as one italic run and threw away the live
+#: reassertion between them, whenever a retraction verb sat within forty
+#: characters of the first. That matters most here of all, because ``SELECT *`` is
+#: the phrase ADR-0024 decision 2 is written around: two of them in one paragraph
+#: is the ordinary case, not a contrived one, and the decision writes them in code
+#: markup, which is where this remedy reaches.
+#:
+#: The fence is back-referenced rather than fixed at one backtick, so a span
+#: written with a double fence is still one span.
+#:
+#: **The pairing is an approximation and an unbalanced backtick breaks it both
+#: ways** — measured in ``test_raptor_config_claims.py``, which carries the
+#: probes, and the dangerous direction is the first:
+#:
+#: * a stray backtick can pair with a real span's *opening* one, leaving that
+#:   span's asterisk exposed and the verb-led E1 hidden again — a **false green**,
+#:   which is this remedy failing to reach a shape rather than breaking one it
+#:   used to reach, since before it every asterisk was exposed;
+#: * or it can pair across a real italic marker and delete it, leaving a quotation
+#:   unexcised and reported — a false RED, the same direction as
+#:   :data:`FALSE_RED_RESIDUE_CASES`.
+#:
+#: :func:`test_every_block_the_exclusion_runs_on_pairs_its_backticks` is what
+#: bounds the first on the shipped decision.
+_CODE_SPAN: Final = re.compile(r"(?P<fence>`+).+?(?P=fence)", re.DOTALL)
 
 #: The verbs a dated note uses to introduce the sentence it retracts. ``read``
 #: and ``reads`` are absent for the reason :data:`_QUOTED_RETRACTION` records.
@@ -728,10 +770,26 @@ _RETRACTION_LEAD: Final = (
 #: So the excision is scoped to a quotation a retraction verb introduces. ADR-0024's
 #: note quotes in double quotes after ``said`` and ADR-0008's decision-10 note in
 #: italics after ``said``, so both stay excised; a quoted span with no retraction
-#: verb in front of it is the note talking. ``read``/``reads`` are excluded from
-#: the lead because they are the verb of the claim itself, and admitting them
-#: would excise the object of *nothing reads "index_build_id"*. The same
-#: construction and the same measurement are in ``test_raptor_config_claims.py``.
+#: verb in front of it is the note talking.
+#:
+#: **Verb-scoping did not close E1; it made E1 need a verb, and round three
+#: measured that.** *The note says ``metadata()`` does ``SELECT *``, and nothing
+#: in ``src/`` reads either back today* was hidden on ``ee9b5c4`` in exactly the
+#: way the round-two probe was. :data:`_CODE_SPAN` is what closes it, by
+#: neutralising the asterisks inside inline code spans before this pattern reads
+#: them; :data:`NOTE_EXCLUSION_CASES` carries both verb-led shapes.
+#:
+#: ``read``/``reads`` are excluded from the lead because they are the verb of the
+#: claim itself, and admitting them would excise the object of *nothing reads
+#: "index_build_id"*. **What that costs is a class of false REDs, not the one
+#: shape this comment used to name**, measured in
+#: :data:`FALSE_RED_RESIDUE_CASES`: a lead verb outside
+#: :data:`_RETRACTION_LEAD`, a lead verb further than forty characters from its
+#: quotation, and the second quotation after one verb — ``re.sub`` resumes past
+#: the first match. A fourth member runs the other way, the excision *creating* a
+#: span the paragraph does not contain, and is pinned by
+#: :func:`test_the_excision_can_bring_a_denial_within_reach_of_the_verb`. The same
+#: construction and the same measurements are in ``test_raptor_config_claims.py``.
 _QUOTED_RETRACTION: Final = re.compile(
     rf"(?P<lead>\b(?:{_RETRACTION_LEAD})\b[^\n]{{0,40}}?)" r"(?:\*[^*]+\*|\"[^\"]+\"|“[^”]+”)"
 )
@@ -816,6 +874,13 @@ _NOTE_OPENING: Final = (
 #: -- two of them in one paragraph is not a contrived input, and everything
 #: between their asterisks was excised as an italic span.
 #:
+#: **The last two positives are round three's, and they are E1 with a verb in
+#: front of it.** Scoping the excision to a retraction verb did not close E1; it
+#: made E1 need a verb, and both of these were hidden on ``ee9b5c4`` -- here and
+#: in ``test_raptor_config_claims.py``, which is why the two modules gained the
+#: rows together. :data:`_CODE_SPAN` holds them, not :data:`_RETRACTION_LEAD`, so
+#: a widening of either mechanism is caught here.
+#:
 #: The negatives are transcribed from the shipped note's quoting style, plus the
 #: italic style ADR-0008's decision-10 note uses, so a rule covering only one of
 #: the two would be RED against one of the documents on a clean tree.
@@ -847,6 +912,18 @@ NOTE_EXCLUSION_CASES: Final[tuple[tuple[str, str, bool], ...]] = (
         f'{_NOTE_OPENING} Nothing in `src/` reads "index_build_id" back today.',
         True,
     ),
+    (
+        "a verb-led E1: `says` in front of two `SELECT *` spans",
+        f"{_NOTE_OPENING} The note says `metadata()` does `SELECT *`, and nothing in "
+        "`src/` reads either back today, which is why `SELECT *` is the only fetch.",
+        True,
+    ),
+    (
+        "a verb-led E1: `carries` in front of a `*.db` glob and a `SELECT *`",
+        f"{_NOTE_OPENING} The decision carries `*.db` fixtures, and nothing in `src/` "
+        "reads either back today, so `SELECT *` is the only fetch.",
+        True,
+    ),
     # -- the notes' own quoting styles, which must stay hidden ---------------
     (
         "the double-quoted quotation ADR-0024's note carries",
@@ -868,6 +945,42 @@ NOTE_EXCLUSION_CASES: Final[tuple[tuple[str, str, bool], ...]] = (
     ),
 )
 
+#: The false-RED residue of the verb-scoped excision, as ``(what the shape is, the
+#: note)``. Every one of them is **reported**, and every one is a note quoting
+#: rather than asserting.
+#:
+#: **This is the class :data:`_QUOTED_RETRACTION` used to record as a single
+#: shape**, which is round three's M-2. The excision reaches a quotation only when
+#: a listed verb sits within forty characters in front of it, and each row below
+#: is one way that fails to hold while the note is still quoting.
+#:
+#: These are deliberately **not** :data:`NOTE_EXCLUSION_CASES` rows. That table
+#: asks *is this an assertion the scan must report?*, and the honest answer for
+#: all three is no, while the scan says yes; filing them there would record a known
+#: false RED as intended behaviour.
+#:
+#: **A member that stops being reported is RED, and that is the good direction.**
+#: It means the excision now reaches a shape it did not, which widens what a
+#: correction note may hide; delete the row and name the mechanism that closed it
+#: in the same commit.
+FALSE_RED_RESIDUE_CASES: Final[tuple[tuple[str, str], ...]] = (
+    (
+        "a lead verb outside `_RETRACTION_LEAD` -- `read`, excluded on purpose",
+        f'{_NOTE_OPENING} The paragraph read "nothing in `src/` reads either back '
+        'today" before `add_nodes` started selecting the column.',
+    ),
+    (
+        "a lead verb further than forty characters from its quotation",
+        f"{_NOTE_OPENING} The paragraph said, in the sentence decision 2 has held "
+        'since Milestone 6, "nothing in `src/` reads either back today".',
+    ),
+    (
+        "the second quotation after one verb -- `re.sub` resumes past the first",
+        f'{_NOTE_OPENING} The paragraph said "the copy is latent rather than broken" '
+        'and "nothing in `src/` reads either back today".',
+    ),
+)
+
 
 def _collapsed(text: str) -> str:
     """Runs of whitespace flattened to single spaces, case preserved.
@@ -880,15 +993,32 @@ def _collapsed(text: str) -> str:
     return " ".join(text.split())
 
 
+def _without_code_span_emphasis(text: str) -> str:
+    """``text`` with the asterisks inside inline code spans removed.
+
+    CommonMark cannot open emphasis from inside a code span, so ``SELECT *``
+    contributes a character and never a delimiter. :data:`_QUOTED_RETRACTION` has
+    no such rule and read the asterisks of two such spans as one italic run, which
+    is round three's H-1; :data:`_CODE_SPAN` records the measurement.
+    """
+    return _CODE_SPAN.sub(lambda span: _EMPHASIS.sub("", span.group()), text)
+
+
 def _without_quotations(text: str) -> str:
     """``text`` with the quoted spans a retraction verb introduces replaced by a space.
 
     Applied to a dated correction note before the note is scanned, so that the
     retracted sentence the note quotes is invisible while anything the note
-    *asserts* is not. Bold markers go first, for the reason :data:`_BOLD` records;
-    the lead verb is kept, so only the quotation leaves.
+    *asserts* is not. Two neutralisations run first, each stopping
+    :data:`_QUOTED_RETRACTION` from reading an emphasis span where CommonMark
+    renders none: :func:`_without_code_span_emphasis` for the ``*`` of ``SELECT
+    *``, then :data:`_BOLD` for the reason :data:`_BOLD` records. The lead verb is
+    kept, so only the quotation leaves.
     """
-    return _QUOTED_RETRACTION.sub(lambda match: f"{match.group('lead')} ", _BOLD.sub("", text))
+    return _QUOTED_RETRACTION.sub(
+        lambda match: f"{match.group('lead')} ",
+        _BOLD.sub("", _without_code_span_emphasis(text)),
+    )
 
 
 def _scanned(paragraph: str) -> str:
@@ -911,6 +1041,13 @@ def _retraction_claims(paragraphs: Sequence[str]) -> list[str]:
     split to get the order of. What excision can still do is bring a denial and a
     verb within the gap of each other, which is the same family one step smaller
     and is why the exclusion is verb-scoped rather than blanket.
+
+    **That residual is measured, not merely stated** -- it is the fourth member of
+    the false-RED class, running the opposite way to the three in
+    :data:`FALSE_RED_RESIDUE_CASES`, and
+    :func:`test_the_excision_can_bring_a_denial_within_reach_of_the_verb` prints
+    both sides of it. Until round three it was a sentence here with nothing
+    holding it, which is the shape this module refuses everywhere else.
     """
     return [
         scanned
@@ -1022,8 +1159,16 @@ def test_the_correction_note_exclusion_hides_a_quotation_and_not_an_assertion(
     blanket quotation rule reopened it in narrower shapes -- E1 in particular,
     where the reassertion's only cover was the asterisks of two ``SELECT *``
     spans, in a decision whose own subject is ``SELECT *``. That mutation SURVIVED
-    a full-suite run. The exclusion is verb-scoped now, and these cases are what
-    makes that a measurement.
+    a full-suite run.
+
+    **Two mechanisms hold these rows, and round three is why they are named
+    separately.** Verb-scoping is what shows the round-two shapes; it did not
+    close E1, it only made E1 need a verb, and the two verb-led rows were hidden
+    on ``ee9b5c4`` for that reason. :data:`_CODE_SPAN` closes them, by
+    neutralising the asterisks inside inline code spans before the excision reads
+    them. Stripping every emphasis marker first instead would make the ADR-0008
+    negative below RED -- measured in ``test_raptor_config_claims.py``, which
+    takes the same construction.
 
     Asserted against synthetic notes rather than against the shipped ADR: the
     shipped ADR has no live reassertion in it, so an exclusion that had stopped
@@ -1038,11 +1183,133 @@ def test_the_correction_note_exclusion_hides_a_quotation_and_not_an_assertion(
         f"{'a live reassertion' if claims else 'a quotation'}, expected the opposite.\n\n"
         f"  note    : {note}\n"
         f"  scanned : {_scanned(note)}\n\n"
-        f"If a positive stopped firing, the exclusion widened and a reassertion inside a "
-        f"note is invisible again (round-one A7, round-two E1). If a negative started "
-        f"firing, the exclusion no longer covers a shape a shipped note uses and "
+        f"If a positive stopped firing, `_QUOTED_RETRACTION` widened or `_CODE_SPAN` "
+        f"stopped reaching an asterisk, and a reassertion inside a note is invisible "
+        f"again (round-one A7, round-two E1, round-three's verb-led E1). If a negative "
+        f"started firing, the exclusion no longer covers a shape a shipped note uses and "
         f"`test_adr_0024_does_not_reassert_that_neither_metadata_column_is_read` is RED "
         f"on a clean tree."
+    )
+
+
+@pytest.mark.parametrize(
+    ("shape", "note"),
+    FALSE_RED_RESIDUE_CASES,
+    ids=[case[0] for case in FALSE_RED_RESIDUE_CASES],
+)
+def test_the_verb_scoped_excision_still_reports_its_recorded_false_reds(
+    shape: str, note: str
+) -> None:
+    """RED means a recorded false RED closed, and the record has to name what closed it.
+
+    :data:`FALSE_RED_RESIDUE_CASES` is the class :data:`_QUOTED_RETRACTION`
+    records as the price of scoping the excision to a retraction verb. It was
+    recorded as a single shape from ``5d97f93`` until round three, and it is
+    three, each a different way for a listed verb to fail to sit within forty
+    characters in front of a quotation that is still a quotation.
+
+    Asserted in the *reporting* direction, which is the one that can move
+    silently. Each note here quotes rather than asserts, so a scan that reported
+    nothing would look like the module working; what the assertion holds is that
+    the cost is still being paid where the record says it is.
+    """
+    claims = _retraction_claims([note])
+
+    assert claims, (
+        f"the recorded false RED for {shape} is no longer reported.\n\n"
+        f"  note    : {note}\n"
+        f"  scanned : {_scanned(note)}\n\n"
+        f"That is the good direction and it is still RED: something widened the "
+        f"excision -- `_RETRACTION_LEAD`, the forty-character window, or the way "
+        f"`re.sub` resumes past a match -- so a correction note can now hide a shape it "
+        f"could not before. Check that the widening does not also hide a live "
+        f"reassertion (`NOTE_EXCLUSION_CASES` is the control), then delete this row and "
+        f"name the mechanism in `_QUOTED_RETRACTION`'s residue paragraph."
+    )
+
+
+def test_every_block_the_exclusion_runs_on_pairs_its_backticks() -> None:
+    """RED means the correction note gained a backtick that pairs the wrong way.
+
+    :data:`_CODE_SPAN` closes the verb-led E1 by neutralising the asterisks inside
+    inline code spans, and it locates those spans by pairing backticks. An
+    *unbalanced* backtick pairs a stray one with a real span's opening backtick,
+    leaving that span's asterisk exposed to :data:`_QUOTED_RETRACTION` again --
+    the false-**green** direction, which is why it gets a tripwire rather than a
+    note. ``test_raptor_config_claims.py`` carries the probe and the measurement.
+
+    Scoped to the blocks the exclusion actually runs on, which here means the
+    :data:`_CORRECTION_NOTE` paragraph inside Decision point 2 -- the whole reach
+    of the neutralisation in this module.
+    :func:`test_adr_0024_does_not_reassert_that_neither_metadata_column_is_read`
+    holds that there is exactly one, so this cannot pass by finding none.
+
+    An even count is a tripwire and not a parse: it catches the stray backtick,
+    which is the shape that opens the hole.
+    """
+    notes = [
+        paragraph
+        for paragraph in _decision_two(ADR_0024.read_text(encoding="utf-8"))
+        if _CORRECTION_NOTE.search(paragraph)
+    ]
+
+    unbalanced = [note for note in notes if note.count("`") % 2]
+
+    assert not unbalanced, (
+        "the `_CORRECTION_NOTE` block in ADR-0024 Decision point 2 carries an odd "
+        "number of backticks, so `_CODE_SPAN` pairs them differently from the way a "
+        "reader does -- a real `SELECT *` span's asterisk can be left exposed and a "
+        "verb-led reassertion hidden with it (round three's H-1, reopened):\n"
+        + "\n".join(f"  {note[:160]}" for note in unbalanced)
+        + "\n\nBalance the backticks in the note, or say here why the pairing is still "
+        "the one a reader sees."
+    )
+
+
+def test_the_excision_can_bring_a_denial_within_reach_of_the_verb() -> None:
+    """RED means the residue :func:`_retraction_claims` records is not the one in the code.
+
+    The fourth member of the false-RED class and the only one that runs the other
+    way: the three in :data:`FALSE_RED_RESIDUE_CASES` are quotations the excision
+    fails to *remove*, and this is a span the excision *creates*.
+    :data:`_READS_NEITHER_COLUMN` allows forty characters between the denial and
+    the verb, and taking a quotation out from between them can close a gap that
+    was wider than that -- so a paragraph saying nothing of the kind is reported
+    as the retracted claim.
+
+    Both sides are asserted, because only the pair is the finding: the raw
+    paragraph must *not* match, and the scanned one must. Asserting the second
+    alone would pass against a pattern that matched the raw text too, which is a
+    different defect wearing the same result.
+
+    ``test_raptor_config_claims.py`` carries this module's twin of this residue --
+    an excised quotation joining two sentences across the seam it carried -- and
+    the same reasoning: the direction refused hides a live reassertion, and the
+    direction taken costs a read.
+    """
+    note = (
+        "Corrected in the #199 unit-A follow-up "
+        "(https://github.com/theurian/theurian/issues/426). Nothing the paragraph "
+        'said "about `built_at`, which `Connection.backup` copies and `_restamp` '
+        'overwrites," reads either back today.'
+    )
+
+    scanned = _scanned(note)
+
+    assert not _READS_NEITHER_COLUMN.search(note), (
+        f"the raw paragraph already reads as the retracted claim, so this case no "
+        f"longer demonstrates the excision creating the span -- the denial and the "
+        f"verb are within `_READS_NEITHER_COLUMN`'s gap before anything is removed: "
+        f"{note!r}"
+    )
+    assert _retraction_claims([note]) == [scanned], (
+        f"the excision no longer brings the denial within reach of the verb, so "
+        f"`_retraction_claims`'s docstring records a residue the code does not have.\n\n"
+        f"  raw     : {note}\n"
+        f"  scanned : {scanned}\n\n"
+        f"That is the good direction and it is still RED: state what closed it -- the "
+        f"gap, the substitution's replacement, or the exclusion's scope -- and check "
+        f"the same change did not hide a live reassertion."
     )
 
 
