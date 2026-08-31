@@ -41,6 +41,10 @@ broken extractor cannot produce them.
    green costs the claim.
 
 **What it cannot see, and these are the limits the docstring is here to state.**
+The first three are Python-side; the next three are SQL-side, were found by
+round-one review, and are recorded rather than closed -- each has a case in
+:data:`PROJECTION_CASES` or :data:`KEYED_CASES` asserting the miss, so the list
+is a measurement and not a recollection.
 
 - A ``SELECT *`` whose row is consumed without the key ever being written down --
   ``for column, value in store.metadata().items()``, or ``dict(row)`` handed to
@@ -51,6 +55,18 @@ broken extractor cannot produce them.
 - Attribute access -- ``row.built_at``. ``sqlite3.Row`` offers no attribute
   access and nothing maps this row onto a dataclass today, so the shape does not
   exist in the tree; if one lands, this scan is blind to it.
+- A **schema-qualified table**: ``FROM main.index_metadata``. The projection
+  pattern requires the bare table name directly after ``FROM``.
+- ``index_metadata`` reached through a **join or a CTE** rather than named by the
+  ``FROM`` the projection belongs to -- ``WITH m AS (SELECT * FROM
+  index_metadata) SELECT built_at FROM m``, or ``FROM nodes JOIN index_metadata
+  im`` with ``im.built_at`` in the projection. The inner ``SELECT *`` is still
+  seen; the outer ``built_at`` is not.
+- A **scalar subquery in a position that is not a projection**: ``UPDATE nodes
+  SET x = (SELECT built_at FROM index_metadata)`` is seen, because the inner
+  ``SELECT`` matches on its own, but a query whose only reference to the table is
+  built by string formatting is not -- the constant never contains the finished
+  statement.
 - Anything outside the imported package: ``tools/``, ``plugins/`` and the tests
   themselves are not scanned, the same bound ``test_config_key_call_sites.py`` and
   ``test_network_call_sites.py`` each record for their own.
@@ -112,13 +128,37 @@ _CONSTRAINT_KEYWORDS: Final = frozenset(
     {"primary", "foreign", "unique", "check", "constraint", "key"}
 )
 
-#: A projection over ``index_metadata``. ``DOTALL`` because a SQL string in this
-#: codebase is routinely written across implicitly concatenated literals, which
-#: the parser folds into one constant that may carry newlines.
+#: A projection over ``index_metadata``, **bounded to a single statement and to a
+#: single ``SELECT``**. ``DOTALL`` because a SQL string in this codebase is
+#: routinely written across implicitly concatenated literals, which the parser
+#: folds into one constant that may carry newlines.
+#:
+#: The tempered body -- no ``;``, and no ``SELECT`` or ``FROM`` inside the
+#: projection -- is what keeps a *second* statement in the same constant from
+#: being read into the first one's projection. With a plain ``.*?`` under
+#: ``DOTALL``, ``"SELECT built_at FROM nodes UNION SELECT * FROM index_metadata"``
+#: reports ``built_at`` as a column selected out of ``index_metadata``, which it
+#: is not: the span from the first ``SELECT`` runs through ``FROM nodes UNION
+#: SELECT *`` to the second ``FROM index_metadata``. That is the same
+#: swallow-the-span defect the per-constant application below records, one level
+#: down, and it is a false *consumer* -- the direction that makes
+#: :func:`test_no_shipped_module_consumes_index_metadata_built_at` RED for a
+#: reason that is not true.
 _SELECT_FROM_METADATA: Final = re.compile(
-    r"\bSELECT\b(?P<projection>.*?)\bFROM\s+index_metadata\b",
+    r"\bSELECT\b(?P<projection>(?:(?!\b(?:SELECT|FROM)\b)[^;])*?)\bFROM\s+index_metadata\b",
     re.IGNORECASE | re.DOTALL,
 )
+
+#: ``DISTINCT``/``ALL`` opens a projection and is not a column. Stripped from the
+#: whole projection rather than per item, because that is where SQL puts it.
+_LEADING_QUANTIFIER: Final = re.compile(r"^\s*(?:DISTINCT|ALL)\b", re.IGNORECASE)
+
+#: An explicit alias and everything after it. ``SELECT built_at AS made`` names
+#: ``built_at``; ``made`` is what the caller calls it, not a column of the table.
+_ALIAS_TAIL: Final = re.compile(r"\bAS\b.*$", re.IGNORECASE | re.DOTALL)
+
+#: A possibly table-qualified SQL name.
+_IDENTIFIER: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 #: Mapping accessors that take the key as their first positional argument.
 _KEYED_ACCESSORS: Final = frozenset({"get", "pop", "setdefault"})
@@ -147,16 +187,48 @@ def _index_metadata_columns() -> tuple[str, ...]:
     return tuple(columns)
 
 
+def _projection_columns(item: str) -> Iterator[str]:
+    """The column names one comma-separated projection item refers to.
+
+    Four shapes, and each is a case in :data:`PROJECTION_CASES`:
+
+    * ``*`` (or ``t.*``) yields ``*``, never the columns it stands for. A star
+      select fetches every column and consumes none, which is the distinction the
+      decision turns on.
+    * A bare or table-qualified name yields its last dotted component, so
+      ``index_metadata.built_at`` reads as ``built_at``.
+    * An alias is dropped rather than reported: ``built_at AS made`` yields
+      ``built_at``, and a bare alias (``built_at made``) does the same, because
+      only the *first* name of a plain item is taken.
+    * A function application yields every name it encloses and not the function:
+      ``COUNT(built_at)`` is a consumer of ``built_at``, and it read as the
+      literal string ``COUNT(built_at)`` until round one. ``COUNT(*)`` yields
+      nothing, which is right -- a row count reads no column.
+
+    An identifier immediately followed by ``(`` is the function, not a column, so
+    an aggregate this code has never heard of still gives up its argument.
+    """
+    expression = _ALIAS_TAIL.sub("", item).strip()
+    if expression == "*" or expression.endswith(".*"):
+        yield "*"
+        return
+
+    names = [
+        match
+        for match in _IDENTIFIER.finditer(expression)
+        if not expression[match.end() :].lstrip().startswith("(")
+    ]
+    if not names:
+        return
+    for match in names if "(" in expression else names[:1]:
+        yield match.group().split(".")[-1]
+
+
 def _projection_names(source: str) -> Iterator[str]:
     """Every column a ``SELECT ... FROM index_metadata`` in ``source`` names.
 
-    ``*`` is yielded as ``*``: a star select fetches every column and consumes
-    none, and keeping it in the stream rather than dropping it is what lets the
-    premise ADR-0024 states -- "``metadata()`` does ``SELECT *``, so the value is
-    fetched" -- be asserted instead of assumed.
-
-    Table qualifiers and aliases are reduced to the column name, so
-    ``SELECT index_metadata.built_at AS made`` reads as ``built_at``.
+    Per-item resolution is :func:`_projection_columns`; this is the part that
+    decides *which* text is a projection at all.
 
     **Applied to one string constant at a time, never to the module text**, and
     that is the difference between a scan and a coincidence. Run over raw source
@@ -169,6 +241,12 @@ def _projection_names(source: str) -> Iterator[str]:
     nodes`` column list. The control that is supposed to prove the scan can see
     would then have been satisfied by the accident rather than by the reader.
 
+    **And never across a statement boundary inside one constant**, which is the
+    same defect at the next scale down and is what :data:`_SELECT_FROM_METADATA`
+    now forbids: one constant holding ``SELECT ... FROM nodes; SELECT * FROM
+    index_metadata``, or the two arms of a ``UNION``, used to have the first
+    statement's projection read into the second statement's table.
+
     Implicit concatenation is folded by the parser into a single constant, so a
     SQL string written across five adjacent literals arrives here whole. An
     f-string or a ``.format`` call does not, and a query assembled that way is
@@ -178,13 +256,9 @@ def _projection_names(source: str) -> Iterator[str]:
         if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
             continue
         for match in _SELECT_FROM_METADATA.finditer(node.value):
-            for raw in match.group("projection").split(","):
-                token = raw.strip().strip("`\"'")
-                if not token:
-                    continue
-                head = token.split()[0].split(".")[-1].strip("`\"'")
-                if head:
-                    yield head
+            projection = _LEADING_QUANTIFIER.sub("", match.group("projection"))
+            for item in projection.split(","):
+                yield from _projection_columns(item)
 
 
 def _keyed_names(source: str) -> Iterator[str]:
@@ -277,8 +351,54 @@ PROJECTION_CASES: Final[tuple[tuple[str, frozenset[str]], ...]] = (
         frozenset(),
     ),
     ('"UPDATE index_metadata SET built_at = ? WHERE id = 1"', frozenset()),
+    # A write to another table whose value comes *out of* this one is a read of
+    # this one, and the inner SELECT is matched on its own terms.
+    (
+        '"UPDATE nodes SET stamped_at = (SELECT built_at FROM index_metadata)"',
+        frozenset({"built_at"}),
+    ),
     # -- another table's column of the same name -----------------------------
     ('"SELECT built_at FROM findings_metadata WHERE id = 1"', frozenset()),
+    # -- projections that are not a bare column name -------------------------
+    # Each of these was read wrong until round one. `DISTINCT` and `COUNT(...)`
+    # came back as the literal tokens `DISTINCT built_at` and `COUNT(built_at)`,
+    # so a real consumer written either way was invisible to the pin below.
+    ('"SELECT DISTINCT built_at FROM index_metadata"', frozenset({"built_at"})),
+    ('"SELECT COUNT(built_at) FROM index_metadata"', frozenset({"built_at"})),
+    (
+        '"SELECT MAX(index_metadata.built_at) AS newest FROM index_metadata"',
+        frozenset({"built_at"}),
+    ),
+    # A row count reads no column, so it is not a consumer of one.
+    ('"SELECT COUNT(*) FROM index_metadata WHERE id = 1"', frozenset({})),
+    # -- a second statement in the same constant -----------------------------
+    # Both of these reported `built_at` before the statement-boundary guard: the
+    # span from the first `SELECT` ran through `FROM nodes` to the *second*
+    # `FROM index_metadata`, so a column selected out of another table read as a
+    # column selected out of this one. That is a false consumer, which reddens
+    # the absence pin for a reason that is not true.
+    (
+        '"SELECT built_at FROM nodes UNION SELECT * FROM index_metadata"',
+        frozenset({"*"}),
+    ),
+    (
+        '"SELECT built_at FROM nodes; SELECT * FROM index_metadata WHERE id = 1"',
+        frozenset({"*"}),
+    ),
+    # -- recorded blind spots, asserted rather than only described -----------
+    # The module docstring lists what this cannot see; these three pin the SQL
+    # half of that list so it stays a measurement. A schema-qualified table name,
+    # a table reached through a CTE, and a table reached through a JOIN alias all
+    # leave `FROM index_metadata` unmatched by the projection that consumes the
+    # column, so a consumer written any of those ways passes. The CTE case still
+    # reports the inner `SELECT *`, which is why its expectation is `*` and not
+    # the empty set.
+    ('"SELECT built_at FROM main.index_metadata WHERE id = 1"', frozenset()),
+    (
+        '"WITH m AS (SELECT * FROM index_metadata) SELECT built_at FROM m"',
+        frozenset({"*"}),
+    ),
+    ('"SELECT im.built_at FROM nodes JOIN index_metadata im ON 1 = 1"', frozenset()),
     # -- two statements, and the span between them ---------------------------
     # The regression this case exists for, measured rather than imagined: with
     # the pattern applied to module text instead of to one string constant at a
@@ -493,6 +613,28 @@ _BLOCK_START: Final = re.compile(r"[ \t]*(?:#{1,6}\s|[-*+]\s|\d+\.\s|\||```|---\
 #: ``test_adr_0018_claims.py`` records for ``_decision_point_two``.
 _CORRECTION_NOTE: Final = re.compile(r"\bissues/426\b", re.IGNORECASE)
 
+#: An HTML comment, removed before a positive pin reads Decision point 2.
+#: Markdown renders nothing inside one, so a decision whose sentences live in a
+#: comment is a silent decision that a substring pin over raw text still passes.
+_HTML_COMMENT: Final = re.compile(r"<!--.*?-->", re.DOTALL)
+
+#: Bold markers, removed before :data:`_QUOTATION` looks for italic spans:
+#: ``**bold**`` would otherwise read as an italic span, and a live reassertion
+#: written in bold inside a note would be excised with the quotations.
+_EMPHASIS: Final = re.compile(r"\*\*")
+
+#: A quoted span inside a dated correction note.
+#:
+#: The exclusion this feeds used to skip the whole note paragraph, which bought a
+#: blind spot the size of the note: round-one mutation A7 put a *live*
+#: reassertion inside ADR-0024's correction note and nothing saw it, while the
+#: same sentence one paragraph away was caught. A note is now scanned with its
+#: quoted spans excised -- ADR-0024's note quotes in double quotes, ADR-0008's
+#: decision-10 note quotes in italics, so both forms are here -- which hides what
+#: a note *quotes* and not what it *asserts*. The same construction and the same
+#: fix are in ``test_raptor_config_claims.py``.
+_QUOTATION: Final = re.compile(r"\*[^*]+\*|\"[^\"]+\"|“[^”]+”")
+
 #: The retracted claim: that *both* columns are unread.
 #:
 #: ``reads`` is required with an "either/both/them" object, which is the shape the
@@ -563,6 +705,17 @@ def _collapsed(text: str) -> str:
     return " ".join(text.split())
 
 
+def _without_quotations(text: str) -> str:
+    """``text`` with its quoted spans replaced by a space.
+
+    Applied to a dated correction note before the note is scanned, so that the
+    retracted sentence the note quotes is invisible while anything the note
+    *asserts* is not. Emphasis markers go first, for the reason
+    :data:`_EMPHASIS` records.
+    """
+    return _QUOTATION.sub(" ", _EMPHASIS.sub("", text))
+
+
 def _paragraphs(text: str) -> list[str]:
     """The document's paragraphs, blockquote markers stripped and soft wraps joined."""
     blocks: list[list[str]] = [[]]
@@ -586,8 +739,15 @@ def _decision_two(text: str) -> list[str]:
     Asserted findable exactly once. A decision that cannot be located is not a
     decision whose wording passed -- it is a scan with nothing to read, which the
     pins below would report as compliance.
+
+    HTML comments are removed first. A decision commented out renders as nothing
+    while a substring pin over the raw text stays green -- round-one mutation A6,
+    against ``raptor.md``, and the shape is not specific to that file. ADR-0024
+    carries no ``<!-- -->`` today, so this is a no-op on the shipped document and
+    a closed door on the mutation. ``test_raptor_config_claims.py`` takes the same
+    closure for its two regions.
     """
-    paragraphs = _paragraphs(text)
+    paragraphs = _paragraphs(_HTML_COMMENT.sub(" ", text))
     starts = [
         index
         for index, paragraph in enumerate(paragraphs)
@@ -642,6 +802,37 @@ def test_the_retraction_scans_see_the_old_wording_and_not_the_split_one(
     )
 
 
+def test_the_correction_note_exclusion_hides_a_quotation_and_not_an_assertion() -> None:
+    """RED means the note exclusion is back to skipping whole paragraphs.
+
+    Round-one mutation A7: a live reassertion placed inside the correction note
+    was invisible, while the identical sentence one paragraph away was caught. The
+    exclusion is quotation-shaped now, so both halves of that shape are asserted
+    here against synthetic notes rather than against the shipped ADR -- the
+    shipped ADR has no live reassertion in it, and an exclusion that had stopped
+    excluding anything would look identical there.
+    """
+    quoting = (
+        "Corrected in the #199 unit-A follow-up "
+        "(https://github.com/theurian/theurian/issues/426). This paragraph said "
+        '"nothing in `src/` reads either back today". That was true of both columns.'
+    )
+    asserting = (
+        "Corrected in the #199 unit-A follow-up "
+        "(https://github.com/theurian/theurian/issues/426). Nothing in `src/` reads "
+        "either back today, so this is latent rather than broken."
+    )
+
+    assert not _READS_NEITHER_COLUMN.search(_without_quotations(quoting)), (
+        "the quoted retraction is reported as the merged claim returning, so the note "
+        "that records the fix reads as the defect and this module is RED on a clean tree"
+    )
+    assert _READS_NEITHER_COLUMN.search(_without_quotations(asserting)), (
+        "a live reassertion inside a correction note is invisible, which is round-one "
+        "mutation A7. The exclusion must hide the note's quotations, not the note."
+    )
+
+
 def test_adr_0024_decision_two_splits_the_unread_claim_per_column() -> None:
     """RED means the per-column split is gone -- deleted, or softened back to one claim.
 
@@ -678,12 +869,14 @@ def test_adr_0024_does_not_reassert_that_neither_metadata_column_is_read() -> No
     the same point, which is how the paragraph read for a milestone after
     ``add_nodes`` started selecting the column out of the file it writes into.
 
-    Scoped to Decision point 2 with the dated correction note skipped. The note
-    quotes the retracted sentence in order to retract it, so a scan that read it
-    would report the fix as the defect -- and the served corpus twin
-    ``.theurian/knowledge/architecture/a-purge-is-a-build.<ulid>.md`` still carries
-    the retracted sentence byte-identically by design (#199 unit C), which is why
-    this is not a repo-wide walk.
+    Scoped to Decision point 2, with the dated correction note's **quotations**
+    excised rather than the note skipped. The note quotes the retracted sentence
+    in order to retract it, so a scan that read the quotation would report the fix
+    as the defect; skipping the paragraph closed that at the cost of a blind spot
+    the size of the note, which round-one mutation A7 walked straight into. The
+    served corpus twin ``.theurian/knowledge/architecture/a-purge-is-a-build.<ulid>.md``
+    still carries the retracted sentence byte-identically by design (#199 unit C),
+    which is why this is not a repo-wide walk either way.
     """
     paragraphs = _decision_two(ADR_0024.read_text(encoding="utf-8"))
 
@@ -692,14 +885,18 @@ def test_adr_0024_does_not_reassert_that_neither_metadata_column_is_read() -> No
         f"ADR-0024 Decision point 2 carries {len(notes)} paragraphs naming issue #426, "
         f"expected exactly one -- the dated correction note recording what the "
         f"paragraph said and why the conclusion survives being split per column. The "
-        f"skip below is defined by that note, so it cannot be checked without it"
+        f"excision below is defined by that note, so it cannot be checked without it"
     )
 
     claims = [
-        paragraph
+        scanned
         for paragraph in paragraphs
-        if not _CORRECTION_NOTE.search(paragraph)
-        and (_READS_NEITHER_COLUMN.search(paragraph) or _INDEX_BUILD_ID_UNREAD.search(paragraph))
+        if (
+            scanned := (
+                _without_quotations(paragraph) if _CORRECTION_NOTE.search(paragraph) else paragraph
+            )
+        )
+        and (_READS_NEITHER_COLUMN.search(scanned) or _INDEX_BUILD_ID_UNREAD.search(scanned))
     ]
 
     assert not claims, (

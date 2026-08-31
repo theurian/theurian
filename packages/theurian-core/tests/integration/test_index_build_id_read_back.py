@@ -41,25 +41,30 @@ an absence and is held by
 runs the recompute relative to the restamp -- that ordering is
 ``test_forest_purge_recompute.py``'s and ``test_index_purge_nodes.py``'s.
 
-Real SQLite files under ``tmp_path`` and a real ``ForestBuilder`` over a real
-``ExtractiveSummarizer``; nothing reaches the developer's machine, nothing
-touches the network, and nothing starts a daemon.
+The two behaviour tests use real SQLite files under ``tmp_path`` and a real
+``ForestBuilder`` over a real ``ExtractiveSummarizer``. The signature pin reads
+no database at all: it parses every ``add_nodes`` the imported package declares
+-- three at ``5a14145``, the ``SqliteIndexStore`` adapter plus the ``IndexStore``
+and ``ForestRecomputeStore`` protocols -- so that a fourth declaration is covered
+by the change that writes it rather than by whoever remembers to add it here.
+Nothing reaches the developer's machine, nothing touches the network, and nothing
+starts a daemon.
 """
 
 from __future__ import annotations
 
-import inspect
+import ast
+import pathlib
 import sqlite3
-from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 from typing import Final
 
 import pytest
 
+import theurian
 from theurian.application.forest_builder import ForestBuilder
 from theurian.domain.chunking import Chunk, IndexableChunk
-from theurian.domain.ports.index_store import IndexStore
 from theurian.domain.raptor import IndexableNode
 from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
 from theurian.infrastructure.sqlite.index_store import IndexBuildError, SqliteIndexStore
@@ -67,6 +72,56 @@ from theurian.infrastructure.sqlite.index_store import IndexBuildError, SqliteIn
 pytestmark = pytest.mark.integration
 
 PROJECT: Final = "demo"
+
+#: The package as *imported*, the reckoning the structural test modules use: a
+#: hand-built relative path can drift from the installed package and would then
+#: walk a directory with no declaration in it whatever the source did.
+SRC: Final = pathlib.Path(theurian.__file__).resolve().parent
+
+
+def _parameter_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[str, ...]:
+    """Every name ``function`` binds from its call, in every argument role."""
+    arguments = function.args
+    names = [
+        argument.arg
+        for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)
+    ]
+    names.extend(
+        argument.arg for argument in (arguments.vararg, arguments.kwarg) if argument is not None
+    )
+    return tuple(names)
+
+
+def _add_nodes_declarations() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Every ``add_nodes`` declared in the imported package, as ``(label, parameters)``.
+
+    Derived rather than transcribed, which is the whole point of it. The hand-written
+    pair this replaced named the adapter and the port and missed
+    ``withdrawal_purge.ForestRecomputeStore.add_nodes`` -- the protocol the purge
+    holds its building-file store as, and so the declaration closest to the caller
+    ADR-0024 decision 2's clause is about.
+
+    Class-scoped only: a module-level ``def add_nodes`` would be a free function
+    nothing in this design has, and including one would give the pin below a label
+    with no class to name.
+    """
+    found: list[tuple[str, tuple[str, ...]]] = []
+    for path in sorted(SRC.rglob("*.py")):
+        module = path.relative_to(SRC).as_posix()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            found.extend(
+                (f"{module}::{node.name}.{member.name}", _parameter_names(member))
+                for member in node.body
+                if isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef)
+                and member.name == "add_nodes"
+            )
+    return tuple(sorted(found))
+
+
+#: Every ``add_nodes`` the shipped package declares, adapter and protocol alike.
+ADD_NODES_DECLARATIONS: Final = _add_nodes_declarations()
 
 #: The build the file is created as -- the identity a `Connection.backup` copy
 #: inherits from its parent.
@@ -235,14 +290,38 @@ def test_add_nodes_refuses_a_file_whose_index_metadata_row_is_missing(
     assert not _node_build_ids(store.path), "nodes were written into a file with no build identity"
 
 
+def test_every_declared_add_nodes_is_one_the_signature_pin_reads() -> None:
+    """The population control for the signature pin, asserted before it is searched.
+
+    :data:`ADD_NODES_DECLARATIONS` is derived, so the pin below covers a fourth
+    ``add_nodes`` on the day it is written. A derivation that resolved nothing
+    reports "no declaration takes the argument" in exactly the same way a clean
+    tree does, so the population is established first.
+
+    The two named here are the two ADR-0024 decision 2's clause is *about*: the
+    adapter that reads the column and the port a second adapter would be written
+    against. They are required by name rather than by count -- a count would
+    redden on a third protocol that is nobody's problem, while a missing adapter
+    means the derivation stopped seeing the module the decision names.
+    """
+    labels = {label for label, _ in ADD_NODES_DECLARATIONS}
+
+    assert labels >= {
+        "infrastructure/sqlite/index_store.py::SqliteIndexStore.add_nodes",
+        "domain/ports/index_store.py::IndexStore.add_nodes",
+    }, (
+        f"the `add_nodes` derivation no longer finds the adapter and the port "
+        f"ADR-0024 decision 2 reasons about; it found {sorted(labels)}. The pin "
+        f"below would report an absence about a population it never located."
+    )
+
+
 @pytest.mark.parametrize(
-    ("label", "method"),
-    (
-        ("SqliteIndexStore.add_nodes", SqliteIndexStore.add_nodes),
-        ("IndexStore.add_nodes", IndexStore.add_nodes),
-    ),
+    ("label", "parameters"),
+    ADD_NODES_DECLARATIONS,
+    ids=[case[0] for case in ADD_NODES_DECLARATIONS],
 )
-def test_add_nodes_takes_no_build_id_argument(label: str, method: Callable[..., object]) -> None:
+def test_add_nodes_takes_no_build_id_argument(label: str, parameters: tuple[str, ...]) -> None:
     """RED means the stamp became something a caller can disagree with the file about.
 
     ADR-0024 decision 2's clause is not only that the column is read but that it
@@ -252,12 +331,14 @@ def test_add_nodes_takes_no_build_id_argument(label: str, method: Callable[..., 
     happened to pass the matching value -- and the purge is exactly the caller that
     would not, since it recomputes the forest before ``_restamp`` moves the id.
 
-    Both the adapter and the port are checked. The port is what a second
-    implementation is written against, so a parameter added there re-opens the
-    disagreement for every future store even if this one keeps reading the file.
+    **Every declaration in the package, derived rather than transcribed.** The
+    adapter and the port were named by hand here until round one, and the list was
+    short by one: ``withdrawal_purge.ForestRecomputeStore.add_nodes`` is a third
+    declaration, and it is the protocol the *purge* holds its building-file store
+    as -- the one caller that recomputes the forest before ``_restamp`` moves the
+    id, which is to say the caller the clause exists for. Walking for the
+    declarations means a fourth one is covered by the change that writes it.
     """
-    parameters = inspect.signature(method).parameters
-
     assert "index_build_id" not in parameters, (
         f"{label} now takes `index_build_id` as an argument: {list(parameters)}. "
         f"ADR-0024 decision 2 says the stamp is read out of the file being written "

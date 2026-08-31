@@ -10,8 +10,14 @@ opposite states:
   ``default: "block"`` — the policy an absent key and an absent config file both
   select (#198).
 - ``providers.review.repositories`` — SEC-10's repository allowlist. **Still
-  reserved**, owed with review ingestion (#129). Nothing reads it, its
-  description says so, and this module is what holds the source tree to that.
+  reserved**, owed with review ingestion. Nothing reads it, its description says
+  so, and this module is what holds the source tree to that. The description's
+  ``#129`` cite is **stale**: #129 closed on the wording rather than on the
+  control, so the live owner is #429 (the T-7 fetch controls) and the repointing
+  belongs to #428's stale-owner sweep — with the same schema file's *root*
+  description, which still carries an unnarrowed "Nothing in src/ reads this
+  file" (#455). Both stay outside this PR because they land on
+  ``project-config.schema.json``, which #199 unit B owns.
 - **Every key in the ``raptor`` block** — ADR-0008 decision 10's switch. **Still
   reserved.** ``docs/architecture/raptor.md`` and ADR-0008 decision 10 used to
   say nothing in ``src/`` read ``.theurian/config.yaml`` at all; ADR-0027
@@ -45,15 +51,27 @@ the scan walks every ``*.py`` under the *imported* ``theurian`` package —
 ``tools/``, ``plugins/`` and the tests themselves are outside it — and flags a
 module for naming any spelling in :data:`WATCHED_SPELLINGS`. A spelling is
 matched **exactly**, as a whole identifier or a whole string constant, never as a
-substring. That is what separates the two occurrences that matter from the six
-that do not: ``repositories`` appears five times in ``src/`` as an English word
-inside a docstring and once inside a sentence-shaped f-string
-(``application/setup_withholding.py``), and a substring scan would read all six
-as readers and force this pin to be silenced on its first run. Both real shapes
-have a negative case in :data:`SCANNER_CASES`. The ``raptor`` block pays the same
-rent: ``enabled`` occurs twice in ``src/`` prose — ``systemd_user.py``'s
-"without lingering enabled" and ``index_scan.py``'s "an ICU-enabled build" — and
-neither is a whole name, so neither is seen.
+substring.
+
+That is what keeps the prose out of the enumeration, and there is a lot of it.
+Counted with ``git grep -o -n -i -E "(^|[^A-Za-z0-9_])repositories([^A-Za-z0-9_]|$)"
+-- packages/theurian-core/src`` at ``5a14145``: **ten** occurrences of
+``repositories``, none of them a whole name. Seven are the English word in a
+docstring or a comment; one is inside a sentence-shaped f-string
+(``application/setup_withholding.py``); two name the dotted path
+``providers.review.repositories`` in ``security/project_config.py``'s own
+docstring, which describes the key precisely because nothing reads it. A
+substring scan would read all ten as readers and force this pin to be silenced on
+its first run. The three real shapes have a negative case in
+:data:`SCANNER_CASES`.
+
+The ``raptor`` block pays the same rent. The same key over ``enabled`` returns
+**four** occurrences, on four lines in three modules: ``systemd_user.py``'s
+"without lingering enabled", ``index_scan.py``'s "an ICU-enabled build", and two
+in ``application/forest_builder.py`` (a ``#:`` comment at line 139 and an
+error-message f-string at line 173) that name ``raptor.enabled`` itself. None is
+a whole name — the f-string's own constant is the sentence around the word, not
+the word — so none is seen.
 
 **What this cannot see.** It reads names, so a key assembled at runtime
 (``config["secret" + "Scan"]``), one reached through a variable whose value comes
@@ -140,6 +158,17 @@ def _plausible_spellings(key: str) -> frozenset[str]:
 #: ordinary words in this codebase — ``security/tokens.py`` handles secrets and
 #: ``cli/context.py`` talks about repository roots — and a scan that flagged them
 #: would have to be silenced with an allowlist so long that nobody would read it.
+#:
+#: ``enabled`` sits awkwardly on that rule and is watched anyway. It *is* an
+#: ordinary word, and as a whole identifier — ``enabled = True``, a keyword
+#: argument ``enabled=...``, a dataclass field — it would be flagged with nothing
+#: to do with ``raptor``. It is kept because it is also the published JSON key
+#: exactly, so ``config["raptor"]["enabled"]`` is the shape a loader takes, and
+#: this scan does not distinguish a string constant from an identifier (see
+#: :func:`_spellings`, which yields both from one stream). The cost is a false RED
+#: on an unrelated ``enabled``: a read, in the direction that keeps the claim. The
+#: enumeration's failure message therefore reports what was found and what each
+#: possibility would mean, rather than announcing a loader.
 _RECORDED_KEYS: Final[dict[str, frozenset[str]]] = {
     "security.secretScan": frozenset({"secretScan", "secret_scan", "SECRET_SCAN"}),
     "providers.review.repositories": frozenset({"repositories", "REPOSITORIES"}),
@@ -289,12 +318,21 @@ SCANNER_CASES: tuple[tuple[str, frozenset[str]], ...] = (
     ),
     ('"""Repositories must be allowlisted in `.theurian/config.yaml`."""', frozenset()),
     # -- the real prose the `raptor` block's keys collide with ---------------
-    # `enabled` is an ordinary English word and both of these are transcribed
-    # from `src/`: `infrastructure/services/systemd_user.py` and
-    # `infrastructure/sqlite/index_scan.py`. A substring scan would read both as
-    # readers of `raptor.enabled` and make this pin red on a clean tree.
+    # All four occurrences of `enabled` in `src/` (population key in the module
+    # docstring), transcribed. The first two use it as an ordinary English word;
+    # the last two name `raptor.enabled` itself, in `application/forest_builder.py`
+    # -- a `#:` comment, which never reaches the AST at all, and one arm of an
+    # implicitly concatenated f-string, whose constant is the sentence around the
+    # word rather than the word. A substring scan would read all four as readers
+    # of `raptor.enabled` and make this pin red on a clean tree.
     ('"""Without lingering enabled, closing the last session stops it."""', frozenset()),
     ('"""`lower()` is one of the functions an ICU-enabled build replaces."""', frozenset()),
+    ("#: (`raptor.enabled: false` is that). The schema admits up to 8", frozenset()),
+    (
+        'raise InvariantViolationError(f"max_levels must be at least 1, got "'
+        'f"{n} -- a forest of zero tiers is `raptor.enabled: false`")',
+        frozenset(),
+    ),
     # -- other ordinary code that names a neighbouring word ------------------
     ("from theurian.infrastructure.github import ReviewProvider", frozenset()),
     ('path = root / "repository"', frozenset()),
@@ -428,9 +466,23 @@ def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_one
     10 and ``docs/architecture/raptor.md`` say no key in that block is read, and
     the day a config loader names ``"enabled"``, ``"maxLevels"`` or
     ``"minChildrenPerSummary"`` a sixth site appears here and both records have
-    to be narrowed again in the same change. What this cannot see is unchanged
-    and stated in the module docstring: a key assembled at runtime, or a
-    whole-mapping read that never names it, still passes.
+    to be narrowed again in the same change.
+
+    **One measured gap in that tripwire.** This is an equality over ``(module,
+    spelling)`` pairs, and ``application/forest_builder.py`` already owns the
+    pairs ``max_levels`` and ``min_children_per_summary`` as ``ForestOptions``
+    fields. A loader added *in that one module* binding only those two snake_case
+    names adds no new pair and stays green -- round-one mutation A1 SURVIVED for
+    exactly that reason, and A2, the same read in another module, was KILLED. Any
+    spelling of ``enabled``, any JSON or SCREAMING spelling anywhere, and either
+    snake name in any other module all trip it. The gap is recorded rather than
+    closed: telling a ``ForestOptions`` field from a config read inside one module
+    needs the semantics this scan refuses on purpose (see the ordinary-words rule
+    on :data:`_RECORDED_KEYS`).
+
+    What this cannot see is otherwise unchanged and stated in the module
+    docstring: a key assembled at runtime, or a whole-mapping read that never
+    names it, still passes.
     """
     sites = sorted(
         {
@@ -470,12 +522,17 @@ def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_one
         "describe a shipped control. If the reader is gone, all of that is now "
         "false and has to be corrected in the same change -- do not simply drop "
         "the entry.\n\n"
-        "A NEW site under `raptor.`: ADR-0008 decision 10 says `Nothing in "
-        "`src/` reads `raptor.enabled`, nor any other key in the `raptor` "
-        "block`, and docs/architecture/raptor.md says `no `raptor` key is read` "
-        "(#426). A loader makes both false. Narrow them in the same change, and "
-        "check whether `raptor.enabled`'s published default is now the switch "
-        "the decision says it must default to."
+        "A NEW site under `raptor.`: check which of two things happened before "
+        "editing anything. If the site is a config read, ADR-0008 decision 10's "
+        "`Nothing in `src/` reads `raptor.enabled`, nor any other key in the "
+        "`raptor` block` and docs/architecture/raptor.md's `no `raptor` key is "
+        "read` are both false (#426); narrow them in the same change, and check "
+        "whether `raptor.enabled`'s published default is now the switch the "
+        "decision says it must default to. If it is an unrelated use of an "
+        "ordinary word -- `enabled` in particular is the JSON key and an English "
+        "word at once, and this scan cannot tell a string constant from an "
+        "identifier -- then no record moved and the honest fix is to record the "
+        "site here with a note saying which it is."
     )
 
 

@@ -77,10 +77,13 @@ def test_the_example_does_not_switch_the_raptor_forest_on() -> None:
 # Its annotation used to reach that conclusion through a false premise: "Nothing
 # in `src/` reads this file". The file *is* read -- `security/project_config.py`
 # opens it for `security.secretScan` (ADR-0027 decision 3) -- and the true fact
-# is narrower and key-scoped, so the annotation now names the reader the file has
-# and the key that has none. #429 owns the allowlist against the first external
-# fetch path; #129, the owner the annotation used to name, closed on the wording
-# rather than on the control.
+# is narrower and key-scoped, so the annotation now names the reader module, what
+# the file is read for, and the key that has none. #429 owns the allowlist
+# against the first external fetch path; #129, the owner the annotation used to
+# name, closed on the wording rather than on the control. The retracted sentence
+# is refused by `test_raptor_config_claims.py`, which scans this file's comment
+# blocks; the rows below are the positive half and cannot see a sentence coming
+# back beside them.
 #
 # `security.secretScan` (SEC-11's policy, #198) is the mirror image since
 # ADR-0027 decision 3: it now selects real behaviour, and the trap is
@@ -151,21 +154,28 @@ def _in_config(config: dict[str, Any], key: str) -> Any:
 #: has to say so. ``secretScan`` now reads somewhere, so its annotation has to
 #: say *how far* -- the approval gate, and not ``theurian ingest``.
 #:
-#: ``repositories``' three sentences are one claim in three parts, and the first
-#: is there because the annotation used to get this wrong (#426). It said
+#: ``repositories``' four sentences are one claim in four parts, and the first two
+#: are there because the annotation used to get this wrong (#426). It said
 #: "Nothing in ``src/`` reads this file", which was true until ADR-0027 decision
 #: 3 and is now false: ``security/project_config.py`` opens the file for
-#: ``security.secretScan``. So the row pins **the reader the file does have**,
-#: **the key that has none** -- spelled in full, because the file-level sentence
-#: does not contain it and cannot satisfy this -- and **the live owner**. #129
-#: closed on the wording rather than on the control, which is why naming it is
-#: no longer enough to make the annotation somebody's.
+#: ``security.secretScan``. So the row pins **the reader by module**
+#: (``security/project_config.py``), **what the file is read for**
+#: (``security.secretScan``), **the key that has none** -- spelled in full,
+#: because the file-level sentence does not contain it and cannot satisfy this --
+#: and **the live owner**. #129 closed on the wording rather than on the control,
+#: which is why naming it is no longer enough to make the annotation somebody's.
+#:
+#: The module fragment is required *as well as* the key because the two are
+#: different facts and the annotation's job is to carry both. A rewrite naming
+#: only ``security.secretScan`` says what the file is read *for* and leaves a
+#: reader with nowhere to check it; it passed this row until round one.
 ANNOTATED_KEYS: tuple[tuple[str, Any, tuple[str, ...]], ...] = (
     ("secretScan", "block", ("propose accept", "best effort", "#198")),
     (
         "repositories",
         ["acme/order-service"],
         (
+            "`security/project_config.py`",
             "security.secretScan",
             "nothing in `src/` reads `providers.review.repositories`",
             "#429",
@@ -187,7 +197,17 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
     and believes repositories are allowlisted is wrong, and the annotation is
     what tells them. It has to say that with the *key* named, because the file
     itself is read -- for `security.secretScan` and nothing else -- and the
-    file-level sentence the annotation used to carry was false (#426).
+    file-level sentence the annotation used to carry was false (#426). The
+    reader's *module* is required with the key: "read for `security.secretScan`"
+    says what, `security/project_config.py` says where, and a reader who has to
+    grep for the second is back in the habit #426 was opened to break.
+
+    **The retracted sentence is refused, not merely superseded.**
+    `tests/unit/test_raptor_config_claims.py::test_no_scanned_surface_reasserts_that_nothing_in_src_reads_the_config_file`
+    scans this file's comment blocks for it, in the pronoun form the annotation
+    actually used ("Nothing in `src/` reads this file"). Without that half, the
+    sentence could be restored verbatim beside these required ones and every
+    test here would still pass -- measured in round one.
 
     `secretScan: block` is the other error. Until ADR-0027 decision 3 it selected
     nothing either, and this test required the annotation to say so. It now
