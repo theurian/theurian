@@ -32,8 +32,10 @@ Milestone 1. Only its enforcement mechanism changes.**
    separate lock file**, `.theurian/runtime/write.lock`, held for the duration
    of a write transaction and guarding the state databases under
    `.theurian/state/`. Two concurrent `theurian migrate apply` invocations
-   serialise; the loser waits, then observes the other's work and becomes a
-   no-op (idempotence, FR-K8).
+   serialise **for the work that runs inside that transaction**: the loser waits
+   for the lock, then finds the other's migrations already applied and becomes a
+   no-op (idempotence, FR-K8). What each invocation writes outside the
+   transaction does not serialise, and the narrowing below says what that is.
 3. Milestone 3 replaces the lock with an in-process asyncio queue owned by the
    daemon, plus the same file lock for any CLI invocation running alongside it.
    **`transaction()` keeps its signature**, so no application code changes.
@@ -52,7 +54,7 @@ each call site cannot.
 > **There is no such method, and there never has been** —
 > `git grep "def transaction" -- packages/theurian-core/src` returns nothing.
 >
-> What implementing it revealed: the port publishes its twelve write methods
+> What implementing it revealed: the port publishes its thirteen write methods
 > directly (`append_revision`, `put_item`, `add_relation`, …), and exclusivity
 > lives one layer down, in `write_transaction()` in
 > `infrastructure/sqlite/connection.py`, a context manager that takes the OS
@@ -70,6 +72,35 @@ each call site cannot.
 > is owed, not that the design changed. Tracked with the index writer in
 > [#15](https://github.com/theurian/theurian/issues/15), which Milestone 6 has to
 > answer for both stores at once.
+>
+> **Repointed on 2026-08-31
+> ([#436](https://github.com/theurian/theurian/issues/436)): the sentence above
+> names a tracker that is closed and a milestone that has passed.** #15 closed on
+> 2026-08-10 (`66a43ae`) by wiring ADR-0024 decision 5, the withdrawal→purge
+> trigger — which is neither store's write interface. What this amendment records
+> as owed is still owed, and its live owner is
+> [#439](https://github.com/theurian/theurian/issues/439): the single write
+> interface, the Protocol-surface pin below, and the index's own contract, filed
+> without a milestone. The sentence is left standing rather than rewritten
+> because it is a dated record of what was believed in Milestone 5.
+>
+> **Corrected on 2026-08-31
+> ([#436](https://github.com/theurian/theurian/issues/436)): the count above said
+> *twelve*, and no revision of the port has ever published twelve.** Counted by
+> the key `test_connection_claims.py` uses — `CanonicalStore`'s public members
+> that declare no return value — it has published thirteen since `261eff3`
+> (2026-08-01), the commit that introduced the port, and still did at `f665ecf`
+> (2026-08-07), the commit that wrote this amendment; a sweep of every commit
+> touching that file finds no other count. So the number is corrected in place
+> rather than left standing as a record that aged: it was wrong when written, not
+> stale by one. **The count above is held against the port rather than by hand**:
+> `test_adr_0018_claims.py::test_the_amendment_spells_the_write_method_count_the_port_publishes`
+> reads the number out of that sentence and asserts it equals what
+> `canonical_store_surface.py::write_methods()` derives from the live
+> `CanonicalStore` — the same derivation `test_connection_claims.py` imports, so
+> the two records cannot disagree about the port — and it goes RED whether this
+> record drifts or the port gains a write method. Re-derive it there rather than
+> trusting this sentence.
 >
 > GOVERNANCE says an accepted ADR is superseded rather than edited. This is
 > recorded as an amendment instead, and the judgement is deliberate: superseding
@@ -94,13 +125,43 @@ each call site cannot.
 > [#420](https://github.com/theurian/theurian/pull/420), so the two halves of
 > this document disagreed until now.
 
+> **Narrowed on 2026-08-31 against a measurement
+> ([#468](https://github.com/theurian/theurian/issues/468) owns both the
+> engineering and this record).** Point 2 said, without the boundary it now
+> carries, that two concurrent `theurian migrate apply` invocations serialise and
+> the loser becomes a no-op. Measured on eight real two-process runs against a
+> fresh project, **the loser crashed in four of the eight** — three distinct
+> unhandled errors (`table schema_metadata already exists`, `database is locked`,
+> and one `disk I/O error`), each exiting 1 with a traceback rather than the
+> CLI's failure envelope, with `--json` requested.
+>
+> What holds is the transaction. The lock itself works: a second holder gets
+> `WriteLockTimeoutError`. What does not hold is what `migrate apply` writes
+> around it — `create_database` at `cli/commands.py:1328` runs before the
+> transaction opens, and `write_active_state` at `:1403` publishes the pointer
+> after it commits; both complete while another process holds the lock. So the
+> serialisation this point promises covers the migration content, and not the
+> database's creation or the pointer's publication.
+>
+> The decision is not superseded: one writer is still the design, and the answer
+> is to bring both writes inside the lock rather than to weaken the claim. Until
+> that lands the record states what is true. #468 stays open for both halves, and
+> #439 stays open for the single write interface the amendment above records as
+> owed — the Compliance section's "nothing runs two writers at once" bullet is
+> the missing evidence this measurement supplied by hand.
+
 ## Consequences
 
 ### Positive
 
 - Milestone 1 ships without async plumbing that has no caller.
-- Two concurrent CLI invocations are already safe, which is a real scenario:
-  an editor plugin and a terminal, or a shell script and a watcher.
+- Two concurrent CLI invocations serialise their write transactions, which is a
+  real scenario: an editor plugin and a terminal, or a shell script and a
+  watcher. **This bullet said they are "already safe", and that was measured
+  false on 2026-08-31**: the loser of two concurrent first `migrate apply` runs
+  crashed in four runs of eight, on the writes each makes outside the lock
+  ([#468](https://github.com/theurian/theurian/issues/468)). The narrowing under
+  the Decision has the mechanism and the three error shapes.
 - Milestone 3 changes one class rather than every write path.
 - Synchronous code is easier to reason about and to test where async buys
   nothing.
@@ -117,10 +178,10 @@ each call site cannot.
   its default step set, and
   `tests/integration/test_setup_service.py::test_every_specified_step_is_reported`
   pins the reported set equal to `StepId`. No probe is planned either — building
-  one is rejected rather than deferred, for want of a portable detection design,
-  per the disposition recorded on #417. An operator whose project directory sits
-  on NFS is therefore told nothing by `doctor`. Nothing enforces the exclusion:
-  no step reads a filesystem type. Tracked in
+  one is rejected rather than deferred, for want of a portable detection design.
+  An operator whose project directory sits on NFS is therefore told nothing by
+  `doctor`. Nothing enforces the exclusion: no step reads a filesystem type. The
+  disposition is recorded on
   [#417](https://github.com/theurian/theurian/issues/417).
 - Two enforcement mechanisms exist between Milestone 3 and 1.0 — the queue for
   in-daemon writes and the lock for CLI writes. Both are required, because a CLI
@@ -167,7 +228,7 @@ each call site cannot.
   and `tests/integration/test_cli_commands.py::test_apply_is_idempotent` — a
   second application of the same migration set changes nothing.
 
-Still owed, with the milestone that will satisfy it:
+Still owed, with the issue or milestone that will satisfy it:
 
 - **Nothing holds point 1, and this section claimed a test that does not check
   it.** The bullet here read "`CanonicalStore` exposes no connection object and
@@ -179,12 +240,37 @@ Still owed, with the milestone that will satisfy it:
   runtime-checkable `Protocol`, has no implementation body, declares a member,
   annotates its methods. None of that is about *which* methods.
 
-  Measured, not argued: adding a `connection()` method to the `CanonicalStore`
-  Protocol leaves `test_ports.py` green at 90 passed, **and the whole suite green
-  at 1567 passed**. The escape hatch this ADR says cannot exist can be added and
-  nothing notices. Milestone 6, with
-  [#15](https://github.com/theurian/theurian/issues/15) — the interface has to
-  exist before a test can pin its surface.
+  Measured in Milestone 5, when this bullet was written: adding a `connection()`
+  method to the `CanonicalStore` Protocol left `test_ports.py` and the whole
+  suite green, so the escape hatch this ADR says cannot exist could be added and
+  nothing noticed. The two counts this sentence used to quote are dropped rather
+  than refreshed — they were that suite's, and re-quoting a number nobody
+  re-measured is the defect this document keeps meeting.
+
+  **Re-measured on 2026-08-31, each spelling injected into the port in a
+  throwaway checkout with a control run first, and two of the three now fail.**
+  `-> sqlite3.Connection`, the spelling anyone reaching for this hatch would
+  write, is RED under
+  `test_connection_claims.py::test_the_canonical_store_port_declares_no_single_write_interface`,
+  which reads it as a member returning a context manager. The unannotated
+  `def connection(self)` is RED under
+  `test_ports.py::test_port_methods_are_annotated[CanonicalStore]`. Both were
+  re-run at `c3886db` — the commit that introduced the first of those tests, and
+  an ancestor on `main` rather than a branch tip — with the same two failures, so
+  the anchor outlives the branch that measured it. **`-> object` is the
+  residual**: with that member on the port the whole suite is green, its result
+  identical to the control run on the same tree. No total is quoted, because a
+  total is a property of whichever tree the reader is standing on. So this
+  bullet's
+  heading is now narrower than it reads — what nothing holds is point 1's *first*
+  clause, that all writes go through one interface; the port surface its second
+  clause describes is watched in two spellings out of three. Owed and
+  unscheduled, tracked in
+  [#439](https://github.com/theurian/theurian/issues/439) — the interface has to
+  exist before a test can pin its surface. This bullet named Milestone 6 and
+  [#15](https://github.com/theurian/theurian/issues/15) until 2026-08-31; #15
+  closed on 2026-08-10 without shipping the interface, and #439 is where the work
+  now lives ([#436](https://github.com/theurian/theurian/issues/436)).
 
 - **Nothing runs two writers at once.** This section claimed an integration test
   running N concurrent `migrate apply` processes against one project, asserting
@@ -195,7 +281,10 @@ Still owed, with the milestone that will satisfy it:
   ([#65](https://github.com/theurian/theurian/issues/65)). This is the ADR's
   central claim, so its evidence is the one that was missing: everything above
   holds that a *single* writer behaves, which is what an unserialised design
-  would also do. Milestone 6, with the index writer below.
+  would also do. The evidence stays bundled with the index writer below, whose
+  live owner is [#439](https://github.com/theurian/theurian/issues/439); this
+  bullet said Milestone 6, which has passed without the test being written
+  ([#436](https://github.com/theurian/theurian/issues/436)).
 - **`sqlite3` is not confined, and is already imported outside
   `infrastructure/sqlite/`.** This section claimed a lint check kept it there.
   There is none, and `cli/index_commands.py` imports it directly.
@@ -203,8 +292,8 @@ Still owed, with the milestone that will satisfy it:
   the rule and is parametrised over `sqlite_vec` and `mcp` only.
   [#66](https://github.com/theurian/theurian/issues/66).
 
-- **The derived index has no single-writer contract at all** (Milestone 6,
-  [#15](https://github.com/theurian/theurian/issues/15)). Everything above is
+- **The derived index has no single-writer contract at all** (owed,
+  [#439](https://github.com/theurian/theurian/issues/439)). Everything above is
   about `CanonicalStore`. Milestone 5 gave the product a second writable SQLite
   artifact — the retrieval index — and `theurian index build` is today its only
   writer, serialised by nothing but the fact that a person runs it. Point 1's
@@ -229,5 +318,23 @@ Still owed, with the milestone that will satisfy it:
   > ADR's point 1 applied to the index for the first time, and it is what
   > discharges this bullet when it lands. The `CanonicalStore.transaction()`
   > half above is untouched by it and still owed.
+
+  > **Repointed on 2026-08-31
+  > ([#436](https://github.com/theurian/theurian/issues/436)): Milestone 6 has
+  > passed and this bullet did not close.** The tracker it named,
+  > [#15](https://github.com/theurian/theurian/issues/15), closed on 2026-08-10
+  > (`66a43ae`) by wiring ADR-0024 decision 5 — the withdrawal→purge trigger — so
+  > the second writer the paragraph above predicted is here and the sentence
+  > calling `theurian index build` the index's only writer no longer holds:
+  > `migrate apply` publishes a purged build through
+  > `application/withdrawal_purge.py`. What it writes through is still not an
+  > interface. There is no index write lock in the package: at `6b83be1`,
+  > `git grep -nE "flock|lockf|LOCK_EX|write_lock" -- packages/theurian-core/src`
+  > returns ten lines, every one of them the canonical `ProjectPaths.write_lock`
+  > or the daemon's single-instance lock, and none of them in an index write
+  > path. The purge records the gap in its own source — "No new index-write lock
+  > is taken" — and rests on a fresh ULID and an `os.replace` instead. Owed and
+  > unscheduled, tracked in
+  > [#439](https://github.com/theurian/theurian/issues/439).
 - **NFR-4 is not discharged**, per the amendment above. It belongs with the same
   blue/green work.

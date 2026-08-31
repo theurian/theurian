@@ -68,8 +68,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   to their parents once docstrings are stripped, and no behaviour changes.
   Residues owned: the single write interface ADR-0018 records as owed
   ([#439](https://github.com/theurian/theurian/issues/439)); ADR-0018's
-  Milestone 5 amendment, whose count of the port's write methods no longer
-  matches the port
+  Milestone 5 amendment, whose count of the port's write methods the port never
+  matched
   ([#446](https://github.com/theurian/theurian/pull/446)); and the served corpus
   twin under `.theurian/knowledge/architecture/`, which carries the retracted
   sentence byte-identically and moves only on a governed re-seed (#199 unit C) —
@@ -167,6 +167,114 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `plugins/` — and the served corpus twins of ADR-0008 and ADR-0024 under
   `.theurian/knowledge/architecture/`, which carry the retracted sentences
   byte-identically and move only on a governed re-seed (#199 unit C), the same
+- **ADR-0018's owed single-writer work names a live owner, its write-method
+  count matches the port, and the README states the NFS exclusion**
+  ([#436](https://github.com/theurian/theurian/issues/436),
+  [#417](https://github.com/theurian/theurian/issues/417),
+  [#446](https://github.com/theurian/theurian/pull/446)). One document was
+  pointing owed work at a closed issue, naming a count the port has never had,
+  and keeping an operator-facing exclusion in records operators do not read.
+
+  **The owner-cites.** ADR-0018 cited
+  [#15](https://github.com/theurian/theurian/issues/15) three times as the
+  Milestone-6 owner of owed work: the `CanonicalStore` single write interface,
+  the Protocol-surface pin that waits on it, and the derived index's missing
+  contract. #15 closed on 2026-08-10 (`66a43ae`) by wiring ADR-0024 decision
+  5 — the withdrawal→purge trigger — which is none of those three, and Milestone
+  6 is past. Each cite is classified by what that closure shipped and repointed
+  at [#439](https://github.com/theurian/theurian/issues/439), filed for the work
+  itself: the two Compliance cites are corrected in place, each keeping the
+  retracted pointer inside the sentence that corrects it, while the Milestone-5
+  amendment's sentence stays verbatim under a dated note, because that
+  blockquote is a record of what was believed then. The index bullet now records
+  what did land — `migrate apply` publishes a purged build through
+  `application/withdrawal_purge.py`, so `theurian index build` is no longer the
+  index's only writer — and what did not: no index write lock exists anywhere
+  under `packages/theurian-core/src` (measured at `6b83be1`, unchanged at
+  `c3886db`), which the purge states of itself in its own source.
+
+  **The write-method count.** The Milestone-5 amendment said the port publishes
+  "twelve write methods directly". It publishes thirteen, and the measurement
+  refutes the obvious reading that the port grew one: counted by the key
+  `test_connection_claims.py` uses — `CanonicalStore`'s public members that
+  declare no return value — the port has published thirteen since `261eff3`
+  (2026-08-01), the commit that introduced it, and still did at `f665ecf`
+  (2026-08-07), the commit that wrote the amendment, with no revision of that
+  file counting otherwise. So it is corrected in place under a dated note rather
+  than left standing as a record that aged. This discharges the residue the
+  entry above records, and corrects that entry's framing: the count never
+  matched, rather than stopped matching.
+
+  **The NFS exclusion, where an operator meets it.** ADR-0018 accepts the
+  advisory lock's behaviour on network filesystems by putting a `.theurian/`
+  directory on NFS outside the supported configuration, records that nothing
+  detects that it is, and rejects rather than defers building a probe. README's
+  quick start now carries one line of that, immediately after what `init`
+  creates, citing ADR-0018 rather than re-asserting the absence on its own
+  authority. It promises no detection in any tense.
+
+  **The point-1 escape hatch, re-measured.** The Compliance bullet for point 1
+  said that adding a `connection()` method to the port leaves the suite green
+  and nothing notices. Two of the three spellings now fail:
+  `-> sqlite3.Connection` under `test_connection_claims.py`'s port-shape pin,
+  which reads it as a member returning a context manager, and the unannotated
+  `def connection(self)` under
+  `test_ports.py`'s annotation rule. `-> object` still slips through, and the
+  bullet now records it as the residual. Every spelling was injected in a
+  throwaway checkout with a control run first, and the two failures were re-run
+  at `c3886db` — an ancestor on `main`, not a branch tip — so the anchor survives
+  the squash. The Milestone-5 figures the bullet used to quote are dropped rather
+  than refreshed, since nothing here re-measured that suite, and no new suite
+  total is quoted in their place.
+
+  **Point 2's serialisation claim is narrowed to the write transaction**
+  ([#468](https://github.com/theurian/theurian/issues/468)). The Decision said
+  two concurrent `theurian migrate apply` invocations serialise and the loser
+  becomes a no-op, and the Positive consequence called two concurrent CLI
+  invocations "already safe". Measured on eight real two-process runs, the loser
+  crashed in four of them, because `create_database` runs before the write
+  transaction opens and `write_active_state` publishes the pointer after it
+  commits — both outside the lock, both completing while another process holds
+  it. Point 2 now serialises the work inside the transaction and says so, the
+  Positive bullet records what was false, and a narrowing blockquote carries the
+  measurement and the control that the lock itself works. The record is narrowed
+  rather than the design changed: #468 owns bringing both writes inside the lock,
+  and stays open.
+
+  Prose only, and no behaviour changes. What holds these claims, all in
+  `test_adr_0018_claims.py`: the NFS sentence is pinned in both directions and
+  README's copy of it is read in the same sweep, so neither record can drift
+  alone; `test_both_corrected_compliance_bullets_name_the_live_owner_of_the_owed_work`
+  and `test_neither_corrected_bullet_cites_the_closed_tracker_as_an_owner` hold
+  the two repointed bullets — the first requires #439's link in each, the second
+  refuses a #15 mention whose own sentence does not retract it;
+  `test_no_index_write_path_module_takes_a_lock` sweeps the modules the published
+  index is written through, so the index bullet's "no lock" half moves when a
+  lock lands; and
+  `test_the_amendment_spells_the_write_method_count_the_port_publishes` holds the
+  count spelled in the amendment against the live port, RED whether the sentence
+  drifts or the port gains a write method — so the number is not a copy anyone
+  keeps in step by hand.
+  The review rounds added four more, each closing a deletion or an edit measured
+  green against the tree before it:
+  `test_decision_point_2_says_what_its_serialisation_promise_does_not_cover`
+  holds the boundary clause inside the point a reader who stops at the Decision
+  actually reads, and
+  `test_the_positive_consequence_records_that_already_safe_was_measured_false`
+  holds the three fragments that keep that bullet a retraction rather than a
+  statement of fact;
+  `test_every_correction_note_still_carries_what_makes_it_a_correction` requires
+  the content each correction blockquote turns on, so a note cannot be cut down
+  to its anchor or rewritten around it to assert what it retracted; and
+  `test_every_symbol_pointer_in_the_adr_resolves_to_something_live` reads every
+  `module.py::symbol` the record hands a reader out of the live module, with the
+  harvested set of those references held **equal** to the list — so a reference
+  added to the ADR fails as loudly as one renamed out of the code.
+  Residues owned: the engineering the repoints point
+  at ([#439](https://github.com/theurian/theurian/issues/439), filed without a
+  milestone), and the served corpus twin under
+  `.theurian/knowledge/architecture/`, which still carries the dead cites and
+  the old count and moves only on a governed re-seed (#199 unit C) — the same
   carry #417, #432 and #441 record.
 
 ## [0.1.0.dev15] - 2026-08-31
