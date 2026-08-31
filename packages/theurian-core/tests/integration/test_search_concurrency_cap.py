@@ -608,7 +608,7 @@ async def test_a_normal_search_is_unaffected_by_the_cap(registry: ProjectRegistr
 
 
 @pytest.mark.asyncio
-async def test_the_refusal_is_byte_identical_whatever_the_input(  # noqa: PLR0915 -- 4 rounds, 10
+async def test_the_refusal_is_byte_identical_whatever_the_input(  # noqa: PLR0915 -- 4 rounds, 13
     # captures compared in one assertion; splitting would defeat that comparison (see docstring)
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -626,36 +626,58 @@ async def test_the_refusal_is_byte_identical_whatever_the_input(  # noqa: PLR091
       (a) two different queries against the same store,
       (b) two different projectIds against one server serving both,
       (c) a corpus with three withheld rows against one with none, AND that
-          same withheld-row corpus with `includeUnapproved=True`, and
-      (d) four of the tool's other parameters on the same store as (a): a
-          non-default `limit`, a non-default `maxTokens`, `useDense=True`,
-          and `includeUnapproved=True`.
-    All ten captured refusal strings must be the same string, and that string
-    must be exactly `SEARCH_CAPACITY_REFUSAL` with nothing appended -- a
-    mutation that appended caller- or grant-derived text uniformly (round 1's
-    `refusal-carries-limit`, `refusal-carries-grant`) survived the original
-    five-capture, self-consistency-only version of this test, because every
-    one of those captures used the same default `limit` and the same
-    deployment grant, so the appended text was identical across all of them.
+          same withheld-row corpus crossed with each of the four
+          non-default-valued parameters (d) exercises: `includeUnapproved=
+          True`, `limit=50`, `maxTokens=500`, and `useDense=True`, and
+      (d) those same four parameters -- a non-default `limit`, a non-default
+          `maxTokens`, `useDense=True`, and `includeUnapproved=True` -- on
+          the store with no withheld rows, the same one (a) uses.
+    Every parameter axis (d) exercises against the store with nothing to
+    withhold is therefore also exercised against the store that has
+    something to withhold: the population this test closes is every
+    non-default parameter value crossed with every store, not one parameter
+    crossed with one store.
+    All thirteen captured refusal strings must be the same string, and that
+    string must be exactly `SEARCH_CAPACITY_REFUSAL` with nothing appended --
+    a mutation that appended caller- or grant-derived text uniformly (round
+    1's `refusal-carries-limit`, `refusal-carries-grant`) survived the
+    original five-capture, self-consistency-only version of this test,
+    because every one of those captures used the same default `limit` and
+    the same deployment grant, so the appended text was identical across all
+    of them.
 
-    (c)'s second capture is the withheld-corpus axis crossed with a parameter
-    axis, and it exists because the other nine, on their own, do not cross
-    them: every `includeUnapproved=True` capture before this one ran against
-    `plain`, whose one applied migration leaves `active.migration_count - 1`
-    at `0`, and every withheld-row capture before this one left
-    `includeUnapproved` at its default `False`. `refusal-cross-axis-leak`
-    (adversarial round 2, M-1) appends
+    (c)'s captures after the first cross the withheld-corpus axis with a
+    parameter axis, and round 2 added only one of them: the
+    `includeUnapproved=True` capture. That closed one face of the class, not
+    the class -- `limit`, `maxTokens` and `useDense` were still captured only
+    against `plain`, whose one applied migration leaves
+    `active.migration_count - 1` at `0`, so a mutation keyed on any of *those*
+    parameters instead of `includeUnapproved` would still have survived.
+    `refusal-cross-axis-leak` (adversarial round 2, M-1) appends
     `f" [{active.migration_count - 1}]"` to the refusal precisely when
     `includeUnapproved` is truthy AND that difference is truthy -- true only
     for `retired` (two applied migrations) with `includeUnapproved=True`, so
     it survived every capture the nine-capture version of this test took and
-    is what this tenth capture exists to kill.
+    is what (c)'s `includeUnapproved=True` capture exists to kill.
+    `refusal-cross-axis-usedense` (adversarial round 3, M-1) is the identical
+    shape keyed on `useDense` instead of `includeUnapproved` -- it survived
+    every capture the ten-capture version of this test took, because that
+    version's only withheld-row-store capture besides the default one used
+    `includeUnapproved`, never `useDense`, against `retired`. (c)'s
+    `useDense=True` capture is what kills it. (c)'s `limit=50` and
+    `maxTokens=500` captures close the same population for those two
+    parameters by the same construction; no mutation keyed on either is
+    named here, because both are non-default numeric values that are truthy
+    for essentially every value the tool accepts, so a mutation gated on
+    "is truthy" would fire on every capture in this test rather than
+    singling one out -- but the axis is still exercised, so a future
+    mutation keyed on either has a capture to kill it.
 
-    The `limit=50` capture in (d) is also timed: `MAX_RESULTS` clamps
-    `capped_limit` to exactly 50, so a mutation that scaled the admission
-    wait by `capped_limit` (round 1's `wait-scales-with-limit`) would make
-    that one capture arrive at ~5s rather than within
-    `ADMISSION_WAIT_SECONDS + 1.0`s.
+    The `limit=50` capture in (d) -- not the untimed one in (c) -- is also
+    timed: `MAX_RESULTS` clamps `capped_limit` to exactly 50, so a mutation
+    that scaled the admission wait by `capped_limit` (round 1's
+    `wait-scales-with-limit`) would make that one capture arrive at ~5s
+    rather than within `ADMISSION_WAIT_SECONDS + 1.0`s.
     """
     plain = _build_project(tmp_path, monkeypatch, name="plain")
     two_projects = _build_two_projects(tmp_path, monkeypatch)
@@ -694,9 +716,13 @@ async def test_the_refusal_is_byte_identical_whatever_the_input(  # noqa: PLR091
     _assert_all_succeeded(drained, MAX_CONCURRENT_SEARCHES)
 
     # (c) a corpus with withheld rows against one with none -- and, in the
-    # same round, that withheld-row corpus again with `includeUnapproved=True`:
-    # the one capture that crosses the withheld-corpus axis with a parameter
-    # axis (see the docstring's `refusal-cross-axis-leak` paragraph).
+    # same round, that withheld-row corpus crossed with each of the four
+    # non-default parameters (d) exercises against the store with nothing to
+    # withhold: the captures that cross the withheld-corpus axis with a
+    # parameter axis (see the docstring's `refusal-cross-axis-leak` /
+    # `refusal-cross-axis-usedense` paragraph). `limit` and `maxTokens` are
+    # crossed here too so the population is every non-default parameter on
+    # both stores, not only the two boolean flags.
     retired_server = build_server(retired)
     gate = _SaturationGate()
     monkeypatch.setattr(tools, "hybrid_answer", gate.stub)
@@ -704,22 +730,39 @@ async def test_the_refusal_is_byte_identical_whatever_the_input(  # noqa: PLR091
         retired_server, gate, project_id="retired", count=MAX_CONCURRENT_SEARCHES
     )
     try:
-        messages.append(await _refused(retired_server, project_id="retired", query="a short query"))
-        messages.append(
-            await _refused(
-                retired_server,
-                project_id="retired",
-                query="a short query",
-                includeUnapproved=True,
+        # Gathered concurrently, not five sequential `await`s: each excess
+        # caller's own admission wait is `ADMISSION_WAIT_SECONDS` regardless
+        # of how many others are also waiting, but the holders above are only
+        # guaranteed to stay blocked for `_WAIT_BOUND_SECONDS` -- five
+        # sequential ~`ADMISSION_WAIT_SECONDS`-long refusals came within
+        # noise of that bound and flaked, where five concurrent ones cost
+        # about one wait, not five.
+        messages.extend(
+            await asyncio.gather(
+                _refused(retired_server, project_id="retired", query="a short query"),
+                _refused(
+                    retired_server,
+                    project_id="retired",
+                    query="a short query",
+                    includeUnapproved=True,
+                ),
+                _refused(retired_server, project_id="retired", query="a short query", limit=50),
+                _refused(
+                    retired_server, project_id="retired", query="a short query", maxTokens=500
+                ),
+                _refused(
+                    retired_server, project_id="retired", query="a short query", useDense=True
+                ),
             )
         )
     finally:
         drained = await _drain(gate, tasks)
     _assert_all_succeeded(drained, MAX_CONCURRENT_SEARCHES)
 
-    # (d) four of the tool's other parameters, saturated again against the
-    # same store as (a) -- `limit`, `maxTokens`, `useDense` and
-    # `includeUnapproved` are surfaces the refusal must not carry either.
+    # (d) the same four non-default parameters as (c) above, saturated again
+    # against the store with nothing to withhold (the same store as (a)) --
+    # `limit`, `maxTokens`, `useDense` and `includeUnapproved` are surfaces
+    # the refusal must not carry either, on either store.
     gate = _SaturationGate()
     monkeypatch.setattr(tools, "hybrid_answer", gate.stub)
     tasks = await _saturate(plain_server, gate, project_id="plain", count=MAX_CONCURRENT_SEARCHES)
@@ -749,7 +792,7 @@ async def test_the_refusal_is_byte_identical_whatever_the_input(  # noqa: PLR091
         drained = await _drain(gate, tasks)
     _assert_all_succeeded(drained, MAX_CONCURRENT_SEARCHES)
 
-    assert len(messages) == 10
+    assert len(messages) == 13
     assert len({*messages}) == 1, (
         "the refusal must be byte-identical whatever the input; observed distinct "
         f"strings: {sorted(set(messages))}"
