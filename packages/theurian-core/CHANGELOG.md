@@ -67,7 +67,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   durable record asserting a mechanism the codebase does not contain — and found
   by the same #199 unit-A audit.
   `docs/adr/0027-accept-validates-before-it-moves.md` repeats the retracted
-  phrasing in its decision-2 residue and is left for its own change; the served
+  phrasing in its decision-2 residue and is left for its own change
+  ([#433](https://github.com/theurian/theurian/issues/433)); the served
   corpus twin under `.theurian/knowledge/architecture/` carries the retracted
   sentence byte-identically and moves only on a governed re-seed (#199 unit C),
   the same carry #417 records.
