@@ -2057,13 +2057,26 @@ one that ran, on every session, and the pass that fixed the unreachable face lef
 it in place. Ranking the faces by how wrong they read, rather than by which of
 them a user meets, is what produced that.
 
-**Two of those three files still carry the premise**, in documents
-[#40](https://github.com/theurian/theurian/pull/40) did not reach:
+**Two of those three files carried the premise on into documents
+[#40](https://github.com/theurian/theurian/pull/40) did not reach.** Both are
+corrected, and take the same three columns as the resolved rows above:
 
-| Surface | What it says | Owner |
+| Surface | The premise it carried | Corrected in |
 | :-- | :-- | :-- |
-| `docs/integrations/claude-code.md:101` | the `SessionStart` flowchart: `theurian on PATH? --no--> warn: run /theurian:setup`, which now also disagrees with the shipped script | — |
-| `docs/architecture/requirements-analysis.md`, the compatibility flowchart | its `CLI absent` branch: "Advise /theurian:setup. Do not install anything." | — |
+| `docs/integrations/claude-code.md:101` | the `SessionStart` flowchart: `theurian on PATH? --no--> warn: run /theurian:setup`, which also disagreed with the shipped script | [#421](https://github.com/theurian/theurian/issues/421) |
+| `docs/architecture/requirements-analysis.md`, the compatibility flowchart | its `CLI absent` branch: "Advise /theurian:setup. Do not install anything." | [#421](https://github.com/theurian/theurian/issues/421) |
+
+Both nodes now name the installer before `/theurian:setup`, in the order the
+shipped hook prints it — measured by running
+`plugins/claude-code/scripts/session-start.sh` with `theurian` off `PATH`, which
+is the branch's whole behaviour. The requirements-analysis branch keeps "Do not
+install anything": that half was true of the hook, which prints its advice and
+runs none of it. **Neither correction is pinned by a test.** The two files are
+absent from `CORE_ARRIVAL_SURFACES` in
+`packages/theurian-core/tests/unit/test_setup_claims.py`, whose module docstring
+still counts them as the two of nine that are uncorrected; that tuple, and the
+`INSTALLERS` it checks against `probe_core`'s own words, are the fact side these
+rows would be pinned to.
 
 Both *specify* corrected surfaces rather than being them, which is why a search
 over user-facing text does not reach them. Recorded here rather than left to

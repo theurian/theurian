@@ -149,6 +149,24 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   population keys and the escape space they leave are in
   [`docs/work-logs/2026-08-30-199-unit-a-audit.md`](../../docs/work-logs/2026-08-30-199-unit-a-audit.md).
 
+- **Two flowcharts stop advising a command the shipped `SessionStart` hook
+  dropped** ([#421](https://github.com/theurian/theurian/issues/421)). The hook
+  names an installer before `/theurian:setup`, because `/theurian:setup` shells
+  out to the `theurian` binary whose absence produced the warning. Two documents
+  that *specify* the hook were left behind when it was corrected:
+  `docs/integrations/claude-code.md`'s `SessionStart` flowchart still said
+  `warn: run /theurian:setup`, and `docs/architecture/requirements-analysis.md`'s
+  compatibility flowchart still said "Advise /theurian:setup. Do not install
+  anything." Both now name the installer first, matched against the line the hook
+  actually prints — captured by running it with `theurian` off `PATH`, not read —
+  which the integration doc now quotes verbatim once. Requirements-analysis keeps
+  "Do not install anything": that half was always true of a hook that prints its
+  advice and runs none of it. The threat model's T-16 table, which carried the two
+  as deferrals with an empty owner column, now records them as corrected in the
+  same three columns its resolved rows use — **and records that neither correction
+  is pinned by a test**, both files being absent from
+  `CORE_ARRIVAL_SURFACES` in `tests/unit/test_setup_claims.py`.
+
 ## [0.1.0.dev14] - 2026-08-28
 
 ### Fixed
