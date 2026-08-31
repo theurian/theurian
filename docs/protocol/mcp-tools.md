@@ -489,6 +489,15 @@ product really produces.
 Errors carry structured `details` because a message alone forces the caller back
 into the code to find out what happened.
 
+`knowledge.search` publishes one refusal this table does not cover: under
+sustained concurrent load — more than `MAX_CONCURRENT_SEARCHES` calls already
+in the retrieval answer block — the daemon refuses with a constant, retryable
+`ToolError` naming the cap, rather than queueing the caller without bound.
+It carries no code from the table above and no `details`; today the refusal
+is distinguishable only by its message text, not by a machine-readable field.
+A coded, `retryAfter`-carrying envelope for it is tracked in
+[#419](https://github.com/theurian/theurian/issues/419).
+
 ## Safety contract
 
 Every knowledge-bearing result carries the same three fields, always:
@@ -520,6 +529,10 @@ Additive changes (a new optional field, a new tool) are MINOR and do not bump
 `protocolVersion`. Removing a field, tightening a type, adding a required field,
 or renaming a tool is breaking and bumps it. See
 [plugin-core-compatibility.md](plugin-core-compatibility.md).
+
+`knowledge.search`'s admission refusal (see Errors, above) is a behaviour of
+the shipped surface as of this change — a new error message on an existing
+tool, additive rather than breaking, so it does not bump `protocolVersion`.
 
 **`protocolVersion` is still `theurian/v1` after Milestone 5 and #206, which
 between them made four breaking changes to this contract.** That is a

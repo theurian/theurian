@@ -958,19 +958,39 @@ the visible corpus and with what the current holders asked for. Measured: the
 same four-caller load flips between admitting and refusing a fifth caller
 depending on the holders' query and the store's size, so the event is *not* a
 function of concurrent load alone, and this entry must not claim that it is.
-What SEC-13 needs is narrower, and it holds: no bit about content the caller
-may not read crosses this channel. The refusal message is a fixed string,
-built once from `MAX_CONCURRENT_SEARCHES` and interpolating nothing from the
-request or the store, verified byte-identical across queries, projects and
-corpora by `test_the_refusal_is_byte_identical_whatever_the_input`; the
-refusal path reads nothing from the store; and the event's timing inputs are
-the durations of searches run over rows every caller may already read —
-withheld rows never enter them, because the index excludes them at build time
-and the substring scan reads through `idx_items_status` (#158). Measured
-flat: adding 1,200 withheld rows to an otherwise identical visible corpus
-moved neither the solo-caller latency nor the refusal outcome, on both the
-ranked and the scan path; the T-17a stale-index shape measured flat the same
-way (2026-08-30).
+What SEC-13 needs is narrower than "the event depends on nothing": the
+refusal message is a fixed string, built once from `MAX_CONCURRENT_SEARCHES`
+and interpolating nothing from the request or the store, verified
+byte-identical across queries, projects and corpora, and across `limit`,
+`maxTokens`, `useDense` and `includeUnapproved` (ten pinned captures), by
+`test_the_refusal_is_byte_identical_whatever_the_input`; the refusal path
+reads nothing from the store; and the event's timing inputs are the
+durations of the in-flight searches, and what SEC-13 needs there is that no
+term in those durations lets a caller learn about content it may not read.
+Rows withheld **by status** never enter them: the index excludes them at
+build time, and the substring scan reads through `idx_items_status` (#158) —
+measured flat at ±1,200 *rejected* rows (2026-08-30, in-process, both
+paths). Two recorded terms are inherited unchanged rather than closed here,
+and both are on OTHER axes: `list_items_by_status`'s sensitivity predicate
+costs a measured 0.20 µs per above-ceiling row on the scan path
+(corpus-bounded, no caller can shrink it — #338, T-22), and the ranked
+path's `|ranking|` term costs a measured 14.7 µs per withheld row while a
+published build predates a withdrawal (T-17's ranked-reads face) — a window
+ADR-0024 decision 5 closes at apply time by purging the published build,
+leaving the purge-failure path (`_PURGE_FAILED`) as the recorded residual
+when it cannot. Neither has been measured to move the refusal outcome, and
+neither was measured here in the shape where it is live; what this gate adds
+is at most a coarser, load-noised copy of timing channels those entries
+already record and own — a solo caller times its own query at far higher
+fidelity than a refusal bit under contention.
+
+Frame for the status-axis measurement (adversarial round-2 independent
+reproduction, in-process, b8d2030, 2026-08-31): two projects with
+byte-identical 900-item visible corpora, one +1,200 rejected rows, scan
+path, interleaved A/B, 42 solo probes each — solo median 56.50 ms vs
+56.59 ms (1.00×), refusals per 24-caller storm 13/15/16 vs 16/13/12.
+Mechanism pinned by
+`test_the_substring_scan_reads_items_through_idx_items_status`.
 
 **What the cap bounds, and what it does not.** It bounds concurrent occupancy
 of the retrieval answer path alone — all three members enter through
@@ -984,24 +1004,39 @@ bounded indexed reads, not the unbounded retrieval work this gate exists for —
 but not isolated from the gate: `anyio`'s own default thread limiter (40
 tokens, `anyio` 4.14.2, measured 2026-08-30) is sized independently of
 `MAX_CONCURRENT_SEARCHES` but SHARED with it, and a caller parked in the
-admission wait holds one of those 40 tokens for as long as it waits. With the
-pool saturated, `knowledge.get`, `knowledge.status` and `project.list` queue
-behind the parked searches for up to `ADMISSION_WAIT_SECONDS` (measured
-~0.72 s under the same flood that motivates this cap, against ~1.3 s for the
-same flood with no gate at all — the cap improves this, and the improvement
-is recorded rather than assumed). `/health` is exempt: it is served on the
+admission wait holds one of those tokens for as long as it waits.
+
+A parked waiter holds one pool token for at most `ADMISSION_WAIT_SECONDS`,
+but the queue behind it is not bounded by that constant: a freed token goes
+to the next queued sync call, so another tool waits one token-handoff wave
+per ⌈pending sync calls / (pool tokens − `MAX_CONCURRENT_SEARCHES`)⌉ — linear
+in the number of concurrent callers, with no recorded limit. The 40-token
+pool is the only ceiling on how many calls queue at once. Measured
+(in-process, branch b8d2030, 2026-08-31, real searches, all three tools
+probed at the same instant): `knowledge.get` 0.62 s at 36 concurrent
+searches, 1.64 s at 72 (the first flood depth over the old claimed bound),
+2.69 s at 120, 7.71 s at 300 — and at 300,
+`knowledge.get`/`knowledge.status`/`project.list` all ~7.75 s while
+`/health` answered in 0.004 s (the exemption is the half that holds). The
+step function fits delay ≈ (K − 36)/36 × `ADMISSION_WAIT_SECONDS` to within
+0.05 s. Against a measured worst of 84.3 s at a 120-call flood with no gate:
+the cap improves every measured point and bounds none of them at
+`ADMISSION_WAIT_SECONDS`. `/health` alone is unaffected: it is served on the
 asyncio loop directly and never takes a thread from that pool.
 
 **Accepted design decision: the denial is per-daemon, not per-project.** Four
 concurrent searches on any *one* project refuse `knowledge.search` for every
-project this daemon serves, for as long as they are in flight — measured:
-alpha's four holders refuse a beta caller after 1.003 s, and four ordinary
-no-match searches on a 2,000-document project held all four permits for
-1.79–2.64 s. Accepted because the alternative is unbounded occupancy: the
-same flood at base, with no admission gate at all, delayed `knowledge.get` to
-a measured worst of 84.3 s, against a measured worst of 3.0 s under the cap.
-There is no operator config key for `MAX_CONCURRENT_SEARCHES` in this slice,
-so a deployment cannot raise it, or exempt one project from another's load.
+project this daemon serves, for as long as they are in flight — measured
+(round-1, 2026-08-30, in-process, against b8d2030's ancestors): alpha's four
+holders refuse a beta caller after 1.003 s (alpha/beta two-project
+registry), and four ordinary no-match searches on a 2,000-document project
+held all four permits for 1.79–2.64 s. Accepted because the alternative is
+unbounded occupancy: the same 120-call real-search flood at base, with no
+admission gate at all, delayed `knowledge.get` to a measured worst of
+84.3 s, against a measured worst of 3.0 s under the cap (round-1,
+2026-08-30, in-process). There is no operator config key for
+`MAX_CONCURRENT_SEARCHES` in this slice, so a deployment cannot raise it, or
+exempt one project from another's load.
 
 Pinned by 8 tests in `tests/integration/test_search_concurrency_cap.py`,
 among them: `test_the_cap_refuses_the_excess_caller` (a caller past the cap is
