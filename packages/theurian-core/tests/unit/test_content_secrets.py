@@ -414,16 +414,25 @@ def test_the_detector_ignores_a_string_a_knowledge_document_really_contains(cand
 
 
 # A standing sweep of this repository's own knowledge bodies is deliberately
-# *not* here, and the reason is a hazard rather than a preference. The dogfood
-# project's working tree holds 82 bodies -- the 26 tracked ones and 56
-# machine-local operator notes fenced in `.git/info/exclude` -- so a walker over
-# `.theurian/knowledge/` scans a different population on a maintainer's machine
-# than it does in CI, and a private note is exactly where a real credential would
-# be pasted. That is a red nobody else can reproduce. The measurement it would
-# hold is recorded instead: zero findings across all 26 tracked bodies, all of
-# `docs/`, and `examples/`, on 2026-08-24 -- and `docs/` was *not* zero before the
-# ULID subtraction, which is why the two shapes that tripped it are pinned in
-# NEGATIVES above rather than left to a walk.
+# *not* here, and the reason is a hazard rather than a preference. This
+# repository tracks 27 `.theurian/knowledge/` bodies (measured 2026-08-31,
+# `git ls-files -- .theurian/knowledge/`), and a maintainer's dogfooding
+# machine holds machine-local operator notes beyond those, fenced in
+# `.git/info/exclude` -- the same pattern `tools/corpus_drift.py` records for
+# `.theurian/migrations/` on that machine (its own dated note: 82 files on
+# disk, 26 tracked, the other 56 local-only, measured 2026-08-22). The
+# machine-local half is not re-measured here: this checkout carries none of
+# it (checked 2026-08-31 -- 27 tracked bodies under `.theurian/knowledge/`,
+# zero untracked), and it cannot be, because the notes live in one
+# developer's exclude file and a fresh clone never sees them. So a walker
+# over `.theurian/knowledge/` would scan a different population on that
+# machine than it does in CI, and a private note is exactly where a real
+# credential would be pasted -- a red nobody else can reproduce. The
+# measurement it would hold is recorded instead: zero findings across all 26
+# tracked bodies (as the corpus stood then), all of `docs/`, and `examples/`,
+# on 2026-08-24 -- and `docs/` was *not* zero before the ULID subtraction,
+# which is why the two shapes that tripped it are pinned in NEGATIVES above
+# rather than left to a walk.
 
 
 def test_a_finding_never_carries_more_than_the_published_prefix() -> None:

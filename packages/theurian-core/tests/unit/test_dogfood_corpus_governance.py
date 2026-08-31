@@ -87,12 +87,20 @@ them -- the floor and the index-mode rule -- were the only ones that read a
 count. Two guards for eleven, not one for twelve.
 
 **And the refusal does not reach every rule, which is stated rather than
-rounded up.** Run against a tree that cannot be asked what it tracks, 21 of the
-24 rules here skip and 3 pass: the two managed-``.gitignore`` rules read
-``.gitignore`` and not the corpus, and
+rounded up.** Run against a tree that cannot be asked what it tracks, 23 of the
+28 rules here skip and 5 pass (measured 2026-08-31 at c220733, in a ``.git``-
+and ``.mutate-population``-less copy): the two managed-``.gitignore`` rules
+read ``.gitignore`` and not the corpus,
 :func:`test_the_known_families_are_exactly_what_family_can_return` reads this
-module's own source. Those three assert something real about a tree with no
-corpus in it; the other 21 would not, which is why they refuse instead.
+module's own source, and two rules added since the count above was first
+written -- :func:`test_the_evidence_key_rule_admits_the_optional_key_and_nothing_else`
+and :func:`test_the_fold_key_orders_by_the_migration_document_id_not_the_file_name`
+-- are driven entirely by literal input and never touch the population either.
+Those five assert something real about a tree with no corpus in it; the other
+23 would not, which is why they refuse instead. This paragraph moves whenever a
+rule is added that does or does not read the population, independently of
+whether the corpus itself grows -- a different trigger from the floor and the
+tracked-path count below, both of which move only when the corpus does.
 
 **A floor, recorded as a lower bound rather than an exact count.**
 :data:`MINIMUM_MIGRATIONS` is checked against
@@ -1543,7 +1551,8 @@ def test_the_committed_corpus_holds_one_evidence_file_per_migration() -> None:
     2026-08-31, the two never disagree across this corpus), only **1** of the
     26 pairs crosses a millisecond boundary; ``proposalId + 1 ==
     migration.id`` holds for **25** of the 26, not 24, and fails on exactly
-    the pair that crosses. Not a relation this can assert regardless: even one
+    the pair that crosses (both figures measured 2026-08-31, at b7bb4cd). Not
+    a relation this can assert regardless: even one
     failing pair means it is not universal, and it is not the seed's only
     boundary crossing that will ever exist -- the next correctly-seeded item
     can cross one too. Counts and uniqueness are what the data actually
