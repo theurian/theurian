@@ -2648,11 +2648,15 @@ What survived the correction is the narrower fact about the setup probe, and it
 is stated on both keys for the same reason. **The pathspec is part of each key,
 not decoration from the column header**, and the reason is sharper than
 tidiness: unscoped, these two commands count every prose mention of the step id
-anywhere in the repository — this entry, the work log, the CHANGELOG, the source
-and the pin module all name it — so the unscoped pair read 8 and 9 partway
-through #470 and 9 and 10 by its tip, while the scoped pair did not move at all.
-Only the scoped form is a population, and the pin module's self-exclusion rests
-on it:
+anywhere in the repository — this entry, two work logs, the CHANGELOG, two
+further documents, the release workflow and the source name it alongside the two
+modules the scoped key returns, and the pin module does **not**, because it
+carries the constant only as `StepId.ARTIFACT_INTEGRITY` and both keys are
+case-sensitive, which is its self-exclusion working rather than an omission. So
+the unscoped pair moved twice inside #470 — 7 and 8 at `5a9a1e5`, 8 and 9 once
+the work log landed, 9 and 10 at the tip — while the scoped pair did not move at
+all. Only the scoped form is a population, and the pin module's self-exclusion
+rests on it:
 
 | Key | Modules | At |
 | :-- | --: | :-- |
