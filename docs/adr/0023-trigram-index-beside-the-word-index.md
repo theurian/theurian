@@ -394,8 +394,15 @@ and it is off by default for that reason.
 > the same class and it ends the same way: the purge
 > [#15](https://github.com/theurian/theurian/issues/15) shipped leaves no
 > withheld row in the published index for `_visible_ranking` to spend a canonical
-> read on. This said "still ends with #15" until 2026-09-01, while #15 had closed
-> on 2026-08-10.
+> read on.
+>
+> > **Tensed on 2026-09-01
+> > ([#464](https://github.com/theurian/theurian/issues/464)): the purge has
+> > shipped.** This sentence said the residual "still ends with
+> > [#15](https://github.com/theurian/theurian/issues/15)", written while that
+> > was future work. #15 closed on 2026-08-10 (`66a43ae`), so what ends the
+> > residual is the purged build `theurian migrate apply` already publishes, not
+> > owed work.
 >
 > **Corrected in Milestone 5, review round 8. The cost paragraph above — "it was
 > never compared against the alternative that actually runs today,
