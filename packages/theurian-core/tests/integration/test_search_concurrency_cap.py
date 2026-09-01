@@ -493,7 +493,11 @@ def test_the_cap_pins_its_recorded_constants(registry: ProjectRegistry) -> None:
         "would pass this test against the wrong object"
     )
     index = fn.__code__.co_freevars.index("search_admission")
-    semaphore = fn.__closure__[index].cell_contents  # type: ignore[index]
+    # No `type: ignore` here: `inspect.unwrap` returns `Any`, so mypy no longer
+    # narrows `__closure__` to `tuple[...] | None` and the subscript needs no
+    # suppression. It was flagged as an unused ignore the moment the traversal
+    # changed -- the gate catches this, a scoped run does not.
+    semaphore = fn.__closure__[index].cell_contents
     assert isinstance(semaphore, threading.BoundedSemaphore), (
         "an unbounded threading.Semaphore here would let a bug that "
         "over-releases inflate the cap silently instead of raising -- see "
