@@ -1,0 +1,38 @@
+apiVersion: theurian.dev/v1
+id: 01M1EVG1910GYMEYHR40WGB80K
+createdAt: '2026-09-01T16:05:36+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0017 twin from the current source ADR: the corpus pins docs/adr/0017-sqlite-schema-versioning.md
+  as it stood at 2a98d4c, and the tracked document has moved since (#315).'
+operations:
+- op: createItem
+  itemId: architecture.sqlite-schema-versioning
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.sqlite-schema-versioning
+  revisionId: 01M1EVG1910GYMEYHR40WGB80M
+  expectedRevision: 01M0D5H1F7VZNW2J829749Q1ZP
+  contentFile: ../knowledge/architecture/sqlite-schema-versioning.01M1EVG1910GYMEYHR40WGB80M.md
+  contentSha256: 7304205198e92efbba98fd75b1d508e03ade593290e8a96cfcd220d67d5f188c
+  metadata:
+    title: 'ADR-0017: SQLite schema version participates in the state hash'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0017
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 266e6b668a5e0723ee63accf23f3ae70b501e193
+      filePath: docs/adr/0017-sqlite-schema-versioning.md
