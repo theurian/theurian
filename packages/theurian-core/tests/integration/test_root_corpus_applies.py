@@ -52,7 +52,7 @@ id again without this test's other assertions changing at all.
 **The same class recurs, and every re-seed pays the same toll.** #199 unit C's
 second wave (#471) re-seeded three more items the same way #416 re-seeded
 ADR-0013 -- ``propose``/``accept`` through the real write path -- and #315's
-drift sweep re-seeded nine more. The #440 round's ADV-RC MEDIUM-1 lesson
+drift sweep re-seeded eleven more. The #440 round's ADV-RC MEDIUM-1 lesson
 generalises to every one of them: reverting any single re-seed commit's
 payload (the body and its ``contentSha256``, not its ``expectedRevision``
 pin) would leave this whole suite green at the same test count, because every
@@ -205,9 +205,19 @@ class _PayloadMarker:
 #: shipped" trap the ADR-0013 check above works around by checking two
 #: substrings rather than one contiguous phrase). An issue reference is one
 #: instance of that property rather than the only one, which matters because
-#: five of #315's nine items carry no ``#NNN`` whose count is unique to their
+#: five of #315's items carry no ``#NNN`` whose count is unique to their
 #: current text; those are keyed on a backticked identifier or a measured
 #: figure the same correction introduced.
+#:
+#: **Two drifted twins deliberately absent.**
+#: ``architecture.index-lives-in-its-own-database`` (ADR-0022) drifted at
+#: ``f706329`` and is *not* re-seeded here, and
+#: ``architecture.a-purge-is-a-build`` (ADR-0024) is not re-seeded either:
+#: each of their source documents is due a further correction, and a single
+#: revision should carry both rather than this branch spending one revision on
+#: the first half. That is the anchor rule -- one revision per item per round
+#: of source fixes -- not an oversight, and until those land
+#: ``tools/corpus_drift.py`` reports ADR-0022 as drifted on purpose.
 #:
 #: **No clean negative twin for any of the three.** A ``not in`` pin needs a
 #: token present in the superseded body and absent from current *and* from
@@ -259,6 +269,8 @@ class _PayloadMarker:
 #:   prior {0} (current ``90e0253``).
 #: - ``raptor-forest`` / ``#464``: 1 over 14 points, prior {0} (current
 #:   ``f706329``).
+#: - ``trigram-index-beside-the-word-index`` / ``#464``: 2 over 3 points,
+#:   prior {0} (current ``f706329``).
 #: - ``a-purge-is-a-build`` / ``#426``: 1 over 11 points, prior {0} (current
 #:   ``3749581``).
 #:
@@ -289,6 +301,7 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#468", 5),
     _PayloadMarker(ItemId("architecture.rank-fusion-over-score-normalisation"), "T-17a's", 1),
     _PayloadMarker(ItemId("architecture.raptor-forest"), "#464", 1),
+    _PayloadMarker(ItemId("architecture.trigram-index-beside-the-word-index"), "#464", 2),
     _PayloadMarker(ItemId("architecture.a-purge-is-a-build"), "#426", 1),
 )
 
