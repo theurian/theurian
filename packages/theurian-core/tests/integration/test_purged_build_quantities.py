@@ -42,6 +42,28 @@ shape is fully formed at 0/50/200, and this file stops there so it costs seconds
 rather than minutes. Where a shape depends on a specific boundary -- the
 `FIRST_PASS_DEPTH` edge -- the counts straddle it and a premise asserts that they
 still do.
+
+**The RED paths, run rather than argued** (2026-09-02, `tools/mutate.py
+--prepare-tree`, one isolated copy per mutation, nothing applied to a live
+checkout). Both halves of every test were taken RED, because a claim and its
+control fail for different reasons and only one of them was ever in doubt:
+
+- **The purge reports its own count and keeps the rows** -- `DELETE FROM chunks
+  ... AND 0`, with `_verify`'s post-conditions emptied so the build is still
+  handed back. All three **claims** RED: reads 10 / 60 / 210 against 10 / 10 /
+  10, two passes and 200 reads at 51 withheld against one and 100, peaks 86.0 /
+  160.3 / 363.3 KB against a single value.
+- **The scan below the trigram floor gains a `LIMIT 50`.** The **controls** of
+  the read-count and the peak-memory tests RED: the stale ranking stops growing
+  at 50, and the stale peaks go flat at 86.1 / 85.6 / 85.6 KB.
+- **`FIRST_PASS_DEPTH = CANDIDATE_DEPTH * 2` becomes `CANDIDATE_DEPTH + 1`.** The
+  **control** of the pass-count test RED: the edge leaves 50 and the stale build
+  steps at every level.
+
+The first is the regression these pins exist for and the shape the review rounds
+kept meeting: a purge that *says* it removed the rows. The second and third are
+what say the controls are not decoration -- each takes a control RED while the
+purged column stays green, so neither assertion is holding the other up.
 """
 
 from __future__ import annotations
@@ -518,7 +540,10 @@ def test_a_purged_build_reads_canonical_once_per_visible_row_however_many_were_w
     withheld rows, over a `fetch` that was never called, or over a purge that
     removed nothing: each of those makes stale and purged agree, and the two
     assertions demand that they differ everywhere the withheld count is non-zero.
-    Demonstrated by mutation -- see the module-level record in the PR.
+    Both halves were taken RED by mutation, and the module docstring's table says
+    which mutation took which: a purge that keeps the rows while reporting its own
+    count fails the claim at 10/60/210 reads, and a `LIMIT` on the scan below the
+    trigram floor fails the control.
     """
     stale = {
         withheld: _measure(corpus, corpus.stale, query=SCAN_QUERY, lexical=False)
@@ -578,6 +603,10 @@ def test_a_purged_build_stays_at_one_retriever_pass_across_the_first_pass_depth_
     put the withheld rows at the *top* of the ranking -- if the tie-break were not
     deterministic, or the bodies not equal-weight, the step would land somewhere
     else or not at all, and this test would fail before reaching the purged claim.
+    Both halves were taken RED by mutation (the module docstring's table): a purge
+    that keeps the rows while reporting its own count puts the purged build at two
+    passes and 200 reads at 51 withheld, and shrinking `FIRST_PASS_DEPTH`'s
+    headroom to a single row moves the edge off the control's expectation.
     """
     assert min(EDGE_LEVELS) <= CANDIDATE_DEPTH < max(EDGE_LEVELS), (
         f"the withheld counts {EDGE_LEVELS} no longer straddle CANDIDATE_DEPTH "
@@ -659,7 +688,10 @@ def test_a_purged_builds_peak_memory_stops_moving_with_the_withheld_count(
     **RED path.** The stale control is asserted first and must strictly increase.
     A harness that measured nothing -- a `fetch` never called, a corpus with no
     withheld rows, a peak read outside the traced window -- makes the stale peaks
-    equal and fails there.
+    equal and fails there. Both halves were taken RED by mutation (the module
+    docstring's table): a purge that keeps the rows while reporting its own count
+    puts the purged peaks at 86.0 / 160.3 / 363.3 KB, and a `LIMIT` on the scan
+    below the trigram floor flattens the control at 86.1 / 85.6 / 85.6 KB.
     """
     stale = {
         withheld: _peak_bytes(corpus, corpus.stale, query=SCAN_QUERY)
