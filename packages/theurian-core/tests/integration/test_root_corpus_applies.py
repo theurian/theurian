@@ -250,17 +250,20 @@ class _PayloadMarker:
 #: only because that document is likewise due a correction; there is nothing to
 #: re-seed yet. Calling both "drifted" is the error this paragraph replaces.
 #:
-#: **No clean negative twin for any of the three.** A ``not in`` pin needs a
-#: token present in the superseded body and absent from current *and* from
-#: every intermediate -- and this corpus's ADR-amendment convention quotes
-#: the retracted claim verbatim inside its own correction note, so the
-#: retracted wording reappears in the corrected text and fails to
-#: discriminate. Measured: "on the state database" (0018's retracted lock
-#: claim) appears 0 times in the superseded body and 1 time in the current
-#: one, quoted as part of the correction; "an operator cannot yet move it"
-#: (0008's retracted config claim) appears once in both; "reads either back
-#: today" (0024's retracted claim) appears once in both. No twin added for
-#: any of the three; each item is pinned by its correction marker alone.
+#: **No clean negative twin for any entry, and the reason generalises.** A
+#: ``not in`` pin needs a token present in the superseded body and absent from
+#: current *and* from every intermediate -- and this corpus's ADR-amendment
+#: convention quotes the retracted claim verbatim inside its own correction
+#: note, so the retracted wording reappears in the corrected text and stops
+#: discriminating. That convention applies to every ADR here, which is why no
+#: entry carries a negative twin rather than only the three it was first
+#: measured on. Those three, measured when the mechanism was #471's: "on the
+#: state database" (0018's retracted lock claim) appears 0 times in the
+#: superseded body and 1 time in the current one, quoted as part of the
+#: correction; "an operator cannot yet move it" (0008's retracted config
+#: claim) appears once in both; "reads either back today" (0024's retracted
+#: claim) appears once in both. Every entry is pinned by its correction marker
+#: alone, and the boundary rule below is what a negative twin was reaching for.
 #:
 #: **Instrument, named on both sides.** ``str.count`` -- *occurrences* --
 #: because that is what :func:`test_the_committed_root_corpus_applies_cleanly_to_an_empty_store`
