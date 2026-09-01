@@ -38,7 +38,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from typer.testing import CliRunner
@@ -352,6 +352,77 @@ def test_a_symlinked_store_leaf_escaping_the_tree_is_refused_and_writes_nothing_
     )
     assert "outside" in payload["error"], payload["error"]
     assert list(outside.iterdir()) == [], "the escape wrote something outside the project tree"
+
+
+#: How a child process starts this CLI. Not the ``theurian`` console script: it is
+#: on ``PATH`` only when the suite runs through ``uv run``, and a test that
+#: silently skips on a bare-venv invocation is a test that stops guarding.
+_CLI_ENTRY: Final = "from theurian.cli.main import app; app()"
+
+#: Concurrency for the race below: rounds x workers. The pre-#404 shape failed
+#: 12 of 48 workers over 12x4 (measured 2026-09-02, this harness's scratch twin),
+#: so 3x3 detects it with high probability while costing ~3 seconds. It is not the
+#: deterministic pin -- ``test_findings_store.py``'s poller and residue tests are --
+#: it is the one check that runs real OS processes against a real advisory lock,
+#: which no in-process test can do: ``flock`` is per open file description, so a
+#: second acquisition inside one process contends with itself.
+_RACE_ROUNDS: Final = 3
+_RACE_WORKERS: Final = 3
+
+
+def test_concurrent_builds_all_succeed_and_leave_one_complete_store(project: Path) -> None:
+    """AC-404-1: real concurrent rebuilds serialise; none crashes, and the store is whole.
+
+    Before #404 the rebuild took no lock and wrote in place under the published
+    name, so concurrent invocations tore each other's file: measured on PR #396,
+    workers reported ``FindingsStoreError`` in 17-21 of 25 rounds and one iteration
+    left a file with **no tables at all** under the publish name. Re-measured here
+    on the pre-fix shape, 12 of 48 workers failed with ``disk I/O error`` or
+    ``table findings_metadata already exists``; on the fixed shape, 48 of 48
+    succeeded.
+
+    Every worker must reach a *defined* outcome -- a successful build, or a refusal
+    that carries a remedy -- and the survivor must be complete and stamp-current,
+    with no working file stranded beside it.
+    """
+    for index in range(6):
+        _commit(
+            project,
+            f"fix: change {index} (#{index})",
+            f"Review-Finding: security HIGH — finding {index}",
+            f"Review-Finding: bogus-x LOW — a rejected line {index}",
+        )
+    _publish(project)
+
+    child_env = {**os.environ, "THEURIAN_DATA_DIR": os.environ["THEURIAN_DATA_DIR"]}
+    for _round in range(_RACE_ROUNDS):
+        workers = [
+            subprocess.Popen(  # noqa: S603
+                [sys.executable, "-c", _CLI_ENTRY, "findings", "build", "--json"],
+                cwd=project,
+                env=child_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for _ in range(_RACE_WORKERS)
+        ]
+        for worker in workers:
+            out, err = worker.communicate(timeout=120)
+            payload = json.loads(out or err or "{}")
+            assert worker.returncode == 0, (
+                f"a concurrent `findings build` failed rather than serialising: {payload}"
+            )
+            assert payload["built"] is True
+            assert payload["findings"] == 6
+            assert payload["rejected"] == 6
+
+    store = SqliteReviewFindingStore(ProjectPaths.of(project).findings_for("local"))
+    dump = store.dump()
+    assert len(dump.findings) == 6
+    assert len(dump.rejected) == 6
+    assert store.is_current()
+    assert not store.building_path.exists(), "a working file was stranded beside the published one"
 
 
 def test_dump_raises_on_a_half_built_store_instead_of_reading_it_empty(tmp_path: Path) -> None:

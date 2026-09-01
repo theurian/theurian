@@ -26,6 +26,7 @@ import typer
 from theurian.application.findings_builder import FindingsBuilder, FindingsBuildRequest
 from theurian.domain.errors import TheurianError
 from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
+from theurian.infrastructure.sqlite.connection import WriteLock
 from theurian.infrastructure.sqlite.findings_store import SqliteReviewFindingStore
 
 findings_app = typer.Typer(help="Rebuild the review-finding store.", no_args_is_help=True)
@@ -50,30 +51,46 @@ def findings_build(as_json: JsonOption = False) -> None:
     deleting it costs a rebuild, not data (ADR-0004). A fresh clone that has not
     fetched the public ref yet is refused with a fetch remedy rather than an empty
     store.
+
+    **The rebuild is a write, so it takes the project's writer lock** (#404,
+    ADR-0018). Two concurrent rebuilds serialise instead of assembling at one
+    working name, and a rebuild racing ``migrate apply`` waits for it. A holder
+    that keeps the lock past the timeout is a ``WriteLockTimeoutError`` -- a
+    ``TheurianError`` with its own remedy, handled below like any other refusal,
+    never a raw traceback.
     """
     from theurian.cli.commands import _emit, _fail, _require_project  # noqa: PLC0415 - cycle
 
     context, _ = _require_project(as_json)
     paths = context.paths
-    builder = FindingsBuilder(
-        # The project root is the git working tree the trailers are read from.
-        source=GitTrailerFindingSource(paths.root),
-        store_factory=SqliteReviewFindingStore,
-    )
     try:
-        # `findings_for` is inside the try too: it resolves the store path through
+        # The whole composition is inside the try, not only the build. Both
+        # `findings_for` and `write_lock` resolve through
         # `ProjectPaths._contained`, which can itself raise a `ProjectError` (a
-        # `TheurianError`) -- an earlier cut left it outside, so that escape
-        # bypassed this handler just like the write-path escape below.
+        # `TheurianError`) -- an earlier cut left `findings_for` outside, so that
+        # escape bypassed this handler just like the write-path escape below, and
+        # a `write_lock` composed outside would have re-opened it at a new path.
         request = FindingsBuildRequest(store_path=paths.findings_for(_FINDINGS_STORE_ID))
+        builder = FindingsBuilder(
+            # The project root is the git working tree the trailers are read from.
+            source=GitTrailerFindingSource(paths.root),
+            store_factory=SqliteReviewFindingStore,
+            # The project's one writer lock (ADR-0018), passed as the factory the
+            # builder enters once around the store write -- `WriteLock(...).held`
+            # is bound, not called, because a hold is single-use. Named here and
+            # only here: this is the composition root, and `application/` may not
+            # reach for a concrete adapter (ADR-0003).
+            write_section=WriteLock(paths.write_lock).held,
+        )
         report = builder.build(request)
     except TheurianError as exc:
         # Each failure carries its own remedy: a path that cannot be contained
         # names the escape, unreachable git history (a fresh clone) names the
-        # fetch, and a store write failure names the precondition to fix FIRST --
-        # writable state, free disk space -- with a retry of this same command
-        # only as the trailing clause, never offered as the cure on its own (see
-        # `FindingsStoreError`'s write/read remedy split).
+        # fetch, a lock timeout names the other writer, and a store write failure
+        # names the precondition to fix FIRST -- writable state, free disk space --
+        # with a retry of this same command only as the trailing clause, never
+        # offered as the cure on its own (see `FindingsStoreError`'s write/read
+        # remedy split).
         _fail(str(exc), remedy=exc.remedy or "Run `theurian doctor`.", as_json=as_json, code=1)
         return
     _emit({**report, "built": True}, as_json=as_json)

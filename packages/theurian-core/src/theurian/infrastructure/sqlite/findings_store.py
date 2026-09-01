@@ -8,8 +8,10 @@ writes go through :func:`contextlib.closing` with an explicit commit, and reads
 open a ``mode=ro`` connection that will not conjure a missing file.
 
 **One write, and it is a wholesale projection of git history.** :meth:`replace_all`
-is the only mutation. It rebuilds the file from empty every time -- deleting any
-prior file first -- so the schema is always current after a rebuild (a stale
+is the only mutation. It rebuilds the file from empty every time -- assembling
+under a ``.building`` sibling and publishing by ``os.replace``, so the live name
+only ever holds a whole store (#404) -- so the schema is always current after a
+rebuild (a stale
 :data:`~theurian.infrastructure.sqlite.findings_schema.FINDINGS_SCHEMA_VERSION`
 cannot survive one), the rows are exactly the load's, and two rebuilds over one
 load leave a logically identical store (AC-2). Its sole *shipped* caller feeds it
@@ -27,9 +29,10 @@ is a later slice with its own disclosure round.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Iterator
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, final
@@ -96,6 +99,29 @@ class FindingsStoreError(TheurianError):
     def __init__(self, detail: str, *, remedy: str = _REBUILD_REMEDY) -> None:
         self.remedy = remedy
         super().__init__(f"The review-finding store could not be used ({detail}).")
+
+
+#: The working-name suffix a rebuild assembles under before publishing (#404).
+#: Matches the one ``index build`` and the purge use, so a reader of either file's
+#: directory sees one convention for "a writer has not finished with this".
+_BUILDING_SUFFIX: Final = ".building"
+
+#: SQLite's two companion files. A database is these three names, so anything that
+#: removes one removes all three or leaves a write-ahead log paired with a database
+#: that never wrote it (``cli/commands.py``, ``sqlite/index_purge.py``).
+_SIDECAR_SUFFIXES: Final = ("-wal", "-shm")
+
+
+def _unlink_sidecars(path: Path) -> None:
+    """Remove ``path``'s ``-wal``/``-shm`` companions, leaving ``path`` itself."""
+    for suffix in _SIDECAR_SUFFIXES:
+        path.with_name(path.name + suffix).unlink(missing_ok=True)
+
+
+def _unlink_with_sidecars(path: Path) -> None:
+    """Remove a database and both its companions, so nothing of it survives."""
+    path.unlink(missing_ok=True)
+    _unlink_sidecars(path)
 
 
 def committed_at_text(moment: datetime) -> str:
@@ -195,53 +221,85 @@ class SqliteReviewFindingStore:
     def path(self) -> Path:
         return self._path
 
+    @property
+    def building_path(self) -> Path:
+        """Where :meth:`replace_all` assembles the next store before publishing it.
+
+        A sibling of the published path, named by suffix, so it is contained by
+        whatever contained that path: ``ProjectPaths.findings_for`` proves the
+        publish name sits inside the project, and a name derived from it by
+        appending cannot leave the directory the way a separately-composed working
+        path could (#237, SEC-7). Exposed so a test can assert what a failed build
+        left behind, not because any caller needs to name it.
+        """
+        return self._path.with_name(self._path.name + _BUILDING_SUFFIX)
+
     def replace_all(self, load: FindingLoad) -> None:
         """Rebuild the store to hold exactly ``load``, wholesale and idempotently.
 
-        The file is recreated from empty each call -- any prior file is unlinked
-        first -- so the schema is always current afterwards and the row set is
-        exactly the load's. The findings, the rejected trailers and the stamp are
-        written in one transaction: a crash before it commits leaves no stamp row
-        rather than publishing a half-written store as valid. That absent row would
-        read as "not current" through :meth:`is_current` -- though no shipped path
-        checks it today (see that method's own docstring) -- and in any case the
-        next call to this method overwrites the file wholesale regardless of what
-        it finds, unconditional rebuild being how this slice's one writer already
-        behaves.
+        The file is built from empty each call and published by rename, so the
+        schema is always current afterwards and the row set is exactly the load's.
+        The findings, the rejected trailers and the stamp are written in one
+        transaction: a crash before it commits leaves no stamp row rather than
+        publishing a half-written store as valid.
 
-        The whole operation, including directory creation and the unlink, runs
+        **Published by rename, never written under the live name** (#404). The
+        build assembles at :attr:`building_path` and ``os.replace`` moves it onto
+        the publish name once it is whole -- the discipline ``index build`` and the
+        purge already record with their reasoning ("a file under the completed name
+        is complete by construction", ``cli/index_commands.py``). The shape this
+        replaced unlinked the live path first and wrote the replacement in place,
+        so a concurrent reader could observe a missing file, or a file carrying the
+        new schema and not yet its rows, and an interrupted rebuild destroyed the
+        previously good store outright (measured on PR #396: 4 processes x 25
+        rounds left one file with no tables at all under the publish name). Now the
+        publish name only ever holds a whole store: the previous one until the
+        rename, the new one after it.
+
+        **The rename makes an old ``-wal``/``-shm`` beside the publish name
+        dangerous, so they are removed with it.** The in-place shape could argue
+        that ``sqlite3.connect`` reconciles whatever a killed prior connection
+        left; a rename cannot, because the file arriving under the name is a
+        *different database* and a stale write-ahead log beside it belongs to the
+        one just displaced. Our own writes never leave any -- the last connection
+        closing checkpoints and unlinks both (measured) -- so this only reaps a
+        killed process's residue, and it runs after the rename, where an open
+        reader's descriptors are unaffected by a name going away.
+
+        **``os.replace`` is atomic only within a filesystem**, which is why the
+        working name is a sibling rather than a temporary directory: both paths sit
+        in ``.theurian/state/`` by construction, so the rename cannot degrade into
+        a copy across a device boundary.
+
+        The whole operation, including directory creation and the rename, runs
         inside one ``try``: an earlier cut left ``mkdir``/``unlink`` outside it,
         catching only ``sqlite3.Error``, so a ``PermissionError`` on either escaped
         as a raw traceback past every ``TheurianError`` handler above this adapter
         (the same shape ``project_service.index_for`` converts ``(ValueError,
-        OSError)`` for). Both ``OSError`` and ``sqlite3.Error`` convert here.
+        OSError)`` for). Both ``OSError`` and ``sqlite3.Error`` convert here, and a
+        failure takes the half-built sibling with it, so a failed rebuild leaves
+        neither a partial file at the publish name nor a stale one beside it.
 
-        **Not yet atomic across a reader.** ``index build`` writes under a
-        ``.building`` working name and calls ``os.replace`` into the completed
-        name only once the build is whole (``cli/index_commands.py``), so a
-        concurrent reader never observes a partially written index file. This
-        method instead
-        unlinks the live path and writes the replacement in place, so a reader
-        that opens the file mid-``replace_all`` can observe a missing file or a
-        file with the new schema but not yet all its rows. Deliberately not fixed
-        here -- this slice ships no reader that races a build (AC-7: nothing
-        serves from this store yet) -- and adopting the same working-name
-        discipline is tracked as its own follow-up issue rather than folded in.
+        **Serialisation is the caller's, and it is needed.** Two processes
+        assembling at the same working name would corrupt each other, so
+        ``findings build`` holds ``ProjectPaths.write_lock`` across this whole call
+        (``application/findings_builder.py``). This adapter does not take the lock
+        itself: it is handed a path, not a project, and a lock acquired here could
+        not extend to the caller's own critical section -- the mistake #468 records,
+        where two separate holds left a window worse than the race they closed.
         """
         finding_rows = _finding_rows(load.accepted)
         rejected_rows = _rejected_rows(load.rejected)
         stamped_at = datetime.now(UTC).isoformat()
+        building = self.building_path
 
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            # Wholesale: unlink the main file first, so no earlier schema or row in
-            # it can survive. This does not remove a `-wal`/`-shm` sibling left by a
-            # killed prior connection -- `sqlite3.connect` below recreates and
-            # reconciles those itself, so no row from them resurfaces (measured);
-            # the invariant is "no earlier schema or row reachable from this
-            # connection", not "no earlier bytes anywhere on disk".
-            self._path.unlink(missing_ok=True)
-            with closing(sqlite3.connect(self._path)) as connection:
+            # A previous run that died mid-build leaves this behind; sqlite would
+            # happily open and extend it, which would land its rows in the new
+            # store. Wholesale means from empty, so it goes first.
+            _unlink_with_sidecars(building)
+            with closing(sqlite3.connect(building)) as connection:
                 for pragma in CONNECTION_PRAGMAS:
                     connection.execute(pragma)
                 # `executescript` commits any pending transaction, so the DDL lands
@@ -253,7 +311,15 @@ class SqliteReviewFindingStore:
                     _INSERT_METADATA, (FINDINGS_SCHEMA_VERSION, PARSER_STAMP, stamped_at)
                 )
                 connection.commit()
+            # The atomic primitive. Everything above wrote to a name nothing reads.
+            os.replace(building, self._path)  # noqa: PTH105 - the atomic primitive
+            _unlink_sidecars(self._path)
         except (sqlite3.Error, OSError) as exc:
+            # Best-effort, and suppressed on purpose: a cleanup failure must not
+            # replace the real error with a less informative one (the shape
+            # `migrate apply`'s create-database backstop uses).
+            with suppress(OSError):
+                _unlink_with_sidecars(building)
             raise FindingsStoreError(
                 f"writing {self._path.name}: {exc}", remedy=_WRITE_REMEDY
             ) from exc

@@ -29,6 +29,7 @@ absent from this slice.
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import final
@@ -36,6 +37,13 @@ from typing import final
 from theurian.domain.ports.review_finding_source import ReviewFindingSource
 from theurian.domain.ports.review_finding_store import ReviewFindingStore
 from theurian.domain.review_finding import PARSER_STAMP
+
+#: A factory for the critical section :meth:`FindingsBuilder.build` publishes
+#: inside. A *factory*, not a context manager: an advisory lock's hold is
+#: single-use, so a builder reused across two builds must be able to take it
+#: twice. ``WriteLock(path).held`` in the CLI composition root is exactly one of
+#: these, named there and nowhere in this layer (ADR-0003).
+WriteSection = Callable[[], AbstractContextManager[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,9 +72,11 @@ class FindingsBuilder:
         *,
         source: ReviewFindingSource,
         store_factory: Callable[[Path], ReviewFindingStore],
+        write_section: WriteSection = nullcontext,
     ) -> None:
         self._source = source
         self._store_factory = store_factory
+        self._write_section = write_section
 
     def build(self, request: FindingsBuildRequest) -> dict[str, object]:
         """Read the source and land its findings in a fresh store at ``store_path``.
@@ -77,10 +87,37 @@ class FindingsBuilder:
         nothing lost or duplicated (AC-3). The load is exactly what the git source
         resolved, so a deleted store rebuilds identically and holds nothing git does
         not (AC-6).
+
+        **One continuous hold covers the whole critical section, and the git read
+        sits outside it** (#404, and #468's recorded lesson). The section this
+        serialises is exactly the store write: two rebuilds assembling at one
+        ``.building`` name would corrupt each other, and the ``os.replace`` that
+        publishes is inside the same hold as the assembly that fed it -- never two
+        sequential holds, which is the shape #468 measured leaving a window worse
+        than the race it closed. ``load_findings`` runs before the hold because it
+        reads *git*, touching nothing the lock protects, and it is a subprocess
+        with a 30-second bound; holding a project's single writer lock across it
+        would block ``migrate apply`` for the length of a git log, for no guarantee
+        (the same reason ``migrate apply`` builds its ``Project`` outside its own
+        hold).
+
+        That leaves one ordering the lock deliberately does not fix: two rebuilds
+        can read git at different instants, and the one that read *earlier* may
+        publish *later*, so the surviving store can be a snapshot one commit
+        behind. It is a whole, self-consistent, correctly stamped store either way
+        -- which is what the lock is for -- and the ref it projects is moving, so
+        no lock could make "the latest" mean anything here. The next rebuild
+        converges.
+
+        ``write_section`` defaults to :func:`contextlib.nullcontext`, so a test
+        driving a builder against a private temporary path gets the same behaviour
+        without inventing a lock file. The shipped composition root always passes
+        the project's real one.
         """
         load = self._source.load_findings()
         store = self._store_factory(request.store_path)
-        store.replace_all(load)
+        with self._write_section():
+            store.replace_all(load)
         return {
             "storePath": str(request.store_path),
             "findings": len(load.accepted),
@@ -89,4 +126,4 @@ class FindingsBuilder:
         }
 
 
-__all__ = ["FindingsBuildRequest", "FindingsBuilder"]
+__all__ = ["FindingsBuildRequest", "FindingsBuilder", "WriteSection"]

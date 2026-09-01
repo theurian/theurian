@@ -162,6 +162,19 @@ class ReviewFindingStore(Protocol):
         same load leave a logically identical store (AC-2), and a rebuild from git
         is a pure function of the source (AC-1/AC-6).
 
+        **Atomic against a concurrent reader, and that is a promise of this port,
+        not an implementation detail of one adapter** (#404). A caller reading the
+        store while this runs observes the whole previous content or the whole new
+        content -- never a missing store, never a partial one -- and a rebuild that
+        fails leaves the previous content intact rather than destroying it. An
+        implementation assembles elsewhere and publishes in one indivisible step;
+        one that wrote in place would satisfy every other clause here while giving
+        the serving slice a window in which the corpus reads as empty.
+
+        Serialising two *writers* is the caller's, though: this method is handed a
+        destination, not a project, so a shipped writer takes the project's write
+        lock across the call (``application/findings_builder.py``).
+
         ``load`` is expected to be one a git :class:`ReviewFindingSource` resolved --
         but that is a fact about the one shipped caller, not a guarantee this port
         enforces: neither the port nor its adapter verifies that a given

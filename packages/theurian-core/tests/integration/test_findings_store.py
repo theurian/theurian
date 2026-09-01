@@ -23,6 +23,8 @@ ADR-0029 D3).
 from __future__ import annotations
 
 import sqlite3
+import threading
+import time
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -46,7 +48,10 @@ from theurian.domain.review_finding import (
     parse_trailer_line,
 )
 from theurian.infrastructure.sqlite.findings_schema import FINDINGS_DDL, FINDINGS_SCHEMA_VERSION
-from theurian.infrastructure.sqlite.findings_store import SqliteReviewFindingStore
+from theurian.infrastructure.sqlite.findings_store import (
+    FindingsStoreError,
+    SqliteReviewFindingStore,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -342,6 +347,184 @@ def test_dump_orders_by_commit_then_position(tmp_path: Path) -> None:
     # The text rides with its key, so a mis-order would carry the wrong content too.
     assert [f.finding_text for f in dump.findings] == ["a0", "a1", "b0", "b1"]
     assert [r.commit_sha for r in dump.rejected] == [_sha("a"), _sha("b")]
+
+
+# --- #404: the publish name only ever holds a whole store -------------------
+
+
+def _bulk_load(marker: str, *, rows: int = 4000) -> FindingLoad:
+    """A load big enough that a rebuild takes long enough to be sampled mid-write.
+
+    Every finding carries ``marker`` in its text, so a reader can say *which*
+    rebuild it is looking at rather than merely that the store parses.
+    """
+    return FindingLoad(
+        accepted=tuple(
+            _finding(_sha(chr(ord("a") + index % 20)), text=f"{marker}-{index}")
+            for index in range(rows)
+        ),
+        rejected=(),
+    )
+
+
+def test_a_reader_polling_through_a_rebuild_sees_only_whole_stores(tmp_path: Path) -> None:
+    """#404: mid-rebuild, the publish name holds the old store or the new one, never neither.
+
+    The shape this replaced unlinked the live path and wrote the replacement under
+    it, so a reader that opened the file mid-``replace_all`` observed a missing
+    file -- ``dump`` answering empty, indistinguishable from a genuinely empty
+    corpus -- or a file whose schema had committed and whose rows had not, which
+    ``dump`` raises on. Building at a ``.building`` sibling and publishing by
+    ``os.replace`` removes the window: the name is never opened for writing at all.
+
+    A background thread polls ``dump`` as tightly as it can while the main thread
+    rebuilds. Every observation must be one of the two whole states. The
+    non-vacuity check is the count of observations taken strictly *between* the
+    rebuild's start and its end: a run that only sampled either side of the write
+    would prove nothing, and fails here naming that rather than passing.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_bulk_load("old"))
+
+    observations: list[tuple[float, str]] = []
+    stop = threading.Event()
+
+    def poll() -> None:
+        while not stop.is_set():
+            try:
+                texts = {f.finding_text.split("-")[0] for f in store.dump().findings}
+            except FindingsStoreError as exc:  # a half-built file: the defect itself
+                observations.append((time.monotonic(), f"raised: {exc}"))
+            else:
+                observations.append((time.monotonic(), ",".join(sorted(texts)) or "<empty>"))
+
+    reader = threading.Thread(target=poll, daemon=True)
+    reader.start()
+    try:
+        started = time.monotonic()
+        store.replace_all(_bulk_load("new"))
+        finished = time.monotonic()
+    finally:
+        stop.set()
+        reader.join(timeout=10)
+
+    during = [state for when, state in observations if started < when < finished]
+    assert during, (
+        f"the reader took no sample during the rebuild ({finished - started:.3f}s, "
+        f"{len(observations)} samples overall), so this run proves nothing about "
+        f"the window -- raise the row count in _bulk_load"
+    )
+    assert set(during) <= {"old", "new"}, (
+        f"a reader observed the publish name in a state that is neither the whole "
+        f"previous store nor the whole new one: {sorted(set(during) - {'old', 'new'})}"
+    )
+
+
+def test_a_failed_rebuild_leaves_the_previous_store_and_no_residue(tmp_path: Path) -> None:
+    """#404 (unwanted behaviour): a build that fails mid-write publishes nothing.
+
+    Forced by making the publish name's directory hold a *directory* under the
+    ``.building`` name, so ``sqlite3.connect`` fails after ``mkdir`` and before any
+    row is written -- a real ``OSError`` from the same call the write path makes,
+    not a patched-in exception.
+
+    Three things must hold, and the old shape held none of them: the previously
+    good store is still there and still complete; nothing partial sits at the
+    publish name; and the failure is a :class:`FindingsStoreError` with the
+    write-path remedy rather than a raw traceback.
+    """
+    store = _store(tmp_path)
+    store.replace_all(
+        FindingLoad(accepted=(_finding(_sha("a"), text="the good store"),), rejected=())
+    )
+    before = store.dump()
+
+    # A directory where the build wants a file: `connect` raises, mid-operation.
+    store.building_path.mkdir(parents=True)
+
+    with pytest.raises(FindingsStoreError) as caught:
+        store.replace_all(
+            FindingLoad(accepted=(_finding(_sha("b"), text="never lands"),), rejected=())
+        )
+
+    assert "writable" in (caught.value.remedy or "")
+    assert store.dump() == before  # the previous store is untouched and whole
+    assert store.is_current()
+    assert [f.finding_text for f in store.dump().findings] == ["the good store"]
+
+
+def test_a_failed_rebuild_cleans_up_its_building_sibling(tmp_path: Path) -> None:
+    """#404: a half-built file is removed, never left where a later build would extend it.
+
+    Forced by an unwritable ``state/`` directory, so the build fails *after* the
+    working file exists. Two things follow: the sibling is gone, and -- because
+    ``replace_all`` also clears it on the way *in* -- a residue that did survive a
+    kill could not become rows in the next store. Both matter: the first keeps the
+    directory honest, the second is what makes wholesale-from-empty true even after
+    a crash this ``except`` never ran for.
+    """
+    store = _store(tmp_path)
+    store.replace_all(FindingLoad(accepted=(_finding(_sha("a")),), rejected=()))
+
+    # A leftover from a build that was killed rather than raised: rows that must
+    # not reach the next store.
+    store.building_path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(store.building_path)) as connection:
+        connection.executescript(FINDINGS_DDL)
+        connection.executemany(
+            "INSERT INTO findings (commit_sha, position, reviewer, severity, finding_text, "
+            "provider, source_uri, committed_at, pull_request, family, specialist) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [_raw_finding_row(_sha("z"), 0, "a killed build's leftover")],
+        )
+        connection.commit()
+
+    store.replace_all(
+        FindingLoad(accepted=(_finding(_sha("b"), text="the new store"),), rejected=())
+    )
+
+    assert [f.finding_text for f in store.dump().findings] == ["the new store"]
+    assert not store.building_path.exists()  # published by rename, so it is gone
+    for suffix in ("-wal", "-shm"):
+        sibling = store.building_path.with_name(store.building_path.name + suffix)
+        assert not sibling.exists()
+
+
+def test_the_published_store_carries_no_sidecar_from_the_file_it_replaced(tmp_path: Path) -> None:
+    """#404: a stale ``-wal`` beside the publish name is removed with the rename.
+
+    The in-place shape could argue that ``sqlite3.connect`` reconciles whatever a
+    killed prior connection left beside the live name. A rename cannot: the file
+    arriving under the name is a *different database*, and a write-ahead log left
+    by the one it displaced belongs to no database at all. So the publish path's
+    companions are unlinked with the rename, and a rebuild is proved to leave a
+    self-contained file.
+    """
+    store = _store(tmp_path)
+    store.replace_all(FindingLoad(accepted=(_finding(_sha("a")),), rejected=()))
+    stale = store.path.with_name(store.path.name + "-wal")
+    stale.write_bytes(b"a killed connection's write-ahead log")
+
+    store.replace_all(FindingLoad(accepted=(_finding(_sha("b"), text="rebuilt"),), rejected=()))
+
+    assert not stale.exists()
+    assert not store.path.with_name(store.path.name + "-shm").exists()
+    assert [f.finding_text for f in store.dump().findings] == ["rebuilt"]
+
+
+def test_the_building_sibling_stays_inside_the_state_directory(tmp_path: Path) -> None:
+    """#404 / SEC-7: the working name is derived from the publish name, not composed.
+
+    ``ProjectPaths.findings_for`` proves the publish path is contained; a working
+    path built by appending to its *name* inherits that proof, while one composed
+    separately would need its own. Pinned so a later refactor cannot quietly move
+    the build into a temporary directory -- which would also make ``os.replace``
+    a cross-device copy and lose the atomicity the whole fix rests on.
+    """
+    store = _store(tmp_path)
+
+    assert store.building_path.parent == store.path.parent
+    assert store.building_path.name == store.path.name + ".building"
 
 
 # --- #405: committed_at TEXT is a chronological sort key --------------------
