@@ -4,8 +4,19 @@ Writes are intended to happen inside :func:`write_transaction` (ADR-0018), which
 takes the advisory lock and yields the connection :class:`SqliteWriter` is built
 from. Nothing here enforces that pairing -- :meth:`SqliteWriter.__init__` takes
 any connection -- so it is held by convention at each call site, per ADR-0018's
-Milestone 5 amendment. Reads open their own WAL connection, so a search never
-blocks on a running rebuild (NFR-4, NFR-7).
+Milestone 5 amendment. Reads open their own WAL connection, so a
+``migrate apply`` write does not block a reader of the state database (NFR-7).
+
+Not NFR-4, which that sentence also cited until 2026-09-01. NFR-4 is "the
+previously published index answers every query while a new build runs, zero read
+downtime", and the artifact it is about is the *retrieval index*: a separate file
+since ADR-0022, republished by writing a new one and swapping a pointer, which no
+WAL connection spans. ADR-0018's Neutral consequence made the same mis-citation
+and its amendment retracted it -- nothing in this file discharges NFR-4, whose
+discharge rests on ADR-0024 points 6 and 7 -- but the retraction had not
+travelled to this file (#454). Whether those points leave NFR-4 discharged is not
+settled here: the ADR records still disagree about that, and reconciling them is
+#140's.
 
 Every line here that turns a stored cell into a value goes through
 :func:`_reading`, which answers for the whole class of ways this file can fail to
