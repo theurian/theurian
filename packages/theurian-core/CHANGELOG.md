@@ -45,8 +45,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   rather than five tool bodies: `_tool` replaces the five `@server.tool`
   registrations and turns an escaping `TheurianError` into
   `ToolError(str(exc))`, so "a refusal raised below the surface still
-  reaches its caller" is a property of the surface, with a structural test
-  pinning that no registration bypasses it.
+  reaches its caller" is a property of the surface. Two tests hold that,
+  and the division matters: a source scan catches a *decorator* that names
+  something other than the seam, and a runtime check asks the built server
+  whether each registered tool is actually wrapped. Only the second can
+  fail when the seam is bypassed from *inside* the registration helper —
+  the first reads spelling, and adversarial review demonstrated a bypass
+  that left every decorator identical and the whole suite green.
 
   **Nothing a caller reads moves.** The seam forwards the refusal's own text
   and adds nothing to it — not `remedy`, not a path, not the class name, not
@@ -60,14 +65,33 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   2.0.0, and the unfixed tree under 2.0.0. The 44 node ids that were RED
   under 2.1.1 pass.
 
-  **A crash's text stays withheld under mcp 2.1 and later, by design.** The
-  seam catches `TheurianError` and nothing wider, so a `TypeError`, an
-  `OSError` or a bare `sqlite3.Error` is left in upstream's crash arm — the
-  one cell the same probe measured moving: `Error executing tool TypeError:
-  an internal call was made with the wrong arity` under 2.0.0 against `Error
+  **The text of an exception that escapes a tool body stays withheld under
+  mcp 2.1 and later unless it is a deliberate refusal, by design.** The seam
+  catches `TheurianError` and nothing wider, so a `TypeError`, an `OSError`
+  or a bare `sqlite3.Error` is left in upstream's crash arm — the one cell
+  the same probe measured moving. In that probe each tool was *named* after
+  the exception class it raises, so the tool name is what mcp interpolates
+  and what the quotes below repeat: `Error executing tool TypeError: an
+  internal call was made with the wrong arity` under 2.0.0 against `Error
   executing tool TypeError` under 2.1.1. Upstream's withholding is hardening
   this project agrees with, and catching `Exception` at the seam would
   defeat the change that surfaced the bug.
+
+  The claim is scoped to exceptions that *escape a tool body*, because it is
+  not true of the whole wire: the SDK refuses a malformed call before the
+  body runs, with its own `ToolError` carrying pydantic's validation text —
+  which echoes the caller's own argument back. Measured under both 2.0.0 and
+  2.1.1, that text is byte-identical, so this change neither widens nor
+  narrows it, and what it echoes is the caller's own input rather than
+  anything read from a project.
+
+  The seam only sees what is raised while it is on the stack, so a tool that
+  returned before running its body would silently opt out. Registration now
+  refuses a coroutine, async-generator or generator function, and a callable
+  object whose `__call__` is one of those; a plain function that *returns* an
+  awaitable cannot be recognised until it is called, so the wrapper refuses
+  that at call time rather than letting the SDK serialise an un-awaited
+  object as a successful result. No registered tool has any of these shapes.
 
   Under mcp 2.0.0 nothing user-visible changes either way: that dispatcher
   wraps the SDK's own `ToolError` exactly like anything else, so the added

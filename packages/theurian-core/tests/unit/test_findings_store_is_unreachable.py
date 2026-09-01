@@ -1039,7 +1039,7 @@ def _registered_tool_names(tools_source: str) -> Iterator[str]:
 def test_the_tool_registry_registers_exactly_the_known_read_tools() -> None:
     """Guards the finding-tool check: a new tool must be classified, not defaulted in.
 
-    Pinned as a whole-set equality so a new ``@server.tool`` reddens this until
+    Pinned as a whole-set equality so a new registration reddens this until
     someone adds it to :data:`KNOWN_TOOL_NAMES` -- which is the moment they must
     decide whether it serves a finding. Without the pin, a findings-serving tool
     whose name did not literally contain "finding" would sail past the check below;
