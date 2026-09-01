@@ -12,6 +12,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0.dev16] - 2026-09-02
+
 ### Fixed
 
 - **Two concurrent `theurian migrate apply` invocations against a fresh
