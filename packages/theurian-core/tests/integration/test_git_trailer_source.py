@@ -22,7 +22,7 @@ import os
 import re
 import subprocess
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -863,6 +863,57 @@ def test_a_trailer_below_many_body_lines_is_fully_read(tmp_path: Path) -> None:
     ]
 
 
+def test_mixed_offset_committer_dates_normalise_to_utc_in_chronological_order(
+    tmp_path: Path,
+) -> None:
+    """#405: the parsed date is a UTC instant, and the accepted order is unchanged.
+
+    Two halves, and only the first is new behaviour. **The date is normalised**:
+    ``%cI`` carries the committer's own offset, and the store writes what it is
+    handed as TEXT, where mixed offsets do not sort chronologically -- so the source
+    hands over an instant, not a spelling. **The order is not touched**: aware
+    datetimes already compared as instants, so the accepted sequence here is exactly
+    what the offset-preserving parse produced, which is what this asserts against a
+    hand-written expectation rather than against a re-run of the old code.
+
+    The fixture is the inversion #405 measured: the ``+14:00`` commit is EARLIER in
+    real time than the ``-11:00`` one, while its raw ISO text sorts after it. The
+    raw-text control below is what keeps that premise honest.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(
+        clone,
+        "fix: far east (#1)",
+        "Review-Finding: security HIGH — earlier, written +14:00",
+        when="2026-01-02T01:00:00+14:00",  # instant 2026-01-01T11:00:00Z
+    )
+    _commit(
+        clone,
+        "fix: far west (#2)",
+        "Review-Finding: security LOW — later, written -11:00",
+        when="2026-01-01T12:00:00-11:00",  # instant 2026-01-01T23:00:00Z
+    )
+    _publish(clone)
+
+    # The fixture's premise: raw `%cI` text really does invert these two.
+    raw_dates = _git(clone, "log", "refs/remotes/origin/main", "--format=%cI").split()
+    assert sorted(raw_dates) == ["2026-01-01T12:00:00-11:00", "2026-01-02T01:00:00+14:00"]
+
+    load = GitTrailerFindingSource(clone).load_findings()
+
+    assert [f.finding_text for f in load.accepted] == [
+        "earlier, written +14:00",
+        "later, written -11:00",
+    ]
+    assert [f.date for f in load.accepted] == [
+        datetime(2026, 1, 1, 11, 0, tzinfo=UTC),
+        datetime(2026, 1, 1, 23, 0, tzinfo=UTC),
+    ]
+    # Normalised, not merely equal as instants: the offset the committer wrote is
+    # gone from the value the store will record.
+    assert all(f.date.utcoffset() == timedelta(0) for f in load.accepted)
+
+
 def test_the_finding_date_is_the_committer_date_not_the_author_date(tmp_path: Path) -> None:
     """The record carries the committer date (``%cI``), not the author date.
 
@@ -1140,6 +1191,58 @@ def test_split_records_marks_a_year_10000_date_unrepresentable(tmp_path: Path) -
     assert record.committed_at is None
     assert record.date_iso == "10000-01-02T00:00:00Z"
     assert record.sha == "a" * 40
+
+
+def test_split_records_marks_an_offsetless_date_unrepresentable(tmp_path: Path) -> None:
+    """A committer date with no offset is unrepresentable, never read as local time (#405).
+
+    ``%cI`` always carries an offset, so this is unreachable from git -- which is
+    exactly why it needs driving here. Two things would go wrong without the guard.
+    ``astimezone`` on a naive value reads the *machine's* own offset, so the stored
+    instant would depend on where the build ran; and before the normalisation the
+    naive value flowed on to ``ReviewFinding.__post_init__``'s timezone-aware check
+    and raised a ``DomainError`` that ``load_findings`` does not catch, aborting the
+    whole load on one record -- the fatal abort D3 forbids.
+
+    Pinned at the split boundary where the mark is set, beside the year-10000
+    sibling, and end-to-end by the ``load_findings`` accounting below.
+    """
+    stream = _record_stream(
+        "a" * 40, "2026-01-01T00:00:00", "Review-Finding: security HIGH — no offset"
+    )
+    (record,) = _split_records(stream, tmp_path)
+    assert record.committed_at is None
+    assert record.date_iso == "2026-01-01T00:00:00"  # kept verbatim for the rejection
+
+
+def test_an_offsetless_date_is_accounted_as_a_rejection_not_a_fatal_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The offsetless record becomes one rejection and its siblings still load (#405, D3).
+
+    ``git log`` cannot be made to emit an offsetless ``%cI``, so the stream is
+    injected at the one seam between the subprocess and the parse. That keeps the
+    whole of ``load_findings`` -- the accounting, the sort keys, the rejection
+    reason -- under test, which a direct ``_split_records`` call does not reach.
+    """
+    stream = _record_stream(
+        "a" * 40,
+        "2026-01-01T00:00:00",  # no offset
+        "Review-Finding: security HIGH — on the offsetless record",
+        "b" * 40,
+        "2026-02-01T00:00:00+00:00",
+        "Review-Finding: security LOW — on a well-formed sibling",
+    )
+    source = GitTrailerFindingSource(tmp_path)
+    monkeypatch.setattr(GitTrailerFindingSource, "_git_log", lambda _self: stream)
+
+    load = source.load_findings()  # must not raise
+
+    assert [f.finding_text for f in load.accepted] == ["on a well-formed sibling"]
+    assert len(load.rejected) == 1
+    assert load.rejected[0].commit_sha == "a" * 40
+    assert "2026-01-01T00:00:00" in load.rejected[0].reason
+    assert "committer date" in load.rejected[0].reason
 
 
 def test_split_records_empty_stream_yields_no_records(tmp_path: Path) -> None:

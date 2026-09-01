@@ -68,8 +68,17 @@ class StoredFinding:
     finding_text: str
     provider: str
     source_uri: str
-    #: The committer date as a stored ISO-8601 string (round-trips
-    #: ``ReviewFinding.date.isoformat()``).
+    #: The committer date as a stored ISO-8601 string, **normalised to UTC at a
+    #: fixed width** (``2026-02-01T00:00:00.000000+00:00``) rather than kept in the
+    #: committer's own offset (#405). It round-trips the *instant* of
+    #: ``ReviewFinding.date``, not its spelling: ``datetime.fromisoformat`` of this
+    #: value equals that field, while the two strings differ whenever the committer
+    #: was not on UTC. The encoding is what makes the column a sort key at all --
+    #: SQLite compares TEXT byte-wise, and byte order over mixed offsets is not
+    #: chronological, so a ``+14:00`` commit earlier in real time sorted after a
+    #: ``-11:00`` commit that was later. A reader may therefore ``ORDER BY
+    #: committed_at``; a reader that wants the committer's local offset back has to
+    #: get it from git, because the store does not keep it.
     committed_at: str
     pull_request: int | None
     family: str | None

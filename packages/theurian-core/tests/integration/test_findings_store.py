@@ -344,6 +344,111 @@ def test_dump_orders_by_commit_then_position(tmp_path: Path) -> None:
     assert [r.commit_sha for r in dump.rejected] == [_sha("a"), _sha("b")]
 
 
+# --- #405: committed_at TEXT is a chronological sort key --------------------
+
+
+#: Four findings whose committer dates are deliberately spread across UTC offsets,
+#: paired with the instant each one names. Two of them (``+14:00`` and ``-11:00``)
+#: are the inversion the issue measured: the ``+14:00`` commit is EARLIER in real
+#: time yet its offset-preserving TEXT sorts AFTER the ``-11:00`` one, because
+#: ``2026-01-02T…`` > ``2026-01-01T…`` byte-wise. Two more name the *same* instant
+#: through different offsets, so a correct encoding must make them TEXT-equal
+#: rather than merely adjacent. The fifth carries sub-second precision, which git's
+#: second-resolution ``%cI`` never emits but a derived writer could: it is what
+#: makes the fixed-width encoding load-bearing rather than incidental.
+_MIXED_OFFSET_DATES: tuple[tuple[str, str], ...] = (
+    ("2026-01-02T01:00:00+14:00", "b"),  # instant 2026-01-01T11:00:00Z -- earliest
+    ("2026-01-01T12:00:00-11:00", "c"),  # instant 2026-01-01T23:00:00Z
+    ("2026-02-01T00:00:00+00:00", "d"),  # instant 2026-02-01T00:00:00Z
+    ("2026-02-01T09:00:00+09:00", "e"),  # the SAME instant, written another way
+    ("2026-03-01T00:00:00.500000+05:30", "f"),  # instant 2026-02-28T18:30:00.5Z
+)
+
+
+def test_committed_at_text_sorts_chronologically_across_utc_offsets(tmp_path: Path) -> None:
+    """#405: ``ORDER BY committed_at`` is chronological, not lexicographic-by-offset.
+
+    The store keeps ``committed_at`` as TEXT, and TEXT ordering over
+    offset-preserving ISO-8601 is not chronological: a ``+14:00`` timestamp that is
+    *earlier* in real time sorts *after* a ``-11:00`` one that is later. The store
+    is the only artifact that carries an order for these rows, so it is the store --
+    not its one shipped caller -- that must encode an instant: every value is
+    normalised to UTC at a fixed width, which makes byte order and instant order the
+    same relation.
+
+    The oracle is this test's own chronological sort of the *instants*, computed
+    from the fixture literals, never a re-derivation of the store's encoding. It
+    ranges over a hand-authored ``FindingLoad`` rather than a git read, because a
+    caller can build one directly (the port says so) and the property must hold for
+    every row the store admits, not only for rows a git source produced.
+    """
+    store = _store(tmp_path)
+    load = FindingLoad(
+        accepted=tuple(
+            _finding(_sha(seed), text=f"at {when}", when=when) for when, seed in _MIXED_OFFSET_DATES
+        ),
+        rejected=(),
+    )
+
+    store.replace_all(load)
+    with closing(sqlite3.connect(store.path)) as connection:
+        by_text = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT finding_text FROM findings ORDER BY committed_at, commit_sha"
+            ).fetchall()
+        ]
+        stored_dates = [
+            str(row[0])
+            for row in connection.execute("SELECT committed_at FROM findings").fetchall()
+        ]
+
+    chronological = [
+        f"at {when}"
+        for when, _seed in sorted(
+            _MIXED_OFFSET_DATES, key=lambda pair: datetime.fromisoformat(pair[0])
+        )
+    ]
+    assert by_text == chronological
+    # The fixture's own premise: raw offset-preserving TEXT really does invert this
+    # order, so the assertion above is not vacuously satisfied by the input order.
+    raw_text_order = [
+        f"at {when}" for when, _seed in sorted(_MIXED_OFFSET_DATES, key=lambda pair: pair[0])
+    ]
+    assert raw_text_order != chronological
+
+    # Every stored value is a UTC instant at one fixed width -- which is what makes
+    # byte order and instant order the same relation for any two rows, not only for
+    # the second-resolution values git's `%cI` happens to emit.
+    assert all(text.endswith("+00:00") for text in stored_dates)
+    assert len({len(text) for text in stored_dates}) == 1
+
+
+def test_the_same_instant_written_in_two_offsets_stores_one_text(tmp_path: Path) -> None:
+    """#405: two spellings of one instant are TEXT-equal, so a tie is a real tie.
+
+    ``ORDER BY committed_at`` alone cannot be chronological unless equal instants
+    compare equal. ``2026-02-01T00:00:00+00:00`` and ``2026-02-01T09:00:00+09:00``
+    name the same moment; stored verbatim they are two distinct strings that sort
+    apart with unrelated rows able to fall between them.
+    """
+    store = _store(tmp_path)
+    store.replace_all(
+        FindingLoad(
+            accepted=(
+                _finding(_sha("a"), text="utc", when="2026-02-01T00:00:00+00:00"),
+                _finding(_sha("b"), text="jst", when="2026-02-01T09:00:00+09:00"),
+            ),
+            rejected=(),
+        )
+    )
+
+    stored = {f.finding_text: f.committed_at for f in store.dump().findings}
+
+    assert stored["utc"] == stored["jst"]
+    assert stored["utc"] == "2026-02-01T00:00:00.000000+00:00"
+
+
 def _raw_finding_row(
     sha: str, position: int, text: str, *, when: str = "2026-08-27T12:00:00+00:00"
 ) -> tuple[str, int, str, str, str, str, str, str, int | None, str | None, str | None]:

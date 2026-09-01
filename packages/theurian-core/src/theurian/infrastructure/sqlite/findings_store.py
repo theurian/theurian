@@ -98,12 +98,53 @@ class FindingsStoreError(TheurianError):
         super().__init__(f"The review-finding store could not be used ({detail}).")
 
 
+def committed_at_text(moment: datetime) -> str:
+    """One instant as the ``committed_at`` TEXT the store sorts on (#405).
+
+    **Byte order is instant order, for every value this returns.** ``committed_at``
+    is TEXT, and SQLite compares TEXT byte-wise, so an offset-preserving ISO-8601
+    string is *not* a chronological key: a ``+14:00`` commit that is earlier in real
+    time sorts after a ``-11:00`` commit that is later (the inversion #405
+    measured), and the same instant written through two offsets is two unequal
+    strings that unrelated rows can fall between. This is the bug class PR #112
+    already recorded for the canonical store (``sqlite/schema.py``); the findings
+    store repeats it because it stores what the committer's own timezone said.
+
+    Two properties together make the relation exact, and neither is sufficient
+    alone:
+
+    - **normalised** -- ``astimezone(UTC)`` collapses every spelling of one instant
+      to one string, so equal instants compare equal;
+    - **fixed width** -- ``timespec="microseconds"`` pads the fractional part, so a
+      sub-second value cannot sort against a whole-second one on the ``.``/``+``
+      byte at offset 19. git's ``%cI`` is second-resolution and never triggers that,
+      but the derived writers ADR-0029 owes are not bound by ``%cI``, and a key that
+      is total only for one producer's precision is a trap rather than a key.
+
+    The year is always four digits (``datetime`` spans 1..9999), so the whole string
+    is exactly 32 characters and no prefix comparison can be truncated short.
+
+    A naive ``datetime`` cannot reach here: ``ReviewFinding.__post_init__`` refuses
+    one, and this store writes no other date. That refusal is what keeps
+    ``astimezone`` from silently reading the *machine's* local offset into a stored
+    value, which would make the store a function of where it was built.
+    """
+    return moment.astimezone(UTC).isoformat(timespec="microseconds")
+
+
 def _finding_rows(accepted: tuple[ReviewFinding, ...]) -> list[_FindingRow]:
     """Project accepted findings to insertable rows, assigning the position key.
 
     ``position`` is the finding's ordinal *within its commit*, in the source's
     total order -- so several findings on one commit stay distinct and stably
     ordered, and a rebuild over unchanged history assigns the same positions (AC-2).
+
+    ``committed_at`` goes through :func:`committed_at_text` rather than
+    ``date.isoformat()``: the stored column is a chronological sort key, and the
+    committer's own UTC offset is not one (#405). Applied here, at the one place
+    every accepted row is built, so the property holds for any ``FindingLoad`` the
+    store admits -- including one a caller constructed without a git source, which
+    the port explicitly says is possible.
     """
     counters: dict[str, int] = {}
     rows: list[_FindingRow] = []
@@ -119,7 +160,7 @@ def _finding_rows(accepted: tuple[ReviewFinding, ...]) -> list[_FindingRow]:
                 finding.finding_text,
                 finding.provider,
                 finding.anchor.source_uri,
-                finding.date.isoformat(),
+                committed_at_text(finding.date),
                 finding.pull_request,
                 finding.family,
                 finding.specialist,

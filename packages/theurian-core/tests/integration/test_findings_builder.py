@@ -35,6 +35,7 @@ from __future__ import annotations
 import os
 import subprocess
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -54,7 +55,16 @@ pytestmark = pytest.mark.integration
 #: The content of a finding excluding the store-assigned position: everything the
 #: source hands out. Set-equality is taken over this, since the source has no
 #: position to compare against.
-_FindingContent = tuple[str | int | None, ...]
+#:
+#: The committer date enters as a ``datetime`` on **both** sides -- the source's
+#: field, and the stored TEXT parsed back -- so the comparison is over the instant
+#: rather than its spelling (#405). The store deliberately does not keep the
+#: committer's own offset: it writes a UTC-normalised, fixed-width instant so the
+#: column is a chronological sort key. Comparing the strings would therefore fail
+#: for a reason that is not a loss, and re-deriving the store's encoding here would
+#: make this oracle agree with the store's algorithm by construction, which is the
+#: shape this file's own header rules out.
+_FindingContent = tuple[str | int | datetime | None, ...]
 _RejectedContent = tuple[str, str, str]
 
 
@@ -125,7 +135,7 @@ def _finding_content(finding: ReviewFinding) -> _FindingContent:
         finding.finding_text,
         finding.provider,
         finding.anchor.source_uri,
-        finding.date.isoformat(),
+        finding.date,
         finding.pull_request,
         finding.family,
         finding.specialist,
@@ -140,7 +150,7 @@ def _stored_finding_content(stored: StoredFinding) -> _FindingContent:
         stored.finding_text,
         stored.provider,
         stored.source_uri,
-        stored.committed_at,
+        datetime.fromisoformat(stored.committed_at),
         stored.pull_request,
         stored.family,
         stored.specialist,

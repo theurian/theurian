@@ -43,7 +43,7 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, final
 
@@ -250,15 +250,17 @@ class GitTrailerFindingSource:
         for record in records:
             committed_at = record.committed_at
             if committed_at is None:
-                # A committer date git emitted outside datetime's range (year >=
-                # 10000) cannot become a valid ReviewFinding, and its parse runs
-                # before any trailer -- so letting the ValueError escape would abort
-                # the whole load, even for a trailer-less commit (D3). Account the
-                # record as one rejected entry and keep loading its siblings; its
-                # sha is git's own %H (D4), never author-forgeable.
+                # A committer date this runtime cannot hold as a UTC instant -- a
+                # year >= 10000, or (unreachable from `%cI`) a value with no offset
+                # at all -- cannot become a valid ReviewFinding, and its parse runs
+                # before any trailer, so letting it escape would abort the whole
+                # load, even for a trailer-less commit (D3). Account the record as
+                # one rejected entry and keep loading its siblings; its sha is git's
+                # own %H (D4), never author-forgeable.
                 reason = (
-                    f"unparseable committer date {record.date_iso!r} "
-                    "(year exceeds datetime.max, so the record cannot be a finding)"
+                    f"unusable committer date {record.date_iso!r} "
+                    "(not an offset-bearing instant datetime can hold, so the record "
+                    "cannot be a finding)"
                 )
                 rejected.append(
                     ((record.sha, 0), RejectedTrailer(record.sha, record.date_iso, reason))
@@ -366,17 +368,20 @@ class _Record:
     what let a subject-folded trailer go unaccounted (#410, and :data:`_FORMAT`).
     Named for what it holds so no reader infers a subject was stripped on the way in.
 
-    ``committed_at`` is ``None`` exactly when git emitted a committer date this
-    runtime cannot represent -- a year >= 10000, which a crafted
-    ``GIT_COMMITTER_DATE`` (``@253402387200`` -> ``10000-01-02T00:00:00Z``)
-    produces but ``datetime.max`` (year 9999) cannot hold. The parse runs for every
-    record *before* any trailer is read, so a raised ``ValueError`` there would
-    abort the whole load -- even for a trailer-less commit -- defeating the D3
+    ``committed_at`` is a **UTC instant** (#405) and is ``None`` exactly when git
+    emitted a committer date this runtime cannot hold as one -- a year >= 10000,
+    which a crafted ``GIT_COMMITTER_DATE`` (``@253402387200`` ->
+    ``10000-01-02T00:00:00Z``) produces but ``datetime.max`` (year 9999) cannot
+    hold, or a value carrying no offset, which ``%cI`` never emits and which cannot
+    be converted without reading the machine's own timezone. The parse runs for
+    every record *before* any trailer is read, so a raised ``ValueError`` there
+    would abort the whole load -- even for a trailer-less commit -- defeating the D3
     "never a fatal abort" invariant. Marking the date unrepresentable instead lets
     the caller account the record as rejected and keep going. ``date_iso`` keeps
-    git's raw ``%cI`` verbatim so the rejection can name the value that failed; the
-    date is never fabricated to fill the gap, because it is a published field and
-    the finding's total-order sort key -- a record without a valid one cannot be a
+    git's raw ``%cI`` verbatim -- offset and all -- so the rejection can name the
+    value that failed and no provenance is lost by the normalisation; the date is
+    never fabricated to fill the gap, because it is a published field and the
+    finding's total-order sort key, and a record without a valid one cannot be a
     valid finding.
     """
 
@@ -387,18 +392,36 @@ class _Record:
 
 
 def _parse_committer_date(date_iso: str) -> datetime | None:
-    """git's ``%cI`` as an aware datetime, or ``None`` when it is unrepresentable.
+    """git's ``%cI`` as a UTC instant, or ``None`` when it is unrepresentable.
 
     ``datetime.fromisoformat`` raises ``ValueError`` on a year >= 10000, which git
     will emit for a crafted ``GIT_COMMITTER_DATE``. Returning ``None`` rather than
     raising lets the caller account that record as rejected and keep loading the
     rest (D3); a ``None`` is never replaced by a sentinel date, because the
     committer date is the finding's total-order sort key and a published field.
+
+    **Normalised to UTC (#405).** ``%cI`` carries the committer's own offset, and
+    an offset-preserving value is not a sort key once it is written down: the store
+    keeps it as TEXT, and TEXT order over mixed offsets is not chronological. The
+    conversion is an identity on the *instant*, so the in-memory total order below
+    is byte-for-byte what it was -- aware datetimes already compared as instants --
+    and only the recorded representation changes.
+
+    **A date without an offset is unrepresentable, not local time.** ``%cI`` always
+    carries one, so this is unreachable from git; it is refused rather than passed
+    through because ``astimezone`` on a naive value silently reads the *machine's*
+    own offset, which would make the load a function of where it ran. Without this
+    branch such a value also reached ``ReviewFinding.__post_init__``'s
+    timezone-aware check and raised a ``DomainError`` no caller catches -- a fatal
+    abort of the whole load, which is precisely what D3 forbids.
     """
     try:
-        return datetime.fromisoformat(date_iso)
+        parsed = datetime.fromisoformat(date_iso)
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
 
 
 def _split_records(stdout: str, repo_root: Path) -> list[_Record]:
