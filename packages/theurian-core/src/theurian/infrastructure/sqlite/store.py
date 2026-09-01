@@ -12,8 +12,11 @@ previously published index answers every query while a new build runs, zero read
 downtime", and the artifact it is about is the *retrieval index*: a separate file
 since ADR-0022, republished by writing a new one and swapping a pointer, which no
 WAL connection spans. ADR-0018's Neutral consequence made the same mis-citation
-and its amendment retracted it -- NFR-4 is owed to the blue/green work, not
-discharged here -- but the retraction had not travelled to this file (#454).
+and its amendment retracted it -- nothing in this file discharges NFR-4, whose
+discharge rests on ADR-0024 points 6 and 7 -- but the retraction had not
+travelled to this file (#454). Whether those points leave NFR-4 discharged is not
+settled here: the ADR records still disagree about that, and reconciling them is
+#140's.
 
 Every line here that turns a stored cell into a value goes through
 :func:`_reading`, which answers for the whole class of ways this file can fail to
