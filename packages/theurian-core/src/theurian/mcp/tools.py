@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 
 from theurian import __protocol_version__, __version__
 from theurian.application.authorization import DEPLOYMENT_TENANT, AuthorizationGrant
@@ -144,8 +145,44 @@ SEARCH_CAPACITY_REFUSAL: Final = (
 )
 
 
-class ToolError(TheurianError):
-    """A tool could not answer. Carries a remedy, never a stack trace."""
+class ToolError(TheurianError, SdkToolError):
+    """A tool could not answer. Carries a remedy, never a stack trace.
+
+    **Both bases are load-bearing, and each answers a different question.**
+
+    ``TheurianError`` is what makes this a deliberate refusal rather than a
+    crash inside this codebase: it carries ``remedy``, and it is the type every
+    ``except TheurianError`` clause outside this module already names.
+
+    ``SdkToolError`` -- ``mcp.server.mcpserver.exceptions.ToolError`` -- is what
+    makes the message reach the caller. From mcp 2.1.0 (upstream PR #3314, "Log
+    MCPServer handler exceptions by kind and keep crash details off the wire",
+    listed as a behaviour change in that release), the tool dispatcher forwards
+    ``str(exc)`` only for exceptions that *are* the SDK's own ``ToolError`` or
+    ``ResourceError``; anything else is treated as a crash, logged with its
+    traceback server-side, and answered with a bare ``Error executing tool
+    <name>``. This class carried the SDK's *name* without its identity, so
+    every remedy written in this module -- ``_with_remedy``, ``_unresolvable``,
+    ``_tenant_boundary_refusal`` and each direct ``raise`` -- was dropped on the
+    way out under 2.1: 44 assertions on the message text went RED (issue #469).
+
+    The SDK's hardening is this project's own posture, so the fix is to say
+    which kind of failure this is rather than to stay behind it (#469, and the
+    same reasoning `_with_remedy` was written under).
+
+    **Nothing about the message moves.** This class defines no ``__init__``, so
+    what a caller reads is what the raise site built, unchanged; the wire shape
+    (``isError`` plus a text content block) is the SDK's and was never a
+    function of the exception's Python type. Under the pinned mcp 2.0.0 the
+    behaviour is identical for a second reason: that dispatcher's
+    ``except Exception`` arm wraps every escaping exception the same way,
+    including the SDK's own ``ToolError``, so the base added here is inert until
+    2.1. Which errors fire, and their text, are unchanged by this class header
+    -- the property the refusal-distinguishability family (SEC-13) depends on.
+
+    ``TheurianError`` is named first so it wins the MRO wherever both bases
+    could answer, which is what keeps ``remedy`` this project's attribute.
+    """
 
 
 #: Cap on `asOf` before it can be echoed into an error message. An RFC 3339
