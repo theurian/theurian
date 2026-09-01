@@ -44,8 +44,36 @@ grep -cnE '14\.7|640\.3|160\.3|29\.17|tracemalloc|peak' \
   docs/work-logs/2026-08-03-milestone-5-review-rounds.md   # -> 0
 ```
 
-So the threat-model prose is the only spec source for every figure below, and
-what it does not state cannot be recovered from anywhere else in the repository.
+So the threat-model prose is the only spec source *in that work log*. It is not
+the only source in the repository, and saying so would be false. The repo-wide
+key, reproduced 2026-09-02:
+
+```sh
+git grep -nE '14\.7|640\.3|160\.3|29\.17' ec0dbcd   # -> 14 lines
+```
+
+Fourteen lines: seven inside the T-17 entry itself, one coincidental match on a
+`uv.lock` upload timestamp, and **six live sites elsewhere that cite these
+figures as current**.
+
+| Site | What it cites |
+| :-- | :-- |
+| `docs/security/threat-model.md:1047` | 14.7 µs per withheld row, in accepted-cost prose outside the T-17 entry |
+| `packages/theurian-core/src/theurian/domain/ports/canonical_store.py:183` | 14.7 µs, as the cost the ranked path accepts |
+| `packages/theurian-core/src/theurian/infrastructure/sqlite/index_store.py:1264` | 29.17 ms, **and F5's corpus size** |
+| `packages/theurian-core/src/theurian/infrastructure/sqlite/store.py:500` | 14.7 µs, as a comparison base ("about 70 times smaller per row") |
+| `packages/theurian-core/src/theurian/mcp/tools.py:861` | 14.7 µs, as T-17's ranked-reads face |
+| `packages/theurian-core/tests/integration/test_absence_proof.py:203` | 14.7 µs, as the accepted per-row cost a test compares against |
+
+One parameter the threat model omits is therefore recoverable after all. The
+T-17 M5 body (:4288-4290) publishes 29.17 / 14.00 / 14.04 ms with no corpus
+size; `index_store.py:1264` records the same measurement "on a 6,000-row corpus
+shaped to sit on that edge". What no source states is F1's ranking size, which
+is recovered by arithmetic below.
+
+All six cite the pre-purge figures as live comparison bases, so all six move
+when the records do. They belong to the record-update follow-up's scope — the
+next PR on this stack — not to this work log.
 
 | ID | Figure | Record | What it measured | Mechanism as stated | Re-runnable |
 | :-- | :-- | :-- | :-- | :-- | :-- |
