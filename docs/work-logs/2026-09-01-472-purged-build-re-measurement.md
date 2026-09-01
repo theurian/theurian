@@ -21,7 +21,7 @@ cannot be re-derived is itself a finding.
 | | |
 | :-- | :-- |
 | Source records | `docs/security/threat-model.md` @ `ec0dbcd`, T-17 entry: round five :3922-4043, round six :4045-4183, round seven :4185-4242, the M5 scan-cache body :4285-4300, the discharge note :4251-4283 |
-| Code measured | `ec0dbcd` (`origin/main`), clean worktree |
+| Code measured | `ec0dbcd`, clean worktree |
 | Machine | Apple M1 Max, macOS 26.6.2, arm64 |
 | Runtime | CPython 3.13.3, SQLite 3.47.1 |
 | Date | 2026-09-01 |
@@ -32,8 +32,10 @@ anchor beside the new number.
 
 ## Reconstruction: what the records say about how they were taken
 
-Written before measuring, so the spec is derived from the records rather than
-back-formed from a result.
+The F1–F9 table below was written before measuring, so its spec is derived from
+the records rather than back-formed from a result. That does not describe the
+whole section: the last subsection carries a measurement of its own, taken at
+this anchor and marked as such where it appears.
 
 **The Milestone 5 review-rounds work log carries no provenance for any of
 them.** `docs/work-logs/2026-08-03-milestone-5-review-rounds.md` is 340 lines,
@@ -115,7 +117,11 @@ same sweep" at :4080 refers to the round-six table immediately above, whose
 visible count *is* ten. So the reconstruction is **visible = 10, corpus = 200
 approved documents** — recovered by arithmetic, not stated by the record.
 
-### The trap in re-running F2, F3, F4 and F7 as written
+### The trap in re-running F2, F3, F4 and F7 as written — measured, not reconstructed
+
+Everything above this heading derives a spec from the records. This subsection
+does not: it rebuilds one of those harnesses and runs it at the anchor, and the
+figures in it are measurements like every table further down.
 
 All four were taken with a **fake** retriever whose withheld tail is a
 constructor argument. Under such a harness "purged" is not a state — it is
@@ -238,6 +244,17 @@ visible = 50, pass count held at one.
 | 5,950 | stale | 6,000 | 6,000 | 8,244.4 | 156.2400 |
 | 5,950 | **purged** | **50** | **50** | **84.9** | **1.2234** |
 
+**Provenance of the two right-hand columns, stated because it is thin.**
+Whether `peak KB` and `gate ms` were taken in the same measurement window is
+**not recorded**, and the harness is not committed (see *Where the harness
+should live*), so it cannot be established now — asserting either way would be
+fabricating provenance. `tracemalloc` inflates wall clock several-fold, so a
+clock running inside the trace is not comparable with a clean one. **The
+`gate ms` column is therefore graded shape-only**: what it carries is the
+direction and the flatness of the purged side, not its absolute milliseconds.
+Neither a repeat count nor the statistic behind either column is recorded for
+this table, unlike F2 and F1′ above, which name 40 iterations per timing cell.
+
 **F4′, the growth factor.** Stale: 80.6 → 8,244.4 KB over a 120× increase in
 `|ranking|` = **102×**, a fourth magnitude beside the record's 213× and 8.8× and
 the fake-harness re-run's 33.5×. Purged: `|ranking|` does not increase at all, so
@@ -320,6 +337,9 @@ visible = 50, withheld = 5,950, withdrawn bodies ten times the corpus mean.
 | purged | 50 | 1.21 |
 | fresh | 50 | 1.05 |
 
+The repeat count and the statistic behind `scan ms` are not recorded for this
+table either.
+
 F5 as published priced a *saving*; this prices the thing that was being saved.
 The purge takes one pass over the corpus from 85.10 ms to 1.21 ms — the withheld
 rows were being scanned, ranked and returned to Python on every request, and
@@ -359,6 +379,12 @@ Re-derived on this ground at the largest scale measured: 5,950 withheld rows at
 24.3 µs = **+144.6 ms**, against a purged request's 1.21 ms scan and 1.22 ms gate
 walk. Measured directly, the stale gate costs 156.24 ms against the purged
 1.22 ms.
+
+**This paragraph reads across three tables, and inherits the weakest grade
+among them.** 24.3 µs is F1′'s, 1.21 ms is F5′'s `scan ms`, and 1.22 / 156.24 ms
+are the F3/F4 table's `gate ms` — so the two gate figures carry that table's
+**shape-only** grade, and the three tables are not recorded to share a
+measurement window. Read the direction here, not the arithmetic.
 
 On a purged build the derivation has no input: the multiplier is the withheld
 term in `|ranking|`, and it is zero. **+14% becomes +0%.**
@@ -438,6 +464,14 @@ as corrected by #432/#433) — or `daemon/instance.py`'s single-instance lock.
 `write_transaction`, the only function that takes it, has **two** call sites
 (`cli/commands.py:1218`, `cli/migration_pipeline.py:94`), both on the state
 database. **Zero index write paths.**
+
+**That count is anchored to `ec0dbcd`, and it has already moved.** At `266e6b6`
+— one commit later, #478's `migrate apply` serialisation — the same key returns
+**33 lines**, because that commit added lock-token lines to the files this key
+counts. Every added line is in `cli/commands.py`, `cli/migration_pipeline.py`
+or `infrastructure/sqlite/connection.py`; none is in `index_store.py` or
+`index_purge.py`, so the *zero* survives. The *19* does not: re-take the key at
+the landing base before this is quoted into ADR-0024's correction.
 
 *Runtime.* The publish half of the purge, called exactly as
 `withdrawal_purge.py:334` calls it:
@@ -542,6 +576,17 @@ assertions and the flat purged columns above become pins that go RED if a future
 change puts the withheld term back. Making that happen is a design decision for
 the tests specialist, not a scratch commit — recorded here as the recommendation
 that falls out of this work rather than executed inside it.
+
+**Which grades this document the way it grades the records it re-measures.**
+The defect it opens with is that the round-5/6/7 figures ship with no committed
+producer. These figures ship with none either: the scripts were scratch, they
+are withdrawn, and until a producer lands every table above is a dated claim
+about one machine that no reader can re-run. The difference is that the
+producer is in flight rather than absent — the pins are being written on this
+branch's stack (`docs/472-purged-records-and-pins`), into the
+`packages/theurian-core/tests/integration/` home decided just above. Read the
+tables against that: measured, anchored, and not yet reproducible by anyone but
+their author.
 
 Until then the invariants underneath these tables are held by the suite already
 named: `test_index_purge.py`, `test_absence_proof.py`,
