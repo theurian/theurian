@@ -44,7 +44,12 @@ and
 ```sh
 grep -cnE '14\.7|640\.3|160\.3|29\.17|tracemalloc|peak' \
   docs/work-logs/2026-08-03-milestone-5-review-rounds.md   # -> 0
+grep -cE 'round|Round' \
+  docs/work-logs/2026-08-03-milestone-5-review-rounds.md   # -> 43
 ```
+
+The second line is the positive control, same tool and same file: the zero is a
+zero and not a key that matches nothing anywhere.
 
 So the threat-model prose is the only spec source *in that work log*. It is not
 the only source in the repository, and saying so would be false. The repo-wide
@@ -215,7 +220,9 @@ withheld 0 → 400):
 | **purged, here** | **10** | **10** | **0.2339** | **0.2427** | **0.02** |
 
 The pre-purge rate reproduces in shape and to within 1.7× in magnitude — a
-different machine three weeks later, so *comparable in shape, not in magnitude*.
+different machine 27 days later (the round-6/7 figures landed in `21e1ba9`,
+2026-08-05; this was measured 2026-09-01), so *comparable in shape, not in
+magnitude*.
 The purged rate is zero: 0.0088 ms over 400 rows, against a within-condition
 run-to-run spread of ~0.01 ms measured over three independent repeats of the same
 pair. Across the whole 0 → 5,990 sweep the purged gate spans 0.2339–0.2433 ms —
@@ -328,8 +335,13 @@ count is pinned at one, not because it is too small to measure.
 
 ### F5′ — the scan the deleted cache stood in front of
 
-visible = 50, withheld = 5,950, withdrawn bodies ten times the corpus mean.
-`fresh` is a build that never held them.
+visible = 50, withheld = 5,950, and the withdrawn bodies are the long ones.
+*How much* longer, against which population, is **not recorded** — the harness
+is not committed and the fixture's generator is gone with it. What the record
+does settle is the token ratio, derivable from F9's table below over these same
+three corpora: the 5,950 withdrawn chunks average (1,125,900 − 1,350) ÷ 5,950 =
+**189.0 tokens** against the fifty visible chunks' **27.00**, a **7.0×** ratio
+in FTS5 tokens. `fresh` is a build that never held them.
 
 | build | rows returned | scan ms |
 | :-- | --: | --: |
@@ -423,14 +435,14 @@ and no smaller.
 | Figure | Record (pre-purge) | Here, stale | Here, **purged** |
 | :-- | --: | --: | --: |
 | 14.7 µs per withheld row (F1) | 14.7 µs | 24.3 µs | **0.02 µs — no rate** |
-| 160.3 KB peak at 2,000 withheld (F3) | 160.3 KB | 2,891.1 KB | **84.9 KB, flat** |
-| 640.3 KB peak at 5,950 withheld (F3) | 640.3 KB | 8,244.4 KB | **84.9 KB, flat** |
+| 160.3 KB peak at 2,000 withheld (F3) | 160.3 KB | 2,891.1 KB | **84.9 KB — 80.6–84.9 across the sweep, no withheld term** |
+| 640.3 KB peak at 5,950 withheld (F3) | 640.3 KB | 8,244.4 KB | **84.9 KB — 80.6–84.9 across the sweep, no withheld term** |
 | 8.8× growth (F4, review harness) | 8.8× | 102× | **no growth — `\|ranking\|` is constant** |
 | 213× growth (F4, entry harness) | 213× | 102× | **no growth — `\|ranking\|` is constant** |
 | 29.17 ms, two independent scans (F5) | 29.17 ms | **not re-runnable** — `_scan_cache` deleted in M6 (#16) | — |
 
 The three magnitudes in the middle column are not corrections to the record. They
-are a different machine, three weeks later, on a synthetic corpus — *comparable
+are a different machine, 27 days later, on a synthetic corpus — *comparable
 in shape, not in magnitude*, which is what the round-seven evidence grade already
 says about its own numbers.
 
@@ -457,10 +469,15 @@ ADR-0024 point 4, verbatim (`docs/adr/0024-a-purge-is-a-build.md:259-263`):
 **No.** Re-confirmed at `ec0dbcd` by two independent keys.
 
 *Static.* `git grep -nE "flock|lockf|LOCK_EX|LOCK_SH|LOCK_NB|write_lock|WriteLock"
--- packages/theurian-core/src` returns **19 lines over 5 files**. Every one is
-either `ProjectPaths.write_lock` — the advisory lock on
+-- packages/theurian-core/src` returns **19 lines over 5 files**, and none of
+them is an index write path. Eight are the lock *mechanism*, all in
+`infrastructure/sqlite/connection.py`: the `WriteLock` class,
+`WriteLockTimeoutError`, and their `flock` / `LOCK_*` calls. Nine are the *path*
+and its error type — `ProjectPaths.write_lock`, the advisory lock on
 `.theurian/runtime/write.lock` guarding the *state* databases (ADR-0018 point 2,
-as corrected by #432/#433) — or `daemon/instance.py`'s single-instance lock.
+as corrected by #432/#433), at its definition and five call sites, plus three
+`WriteLockTimeoutError` import, handling and docstring lines in the CLI. The
+remaining two are `daemon/instance.py`'s single-instance lock.
 `write_transaction`, the only function that takes it, has **two** call sites
 (`cli/commands.py:1218`, `cli/migration_pipeline.py:94`), both on the state
 database. **Zero index write paths.**
@@ -495,7 +512,7 @@ so there is nothing to hold.
 > ADR-0018 point 1 still owes the index is entangled with this purge […] and is
 > tracked in issue #15's follow-through rather than opened here.
 
-and `project_service.py:1053`: "The purge holds no index-write lock". So
+and `project_service.py:1052`: "The purge holds no index-write lock". So
 ADR-0024's point 4 contradicts both the code and ADR-0018's own record (which
 #436 corrected to *owed*, owner [#439](https://github.com/theurian/theurian/issues/439)),
 and the code's side is the measured one.
@@ -589,9 +606,9 @@ tables against that: measured, anchored, and not yet reproducible by anyone but
 their author.
 
 Until then the invariants underneath these tables are held by the suite already
-named: `test_index_purge.py`, `test_absence_proof.py`,
-`test_forest_purge_equality.py`, `test_retrieval_depth.py` and
-`test_scan_exhaustion.py` — 84 tests, green at `ec0dbcd`. **What none of them
+named: `tests/integration/test_index_purge.py`, `test_absence_proof.py`,
+`test_forest_purge_equality.py` and `test_scan_exhaustion.py`, plus
+`tests/unit/test_retrieval_depth.py` — 84 tests, green at `ec0dbcd`. **What none of them
 holds is a *quantity*.** They pin that a purged build answers identically to one
 that never held the rows; nothing pins that its canonical-read count, its peak
 memory or its pass count stop moving with the withheld count. That is the gap
