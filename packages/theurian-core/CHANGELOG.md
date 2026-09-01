@@ -174,14 +174,30 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   nothing, against a `55 lines` positive control that hits that same docstring.
   The owed item is now recorded as discharged rather than left open.
 
-  **Neither half of this correction is pinned yet**, and there is no
-  `test_adr_0029_claims.py` to hold it — unlike ADR-0018 and ADR-0027, whose
-  claims tests exist. The fact side has live contracts to derive from
+  **Both halves are pinned, in the same pull request that made the correction.**
+  `test_adr_0029_claims.py` is the record — the ADR-0018 and ADR-0027 shape,
+  which this ADR had no equivalent of until now. The prose half reads the two
+  records this bullet and the landing note live in, and holds the closure
+  structurally rather than by wording, because the residuals paragraph is kept as
+  written: the marker must be the paragraph *directly* above it, and the landing
+  note must sit below, each matching exactly one paragraph so a rewritten anchor
+  fails as a count instead of silently scanning nothing. The fact half derives
+  from the live contracts the correction leaned on
   (`FINDINGS_SCHEMA_VERSION`, `trailer_source._FORMAT`, `_STAMP_PROBES`,
   `SqliteReviewFindingStore.building_path`, `FindingsBuilder`'s `write_section`),
-  so the gap is a missing test rather than a missing contract. **No issue is
-  cited because none exists yet:** the pin is requested from the tests lane in
-  this pull request, and this bullet is the record until it lands.
+  so a mechanism that moves and leaves these records behind goes RED — a bump to
+  schema 3 reddens both spellings of "1 → 2", and the two REDs are separate tests
+  with separate messages, because the CHANGELOG's would be a false release note
+  while the ADR's is a decision to append the next move.
+
+  **What the pin does not reach, stated because a pin that catches less than the
+  sentence claims is the same defect one level up.** Its scope is those two
+  records and no third, so the *Re-anchored census* is outside it: neither the
+  `%b`/`%B` equivalence table nor the superseded "38 lines" claim above has a
+  fact-side pin. The recorded reason is that both are measurements against named
+  commits and a named command, which is the one form of a written number this
+  file set accepts without one — the ADR carries each with its command and, for
+  "38 lines", its positive control. The module's own docstring states this reach.
 
 - **Four more config-reader universals are narrowed, `store.py`'s retracted
   NFR-4 citation is corrected, and the dead `#15`/`#113` owner cites in the
