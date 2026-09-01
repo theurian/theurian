@@ -98,6 +98,101 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   base is inert there, and the seam emits the text the blanket arm already
   folded in.
 
+### Documentation
+
+- **Four more config-reader universals are narrowed, `store.py`'s retracted
+  NFR-4 citation is corrected, and the dead `#15`/`#113` owner cites in the
+  purge path and three ADRs are repointed or classified as history**
+  ([#447](https://github.com/theurian/theurian/issues/447),
+  [#454](https://github.com/theurian/theurian/issues/454),
+  [#444](https://github.com/theurian/theurian/issues/444),
+  [#464](https://github.com/theurian/theurian/issues/464),
+  [#487](https://github.com/theurian/theurian/pull/487)). Four records that
+  [#426](https://github.com/theurian/theurian/issues/426) and
+  [#428](https://github.com/theurian/theurian/issues/428) had already corrected
+  elsewhere still carried the retracted version, each in a file those sweeps did
+  not reach.
+
+  **Three "nothing in `src/` reads `.theurian/config.yaml`" universals** —
+  `application/forest_builder.py`'s `SUMMARY_MAX_TOKENS` comment,
+  `test_forest_derivation.py::test_the_option_defaults_are_the_config_schemas_own`
+  and `test_schemas.py::test_the_raptor_forest_is_declared_off_by_default` — are
+  narrowed to the `raptor` block, the population that still has no reader. The
+  universal stopped being true when ADR-0027 decision 3 shipped
+  `security/project_config.py::read_secret_scan_policy`, which reads
+  `security.secretScan` and nothing else. No conclusion leaned on the file being
+  unread — each leans on these keys being unread — so the premise is narrowed
+  rather than the paragraph deleted.
+
+  **Which half is pinned is stated rather than assumed.**
+  `test_config_key_call_sites.py` holds the fact side, over `raptor` key
+  spellings derived from `properties.raptor.properties` in the schema, so a
+  loader that names one goes RED. The prose side of these three is **unpinned**,
+  because `test_raptor_config_claims.py` is scoped to the three files #426
+  corrected and these are not among them; both test docstrings now say so. So is
+  the fact side's one measured gap: a read bound to `max_levels` or
+  `min_children_per_summary` inside `application/forest_builder.py` adds no new
+  `(module, spelling)` pair, since `ForestOptions` already owns both names there
+  — mutation A1 SURVIVED for that reason where A2, the same read in another
+  module, was KILLED.
+
+  **`store.py`'s module docstring** said reads open their own WAL connection "so
+  a search never blocks on a running rebuild (NFR-4, NFR-7)". NFR-4 is about the
+  *retrieval index*, which has been a separate file since ADR-0022 and is
+  republished by writing a new one and swapping a pointer — something no WAL
+  connection spans. ADR-0018's Neutral consequence made the same mis-citation and
+  its Milestone 5 amendment retracted it, but the retraction had not travelled
+  here. The NFR-7 half is kept and stated as what this file settles: a
+  `migrate apply` write does not block a reader of the state database. Whether
+  ADR-0024 points 6 and 7 leave NFR-4 discharged is left open rather than
+  answered — the ADR records still disagree, which is
+  [#140](https://github.com/theurian/theurian/issues/140)'s first item.
+
+  **The purge path's two owner cites** named things that cannot own work.
+  `application/withdrawal_purge.py` handed the single index-writer interface
+  ADR-0018 point 1 owes to "issue #15's follow-through", and no such tracker
+  exists: #15 closed on 2026-08-10 (`66a43ae`) by shipping the withdrawal→purge
+  trigger that function *is*, not the interface it writes without.
+  `application/project_service.py` called a compare-and-swap pointer write
+  "#113's scope", and #113 is the merged pull request that shipped the
+  purge-is-a-build model the same day, so it holds no owed work. Both now name
+  [#439](https://github.com/theurian/theurian/issues/439), which owns the derived
+  index's single-writer contract. The other #113 cite at the head of that bullet
+  names the same pull request as the *mechanism* the check rests on, which is
+  history and is left alone.
+
+  **The doc-side `#15` cites are classified per the closure-reason rule**, so
+  only the one that pointed at unbuilt work moved. ADR-0022's Still-owed bullet
+  headed "(Milestone 6, #15)" is repointed at #439 — Milestone 6 has passed, and
+  #15 closed by wiring ADR-0024 decision 5, which is the *answer* recorded below
+  that bullet and not the writer discipline the bullet asks for. Its measurement
+  is pasted rather than summarised, and anchored: at `ec0dbcd`,
+  `git grep -nE "flock|lockf|LOCK_EX|write_lock" -- packages/theurian-core/src`
+  returned ten lines, every one the canonical `ProjectPaths.write_lock` or the
+  daemon's single-instance lock and none in an index write path. That count is
+  the anchor's, not today's — `266e6b6` (#478, merged during this release
+  window) took the same lock across `migrate apply`'s critical section and the
+  command returns 18 lines at this branch's head. The conclusion is unchanged,
+  because every added line is that same state-database lock or prose about
+  `flock` semantics, and none is an index write path. ADR-0008's
+  "#15 removes those rows" is history: the actor is
+  `application/withdrawal_purge.py`, and the sentence never named a live tracker
+  — #15 closed at 19:45 +0900 and the sentence entered the file at 22:27 +0900
+  the same day (`379e197`). ADR-0023's two future-tensed sentences are tensed
+  against the shipped purge, each dated note naming its subject so the two are
+  distinguishable when scanning: T-17a's duration face, and the canonical-read
+  residual left by dropping the `LIMIT`.
+
+  Prose, comments and docstrings only — `forest_builder.py`,
+  `project_service.py`, `withdrawal_purge.py` and `store.py` are AST-identical to
+  their parents once docstrings are stripped, checked with a positive control,
+  and no behaviour changes. Carried: the three served corpus twins under
+  `.theurian/knowledge/architecture/` — `raptor-forest`,
+  `index-lives-in-its-own-database` and
+  `trigram-index-beside-the-word-index` — hold the uncorrected sentences
+  byte-identically and move only on a governed re-seed (#199 unit C mechanics),
+  which follows in its own PR.
+
 ## [0.1.0.dev16] - 2026-09-02
 
 ### Fixed

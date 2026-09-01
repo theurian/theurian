@@ -893,8 +893,23 @@ def test_the_raptor_forest_is_declared_off_by_default() -> None:
     unmeasured ships opt-in, so that turning it on is somebody's decision and
     not the side effect of an upgrade." The schema declared `default: true`
     from the day the block was written, which was not a decision anyone took --
-    nothing in `src/` reads it, or reads `.theurian/config.yaml` at all, so the
+    nothing in `src/` reads it, nor any other key in the `raptor` block, so the
     value has never taken effect anywhere and had never been examined either.
+
+    **The clause "or reads `.theurian/config.yaml` at all" stood here until
+    2026-09-01 and was false from ADR-0027 decision 3 onwards** -- the file has
+    a reader, and the next test in this module is about it: `secretScan` is read
+    by `security/project_config.py` and applied at `theurian propose accept`.
+    Narrowed to the `raptor` block rather than deleted, because that is the half
+    the conclusion above needs and the half that is still true (#426, #447).
+    `tests/unit/test_config_key_call_sites.py` holds the fact side, over keys
+    derived from the schema this test loads, so a `raptor` loader reddens it --
+    with the one measured exception `tests/unit/test_raptor_config_claims.py`
+    records: a read bound to `max_levels` or `min_children_per_summary` inside
+    `application/forest_builder.py` adds no new `(module, spelling)` pair,
+    because `ForestOptions` already owns both names there, so that loader leaves
+    the enumeration green (round-one mutation A1 SURVIVED for that reason; A2,
+    the same read in another module, was KILLED). Nothing holds this paragraph.
 
     Pinned here rather than left to the loader that will one day read it,
     because a default is a published claim the moment it is in a schema a third
