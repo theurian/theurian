@@ -244,10 +244,14 @@ the fake-harness re-run's 33.5×. Purged: `|ranking|` does not increase at all, 
 there is no 120× to take a factor over; the peak moves 80.6 → 84.9 KB, 1.05×.
 
 **The 4.3 KB step in the purged column is a harness artefact, not a residual,
-and it was isolated rather than explained away.** It is not monotone in the
-withheld count — flat at 0, 50 and 200, one step, then flat again — which is the
-shape of allocator state, not of a channel. Two isolations settle it, each
-holding the returned result identical and varying only the pre-purge corpus:
+and it was isolated rather than explained away.** The column read alone settles
+nothing: 80.6 / 80.6 / 80.6 / 84.9 / 84.9 KB is weakly increasing in the
+withheld count, which is also what a residual would look like. What settles it
+is that **the step follows the warm-up, not the withheld count** — warming the
+harness on the stale build gives 84.8 KB at 5,950 withheld where warming it on
+the purged build gives 80.5 KB: same condition, same process, same returned
+result. Two isolations account for the rest, each holding the returned result
+identical and varying only the pre-purge corpus:
 
 - the **retriever** alone, `search_substring` on the purged build:
   **25.4 KB at every withheld count** from 0 to 5,950, nine repeats, min and
@@ -258,10 +262,9 @@ holding the returned result identical and varying only the pre-purge corpus:
 
 Both flat to 0.1 KB across the entire sweep, and their sum (84.3 KB) is *above*
 some composite readings — which is itself proof the composite figure is
-allocator-pool-dependent rather than additive. A third probe confirms the
-mechanism directly: warming the harness on the stale build gives 84.8 KB at
-5,950 withheld where warming it on the purged build gives 80.5 KB, same
-condition, same process. **There is no peak-memory residual on a purged build.**
+allocator-pool-dependent rather than additive. With both stages flat and the
+warm-up probe accounting for the step, **there is no peak-memory residual on a
+purged build.**
 
 Recorded at this length because a 5% step that correlates with the withheld count
 in a first table is exactly what an unexamined re-measurement would publish as a
