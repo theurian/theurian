@@ -1,0 +1,38 @@
+apiVersion: theurian.dev/v1
+id: 01M1EVEK9XEPDZ06KKC5HHNNJX
+createdAt: '2026-09-01T16:04:49+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0015 twin from the current source ADR: the corpus pins docs/adr/0015-dco-over-cla.md
+  as it stood at 2a98d4c, and the tracked document has moved since (#315).'
+operations:
+- op: createItem
+  itemId: architecture.dco-over-cla
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.dco-over-cla
+  revisionId: 01M1EVEK9XEPDZ06KKC5HHNNJY
+  expectedRevision: 01M0D5H0E6NWQA68WM4QD9RAN4
+  contentFile: ../knowledge/architecture/dco-over-cla.01M1EVEK9XEPDZ06KKC5HHNNJY.md
+  contentSha256: 455b60e11f617ed9f9ad96c86b3e20e3c574920f3cf7ea82a9340832435bf8f7
+  metadata:
+    title: 'ADR-0015: Developer Certificate of Origin, not a Contributor License Agreement'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0015
+    scope:
+      paths:
+      - '**'
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 266e6b668a5e0723ee63accf23f3ae70b501e193
+      filePath: docs/adr/0015-dco-over-cla.md
