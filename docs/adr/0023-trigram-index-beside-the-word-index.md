@@ -371,13 +371,13 @@ and it is off by default for that reason.
 >
 > > **Tensed on 2026-09-01
 > > ([#464](https://github.com/theurian/theurian/issues/464)): the purge has
-> > shipped.** This sentence said the face "goes away with the index purge in
-> > [#15](https://github.com/theurian/theurian/issues/15)", written while that
-> > was future work. #15 closed on 2026-08-10 (`66a43ae`): `theurian migrate
-> > apply` publishes a purged build the moment a withdrawal lands (ADR-0024
-> > decision 5), so the published index holds no withheld row for a truncating
-> > retriever to spend a slot on. Nothing is owed here — what survives is a
-> > request in flight at the purge's pointer swap, which
+> > shipped — the duration face.** This sentence said the face "goes away with
+> > the index purge in [#15](https://github.com/theurian/theurian/issues/15)",
+> > written while that was future work. #15 closed on 2026-08-10 (`66a43ae`):
+> > `theurian migrate apply` publishes a purged build the moment a withdrawal
+> > lands (ADR-0024 decision 5), so the published index holds no withheld row
+> > for a truncating retriever to spend a slot on. Nothing is owed here — what
+> > survives is a request in flight at the purge's pointer swap, which
 > > `application/retrieval_service.py` records at the scan branch's own
 > > paragraph, and a purge that failed, which taints the pointer and stands the
 > > build aside.
@@ -398,11 +398,11 @@ and it is off by default for that reason.
 >
 > > **Tensed on 2026-09-01
 > > ([#464](https://github.com/theurian/theurian/issues/464)): the purge has
-> > shipped.** This sentence said the residual "still ends with
-> > [#15](https://github.com/theurian/theurian/issues/15)", written while that
-> > was future work. #15 closed on 2026-08-10 (`66a43ae`), so what ends the
-> > residual is the purged build `theurian migrate apply` already publishes, not
-> > owed work.
+> > shipped — the canonical-read residual.** This sentence said the residual
+> > "still ends with [#15](https://github.com/theurian/theurian/issues/15)",
+> > written while that was future work. #15 closed on 2026-08-10 (`66a43ae`), so
+> > what ends the residual is the purged build `theurian migrate apply` already
+> > publishes, not owed work.
 >
 > **Corrected in Milestone 5, review round 8. The cost paragraph above — "it was
 > never compared against the alternative that actually runs today,

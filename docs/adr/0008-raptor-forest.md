@@ -683,8 +683,8 @@ flowchart TB
    > **content the caller may not read influencing a derived artifact no purge
    > reaches**. T-17a's root cause is a different one — *the index still holds
    > the withdrawn rows* — and `66a43ae` shipped the withdrawal→purge trigger
-   > ([#15](https://github.com/theurian/theurian/issues/15)) on 2026-08-10; it
-   > removes those rows, which is why deleting them restores equality
+   > ([#15](https://github.com/theurian/theurian/issues/15)) on 2026-08-10; the
+   > trigger removes those rows, which is why deleting them restores equality
    > there. This read "#15 removes those rows" until 2026-09-01, naming as the
    > actor a tracker that had already closed earlier the same day: #15 closed at
    > 19:45 +0900 and the sentence entered this file at 22:27 +0900 (`379e197`),
