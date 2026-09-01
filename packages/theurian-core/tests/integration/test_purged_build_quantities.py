@@ -572,10 +572,12 @@ def test_a_purged_build_reads_canonical_once_per_visible_row_however_many_were_w
         "withdrawn. That is T-17's residual back: the store can count the reads, so "
         "the withheld count reaches an observer the response withholds it from"
     )
-    assert all(
-        purged[withheld].passes == 1 and purged[withheld].returned == VISIBLE_READS
-        for withheld in WITHHELD_LEVELS
-    ), "the purged build must answer the same ten rows in one pass at every level"
+    assert [
+        (purged[withheld].passes, purged[withheld].returned) for withheld in WITHHELD_LEVELS
+    ] == [(1, VISIBLE_READS) for _ in WITHHELD_LEVELS], (
+        f"the purged build must answer the same {VISIBLE_READS} rows in one pass at "
+        f"every withheld level; a second pass is a round trip a caller can time"
+    )
 
 
 def test_a_purged_build_stays_at_one_retriever_pass_across_the_first_pass_depth_edge(
