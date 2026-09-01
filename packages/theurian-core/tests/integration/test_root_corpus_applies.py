@@ -49,15 +49,20 @@ the correction from the retraction the moment either is reverted while ids
 stay pinned, and a *future*, legitimate re-seed changes the current revision
 id again without this test's other assertions changing at all.
 
-**The same class recurs, pre-empted rather than re-found.** #199 unit C's
-second wave (#471) re-seeds three more items the same way #416 re-seeded
-ADR-0013 -- ``propose``/``accept`` through the real write path -- and the
-#440 round's ADV-RC MEDIUM-1 lesson generalises immediately: reverting any of
-the three wave commits (payload, not ``expectedRevision``) would leave this
-whole suite green at the same test count, for the identical reason the
-ADR-0013 revert did. So each of the three gets its own content-shaped pin
-below, pre-emptively, rather than waiting for a round to rediscover the same
-class a fourth time.
+**The same class recurs, and every re-seed pays the same toll.** #199 unit C's
+second wave (#471) re-seeded three more items the same way #416 re-seeded
+ADR-0013 -- ``propose``/``accept`` through the real write path -- and #315's
+drift sweep re-seeded nine more. The #440 round's ADV-RC MEDIUM-1 lesson
+generalises to every one of them: reverting any single re-seed commit's
+payload (the body and its ``contentSha256``, not its ``expectedRevision``
+pin) would leave this whole suite green at the same test count, because every
+other rule over the corpus compares author-supplied values against
+themselves -- a body against the digest its own migration declares, a body
+against the blob at the anchor that same migration names -- and a reverted
+payload is internally consistent at every one of them. The only rule that
+reads the *current* ``docs/`` tree is ``tools/corpus_drift.py``, which CI runs
+``--advisory``: exit 0 even on drift. So each re-seeded item gets its own
+content-shaped pin in :data:`_RESEED_PAYLOAD_MARKERS` below.
 
 **Population, and why it is narrower than the governance module's.** Loads
 the real directory listing, but only after confirming -- via ``git``, never
@@ -79,6 +84,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
@@ -118,11 +124,18 @@ MIGRATIONS_DIRECTORY: Final = REPO_ROOT / ".theurian" / "migrations"
 #: a coincidence: a re-seed is a second migration, and a second revision,
 #: over an item that already exists, so it grows the migration count
 #: without growing the item count -- which is *why* the two populations
-#: diverge even though the two floor constants do not. Measured 2026-09-01
-#: at 7b2ca67: four items now carry two revisions each -- the ADR-0013
-#: re-seed (#416) plus the three #199 unit C second-wave re-seeds (#471,
-#: :data:`_SECOND_WAVE_MARKERS`) -- and the corpus still holds exactly 26
-#: distinct items.
+#: diverge even though the two floor constants do not. **How far they have
+#: diverged is not recorded here.** The live record is
+#: ``EXPECTED_CORPUS_POPULATION`` in ``test_dogfood_corpus_governance.py``,
+#: whose ``multi_revision_items`` and ``distinct_items`` are recomputed from
+#: the tracked corpus on every run and moved deliberately in the same change
+#: that moves the corpus; a second narration of the same numbers here would go
+#: stale silently, which is the class #458 closed. What stays is one dated
+#: point measurement, frozen at the commit named beside it: measured
+#: 2026-09-01 at ``7b2ca67``, four items carried two revisions each -- the
+#: ADR-0013 re-seed (#416) plus the three #199 unit C second-wave re-seeds
+#: (#471) -- over 26 distinct items. #315's nine-item drift sweep moved both
+#: of those figures afterwards, and moved them in the live record.
 MINIMUM_KNOWLEDGE_ITEMS: Final = 26
 
 #: The item the #416 re-seed gave a second revision -- the one member of this
@@ -130,13 +143,37 @@ MINIMUM_KNOWLEDGE_ITEMS: Final = 26
 #: first ``upsertRevision``.
 _RESEEDED_ITEM: Final = ItemId("architecture.ai-writes-produce-proposals")
 
-#: #199 unit C's second wave (#471): three more items re-seeded through
-#: propose/accept, and a literal string each corrected body carries that
-#: neither the original seed nor a partially-corrected intermediate state
-#: does -- pre-empted from the ADV-RC MEDIUM-1 class the #440 round found
-#: (a reverted re-seed payload leaves the whole suite green at the same
-#: test count, because a revision-id check alone cannot tell a correction
-#: from a reverted one).
+
+@dataclass(frozen=True, slots=True)
+class _PayloadMarker:
+    """A token whose occurrence count in an item's current body no earlier body shares.
+
+    ``count`` is the whole point: see :data:`_RESEED_PAYLOAD_MARKERS` for the
+    measurement that retired the membership form this replaces.
+    """
+
+    item_id: ItemId
+    token: str
+    count: int
+
+    def __post_init__(self) -> None:
+        """A marker that pins zero pins nothing -- it passes on a body that never had it."""
+        if self.count < 1:
+            raise ValueError(
+                f"{self.item_id.value} pins {self.token!r} at {self.count}, but a marker "
+                f"asserting an absence cannot distinguish a correct payload from a reverted "
+                f"one: every body that never carried the token satisfies it. Pin a token the "
+                f"current body actually carries, measured against every earlier state of its "
+                f"source document."
+            )
+
+
+#: One entry per re-seeded item: a literal token its *current* body carries a
+#: measured number of times, where no earlier state of that item's source
+#: document carries it the same number of times -- pre-empted from the ADV-RC
+#: MEDIUM-1 class the #440 round found (a reverted re-seed payload leaves the
+#: whole suite green at the same test count, because a revision-id check alone
+#: cannot tell a correction from a reverted one).
 #:
 #: **Three-point measured, not two -- this round's own lesson.** A round-one
 #: version of this pin keyed on ``write.lock``/``ADR-0025``, measured only
@@ -151,11 +188,26 @@ _RESEEDED_ITEM: Final = ItemId("architecture.ai-writes-produce-proposals")
 #: intermediate correction commit in the item's ``docs/adr/`` history,
 #: current -- not just the two ends.
 #:
-#: Wrap-safe single tokens, deliberately: an issue reference like ``#436``
-#: cannot split across a Markdown line wrap the way a multi-word phrase can
-#: (the ``#414``/"owed, not shipped" trap the ADR-0013 check above already
-#: works around by checking two substrings rather than one contiguous
-#: phrase).
+#: **A count, not a presence -- #315's own lesson, and the reason this
+#: constant was renamed.** The #471 form asserted ``marker in body``. That
+#: holds whenever the token is present *at all*, so it stops discriminating
+#: the moment a later correction to the same document keeps the token while
+#: changing everything around it. Measured 2026-09-02: this entry's
+#: predecessor keyed ``architecture.single-writer-synchronous-in-m1`` on
+#: ``#436``, which the #471 body (revision ``01M1C8VS6C7SXBWJNBV3W5QEP9``) and
+#: #315's re-seed (revision ``01M1EVGVTNMDR2NQ9P49PARD1A``) both carry **5**
+#: times -- the pin had silently become a two-point marker with both points on
+#: the same side. ``#468``, on the same pair, counts **3** and **5**. So each
+#: entry pins the number, and the assertion is equality, not membership.
+#:
+#: Wrap-safe tokens, deliberately: a Markdown line wrap breaks at whitespace,
+#: so a token containing none cannot be split by one (the ``#414``/"owed, not
+#: shipped" trap the ADR-0013 check above works around by checking two
+#: substrings rather than one contiguous phrase). An issue reference is one
+#: instance of that property rather than the only one, which matters because
+#: five of #315's nine items carry no ``#NNN`` whose count is unique to their
+#: current text; those are keyed on a backticked identifier or a measured
+#: figure the same correction introduced.
 #:
 #: **No clean negative twin for any of the three.** A ``not in`` pin needs a
 #: token present in the superseded body and absent from current *and* from
@@ -169,28 +221,66 @@ _RESEEDED_ITEM: Final = ItemId("architecture.ai-writes-produce-proposals")
 #: today" (0024's retracted claim) appears once in both. No twin added for
 #: any of the three; each item is pinned by its correction marker alone.
 #:
-#: Measured 2026-09-01, ``grep -cF <marker>`` -- ``-F``, literal, named
-#: because it is not the instrument the round-one version used: plain
-#: ``grep -c "write.lock"`` treats the ``.`` as "any character" and reports
-#: 8 for a body a literal count reports 3 for. Three points each --
-#: seed, intermediate, current:
+#: **Instrument, named on both sides.** ``str.count`` -- *occurrences* --
+#: because that is what :func:`test_the_committed_root_corpus_applies_cleanly_to_an_empty_store`
+#: asserts with. ``grep -c`` counts matching *lines* and is a different
+#: measurement; it happens to agree on every token below, and agreeing is not
+#: being the same. The round-one version's own instrument error is why this
+#: paragraph exists: plain ``grep -c "write.lock"`` treats the ``.`` as "any
+#: character" and reports 8 for a body a literal count reports 3 for.
 #:
-#: - ``architecture.single-writer-synchronous-in-m1`` / ``#436``: 0 (seed,
-#:   ``2a98d4c``) / 0 (intermediate, ``14dd466`` -- #432, the lock-file
-#:   claim's *own* correction commit, moved the claim but not yet to the
-#:   wording #436 later added) / 5 (current, ``5a9a1e5``, this item's #471
-#:   anchor).
-#: - ``architecture.raptor-forest`` / ``#426``: 0 (seed, ``2a98d4c``) / 0
-#:   (intermediate, ``b857c1a`` -- #119/#352's sensitivity-enforcement
-#:   change, the commit the withdrawn ``ADR-0025`` marker had mis-attributed
-#:   to #448) / 2 (current, ``3749581``, this item's #471 anchor).
-#: - ``architecture.a-purge-is-a-build`` / ``#426``: 0 (seed, ``2a98d4c``) /
-#:   0 (intermediate, ``b857c1a``, same commit as above) / 1 (current,
-#:   ``3749581``, this item's #471 anchor).
-_SECOND_WAVE_MARKERS: Final[tuple[tuple[ItemId, str], ...]] = (
-    (ItemId("architecture.single-writer-synchronous-in-m1"), "#436"),
-    (ItemId("architecture.raptor-forest"), "#426"),
-    (ItemId("architecture.a-purge-is-a-build"), "#426"),
+#: **Every point, not three.** "Seed / intermediate / current" names the
+#: shape; the measurement below walks *every* commit that touched the item's
+#: source document in ``266e6b6``'s history, which is a superset of it, and a
+#: token qualifies only when its count at the current point differs from its
+#: count at every one of them. Each token is additionally drawn from the
+#: **added** lines of the last such commit, so it names the correction whose
+#: absence a reverted payload would show rather than a word that happens to be
+#: new. Measured 2026-09-02 at ``7d7bca1``; ``points`` counts the commits
+#: compared, ``prior`` the distinct counts across all of them but the last:
+#:
+#: - ``monorepo-with-independent-artifacts`` / ```Core```: 1 over 3 points,
+#:   prior {0} (current ``c7d49ff``, #341's record of the required checks).
+#: - ``sqlite-is-a-derived-artifact`` / ``#87``: 1 over 5 points, prior {0}
+#:   (current ``dd4b991``).
+#: - ``yaml-knowledge-migrations`` / ``#245``: 1 over 3 points, prior {0}
+#:   (current ``06fbc42``).
+#: - ``dependency-pinning-and-pre-1-0-isolation`` / ```3.13```: 1 over 4
+#:   points, prior {0} (current ``dedf08e``).
+#: - ``dco-over-cla`` / ``30/30``: 1 over 4 points, prior {0} (current
+#:   ``c7d49ff``, the same #341 measurement).
+#: - ``state-hash-covers-the-working-tree`` / ```contentSha256```: 1 over 3
+#:   points, prior {0} (current ``1a38afe``).
+#: - ``sqlite-schema-versioning`` / ``#117``: 3 over 4 points, prior {0}
+#:   (current ``7d7195b``).
+#: - ``single-writer-synchronous-in-m1`` / ``#468``: 5 over 8 points, prior
+#:   {0, 3} (current ``266e6b6``).
+#: - ``rank-fusion-over-score-normalisation`` / ``T-17a's``: 1 over 3 points,
+#:   prior {0} (current ``90e0253``).
+#: - ``raptor-forest`` / ``#426``: 2 over 13 points, prior {0} (current
+#:   ``3749581``).
+#: - ``a-purge-is-a-build`` / ``#426``: 1 over 11 points, prior {0} (current
+#:   ``3749581``).
+#:
+#: ``single-writer-synchronous-in-m1`` is the only row whose prior counts are
+#: not all zero, and it is the row that motivated the change: ``#468`` at 3 is
+#: the #471 re-seed's own body (``5a9a1e5``), which a presence check cannot
+#: tell apart from the 5 in #315's.
+#:
+#: The two #426 rows keep the token they already shipped -- this change adds
+#: the count they were missing rather than re-keying items #315 never touched.
+_RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
+    _PayloadMarker(ItemId("architecture.monorepo-with-independent-artifacts"), "`Core`", 1),
+    _PayloadMarker(ItemId("architecture.sqlite-is-a-derived-artifact"), "#87", 1),
+    _PayloadMarker(ItemId("architecture.yaml-knowledge-migrations"), "#245", 1),
+    _PayloadMarker(ItemId("architecture.dependency-pinning-and-pre-1-0-isolation"), "`3.13`", 1),
+    _PayloadMarker(ItemId("architecture.dco-over-cla"), "30/30", 1),
+    _PayloadMarker(ItemId("architecture.state-hash-covers-the-working-tree"), "`contentSha256`", 1),
+    _PayloadMarker(ItemId("architecture.sqlite-schema-versioning"), "#117", 3),
+    _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#468", 5),
+    _PayloadMarker(ItemId("architecture.rank-fusion-over-score-normalisation"), "T-17a's", 1),
+    _PayloadMarker(ItemId("architecture.raptor-forest"), "#426", 2),
+    _PayloadMarker(ItemId("architecture.a-purge-is-a-build"), "#426", 1),
 )
 
 #: Frozen rather than ``datetime.now()``: a project row's ``registered_at`` is
@@ -333,15 +423,15 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
     the module docstring's third check for why an id match alone is not
     enough (ADV-RC MEDIUM-1).
 
-    A fourth family, added for #199 unit C's second wave (#471): the same
-    content-shaped pin, once per :data:`_SECOND_WAVE_MARKERS` entry, run
-    pre-emptively rather than waiting for a round to reproduce ADV-RC
-    MEDIUM-1 a second time against a different item. Each reverts its own
-    item's re-seed commit RED and nothing else's -- see the entries'
-    docstring for the measured three-point (seed / intermediate / current)
-    discrimination each correction-keyed marker was chosen for, and for why
-    the round's own first version of this pin (a two-point, general-word
-    marker) is not what ships here.
+    A fourth family, one entry per re-seeded item
+    (:data:`_RESEED_PAYLOAD_MARKERS`): the same content-shaped pin, carried by
+    every re-seed rather than only by the one a round happened to reproduce.
+    Each turns its own item's re-seed commit RED when that commit's payload is
+    reverted, and nothing else's -- see the entries' docstring for the
+    per-point counts behind each token, for why an equality on the count and
+    not a membership test is what ships, and for the two earlier versions of
+    this pin (a two-point general-word marker, then a presence-only one) that
+    do not.
     """
     _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files()
 
@@ -447,18 +537,20 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
         f"carries the retracted claim 'warns past a threshold' (#252)."
     )
 
-    # Pre-empted from the same class: #199 unit C's second wave (#471)
-    # re-seeded three more items through the real write path, and reverting
-    # any one wave commit's payload would leave the suite green at the same
-    # test count for the identical reason the ADR-0013 revert above did --
-    # see :data:`_SECOND_WAVE_MARKERS`'s docstring for the measured
-    # three-point (seed / intermediate / current) discrimination behind
-    # each correction-keyed marker.
-    for item_id, marker in _SECOND_WAVE_MARKERS:
-        second_wave_body = _current_body(database, project.project_id, item_id)
-        assert marker in second_wave_body, (
-            f"the applied body for {item_id.value} does not carry {marker!r}. Reverting "
-            f"this item's #471 re-seed payload -- the body, not its expectedRevision pin -- "
-            f"would leave this assertion the only one in this test file to notice, per the "
-            f"ADV-RC MEDIUM-1 class the #440 round found."
+    # The same class, once per re-seeded item: reverting any one re-seed
+    # commit's payload would leave the suite green at the same test count for
+    # the identical reason the ADR-0013 revert above did -- see
+    # :data:`_RESEED_PAYLOAD_MARKERS`'s docstring for the per-point counts
+    # behind each token, and for why the count and not mere presence is what
+    # is asserted.
+    for marker in _RESEED_PAYLOAD_MARKERS:
+        applied_body = _current_body(database, project.project_id, marker.item_id)
+        assert applied_body.count(marker.token) == marker.count, (
+            f"the applied body for {marker.item_id.value} carries {marker.token!r} "
+            f"{applied_body.count(marker.token)} time(s); this item's re-seed pinned it at "
+            f"{marker.count}. Reverting this item's re-seed payload -- the body, not its "
+            f"expectedRevision pin -- would leave this assertion the only one in this test "
+            f"file to notice, per the ADV-RC MEDIUM-1 class the #440 round found. If the "
+            f"source document legitimately moved, re-measure the token against every point "
+            f"in its history and update the count here in the same change."
         )
