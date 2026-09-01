@@ -187,12 +187,43 @@ def test_a_2_1_shaped_dispatcher_forwards_the_message() -> None:
 #: ``TheurianError`` -- rather than to the reachable subset, and because the day
 #: a write tool is added is the day the reachable subset changes without this
 #: file being touched.
+#: ``ProjectError`` is built *with* a remedy on purpose, and it is the only
+#: fixture here that has one. A first draft of this file gave it none, and a
+#: mutation that folded ``exc.remedy`` into the forwarded message -- the exact
+#: enrichment ``_with_remedy`` performs deliberately elsewhere, and the one this
+#: seam must not perform -- survived the whole module: every fixture's
+#: ``remedy`` was ``''``, so "adds nothing" and "adds the remedy" produced
+#: identical bytes. The distinguishing input is the fixture, not the assertion.
 BELOW_SURFACE_REFUSALS: dict[str, TheurianError] = {
     "SchemaVersionMismatchError": SchemaVersionMismatchError(pathlib.Path("state.sqlite"), 2, 4),
     "StateDatabaseUnreadableError": StateDatabaseUnreadableError("ValueError"),
-    "ProjectError": ProjectError("the registry cannot be read as JSON"),
+    "ProjectError": ProjectError(
+        "the registry cannot be read as JSON",
+        remedy="Run `theurian project unregister demo` and register it again.",
+    ),
     "WriteLockTimeoutError": WriteLockTimeoutError(pathlib.Path("state.sqlite"), 30.0),
 }
+
+
+def test_at_least_one_fixture_carries_a_remedy_the_message_does_not() -> None:
+    """The distinguishing input, pinned so it cannot be tidied away.
+
+    Every assertion about "the seam adds nothing" is vacuous over refusals whose
+    ``remedy`` is empty, because folding an empty string changes no bytes. This
+    module needs at least one fixture where the two differ, or a remedy-folding
+    regression passes it silently -- which is what a surviving mutation showed
+    before this test existed.
+    """
+    distinguishing = [
+        name
+        for name, exc in BELOW_SURFACE_REFUSALS.items()
+        if getattr(exc, "remedy", "") and getattr(exc, "remedy", "") not in str(exc)
+    ]
+    assert distinguishing, (
+        "no fixture carries a remedy absent from its own message, so every "
+        "'the seam adds nothing' assertion below is vacuous against a "
+        "remedy-folding change -- give one of them a `remedy=`"
+    )
 
 
 @pytest.mark.parametrize("name", sorted(BELOW_SURFACE_REFUSALS))
