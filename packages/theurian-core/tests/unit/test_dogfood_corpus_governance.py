@@ -566,13 +566,13 @@ def _requires_git_objects(what: str) -> Index:
 #: the corpus, not a sweep across however many places happened to narrate it.
 EXPECTED_CORPUS_POPULATION: Final[Mapping[str, int]] = MappingProxyType(
     {
-        "tracked_migrations": 31,
-        "bodies": 31,
-        "evidence_files": 31,
+        "tracked_migrations": 32,
+        "bodies": 32,
+        "evidence_files": 32,
         "gitkeep_placeholders": 3,
-        "tracked_paths": 96,
+        "tracked_paths": 99,
         "distinct_items": 26,
-        "multi_revision_items": 5,
+        "multi_revision_items": 6,
     }
 )
 
