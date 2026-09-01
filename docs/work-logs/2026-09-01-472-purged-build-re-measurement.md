@@ -60,16 +60,17 @@ key below was run. A hand-picked spelling list came up short twice — first at
 four spellings, then at seven — so the key is not picked any more.
 
 **The key is derived from the records' own figure inventory.** Its spelling set
-is the F1–F9 Record column below — every figure those records publish — plus the
-roundings the records themselves use (`15 µs` for F1's 14.7). A figure outside
-that column is not a round-5/6/7 figure and is not this key's business; a figure
+is the **Figure** column of the F1–F9 table below — every figure those records
+publish — plus the roundings the records themselves use (`15 µs` for F1's
+14.7 µs, recorded at :4083 and multiplied out at :4150). A figure outside that
+column is not a round-5/6/7 figure and is not this key's business; a figure
 inside it does not get to be left out. Within the column, a spelling is admitted
 only when a hit is presumptively about the figure — unit-qualified, or three or
 more significant digits — and the exclusions are measured rather than assumed:
 at `ec0dbcd` a bare `3\.0` returns 57 lines, `120` returns 50, an unqualified
 `419` returns 186, and `213` alone returns 8 of which 7 are workflow-run ids and
 content hashes. F2's counts (10 / 11 / 60 / 210 / 6,000) are not distinctive
-numeric literals at all, and F9's Record entry publishes none, so neither
+numeric literals at all, and F9's Figure entry publishes none, so neither
 contributes a spelling.
 
 ```sh
