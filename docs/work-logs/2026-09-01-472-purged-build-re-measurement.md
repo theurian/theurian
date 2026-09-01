@@ -53,35 +53,69 @@ zero and not a key that matches nothing anywhere.
 
 So the work log contributes no spec, and the threat-model prose is the only
 place that states *how* any of these figures was taken. It is not the only place
-in the repository that carries them, and this note said otherwise until the
-repo-wide key was run. Reproduced 2026-09-02:
+in the repository that **carries** them, and this note said otherwise until the
+key below was run. A hand-picked spelling list came up short twice — first at
+four spellings, then at seven — so the key is not picked any more.
+
+**The key is derived from the records' own figure inventory.** Its spelling set
+is the F1–F9 Record column below — every figure those records publish — plus the
+roundings the records themselves use (`15 µs` for F1's 14.7). A figure outside
+that column is not a round-5/6/7 figure and is not this key's business; a figure
+inside it does not get to be left out. Within the column, a spelling is admitted
+only when a hit is presumptively about the figure — unit-qualified, or three or
+more significant digits — and the exclusions are measured rather than assumed:
+at `ec0dbcd` a bare `3\.0` returns 57 lines, `120` returns 50, an unqualified
+`419` returns 186, and `213` alone returns 8 of which 7 are workflow-run ids and
+content hashes. F2's counts (10 / 11 / 60 / 210 / 6,000) are not distinctive
+numeric literals at all, and F9's Record entry publishes none, so neither
+contributes a spelling.
 
 ```sh
-git grep -nE '14\.7|640\.3|160\.3|29\.17' ec0dbcd   # -> 14 lines
+git grep -nE '14\.7|0\.163|6\.047|15 (µs|us)|160\.3|640\.3|3\.0 / 10\.5|8\.8(×|x)|213(×|x)|29\.17|14\.00|14\.04|\+90 ms|\+14%|0\.64 s|419 (µs|us)|454 (µs|us)|\+35 (µs|us)|\+8\.3%|0\.07 ms|1\.40 ms|N=300' \
+  ec0dbcd -- ':(exclude)uv.lock'   # -> 48 lines
 ```
 
-Fourteen lines: seven inside the T-17 entry itself, one coincidental match on a
-`uv.lock` upload timestamp, and **six live sites elsewhere that cite these
-figures as current**.
+Forty-eight lines, classified exhaustively — the four buckets sum to 48:
+
+| Bucket | Lines |
+| :-- | --: |
+| Inside the T-17 entry itself (:4032-4035, :4080-4181, :4201-4226, :4289-4290) | 19 |
+| **Live satellites — 15 lines over ten sites elsewhere, each citing a round-5/6/7 figure as current** | 15 |
+| One shipped `packages/theurian-core/CHANGELOG.md:6453` entry, which records what a release said and is not restated | 1 |
+| Hits on figures these records *borrow* rather than produce — TB-1's 1.40 ms end-to-end floor, ADR-0023's 0.64 s / 3.06 s scan pair — which do not move when T-17's do | 13 |
+
+The ten live sites:
 
 | Site | What it cites |
 | :-- | :-- |
 | `docs/security/threat-model.md:1047` | 14.7 µs per withheld row, in accepted-cost prose outside the T-17 entry |
-| `packages/theurian-core/src/theurian/domain/ports/canonical_store.py:183` | 14.7 µs, as the cost the ranked path accepts |
-| `packages/theurian-core/src/theurian/infrastructure/sqlite/index_store.py:1264` | 29.17 ms, **and F5's corpus size** |
+| `packages/theurian-core/src/theurian/application/retrieval_service.py:624` | 15 µs per distinct document, F1's own rounding |
+| `packages/theurian-core/src/theurian/application/retrieval_service.py:646` | **F6** — "+90 ms against the 0.64 s a healthy scan costs", the figure round six never measured |
+| `packages/theurian-core/src/theurian/application/visibility.py:195-198` | 15 µs, **F1's raw sweep** (6.047 ms against 0.163 ms), **and a linearity claim** |
+| `packages/theurian-core/src/theurian/domain/ports/canonical_store.py:183-184` | 14.7 µs and 15 µs, as the cost the ranked path accepts |
+| `packages/theurian-core/src/theurian/infrastructure/sqlite/index_store.py:1264-1265` | 29.17 / 14.04 ms, **and F5's corpus size** |
 | `packages/theurian-core/src/theurian/infrastructure/sqlite/store.py:500` | 14.7 µs, as a comparison base ("about 70 times smaller per row") |
 | `packages/theurian-core/src/theurian/mcp/tools.py:861` | 14.7 µs, as T-17's ranked-reads face |
 | `packages/theurian-core/tests/integration/test_absence_proof.py:203` | 14.7 µs, as the accepted per-row cost a test compares against |
+| `packages/theurian-core/tests/unit/test_result_gate_session.py:359-361` | 15 µs, **F1's raw sweep**, **and a linearity claim** |
 
-One parameter the threat model omits is therefore recoverable after all. The
-T-17 M5 body (:4288-4290) publishes 29.17 / 14.00 / 14.04 ms with no corpus
-size; `index_store.py:1264` records the same measurement "on a 6,000-row corpus
-shaped to sit on that edge". What no source states is F1's ranking size, which
-is recovered by arithmetic below.
+**Two of the ten carry more than a number.** `visibility.py:198` says the cost is
+"linear in the withheld *document* count, with no threshold in it" and
+`test_result_gate_session.py:361` says "linear, one row at a time, with no
+threshold in it". The purged column measured below is **10 reads at every
+withheld count**: on a purged build there is no line left to be linear. Those two
+need the claim rewritten, not the figure updated.
 
-All six cite the pre-purge figures as live comparison bases, so all six move
-when the records do. They belong to the record-update follow-up's scope — the
-next PR on this stack — not to this work log.
+One parameter the threat model omits is also recoverable after all. The T-17 M5
+body (:4288-4290) publishes 29.17 / 14.00 / 14.04 ms with no corpus size;
+`index_store.py:1264-1265` records the same measurement "on a 6,000-row corpus
+shaped to sit on that edge". What no source states is F1's ranking size, which is
+recovered by arithmetic below.
+
+All ten cite the pre-purge figures as live comparison bases, so all ten move when
+the records do. They belong to the record-update follow-up's scope — the next PR
+on this stack — not to this work log. The CHANGELOG line and the thirteen
+borrowed-figure lines do not.
 
 | ID | Figure | Record | What it measured | Mechanism as stated | Re-runnable |
 | :-- | :-- | :-- | :-- | :-- | :-- |
