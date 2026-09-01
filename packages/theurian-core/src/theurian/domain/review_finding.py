@@ -97,83 +97,6 @@ class FindingSeverity(StrEnum):
     LOW = "LOW"
 
 
-def _compute_parser_stamp() -> str:
-    """A content hash over the five closed-vocabulary literals decision 2 names.
-
-    **What this covers, exactly.** The five things ADR-0029 decision 2 calls a
-    "grammar change": the trailer key (:data:`TRAILER_KEY`), the separator
-    (:data:`SEPARATOR`), the two closed vocabularies (:class:`ReviewerToken`,
-    :class:`FindingSeverity`), and the alias map (:data:`_REVIEWER_ALIASES`). The
-    stamp hashes the five member-*value* serializations, not the enum machinery
-    that reads them: changing one of those values -- adding an alias entry, adding
-    or renaming a member, changing the key or the separator -- moves the stamp
-    (each verified independently by mutation). A store built under the old values
-    is then *detectable* as stale from the mismatch (AC-4); the consumer that acts
-    on that detection -- refusing a stale store, or triggering a rebuild from the
-    signal -- arrives with the serving slice. Today the store's one writer rebuilds
-    unconditionally on every run regardless of what this stamp says, so nothing
-    here is stale-then-rebuilt yet: the detection is real, the reaction is not
-    shipped.
-
-    **What this does NOT cover: matching behaviour layered on the vocabularies, and
-    the parser's mechanics.** Four mechanics are not hashed: the single space
-    consumed after the key, the ``<reviewer> <SEVERITY>`` two-token split on the
-    prefix, and the alias-lookup mechanism :func:`_reviewer` applies to the first
-    token (all three in :func:`parse_trailer_line` / :func:`_reviewer`), plus the
-    column-0 extraction rule that decides which body line even reaches this parser
-    (``infrastructure/git/trailer_source.py``). Widening any of those -- tolerating
-    a TAB after the key, accepting an indented trailer line, folding a
-    continuation -- changes the accepted set while all five hashed values stay
-    byte-identical, so the stamp does not move and a store built under the old
-    mechanics reads as current under the new ones (demonstrated by adversarial
-    review). The same gap exists one layer up, in how a member is *matched* rather
-    than what it is *worth*: an ``Enum._missing_`` hook or a ``__new__`` override
-    could widen what ``ReviewerToken(...)`` or ``FindingSeverity(...)`` accepts --
-    ``Review-Finding: CODE-REVIEW HIGH``, or ``security`` in mixed case, starting to
-    parse -- without moving a single hashed literal, because every member's *value*
-    stays unchanged. Binding mechanics and matching behaviour into the stamp is a
-    real fix, tracked as its own structural-bind residual in issue #406 rather than
-    folded in here; until it lands, either kind of change owes a manual
-    :data:`~theurian.infrastructure.sqlite.findings_schema.FINDINGS_SCHEMA_VERSION`
-    bump -- the same manual discipline ``INDEX_SCHEMA_VERSION`` already relies on
-    for whatever its own forcing function does not reach.
-
-    Derived rather than hand-maintained for the five literals it does cover,
-    because each is a thing an edit to the *vocabulary* changes: the key, the
-    separator, the two closed vocabularies, and the alias map (adding an alias is
-    the recorded grammar change of decision 2). Hashing all five means the stamp
-    cannot silently stay equal across a vocabulary change the way a forgotten
-    manual bump would -- the forcing-function property the derived index/state
-    schema versions rely on, moved from a human's discipline onto the constants
-    themselves, for this one slice of the grammar.
-
-    Deterministic: the vocabularies and the alias map are serialized in sorted
-    order, so the stamp is a pure function of the grammar and not of dict or set
-    iteration order (no ``hash()``, no unordered iteration reaching an output).
-    """
-    material = "\n".join(
-        [
-            f"key={TRAILER_KEY}",
-            f"separator={SEPARATOR}",
-            "reviewers=" + ",".join(sorted(token.value for token in ReviewerToken)),
-            "aliases="
-            + ",".join(f"{raw}->{token.value}" for raw, token in sorted(_REVIEWER_ALIASES.items())),
-            "severities=" + ",".join(sorted(severity.value for severity in FindingSeverity)),
-        ]
-    )
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
-
-
-#: The current trailer-grammar identity (see :func:`_compute_parser_stamp`). A
-#: derived store records this beside its schema version; a stored value that no
-#: longer equals this one means the file was parsed by a superseded grammar --
-#: *detectable* staleness (ADR-0029, AC-4). Today the store's one writer rebuilds
-#: wholesale from git history on every run regardless of this comparison; a reader
-#: that trusts a store in place, and rebuilds only on a detected mismatch, is the
-#: serving slice this signal is for.
-PARSER_STAMP: Final = _compute_parser_stamp()
-
-
 class MalformedTrailerError(DomainError):
     """A ``Review-Finding:`` trailer does not satisfy the normative grammar.
 
@@ -348,6 +271,34 @@ def _severity(token: str, *, line: str) -> FindingSeverity:
         ) from exc
 
 
+def keyed_lines(message: str) -> tuple[tuple[int, str], ...]:
+    """The candidate trailer lines of one commit message, with their line indexes.
+
+    **The D1 extraction rule, and it lives here because it is grammar.** Which
+    lines of a message are even *candidates* decides the accepted set exactly as
+    much as what :func:`parse_trailer_line` does with one, so it belongs beside the
+    rest of the grammar rather than inside the git adapter that reads a message --
+    where it was unreachable to :data:`PARSER_STAMP` without inverting the layering
+    (#406). It touches no I/O and takes no git type, so nothing about the move
+    crosses a boundary the other way.
+
+    A candidate is a ``\\n``-delimited line whose first character starts
+    :data:`TRAILER_KEY`: column 0, anywhere in the message. Not git's own
+    ``%(trailers)``, which reads only the last paragraph and would drop the ~82% of
+    this repository's trailers that sit ahead of the ``Signed-off-by:`` paragraph;
+    and not a stripped or folded line, because a trailer value is exactly one
+    physical line (D2), so an indented continuation is ordinary message text.
+
+    The index is the line's position in the message, returned rather than
+    recomputed so a caller's ordering key and this rule cannot drift apart.
+    """
+    return tuple(
+        (position, line)
+        for position, line in enumerate(message.split("\n"))
+        if line.startswith(TRAILER_KEY)
+    )
+
+
 def parse_trailer_line(line: str) -> tuple[ReviewerToken, FindingSeverity, str]:
     """Split one trailer line into its governed tokens and its opaque text.
 
@@ -404,3 +355,205 @@ def finding_from_trailer(line: str, *, commit_sha: str, committed_at: datetime) 
         pull_request=None,
         date=committed_at,
     )
+
+
+# --- the parser stamp -------------------------------------------------------
+#
+# Below the grammar it measures, because it runs it: the probe matrix calls
+# `keyed_lines` and `parse_trailer_line`, so it cannot be computed before they
+# exist. Everything from here down is import-time and pure.
+
+
+class _MatchingBaseline(StrEnum):
+    """A plain ``StrEnum`` that adds nothing, used to cancel enum machinery.
+
+    :func:`_matching_surface` subtracts this class's attribute set from a governed
+    vocabulary's, so whatever ``EnumType`` puts on a ``StrEnum`` -- and *whatever a
+    future interpreter puts there instead* -- appears on both sides and cancels.
+    What survives the subtraction is exactly what this codebase's own source added.
+    That is what makes the surface a total account of the class body rather than an
+    enumeration of the hooks someone thought of, and interpreter-independent
+    without any claim about a particular CPython's enum internals.
+
+    It carries a docstring on purpose: ``__doc__`` is an attribute like any other,
+    and a baseline without one would leave ``__doc__`` uncancelled on every
+    governed vocabulary.
+    """
+
+    MEMBER = "member"
+
+
+#: The commit messages the stamp runs the grammar over. Each is chosen for one
+#: named mechanic -- the ones :data:`PARSER_STAMP`'s docstring lists -- and the
+#: probe's *answer*, not its text, is what enters the hash. Written as messages
+#: rather than lines so :func:`keyed_lines`'s extraction rule is inside the probe
+#: too, and so the two halves of the grammar are measured as the one function they
+#: compose into.
+_STAMP_PROBES: Final[tuple[str, ...]] = (
+    # Extraction (D1): column 0 anywhere in the message, subject included; an
+    # indented line and a line carrying the key mid-way are not candidates.
+    "Review-Finding: security HIGH — a keyed subject\n"
+    "an ordinary line\n"
+    "    Review-Finding: security HIGH — indented\n"
+    "text before Review-Finding: security HIGH — mid-line\n"
+    "Review-Finding: security HIGH — at column zero",
+    # The separator after the key: exactly one ASCII space is consumed, and no
+    # other whitespace is. A TAB- or lstrip-tolerant widening flips lines 3 and 4.
+    "Review-Finding: code-review HIGH — one space\n"
+    "Review-Finding:code-review HIGH — no space\n"
+    "Review-Finding:  code-review HIGH — two spaces\n"
+    "Review-Finding:\tcode-review HIGH — a tab",
+    # The `<reviewer> SP <SEVERITY>` arity: exactly two tokens before the
+    # separator. A `split(" ", 1)` or a `>= 2` widening flips lines 2 and 3.
+    "Review-Finding: code-review HIGH — exactly two\n"
+    "Review-Finding: code-review HIGH extra — three tokens\n"
+    "Review-Finding: code-review — one token",
+    # The alias lookup, and the matching behaviour layered on both vocabularies.
+    # A case-folding `_missing_` hook, a `__new__` override or a case-insensitive
+    # alias lookup flips lines 2 through 5 without moving a single member value.
+    "Review-Finding: code HIGH — a registered alias\n"
+    "Review-Finding: CODE HIGH — the alias upper-cased\n"
+    "Review-Finding: CODE-REVIEW HIGH — a member upper-cased\n"
+    "Review-Finding: Security HIGH — a member title-cased\n"
+    "Review-Finding: security high — a severity lower-cased",
+    # The separator itself, split on the FIRST occurrence, and the empty-text
+    # refusal. An `rsplit` or a `strip()` changes the text the first line yields.
+    "Review-Finding: security HIGH — a — b — c\n"
+    "Review-Finding: security HIGH - an ASCII hyphen\n"
+    "Review-Finding: security HIGH —no spaces around it\n"
+    "Review-Finding: security HIGH — ",
+)
+
+
+def _matching_surface(vocabulary: type[StrEnum]) -> tuple[str, ...]:
+    """Everything this codebase's source added to a governed vocabulary's class body.
+
+    Answers the face #406's follow-up comment names: matching behaviour layered
+    *on* the five hashed vocabularies. An ``Enum._missing_`` hook, a ``__new__``
+    override, an ``__init__`` or a ``__str__`` widens or reshapes what
+    ``ReviewerToken(...)`` accepts while every member *value* -- and so every
+    literal the vocabulary section hashes -- stays byte-identical.
+
+    The account is total rather than a list of hooks. Every entry of ``vars(cls)``
+    that is not a member is recorded as ``name=provenance``, where provenance is
+    the attribute's ``__qualname__`` when it has one and its type's name otherwise;
+    the same set is taken over :class:`_MatchingBaseline` and subtracted. Machinery
+    appears identically on both sides and cancels -- ``__new__`` reads
+    ``Enum.__new__`` for a plain ``StrEnum`` and for a widened one alike, which is
+    why a user ``__new__`` is caught through the ``_new_member_`` /
+    ``__new_member__`` entries ``EnumType`` moves it to (measured), not through
+    ``__new__`` -- and an override is caught because its qualname roots in *this*
+    class rather than in ``str``, ``Enum`` or ``StrEnum``.
+
+    Two consequences worth stating. Nothing here depends on knowing what a given
+    CPython's enum machinery contains, so a Python upgrade that reshapes it moves
+    both sides equally and leaves the stamp still. And removing a vocabulary's
+    class docstring *does* move the stamp -- ``__doc__`` goes from ``str`` to
+    ``NoneType`` -- a conservative false positive, never a false negative.
+    """
+    baseline = {
+        (name, _provenance(value))
+        for name, value in vars(_MatchingBaseline).items()
+        if name not in _MatchingBaseline.__members__
+    }
+    surface = {
+        (name, _provenance(value))
+        for name, value in vars(vocabulary).items()
+        if name not in vocabulary.__members__
+    }
+    return tuple(sorted(f"{name}={provenance}" for name, provenance in surface - baseline))
+
+
+def _provenance(value: object) -> str:
+    """Where an attribute came from: its qualified name, or its type's name."""
+    qualname = getattr(value, "__qualname__", None)
+    return qualname if isinstance(qualname, str) else type(value).__name__
+
+
+def _probe_verdict(line: str) -> str:
+    """One probe line's answer: the mapping it produces, or that it was refused.
+
+    The *reason* a refusal carries is deliberately not part of the answer. A reason
+    is a message to a human; rewording one is prose, and a stamp that moved on
+    prose would be noise a reader learns to ignore rather than a signal.
+    """
+    try:
+        reviewer, severity, finding_text = parse_trailer_line(line)
+    except MalformedTrailerError:
+        return "refused"
+    return f"accepted({reviewer.value},{severity.value},{finding_text})"
+
+
+def _compute_parser_stamp() -> str:
+    """The trailer grammar's identity: its vocabularies, its matching, its behaviour.
+
+    A store records this beside its schema version, so a file parsed by a
+    superseded grammar is *detectable* from the mismatch (ADR-0029 AC-4). Three
+    sections, because three different kinds of change alter what the parser accepts
+    and no one of them sees the other two:
+
+    - **Vocabulary** -- the five closed-vocabulary literals decision 2 names: the
+      key (:data:`TRAILER_KEY`), the separator (:data:`SEPARATOR`), the two
+      vocabularies' member values, and the alias map. Total over those values;
+      each has been shown to move the stamp independently by mutation.
+    - **Matching** -- :func:`_matching_surface` over each vocabulary: a total
+      account of what this codebase's source added to the class body, which is
+      where an ``Enum._missing_`` or ``__new__`` widening lives (#406's follow-up
+      comment). Every member value can stay byte-identical while that surface
+      changes, which is exactly why the vocabulary section cannot see it.
+    - **Behaviour** -- the answer the grammar gives to every line of every probe in
+      :data:`_STAMP_PROBES`, run through the whole path: :func:`keyed_lines`'s
+      column-0 extraction rule and then :func:`parse_trailer_line`'s mechanics --
+      the single space consumed after the key, the two-token split, the alias
+      lookup, the first-occurrence separator split. Those mechanics were the
+      unbound half #406 was filed for.
+
+    **Why behaviour and not source text.** The question the stamp answers is
+    "would this parser read the corpus differently from the one that built the
+    store", and that is a question about the accepted set, not about characters in
+    a file. So a behaviour-preserving refactor correctly leaves the stamp still,
+    while any widening that changes an answer moves it. It also makes the stamp
+    interpreter-independent by construction: it is Python *semantics*, not a
+    representation of Python syntax, so no bytecode digest or ``ast.dump`` shape
+    can drift it across a version upgrade and silently mark every store stale.
+
+    **The residual, stated.** The behaviour section is exact for the mechanics its
+    probes distinguish, and a widening that no probe separates would leave it
+    still -- so a mechanics change owes a probe, and adding one is itself the
+    recorded act. The other two sections carry no such residual: both are total
+    over their populations. See :data:`FINDINGS_SCHEMA_VERSION`'s own note for
+    what stays manual on the *storage* side, which this stamp does not reach.
+
+    Deterministic: the vocabularies, the alias map and the matching surfaces are
+    all serialized in sorted order, and the probes are a fixed tuple -- so the
+    stamp is a pure function of the grammar and not of dict or set iteration order
+    (no ``hash()``, no unordered iteration reaching an output).
+    """
+    material = "\n".join(
+        [
+            f"key={TRAILER_KEY}",
+            f"separator={SEPARATOR}",
+            "reviewers=" + ",".join(sorted(token.value for token in ReviewerToken)),
+            "aliases="
+            + ",".join(f"{raw}->{token.value}" for raw, token in sorted(_REVIEWER_ALIASES.items())),
+            "severities=" + ",".join(sorted(severity.value for severity in FindingSeverity)),
+            "reviewer-matching=" + ";".join(_matching_surface(ReviewerToken)),
+            "severity-matching=" + ";".join(_matching_surface(FindingSeverity)),
+            *(
+                f"probe[{probe_index}][{line_index}]={_probe_verdict(line)}"
+                for probe_index, probe in enumerate(_STAMP_PROBES)
+                for line_index, line in keyed_lines(probe)
+            ),
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+#: The current trailer-grammar identity (see :func:`_compute_parser_stamp`). A
+#: derived store records this beside its schema version; a stored value that no
+#: longer equals this one means the file was parsed by a superseded grammar --
+#: *detectable* staleness (ADR-0029, AC-4). Today the store's one writer rebuilds
+#: wholesale from git history on every run regardless of this comparison; a reader
+#: that trusts a store in place, and rebuilds only on a detected mismatch, is the
+#: serving slice this signal is for.
+PARSER_STAMP: Final = _compute_parser_stamp()

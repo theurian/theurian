@@ -49,12 +49,12 @@ from typing import Final, final
 
 from theurian.domain.errors import TheurianError
 from theurian.domain.review_finding import (
-    TRAILER_KEY,
     FindingLoad,
     MalformedTrailerError,
     RejectedTrailer,
     ReviewFinding,
     finding_from_trailer,
+    keyed_lines,
 )
 
 #: The one ref this source reads, fully qualified (ADR-0029 Amendment 1, D7). Not
@@ -266,9 +266,10 @@ class GitTrailerFindingSource:
                     ((record.sha, 0), RejectedTrailer(record.sha, record.date_iso, reason))
                 )
                 continue
-            for position, line in enumerate(record.message.split("\n")):
-                if not line.startswith(TRAILER_KEY):
-                    continue
+            # The extraction rule is `keyed_lines` in the domain, not a `startswith`
+            # written out here: which lines are candidates is grammar, and grammar
+            # the adapter owned privately was unreachable to PARSER_STAMP (#406).
+            for position, line in keyed_lines(record.message):
                 try:
                     finding = finding_from_trailer(
                         line, commit_sha=record.sha, committed_at=committed_at

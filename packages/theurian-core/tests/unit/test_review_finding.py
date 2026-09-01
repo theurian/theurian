@@ -8,8 +8,12 @@ adapter's scoping and loss-free mapping are exercised against real repositories 
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import override
 
 import pytest
 
@@ -343,27 +347,30 @@ def test_the_parser_stamp_changes_when_any_grammar_element_changes(
 ) -> None:
     """Each of the five hashed vocabulary constants is an input to the stamp.
 
-    ``_compute_parser_stamp`` hashes exactly five things (see its own docstring):
-    the trailer key, the separator, the two closed vocabularies, and the alias
-    map. It does **not** cover the parser's mechanics -- the space consumed after
-    the key, the ``<reviewer> <SEVERITY>`` token split, and the column-0
-    extraction rule that decides which body line reaches the parser at all -- so
-    "every element of the grammar" overstates what this test can catch: a change
-    to one of those mechanics leaves every case below green while the accepted
-    set still changed (recorded gap, production commit ``ebec475``). What this
-    test does pin is narrower and still real: if any of the five hashed
-    constants stopped feeding the hash, a change to *that* constant would leave
-    the stamp unchanged and a superseded store would read as current -- the
+    This covers the stamp's **vocabulary** section only: the trailer key, the
+    separator, the two closed vocabularies, and the alias map. The other two
+    sections have their own drivers below --
+    :func:`test_the_parser_stamp_moves_when_a_parser_mechanic_widens` for the
+    behaviour probes, and
+    :func:`test_the_parser_stamp_moves_when_a_vocabulary_gains_a_matching_hook` for
+    the matching surface -- because a change to one section leaves the other two
+    byte-identical, which is the whole reason there are three.
+
+    Until #406 the vocabulary section was the *only* section, so a widening of the
+    parser's mechanics or of a vocabulary's matching behaviour left every case
+    below green while the accepted set had changed (recorded gap, production commit
+    ``ebec475``). What this case set pins, then and now, is that if any of the five
+    hashed constants stopped feeding the hash, a change to *that* constant would
+    leave the stamp unchanged and a superseded store would read as current -- the
     forcing function silently broken for that element.
 
-    Each case swaps one of the five constants for a materially different value
-    and asserts the recomputed stamp differs from the live :data:`PARSER_STAMP`.
-    Because the stamp
-    is derived from the live module globals at call time, this exercises the real
-    ``_compute_parser_stamp``: a source that dropped, say, the ``separator=`` line
-    from the hashed material would produce the *same* stamp here for a changed
-    separator, and the ``separator`` case would fail -- which is exactly the
-    regression this pins against.
+    Each case swaps one of the five constants for a materially different value and
+    asserts the recomputed stamp differs from the live :data:`PARSER_STAMP`.
+    Because the stamp is derived from the live module globals at call time, this
+    exercises the real ``_compute_parser_stamp``: a source that dropped, say, the
+    ``separator=`` line from the hashed material would produce the *same* stamp
+    here for a changed separator, and the ``separator`` case would fail -- which is
+    exactly the regression this pins against.
     """
     if attribute == "ReviewerToken":
         replacement = _reviewer_enum_with_extra()
@@ -382,3 +389,249 @@ def test_the_parser_stamp_changes_when_any_grammar_element_changes(
         f"that differs only in {attribute} would read as current instead of being "
         f"rebuilt (ADR-0029 decision 2, AC-4)."
     )
+
+
+# --- #406: the mechanics and the matching surface feed the stamp too --------
+#
+# Each widening below is written as a stand-in for the corresponding source edit:
+# it normalises exactly what the widened mechanic would have tolerated and then
+# delegates to the real parser, so it changes precisely one answer class and
+# nothing else. The equivalent edits made directly in the source of
+# `parse_trailer_line` / `keyed_lines` are demonstrated on PR #492; these are the
+# committed drivers, so a future change that unbinds a mechanic reddens here
+# rather than waiting for someone to re-run a mutation by hand.
+
+_ParseTrailer = Callable[[str], tuple[ReviewerToken, FindingSeverity, str]]
+
+
+def _tolerating_a_tab_after_the_key(original: _ParseTrailer) -> _ParseTrailer:
+    """Widen the one mechanic that consumes a single ASCII space after the key."""
+
+    def parse(line: str) -> tuple[ReviewerToken, FindingSeverity, str]:
+        key = review_finding.TRAILER_KEY
+        if line.startswith(key + "\t"):
+            line = key + " " + line[len(key) + 1 :]
+        return original(line)
+
+    return parse
+
+
+def _tolerating_extra_prefix_tokens(original: _ParseTrailer) -> _ParseTrailer:
+    """Widen the `<reviewer> SP <SEVERITY>` arity to "the first two tokens win"."""
+
+    governed_arity = 2  # the `<reviewer> SP <SEVERITY>` count this widening drops
+
+    def parse(line: str) -> tuple[ReviewerToken, FindingSeverity, str]:
+        key, separator = review_finding.TRAILER_KEY, review_finding.SEPARATOR
+        prefix, found, text = line.removeprefix(key).lstrip(" ").partition(separator)
+        tokens = prefix.split(" ")
+        if found and len(tokens) > governed_arity:
+            line = f"{key} {tokens[0]} {tokens[1]}{separator}{text}"
+        return original(line)
+
+    return parse
+
+
+def _tolerating_a_case_insensitive_alias(original: _ParseTrailer) -> _ParseTrailer:
+    """Widen the alias lookup `_reviewer` applies to the first prefix token."""
+
+    def parse(line: str) -> tuple[ReviewerToken, FindingSeverity, str]:
+        key = review_finding.TRAILER_KEY
+        remainder = line.removeprefix(key).lstrip(" ")
+        first, space, rest = remainder.partition(" ")
+        if space and first.lower() in review_finding._REVIEWER_ALIASES:
+            line = f"{key} {first.lower()} {rest}"
+        return original(line)
+
+    return parse
+
+
+def _tolerating_an_indented_trailer(
+    _original: Callable[[str], tuple[tuple[int, str], ...]],
+) -> Callable[[str], tuple[tuple[int, str], ...]]:
+    """Widen the column-0 extraction rule to accept a leading-whitespace line."""
+
+    def extract(message: str) -> tuple[tuple[int, str], ...]:
+        return tuple(
+            (position, line.lstrip())
+            for position, line in enumerate(message.split("\n"))
+            if line.lstrip().startswith(review_finding.TRAILER_KEY)
+        )
+
+    return extract
+
+
+@pytest.mark.parametrize(
+    "mechanic, target, widen",
+    [
+        pytest.param(
+            "the single ASCII space consumed after the key",
+            "parse_trailer_line",
+            _tolerating_a_tab_after_the_key,
+            id="space-after-key",
+        ),
+        pytest.param(
+            "the <reviewer> SP <SEVERITY> two-token split",
+            "parse_trailer_line",
+            _tolerating_extra_prefix_tokens,
+            id="two-token-split",
+        ),
+        pytest.param(
+            "the alias lookup applied to the first token",
+            "parse_trailer_line",
+            _tolerating_a_case_insensitive_alias,
+            id="alias-lookup",
+        ),
+        pytest.param(
+            "the column-0 extraction rule",
+            "keyed_lines",
+            _tolerating_an_indented_trailer,
+            id="column-zero-extraction",
+        ),
+    ],
+)
+def test_the_parser_stamp_moves_when_a_parser_mechanic_widens(
+    monkeypatch: pytest.MonkeyPatch,
+    mechanic: str,
+    target: str,
+    widen: Callable[..., object],
+) -> None:
+    """#406: each of the four unbound mechanics now feeds the stamp, via the probes.
+
+    These four decide the accepted set as surely as the vocabularies do, and until
+    #406 none of them reached the stamp: a store built under the old mechanics read
+    as current under the widened ones. The stamp's behaviour section runs
+    :data:`_STAMP_PROBES` through :func:`keyed_lines` and
+    :func:`parse_trailer_line`, so a widening that changes any probe's answer moves
+    it.
+
+    Each case widens exactly one mechanic and asserts two things in order: that the
+    widening really did change an answer -- the premise, without which the stamp
+    assertion would be vacuous -- and that the stamp moved with it. The premise
+    check is what keeps this honest if a probe is ever deleted: a widening nothing
+    distinguishes fails here at the first assertion, naming the mechanic that lost
+    its probe, rather than silently passing.
+    """
+    original = getattr(review_finding, target)
+    before = review_finding._compute_parser_stamp()
+    monkeypatch.setattr(review_finding, target, widen(original))
+
+    widened_answers = [
+        review_finding._probe_verdict(line)
+        for probe in review_finding._STAMP_PROBES
+        for _position, line in review_finding.keyed_lines(probe)
+    ]
+    monkeypatch.setattr(review_finding, target, original)
+    original_answers = [
+        review_finding._probe_verdict(line)
+        for probe in review_finding._STAMP_PROBES
+        for _position, line in review_finding.keyed_lines(probe)
+    ]
+    assert widened_answers != original_answers, (
+        f"widening {mechanic} changed no probe answer, so no probe distinguishes "
+        f"it -- the stamp assertion below would pass vacuously. Add a probe for "
+        f"this mechanic to _STAMP_PROBES."
+    )
+
+    monkeypatch.setattr(review_finding, target, widen(original))
+    assert review_finding._compute_parser_stamp() != before, (
+        f"widening {mechanic} left PARSER_STAMP unchanged, so a store built under "
+        f"the narrower grammar reads as current under the wider one (ADR-0029 AC-4, "
+        f"issue #406)."
+    )
+
+
+def test_the_parser_stamp_moves_when_a_vocabulary_gains_a_matching_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#406's second face: a widened `_missing_` moves the stamp with no value changed.
+
+    An ``Enum._missing_`` hook widens what ``ReviewerToken(...)`` accepts while
+    every member's *value* stays byte-identical -- so the stamp's vocabulary
+    section, which serializes those values, cannot see it. The matching section
+    can: it records everything this codebase's source put on the class body, taken
+    as a difference against a plain ``StrEnum`` so the interpreter's own enum
+    machinery cancels.
+
+    Both halves are asserted, because either alone would be misleading: that the
+    five hashed *values* really are unchanged (the premise -- otherwise this would
+    be re-testing the vocabulary section), and that the stamp moved anyway.
+    """
+
+    class WidenedReviewerToken(StrEnum):
+        """A reviewer vocabulary that accepts its own members in any case."""
+
+        CODE_REVIEW = "code-review"
+        SECURITY = "security"
+        ADVERSARIAL = "adversarial"
+
+        @classmethod
+        @override
+        def _missing_(cls, value: object) -> WidenedReviewerToken | None:
+            if isinstance(value, str):
+                return cls.__members__.get(value.upper().replace("-", "_"))
+            return None
+
+    # The premise: the member values are identical, so the vocabulary section of
+    # the material is byte-for-byte what it was.
+    assert sorted(t.value for t in WidenedReviewerToken) == sorted(t.value for t in ReviewerToken)
+    # ... and the widening is real: the narrow vocabulary refuses what it accepts.
+    assert WidenedReviewerToken("CODE-REVIEW") is WidenedReviewerToken.CODE_REVIEW
+    with pytest.raises(ValueError, match="CODE-REVIEW"):
+        ReviewerToken("CODE-REVIEW")
+
+    monkeypatch.setattr(review_finding, "ReviewerToken", WidenedReviewerToken)
+
+    assert review_finding._compute_parser_stamp() != PARSER_STAMP, (
+        "a vocabulary that gained an Enum._missing_ hook left PARSER_STAMP "
+        "unchanged: matching behaviour is unbound again, so a store built before "
+        "the hook reads as current after it (issue #406's follow-up face)."
+    )
+
+
+def test_the_matching_surface_is_empty_for_a_vocabulary_that_adds_nothing() -> None:
+    """The matching section's control: today both vocabularies add nothing at all.
+
+    Without this, the sibling test above could pass for the wrong reason -- a
+    surface that reported some constant non-empty noise would also "change" when a
+    hook landed. Measured here instead: a plain ``StrEnum`` and both governed
+    vocabularies all reduce to the empty tuple, so every entry the stamp ever sees
+    in this section is something this codebase's own source put there.
+    """
+
+    class Plain(StrEnum):
+        """A plain vocabulary, for the control."""
+
+        ONLY = "only"
+
+    assert review_finding._matching_surface(Plain) == ()
+    assert review_finding._matching_surface(ReviewerToken) == ()
+    assert review_finding._matching_surface(FindingSeverity) == ()
+
+
+def test_the_parser_stamp_is_byte_identical_across_two_fresh_interpreters() -> None:
+    """The stamp is a function of the grammar, not of a process (ADR-0029 AC-6).
+
+    A store records this value and a later process compares against it, so a stamp
+    that varied per run would mark every store stale at once. Two separate
+    interpreters, not two calls in this one: a same-process comparison cannot see a
+    ``PYTHONHASHSEED``-dependent iteration order, which is exactly the way a
+    derived constant most often stops being deterministic.
+
+    This is also what the choice of a *behavioural* bind buys over a bytecode or
+    ``ast.dump`` digest: the material is Python semantics, so nothing in it can
+    drift when the interpreter changes underneath unchanged source.
+    """
+    read_stamp = "from theurian.domain.review_finding import PARSER_STAMP; print(PARSER_STAMP)"
+    runs = [
+        subprocess.run(  # noqa: S603
+            [sys.executable, "-c", read_stamp],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        for _ in range(2)
+    ]
+
+    assert runs[0] == runs[1]
+    assert runs[0] == PARSER_STAMP
