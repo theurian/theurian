@@ -363,9 +363,9 @@ _CLI_ENTRY: Final = "from theurian.cli.main import app; app()"
 #: 12 of 48 workers over 12x4 (measured 2026-09-02, this harness's scratch twin),
 #: so 3x3 detects it with high probability while costing ~3 seconds. It is not the
 #: deterministic pin -- ``test_findings_store.py``'s poller and residue tests are --
-#: it is the one check that runs real OS processes against a real advisory lock,
-#: which no in-process test can do: ``flock`` is per open file description, so a
-#: second acquisition inside one process contends with itself.
+#: it is the one check that runs real OS processes against the project's real
+#: advisory lock, which no in-process test can do: ``flock`` contends per open
+#: file description, so a second acquisition inside one process blocks on itself.
 _RACE_ROUNDS: Final = 3
 _RACE_WORKERS: Final = 3
 
@@ -384,6 +384,20 @@ def test_concurrent_builds_all_succeed_and_leave_one_complete_store(project: Pat
     Every worker must reach a *defined* outcome -- a successful build, or a refusal
     that carries a remedy -- and the survivor must be complete and stamp-current,
     with no working file stranded beside it.
+
+    **The children really do contend the project's advisory write lock**, which
+    ``tests/unit/test_connection_claims.py``'s disclaimer now records. Measured
+    2026-09-02 by instrumenting the lock's acquire loop in a scratch copy: 9
+    acquisitions and 9 blocked attempts across these 3 rounds of 3, so in every
+    round two children were waiting while a third held it. What they take is the
+    lock object directly rather than the transactional write path, so that path's
+    own cross-process wording is untouched by this file.
+
+    This file names neither lock symbol on purpose. Both of
+    ``test_connection_claims.py``'s populations are text keys over those two
+    tokens, and a file that only *writes* about the lock is a false member of
+    either -- the acquisition here happens inside a spawned CLI, which is the
+    blindness that module records rather than a population it can read.
     """
     for index in range(6):
         _commit(

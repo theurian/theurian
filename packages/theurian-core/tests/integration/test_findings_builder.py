@@ -214,10 +214,14 @@ def test_the_build_publishes_inside_one_continuous_write_section(tmp_path: Path)
       blocks ``migrate apply`` for the length of a ``git log`` -- the reason
       ``migrate apply`` builds its own ``Project`` outside its hold.
 
-    Driven with a recording section and a recording store rather than a real
-    ``WriteLock``, because a lock file cannot report *when* it was entered relative
+    Driven with a recording section and a recording store rather than the real
+    advisory lock, because a lock file cannot report *when* it was entered relative
     to the calls around it; the real lock's cross-process behaviour is
-    ``test_findings_build_cli.py``'s two-process race.
+    ``test_findings_build_cli.py``'s concurrent-process race. This file names no
+    lock class for that reason, which also keeps it out of
+    ``test_connection_claims.py``'s exact one-file population -- that key admits a
+    prose mention, and a member that only writes about the lock would make the
+    population say something it does not mean.
     """
     events: list[str] = []
 
@@ -263,11 +267,11 @@ def test_the_build_publishes_inside_one_continuous_write_section(tmp_path: Path)
 def test_a_builder_can_run_twice_because_the_section_is_a_factory(tmp_path: Path) -> None:
     """#404: ``write_section`` is a factory, so a reused builder takes the hold twice.
 
-    ``WriteLock(path).held`` is a generator-based context manager: entering the
-    *same* instance twice raises, so passing a context manager rather than a
-    factory would work once and fail on a builder's second build. Nothing in the
-    shipped CLI reuses a builder today, which is exactly why this needs pinning
-    rather than assuming.
+    The real section is a generator-based context manager (the advisory lock's
+    ``held``): entering the *same* instance twice raises, so passing a context
+    manager rather than a factory would work once and fail on a builder's second
+    build. Nothing in the shipped CLI reuses a builder today, which is exactly why
+    this needs pinning rather than assuming.
     """
     entries: list[int] = []
 

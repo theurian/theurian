@@ -141,16 +141,46 @@ great deal of ordinary port surface, and a pin that fires on it gets deleted.
   and never flocked it. ``test_adr_0018_claims.py`` disclaims the same about its
   own path arithmetic, and the behaviour is held by
   ``tests/integration/test_canonical_store.py``.
-- **No test in this repository contends the write lock across two OS
-  processes.** *Contends*, not *takes*: the sentence that stood here until #441's
-  second review round said "takes ... from a second OS process", and it was
-  false. ``tests/e2e/test_migration_workflow.py`` runs ``theurian migrate apply``
-  as a child, and that child does take the lock -- ``cli/commands.py`` and
-  ``cli/migration_pipeline.py`` are the only two ``write_transaction`` call sites
-  in ``src`` and both are on the CLI's own path (measured 2026-08-31,
-  ``git grep -n 'write_transaction' -- packages/theurian-core/src``). What no
-  test does is hold it from two processes **at once**, and that is the claim the
-  two population tests below hold.
+- **Two tests contend the write lock across OS processes, and neither key below
+  can see either of them.** The sentence that stood here said no test did, and it
+  had already stopped being true before the paragraph was re-read: *contends*, not
+  *takes*, was #441's second-round correction, and the contending tests arrived
+  afterwards.
+
+  ``tests/e2e/test_migration_workflow.py`` is still the serial case:
+  ``theurian migrate apply`` in a child, which does take the lock --
+  ``cli/commands.py`` and ``cli/migration_pipeline.py`` are the only two
+  ``write_transaction`` call sites in ``src`` and both are on the CLI's own path
+  (measured 2026-08-31, ``git grep -n 'write_transaction' --
+  packages/theurian-core/src``) -- one child at a time, so it never contends.
+
+  The two that do:
+
+  - ``tests/e2e/test_migrate_apply_concurrency.py`` (#468, landed 2026-09-01 in
+    ``266e6b6``) runs **two** ``theurian migrate apply`` processes at once, each
+    entering ``write_transaction``. So "two processes that both enter here
+    serialise" became a measured property that day, not an inherited one, and the
+    sentence below saying otherwise was stale from then.
+  - ``tests/integration/test_findings_build_cli.py`` (#404) starts three
+    ``theurian findings build`` children at once, each taking the project's
+    advisory lock **directly** rather than through ``write_transaction``. Measured
+    2026-09-02 by instrumenting the acquire loop in a scratch copy: 9 acquisitions
+    and 9 blocked attempts across 3 rounds of 3, so every round had two children
+    waiting on a third.
+
+  Both are invisible here for the same recorded reason: their acquisition happens
+  inside a spawned CLI, so neither names either symbol the keys search for. The
+  first is *in* the wider population -- its own prose spells ``write_transaction``
+  -- and the rule still admits it, because it starts its children with
+  ``subprocess.run`` on threads, a shape the concurrency rule cannot read (see the
+  thread residue below). **So the wider tier's rule now passes over a member that
+  does exactly what it exists to detect.** Recorded here rather than fixed in
+  passing: widening the rule to catch it is a change to what this module measures,
+  owed its own read.
+
+  What the two population tests below hold is therefore narrower than the sentence
+  they used to serve: over *their* populations, no member holds the lock from two
+  processes at once by a construct they can see.
 
   They hold it in two tiers, because one key cannot do both jobs:
 
@@ -162,40 +192,49 @@ great deal of ordinary port surface, and a pin that fires on it gets deleted.
     path, since contention is per open file description rather than per process.
   - ``test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself``
     keys on ``WriteLock|write_transaction`` and refuses only a construct by which
-    a second OS process can be **running while the test is**. **Ten files**, and
-    the number is a dated measurement rather than a property -- taken 2026-08-31
-    at #446 by the self-excluding key
+    a second OS process can be **running while the test is**. **Eleven files**, and
+    the number is a dated measurement rather than a property -- taken 2026-09-02 at
+    #404 by the self-excluding key
     ``git grep -lP '\\bWriteLock\\b|\\bwrite_transaction\\b' --
     packages/theurian-core/tests tests ':!*test_connection_claims.py'``, which is
     the population the tier actually scans: the rule drops this module before it
     looks at anything, so the same key without the pathspec -- the *raw* grep,
-    which answers eleven -- describes a set the tier never reads. The figure
-    written here said *nine* while the tree held ten, and then *eleven* off the
-    raw grep; a count in prose churns on every new member **and** on whichever
-    key its author reached for, which is why the test asserts a property and not
-    this list.
+    which answers twelve -- describes a set the tier never reads. It read *ten* at
+    2026-08-31 (#446); the one member since is
+    ``tests/e2e/test_migrate_apply_concurrency.py`` (#468). Earlier the figure said
+    *nine* while the tree held ten, and *eleven* off the raw grep; a count in prose
+    churns on every new member **and** on whichever key its author reached for,
+    which is why the test asserts a property and not this list.
 
-    Four of the ten name ``subprocess``, and that is not a finding. All four are
-    integration tests and every one of them uses ``subprocess.run``, which blocks
-    until the child exits, so the child cannot be holding the lock while the
-    parent is. The eleventh file the raw grep returns is this module, which names
-    the word only in the prose you are reading, and the tier excludes it before
-    the rule runs. A rule that refused ``subprocess`` outright would report four
-    false positives and teach the next author to delete it. This tier asserts a
-    property rather than an exact file list, because ``write_transaction`` is how
-    an ordinary integration test seeds a database and pinning that list would
-    churn on every new one.
+    Five of the eleven name ``subprocess``, and four of those are not a finding:
+    each uses ``subprocess.run``, which blocks until the child exits, so the child
+    cannot be holding the lock while the parent is. The fifth,
+    ``tests/e2e/test_migrate_apply_concurrency.py``, runs two of them on threads
+    and therefore *does* contend -- the residue the module docstring records above,
+    and the reason that paragraph no longer claims this tier's population is clean
+    in fact rather than clean to its key. The twelfth file the raw grep returns is
+    this module, which names the words only in the prose you are reading, and the
+    tier excludes it before the rule runs. A rule that refused ``subprocess``
+    outright would report four false positives and teach the next author to delete
+    it. This tier asserts a property rather than an exact file list, because
+    ``write_transaction`` is how an ordinary integration test seeds a database and
+    pinning that list would churn on every new one.
 
   So the cross-process wording these docstrings carry ("two processes that both
-  enter here serialise") remains a property of ``fcntl.flock`` rather than
-  something the suite measures.
+  enter here serialise") is no longer only a property of ``fcntl.flock``: the two
+  e2e/integration tests named above measure it, one through ``write_transaction``
+  and one through the lock class. It is not measured *by anything in this module*,
+  which is the distinction the two tiers below keep.
 
   **The blindness, stated rather than papered over.** Both keys are text searches
   for two symbols, and a test whose only acquisition happens inside a spawned
-  CLI names neither. ``tests/e2e/test_migration_workflow.py`` is exactly that
-  file: it is in neither population, and widening the key does not reach it --
-  what it names is the installed entry point. Its serialness is established by
-  reading it (``subprocess.run``, which waits), not by anything asserted here.
+  CLI names neither. ``tests/e2e/test_migration_workflow.py``,
+  ``tests/e2e/test_migrate_apply_concurrency.py`` and
+  ``tests/integration/test_findings_build_cli.py`` are exactly those files -- what
+  they name is the entry point, and widening the key does not reach it. The first
+  one's serialness is established by reading it (``subprocess.run``, which waits);
+  the other two are deliberately not serial, and what they measure is written down
+  above rather than asserted here.
   Nor can a text scan see a thread that runs ``subprocess.run`` concurrently: a
   ``\\bThread\\b`` token was measured against the tree on 2026-08-31 and fires on
   this module's own English ("Thread a connection ... through these signatures"),
