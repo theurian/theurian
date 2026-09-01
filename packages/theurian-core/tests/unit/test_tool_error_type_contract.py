@@ -46,8 +46,11 @@ and pin that a real crash is still withheld.
 from __future__ import annotations
 
 import ast
+import functools
 import inspect
 import pathlib
+from collections.abc import AsyncIterator, Iterator
+from typing import Any
 
 import pytest
 from mcp.server import MCPServer
@@ -62,7 +65,7 @@ from theurian.infrastructure.sqlite.connection import (
     StateDatabaseUnreadableError,
     WriteLockTimeoutError,
 )
-from theurian.mcp.tools import ToolError, _forwarding, _tool
+from theurian.mcp.tools import DEFERRED_RESULT_REFUSAL, ToolError, _forwarding, _tool
 
 pytestmark = pytest.mark.unit
 
@@ -256,8 +259,20 @@ def test_a_below_surface_refusal_reaches_the_wire_with_its_own_text_and_nothing_
         "the seam must forward the refusal's own text unchanged; anything else "
         "publishes bytes this wire has never carried"
     )
+    # `from exc`, not `from None`. The reason is *not* the server-side log:
+    # measured against mcp 2.1.1, a forwarded refusal takes the SDK's info arm
+    # (`logger.info("Tool %r failed: %r", name, str(exc))`, server.py:438) which
+    # passes no `exc_info`, so the chain is never rendered there -- only the
+    # crash arm's `logger.exception` would render it, and a converted refusal
+    # never reaches that arm. What `__cause__` is actually worth: it keeps the
+    # original object recoverable in-process, which is what lets a test compare
+    # the forwarded text against the refusal that produced it rather than
+    # against a copy of its own expectation; and `from None` would additionally
+    # suppress the chain for a crash *inside* the conversion, which is the one
+    # case that does reach `logger.exception`.
     assert converted.value.__cause__ is original, (
-        "the original must stay on `__cause__` so the server-side log still has it"
+        "the refusal that produced this text must stay recoverable on `__cause__`; "
+        "`from None` would erase the only in-process link back to it"
     )
 
 
@@ -367,33 +382,195 @@ def test_the_seam_keeps_the_signature_the_sdk_builds_schemas_from() -> None:
     assert wrapped.__name__ == answer.__name__
 
 
-def test_registering_an_async_tool_through_the_seam_is_refused() -> None:
-    """The guard, driven -- not merely present.
+def test_the_seam_leaves_the_sdk_derived_tool_metadata_byte_identical() -> None:
+    """The stronger property, over what the SDK *derived* rather than what it read.
 
-    ``_forwarding``'s wrapper is synchronous. Applied to a coroutine function it
-    would return an un-awaited coroutine and catch nothing, so every
-    below-surface refusal would go back to being withheld, silently and only
-    under mcp >= 2.1. Refused at registration instead, where it is a startup
-    failure.
+    ``inspect.signature`` following ``__wrapped__`` is exactly what
+    ``functools.wraps`` promises, so the comparison above can pass while the SDK
+    still built something different -- it does its own ``get_type_hints`` and
+    pydantic model construction, and those read attributes ``wraps`` does not
+    copy. Comparing the *products* closes that gap: register one function through
+    the seam and its twin raw, then compare every field the SDK derived.
+
+    ``arg_model`` is compared by JSON schema rather than by identity, because
+    pydantic builds a distinct model class per registration; the schema is the
+    thing that reaches the wire.
     """
-    server = MCPServer("guard-probe")
 
-    async def later() -> str:  # pragma: no cover - never called, only registered
+    def answer(projectId: str, limit: int = 10) -> dict[str, str]:  # noqa: N803
+        """A tool docstring the SDK turns into a description."""
+        return {}
+
+    through_the_seam = MCPServer("seam")
+    raw = MCPServer("raw")
+    _tool(through_the_seam, name="probe")(answer)
+    raw.tool(name="probe")(answer)
+
+    seamed_tool = through_the_seam._tool_manager.get_tool("probe")
+    raw_tool = raw._tool_manager.get_tool("probe")
+    assert seamed_tool is not None and raw_tool is not None
+
+    # Every field the SDK models, rather than a list someone remembered to
+    # extend. `fn` is necessarily different -- that is the whole change -- and
+    # `fn_metadata` holds pydantic model *classes* built fresh per registration,
+    # so it is compared through the schemas it derives instead.
+    derived = set(type(seamed_tool).model_fields) - {"fn", "fn_metadata"}
+    assert {"parameters", "is_async", "context_kwarg", "description"} <= derived, (
+        "the SDK's Tool model no longer carries the fields this comparison exists "
+        "to check; re-read it rather than trusting the loop below"
+    )
+    for field in sorted(derived):
+        assert getattr(seamed_tool, field) == getattr(raw_tool, field), (
+            f"the seam changed the SDK-derived `{field}`, so the published tool "
+            f"contract is not the one the raw registration would have produced"
+        )
+
+    seamed_meta, raw_meta = seamed_tool.fn_metadata, raw_tool.fn_metadata
+    assert seamed_meta.arg_model.model_json_schema() == raw_meta.arg_model.model_json_schema()
+    assert seamed_meta.output_schema == raw_meta.output_schema
+    assert seamed_meta.wrap_output == raw_meta.wrap_output
+
+    # The control: the two really are different objects, so the equalities above
+    # are comparing two derivations rather than one object with itself.
+    assert seamed_tool is not raw_tool
+    assert seamed_tool.fn is not raw_tool.fn
+
+
+def _deferring_shapes() -> dict[str, object]:
+    """Every callable shape that returns before its body runs.
+
+    Built in a function rather than at module scope so the generator and
+    async-generator definitions are not module-level statements pytest collects.
+    """
+
+    async def coroutine_function() -> str:  # pragma: no cover - only registered
         return "x"
 
-    with pytest.raises(TypeError, match="async"):
-        _tool(server, name="later")(later)
+    async def async_generator_function() -> AsyncIterator[str]:  # pragma: no cover
+        yield "x"
+
+    def generator_function() -> Iterator[str]:  # pragma: no cover
+        yield "x"
+
+    class AsyncCallable:
+        async def __call__(self) -> str:  # pragma: no cover
+            return "x"
+
+    class AsyncGenCallable:
+        async def __call__(self) -> AsyncIterator[str]:  # pragma: no cover
+            yield "x"
+
+    class GenCallable:
+        def __call__(self) -> Iterator[str]:  # pragma: no cover
+            yield "x"
+
+    return {
+        "coroutine function": coroutine_function,
+        "async generator function": async_generator_function,
+        "generator function": generator_function,
+        "object with an async __call__": AsyncCallable(),
+        "object with an async-generator __call__": AsyncGenCallable(),
+        "object with a generator __call__": GenCallable(),
+        "functools.partial of a coroutine function": functools.partial(coroutine_function),
+    }
+
+
+@pytest.mark.parametrize("shape", sorted(_deferring_shapes()))
+def test_registering_a_deferring_callable_through_the_seam_is_refused(shape: str) -> None:
+    """The guard, driven over every shape it claims -- not merely present.
+
+    ``_forwarding``'s wrapper is synchronous, and its ``except`` arms only see
+    what is raised *while it is on the stack*. Any callable that hands back an
+    object and runs its body later escapes them, so the #491 conversion silently
+    stops applying -- and only under mcp >= 2.1, where the un-converted refusal
+    is withheld.
+
+    The first version of this guard asked ``inspect.iscoroutinefunction`` alone,
+    which is one of these seven. A generator function is not async at all; a
+    callable *object* carries its deferral on ``type(fn).__call__`` rather than
+    on the instance, so the instance answers ``False`` to every ``inspect``
+    predicate asked of it directly.
+
+    ``functools.partial`` is here for the message rather than the predicate: it
+    has no ``__name__``, and a guard that built its refusal from ``fn.__name__``
+    raised ``AttributeError`` from inside itself. That still refused the
+    registration -- it failed closed -- but named nothing.
+    """
+    server = MCPServer("guard-probe")
+    fn = _deferring_shapes()[shape]
+
+    with pytest.raises(TypeError, match="defers its body"):
+        _tool(server, name="probe")(fn)  # type: ignore[arg-type]
+
+
+def test_a_plain_def_returning_a_coroutine_is_refused_at_call_time() -> None:
+    """The fourth face, which no registration-time predicate can see.
+
+    A plain ``def`` that *returns* a coroutine is indistinguishable from a
+    well-behaved tool until it is called: its body has not run when
+    ``_forwarding``'s ``except`` arms are on the stack, so they protect nothing,
+    and the SDK does not await a synchronous tool's return value. Measured, the
+    result was serialised as a *success* carrying ``<coroutine object ...>`` --
+    a caller receiving a Python repr as knowledge.
+
+    Chosen over recording it as a residual because the information exists at the
+    one moment it is needed, in the wrapper, at no cost to any real tool: the
+    five registered tools return ``dict``, and an awaitable return is never a
+    legitimate result on this surface.
+    """
+    coroutine_returned: Any = None
+
+    def looks_synchronous() -> Any:
+        nonlocal coroutine_returned
+
+        async def body() -> str:
+            return "x"
+
+        coroutine_returned = body()
+        return coroutine_returned
+
+    try:
+        with pytest.raises(ToolError, match="un-awaited object"):
+            _forwarding(looks_synchronous)()
+    finally:
+        if coroutine_returned is not None:
+            coroutine_returned.close()  # or Python warns about it, and warnings are errors
+
+
+def test_the_deferred_result_refusal_carries_nothing_but_the_tool_name() -> None:
+    """The new refusal is a constant, like ``SEARCH_CAPACITY_REFUSAL`` before it.
+
+    A refusal that varied with the request would be the
+    "an error that fires for one input and not another" channel SEC-13 closes
+    everywhere else on this surface. This one interpolates the tool function's
+    own name and nothing more -- and a tool's name is what ``tools/list``
+    already publishes.
+    """
+    assert DEFERRED_RESULT_REFUSAL.count("{") == 1
+    assert "{tool}" in DEFERRED_RESULT_REFUSAL
+    rendered = DEFERRED_RESULT_REFUSAL.format(tool="knowledge.search")
+    assert "knowledge.search" in rendered
+    for leaked in ("projectId", "query", "coroutine object", "Traceback"):
+        assert leaked not in rendered
 
 
 def test_every_tool_is_registered_through_the_one_seam() -> None:
-    """A tool registered any other way silently opts out of the conversion.
+    """No *decorator* in ``register`` names anything but ``_tool``.
 
-    The failure this closes is not hypothetical: one-conversion-per-tool-body is
-    the shape that let ``knowledge.get`` and ``knowledge.search`` disagree about
-    the same store failure before ``_with_remedy`` was factored out. Read off
-    the source rather than off the server object, because what has to be pinned
-    is that no *future* registration bypasses the seam -- a fact about the code,
-    not about one built server.
+    **This is the narrower of two pins, and its limits are the point.** It reads
+    spelling: the decorator each tool carries. That catches a sixth tool added
+    with ``@server.tool`` and nothing else. It does **not** catch a bypass inside
+    ``_tool`` itself -- deleting ``_forwarding``'s application leaves every
+    decorator identical, and the adversarial round confirmed the full suite
+    stayed green (4632 passed) under exactly that mutation while the #491
+    remedies were withheld again under mcp 2.1.1.
+
+    The pin that closes that is
+    ``tests/integration/test_mcp_tools.py::test_every_registered_tool_goes_through_the_forwarding_seam``,
+    which asks the built server whether each ``Tool.fn`` is actually the
+    wrapper. This one is kept because it fails *earlier* and names the offending
+    decorator, which the runtime pin cannot do -- but the universality claim
+    rests on the runtime pin, not on this.
     """
     source = pathlib.Path(inspect.getsourcefile(tools_module) or "").read_text(encoding="utf-8")
     tree = ast.parse(source)

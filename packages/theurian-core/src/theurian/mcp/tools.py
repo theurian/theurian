@@ -188,6 +188,20 @@ class ToolError(TheurianError, SdkToolError):
     """
 
 
+#: What a caller sees when a registered tool hands back an un-run body.
+#:
+#: Interpolates the *tool function's* name and nothing else -- no argument, no
+#: `projectId`, nothing read from a store -- so it cannot become the
+#: "an error that fires for one input and not another" channel SEC-13 closes
+#: elsewhere. It fires for one *tool* and not another, which discloses only what
+#: `tools/list` already publishes.
+DEFERRED_RESULT_REFUSAL: Final = (
+    "The tool {tool} returned an un-awaited object instead of a result. This is a "
+    "defect in this daemon, not something your request can fix; the daemon's own "
+    "logs name it. Nothing was read and nothing was changed."
+)
+
+
 def _forwarding[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     """Let a deliberate refusal raised *below* this module still reach the caller.
 
@@ -225,13 +239,62 @@ def _forwarding[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     @functools.wraps(fn)
     def forwarding(*args: P.args, **kwargs: P.kwargs) -> R:
         try:
-            return fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
         except ToolError:
             raise
         except TheurianError as exc:
             raise ToolError(str(exc)) from exc
+        if inspect.isawaitable(result) or inspect.isasyncgen(result):
+            # The one deferral `_defers_its_body` cannot see at registration: a
+            # plain `def` that *returns* a coroutine. Its body has not run yet,
+            # so the `except` arms above protected nothing, and the SDK -- which
+            # does not await a sync tool's return value -- would serialise the
+            # object's `repr` as a successful result. A caller would receive
+            # `<coroutine object ...>` as knowledge.
+            #
+            # Refused rather than awaited: awaiting here would need an event
+            # loop this synchronous worker thread does not own, and a tool
+            # shaped this way is a defect in the daemon rather than something a
+            # caller can retry into working. The message is a constant apart
+            # from the tool's own name, which the caller supplied.
+            raise ToolError(DEFERRED_RESULT_REFUSAL.format(tool=getattr(fn, "__name__", "?")))
+        return result
 
     return forwarding
+
+
+def _defers_its_body(fn: object) -> bool:
+    """Whether calling ``fn`` returns *before* its body runs.
+
+    The predicate `_tool`'s guard needs, and it is not "is it async". What
+    breaks :func:`_forwarding` is any callable that hands back an object and
+    runs its body later, outside the ``try`` -- so the refusal is raised when
+    the wrapper is no longer on the stack and the ``except`` arm cannot see it.
+    Three shapes do that, and a first version of this guard named only the first:
+
+    * a coroutine function -- awaited later;
+    * an async generator function -- iterated later;
+    * a plain generator function -- iterated later. Not async at all, which is
+      why an "is it async" predicate misses it.
+
+    Each is asked twice: once of ``fn`` itself, and once of ``type(fn).__call__``
+    for a callable *object*, whose deferral lives on the method rather than on
+    the instance. ``inspect.iscoroutinefunction`` answers ``False`` for an
+    instance of a class whose ``__call__`` is ``async def``.
+
+    **The fourth shape is not decidable here and is deliberately left to
+    runtime.** A plain ``def`` that *returns* a coroutine looks exactly like a
+    well-behaved tool at registration; nothing short of calling it can tell.
+    :func:`_forwarding` checks its own result for that instead -- see the
+    awaitable branch there -- which is where the information exists.
+    """
+    deferring = (
+        inspect.iscoroutinefunction,
+        inspect.isasyncgenfunction,
+        inspect.isgeneratorfunction,
+    )
+    call = getattr(type(fn), "__call__", None)  # noqa: B004 -- the method, not a call
+    return any(test(fn) for test in deferring) or any(test(call) for test in deferring)
 
 
 def _tool[**P, R](
@@ -244,9 +307,19 @@ def _tool[**P, R](
     reaches the caller" is a property of the *surface*, not of five separately
     remembered tool bodies -- the shape that let ``knowledge.get`` and
     ``knowledge.search`` disagree about the same store failure in the first
-    place. A tool registered any other way silently opts out, which is why
-    ``test_mcp_tools.py`` pins that no ``server.tool`` call remains in
-    ``register``.
+    place.
+
+    **A tool registered any other way silently opts out, and two different pins
+    catch that -- because one of them cannot.**
+    ``tests/unit/test_tool_error_type_contract.py::test_every_tool_is_registered_through_the_one_seam``
+    reads ``register``'s AST and catches a *decorator* that names something other
+    than ``_tool``. It cannot catch a bypass inside this function: deleting
+    :func:`_forwarding`'s application below leaves that decorator untouched, and
+    the whole suite stayed green under exactly that mutation while every #491
+    remedy went back to being withheld under mcp >= 2.1.
+    ``tests/integration/test_mcp_tools.py::test_every_registered_tool_goes_through_the_forwarding_seam``
+    is the pin that cannot be spelled around: it asks the *built* server whether
+    each registered ``Tool.fn`` carries ``functools.wraps``' ``__wrapped__``.
 
     ``functools.wraps`` keeps the wrapped signature, annotations and docstring,
     which is what the SDK reads to build each tool's input and output schema;
@@ -256,18 +329,27 @@ def _tool[**P, R](
     """
 
     def decorate(fn: Callable[P, R]) -> Callable[P, R]:
-        if inspect.iscoroutinefunction(fn):
-            # `_forwarding`'s wrapper is synchronous: applied to a coroutine
-            # function it would return an un-awaited coroutine and catch
-            # nothing, so every below-surface refusal would go back to being
-            # withheld -- silently, and only under mcp >= 2.1. Refused at
-            # registration, where it is a startup failure rather than a
-            # disclosure regression discovered by a caller.
+        if _defers_its_body(fn):
+            # `_forwarding`'s wrapper is synchronous, and its `except` arm only
+            # sees exceptions raised *while it is on the stack*. Any callable
+            # that returns before its body runs -- a coroutine function, an
+            # async generator, a plain generator -- hands back an object instead,
+            # and the refusal is raised later, when the wrapper is long gone. The
+            # conversion silently stops applying, and only under mcp >= 2.1.
+            # Refused at registration, where it is a startup failure rather than
+            # a disclosure regression discovered by a caller.
+            #
+            # `getattr` rather than `fn.__name__`: a `functools.partial` has no
+            # `__name__`, and building this message would raise `AttributeError`
+            # from inside the guard -- a refusal either way, but one that names
+            # nothing.
             msg = (
-                f"{fn.__name__} is async, and `_forwarding` only wraps synchronous "
-                f"tools. Give `_forwarding` an async branch before registering an "
-                f"async tool, or the below-surface refusal conversion (#491) will "
-                f"not apply to it."
+                f"{getattr(fn, '__name__', repr(fn))} defers its body (it is a "
+                f"coroutine, async generator, or generator function), and "
+                f"`_forwarding` only wraps callables that run their body when "
+                f"called. Give `_forwarding` a matching branch before registering "
+                f"it, or the below-surface refusal conversion (#491) will not "
+                f"apply to it."
             )
             raise TypeError(msg)
         registered: Callable[P, R] = server.tool(**registration)(_forwarding(fn))

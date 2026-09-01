@@ -9,6 +9,7 @@ same entry point the transport uses -- against a project built by the real CLI.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import json
 import re
 import sqlite3
@@ -2242,6 +2243,40 @@ def _referenced_names(function: Any) -> set[str]:
 
     Follows nested code objects, so a write hidden inside a comprehension or an
     inner helper is still visible.
+
+    **And follows ``__wrapped__``, which is what makes it see a tool body at
+    all.** Since #491 every tool is registered through ``mcp/tools.py``'s
+    ``_tool`` seam, so ``Tool.fn`` is ``_forwarding``'s wrapper; the wrapper
+    reaches the real body through a *free variable*, and a free variable is not
+    in ``co_consts``. Walking ``Tool.fn`` alone therefore returned the wrapper's
+    own three names -- ``TheurianError``, ``ToolError``, ``str`` -- instead of
+    the tool's twenty-three, and a planted ``append_revision`` inside a tool body
+    passed this guard while failing it on ``main``.
+
+    The whole chain is walked, wrapper *and* wrapped, rather than jumping to
+    ``inspect.unwrap``'s innermost function: a guard that stepped over
+    intermediate wrappers would stop seeing a write introduced *in* one. Nothing
+    is skipped, so the walk can only ever grow the name set.
+    """
+    seen: set[str] = set()
+    pending: list[Any] = []
+    fn: Any = function
+    while fn is not None and hasattr(fn, "__code__"):
+        pending.append(fn.__code__)
+        fn = getattr(fn, "__wrapped__", None)
+    while pending:
+        code = pending.pop()
+        seen.update(code.co_names)
+        pending.extend(c for c in code.co_consts if hasattr(c, "co_names"))
+    return seen
+
+
+def _names_without_following_wrapped(function: Any) -> set[str]:
+    """``_referenced_names``' walk with the ``__wrapped__`` hop removed.
+
+    Exists only so the premise check below can say what the hop is worth. Kept
+    beside the real walk rather than inlined, because the two must stay the same
+    walk in every respect but that one.
     """
     seen: set[str] = set()
     pending = [function.__code__]
@@ -2250,6 +2285,43 @@ def _referenced_names(function: Any) -> set[str]:
         seen.update(code.co_names)
         pending.extend(c for c in code.co_consts if hasattr(c, "co_names"))
     return seen
+
+
+def test_the_walk_reaches_a_real_tool_body(registry: ProjectRegistry) -> None:
+    """The premise the two bytecode guards rest on, asserted instead of assumed.
+
+    Both `test_no_registered_tool_can_reach_a_canonical_write` and the findings
+    companion answer a question of the form "is a forbidden name reachable from
+    this tool?", and both report *no* as clean. A walk that reaches nothing
+    therefore passes them while checking nothing -- which is exactly what
+    happened when the #491 seam made ``Tool.fn`` a wrapper whose body hangs off
+    a free variable: the walk over `knowledge.search` collapsed from
+    twenty-three names to the wrapper's three, and a planted ``append_revision``
+    passed both guards.
+
+    So this pins the *reach*, per tool and by name: following ``__wrapped__``
+    must strictly add names for every registered tool. Stated as a strict
+    superset rather than as a count, because a count is a number someone
+    updates and a superset is a property -- and if the seam were ever removed,
+    `test_every_registered_tool_goes_through_the_forwarding_seam` is what fails,
+    not this.
+    """
+    server = build_server(registry)
+    tools = server._tool_manager.list_tools()
+    assert tools, "an empty tool list would pass this test vacuously"
+
+    thin: dict[str, int] = {}
+    for tool in tools:
+        full = _referenced_names(tool.fn)
+        wrapper_only = _names_without_following_wrapped(tool.fn)
+        if not wrapper_only < full:
+            thin[tool.name] = len(full)
+
+    assert not thin, (
+        f"following `__wrapped__` added no name for these tools, so the guards "
+        f"that walk them are inspecting the wrapper rather than the tool body "
+        f"and would report a planted write as clean: {thin}"
+    )
 
 
 def test_the_write_gateway_still_guards_the_write_surface() -> None:
@@ -2274,6 +2346,15 @@ def test_no_registered_tool_can_reach_a_canonical_write(registry: ProjectRegistr
     `append_revision` and the tool list would look unchanged. This walks the
     bytecode of every registered tool instead, looking for both the write
     gateways and every individual write method.
+
+    **"Every registered tool" is a claim about what the walk reaches, and it
+    was briefly false.** ``Tool.fn`` is ``_forwarding``'s wrapper since #491,
+    and the wrapper holds the real body in a free variable that no ``co_consts``
+    walk enters -- so this test kept passing while inspecting three names
+    belonging to the wrapper. `_referenced_names` now follows ``__wrapped__``,
+    and `test_the_walk_reaches_a_real_tool_body` below is the premise check that
+    would have caught it: a guard whose reach is asserted nowhere reports an
+    empty search as a clean one.
     """
     forbidden = WRITE_GATEWAYS | _mutating_method_names()
     server = build_server(registry)
@@ -2290,6 +2371,64 @@ def test_no_registered_tool_can_reach_a_canonical_write(registry: ProjectRegistr
             offenders[tool.name] = reached
 
     assert not offenders, f"tools with a canonical write path: {offenders}"
+
+
+def test_every_registered_tool_goes_through_the_forwarding_seam(
+    registry: ProjectRegistry,
+) -> None:
+    """#491's seam is universal over the *built* server, not over a spelling.
+
+    The claim -- every registered tool converts a below-surface ``TheurianError``
+    so its remedy still reaches the caller under mcp >= 2.1 -- was pinned only by
+    an AST scan of ``register`` keyed on the substring ``server.tool`` and the
+    prefix ``_tool(``. That pin cannot fail on a real bypass: deleting
+    ``_forwarding``'s *application* (``server.tool(**registration)(fn)``) leaves
+    both keys intact, and the adversarial round confirmed the full suite stayed
+    green -- 4632 passed, identical to control -- while every #491 remedy went
+    back to being withheld under 2.1.1. Six bypass shapes pass the source scan.
+
+    What cannot be spelled around is the object the SDK actually holds. Each
+    registered ``Tool.fn`` must *be* ``_forwarding``'s wrapper, which
+    ``functools.wraps`` marks with ``__wrapped__``. Deleting the application, or
+    registering a sixth tool straight onto ``server.tool``, reddens this
+    immediately.
+
+    Asserted over the built server rather than the source, and asserted
+    per-tool with the tool named, so a partial bypass is not averaged away by a
+    conforming majority. The AST companion in
+    ``tests/unit/test_tool_error_type_contract.py`` keeps its own narrower job:
+    catching a bypass at the *decorator* before a server is ever built.
+    """
+    server = build_server(registry)
+    tools = server._tool_manager.list_tools()
+    assert tools, "an empty tool list would pass this test vacuously"
+
+    unwrapped = {
+        tool.name
+        for tool in tools
+        if not hasattr(tool.fn, "__wrapped__") or inspect.unwrap(tool.fn) is tool.fn
+    }
+    assert not unwrapped, (
+        f"these registered tools are not wrapped by `_forwarding`, so a refusal "
+        f"raised below `mcp/tools.py` is withheld from their callers under mcp "
+        f">= 2.1 (#491): {sorted(unwrapped)}"
+    )
+
+    # The positive control for the key above: `__wrapped__` must be absent from a
+    # tool registered straight onto the SDK, or "every tool has it" is satisfied
+    # by something other than the seam and the assertion means nothing.
+    control = MCPServer("seam-pin-control")
+
+    @control.tool(name="raw")
+    def raw() -> dict[str, str]:  # pragma: no cover - registered, never called
+        return {}
+
+    raw_tool = control._tool_manager.get_tool("raw")
+    assert raw_tool is not None
+    assert not hasattr(raw_tool.fn, "__wrapped__"), (
+        "a raw `server.tool` registration already carries `__wrapped__`, so the "
+        "assertion above cannot distinguish a wrapped tool from an unwrapped one"
+    )
 
 
 # -- Cross-project isolation (SEC-13) --------------------------------------

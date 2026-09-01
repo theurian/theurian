@@ -5,11 +5,15 @@ shipped source. This is the arm that reads the running registry: it constructs t
 MCP server the daemon builds and asks it, rather than ``mcp/tools.py``, what tools
 exist. Two things the source scan cannot see are visible here:
 
-- a tool registered by some mechanism other than the ``@server.tool(name=...)``
-  decorator the AST arm keys on -- an ``add_tool`` call, a name assembled at
-  runtime -- still appears in ``server._tool_manager.list_tools()``;
+- a tool registered by some mechanism other than the registration decorators the
+  AST arm keys on -- an ``add_tool`` call, a name assembled at runtime -- still
+  appears in ``server._tool_manager.list_tools()``;
 - a tool that reaches a store *symbol* in its own bytecode is caught by walking
-  ``tool.fn``'s code, which is stronger than a name check for the direct case.
+  ``tool.fn`` and everything it wraps, which is stronger than a name check for
+  the direct case. The ``__wrapped__`` hop is load-bearing rather than
+  incidental: since #491 ``tool.fn`` is ``mcp/tools.py``'s ``_forwarding``
+  wrapper, and a walk that stopped there saw three names belonging to the
+  wrapper while a planted store symbol in the tool body passed unnoticed.
 
 Together with the unit prongs, the boundary is held from both ends: the serving
 layer cannot *import* the store (prong a), no serving module names its *tables*
@@ -82,9 +86,22 @@ def _referenced_names(function: Any) -> set[str]:
     Follows nested code objects, so a store constructed inside a comprehension or
     an inner helper of the tool is still visible. The same walk
     ``test_mcp_tools.py`` uses to pin that no tool reaches a canonical write.
+
+    **And follows ``__wrapped__``.** Since #491 every tool is registered through
+    ``mcp/tools.py``'s ``_tool`` seam, so ``Tool.fn`` is ``_forwarding``'s
+    wrapper and reaches the real body through a *free variable*, which is not in
+    ``co_consts``. Walking ``Tool.fn`` alone saw the wrapper's own three names
+    and a planted store symbol inside a tool body passed this guard. The whole
+    chain is walked -- wrapper *and* wrapped, not ``inspect.unwrap``'s innermost
+    function alone -- so a store reference introduced in an intermediate wrapper
+    is still seen.
     """
     seen: set[str] = set()
-    pending = [function.__code__]
+    pending: list[Any] = []
+    fn: Any = function
+    while fn is not None and hasattr(fn, "__code__"):
+        pending.append(fn.__code__)
+        fn = getattr(fn, "__wrapped__", None)
     while pending:
         code = pending.pop()
         seen.update(code.co_names)
@@ -97,9 +114,10 @@ def test_the_built_server_registers_exactly_the_known_read_tools(
 ) -> None:
     """The running registry matches the pinned read-only set -- however tools land.
 
-    The unit arm reads ``@server.tool(name=...)`` from source; this reads the tool
-    manager of the constructed server. A tool added by a mechanism the source scan
-    does not key on would show up here and nowhere else, so this whole-set equality
+    The unit arm reads the ``_tool(server, name=...)`` registrations from source;
+    this reads the tool manager of the constructed server. A tool added by a
+    mechanism the source scan does not key on would show up here and nowhere
+    else, so this whole-set equality
     is the drift guard for the runtime surface -- and, like its unit twin, forces a
     new tool through classification before it can be registered unremarked.
     """
