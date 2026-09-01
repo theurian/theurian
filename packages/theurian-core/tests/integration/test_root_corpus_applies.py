@@ -53,16 +53,29 @@ id again without this test's other assertions changing at all.
 second wave (#471) re-seeded three more items the same way #416 re-seeded
 ADR-0013 -- ``propose``/``accept`` through the real write path -- and #315's
 drift sweep re-seeded eleven more. The #440 round's ADV-RC MEDIUM-1 lesson
-generalises to every one of them: reverting any single re-seed commit's
-payload (the body and its ``contentSha256``, not its ``expectedRevision``
-pin) would leave this whole suite green at the same test count, because every
-other rule over the corpus compares author-supplied values against
-themselves -- a body against the digest its own migration declares, a body
-against the blob at the anchor that same migration names -- and a reverted
-payload is internally consistent at every one of them. The only rule that
-reads the *current* ``docs/`` tree is ``tools/corpus_drift.py``, which CI runs
-``--advisory``: exit 0 even on drift. So each re-seeded item gets its own
-content-shaped pin in :data:`_RESEED_PAYLOAD_MARKERS` below.
+generalises to every one of them, but **only at one revert depth**, and saying
+so precisely is the point -- an earlier version of this paragraph claimed the
+whole class was invisible to everything else, and the adversarial round
+measured that false. Three depths, measured 2026-09-02:
+
+- **body + ``contentSha256``.** Caught already, by
+  ``test_dogfood_corpus_governance.py``'s
+  ``test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``: the
+  body no longer matches the blob at the anchor its own migration still names.
+- **\\+ the migration's ``sourceAnchors[].commitSha``.** Still caught, by
+  ``test_every_evidence_anchor_is_one_a_committed_migration_also_names``: the
+  evidence file names an anchor no migration does any more.
+- **\\+ the matching ``evidence.json`` ``commitSha``.** Nothing else notices.
+  Every remaining rule compares author-supplied values against themselves -- a
+  body against the digest its own migration declares, that body against the
+  blob at the anchor that same migration now names -- and a three-file
+  coordinated revert is internally consistent at all of them.
+
+That third shape is what :data:`_RESEED_PAYLOAD_MARKERS` below exists for, and
+it is the only one it is the sole catcher of. The one rule that reads the
+*current* ``docs/`` tree, ``tools/corpus_drift.py``, would see all three, but
+CI runs it ``--advisory`` (``.github/workflows/core.yml``): exit 0 even on
+drift, by design, so it gates nothing.
 
 **Population, and why it is narrower than the governance module's.** Loads
 the real directory listing, but only after confirming -- via ``git``, never
@@ -134,7 +147,7 @@ MIGRATIONS_DIRECTORY: Final = REPO_ROOT / ".theurian" / "migrations"
 #: point measurement, frozen at the commit named beside it: measured
 #: 2026-09-01 at ``7b2ca67``, four items carried two revisions each -- the
 #: ADR-0013 re-seed (#416) plus the three #199 unit C second-wave re-seeds
-#: (#471) -- over 26 distinct items. #315's nine-item drift sweep moved both
+#: (#471) -- over 26 distinct items. #315's eleven-item drift sweep moved both
 #: of those figures afterwards, and moved them in the live record.
 MINIMUM_KNOWLEDGE_ITEMS: Final = 26
 
@@ -209,15 +222,16 @@ class _PayloadMarker:
 #: current text; those are keyed on a backticked identifier or a measured
 #: figure the same correction introduced.
 #:
-#: **Two drifted twins deliberately absent.**
-#: ``architecture.index-lives-in-its-own-database`` (ADR-0022) drifted at
-#: ``f706329`` and is *not* re-seeded here, and
-#: ``architecture.a-purge-is-a-build`` (ADR-0024) is not re-seeded either:
-#: each of their source documents is due a further correction, and a single
-#: revision should carry both rather than this branch spending one revision on
-#: the first half. That is the anchor rule -- one revision per item per round
-#: of source fixes -- not an oversight, and until those land
-#: ``tools/corpus_drift.py`` reports ADR-0022 as drifted on purpose.
+#: **One drifted twin deliberately absent, and one clean twin deliberately
+#: left alone -- they are not the same case.**
+#: ``architecture.index-lives-in-its-own-database`` (ADR-0022) *is* drifted:
+#: ``f706329`` moved its source and the corpus still pins the older digest, so
+#: ``tools/corpus_drift.py`` reports it, on purpose, until the further
+#: correction its document is due lands and one revision can carry both halves.
+#: ``architecture.a-purge-is-a-build`` (ADR-0024) is **not** drifted -- its pin
+#: is byte-identical to its source as measured 2026-09-02 -- and is left alone
+#: only because that document is likewise due a correction; there is nothing to
+#: re-seed yet. Calling both "drifted" is the error this paragraph replaces.
 #:
 #: **No clean negative twin for any of the three.** A ``not in`` pin needs a
 #: token present in the superseded body and absent from current *and* from
