@@ -51,9 +51,10 @@ grep -cE 'round|Round' \
 The second line is the positive control, same tool and same file: the zero is a
 zero and not a key that matches nothing anywhere.
 
-So the threat-model prose is the only spec source *in that work log*. It is not
-the only source in the repository, and saying so would be false. The repo-wide
-key, reproduced 2026-09-02:
+So the work log contributes no spec, and the threat-model prose is the only
+place that states *how* any of these figures was taken. It is not the only place
+in the repository that carries them, and this note said otherwise until the
+repo-wide key was run. Reproduced 2026-09-02:
 
 ```sh
 git grep -nE '14\.7|640\.3|160\.3|29\.17' ec0dbcd   # -> 14 lines
