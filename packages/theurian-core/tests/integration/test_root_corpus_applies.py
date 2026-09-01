@@ -257,8 +257,8 @@ class _PayloadMarker:
 #:   {0, 3} (current ``266e6b6``).
 #: - ``rank-fusion-over-score-normalisation`` / ``T-17a's``: 1 over 3 points,
 #:   prior {0} (current ``90e0253``).
-#: - ``raptor-forest`` / ``#426``: 2 over 13 points, prior {0} (current
-#:   ``3749581``).
+#: - ``raptor-forest`` / ``#464``: 1 over 14 points, prior {0} (current
+#:   ``f706329``).
 #: - ``a-purge-is-a-build`` / ``#426``: 1 over 11 points, prior {0} (current
 #:   ``3749581``).
 #:
@@ -267,8 +267,17 @@ class _PayloadMarker:
 #: the #471 re-seed's own body (``5a9a1e5``), which a presence check cannot
 #: tell apart from the 5 in #315's.
 #:
-#: The two #426 rows keep the token they already shipped -- this change adds
-#: the count they were missing rather than re-keying items #315 never touched.
+#: **``raptor-forest`` re-keyed for the same reason, one commit later.** It
+#: shipped ``#426`` at 2, and #487 (``f706329``) moved the document again
+#: without touching that count: measured 2026-09-02, ``#426`` is 2 in both
+#: the #471 body (``3749581``) and #315's re-seed of it (``f706329``). A
+#: presence check and a count keyed on ``#426`` are equally blind there, so
+#: the entry moved to ``#464`` -- the issue #487's own correction cites -- at
+#: 1 against 0 everywhere before. ``a-purge-is-a-build`` keeps ``#426``: #487
+#: did not touch ADR-0024, so nothing about that row moved. The general rule
+#: this makes concrete: **a re-seed re-measures its item's marker**, because
+#: the token that discriminated the previous revision need not discriminate
+#: the next one.
 _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     _PayloadMarker(ItemId("architecture.monorepo-with-independent-artifacts"), "`Core`", 1),
     _PayloadMarker(ItemId("architecture.sqlite-is-a-derived-artifact"), "#87", 1),
@@ -279,7 +288,7 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     _PayloadMarker(ItemId("architecture.sqlite-schema-versioning"), "#117", 3),
     _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#468", 5),
     _PayloadMarker(ItemId("architecture.rank-fusion-over-score-normalisation"), "T-17a's", 1),
-    _PayloadMarker(ItemId("architecture.raptor-forest"), "#426", 2),
+    _PayloadMarker(ItemId("architecture.raptor-forest"), "#464", 1),
     _PayloadMarker(ItemId("architecture.a-purge-is-a-build"), "#426", 1),
 )
 
