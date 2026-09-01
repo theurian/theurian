@@ -22,8 +22,11 @@ errors it raises. How a search is actually answered lives in
 
 from __future__ import annotations
 
+import functools
+import inspect
 import shlex
 import threading
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -183,6 +186,94 @@ class ToolError(TheurianError, SdkToolError):
     ``TheurianError`` is named first so it wins the MRO wherever both bases
     could answer, which is what keeps ``remedy`` this project's attribute.
     """
+
+
+def _forwarding[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
+    """Let a deliberate refusal raised *below* this module still reach the caller.
+
+    The second face of issue #469. Subclassing the SDK's ``ToolError`` fixes
+    every refusal this module raises, and nothing else: the store and the
+    connection layer raise their own ``TheurianError`` subclasses --
+    ``SchemaVersionMismatchError``, ``StateDatabaseUnreadableError`` -- which
+    travel up through a tool body that never converts them, are not the SDK's
+    ``ToolError``, and so are treated by mcp >= 2.1 as crashes. Their remedies
+    reached callers under 2.0.0 and stopped under 2.1 (issue #491).
+
+    **Parity, not enrichment.** The wrapper raises ``ToolError(str(exc))`` and
+    nothing more, because ``str(exc)`` is exactly what mcp 2.0.0's blanket
+    ``except Exception`` arm folded into ``Error executing tool {name}: {e}``.
+    Deliberately *not* ``_with_remedy``'s fold: ``exc.remedy`` was dropped by
+    2.0.0 too, so adding it here would publish text this wire has never
+    carried, at a seam whose whole justification is that it changes nothing.
+    The same reasoning forbids the path, the class name and the traceback --
+    an error is a channel, and widening one while restoring it is how a
+    restoration becomes a disclosure (SEC-13, and the family
+    ``StateDatabaseUnreadableError``'s own docstring is written against: it
+    carries the failing exception's *type* and never the corrupted cell, and
+    that stays true because this wrapper only passes its message through).
+
+    **Scoped to ``TheurianError`` alone.** A ``TypeError`` or a bare
+    ``sqlite3.Error`` is a crash, not a refusal, and upstream's decision to keep
+    crash detail off the wire is hardening this project agrees with -- it is
+    left in force. Catching ``Exception`` here would defeat exactly the change
+    that surfaced the bug.
+
+    ``ToolError`` is re-raised untouched rather than rebuilt, so a refusal this
+    module already worded cannot be reworded by passing through this seam.
+    """
+
+    @functools.wraps(fn)
+    def forwarding(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return fn(*args, **kwargs)
+        except ToolError:
+            raise
+        except TheurianError as exc:
+            raise ToolError(str(exc)) from exc
+
+    return forwarding
+
+
+def _tool[**P, R](
+    server: MCPServer, **registration: Any
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """``server.tool``, with :func:`_forwarding` applied first.
+
+    The one seam. Registration goes through here rather than through
+    ``server.tool`` directly so that "a refusal raised below this module still
+    reaches the caller" is a property of the *surface*, not of five separately
+    remembered tool bodies -- the shape that let ``knowledge.get`` and
+    ``knowledge.search`` disagree about the same store failure in the first
+    place. A tool registered any other way silently opts out, which is why
+    ``test_mcp_tools.py`` pins that no ``server.tool`` call remains in
+    ``register``.
+
+    ``functools.wraps`` keeps the wrapped signature, annotations and docstring,
+    which is what the SDK reads to build each tool's input and output schema;
+    ``tests/integration/test_wire_contract.py`` validates real responses
+    against the published schemas, so a wrapper that broke that introspection
+    would fail there rather than silently reshape the contract.
+    """
+
+    def decorate(fn: Callable[P, R]) -> Callable[P, R]:
+        if inspect.iscoroutinefunction(fn):
+            # `_forwarding`'s wrapper is synchronous: applied to a coroutine
+            # function it would return an un-awaited coroutine and catch
+            # nothing, so every below-surface refusal would go back to being
+            # withheld -- silently, and only under mcp >= 2.1. Refused at
+            # registration, where it is a startup failure rather than a
+            # disclosure regression discovered by a caller.
+            msg = (
+                f"{fn.__name__} is async, and `_forwarding` only wraps synchronous "
+                f"tools. Give `_forwarding` an async branch before registering an "
+                f"async tool, or the below-surface refusal conversion (#491) will "
+                f"not apply to it."
+            )
+            raise TypeError(msg)
+        registered: Callable[P, R] = server.tool(**registration)(_forwarding(fn))
+        return registered
+
+    return decorate
 
 
 #: Cap on `asOf` before it can be echoed into an error message. An RFC 3339
@@ -761,7 +852,8 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
 
         return paths, database, active
 
-    @server.tool(
+    @_tool(
+        server,
         name="knowledge.search",
         description=(
             "Search a project's approved knowledge. Returns results with full "
@@ -999,7 +1091,8 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             )
         return answer if integrity is None else {**answer, "integrity": integrity}
 
-    @server.tool(
+    @_tool(
+        server,
         name="knowledge.get",
         description="Fetch one knowledge item's current revision, with provenance.",
     )
@@ -1159,7 +1252,8 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             payload["integrity"] = integrity
         return payload
 
-    @server.tool(
+    @_tool(
+        server,
         name="knowledge.status",
         description=(
             "Report a project's knowledge state: item counts by status, the "
@@ -1247,7 +1341,8 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             response["integrity"] = integrity
         return response
 
-    @server.tool(
+    @_tool(
+        server,
         name="project.list",
         description=(
             "List projects this daemon serves, and the registry entries it could "
@@ -1309,7 +1404,8 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             else None,
         }
 
-    @server.tool(
+    @_tool(
+        server,
         name="system.capabilities",
         description=(
             "What this Core build supports. Lets a client degrade per feature "

@@ -27,6 +27,7 @@ reusing one shared fixture instance for all of them.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import subprocess
 import threading
 import time
@@ -469,14 +470,28 @@ def test_the_cap_pins_its_recorded_constants(registry: ProjectRegistry) -> None:
 
     # The semaphore itself is a local inside `register`'s closure, not a
     # module attribute -- reached here through the registered tool function's
-    # own closure cell. `Tool.fn` (`mcp.server.mcpserver.tools.base.Tool.
-    # from_function`) stores the exact function object `register` built, not
-    # a wrapper, so `knowledge_search`'s free variable `search_admission`
-    # still names the same semaphore `register` constructed it around.
+    # own closure cell.
+    #
+    # `Tool.fn` is no longer that function. Since #491 every tool is registered
+    # through `tools.py::_tool`, which wraps the body in `_forwarding` so a
+    # refusal raised below this module still reaches the caller under mcp >=
+    # 2.1; `Tool.fn` is that wrapper, and the wrapper's own `__code__` closes
+    # over `fn`, not over `search_admission`. `functools.wraps` puts the real
+    # body on `__wrapped__`, which is what `inspect.unwrap` follows. Asserted
+    # rather than assumed below: if the seam were removed, `unwrap` would
+    # return the body directly and this test would still be reading the right
+    # closure -- so the assertion is what stops it silently reading the wrong
+    # object if the seam ever changes shape again.
     server = build_server(registry)
     tool = server._tool_manager.get_tool("knowledge.search")
     assert tool is not None, "knowledge.search must be registered"
-    fn = tool.fn
+    fn = inspect.unwrap(tool.fn)
+    assert "search_admission" in fn.__code__.co_freevars, (
+        "the unwrapped tool body must be the closure `register` built around "
+        "`search_admission`; if `_tool`/`_forwarding` changed shape, follow it "
+        "here rather than deleting the assertion -- reading a wrapper's closure "
+        "would pass this test against the wrong object"
+    )
     index = fn.__code__.co_freevars.index("search_admission")
     semaphore = fn.__closure__[index].cell_contents  # type: ignore[index]
     assert isinstance(semaphore, threading.BoundedSemaphore), (
