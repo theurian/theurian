@@ -240,13 +240,31 @@ def test_min_children_per_summary_is_a_floor_the_caller_can_move() -> None:
 def test_the_option_defaults_are_the_config_schemas_own() -> None:
     """`ForestOptions` and `schemas/config/project-config.schema.json` must agree.
 
-    The builder takes these as parameters because nothing in `src/` reads
-    `.theurian/config.yaml` at all -- ADR-0008 decision 10's amendment says so
-    of `raptor.enabled`, and `docs/architecture/raptor.md` says the same of
+    The builder takes these as parameters because no key in the `raptor` block
+    has a reader in `src/` -- ADR-0008 decision 10's amendment says so of
+    `raptor.enabled`, and `docs/architecture/raptor.md` says the same of
     `minChildrenPerSummary`. Two independently written defaults that happen to
     agree today is exactly the shape that drifts the moment one of them is
     tuned, and the day a config loader lands the drift changes behaviour for
     everyone who never set either.
+
+    **This premise said "nothing in `src/` reads `.theurian/config.yaml` at all"
+    until 2026-09-01, and both sources it cites had already been narrowed away
+    from it** (#426, 2026-08-31): the file has one reader,
+    `security/project_config.py::read_secret_scan_policy`, which takes
+    `security.secretScan` and nothing else (ADR-0027 decision 3). The conclusion
+    never leaned on the file being unread -- it leans on these two keys being
+    unread, which still holds -- so the premise is narrowed rather than the
+    paragraph deleted (#447).
+
+    Which pin holds the narrowed half: `tests/unit/test_config_key_call_sites.py`
+    holds the *fact*, over `raptor` keys derived from the schema rather than
+    transcribed, so a loader that names one goes RED there. Its own measured gap
+    is this test's subject -- a read bound to `max_levels` or
+    `min_children_per_summary` inside `application/forest_builder.py` adds no new
+    `(module, spelling)` pair, because `ForestOptions` already owns both names.
+    No pin holds the *prose* half here: `tests/unit/test_raptor_config_claims.py`
+    is scoped to the three files #426 corrected, and this is not one of them.
     """
     from theurian.application.forest_builder import ForestOptions
 

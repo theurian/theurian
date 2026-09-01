@@ -365,10 +365,22 @@ and it is off by default for that reason.
 > corrects is the claim that the branch was thereby taken out of the loop
 > entirely. The remaining call is the *duration* face of T-17a — an extra fetch
 > is what securing `CANDIDATE_DEPTH` visible rows from a retriever that is not
-> exhausted means — and it goes away with the index purge in
-> [#15](https://github.com/theurian/theurian/issues/15), not with a change here.
+> exhausted means — and what removed it is the index purge, not a change here.
 > T-17 in the [threat model](../security/threat-model.md) carries the argument
 > and the five things that would falsify it.
+>
+> > **Tensed on 2026-09-01
+> > ([#464](https://github.com/theurian/theurian/issues/464)): the purge has
+> > shipped — the duration face.** This sentence said the face "goes away with
+> > the index purge in [#15](https://github.com/theurian/theurian/issues/15)",
+> > written while that was future work. #15 closed on 2026-08-10 (`66a43ae`):
+> > `theurian migrate apply` publishes a purged build the moment a withdrawal
+> > lands (ADR-0024 decision 5), so the published index holds no withheld row
+> > for a truncating retriever to spend a slot on. Nothing is owed here — what
+> > survives is a request in flight at the purge's pointer swap, which
+> > `application/retrieval_service.py` records at the scan branch's own
+> > paragraph, and a purge that failed, which taints the pointer and stands the
+> > build aside.
 >
 > **Corrected again in review round six: having no `LIMIT` bounds the pass count
 > and unbounds the work inside a pass.** `_visible_ranking` hands the whole
@@ -379,7 +391,18 @@ and it is off by default for that reason.
 > six full scans cost 3.06 s where 6,000 canonical reads cost about 0.09 s, but
 > what it bought is a cheaper unit and not a closed channel: T-17's "closed
 > outright on this branch" is retracted there. The residual is the same face of
-> the same class and still ends with [#15](https://github.com/theurian/theurian/issues/15).
+> the same class and it ends the same way: the purge
+> [#15](https://github.com/theurian/theurian/issues/15) shipped leaves no
+> withheld row in the published index for `_visible_ranking` to spend a canonical
+> read on.
+>
+> > **Tensed on 2026-09-01
+> > ([#464](https://github.com/theurian/theurian/issues/464)): the purge has
+> > shipped — the canonical-read residual.** This sentence said the residual
+> > "still ends with [#15](https://github.com/theurian/theurian/issues/15)",
+> > written while that was future work. #15 closed on 2026-08-10 (`66a43ae`), so
+> > what ends the residual is the purged build `theurian migrate apply` already
+> > publishes, not owed work.
 >
 > **Corrected in Milestone 5, review round 8. The cost paragraph above — "it was
 > never compared against the alternative that actually runs today,

@@ -158,8 +158,9 @@ Still owed, with the milestone that will satisfy it:
   withdrawn. It belongs with the blue/green work. This is also NFR-4, which
   ADR-0018's Neutral consequence cited as satisfied by WAL — it is not, because
   WAL spans one database file and this rebuild replaces one.
-- **Something other than a build will write to an index** (Milestone 6,
-  [#15](https://github.com/theurian/theurian/issues/15)). This ADR's model is
+- **Something other than a build will write to an index** (answered below; the
+  writer discipline owed,
+  [#439](https://github.com/theurian/theurian/issues/439)). This ADR's model is
   that publishing is a pointer swap and "the rebuild happens in a file nobody is
   reading" — which assumes the only writer is a build, producing a fresh file.
   T-17a's root fix breaks that assumption: withdrawn rows have to leave the
@@ -191,3 +192,25 @@ Still owed, with the milestone that will satisfy it:
   > two together are what NFR-4 needs, and neither alone is enough — measured at
   > 1,889 errors against 163 successful searches when the old build is reaped
   > under a reader.
+
+  > **Repointed on 2026-09-01
+  > ([#464](https://github.com/theurian/theurian/issues/464)): this bullet's
+  > heading named "(Milestone 6,
+  > [#15](https://github.com/theurian/theurian/issues/15))", and neither can
+  > carry it.** Milestone 6 has passed. #15 closed on 2026-08-10 (`66a43ae`) by
+  > wiring ADR-0024 decision 5 — the withdrawal→purge trigger — which is the
+  > *answer* recorded above and not the writer discipline the paragraph before it
+  > asks for. The prediction resolved in the narrower form ADR-0024 chose:
+  > nothing writes to a published index, and what changed is that `index build`
+  > is no longer the only thing that *produces* one — `migrate apply` publishes a
+  > purged build through `application/withdrawal_purge.py`, so "the rebuild
+  > happens in a file nobody is reading" still holds. What does not exist is the
+  > interface that second producer writes through. Measured at `ec0dbcd`:
+  > `git grep -nE "flock|lockf|LOCK_EX|write_lock" -- packages/theurian-core/src`
+  > returns ten lines, every one of them the canonical `ProjectPaths.write_lock`
+  > or the daemon's single-instance lock and none in an index write path, and the
+  > purge says so in its own source ("No new index-write lock is taken"). Owed
+  > and unscheduled, tracked in
+  > [#439](https://github.com/theurian/theurian/issues/439) — where ADR-0018's
+  > matching bullet was repointed on 2026-08-31
+  > ([#436](https://github.com/theurian/theurian/issues/436)).

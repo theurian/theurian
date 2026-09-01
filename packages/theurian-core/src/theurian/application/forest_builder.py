@@ -91,9 +91,9 @@ from theurian.domain.values import AclGroup, ContentHash, Scope, TenantId
 #: would spend a caller's budget to say less.
 #:
 #: It has no config surface. `raptor.maxLevels` and `raptor.minChildrenPerSummary`
-#: are in `schemas/config/project-config.schema.json` and nothing in `src/` reads
-#: that file yet; adding a third key would be a published default with no reader
-#: and no measurement behind it.
+#: are in `schemas/config/project-config.schema.json`, and no `raptor` key has a
+#: reader in `src/`: `.theurian/config.yaml`'s reader takes `security.secretScan`
+#: (ADR-0027). A third key would publish a default with no reader or measurement.
 SUMMARY_MAX_TOKENS: Final = TARGET_CHARS // CHARS_PER_TOKEN
 
 #: The smallest threshold that still means something, and the config schema's
