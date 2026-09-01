@@ -286,16 +286,27 @@ visible = 50, pass count held at one.
 | 5,950 | stale | 6,000 | 6,000 | 8,244.4 | 156.2400 |
 | 5,950 | **purged** | **50** | **50** | **84.9** | **1.2234** |
 
-**Provenance of the two right-hand columns, stated because it is thin.**
-Whether `peak KB` and `gate ms` were taken in the same measurement window is
-**not recorded**, and the harness is not committed (see *Where the harness
-should live*), so it cannot be established now — asserting either way would be
-fabricating provenance. `tracemalloc` inflates wall clock several-fold, so a
-clock running inside the trace is not comparable with a clean one. **The
-`gate ms` column is therefore graded shape-only**: what it carries is the
-direction and the flatness of the purged side, not its absolute milliseconds.
-Neither a repeat count nor the statistic behind either column is recorded for
-this table, unlike F2 and F1′ above, which name 40 iterations per timing cell.
+**Provenance of the two right-hand columns.** The instrument is not stated in
+the harness, which is not committed (see *Where the harness should live*), so
+the question is whether `gate ms` was clocked *inside* the `tracemalloc` trace
+that produced `peak KB`. It was not, and the tables settle it without a
+re-measurement. The threat model records the inflation factor at
+`docs/security/threat-model.md:537` — "`tracemalloc` inflates it 5–8× and never
+runs in a timing pass" — and this table's gate is nowhere near 5× F2's:
+
+| Comparison | F3/F4 here | F2/F1′ there | Ratio |
+| :-- | --: | --: | --: |
+| stale gate at `\|ranking\|` = 6,000 | 156.2400 ms | 157.7126 ms | **0.99×** |
+| stale gate, 50 against 10 in `\|ranking\|` | 1.1814 ms | 0.2349 ms | **5.03×** for 5× the rows |
+
+A traced clock would put the first ratio at 5–8, not at 0.99, and the second
+would not track the row count. **The `gate ms` columns carry the clean-clock
+grade**, which is also what F1′'s own "within 1.7× in magnitude" against the
+record's 14.7 µs already assumes.
+
+What is genuinely missing is narrower: **neither a repeat count nor the
+statistic behind either column is recorded for this table**, unlike F2 and F1′
+above, which name 40 iterations per timing cell.
 
 **F4′, the growth factor.** Stale: 80.6 → 8,244.4 KB over a 120× increase in
 `|ranking|` = **102×**, a fourth magnitude beside the record's 213× and 8.8× and
@@ -427,11 +438,12 @@ Re-derived on this ground at the largest scale measured: 5,950 withheld rows at
 walk. Measured directly, the stale gate costs 156.24 ms against the purged
 1.22 ms.
 
-**This paragraph reads across three tables, and inherits the weakest grade
-among them.** 24.3 µs is F1′'s, 1.21 ms is F5′'s `scan ms`, and 1.22 / 156.24 ms
-are the F3/F4 table's `gate ms` — so the two gate figures carry that table's
-**shape-only** grade, and the three tables are not recorded to share a
-measurement window. Read the direction here, not the arithmetic.
+**This paragraph reads across three tables**: 24.3 µs is F1′'s, 1.21 ms is F5′'s
+`scan ms`, and 1.22 / 156.24 ms are the F3/F4 table's `gate ms`. Only F3/F4 was
+ever in doubt — it is the one table with a memory column — and the provenance
+note above settles its clock as clean, so the arithmetic holds across all three.
+What F3/F4 and F5′ still do not record is a repeat count or a statistic; F2 and
+F1′ name 40 iterations per timing cell.
 
 On a purged build the derivation has no input: the multiplier is the withheld
 term in `|ranking|`, and it is zero. **+14% becomes +0%.**
