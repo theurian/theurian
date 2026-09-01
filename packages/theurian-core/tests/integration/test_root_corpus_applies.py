@@ -108,8 +108,13 @@ from fakes.clock import FrozenClock
 from theurian.application.project_service import ProjectPaths, resolve_state_hash
 from theurian.cli.context import schema_root
 from theurian.cli.migration_pipeline import apply_migration_set
-from theurian.domain.identifiers import ItemId, ProjectId
-from theurian.domain.migration import MIGRATION_ENGINE_VERSION, current_revision_in
+from theurian.domain.identifiers import ItemId, ProjectId, RevisionId
+from theurian.domain.migration import (
+    MIGRATION_ENGINE_VERSION,
+    LoadedMigrations,
+    UpsertRevision,
+    current_revision_in,
+)
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY, Project
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
 from theurian.infrastructure.sqlite.connection import create_database, open_read_connection
@@ -254,44 +259,20 @@ class _PayloadMarker:
 #: character" and reports 8 for a body a literal count reports 3 for.
 #:
 #: **Every point, not three.** "Seed / intermediate / current" names the
-#: shape; the measurement below walks *every* commit that touched the item's
-#: source document in ``266e6b6``'s history, which is a superset of it, and a
-#: token qualifies only when its count at the current point differs from its
-#: count at every one of them. Each token is additionally drawn from the
-#: **added** lines of the last such commit, so it names the correction whose
-#: absence a reverted payload would show rather than a word that happens to be
-#: new. Measured 2026-09-02 at ``7d7bca1``; ``points`` counts the commits
-#: compared, ``prior`` the distinct counts across all of them but the last:
+#: shape; each token was measured against *every* commit that touched its
+#: item's source document, which is a superset of it, and qualified only when
+#: its count at the current point differed from its count at every one of
+#: them. Each token is additionally drawn from the **added** lines of the last
+#: such commit, so it names the correction whose absence a reverted payload
+#: would show rather than a word that happens to be new.
 #:
-#: - ``monorepo-with-independent-artifacts`` / ```Core```: 1 over 3 points,
-#:   prior {0} (current ``c7d49ff``, #341's record of the required checks).
-#: - ``sqlite-is-a-derived-artifact`` / ``#87``: 1 over 5 points, prior {0}
-#:   (current ``dd4b991``).
-#: - ``yaml-knowledge-migrations`` / ``#245``: 1 over 3 points, prior {0}
-#:   (current ``06fbc42``).
-#: - ``dependency-pinning-and-pre-1-0-isolation`` / ```3.13```: 1 over 4
-#:   points, prior {0} (current ``dedf08e``).
-#: - ``dco-over-cla`` / ``30/30``: 1 over 4 points, prior {0} (current
-#:   ``c7d49ff``, the same #341 measurement).
-#: - ``state-hash-covers-the-working-tree`` / ```contentSha256```: 1 over 3
-#:   points, prior {0} (current ``1a38afe``).
-#: - ``sqlite-schema-versioning`` / ``#117``: 3 over 4 points, prior {0}
-#:   (current ``7d7195b``).
-#: - ``single-writer-synchronous-in-m1`` / ``#468``: 5 over 8 points, prior
-#:   {0, 3} (current ``266e6b6``).
-#: - ``rank-fusion-over-score-normalisation`` / ``T-17a's``: 1 over 3 points,
-#:   prior {0} (current ``90e0253``).
-#: - ``raptor-forest`` / ``#464``: 1 over 14 points, prior {0} (current
-#:   ``f706329``).
-#: - ``trigram-index-beside-the-word-index`` / ``#464``: 2 over 3 points,
-#:   prior {0} (current ``f706329``).
-#: - ``a-purge-is-a-build`` / ``#426``: 1 over 11 points, prior {0} (current
-#:   ``3749581``).
-#:
-#: ``single-writer-synchronous-in-m1`` is the only row whose prior counts are
-#: not all zero, and it is the row that motivated the change: ``#468`` at 3 is
-#: the #471 re-seed's own body (``5a9a1e5``), which a presence check cannot
-#: tell apart from the 5 in #315's.
+#: **The per-item selection matrix is not narrated here.** Twelve rows of
+#: item/token/count/points, hand-carried in a docstring, is the #458 stale-count
+#: shape exactly: a dozen numbers no rule recomputes, going stale on the first
+#: re-seed nobody re-narrated. The rows are archived in PR #490's round-two
+#: record. What is *live* is below and in the test: the counts themselves, and
+#: the boundary rule that recomputes each token's count in the revision its
+#: item's latest re-seed replaced and fails when it equals the pin.
 #:
 #: **``raptor-forest`` re-keyed for the same reason, one commit later.** It
 #: shipped ``#426`` at 2, and #487 (``f706329``) moved the document again
@@ -393,42 +374,52 @@ def _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files(
         )
 
 
-def _current_body(database: Path, project_id: ProjectId, item_id: ItemId) -> str:
-    """The applied store's current body for ``item_id``.
+def _revision_chain(loaded: LoadedMigrations) -> dict[ItemId, tuple[RevisionId, ...]]:
+    """Every item's revisions, in the loader's own application order.
 
-    The same two-hop read the ADR-0013 check below performs inline --
-    ``knowledge_items`` for the pointer, ``knowledge_revisions`` for what it
-    points at -- pulled out once so each of the second-wave pins is two
-    lines: fetch the body, assert its marker. Not used by the ADR-0013 check
-    itself, which additionally cross-checks the pointer against
-    :func:`current_revision_in` and stays as originally written rather than
-    being rewired through a helper introduced for a later item.
+    The same fold :func:`current_revision_in` performs, kept whole instead of
+    collapsed to its last element: the marker rules below need the *previous*
+    revision as well as the current one, and re-deriving the order from file
+    names would be the wrong key -- a ``MigrationSet`` iterates in Kahn order
+    over the migration documents' own ids, which a filename sort does not
+    reproduce (the fold-key finding the #440 round caught).
+
+    Cross-checked against ``current_revision_in`` at the call site, so the two
+    orderings cannot silently diverge.
+    """
+    chain: dict[ItemId, tuple[RevisionId, ...]] = {}
+    for migration in loaded.migration_set:
+        for operation in migration.operations:
+            if isinstance(operation, UpsertRevision):
+                chain[operation.item_id] = (
+                    *chain.get(operation.item_id, ()),
+                    operation.revision_id,
+                )
+    return chain
+
+
+def _bodies_by_revision(database: Path, project_id: ProjectId) -> dict[str, str]:
+    """Every applied revision's body, in one connection and one query.
+
+    One read for the whole test rather than the two-hop read once per marker:
+    twelve markers each needing a current *and* a superseded body was twenty-four
+    connection open/close pairs for data that does not change between them.
+    Keyed by revision id, because that is what :func:`_revision_chain` hands
+    back; the current-revision pointer is cross-checked separately, so nothing
+    here has to re-read ``knowledge_items``.
+
+    Superseded revisions are in this table too -- ``upsertRevision`` inserts a
+    row per revision and only moves the pointer -- which is what makes the
+    boundary rule below readable from the store rather than from the tree.
     """
     with closing(open_read_connection(database)) as connection:
-        row = connection.execute(
-            "SELECT current_revision_id FROM knowledge_items WHERE project_id = ? AND item_id = ?",
-            (project_id.value, item_id.value),
-        ).fetchone()
-        assert row is not None, (
-            f"{item_id.value} has no row in knowledge_items after applying. Every "
-            f"migration that names it as a createItem target should have created it."
-        )
-        current_revision = row["current_revision_id"]
-        assert current_revision is not None, (
-            f"{item_id.value} has no current revision after applying, so there is no "
-            f"body to check its content."
-        )
-        body_row = connection.execute(
-            "SELECT body FROM knowledge_revisions WHERE project_id = ? AND revision_id = ?",
-            (project_id.value, current_revision),
-        ).fetchone()
-        assert body_row is not None, (
-            f"knowledge_revisions holds no row for {current_revision!r}, the revision "
-            f"knowledge_items.current_revision_id just named for {item_id.value}. A "
-            f"pointer with nothing behind it is a store the engine's own write "
-            f"transaction should never produce."
-        )
-        return str(body_row["body"])
+        return {
+            str(row["revision_id"]): str(row["body"])
+            for row in connection.execute(
+                "SELECT revision_id, body FROM knowledge_revisions WHERE project_id = ?",
+                (project_id.value,),
+            )
+        }
 
 
 def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: Path) -> None:
@@ -573,20 +564,98 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
         f"carries the retracted claim 'warns past a threshold' (#252)."
     )
 
-    # The same class, once per re-seeded item: reverting any one re-seed
-    # commit's payload would leave the suite green at the same test count for
-    # the identical reason the ADR-0013 revert above did -- see
-    # :data:`_RESEED_PAYLOAD_MARKERS`'s docstring for the per-point counts
-    # behind each token, and for why the count and not mere presence is what
-    # is asserted.
+    # The same class, once per re-seeded item -- see
+    # :data:`_RESEED_PAYLOAD_MARKERS`'s docstring for how each token was
+    # measured, and the module docstring for the one revert depth these
+    # assertions are the sole catcher of.
+    chain = _revision_chain(loaded)
+    bodies = _bodies_by_revision(database, project.project_id)
+
+    # _revision_chain re-folds what current_revision_in folds, so the two are
+    # held to the same answer rather than trusted to agree -- the fold key is
+    # exactly what the #440 round caught being wrong once already.
+    disagreements = {
+        item.value: (revisions[-1].value, current_revision_in(loaded.migration_set, item))
+        for item, revisions in chain.items()
+        if current_revision_in(loaded.migration_set, item) != revisions[-1]
+    }
+    assert not disagreements, (
+        f"_revision_chain's last revision and current_revision_in disagree for "
+        f"{disagreements}. They fold the same operations in the same order, so a "
+        f"disagreement means this test's own reconstruction has drifted from the production "
+        f"helper and every marker below is reading the wrong body."
+    )
+
+    # The census. Without it, deleting an entry from the tuple is invisible --
+    # measured: mutation m4, dropping the last _PayloadMarker, left the whole
+    # suite green. It is also what makes the *next* re-seed's missing marker
+    # RED: a re-seed gives its item a second revision, so the item joins this
+    # set the moment the migration lands, whether or not anyone adds a pin.
+    multi_revision = {item for item, revisions in chain.items() if len(revisions) > 1}
+    pinned = tuple(marker.item_id for marker in _RESEED_PAYLOAD_MARKERS)
+    assert len(set(pinned)) == len(pinned), (
+        f"_RESEED_PAYLOAD_MARKERS names an item twice: "
+        f"{sorted({item.value for item in pinned if pinned.count(item) > 1})}. Two entries "
+        f"for one item let one of them be wrong while the other passes."
+    )
+    accounted = set(pinned) | {_RESEEDED_ITEM}
+    assert accounted == multi_revision, (
+        f"the pinned set and the multi-revision set disagree. Pinned but not re-seeded: "
+        f"{sorted(item.value for item in accounted - multi_revision)}; "
+        f"re-seeded but unpinned: "
+        f"{sorted(item.value for item in multi_revision - accounted)}. "
+        f"Every item with more than one revision has had a payload replaced, so every one of "
+        f"them needs a content pin -- add a _PayloadMarker measured against every point in "
+        f"its source document's history. {_RESEEDED_ITEM.value} is the exception because the "
+        f"#414 assertions above pin it by hand."
+    )
+
     for marker in _RESEED_PAYLOAD_MARKERS:
-        applied_body = _current_body(database, project.project_id, marker.item_id)
+        revisions = chain[marker.item_id]
+        applied_body = bodies[revisions[-1].value]
         assert applied_body.count(marker.token) == marker.count, (
             f"the applied body for {marker.item_id.value} carries {marker.token!r} "
             f"{applied_body.count(marker.token)} time(s); this item's re-seed pinned it at "
-            f"{marker.count}. Reverting this item's re-seed payload -- the body, not its "
-            f"expectedRevision pin -- would leave this assertion the only one in this test "
-            f"file to notice, per the ADV-RC MEDIUM-1 class the #440 round found. If the "
+            f"{marker.count}. A three-file coordinated revert of this item's payload -- body, "
+            f"contentSha256 and both anchors -- would leave this assertion the only one in "
+            f"the suite to notice, per the ADV-RC MEDIUM-1 class the #440 round found. If the "
             f"source document legitimately moved, re-measure the token against every point "
             f"in its history and update the count here in the same change."
         )
+
+        # The boundary. A marker discriminates only while its count *differs*
+        # across the revision it replaced, and that property decays silently:
+        # `#436` on single-writer and `#426` on raptor-forest each stopped
+        # discriminating when a later correction kept the token's count, and
+        # both were caught by hand rather than by the suite. Reading the
+        # superseded body live means the next re-seed that lands without
+        # re-measuring goes RED here instead of shipping a dead pin.
+        superseded_body = bodies[revisions[-2].value]
+        assert superseded_body.count(marker.token) != marker.count, (
+            f"{marker.item_id.value}'s marker {marker.token!r} no longer discriminates: it "
+            f"counts {marker.count} in the current body and {superseded_body.count(marker.token)} "
+            f"in revision {revisions[-2].value}, the one this item's latest re-seed replaced. "
+            f"A revert to that body would satisfy the pin above, so the pin catches nothing. "
+            f"Re-measure a token whose count at the current point differs from its count at "
+            f"every earlier point of {marker.item_id.value}'s source document, and update both "
+            f"the entry and its recorded measurement."
+        )
+
+
+@pytest.mark.parametrize("count", [0, -1])
+def test_a_payload_marker_refuses_a_count_that_asserts_an_absence(count: int) -> None:
+    """:class:`_PayloadMarker`'s own guard, driven rather than merely written.
+
+    A guard no input reaches survives its own deletion. Measured: weakening
+    ``count < 1`` to ``count < 0`` (mutation m5) left the whole suite green, and
+    so did that weakening *plus* an entry pinning a token no body carries at
+    zero (m6) -- the vacuous pin the guard exists to refuse, shipped green.
+
+    Zero is the case that matters and negative is the case that proves the
+    boundary is the right one: a marker pinning an absence is satisfied by every
+    body that never carried the token, including the superseded one, so it
+    cannot distinguish a correct payload from a reverted one -- which is the
+    entire job.
+    """
+    with pytest.raises(ValueError, match="cannot distinguish a correct payload"):
+        _PayloadMarker(ItemId("architecture.any-item"), "#404", count)
