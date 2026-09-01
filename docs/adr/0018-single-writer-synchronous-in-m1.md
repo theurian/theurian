@@ -127,8 +127,10 @@ each call site cannot.
 
 > **Narrowed on 2026-08-31 against a measurement
 > ([#468](https://github.com/theurian/theurian/issues/468) owns both the
-> engineering and this record).** Point 2 said, without the boundary it now
-> carries, that two concurrent `theurian migrate apply` invocations serialise and
+> engineering and this record). Superseded by the 2026-09-01 closure below —
+> read this paragraph as dated history, not as the current state.** Point 2
+> said, without the boundary it now carries, that two concurrent
+> `theurian migrate apply` invocations serialise and
 > the loser becomes a no-op. Measured on eight real two-process runs against a
 > fresh project, **the loser crashed in four of the eight** — three distinct
 > unhandled errors (`table schema_metadata already exists`, `database is locked`,

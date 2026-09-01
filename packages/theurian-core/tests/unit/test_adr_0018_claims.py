@@ -370,7 +370,7 @@ the #468 narrowing of Decision point 2 reached three places, and only one of
 them is a blockquote. #468's fix closed the gap the narrowing described, so
 the two non-blockquote places now hold the *closure* rather than the
 narrowing:
-:func:`test_decision_point_2_says_what_its_serialisation_promise_does_not_cover`
+:func:`test_decision_point_2_no_longer_carries_the_narrowing`
 holds the absence of the boundary clause a reader used to meet in the
 Decision itself, and
 :func:`test_the_positive_consequence_records_that_already_safe_was_measured_false`
@@ -2358,7 +2358,7 @@ def test_the_point_1_bullet_keeps_the_re_measurement_that_narrows_its_own_claim(
     )
 
 
-def test_decision_point_2_says_what_its_serialisation_promise_does_not_cover() -> None:
+def test_decision_point_2_no_longer_carries_the_narrowing() -> None:
     """RED means point 2 carries the narrowing again, which #468's fix closed.
 
     The claim as it stood -- two concurrent ``theurian migrate apply`` invocations

@@ -44,7 +44,7 @@ import pytest
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
-from theurian.application.project_service import ProjectPaths
+from theurian.application.project_service import BuildProvenance, ProjectPaths
 from theurian.application.project_service import write_active_state as real_write_active_state
 from theurian.cli.main import app
 from theurian.domain.ports import Clock
@@ -175,6 +175,81 @@ def test_create_database_and_write_active_state_each_run_only_while_the_lock_is_
     assert result.exit_code == 0, result.stderr
     assert held_at.get("create_database") is True
     assert held_at.get("write_active_state") is True
+
+
+def test_provenance_is_recorded_before_the_pointer_publishes(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#478 round two (adversarial MEDIUM-1): the confinement test above pins
+    that `record_state` and `write_active_state` each run *under* the lock,
+    but not their *order* relative to each other -- reversing them (both
+    still inside the lock) survives the whole suite, e2e included, because
+    nothing checks which one ran first. The order matters on its own: a
+    single-process crash between the two writes, in the swapped order, would
+    leave `active.json` naming a state hash whose provenance is absent -- the
+    serve-side provenance gate then refuses it (fail-closed, not a
+    disclosure), but it is a real regression from what moving `record_state`
+    ahead of the publish is supposed to buy (this command's own docstring).
+
+    Probes at `write_active_state`'s own call site: by the instant it runs,
+    `provenance.has_state` for the exact state hash about to be published
+    must already be True. RED under a mutation that swaps the two calls.
+    """
+    _write_migration(project)
+    observed: dict[str, bool] = {}
+
+    def probed_write_active_state(
+        paths_arg: ProjectPaths, state_hash: StateHash, migration_count: int, clock: Clock
+    ) -> ActiveState:
+        provenance = BuildProvenance.default()
+        observed["has_state_before_publish"] = provenance.has_state(paths_arg.root, str(state_hash))
+        return real_write_active_state(paths_arg, state_hash, migration_count, clock)
+
+    monkeypatch.setattr("theurian.cli.commands.write_active_state", probed_write_active_state)
+
+    result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 0, result.stderr
+    assert observed.get("has_state_before_publish") is True
+
+
+def test_a_failed_create_database_leaves_no_partial_file_behind(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#478 round two (adversarial MEDIUM-2): the directory-at-the-database-path
+    backstop test below never exercises real cleanup -- `unlink` refuses a
+    directory too, so `contextlib.suppress(OSError)` swallowing *that*
+    failure reads identically to a no-op cleanup that swallows everything.
+    This forces a real failure inside `create_database`'s own DDL execution
+    -- `sqlite3.connect` has already created a real, non-directory file on
+    disk by the time `executescript` fails on invalid SQL -- so the file
+    `_unlink_database_and_sidecars` has to remove is one it actually *can*
+    remove, proving the cleanup call does something rather than merely that
+    it does not itself crash.
+    """
+    _write_migration(project)
+    paths = ProjectPaths.of(project)
+
+    validated = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+    assert validated.exit_code == 0, validated.stderr
+    state_hash = str(json.loads(validated.stdout)["stateHash"])
+    database_path = paths.state / f"theurian-state-{state_hash[:12]}.sqlite"
+
+    monkeypatch.setattr(
+        "theurian.infrastructure.sqlite.connection.DDL", "THIS IS NOT VALID SQL AT ALL;"
+    )
+
+    result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    assert result.stdout == ""
+    error_payload = json.loads(result.stderr)
+    assert "error" in error_payload
+    assert "remedy" in error_payload
+    assert not database_path.exists(), "the real partial file must be gone after cleanup"
+    assert not database_path.with_name(f"{database_path.name}-wal").exists()
+    assert not database_path.with_name(f"{database_path.name}-shm").exists()
+    assert not paths.active_pointer.exists()
 
 
 def test_a_directory_at_the_database_path_fails_cleanly_and_cleans_up(project: Path) -> None:
