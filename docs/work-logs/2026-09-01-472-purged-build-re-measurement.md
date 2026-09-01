@@ -42,14 +42,16 @@ them.** `docs/work-logs/2026-08-03-milestone-5-review-rounds.md` is 340 lines,
 and
 
 ```sh
-grep -cnE '14\.7|640\.3|160\.3|29\.17|tracemalloc|peak' \
+grep -cE '14\.7|640\.3|160\.3|29\.17|tracemalloc|peak' \
   docs/work-logs/2026-08-03-milestone-5-review-rounds.md   # -> 0
-grep -cE 'round|Round' \
-  docs/work-logs/2026-08-03-milestone-5-review-rounds.md   # -> 43
+grep -cE '14\.7|640\.3|160\.3|29\.17|tracemalloc|peak' \
+  docs/security/threat-model.md                           # -> 31
 ```
 
-The second line is the positive control, same tool and same file: the zero is a
-zero and not a key that matches nothing anywhere.
+The second line is the positive control: **the same key**, against a file it is
+known to hit. A control with a different pattern would prove the tool runs, not
+that this key can match — the zero above is a zero because the key works, not
+because it matches nothing anywhere.
 
 So the work log contributes no spec, and the threat-model prose is the only
 place that states *how* any of these figures was taken. It is not the only place
@@ -540,8 +542,14 @@ database. **Zero index write paths.**
 **33 lines**, because that commit added lock-token lines to the files this key
 counts. Every added line is in `cli/commands.py`, `cli/migration_pipeline.py`
 or `infrastructure/sqlite/connection.py`; none is in `index_store.py` or
-`index_purge.py`, so the *zero* survives. The *19* does not: re-take the key at
-the landing base before this is quoted into ADR-0024's correction.
+`index_purge.py`, so the *zero* survives that commit.
+
+**Both halves are anchored, and both need re-taking if the landing base moves
+past `266e6b6`.** The 19 is anchored to `ec0dbcd`; the zero's supporting reason
+— that no added line lands in an index-writing module — is anchored to
+`266e6b6`, and a later commit could add one. Re-take the key and re-classify its
+new lines at whatever base this is quoted from, before either number goes into
+ADR-0024's correction.
 
 *Runtime.* The publish half of the purge, called exactly as
 `withdrawal_purge.py:334` calls it:
