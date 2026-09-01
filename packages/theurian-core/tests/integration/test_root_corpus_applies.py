@@ -77,19 +77,31 @@ it is the only one it is the sole catcher of. The one rule that reads the
 CI runs it ``--advisory`` (``.github/workflows/core.yml``): exit 0 even on
 drift, by design, so it gates nothing.
 
-**Population, and why it is narrower than the governance module's.** Loads
-the real directory listing, but only after confirming -- via ``git``, never
-the ``tools/mutate.py`` manifest -- that the listing holds nothing git does
-not track: :func:`load_migrations` reads every ``.yaml`` file physically
-present in ``.theurian/migrations/`` with no regard for tracking, so an
-untracked local draft sitting there on a contributor's own machine would
-otherwise be tested as if it were the committed corpus. A ``tools/mutate.py``
-copy carries a manifest and *could* answer from it, but this test's subject is
-a real SQLite database and a real transaction -- work, not YAML arithmetic --
-and running it once per worker tree for every mutation in a batch that
-touches nothing under ``.theurian/`` would tax the harness for no return. So
-it skips loudly there rather than passing vacuously: the manifest answer is
-refused on purpose, not because it would be wrong.
+**Population, and why it is narrower than the governance module's.** The
+population is ``git ls-files -- .theurian``, copied into a scratch tree and
+loaded from there, so what gets applied is the *committed* corpus by
+construction. :func:`load_migrations` reads every ``.yaml`` physically present
+with no regard for tracking, so loading the real directory in place would
+apply an untracked local draft as if it had been committed.
+
+That used to be handled by skipping the whole test whenever an untracked
+``.yaml`` sat in the directory, which put this file to sleep exactly where it
+is needed most: the maintainer's dogfooding machine keeps machine-local vault
+notes under ``.theurian/`` (fenced in ``.git/info/exclude``), so every
+assertion here -- the twelve payload markers included -- was disabled on the
+one tree where re-seeds are authored and a mis-measured marker would first be
+written. Filtering serves the original concern strictly better than skipping
+did: the draft is not stepped around, it is never loaded (#490 round two).
+
+One skip remains, for the one case where there is no tracked set to filter to:
+``git`` absent, or unable to answer for this checkout -- a ``tools/mutate.py``
+copy, which carries no ``.git`` on purpose. That copy carries a manifest and
+*could* answer from it, but this test's subject is a real SQLite database and a
+real transaction -- work, not YAML arithmetic -- and running it once per worker
+tree for every mutation in a batch that touches nothing under ``.theurian/``
+would tax the harness for no return. So it skips loudly there rather than
+passing vacuously: the manifest answer is refused on purpose, not because it
+would be wrong.
 """
 
 from __future__ import annotations
@@ -307,25 +319,34 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
 _REGISTERED_AT: Final = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
 
 
-def _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files() -> None:
-    """Refuse to run over anything ``git`` cannot vouch for.
+def _tracked_corpus_paths() -> tuple[str, ...]:
+    """Every path git tracks under ``.theurian/``, or a skip when git cannot say.
 
-    Two distinct refusals, both loud:
+    One refusal remains, and only one: no git, or git cannot answer for this
+    checkout (a ``tools/mutate.py`` copy, which carries no ``.git`` on
+    purpose -- see the module docstring for why this test does not fall back to
+    the copy's manifest the way ``test_dogfood_corpus_governance.py``'s
+    ``_tracked()`` does). Without git there is no tracked set to speak of, so
+    there is nothing to filter *to*.
 
-    - No git, or git cannot answer for this checkout (a ``tools/mutate.py``
-      copy, which carries no ``.git`` on purpose -- see the module docstring
-      for why this test does not fall back to the copy's manifest the way
-      ``test_dogfood_corpus_governance.py``'s ``_tracked()`` does).
-    - Git answers, but the directory holds a ``.yaml`` file it does not
-      track. :func:`load_migrations` reads the whole directory with no
-      regard for tracking, so an uncommitted local draft would otherwise be
-      loaded and applied as if it were part of the corpus this PR ships.
+    **What used to be a second refusal is now a filter** (#490 round two).
+    :func:`load_migrations` reads every ``.yaml`` physically present with no
+    regard for tracking, and the old answer to that was to skip the whole test
+    whenever an untracked one sat in the directory. That is dormancy exactly
+    where it hurts most: the maintainer's own dogfooding machine keeps
+    machine-local vault notes under ``.theurian/`` (fenced in
+    ``.git/info/exclude``), so every assertion in this file -- the twelve
+    payload markers included -- was disabled on the one tree where re-seeds are
+    authored and where a mis-measured marker would first be committed. Copying
+    the tracked set out and loading *that* serves the original concern strictly
+    better: an untracked draft is not skipped around, it is never loaded.
     """
     git = shutil.which("git")
     if git is None:
         pytest.skip(
-            f"no git on this machine: nothing here can confirm {MIGRATIONS_DIRECTORY} holds "
-            f"only tracked files, so this test declines to load it and report a false answer"
+            f"no git on this machine: nothing here can name the tracked subset of "
+            f"{REPO_ROOT / '.theurian'}, so this test declines to load it and report a "
+            f"false answer"
         )
 
     completed = subprocess.run(  # noqa: S603 - fixed argv, no shell, no caller input
@@ -338,7 +359,7 @@ def _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files(
             "ls-files",
             "-z",
             "--",
-            str(MIGRATIONS_DIRECTORY.relative_to(REPO_ROOT)),
+            ".theurian",
         ],
         capture_output=True,
         check=False,
@@ -352,26 +373,36 @@ def _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files(
             f"rather than falling back to the copy's manifest."
         )
 
-    tracked_names = {
-        entry.rsplit("/", 1)[-1]
-        for entry in completed.stdout.decode("utf-8", "surrogateescape").split("\0")
-        if entry
-    }
-    # `name.endswith(".yaml")`, matching the loader's own filter exactly
-    # (`migration_loader.py`'s `candidates` line): `path.suffix` would miss a
-    # bare `.yaml` filename (`Path(".yaml").suffix == ""`), which the loader
-    # still accepts.
-    on_disk_names = {
-        path.name for path in MIGRATIONS_DIRECTORY.iterdir() if path.name.endswith(".yaml")
-    }
-    untracked = sorted(on_disk_names - tracked_names)
-    if untracked:
-        pytest.skip(
-            f"{MIGRATIONS_DIRECTORY} holds .yaml file(s) git does not track: {untracked}. "
-            f"`load_migrations` reads the whole directory regardless of tracking, so this "
-            f"would apply a local draft as if it were the committed corpus. Commit it, "
-            f"remove it, or move it elsewhere before running this test."
-        )
+    paths = tuple(
+        entry for entry in completed.stdout.decode("utf-8", "surrogateescape").split("\0") if entry
+    )
+    assert paths, (
+        f"git tracks nothing under {REPO_ROOT / '.theurian'}. The committed corpus is gone -- "
+        f"which is a finding, not a reason for this test to skip and read as green."
+    )
+    return paths
+
+
+def _committed_corpus(destination: Path) -> Path:
+    """A tree holding exactly the tracked ``.theurian/`` paths, and nothing else.
+
+    The population is ``git ls-files``, so what gets applied below is the
+    committed corpus by construction rather than by a precondition someone has
+    to keep true. Copies rather than symlinks: the loader refuses irregular
+    entries under its own root, and a symlinked tree would be testing that
+    refusal instead of the corpus.
+
+    ``.theurian/knowledge/`` comes along because a migration's ``contentFile``
+    is relative to the migrations directory (``../knowledge/...``) and the
+    loader resolves it inside the root it was handed; the tracked bodies are
+    exactly the ones the tracked migrations name, which
+    ``test_dogfood_corpus_governance.py`` holds separately in both directions.
+    """
+    for relative in _tracked_corpus_paths():
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / relative, target)
+    return destination
 
 
 def _revision_chain(loaded: LoadedMigrations) -> dict[ItemId, tuple[RevisionId, ...]]:
@@ -460,14 +491,13 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
     this pin (a two-point general-word marker, then a presence-only one) that
     do not.
     """
-    _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files()
-
-    paths = ProjectPaths.of(REPO_ROOT)
+    corpus_root = _committed_corpus(tmp_path / "corpus")
+    paths = ProjectPaths.of(corpus_root)
     loaded = load_migrations(paths.root, paths.migrations, schema_root())
 
     project = Project(
         project_id=ProjectId("root-corpus-applicability-test"),
-        root_path=str(REPO_ROOT),
+        root_path=str(corpus_root),
         repository_url=None,
         default_branch="main",
         knowledge_directory=DEFAULT_KNOWLEDGE_DIRECTORY,
