@@ -643,7 +643,9 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
         f"#414 assertions above pin it by hand."
     )
 
+    checked: list[ItemId] = []
     for marker in _RESEED_PAYLOAD_MARKERS:
+        checked.append(marker.item_id)
         revisions = chain[marker.item_id]
         applied_body = bodies[revisions[-1].value]
         assert applied_body.count(marker.token) == marker.count, (
@@ -673,6 +675,19 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
             f"every earlier point of {marker.item_id.value}'s source document, and update both "
             f"the entry and its recorded measurement."
         )
+
+    # The census proves the *list* is complete; this proves the list was
+    # *walked*. Measured: replacing the loop's iterable with
+    # `_RESEED_PAYLOAD_MARKERS[:0]` (mutation m7) left every assertion above
+    # unexecuted and the suite green -- the census passed because it reads the
+    # constant directly, not the loop. Comparing what the loop actually visited
+    # against the constant is what closes that.
+    assert tuple(checked) == pinned, (
+        f"the marker loop visited {[item.value for item in checked]}, but "
+        f"_RESEED_PAYLOAD_MARKERS names {[item.value for item in pinned]}. Every entry has to "
+        f"be reached: an iterable that skips entries leaves their pins unasserted while every "
+        f"other rule in this test still passes."
+    )
 
 
 @pytest.mark.parametrize("count", [0, -1])
