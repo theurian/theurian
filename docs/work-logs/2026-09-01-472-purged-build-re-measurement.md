@@ -476,8 +476,9 @@ them is an index write path. Eight are the lock *mechanism*, all in
 `WriteLockTimeoutError`, and their `flock` / `LOCK_*` calls. Nine are the *path*
 and its error type — `ProjectPaths.write_lock`, the advisory lock on
 `.theurian/runtime/write.lock` guarding the *state* databases (ADR-0018 point 2,
-as corrected by #432/#433), at its definition and five call sites, plus three
-`WriteLockTimeoutError` import, handling and docstring lines in the CLI. The
+as corrected by #432/#433), counted at its definition and the five lines that
+thread it through the CLI to `write_transaction`, plus three
+`WriteLockTimeoutError` import, handling and docstring lines. The
 remaining two are `daemon/instance.py`'s single-instance lock.
 `write_transaction`, the only function that takes it, has **two** call sites
 (`cli/commands.py:1218`, `cli/migration_pipeline.py:94`), both on the state
@@ -596,8 +597,10 @@ the tests specialist, not a scratch commit — recorded here as the recommendati
 that falls out of this work rather than executed inside it.
 
 **Which grades this document the way it grades the records it re-measures.**
-The defect it opens with is that the round-5/6/7 figures ship with no committed
-producer. These figures ship with none either: the scripts were scratch, they
+The grade it applies to the round-5/6/7 records above is that their figures ship
+with no committed producer, so the spec has to be reconstructed from prose and
+one parameter recovered by arithmetic. These figures ship with none either: the
+scripts were scratch, they
 are withdrawn, and until a producer lands every table above is a dated claim
 about one machine that no reader can re-run. The difference is that the
 producer is in flight rather than absent — the pins are being written on this
