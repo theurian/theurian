@@ -65,13 +65,25 @@ publish — plus the roundings the records themselves use (`15 µs` for F1's
 14.7 µs, recorded at :4083 and multiplied out at :4150). A figure outside that
 column is not a round-5/6/7 figure and is not this key's business; a figure
 inside it does not get to be left out. Within the column, a spelling is admitted
-only when a hit is presumptively about the figure — unit-qualified, or three or
-more significant digits — and the exclusions are measured rather than assumed:
-at `ec0dbcd` a bare `3\.0` returns 57 lines, `120` returns 50, an unqualified
-`419` returns 186, and `213` alone returns 8 of which 7 are workflow-run ids and
-content hashes. F2's counts (10 / 11 / 60 / 210 / 6,000) are not distinctive
-numeric literals at all, and F9's Figure entry publishes none, so neither
-contributes a spelling.
+on one of three grounds: it is **unit-qualified**, it carries **three or more
+significant digits**, or — where the records publish a figure as a *series* — it
+is **the series as the record writes it**. The third ground is what puts F3 in
+the key: `3.0`, `10.5` and `10.3` are individually indistinguishable from
+unrelated text, but the sequence `3\.0 / 10\.5` is not, and it reaches the line
+where round seven states the series (:4220).
+
+The exclusions are measured rather than assumed: at `ec0dbcd` a bare `3\.0`
+returns 57 lines, `120` returns 50, an unqualified `419` returns 186, and `213`
+alone returns 8 of which 7 are workflow-run ids and content hashes. Admitting
+`10\.5|10\.3` as members takes the key to **52** lines rather than 48 — round
+seven's own harness output at :4199-4200, which is inside the T-17 entry, plus
+two hits on T-22's parse timings (`docs/security/threat-model.md:546` and
+`docs/work-logs/2026-08-30-199-unit-a-audit.md:411`) — and **no new satellite
+site**. The narrower form is the one published because it classifies exhaustively
+into the four buckets below; the wider one is 21 / 15 / 1 / 13 with two further
+lines that belong to no bucket. F2's counts (10 / 11 / 60 / 210 / 6,000) are not
+distinctive numeric literals at all, and F9's Figure entry publishes none, so
+neither contributes a spelling.
 
 ```sh
 git grep -nE '14\.7|0\.163|6\.047|15 (µs|us)|160\.3|640\.3|3\.0 / 10\.5|8\.8(×|x)|213(×|x)|29\.17|14\.00|14\.04|\+90 ms|\+14%|0\.64 s|419 (µs|us)|454 (µs|us)|\+35 (µs|us)|\+8\.3%|0\.07 ms|1\.40 ms|N=300' \
@@ -107,7 +119,8 @@ The ten live sites:
 `test_result_gate_session.py:361` says "linear, one row at a time, with no
 threshold in it". The purged column measured below is **10 reads at every
 withheld count**: on a purged build there is no line left to be linear. Those two
-need the claim rewritten, not the figure updated.
+need the claim rewritten **in addition to** the figure update — they carry
+6.047 ms and 0.163 ms as well, and those move like every other figure here.
 
 One parameter the threat model omits is also recoverable after all. The T-17 M5
 body (:4288-4290) publishes 29.17 / 14.00 / 14.04 ms with no corpus size;
