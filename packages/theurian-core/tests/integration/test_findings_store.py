@@ -52,6 +52,7 @@ from theurian.infrastructure.sqlite.findings_store import (
     FindingsStoreError,
     SqliteReviewFindingStore,
 )
+from theurian.infrastructure.sqlite.schema import read_only_uri
 
 pytestmark = pytest.mark.integration
 
@@ -367,42 +368,80 @@ def _bulk_load(marker: str, *, rows: int = 4000) -> FindingLoad:
     )
 
 
+def _sample_the_publish_path(store: SqliteReviewFindingStore) -> str:
+    """What a reader finds at the published name right now, in constant time.
+
+    **Not ``dump``, and the reason is a measurement.** ``dump`` reads every row and
+    builds a dataclass per row, so on a store big enough for its rebuild to be
+    worth sampling, one sample costs about what one rebuild costs. Measured on CI
+    (ubuntu-latest, 2026-09-01): a polling thread using ``dump`` completed **one**
+    sample in a 0.140-second rebuild and took none inside the window, so the run
+    proved nothing -- the non-vacuity guard below caught it rather than letting it
+    pass. This probe is two indexed lookups and does not grow with the corpus.
+
+    It reproduces exactly the states ``dump`` distinguishes, which is what makes it
+    a faithful stand-in: a missing file cannot be opened ``mode=ro`` at all
+    (``dump`` answers that one empty, indistinguishable from a genuinely empty
+    corpus -- the worse failure); a file whose schema committed and whose data
+    transaction did not has no metadata row, which is exactly what ``dump`` raises
+    on; and a whole store yields its marker.
+    """
+    try:
+        with closing(sqlite3.connect(read_only_uri(store.path), uri=True)) as connection:
+            if (
+                connection.execute("SELECT 1 FROM findings_metadata WHERE id = 1").fetchone()
+                is None
+            ):
+                return "half-built: no metadata row"
+            row = connection.execute("SELECT finding_text FROM findings LIMIT 1").fetchone()
+            return "<empty>" if row is None else str(row[0]).split("-")[0]
+    except sqlite3.Error as exc:
+        return f"unreadable: {exc}"
+
+
 def test_a_reader_polling_through_a_rebuild_sees_only_whole_stores(tmp_path: Path) -> None:
     """#404: mid-rebuild, the publish name holds the old store or the new one, never neither.
 
     The shape this replaced unlinked the live path and wrote the replacement under
     it, so a reader that opened the file mid-``replace_all`` observed a missing
-    file -- ``dump`` answering empty, indistinguishable from a genuinely empty
-    corpus -- or a file whose schema had committed and whose rows had not, which
-    ``dump`` raises on. Building at a ``.building`` sibling and publishing by
+    file -- which ``dump`` answers *empty*, indistinguishable from a genuinely
+    empty corpus -- or a file whose schema had committed and whose rows had not,
+    which ``dump`` raises on. Building at a ``.building`` sibling and publishing by
     ``os.replace`` removes the window: the name is never opened for writing at all.
 
-    A background thread polls ``dump`` as tightly as it can while the main thread
-    rebuilds. Every observation must be one of the two whole states. The
-    non-vacuity check is the count of observations taken strictly *between* the
-    rebuild's start and its end: a run that only sampled either side of the write
-    would prove nothing, and fails here naming that rather than passing.
+    A background thread samples the publish path as tightly as it can (see
+    :func:`_sample_the_publish_path` for why the sample is a constant-time probe
+    and not ``dump`` itself) while the main thread rebuilds twice, so the window is
+    two transitions rather than one. Every observation must be one of the two whole
+    states.
+
+    **The non-vacuity check is the point of failure that matters.** It counts
+    observations taken strictly *between* the rebuilds' start and end: a run that
+    sampled only either side would prove nothing about the window, and this fails
+    naming that rather than passing. It has already earned its place once -- it is
+    what turned the ``dump``-based probe's starvation on CI into a RED with a
+    diagnosis instead of a green run that measured nothing.
     """
     store = _store(tmp_path)
     store.replace_all(_bulk_load("old"))
+    # The premise the whole test rests on: before any rebuild, the probe reads the
+    # published store as whole. A probe that answered "unreadable" for every input
+    # would satisfy nothing below while looking like coverage.
+    assert _sample_the_publish_path(store) == "old"
 
     observations: list[tuple[float, str]] = []
     stop = threading.Event()
 
     def poll() -> None:
         while not stop.is_set():
-            try:
-                texts = {f.finding_text.split("-")[0] for f in store.dump().findings}
-            except FindingsStoreError as exc:  # a half-built file: the defect itself
-                observations.append((time.monotonic(), f"raised: {exc}"))
-            else:
-                observations.append((time.monotonic(), ",".join(sorted(texts)) or "<empty>"))
+            observations.append((time.monotonic(), _sample_the_publish_path(store)))
 
     reader = threading.Thread(target=poll, daemon=True)
     reader.start()
     try:
         started = time.monotonic()
         store.replace_all(_bulk_load("new"))
+        store.replace_all(_bulk_load("old"))
         finished = time.monotonic()
     finally:
         stop.set()
@@ -410,9 +449,9 @@ def test_a_reader_polling_through_a_rebuild_sees_only_whole_stores(tmp_path: Pat
 
     during = [state for when, state in observations if started < when < finished]
     assert during, (
-        f"the reader took no sample during the rebuild ({finished - started:.3f}s, "
+        f"the reader took no sample during the rebuilds ({finished - started:.3f}s, "
         f"{len(observations)} samples overall), so this run proves nothing about "
-        f"the window -- raise the row count in _bulk_load"
+        f"the window -- the probe is starved, or the rebuild is too fast to sample"
     )
     assert set(during) <= {"old", "new"}, (
         f"a reader observed the publish name in a state that is neither the whole "
