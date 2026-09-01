@@ -594,6 +594,120 @@ def test_a_quoted_grammar_example_is_rejected_and_siblings_still_load(tmp_path: 
     assert valid_one != example_sha  # the valid commit is a distinct object
 
 
+# --- AC-1: the read is the whole message, so a folded trailer is accounted ---
+
+
+def test_a_trailer_folded_into_the_subject_paragraph_is_accounted(tmp_path: Path) -> None:
+    """A column-0 keyed line in the subject *paragraph* is read, not silently dropped (#410).
+
+    git's ``%b`` excludes the first *paragraph*, not the first line: in a message
+    whose subject is not followed by a blank line, every following line folds into
+    the subject and ``%b`` is empty. A trailer there appeared in neither tuple --
+    unaccounted, falsifying the loss-free invariant :class:`FindingLoad` publishes.
+    The adapter reads ``%B`` (the whole message), so the folded trailer is a
+    column-0 keyed line like any other.
+
+    The ``%b``/``%B`` contrast is asserted first, so the fixture cannot quietly stop
+    exercising the fold: without that control this test would still pass against a
+    message git happened to split into subject and body normally.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    folded = _commit_body_file(
+        clone,
+        # No blank line after the subject: the trailer folds into the subject
+        # paragraph, which is exactly what `%b` drops.
+        "fix: a subject with no blank line after it\n"
+        "Review-Finding: security HIGH — folded into the subject paragraph\n".encode(),
+        when="2026-01-01T00:00:00",
+    )
+    _commit(
+        clone,
+        "fix: an ordinary commit (#2)",
+        "Review-Finding: security LOW — an ordinary body",
+        # Dated after the folded commit, so the expected sequence below is the
+        # chronological total order rather than a sha tie-break.
+        when="2026-02-01T00:00:00",
+    )
+    _publish(clone)
+
+    # The fixture's own premise: `%b` really does lose this line, and `%B` keeps it.
+    body_only = _git(clone, "log", "refs/remotes/origin/main", "--format=%b")
+    whole = _git(clone, "log", "refs/remotes/origin/main", "--format=%B")
+    assert "folded into the subject paragraph" not in body_only
+    assert "folded into the subject paragraph" in whole
+
+    load = GitTrailerFindingSource(clone).load_findings()
+
+    assert [f.finding_text for f in load.accepted] == [
+        "folded into the subject paragraph",
+        "an ordinary body",
+    ]
+    assert load.rejected == ()
+    assert load.accepted[0].commit_sha == folded
+
+
+def test_a_subject_that_is_itself_a_keyed_line_is_a_finding(tmp_path: Path) -> None:
+    """The population is every column-0 keyed line in the *message*, subject included (#410).
+
+    Reading ``%B`` makes the subject reachable, and a subject that is itself a
+    column-0 keyed line is therefore a finding rather than an excluded special
+    case. Pinned rather than left implicit: an "exclude the first line" refinement
+    would re-open the accounting gap at a different offset -- the folded shape above
+    is exactly a keyed line that a first-line rule would have to keep, and no rule
+    that counts lines can tell the two apart.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit_body_file(
+        clone, b"Review-Finding: adversarial LOW \xe2\x80\x94 the subject line itself\n"
+    )
+    _publish(clone)
+
+    load = GitTrailerFindingSource(clone).load_findings()
+
+    assert [f.finding_text for f in load.accepted] == ["the subject line itself"]
+    assert load.rejected == ()
+
+
+def test_a_lone_cr_message_carries_no_column_zero_line_and_balances(tmp_path: Path) -> None:
+    """A CR-separated message has one line, so it holds no trailer -- and none is claimed (#410).
+
+    The second input shape #410 names. A body whose separators are lone ``CR``
+    bytes is a *single* LF-delimited line whose column 0 is the subject, so under
+    the population the load publishes -- column-0 keyed lines of the whole message,
+    split on ``\\n`` -- there is no trailer to lose. This is a bound on the claim,
+    not a hole in it: the same rule is what the loss-free canary's own baseline
+    greps, so both sides agree the count is zero, and no line is silently dropped
+    from a population that ever contained it.
+
+    Asserted here so a later "helpfully" CR-aware split cannot land without a
+    recorded decision -- it would widen the accepted set while the population the
+    invariant is stated over stayed LF-delimited.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit_body_file(
+        clone,
+        "fix: lone carriage returns\r\rReview-Finding: security HIGH — behind lone CRs\r".encode(),
+        when="2026-01-01T00:00:00",
+    )
+    _commit(
+        clone,
+        "fix: a normal one (#2)",
+        "Review-Finding: security LOW — a normal body",
+        when="2026-02-01T00:00:00",
+    )
+    _publish(clone)
+
+    whole = _git(clone, "log", "refs/remotes/origin/main", "--format=%B")
+    keyed = [line for line in whole.split("\n") if line.startswith(TRAILER_KEY)]
+    assert [text for text in keyed if "behind lone CRs" in text] == []  # not a column-0 line
+
+    load = GitTrailerFindingSource(clone).load_findings()
+
+    assert [f.finding_text for f in load.accepted] == ["a normal body"]
+    assert load.rejected == ()
+    assert len(load.accepted) + len(load.rejected) == len(keyed)
+
+
 # --- D2: a trailer value is exactly one physical line -----------------------
 
 
@@ -722,10 +836,10 @@ def test_multiple_trailers_on_one_commit_all_map_in_body_order(tmp_path: Path) -
 def test_a_trailer_below_many_body_lines_is_fully_read(tmp_path: Path) -> None:
     """A multi-line body's trailers are all read, wherever they sit in the body.
 
-    ``git log %b`` returns the whole body as one NUL-framed field, so a trailer
+    ``git log %B`` returns the whole message as one NUL-framed field, so a trailer
     after several paragraphs -- and a second one before them -- are both column-0
-    keyed lines. A mutation that truncated the body (an earlier ``fields[3:]``
-    join, or reading only the first body line) would drop the later trailer; this
+    keyed lines. A mutation that truncated the message (an earlier ``fields[3:]``
+    join, or reading only the first line) would drop the later trailer; this
     asserts both survive with their exact text.
     """
     _origin, clone = _origin_and_clone(tmp_path)
@@ -888,6 +1002,15 @@ def test_live_origin_main_accounts_for_every_trailer_loss_free() -> None:
     is the recorded grammar-change signal (the fix is to widen the parser, not to
     loosen this test). Skips where the checkout or its remote-tracking ref is
     unresolvable, keeping the mutation control GREEN.
+
+    **The baseline greps ``%B``, not ``%b`` (#410).** While the adapter read ``%b``
+    this baseline read it too, so the equation compared the defect with itself: a
+    trailer folded into the subject paragraph was missing from both sides and the
+    balance held while the line was lost. ``%B`` is the whole message, which is the
+    population the invariant is actually stated over. Measured on ``origin/main`` @
+    ``266e6b6`` (2026-09-02) the two counts agree at 386, so this repointing changed
+    no live number -- it removed the shared blind spot ahead of the first folded
+    trailer, not a present miscount.
     """
     repo = _live_repo_root()
     if repo is None or not _origin_main_present(repo):
@@ -899,7 +1022,7 @@ def test_live_origin_main_accounts_for_every_trailer_loss_free() -> None:
 
     assert load == again  # deterministic across two calls
 
-    raw = _git(repo, "log", "refs/remotes/origin/main", "--format=%b")
+    raw = _git(repo, "log", "refs/remotes/origin/main", "--format=%B")
     keyed = [line for line in raw.split("\n") if line.startswith(TRAILER_KEY)]
     # Loss-free population accounting: every column-0 keyed line is accounted for
     # in exactly one tuple, none silently dropped, and there really are some.
@@ -951,7 +1074,7 @@ def test_split_records_normal_separator_stream_yields_whole_records(tmp_path: Pa
     assert [r.sha for r in records] == ["a" * 40, "b" * 40]
     assert records[0].committed_at == datetime(2026, 1, 1, tzinfo=UTC)
     assert records[1].committed_at == datetime(2026, 2, 1, tzinfo=UTC)
-    assert records[1].body == ""  # a legitimate empty final field, not a terminator artefact
+    assert records[1].message == ""  # a legitimate empty final field, not a terminator artefact
 
 
 def test_split_records_tolerates_a_terminator_variant_trailing_empty_token(tmp_path: Path) -> None:
@@ -972,7 +1095,7 @@ def test_split_records_tolerates_a_terminator_variant_trailing_empty_token(tmp_p
     )
     records = _split_records(normal + _NUL, tmp_path)  # the terminator variant's trailing NUL
     assert [r.sha for r in records] == ["a" * 40, "b" * 40]
-    assert [r.body for r in records] == ["one", "two"]
+    assert [r.message for r in records] == ["one", "two"]
 
 
 def test_split_records_rejects_a_misframed_3n_plus_1_stream(tmp_path: Path) -> None:

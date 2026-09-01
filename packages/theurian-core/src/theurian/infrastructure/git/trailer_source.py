@@ -123,12 +123,23 @@ GIT_TIMEOUT_SECONDS: Final = 30.0
 #: be rejected by ``subprocess`` ("embedded null byte"), so the format carries the
 #: escape and only the output carries the byte.
 _NUL: Final = "\x00"
-_FORMAT: Final = "format:%H%x00%cI%x00%b"
+#: ``%B`` -- the **raw whole message**, subject included -- and deliberately not
+#: ``%b`` (#410). git's ``%b`` excludes the first *paragraph*, not the first line:
+#: in a message whose subject is not followed by a blank line, every following line
+#: folds into the subject and ``%b`` is empty, so a column-0 ``Review-Finding:``
+#: line sitting there reached neither tuple of the load -- silently unaccounted,
+#: which is exactly what :class:`FindingLoad`'s loss-free invariant forbids.
+#: Reading the whole message makes the population "every column-0 keyed line of the
+#: commit message", with no paragraph rule between an author's bytes and the parse.
+_FORMAT: Final = "format:%H%x00%cI%x00%B"
 
-#: sha, committer-date, body. Exactly three -- not "at least three" -- because no
-#: field can contain the NUL separator, so the stream splits into an exact multiple
-#: of this width. The subject is deliberately not read: it was only the source of
-#: the deleted ``pull_request`` heuristic (D5), and nothing else needs it.
+#: sha, committer-date, whole message. Exactly three -- not "at least three" --
+#: because no field can contain the NUL separator, so the stream splits into an
+#: exact multiple of this width. The subject is not read as its *own* field: it was
+#: only the source of the deleted ``pull_request`` heuristic (D5), and nothing needs
+#: it separately. It arrives inside ``%B`` as ordinary message text, where it is a
+#: candidate keyed line like any other and nothing can re-derive a PR from it,
+#: because no field tells the parser which line the subject was.
 _FIELDS_PER_RECORD: Final = 3
 
 
@@ -189,12 +200,24 @@ class GitTrailerFindingSource:
 
         **Extraction is a column-0 block, not git's own trailer parser** (D1): a
         genuine trailer is a line beginning at column 0 with the exact key,
-        appearing anywhere in the commit body -- git's ``%(trailers)`` reads only
+        appearing anywhere in the commit message -- git's ``%(trailers)`` reads only
         the last paragraph and would drop the ~82% of this repo's trailers that sit
         ahead of the ``Signed-off-by:`` paragraph. **A trailer value is a single
         physical line** (D2): each ``split("\\n")`` line is one value, and an
-        indented or wrapped continuation line is ordinary body text that does not
+        indented or wrapped continuation line is ordinary message text that does not
         begin with the key, so it is ignored rather than folded in.
+
+        **The population is the whole message, subject included** (:data:`_FORMAT`,
+        #410). The candidate lines are every ``\\n``-delimited line of ``%B``, so a
+        trailer folded into the subject paragraph -- which ``%b`` dropped, since
+        ``%b`` excludes the first *paragraph* rather than the first line -- is a
+        keyed line like any other, and a subject that is itself a keyed line is a
+        finding rather than an excluded special case. Two bounds this states rather
+        than hides: "line" means ``\\n``-delimited, so a message whose separators are
+        lone ``CR`` bytes is one line carrying no column-0 keyed line at all (nothing
+        is dropped, because nothing was ever in the population); and the subject
+        arrives with no marker saying it *is* the subject, which is what keeps the
+        deleted ``pull_request``-from-subject heuristic (D5) unreachable.
 
         **The load is loss-free by accounting, not by aborting** (AC-1, D3): every
         column-0 keyed line whose record has a valid committer date is either an
@@ -241,7 +264,7 @@ class GitTrailerFindingSource:
                     ((record.sha, 0), RejectedTrailer(record.sha, record.date_iso, reason))
                 )
                 continue
-            for position, line in enumerate(record.body.split("\n")):
+            for position, line in enumerate(record.message.split("\n")):
                 if not line.startswith(TRAILER_KEY):
                     continue
                 try:
@@ -336,7 +359,12 @@ def _decode_git_output(raw: bytes, repo_root: Path) -> str:
 
 @dataclass(frozen=True, slots=True)
 class _Record:
-    """One framed ``git log -z`` record: its sha, body, and committer date.
+    """One framed ``git log -z`` record: its sha, whole message, and committer date.
+
+    ``message`` is git's ``%B`` -- subject and body together, not the ``%b`` body
+    alone -- because a paragraph rule between the author's bytes and the parse is
+    what let a subject-folded trailer go unaccounted (#410, and :data:`_FORMAT`).
+    Named for what it holds so no reader infers a subject was stripped on the way in.
 
     ``committed_at`` is ``None`` exactly when git emitted a committer date this
     runtime cannot represent -- a year >= 10000, which a crafted
@@ -353,7 +381,7 @@ class _Record:
     """
 
     sha: str
-    body: str
+    message: str
     date_iso: str
     committed_at: datetime | None
 
@@ -381,8 +409,8 @@ def _split_records(stdout: str, repo_root: Path) -> list[_Record]:
     semantics of ``tformat:`` or a bare format string, so there is no trailing NUL
     after the last record and a well-formed stream is exactly
     :data:`_FIELDS_PER_RECORD` * n tokens. Because NUL cannot occur in a commit
-    message, no field -- the multi-line body included -- can hold the separator, so
-    the split is exact and needs no rejoining.
+    message, no field -- the multi-line ``%B`` message included -- can hold the
+    separator, so the split is exact and needs no rejoining.
 
     Each record's committer date is parsed here; a date git emitted outside
     ``datetime``'s range is carried as ``committed_at=None`` (see :class:`_Record`)
@@ -400,8 +428,8 @@ def _split_records(stdout: str, repo_root: Path) -> list[_Record]:
     # and this branch does not fire. It is here only to tolerate a `-z` that
     # *terminates* records instead (`tformat:`, or a future git default), which
     # would leave one trailing empty token. Drop exactly that one, and only when the
-    # count says it is the terminator (`% width == 1`), so an empty final body -- a
-    # legitimate last field under separator semantics -- is never mistaken for it.
+    # count says it is the terminator (`% width == 1`), so an empty final message --
+    # a legitimate last field under separator semantics -- is never mistaken for it.
     if len(tokens) % _FIELDS_PER_RECORD == 1 and tokens[-1] == "":
         tokens.pop()
     # Also defensive: separator output is always `3n`, so this refuses only a
@@ -416,11 +444,11 @@ def _split_records(stdout: str, repo_root: Path) -> list[_Record]:
         )
     records: list[_Record] = []
     for start in range(0, len(tokens), _FIELDS_PER_RECORD):
-        sha, date_iso, body = tokens[start : start + _FIELDS_PER_RECORD]
+        sha, date_iso, message = tokens[start : start + _FIELDS_PER_RECORD]
         records.append(
             _Record(
                 sha=sha,
-                body=body,
+                message=message,
                 date_iso=date_iso,
                 committed_at=_parse_committer_date(date_iso),
             )

@@ -79,8 +79,8 @@ class ReviewerToken(StrEnum):
 #: genuinely unknown token is still refused. Growing this map is the deliberate,
 #: recorded act decision 2 calls a grammar change: a spelling is added only once it
 #: is on public ``main``, and the live loss-free test
-#: (``test_live_origin_main_maps_every_trailer_loss_free``) is what forces the
-#: parser's accepted set to stay a superset of the installed base.
+#: (``test_live_origin_main_accounts_for_every_trailer_loss_free``) is what forces
+#: the parser's accepted set to stay a superset of the installed base.
 _REVIEWER_ALIASES: Final[dict[str, ReviewerToken]] = {"code": ReviewerToken.CODE_REVIEW}
 
 
@@ -308,6 +308,17 @@ class FindingLoad:
     than lost. A single malformed line, and a single crafted date, each stay one
     :class:`RejectedTrailer` while every well-formed sibling still loads -- which is
     what makes "loss-free" hold under a corpus that cannot be edited.
+
+    **The population the invariant ranges over is stated, because it was once
+    narrower than the sentence above implied** (#410). A "column-0 line" is a
+    ``\\n``-delimited line of the **whole commit message** -- subject included --
+    whose first character starts the key. It was the ``%b`` *body* until #410: git's
+    ``%b`` drops the first paragraph rather than the first line, so a trailer folded
+    into an unseparated subject was in neither tuple and the invariant was false for
+    it. Two bounds remain, and they are bounds on the population rather than holes
+    in the accounting: a message separated by lone ``CR`` bytes is a single line and
+    therefore carries no column-0 keyed line at all, and a line's *offset* in the
+    message is not part of the key, so a keyed subject is a finding.
     """
 
     accepted: tuple[ReviewFinding, ...]
