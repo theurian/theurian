@@ -6,7 +6,9 @@ the Claude Code plugin depends on (CP-2), validated by ``tests/contract/``.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import sqlite3
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -89,6 +91,7 @@ from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
     StateDatabaseUnreadableError,
+    WriteLock,
     WriteLockTimeoutError,
     create_database,
     write_transaction,
@@ -648,18 +651,40 @@ def _read_active(paths: ProjectPaths, as_json: bool) -> ActiveState | None:
         raise
 
 
-def _discard_untrusted_state(database: Path) -> None:
-    """Delete a state database this installation did not build, sidecars and all.
+def _unlink_database_and_sidecars(database: Path) -> None:
+    """Delete a state database file, its `-wal` and its `-shm`, if present.
 
     A WAL-mode database (`PRAGMA journal_mode = WAL`) carries committed data in a
     `-wal` sidecar and its shared-memory index in a `-shm` one, so deleting the
-    main file alone could leave a committed poisoned WAL to be replayed against
-    whatever is rebuilt in its place -- the same replay the read side opens
-    `mode=ro` to avoid. All three go; `missing_ok` covers the ordinary case where
-    a clean checkpoint already removed the sidecars.
+    main file alone could leave a poisoned WAL to be replayed against whatever
+    is written in its place -- the same replay the read side opens `mode=ro` to
+    avoid. All three go; `missing_ok` covers both callers' ordinary cases: a
+    clean checkpoint already removed the sidecars, or nothing was ever written
+    at all.
+
+    Two callers, two different reasons, both wanting the identical operation
+    rather than two copies of it: :func:`_discard_untrusted_state` removes a
+    database this installation did not build; `migrate_apply`'s own locked
+    section removes whatever its own failed attempt at `create_database` left
+    behind (issue #468, the `index_commands.py::_run_build` precedent -- "a
+    half-built X is worse than none").
     """
     for sidecar in ("", "-wal", "-shm"):
         database.with_name(f"{database.name}{sidecar}").unlink(missing_ok=True)
+
+
+def _discard_untrusted_state(database: Path) -> None:
+    """Delete a state database this installation did not build, sidecars and all.
+
+    A database file at the name this build would use, that this installation
+    did not produce -- a doctored `.theurian/state/` shipped in the repository
+    past its ADR-0004 ignore. Applying migrations *into* it would leave its
+    injected rows untouched (an idempotent replay writes nothing) and then
+    stamp the result as this install's build. `git rm --cached` is still the
+    user's job for a tracked copy (the refusal on the serve side names it);
+    this only stops the untrusted bytes from being adopted here.
+    """
+    _unlink_database_and_sidecars(database)
 
 
 # ---------------------------------------------------------------------------
@@ -1289,12 +1314,76 @@ def migrate_validate(as_json: JsonOption = False) -> None:
     )
 
 
+#: The remedy for a residual fault reaching one of the two backstops inside
+#: `migrate apply`'s single critical section (issue #468 round two): section
+#: A's `(OSError, sqlite3.Error)` around `create_database`, and section B's
+#: `OSError` around `record_state`/`write_active_state`. Both sections are
+#: inside one continuous `WriteLock` hold spanning creation through publish,
+#: so the process-level race #468 measured is closed at the source and
+#: neither backstop is reachable through that race any more; each is what
+#: turns an UNRELATED fault -- a filesystem problem, or the advisory lock's
+#: own documented NFS caveat (ADR-0018 Negative consequence) -- into the same
+#: `_fail` envelope every other command failure gets, rather than a raw
+#: traceback. Never leads with lock-contention advice: a lock *timeout* is
+#: `WriteLockTimeoutError`, caught by the outer `except TheurianError`
+#: wrapping the whole critical section (below), and cannot reach either of
+#: these two backstops.
+_LOCKED_WRITE_FAULT_REMEDY = (
+    "Check that `.theurian/state/` is writable and on a supported filesystem (not NFS; "
+    "ADR-0018), then retry `theurian migrate apply`."
+)
+
+
 @migrate_app.command("apply")
-def migrate_apply(as_json: JsonOption = False) -> None:
+def migrate_apply(  # noqa: PLR0911 -- one early return per distinguishable failure shape; the single critical section (#468) is kept as one function on purpose, so "does everything really sit under the one lock" stays answerable by reading top to bottom rather than by trusting a call graph
+    as_json: JsonOption = False,
+) -> None:
     """Apply pending migrations to the canonical store.
 
     Idempotent: applying an unchanged set again reports zero applied and changes
     nothing (FR-K8).
+
+    **One critical section spans every write this command makes (issue #468,
+    round two).** The first shape shipped here held `create_database` and
+    `write_active_state` under two separate acquire/release cycles of the
+    same `WriteLock`, sequential rather than nested -- and measurement found
+    a real gap in the window *between* them: `provenance.record_state` ran
+    outside any lock, after the pointer publish, so a slower process racing a
+    faster one could observe `has_state == False` for a database the faster
+    process had *already built and published*. The untrusted-state discard
+    branch, reading that as a doctored `.theurian/state/`, then deleted and
+    rebuilt a live, just-published database out from under the process that
+    built it -- 13/78 raced pairs measured both processes `databaseCreated:
+    true`. That design's own docstring called the re-check "FR-K8's
+    idempotent-noop path pulled one step earlier"; it was false. A loser
+    under it did not observe the winner's work, it destroyed it.
+
+    The fix (Codex, consulted on the smallest correct shape) holds ONE
+    `WriteLock` across the whole sequence below: the discard/create decision,
+    `create_database`, the migration transaction, `provenance.record_state`,
+    and `write_active_state`, in that order. `record_state` moves *before*
+    the pointer publish, so by the time `active.json` names a state hash,
+    that hash's provenance is already on record -- there is no window where
+    the pointer names a build the serve-side provenance gate has not yet
+    been told about. The doctored-state discard check stays inside this one
+    section, and that is what makes it correct rather than merely
+    convenient: under one continuous hold, no *other* writer's intermediate
+    state is ever visible here, so `has_state == False` on a database that
+    exists can only mean what the check exists to catch -- state this
+    installation never built, committed and shipped past ADR-0004's ignore --
+    never a live build still in flight.
+
+    Mechanically, `apply_migration_set` (and `write_transaction` beneath it)
+    gained an `already_locked` parameter, so this command's own acquisition
+    can cover the transaction too without a second, nested acquisition of the
+    same lock file: `flock` locks an *open file description*, not a process
+    or a path, so a second `Path.open()` + `flock` on a file this same
+    process already holds self-blocks for the full timeout, exactly as a
+    second OS process would. `already_locked` defaults to `False` everywhere
+    else -- `migrate status`'s own `write_transaction` call, and `propose
+    accept`'s rehearsal against a throwaway lock file no other process can
+    contend for -- so every other caller keeps the self-contained acquisition
+    it always had.
     """
     context, database = _require_project(as_json)
 
@@ -1311,23 +1400,14 @@ def migrate_apply(as_json: JsonOption = False) -> None:
     # database this install did not build, and to record the one it does.
     provenance = BuildProvenance.default()
 
-    created = False
-    if database.exists() and not provenance.has_state(context.paths.root, str(context.state_hash)):
-        # A database file at the name this build would use, that this
-        # installation did not produce -- a doctored `.theurian/state/` shipped in
-        # the repository past its ADR-0004 ignore. Applying migrations *into* it
-        # would leave its injected rows untouched (an idempotent replay writes
-        # nothing) and then stamp the result as this install's build. Discard it,
-        # sidecars included, and rebuild from the Git-tracked migrations, which
-        # are the trusted source. `git rm --cached` is still the user's job for a
-        # tracked copy (the refusal on the serve side names it); this only stops
-        # the untrusted bytes from being adopted here.
-        _discard_untrusted_state(database)
-
-    if not database.exists():
-        create_database(database, str(context.state_hash), MIGRATION_ENGINE_VERSION)
-        created = True
-
+    # Built before the lock, not inside it: every field here is read-only git
+    # metadata (`repository_url`, `default_branch`, `current_commit` -- each a
+    # subprocess call), and the round-one measurement traced part of the
+    # original defect's window to exactly these calls sitting between two
+    # separate lock holds. There is only one hold now, but nothing here
+    # writes anything the lock protects, so this stays outside it -- the same
+    # reason `write_transaction`'s own NFR-8 note gives for content hashing:
+    # no external I/O inside a hold that does not need it.
     project = Project(
         project_id=context.project_id,
         root_path=str(context.paths.root),
@@ -1338,84 +1418,153 @@ def migrate_apply(as_json: JsonOption = False) -> None:
         last_seen_commit=current_commit(context.paths.root),
     )
 
+    created = False
     try:
-        # The one definition of what applying a migration set is (ADR-0027
-        # decision 2). `propose accept`'s pre-check replays through this same
-        # function against a throwaway database, so an acceptance and this
-        # command cannot disagree about whether a set is usable.
-        report = apply_migration_set(
-            database=database,
-            write_lock=context.paths.write_lock,
-            project=project,
-            loaded=context.loaded,
-            clock=context.clock,
-            database_created=created,
-        )
-    except MigrationChecksumMismatchError as exc:
-        _fail(
-            str(exc),
-            remedy=(
-                "Restore the original migration file, or write a new migration. "
-                "Never edit an applied migration."
-            ),
-            as_json=as_json,
-            code=EXIT_STATE_ERROR,
-        )
-        return
-    except RevisionConflictError as exc:
-        _fail(
-            str(exc),
-            remedy=(
-                "Two changes targeted the same item. Read both revisions, decide which "
-                "is correct, and write a new migration with the right expectedRevision. "
-                "Theurian does not merge knowledge automatically."
-            ),
-            as_json=as_json,
-            code=EXIT_STATE_ERROR,
-        )
-        return
-    except UnenforceableScopeError as exc:
-        # Defense in depth, not the primary path: the pre-check above already
-        # refuses before `create_database` runs, for every input this command
-        # can receive. `MigrationEngine.apply` enforces the same rule on its
-        # own, so this stays correct even for a caller that invokes it
-        # directly without going through this command. Caught ahead of the
-        # generic `MigrationError` clause below, since it is one.
-        _fail(
-            str(exc),
-            remedy=_unenforceable_scope_remedy(exc, context.paths, context.project_id),
-            as_json=as_json,
-            code=EXIT_STATE_ERROR,
-        )
-        return
-    except (MigrationCycleError, MigrationError) as exc:
-        _fail(
-            str(exc),
-            remedy="Fix the migration set, then retry.",
-            as_json=as_json,
-            code=EXIT_STATE_ERROR,
-        )
-        return
+        with WriteLock(context.paths.write_lock).held():
+            # -- Section A: discard/create decision + create_database -------
+            # Re-checked here, not only inside `create_database`'s own
+            # `if database_path.exists()` guard: a naive design can have two
+            # processes both pass this shape of check before either holds
+            # the lock, so it has to be asked again once the lock *is* held,
+            # or the loser calls `create_database` on a file that already
+            # exists and gets `FileExistsError` instead of observing it.
+            # Under this one continuous hold spanning through the
+            # transaction, record and publish below, no other writer's
+            # intermediate state is ever visible here -- see this command's
+            # own docstring for why that is what makes the discard branch
+            # correct now (#468 round two).
+            try:
+                if database.exists() and not provenance.has_state(
+                    context.paths.root, str(context.state_hash)
+                ):
+                    _discard_untrusted_state(database)
+
+                if not database.exists():
+                    create_database(database, str(context.state_hash), MIGRATION_ENGINE_VERSION)
+                    created = True
+            except (OSError, sqlite3.Error) as exc:
+                # A half-built database is worse than none
+                # (`index_commands.py::_run_build`'s precedent): nothing below
+                # this point has run yet, so whatever `create_database`
+                # partially wrote is unlinked before reporting, not after.
+                # Best-effort: a cleanup failure -- `database` names a
+                # directory, not a file, which `unlink` refuses too -- must
+                # not replace the original error with a less informative one.
+                with contextlib.suppress(OSError):
+                    _unlink_database_and_sidecars(database)
+                _fail(
+                    str(exc),
+                    remedy=_LOCKED_WRITE_FAULT_REMEDY,
+                    as_json=as_json,
+                    code=EXIT_STATE_ERROR,
+                )
+                return
+
+            # -- The transaction ----------------------------------------------
+            try:
+                # The one definition of what applying a migration set is (ADR-0027
+                # decision 2). `propose accept`'s pre-check replays through this
+                # same function against a throwaway database, so an acceptance and
+                # this command cannot disagree about whether a set is usable.
+                # `already_locked=True`: this command already holds `write_lock`
+                # above, so `write_transaction` must not try to acquire it again.
+                report = apply_migration_set(
+                    database=database,
+                    write_lock=context.paths.write_lock,
+                    project=project,
+                    loaded=context.loaded,
+                    clock=context.clock,
+                    database_created=created,
+                    already_locked=True,
+                )
+            except MigrationChecksumMismatchError as exc:
+                _fail(
+                    str(exc),
+                    remedy=(
+                        "Restore the original migration file, or write a new migration. "
+                        "Never edit an applied migration."
+                    ),
+                    as_json=as_json,
+                    code=EXIT_STATE_ERROR,
+                )
+                return
+            except RevisionConflictError as exc:
+                _fail(
+                    str(exc),
+                    remedy=(
+                        "Two changes targeted the same item. Read both revisions, decide "
+                        "which is correct, and write a new migration with the right "
+                        "expectedRevision. Theurian does not merge knowledge automatically."
+                    ),
+                    as_json=as_json,
+                    code=EXIT_STATE_ERROR,
+                )
+                return
+            except UnenforceableScopeError as exc:
+                # Defense in depth, not the primary path: the pre-check above
+                # already refuses before `create_database` runs, for every input
+                # this command can receive. `MigrationEngine.apply` enforces the
+                # same rule on its own, so this stays correct even for a caller
+                # that invokes it directly without going through this command.
+                # Caught ahead of the generic `MigrationError` clause below,
+                # since it is one.
+                _fail(
+                    str(exc),
+                    remedy=_unenforceable_scope_remedy(exc, context.paths, context.project_id),
+                    as_json=as_json,
+                    code=EXIT_STATE_ERROR,
+                )
+                return
+            except (MigrationCycleError, MigrationError) as exc:
+                _fail(
+                    str(exc),
+                    remedy="Fix the migration set, then retry.",
+                    as_json=as_json,
+                    code=EXIT_STATE_ERROR,
+                )
+                return
+            except TheurianError as exc:
+                _fail(str(exc), remedy=_state_remedy(exc), as_json=as_json, code=EXIT_STATE_ERROR)
+                return
+
+            # -- Section B: record BEFORE publish -----------------------------
+            # `record_state` before `write_active_state`, both still under the
+            # same hold: by the time `active.json` names this state hash, its
+            # provenance is already on record, so there is no window where the
+            # pointer names a build the serve-side provenance gate has not yet
+            # been told about -- the ordering the round-one design got
+            # backwards (#468 round two).
+            try:
+                provenance.record_state(context.paths.root, str(context.state_hash))
+                active = write_active_state(
+                    context.paths,
+                    context.state_hash,
+                    len(context.loaded.migration_set),
+                    context.clock,
+                )
+            except OSError as exc:
+                # `sqlite3.Error` is unreachable here: neither `record_state`
+                # nor `write_active_state` opens a database connection.
+                _fail(
+                    str(exc),
+                    remedy=_LOCKED_WRITE_FAULT_REMEDY,
+                    as_json=as_json,
+                    code=EXIT_STATE_ERROR,
+                )
+                return
     except TheurianError as exc:
+        # Reached only by the lock acquisition itself, above every section:
+        # `WriteLockTimeoutError` when another holder keeps `write_lock` past
+        # `WRITE_LOCK_TIMEOUT_SECONDS`. Nothing inside the `with` block can
+        # raise this -- `already_locked=True` means the transaction never
+        # attempts its own acquisition -- so this is the one place a lock
+        # timeout for this whole critical section is ever caught.
         _fail(str(exc), remedy=_state_remedy(exc), as_json=as_json, code=EXIT_STATE_ERROR)
         return
 
-    active = write_active_state(
-        context.paths, context.state_hash, len(context.loaded.migration_set), context.clock
-    )
-
-    # Record that this installation built this canonical state, out of the
-    # repository tree, the instant the pointer that publishes it is written
-    # (ADR-0004, SEC-7). Nothing under `.theurian/state/` will be served for this
-    # project until this record exists, so it is what turns the just-built state
-    # from "present on disk" into "trusted to serve". Recorded on every apply,
-    # not only a changed one: an idempotent re-apply must keep the record so a
-    # daemon does not start refusing state it served a moment ago.
-    provenance.record_state(context.paths.root, str(context.state_hash))
-
-    # After the write transaction has committed and released the lock, never
-    # inside it: `purge_into` is a whole-file backup, delete and verify, and
-    # holding that across a write transaction blocks every other writer (NFR-8,
+    # After the lock has released, never inside it: `purge_into` is a
+    # whole-file backup, delete and verify, and holding that across a write
+    # transaction blocks every other writer (NFR-8,
     # ADR-0018 point 5). The purge reads the *published index*, not canonical
     # state, so the committed withdrawal is all it needs -- and it is the same
     # application-layer use case a future daemon write path calls (ADR-0024

@@ -12,6 +12,42 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two concurrent `theurian migrate apply` invocations against a fresh
+  project no longer race `create_database` and the pointer publish outside
+  the advisory write lock**
+  ([#468](https://github.com/theurian/theurian/issues/468)). Measured on
+  eight real two-process runs (`theurian-adversarial-review`, PR #446 round
+  2): the loser crashed in four, three distinct unhandled `sqlite3` errors,
+  because `create_database` ran before the migration transaction opened and
+  `write_active_state` ran after it committed, both unlocked, so `--json`
+  requested a defined outcome and got a Rich traceback instead.
+
+  `migrate apply` now holds one advisory lock across its whole critical
+  section — the discard/create decision, `create_database`, the migration
+  transaction, the provenance record and the pointer publish, in that order
+  — rather than the migration content alone. A first version of this fix
+  held the same lock in two separate acquire/release cycles instead of one,
+  and review found a real gap in the window between them:
+  `provenance.record_state` ran after the pointer publish and outside any
+  lock, so a slower process racing a faster one could observe
+  `has_state == False` for a database the faster process had already built
+  and published, and the untrusted-state discard branch — meant for a
+  doctored, committed `.theurian/state/` — deleted and rebuilt that live
+  database out from under it (13/78 raced pairs measured both processes
+  `databaseCreated: true`; one pair produced two winners). The shipped
+  design holds one lock for the whole sequence instead, with the provenance
+  record moved ahead of the pointer publish, so there is no window where
+  `active.json` names a state hash the serve-side provenance gate has not
+  yet been told about. Re-measured with the same two-process harness and a
+  synthetic stagger sweep built to reproduce the two-winner shape directly:
+  zero crashes, zero double-`databaseCreated`, zero two-winner pairs, across
+  five runs of eight pairs each.
+
+  ADR-0018 Decision point 2 and its Positive-consequence bullet — narrowed
+  on 2026-08-31 to record the gap this closes — are updated to say so.
+
 ### Documentation
 
 - **ADR-0027 and the SQLite write path no longer repeat ADR-0018's corrected

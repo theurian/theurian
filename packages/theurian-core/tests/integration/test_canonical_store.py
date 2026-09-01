@@ -413,6 +413,53 @@ def test_a_second_writer_waits_rather_than_corrupting(lock: Path) -> None:
         pass  # pragma: no cover - the acquisition above must fail
 
 
+def test_already_locked_is_what_makes_an_ordinary_caller_take_the_lock(
+    database: Path, lock: Path
+) -> None:
+    """#468 round two: nothing pinned that ``already_locked=False`` (the default)
+    is what makes an ordinary ``write_transaction`` caller -- ``migrate
+    status``, ``rehearse_migration_set``, any future direct caller -- actually
+    acquire the write lock. ``migrate apply``'s own call is the only caller
+    that passes ``True``, having already taken the same lock itself.
+
+    Holds ``lock`` from a second ``WriteLock`` object first -- the same
+    flock-self-block shape :func:`test_a_second_writer_waits_rather_than_corrupting`
+    above already uses. The default must then raise ``WriteLockTimeoutError``:
+    it tries to acquire the held lock and cannot. ``already_locked=True`` must
+    proceed despite the identical external hold, because it is the caller's
+    assertion that it already holds the lock, and it skips acquisition
+    entirely rather than contending for it.
+
+    The first call below omits ``already_locked`` entirely, deliberately: a
+    call that passed ``False`` explicitly would keep passing even if the
+    *default* flipped to ``True``, since an explicit argument always wins
+    over a changed default -- measured while writing this test, the earlier
+    draft that spelled out ``already_locked=False`` stayed green after
+    flipping the signature's own default to ``True``. Omitting it is what
+    makes the assertion about the default and not merely about the ``False``
+    branch's own behaviour.
+
+    RED on a default flip (``already_locked: bool = True``) or on a caller
+    that started passing ``True`` without actually holding the lock: either
+    shape turns the first assertion below from a timeout into a silent
+    success. Runs against the real ~30s ``WRITE_LOCK_TIMEOUT_SECONDS`` --
+    ``write_transaction`` exposes no way to shorten it, and this file is
+    already the one member of the narrow, deliberately strict
+    ``WriteLock``-constructing population ``test_connection_claims.py``'s own
+    ``WRITE_LOCK_EXERCISE`` names, so this belongs here rather than beside a
+    shortcut around the real wait.
+    """
+    from theurian.infrastructure.sqlite.connection import WriteLock, WriteLockTimeoutError
+
+    holder = WriteLock(lock, timeout=0.2)
+    with holder.held():
+        with pytest.raises(WriteLockTimeoutError), write_transaction(database, lock):
+            pass  # pragma: no cover - the acquisition above must fail
+
+        with write_transaction(database, lock, already_locked=True) as connection:
+            connection.execute("SELECT 1")
+
+
 # -- ADR-0017: schema version ----------------------------------------------
 
 

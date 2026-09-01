@@ -366,12 +366,17 @@ recorded on :data:`_UNPINNED_BLOCKQUOTES`.
 **Three corrections live outside a blockquote and need their own pins.** The
 point-1 bullet's re-measurement paragraph is held by
 :func:`test_the_point_1_bullet_keeps_the_re_measurement_that_narrows_its_own_claim`;
-the #468 narrowing of Decision point 2 reaches three places, and only one of them
-is a blockquote, so
-:func:`test_decision_point_2_says_what_its_serialisation_promise_does_not_cover`
-holds the boundary clause a reader meets in the Decision itself and
+the #468 narrowing of Decision point 2 reached three places, and only one of
+them is a blockquote. #468's fix closed the gap the narrowing described, so
+the two non-blockquote places now hold the *closure* rather than the
+narrowing:
+:func:`test_decision_point_2_no_longer_carries_the_narrowing`
+holds the absence of the boundary clause a reader used to meet in the
+Decision itself, and
 :func:`test_the_positive_consequence_records_that_already_safe_was_measured_false`
-holds the Consequences bullet that argues for relying on it.
+still holds the Consequences bullet's dated retraction -- which stays as
+history, with a closure sentence appended -- rather than the claim it argued
+for.
 
 **The record's pointers are evidence, so they are resolved.**
 :data:`ADR_SYMBOL_POINTERS` lists every ``module.py::symbol`` reference ADR-0018
@@ -893,20 +898,23 @@ _UNPINNED_BLOCKQUOTES: Final = "recorded above, not enumerated in code"
 #: the residual it found.
 POINT_1_REMEASUREMENT: Final = ("re-measured", "`-> object` is the residual")
 
-#: What Decision point 2 must keep saying after #468. The narrowing landed as one
-#: added clause and one added sentence, both inside the numbered point, and
-#: neither is a blockquote -- so :data:`CORRECTION_NOTES` cannot reach them and
-#: nothing else in this module keys on them.
+#: What Decision point 2 must NOT say again, now that #468's fix closed the gap
+#: it described. The 2026-08-31 narrowing added one boundary clause and one
+#: pointer sentence to the numbered point, both inside it and neither a
+#: blockquote -- so :data:`CORRECTION_NOTES` cannot reach them and nothing else
+#: in this module keys on them.
 #:
-#: Deleting either restores the promise eight real two-process runs falsified: the
-#: loser of two concurrent `migrate apply` invocations crashed in four of them, on
-#: `create_database` and `write_active_state`, which run outside the transaction.
-#: The boundary clause is what makes the surviving sentence true, and the second
-#: fragment is what stops the point being read as *everything* serialising.
+#: Either one returning -- even as an edit that reads like tightening prose --
+#: would mean the single critical section (issue #468) regressed to covering
+#: only the transaction again: the promise the boundary clause qualified is
+#: what eight real two-process runs falsified before the fix, and what #468's
+#: single-lock redesign closed for both `create_database` and
+#: `write_active_state`.
 #:
-#: Both are held against the isolated point rather than the file, because the
-#: narrowing blockquote below quotes the old promise verbatim in order to retract
-#: it, and a file-wide search would read that quotation as the claim returning.
+#: Held against the isolated point rather than the file, for the same reason as
+#: before this was inverted: the narrowing blockquote below the point quotes
+#: this exact boundary verbatim, to retract it as dated history, and a
+#: file-wide search would read that quotation as the boundary returning.
 #:
 #: Lowercase, for the reason :data:`CORRECTION_NOTES` records: everything these
 #: are matched against has been through ``collapsed``.
@@ -2350,41 +2358,46 @@ def test_the_point_1_bullet_keeps_the_re_measurement_that_narrows_its_own_claim(
     )
 
 
-def test_decision_point_2_says_what_its_serialisation_promise_does_not_cover() -> None:
-    """RED means point 2 promises unqualified serialisation again, which is false.
+def test_decision_point_2_no_longer_carries_the_narrowing() -> None:
+    """RED means point 2 carries the narrowing again, which #468's fix closed.
 
     The claim as it stood -- two concurrent ``theurian migrate apply`` invocations
     serialise and the loser becomes a no-op -- was measured false by #446's second
     review round on eight real two-process runs: the loser crashed in four, on
     ``create_database`` before the transaction opens and ``write_active_state``
-    after it commits, both outside the lock
+    after it commits, both outside the lock. #468 closed the gap: a single
+    critical section now spans creation, the transaction, the provenance record
+    and the pointer publish, so the promise covers everything ``migrate apply``
+    writes, not only the migration content
     ([#468](https://github.com/theurian/theurian/issues/468)).
 
-    What made the record true again is a boundary inside the point itself, and a
-    boundary is deleted by an edit that reads like tightening prose. The narrowing
-    blockquote below it is pinned separately in :data:`CORRECTION_NOTES`; this
-    holds the sentence a reader who stops at the Decision actually reads, which is
-    the one the blockquote cannot rescue.
+    So the 2026-08-31 boundary clause is no longer true, and its return -- even
+    as an edit that reads like tightening prose -- would mean the fix
+    regressed. The narrowing blockquote below the point is left standing as
+    dated history and is pinned separately in :data:`CORRECTION_NOTES`; this
+    holds the sentence a reader who stops at the Decision actually reads,
+    which is the one no blockquote below it can correct on its own.
 
     Scoped to the isolated point rather than to the file, because that blockquote
-    quotes the old promise verbatim in order to retract it -- the trap
-    :func:`_decision_point_two` exists for, met again.
+    quotes the old boundary verbatim in order to retract it as history -- the
+    trap :func:`_decision_point_two` exists for, met again.
     """
     _assert_the_keys_are_lowercase("POINT_2_BOUNDARY")
 
     point = _decision_point_two(ADR_0018.read_text(encoding="utf-8"))
 
-    missing = sorted(fragment for fragment in POINT_2_BOUNDARY if fragment not in point)
+    present = sorted(fragment for fragment in POINT_2_BOUNDARY if fragment in point)
 
-    assert not missing, (
-        f"Decision point 2 no longer bounds what it serialises: {missing}. Without "
-        f"that boundary the point promises what four of eight real two-process runs "
-        f"refused -- the loser crashing rather than becoming a no-op (#468)"
+    assert not present, (
+        f"Decision point 2 carries the narrowing #468's fix closed: {present}. The "
+        f"single critical section now spans creation, the transaction, the "
+        f"provenance record and the pointer publish, so the promise covers the "
+        f"whole write, not only what runs inside the transaction (#468)"
     )
 
 
 def test_the_positive_consequence_records_that_already_safe_was_measured_false() -> None:
-    """RED means the ADR calls two concurrent CLI invocations safe again.
+    """RED means the ADR drops the dated retraction that made the bullet honest.
 
     The Positive bullet is the second place a reader meets the claim #468
     falsified, and it is the place they meet it as a *reason to rely on it*: "two
@@ -2398,7 +2411,14 @@ def test_the_positive_consequence_records_that_already_safe_was_measured_false()
     quoted phrase, so the bullet says what it *said*; the refusal, so a reader
     knows it was measured rather than reconsidered; and the owner, so the
     engineering that would restore the claim is findable. Any one of them dropped
-    leaves the bullet reading as a plain statement of fact again.
+    leaves the bullet reading as a plain statement of fact again -- as if
+    "already safe" had never been checked, rather than checked, found false,
+    and (since #468's fix) checked again and found true. The bullet now also
+    carries a closure sentence past these three fragments -- "closed on
+    2026-09-01 ... 'already safe' is true again" -- but nothing here pins that
+    sentence specifically: the retraction is the permanent record, kept
+    exactly as measured, and the closure is additive prose this test does not
+    need to hold for the bullet to stay honest.
 
     Not a blockquote, so :data:`CORRECTION_NOTES` cannot reach it, and outside the
     Compliance section, so :func:`_corrected_bullet` cannot either.

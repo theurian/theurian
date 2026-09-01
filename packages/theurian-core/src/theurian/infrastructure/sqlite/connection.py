@@ -297,8 +297,40 @@ class WriteLock:
                 time.sleep(0.05)
 
 
+def _open_transaction(database_path: Path) -> Iterator[sqlite3.Connection]:
+    """The transaction body itself, with no opinion about the lock.
+
+    Split out of :func:`write_transaction` (#468) so a caller that already
+    holds ``lock_path`` -- ``migrate apply``'s single critical section, which
+    now spans creation, this transaction, the provenance record and the
+    pointer publish as one hold -- can run the identical connect/BEGIN
+    IMMEDIATE/commit-or-rollback sequence without a second, nested
+    acquisition of the same lock file. A process re-``open()``-ing and
+    ``flock``-ing a lock file it is already holding self-blocks for the full
+    timeout: ``flock`` locks an *open file description*, not a process or a
+    path, so two separate ``Path.open()`` calls from the same process are two
+    separate descriptions that contend with each other exactly as two
+    processes would.
+    """
+    connection = sqlite3.connect(database_path, isolation_level=None)
+    try:
+        _prepare(connection, database_path)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield connection
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+        else:
+            connection.execute("COMMIT")
+    finally:
+        connection.close()
+
+
 @contextmanager
-def write_transaction(database_path: Path, lock_path: Path) -> Iterator[sqlite3.Connection]:
+def write_transaction(
+    database_path: Path, lock_path: Path, *, already_locked: bool = False
+) -> Iterator[sqlite3.Connection]:
     """Open an exclusive write transaction.
 
     The lock-holding write path: an OS advisory lock is taken on ``lock_path``
@@ -307,6 +339,20 @@ def write_transaction(database_path: Path, lock_path: Path) -> Iterator[sqlite3.
     guarantee -- ``CanonicalStore`` publishes its write methods directly, so
     exclusivity is held by convention at each call site (ADR-0018, amended in
     Milestone 5).
+
+    ``already_locked`` is ``False`` for every caller except ``migrate apply``'s
+    own composition-root code (#468), which acquires ``lock_path`` itself
+    *before* calling in here, to hold it across writes this function does not
+    otherwise see (database creation, the provenance record, the pointer
+    publish). Passing ``True`` there skips this function's own acquisition --
+    the caller already holds it -- and is a caller's assertion, not something
+    this function verifies: passing ``True`` without actually holding the lock
+    is a caller bug, the same class as writing through ``CanonicalStore``
+    outside ``write_transaction`` at all. Every other caller -- the
+    standalone ``migrate status`` read-modify path, ``propose accept``'s
+    rehearsal against a throwaway database and lock file, any future direct
+    caller -- takes the default and gets the same self-contained acquisition
+    this function has always done.
 
     NFR-8: no external I/O inside. Read and hash content files *before* entering.
 
@@ -317,20 +363,11 @@ def write_transaction(database_path: Path, lock_path: Path) -> Iterator[sqlite3.
         WriteLockTimeoutError: If another holder keeps the advisory lock on
             ``lock_path`` past ``WRITE_LOCK_TIMEOUT_SECONDS``, the default this
             path takes. Raised before the database is opened, so no transaction
-            has begun -- see :meth:`WriteLock._acquire`.
+            has begun -- see :meth:`WriteLock._acquire`. Never raised when
+            ``already_locked`` is ``True``, since no acquisition happens here.
     """
-    lock = WriteLock(lock_path)
-    with lock.held():
-        connection = sqlite3.connect(database_path, isolation_level=None)
-        try:
-            _prepare(connection, database_path)
-            connection.execute("BEGIN IMMEDIATE")
-            try:
-                yield connection
-            except BaseException:
-                connection.execute("ROLLBACK")
-                raise
-            else:
-                connection.execute("COMMIT")
-        finally:
-            connection.close()
+    if already_locked:
+        yield from _open_transaction(database_path)
+        return
+    with WriteLock(lock_path).held():
+        yield from _open_transaction(database_path)
