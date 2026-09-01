@@ -1,0 +1,38 @@
+apiVersion: theurian.dev/v1
+id: 01M1EVDWHYNCNDCMD0XWJGC5SB
+createdAt: '2026-09-01T16:04:25+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0014 twin from the current source ADR: the corpus pins docs/adr/0014-dependency-pinning-and-pre-1-0-isolation.md
+  as it stood at 2a98d4c, and the tracked document has moved since (#315).'
+operations:
+- op: createItem
+  itemId: architecture.dependency-pinning-and-pre-1-0-isolation
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.dependency-pinning-and-pre-1-0-isolation
+  revisionId: 01M1EVDWHYNCNDCMD0XWJGC5SC
+  expectedRevision: 01M0D5GZXH1DG67Z6NF4Q11P5E
+  contentFile: ../knowledge/architecture/dependency-pinning-and-pre-1-0-isolation.01M1EVDWHYNCNDCMD0XWJGC5SC.md
+  contentSha256: 0f9269fbc45df8dd7cd707f27fe48b985706a1cb34c0e58f386f090ebb9189a8
+  metadata:
+    title: 'ADR-0014: Exact dependency pinning and pre-1.0 isolation'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0014
+    scope:
+      paths:
+      - '**'
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 266e6b668a5e0723ee63accf23f3ae70b501e193
+      filePath: docs/adr/0014-dependency-pinning-and-pre-1-0-isolation.md
