@@ -52,11 +52,16 @@ from theurian.domain.review_finding import (
     ReviewFinding,
 )
 from theurian.infrastructure.sqlite.findings_store import SqliteReviewFindingStore
-from theurian.mcp.findings import MAX_FILTER_CHARS, MAX_FINDINGS_LIMIT
+from theurian.mcp.findings import DEFAULT_FINDINGS_LIMIT, MAX_FILTER_CHARS, MAX_FINDINGS_LIMIT
 from theurian.mcp.results import SAFETY
-from theurian.mcp.tools import FINDINGS_UNAVAILABLE_REFUSAL
+from theurian.mcp.tools import FINDINGS_UNAVAILABLE_REFUSAL, MAX_QUERY_CHARS
 
 pytestmark = pytest.mark.integration
+
+#: The repository root, for the one published statement of this tool's bounds.
+#: Four parents up: ``integration`` -> ``tests`` -> ``theurian-core`` ->
+#: ``packages``. The same reckoning ``test_mcp_tools.py`` uses.
+REPO_ROOT = Path(__file__).resolve().parents[4]
 
 runner = CliRunner()
 
@@ -757,6 +762,128 @@ async def test_a_bad_filter_is_refused_before_the_store_is_reached(
 
     assert "code-review, security, adversarial" in message
     assert FINDINGS_UNAVAILABLE_REFUSAL not in message
+
+
+# -- The numbers themselves, which a symbolic assertion cannot hold ---------
+
+
+def test_the_published_limit_row_states_the_bounds_this_build_enforces() -> None:
+    """The one independent statement of two numbers nothing else held.
+
+    Every bound test above names ``MAX_FINDINGS_LIMIT`` and
+    ``DEFAULT_FINDINGS_LIMIT`` symbolically, which is what a bound test should
+    do -- and is also why the *numbers* went unheld: raising the cap tenfold and
+    dropping the default to three each passed the whole suite (measured
+    2026-09-02 against ``e808c82``; mutations ``findings-cap-1000`` and
+    ``findings-default-3``, 4801 tests green under both).
+
+    ``docs/protocol/mcp-tools.md`` is where they are published, so it is the
+    pin: the row is recomputed here from the live constants rather than
+    restated. A client reads that table to size its own paging, and a build
+    whose cap is not the published cap has told it something false about how
+    much of an answer it is getting.
+    """
+    published = (REPO_ROOT / "docs/protocol/mcp-tools.md").read_text(encoding="utf-8")
+
+    row = f"| `limit` | at most {MAX_FINDINGS_LIMIT}, default {DEFAULT_FINDINGS_LIMIT} |"
+    assert row in published, (
+        f"docs/protocol/mcp-tools.md does not carry {row!r}. Either a bound moved "
+        f"and the published table now describes a build that does not exist, or the "
+        f"row was reworded -- in which case update this pin *and* check that the new "
+        f"wording still states both numbers. These two constants have no schema to "
+        f"hold them the way `maxLength: 2000` holds `knowledge.search`'s `query`, so "
+        f"this row is the only thing standing between a caller and a false statement "
+        f"about how much of an answer they received."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_call_with_no_limit_returns_the_default_page_not_the_whole_store(
+    project: ProjectRegistry,
+) -> None:
+    """The default is applied, and it is a page rather than the corpus.
+
+    Every other serving test here reads a three-row store, where the default
+    cannot be observed at all: three rows come back whether the default is 20,
+    three, or not applied. So the one thing ``DEFAULT_FINDINGS_LIMIT`` exists to
+    do -- keep the common call a page rather than a context-budget event -- was
+    driven by nothing.
+
+    The store is deliberately larger than the default here, and the premise is
+    asserted: a corpus that fit inside the default would make the equality below
+    true for the wrong reason.
+    """
+    oversized = FindingLoad(
+        accepted=tuple(
+            _finding(_sha("a"), text=f"finding number {index}", when="2026-08-25T09:00:00+00:00")
+            for index in range(DEFAULT_FINDINGS_LIMIT + 5)
+        ),
+        rejected=(),
+    )
+    store = _land(project, oversized)
+    assert len(store.dump().findings) > DEFAULT_FINDINGS_LIMIT, (
+        "the premise: the store holds more findings than one default page"
+    )
+
+    payload = await _call(project, projectId="demo")
+
+    assert payload["count"] == DEFAULT_FINDINGS_LIMIT == len(payload["findings"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filter_name", ["reviewer", "severity", "commitSha"])
+async def test_a_refusal_is_never_a_bigger_reflector_than_the_published_echo(
+    project: ProjectRegistry, filter_name: str
+) -> None:
+    """What ``MAX_FILTER_CHARS`` buys, asserted -- because the number itself is unpublished.
+
+    A value *inside* the length bound is quoted back, deliberately: a typo is
+    what the refusal exists to make visible. That makes the bound an
+    amplification control (#17), and nothing published states it -- widening it
+    from 200 to 5,000 passed the whole suite (measured 2026-09-02 against
+    ``e808c82``; mutation ``filter-chars-5000``).
+
+    So the property is pinned against two live values instead of the number:
+
+    * every legitimate filter value fits -- a 64-character SHA-256 commit sha,
+      the longest reviewer token, the longest severity -- so no real query is
+      refused for its length;
+    * the largest refusal a caller can provoke stays under ``MAX_QUERY_CHARS``,
+      the size of the one caller-controlled string this daemon already publishes
+      as safe to echo (``knowledge.search``'s ``query``, ``maxLength: 2000`` in
+      its schema). A findings refusal may not be a bigger reflector than the
+      echo that number was chosen for.
+
+    The three filters here are exactly the ones that quote: ``family``,
+    ``specialist`` and ``q`` accept any in-bound string and answer ``count: 0``
+    rather than refusing, so they echo nothing to bound.
+    """
+    longest_legitimate = max(
+        # A SHA-256 repository's commit sha, the longest value any of these
+        # filters legitimately carries.
+        64,
+        *(len(member.value) for member in ReviewerToken),
+        *(len(member.value) for member in FindingSeverity),
+    )
+    assert longest_legitimate < MAX_FILTER_CHARS, (
+        f"MAX_FILTER_CHARS is {MAX_FILTER_CHARS}, shorter than the longest "
+        f"legitimate filter value ({longest_legitimate}); a real query would be "
+        f"refused for its length"
+    )
+    _land(project)
+
+    message = await _call_failing(
+        project, projectId="demo", **{filter_name: "z" * MAX_FILTER_CHARS}
+    )
+
+    assert len(message) < MAX_QUERY_CHARS, (
+        f"a `{filter_name}` at the length bound provoked a {len(message)}-character "
+        f"refusal, past the {MAX_QUERY_CHARS} this daemon publishes as the largest "
+        f"caller-controlled string it will echo. MAX_FILTER_CHARS is {MAX_FILTER_CHARS}: "
+        f"a refusal that quotes the caller's own token turns this surface into a "
+        f"reflector as soon as the bound is wide enough to be worth pointing at "
+        f"something else."
+    )
 
 
 # -- The project gate -------------------------------------------------------
