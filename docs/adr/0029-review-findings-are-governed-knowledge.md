@@ -1209,8 +1209,10 @@ asked for. Measured 2026-09-02 with
 file carries the superseded figure, against a `55 lines` positive control that
 hits that same docstring. The key is source-only on purpose (#404 R1-7): a
 `packages/ tools/ tests/` sweep also scans the core CHANGELOG, where "38 lines"
-is named to explain the correction, so that broader key returns four — the
-records describing the sweep counted as live occurrences of it.
+is named to explain the correction, so the broad key matches this explanatory
+prose itself — which is exactly why the operative key is scoped to source. No
+count of the broad key is stated here, because any number would include the
+records that state it and drift as they are edited.
 
 ## Appendix — advisory census (non-normative, dated)
 

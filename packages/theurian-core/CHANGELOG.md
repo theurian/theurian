@@ -265,9 +265,11 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   returns nothing, against a `55 lines` positive control that hits that same
   docstring. The key is source-only on purpose: a `packages/ tools/ tests/` sweep
   scans this changelog too, where "38 lines" is named to explain the correction,
-  so that key reports its own explanatory prose as a live occurrence and returns
-  four — the record falsifying itself (#404 R1-7). The owed item is now recorded
-  as discharged rather than left open.
+  so that key reports its own explanatory prose as a live occurrence — the record
+  falsifying itself, which is exactly why the operative key is scoped to source
+  (#404 R1-7). No count of the broad key is stated here, because any number would
+  count the sentence that states it. The owed item is now recorded as discharged
+  rather than left open.
 
   **Both halves are pinned, in the same pull request that made the correction.**
   `test_adr_0029_claims.py` is the record — the ADR-0018 and ADR-0027 shape,
