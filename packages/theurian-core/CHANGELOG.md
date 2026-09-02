@@ -56,11 +56,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   refusal itself.** An integer too wide for the store's column, or too many
   digits for Python to render at all, comes back as a graded refusal rather than
   a crash — described by its size once it is past what a refusal will quote, so
-  the message never reflects an absurd value back. A NUL byte in any string
-  filter is refused, because SQLite's pattern matcher stops reading at one and
-  the filter would silently mean something shorter than what was sent; an
-  unpaired surrogate is refused because UTF-8 cannot encode it. Neither can
-  appear in a git commit-message line, so nothing legitimate is turned away.
+  the message never reflects an absurd value back. A NUL byte in any of the six
+  string filters is refused, and the reason is not the same for all six: no
+  stored value can contain one — a git commit-message line cannot carry it — so
+  the five equality filters could match nothing at best, while `q` would not even
+  do that, because SQLite's pattern matcher stops reading at a NUL and would
+  silently search for something shorter than was sent. An unpaired surrogate is
+  refused too, because UTF-8 cannot encode it. Neither shape can appear in a git
+  commit-message line, so nothing legitimate is turned away.
   A damaged store — a column holding a value its type does not admit — reaches
   the caller as the same constant refusal every other unservable store gets,
   never as a different error shape for a different kind of damage.
@@ -71,10 +74,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   from a commit message, a commit message line has no length limit, and refusing
   would let one planted trailer deny the tool to every caller. It is cut at the
   same bound `knowledge.search` clamps a `query` to and marked, so a cut value
-  cannot be read as a whole one. **How many of these reads run at once is
-  bounded too**, by an admission gate of this tool's own with its own refusal
-  message — sharing `knowledge.search`'s would refuse a findings caller with a
-  message about concurrent *searches*.
+  cannot be read as a whole one. **The cut is made by the store's own read**, not
+  applied to what that read returned: the serving `SELECT` projects
+  `substr(finding_text, 1, ?)`, so SQLite never hands the daemon more than the
+  bound plus one character per row and a planted line no longer sizes what one
+  call costs. The published bytes are the same either way. **How many of these
+  reads run at once is bounded too**, by an admission gate of this tool's own
+  with its own refusal message — sharing `knowledge.search`'s would refuse a
+  findings caller with a message about concurrent *searches*.
 
   **A findings store is served only if this installation built it** (ADR-0004,
   SEC-7). The store is derived and git-ignored like the canonical state and the

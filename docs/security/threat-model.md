@@ -1290,7 +1290,7 @@ listed separately because none of the measurements above ranges over it.
 | Dimension | Bound | Refuses or clamps |
 | :-- | :-- | :-- |
 | rows returned | `mcp/findings.py::MAX_FINDINGS_LIMIT` (100), `DEFAULT_FINDINGS_LIMIT` (20) when the caller sends none | **refuses.** A silent clamp would let a caller read "these are the findings matching my filter" off a page cut from more |
-| bytes per served `findingText` | `mcp/findings.py::max_finding_text_chars()`, derived from `MAX_QUERY_CHARS` (2,000) rather than respelled | **clamps**, and marks the cut — the one bound on this surface that does, see below |
+| characters per served `findingText`, cut inside the store's own `SELECT` | `mcp/findings.py::max_finding_text_chars()`, derived from `MAX_QUERY_CHARS` (2,000) rather than respelled, and applied by `infrastructure/sqlite/findings_store.py::_SERVE_COLUMNS` as `substr(finding_text, 1, ?)` | **clamps**, and marks the cut — the one bound on this surface that does, see below |
 | bytes per string filter, before anything is matched or echoed | `mcp/findings.py::MAX_FILTER_CHARS` (200) | **refuses**, reporting the length and never quoting the value (#17's amplification discipline) |
 | magnitude of `pullRequest` | `mcp/findings.py::MAX_PULL_REQUEST`, defined as the widest value the store's signed 64-bit column can hold (`2**63 - 1`); a refusal quotes at most `MAX_ECHOED_DIGITS` (20) decimal digits and describes anything larger by its digit count | **refuses** |
 | concurrent occupancy | its own `threading.BoundedSemaphore` sized by `MAX_CONCURRENT_SEARCHES` (4), waited on for `ADMISSION_WAIT_SECONDS` (1.0 s), refusing with `FINDINGS_CAPACITY_REFUSAL` | **refuses** |
@@ -1306,7 +1306,58 @@ figure the round also recorded — of the order of 210 MB at `limit=100` — is 
 measurement scaled by row count, not a second measurement. The planting actor is
 T-5's contributor, not the caller.
 
-**The byte bound clamps where every other bound here refuses, and the split is
+**The class is "one planted trailer sizes what one call costs", and it has two
+faces.** The **response** face closed in round 1: `findingText` is cut at the
+bound and marked before it reaches the wire. The **read** face was still open
+after that fix and closed in round 2 (`1629902`). `serve_findings` fetched
+`finding_text` whole and left the cut to the surface above it, so the daemon
+materialised every planted byte — `limit + 1` rows per call, once per concurrent
+call — before anything could clamp one of them. The bound is now applied **by the
+store's read**: the serving `SELECT` projects
+`substr(finding_text, 1, text_fetch_chars())`, so SQLite never hands Python more
+than the bound plus one character per row, whatever the corpus holds. That extra
+character is the only remaining evidence that a row *was* longer, and it is what
+`mcp/findings.py::_bounded_text` reads to decide whether to mark the cut. The
+bound is a required keyword argument of the port's one serving read, and a
+non-positive value is refused rather than passed to `substr` — which answers a
+non-positive length with the empty string, and the surface above would publish
+that as the whole finding
+(`test_findings_store.py::test_a_serve_refuses_a_non_positive_text_bound`). The
+cut is on the *projection* only: `q` is still matched against the whole stored
+column, so a substring living past the bound still selects its row
+(`::test_a_match_living_past_the_text_bound_still_selects_its_row`) rather than
+reading as absent. The read's own footprint is pinned by
+`::test_a_serve_hands_python_no_more_text_than_the_bound_it_was_given`, all three
+in that file, and the half that says moving the cut did not move the published
+bytes by
+`test_review_findings_tool.py::test_the_wire_cut_is_the_one_the_whole_value_would_have_produced`.
+
+**The read face's figures, each with its instrument, and deliberately not as a
+ratio.** Measured at the store layer over 21 rows of a 1 MiB planted trailer,
+2026-09-03: **22.0 MB of Python heap before the fix and 0.1 MB after** —
+`tracemalloc` peak over the `serve_findings` call, so the quantity is heap and
+the scope is that call. PR #504 round 2's reviewer measured a 1 MiB planted
+trailer **end to end at 118–279 MB resident**, which is process RSS over the
+whole tool call: a different instrument over a different scope, and a range
+rather than a pair. Both are recorded and neither divides the other, because a
+ratio across two instruments is fabricated — the same rule the #199 unit-A
+amendment above applies when it withdraws a `tracemalloc`-instrumented timing
+that had been compared against a clean one. The response face's own figure is
+the 83.9 MB above.
+
+**The bound counts characters, not bytes.** `max_finding_text_chars()` is a
+character count, and both sides of the cut agree on what a character is: SQLite's
+`substr` on a TEXT value counts code points, which is what Python's `len` counts
+too (checked across ASCII, CJK, combining sequences and astral planes on SQLite
+3.51.2, 2026-09-03 — recorded at `findings_store.py::_SERVE_COLUMNS`, and pinned
+by the byte-identity test named above, whose shapes are chosen where a
+byte-counting boundary would diverge). What the bound costs in *bytes* is
+content-dependent and larger than the character figure: a cut value is exactly
+2,003 characters — 2,000 plus the three-character marker — so an all-astral one
+is 8,003 bytes of UTF-8, about 8 KB. That is the number to size this bound by,
+not 2,003.
+
+**The text bound clamps where every other bound here refuses, and the split is
 the decision.** Every bound a *caller* can provoke refuses, because a truncated
 answer to a filtered question reads as the whole answer. `findingText` is the
 one value whose over-long input is a **stored row rather than a request**:
@@ -5760,7 +5811,15 @@ every query, unbounded per-request work this deliberately avoids. An attacker wh
 can replace a database *after* this install built the matching hash (a tracked
 sidecar overwriting a local build on the next `git pull`, or local filesystem
 write access) is out of scope for this control and left to the T-18 schema gate,
-the #30 PR2 read-back guards, and the corruption checks. The primary vector — a
+the #30 PR2 read-back guards, and the corruption checks. **For the findings
+family there is no hash to mismatch at all:** `theurian findings build` writes
+one store under the constant `FINDINGS_STORE_ID`, so what
+`BuildProvenance.has_findings` records is a per-root boolean — this installation
+has built this project's findings store — and it stays true for whatever bytes
+later occupy that name. The replacement window is therefore not narrowed here by
+an id mismatch the way it can be for the other two families, whose file names
+carry the very hash or build id the serve path checks, so a substitution under a
+*different* id finds no record; the remedy is the same rebuild. The primary vector — a
 build this installation never produced — is closed outright: no serve path finds
 a provenance record for it, and since 0.1.0.dev4 neither index-generating path
 *creates* one for it either — the withdrawal-purge copy-forward that once recorded
