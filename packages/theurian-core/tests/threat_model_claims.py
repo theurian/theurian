@@ -24,6 +24,16 @@ document spells its counts as words. Anything specific to one entry -- which
 bullet, which phrase keys it, which constant it is held against -- stays in that
 entry's own module, where its reasoning can be read beside the assertion.
 
+**One copy is still outside this module, and that is recorded rather than done
+quietly.** ``tests/unit/test_threat_model_t16_claims.py`` carries its own
+``_entry`` and its own ``_HEADING_MARKERS``, written before this module existed;
+the two implementations agree today, and the constants are character-identical.
+Rewiring it is mechanical apart from moving its own synthetic slicing test, and
+it is left for whoever next touches that module rather than folded into an
+unrelated change. Until then, "one derivation" describes T-7 and T-19 and is a
+goal for T-16 -- which is the honest reading, and the shape this module exists to
+stop drifting.
+
 Pure: two files read as text, no database, socket or temporary directory.
 """
 
@@ -88,8 +98,8 @@ def prose(text: str) -> str:
     return collapsed(text.replace("`", "").replace("*", ""))
 
 
-def entry(threat_id: str) -> str:
-    """The one section of the threat model headed *threat_id*, raw.
+def entry_in(text: str, threat_id: str) -> str:
+    """The one section of *text* headed *threat_id*, raw.
 
     Raw rather than normalised: a caller that splits the entry into bullets needs
     the line starts, and :func:`prose` destroys them. Normalise afterwards, per
@@ -98,13 +108,23 @@ def entry(threat_id: str) -> str:
     The heading marker carries its ``\\n`` and its trailing space so the slice
     anchors on a line start and on a whole threat id: a bare ``#### T-7`` would
     also open on a ``T-7a`` heading, and an unanchored ``T-7`` matches the id
-    inside another entry's prose.
+    inside another entry's prose. The leading ``\\n`` is a precondition as well as
+    a guard -- a document whose *first* line is the heading has no break before it
+    and fails the premise rather than being sliced. The shipped threat model opens
+    with its title, so no entry is ever first; a caller handing in a fragment
+    would meet it, and meets it loudly.
+
+    Takes the document as an argument so the slicing can be driven by a synthetic
+    one -- ``tests/unit/test_threat_model_claims.py`` does exactly that. A slicer
+    that only ever ran against the shipped file would be checked by whichever pin
+    happened to fail, and the failure mode that matters here is the one that never
+    fails: a slice running past the next heading widens every scan above it
+    silently.
     """
     heading = f"\n#### {threat_id} "
-    text = THREAT_MODEL.read_text(encoding="utf-8")
 
     assert text.count(heading) == 1, (
-        f"the threat model has {text.count(heading)} lines starting "
+        f"the document has {text.count(heading)} lines starting "
         f"`{heading.strip()}`, expected 1; with none of them the pin over this "
         f"entry scans nothing, and with two it scans whichever came first"
     )
@@ -112,3 +132,8 @@ def entry(threat_id: str) -> str:
     rest = text.split(heading, 1)[1]
     ends = [found for marker in _HEADING_MARKERS if (found := rest.find(marker)) >= 0]
     return rest[: min(ends)] if ends else rest
+
+
+def entry(threat_id: str) -> str:
+    """The one section of the threat model headed *threat_id*, raw."""
+    return entry_in(THREAT_MODEL.read_text(encoding="utf-8"), threat_id)
