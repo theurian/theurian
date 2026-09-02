@@ -35,6 +35,18 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`/theurian:ingest` told the agent nothing reads `.theurian/config.yaml`.**
+  The allowlist paragraph said a repository will have to be listed in that file
+  before Theurian contacts it, then "nothing reads that file today, so do not
+  tell the user the allowlist is protecting them". The file has been read since
+  ADR-0027 decision 3 shipped `security/project_config.py`, which takes
+  `security.secretScan` from it. The warning it supports is still correct, so it
+  is re-derived on the fact that is true rather than dropped: the paragraph now
+  names the one reader and the one key, then narrows the negation to
+  `providers.review.repositories`, which nothing reads — so the allowlist
+  protects nobody and the agent must still not say otherwise
+  ([#461](https://github.com/theurian/theurian/issues/461),
+  [#501](https://github.com/theurian/theurian/pull/501)).
 - **`/theurian:propose` told the agent the secret scan reads the body only.** It
   said to keep credentials out of `--title`, `--description`, `--label` and the
   `--source-*` anchors because "those are not scanned". Core now scans the

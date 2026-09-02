@@ -12,6 +12,41 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Changed
+
+- **The wheel-shipped project-config schema no longer says nothing reads the
+  file; its root description names the one reader**
+  ([#455](https://github.com/theurian/theurian/issues/455),
+  [#501](https://github.com/theurian/theurian/pull/501)). The schemas are
+  force-included into the distribution by `hatch_build.py` and land at
+  `theurian/schemas/`, so a user who opened the published
+  `config/project-config.schema.json` read *"Nothing in src/ reads this file, so
+  no value in it takes effect today"*. That has been false since ADR-0027
+  decision 3 shipped `security/project_config.py`, which takes
+  `security.secretScan` from the file. **This is a claim correction, not a
+  contract change**: no key is added, removed, renamed or re-typed, and every
+  config file that validated before validates now.
+
+  Three faces, one sentence. It also cited
+  [#129](https://github.com/theurian/theurian/issues/129) as the owner of the
+  still-reserved review allowlist — closed on 2026-08-22 on the wording rather
+  than on the control, leaving the allowlist with no open owner — and anchored
+  the rest to "Milestone 7", a counter this project stopped planning against.
+  The description now names the one reader and the one key in force, says every
+  other published key is reserved, repoints the owner to
+  [#429](https://github.com/theurian/theurian/issues/429), and drops the
+  milestone anchor. `providers.review.repositories`' own description carries the
+  same repoint.
+
+  **Pinned in both directions for the first time**, which is why the false
+  sentence survived four sweeps unnoticed:
+  `tests/unit/test_config_key_call_sites.py` now watches the root description as
+  well as the eleven key blocks — the root sits outside that count, and every
+  earlier key that enumerated key blocks missed it by construction — and the
+  schema joined `tests/unit/test_raptor_config_claims.py`'s scanned prose
+  surfaces. A reader added for `providers.review.repositories` reddens the first;
+  a sentence drifting back to the universal reddens the second.
+
 ### Fixed
 
 - **Two `theurian findings build` runs at once no longer tear each other's
@@ -136,6 +171,47 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   spanning two lines and is unchanged.
 
 ### Documentation
+
+- **Claims about what reads a watched file are now swept by object rather than
+  by phrasing, and the sweep is runnable**
+  ([#199](https://github.com/theurian/theurian/issues/199),
+  [#501](https://github.com/theurian/theurian/pull/501)). Five sweeps in a row
+  keyed on how the claim was *worded* and each missed a live member: the
+  wheel-shipped schema root above was missed even by the corrected key written
+  to catch its siblings, and a plugin doc dropped `src/` from the sentence
+  entirely and named the file by pronoun. `tools/audit/` — a repository tool, not
+  part of the distribution — inverts the key: it enumerates the *objects* a claim
+  can be made about (the schema's key surface by JSON parse, `ProjectPaths`'
+  file surface by introspection, and the `.theurian/` paths governed prose
+  names), then asks of each what negated-liveness sentences refer to it.
+
+  Two properties are worth naming because both were measured. The sweep reads
+  **wrap-joined sentences**, not lines: the same key returns 19 lines and 31
+  sentences over the same scope, and the plugin member is one of the twelve a
+  line-oriented pass never returns whole. And every run demonstrates its key
+  against a **planted positive** before any zero is read, because a key that has
+  stopped matching reports exactly what a clean tree reports. Each ledger is
+  exact in both directions — a suspect no row covers and a row the sweep no
+  longer produces are both exit 1 — which is what makes a correction and its
+  record land in one commit instead of the record rotting behind the fix. Full
+  populations, keys and mutation controls:
+  [`docs/work-logs/2026-09-02-199-unit-b-census.md`](../../docs/work-logs/2026-09-02-199-unit-b-census.md).
+
+- **ADR-0008's two dated measurement anchors say which pull requests they belong
+  to** ([#463](https://github.com/theurian/theurian/issues/463),
+  [#501](https://github.com/theurian/theurian/pull/501)). Two amendment blocks
+  anchored a measured line count to `4bfec1d` and `1cc2fa8`. Both are real
+  commits on branches that were squash-merged, so each anchor resolved for
+  whoever wrote it and for nobody who cloned the repository. Repointing was
+  tested before re-tensing and is not available: each names a mid-branch working
+  tree, and no commit reachable from `main` carries either tree. So each sentence
+  now names the pull request the work landed as — `56582b2`
+  ([#142](https://github.com/theurian/theurian/pull/142)) and `d1e79b1`
+  ([#145](https://github.com/theurian/theurian/pull/145)) — and says the measured
+  tree is not preserved, which is the honest form and the one the anchor audit
+  above accepts. **Ten further unreachable anchors remain**, in ADR-0007,
+  ADR-0024, ADR-0027 and the threat model; the census measured that population
+  and #463 owns it.
 
 - **ADR-0029 no longer records the four findings-pipeline residuals as open, and
   its trailer census is keyed on `%B`**
