@@ -12,6 +12,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0.dev17] - 2026-09-02
+
 ### Fixed
 
 - **A refusal keeps reaching its MCP caller with its own message under mcp
