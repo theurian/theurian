@@ -625,8 +625,144 @@ def test_the_schema_root_description_is_exactly_what_this_file_records() -> None
     )
 
 
-#: The exact sentences each watched key's published description has to keep, and
-#: the issue that owns it.
+def _described_node(pointer: tuple[str, ...]) -> str:
+    """The ``description`` the published schema carries at ``pointer``.
+
+    One reader for every pin over a published description, so "what the schema
+    says at this key" is answered in one place and a pointer typo fails loudly
+    rather than defaulting to an empty string that every fragment vacuously
+    matches.
+    """
+    node: object = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
+    for step in pointer:
+        assert isinstance(node, dict), f"the schema has no `{'/'.join(pointer)}`"
+        node = node[step]
+
+    assert isinstance(node, dict), f"`{'/'.join(pointer)}` is not a subschema"
+    description = node.get("description")
+    assert isinstance(description, str), f"`{'/'.join(pointer)}` publishes no description"
+    return description
+
+
+#: ``security.secretScan``'s ``description``, in full, as the wheel publishes it.
+#:
+#: **The root's treatment, applied to the one key that is in force**, and round
+#: two's R2-D is why. The fragment rows below hold five sentences of this
+#: description, and adversarial review confirmed that direction clean: reword or
+#: delete any of them and the row is RED. What no fragment pin can hold is
+#: **contradiction by addition** -- a sixth sentence saying content is screened at
+#: ingest keeps all five fragments, ships in the built wheel, and leaves every pin
+#: and every audit green. The branch recorded that fragment pins are not
+#: addition-proof one constant above (:data:`SCHEMA_ROOT_DESCRIPTION`) and then
+#: left the description that carries SEC-11's whole bound fragment-pinned.
+#:
+#: This is the second and last description pinned whole. The other nine stay
+#: fragment-pinned on purpose: they describe reserved keys, so a sentence added to
+#: one asserts nothing a reader can act on.
+SECRET_SCAN_DESCRIPTION: Final = (
+    "In force. What `theurian propose accept` does when a body it would land appears to "  # noqa: S105 - a published schema description, not a credential
+    "contain a secret (SEC-11, ADR-0027 decision 3): `block` refuses the acceptance and "
+    "consumes nothing, `warn` accepts and reports every finding on the result, `off` "
+    "skips the scan. The default is the behaviour an absent key and an absent config "
+    "file both select, so it states what the product does rather than a policy nothing "
+    "applies. Write `off` **quoted** in YAML -- a bare `off` is the boolean false under "
+    "YAML 1.1 and is refused rather than guessed at. The detector is in-house and best "
+    "effort -- known credential shapes plus an entropy heuristic -- and is not a "
+    "replacement for a repository secret scanner. It covers the approval gate only: "
+    "`theurian ingest` and index building run no scan "
+    "(https://github.com/theurian/theurian/issues/198)."
+)
+
+#: The JSON pointer to that description, so the pin and the fragment row read one
+#: place rather than two spellings of it.
+SECRET_SCAN_POINTER: Final[tuple[str, ...]] = (
+    "properties",
+    "security",
+    "properties",
+    "secretScan",
+)
+
+#: The two anchors that bound the clause ``ingest.md`` says it takes from the
+#: schema, used to *derive* that clause from the schema rather than transcribe it.
+#:
+#: Both anchors sit inside the span the two surfaces share byte for byte, so the
+#: derived string is the schema's own wording of the bound and nothing else. A
+#: reword between them moves the derived string and reddens the surface that did
+#: not follow; a reword outside them is not part of the shared clause and is free.
+_SCAN_BOUND_OPENS: Final = "`theurian ingest`"
+_SCAN_BOUND_CLOSES: Final = "run no scan"
+
+#: The document that says it quotes the schema here.
+INGEST_COMMAND_DOC: Final = REPO_ROOT / "plugins" / "claude-code" / "commands" / "ingest.md"
+
+
+def test_the_secret_scan_description_is_exactly_what_this_file_records() -> None:
+    """RED means the wheel's ``security.secretScan`` description moved, in either direction.
+
+    The fragment rows below catch a **deletion or a reword**: drop "`theurian
+    ingest` and index building run no scan" and the row goes RED, which
+    adversarial review reproduced. They cannot catch an **addition**, and an
+    addition is the shape that ships a false control claim here -- a sentence
+    asserting that ingested content is screened keeps all five fragments and is
+    published in the built wheel.
+
+    This description is the one that carries SEC-11's whole bound, and four
+    documents describe the control by pointing at it. An exact match is
+    affordable for the same reason it is for the root: there is one of it, and a
+    wording change is a deliberate act. If this is RED because the wording
+    genuinely improved, copy the new text in -- and say in the same commit what
+    claim it now makes.
+    """
+    description = _described_node(SECRET_SCAN_POINTER)
+
+    assert description == SECRET_SCAN_DESCRIPTION, (
+        "the published `security.secretScan` description is not the recorded one.\n\n"
+        f"  published: {description!r}\n\n"
+        f"  recorded : {SECRET_SCAN_DESCRIPTION!r}\n\n"
+        "This description is wheel-shipped and is where SEC-11's reach is stated. "
+        "`SECURITY.md`, the threat model's T-15 controls, "
+        "`docs/architecture/requirements-analysis.md` and "
+        "`plugins/claude-code/commands/ingest.md` all describe the control by "
+        "resting on it, so a sentence added here that contradicts the bound makes "
+        "four documents wrong at once -- and every fragment pin stays green while "
+        "it does."
+    )
+
+
+def test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it() -> None:
+    """``ingest.md`` says it quotes the schema; this is that claim, run.
+
+    The paragraph reads "it covers the approval gate only -- `theurian ingest`
+    and index building run no scan (SEC-11, [#198]), **the schema's own
+    wording**". Two surfaces carrying one clause is how a bound drifts into two
+    bounds: one of them gets tightened, a reader trusts whichever they opened,
+    and both look maintained.
+
+    The clause is **derived from the schema and matched byte for byte** in the
+    document, so neither side can move alone. It is not transcribed here twice --
+    a second transcription would be a third surface with the same problem.
+
+    What this does not hold: that the surrounding sentences agree. The schema's
+    side of that is :func:`test_the_secret_scan_description_is_exactly_what_this_file_records`;
+    the document's side is the fragment row in :data:`SECRET_SCAN_PROSE_SURFACES`.
+    """
+    description = _described_node(SECRET_SCAN_POINTER)
+    opens = description.index(_SCAN_BOUND_OPENS)
+    closes = description.index(_SCAN_BOUND_CLOSES, opens) + len(_SCAN_BOUND_CLOSES)
+    clause = description[opens:closes]
+
+    document = " ".join(INGEST_COMMAND_DOC.read_text(encoding="utf-8").split())
+
+    assert clause in document, (
+        f"`plugins/claude-code/commands/ingest.md` no longer carries the schema's "
+        f"own wording of SEC-11's bound.\n\n"
+        f"  the schema publishes: {clause!r}\n\n"
+        "The document says it quotes the schema here. If the schema's wording "
+        "moved, move the document's in the same change; if the document's moved, "
+        "it is now a second bound a reader can trust instead of the contract's."
+    )
+
+
 #:
 #: The scan above holds one direction — code must not overtake the claim — and
 #: leaves the other open: a description rewritten to say a key works would make
@@ -711,13 +847,11 @@ def test_each_watched_key_still_publishes_the_reach_the_scan_enforces(
     So the two halves are pinned in one file: the description states the reach,
     and the source tree is held to it.
     """
-    node: object = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
-    for step in pointer:
-        assert isinstance(node, dict), f"{key}: the schema has no `{'/'.join(pointer)}`"
-        node = node[step]
-
-    assert isinstance(node, dict), f"{key}: `{'/'.join(pointer)}` is not a subschema"
-    description = node.get("description", "")
+    description = (
+        json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))["description"]
+        if not pointer
+        else _described_node(pointer)
+    )
 
     for sentence in required:
         assert sentence in description, (
