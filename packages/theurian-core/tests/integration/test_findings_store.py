@@ -1462,6 +1462,73 @@ def test_serving_a_missing_store_raises_rather_than_answering_empty(tmp_path: Pa
     assert raised.value.remedy == _REBUILD_REMEDY
 
 
+def test_serving_a_missing_store_does_not_conjure_one(tmp_path: Path) -> None:
+    """The read connection is ``mode=ro``, and this is what that buys observably.
+
+    ``serve_findings`` refuses a missing store either way -- opened read-write, an
+    absent file becomes an *empty* database, whose first ``SELECT`` then fails on
+    the missing table and raises the same graded error. So the refusal alone
+    cannot tell the two apart, and dropping ``read_only_uri`` from the read
+    connection passed the whole suite (measured 2026-09-02 against ``e808c82``;
+    mutation ``read-connection-not-read-only``, 4801 tests green).
+
+    What separates them is the file: a read that creates one has written to the
+    project's state directory in order to answer a question, leaving a stamped-as-
+    nothing store where ``findings build`` expects either its own file or none.
+    That is the defect ``index_store._open_read`` already records, asserted here
+    for this store.
+    """
+    store = _store(tmp_path)
+
+    with pytest.raises(FindingsStoreError):
+        store.serve_findings(FindingQuery(limit=10))
+
+    assert not store.path.exists(), (
+        f"serving a missing store created {store.path}. The read connection must be "
+        f"`mode=ro`: a query that conjures an empty database leaves a file behind "
+        f"that nothing built, and the next reader finds a store with no metadata row "
+        f"rather than no store at all."
+    )
+
+
+def test_two_findings_committed_at_one_instant_come_back_in_the_published_order(
+    tmp_path: Path,
+) -> None:
+    """The tiebreak is the whole reason ``limit`` truncates a defined sequence.
+
+    ``committed_at DESC`` alone leaves rows sharing an instant in whatever order
+    the scan produces -- insertion order, here, since the table's only index is
+    its primary key -- and SQLite is free to vary that between plans. So the load
+    is built with its insertion order *deliberately opposite* to the published
+    one: commit ``b`` is written first and commit ``a`` second, both at the same
+    instant, so a read without the ``(commit_sha, position)`` tiebreak returns
+    them the other way round.
+
+    Dropping the tiebreak passed the whole suite before this (measured 2026-09-02
+    against ``e808c82``; mutation ``serve-order-no-tiebreak``): every other order
+    test either uses distinct instants or writes its tied rows already in the
+    published order, so none of them could tell a total order from a lucky one.
+    """
+    store = _store(tmp_path)
+    one_instant = "2026-08-25T09:00:00+00:00"
+    store.replace_all(
+        FindingLoad(
+            accepted=(
+                _finding(_sha("b"), text="written first", when=one_instant),
+                _finding(_sha("a"), text="written second", when=one_instant),
+            ),
+            rejected=(),
+        )
+    )
+
+    assert _served(store) == ("written second", "written first"), (
+        "two findings sharing an instant came back in insertion order rather than "
+        "in `(commit_sha, position)` order; without that tiebreak a `limit` "
+        "truncates a sequence SQLite is free to vary, so the same store can answer "
+        "one query two ways"
+    )
+
+
 @pytest.mark.parametrize(
     "damage",
     [

@@ -764,6 +764,66 @@ async def test_a_bad_filter_is_refused_before_the_store_is_reached(
     assert FINDINGS_UNAVAILABLE_REFUSAL not in message
 
 
+@pytest.mark.asyncio
+async def test_a_sha256_repository_s_commit_sha_is_served_not_refused(
+    project: ProjectRegistry,
+) -> None:
+    """A 64-character sha is a full sha, and this build says so in one place only.
+
+    ``_COMMIT_SHA`` accepts 40 or 64 lower-case hex, because git's ``%H`` is 64
+    characters in a SHA-256 repository -- and nothing drove the second arm:
+    narrowing the pattern to 40 characters passed the whole suite (measured
+    2026-09-02 against ``e808c82``; mutation ``commit-sha-40-only``).
+
+    What that mutation would ship is a refusal a caller cannot act on. Their sha
+    *is* the full one their own ``git log`` prints; being told to send a full sha
+    instead names no reachable value, and the filter they came for is closed to
+    them for as long as their repository stays on SHA-256.
+    """
+    sha256 = "d" * 64
+    _land(
+        project,
+        FindingLoad(
+            accepted=(_finding(sha256, text="a finding on a sha-256 commit"),),
+            rejected=(),
+        ),
+    )
+
+    payload = await _call(project, projectId="demo", commitSha=sha256)
+
+    assert _texts(payload) == ["a finding on a sha-256 commit"]
+    assert payload["findings"][0]["commitSha"] == sha256
+
+
+@pytest.mark.asyncio
+async def test_a_bad_filter_is_refused_before_the_project_is_resolved(
+    project: ProjectRegistry,
+) -> None:
+    """Bounds run before the registry read, not only before the store read.
+
+    ``test_a_bad_filter_is_refused_before_the_store_is_reached`` pins the second
+    half of that ordering; this pins the first, which nothing held -- moving
+    ``_resolve`` ahead of ``build_query`` passed the whole suite (measured
+    2026-09-02 against ``e808c82``; mutation ``resolve-before-bounds``), because
+    every bound test above sends a project that resolves.
+
+    Two things ride on the order. A refused request must cost the daemon nothing
+    (T-6): no registry file read, no state database opened, before a value that
+    was never going to be searched with is rejected. And the refusal a caller
+    reads for a malformed filter must be the same one whatever the project's own
+    state is -- otherwise the error channel carries a second input, which is one
+    more thing SEC-13 has to reason about.
+    """
+    message = await _call_failing(project, projectId="not-registered", reviewer="nobody")
+
+    assert "code-review, security, adversarial" in message
+    assert "not registered" not in message, (
+        "the project was resolved before the filter was bounded: a caller sending a "
+        "bad token learns whether the project exists, and the daemon read the "
+        "registry to answer a request it was always going to refuse"
+    )
+
+
 # -- The numbers themselves, which a symbolic assertion cannot hold ---------
 
 
