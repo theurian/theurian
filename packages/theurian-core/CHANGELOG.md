@@ -125,11 +125,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   The lines `%B` has and `%b` lacks are exactly the first paragraph's, so equal
   counts are what says no commit in that range carries a keyed line inside its
   subject paragraph. Two bounds on the population are stated rather than hidden: a
-  message whose separators are lone `CR` bytes is a single line and carries no
-  column-0 keyed line at all, and a subject that is itself a keyed line is a
-  finding like any other. This is a different mechanism from ADR-0029
-  Amendment 1's D2, which refuses a trailer *value* spanning two lines and is
-  unchanged.
+  message whose separators are lone `CR` bytes is a single line, so at most its
+  first line is a candidate — an unkeyed first line means no finding, a keyed
+  first line makes the CR-joined remainder (further trailers, a sign-off) that one
+  finding's opaque text, never further findings (#404 R1-4) — and a subject that
+  is itself a keyed line is a finding like any other. This is a different
+  mechanism from ADR-0029 Amendment 1's D2, which refuses a trailer *value*
+  spanning two lines and is unchanged.
 
 ### Documentation
 

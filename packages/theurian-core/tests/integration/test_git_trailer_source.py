@@ -669,16 +669,22 @@ def test_a_subject_that_is_itself_a_keyed_line_is_a_finding(tmp_path: Path) -> N
     assert load.rejected == ()
 
 
-def test_a_lone_cr_message_carries_no_column_zero_line_and_balances(tmp_path: Path) -> None:
-    """A CR-separated message has one line, so it holds no trailer -- and none is claimed (#410).
+def test_a_lone_cr_message_with_an_unkeyed_first_line_holds_no_trailer(tmp_path: Path) -> None:
+    """A CR-separated message is one line; an UNKEYED first line holds no trailer (#410).
 
-    The second input shape #410 names. A body whose separators are lone ``CR``
-    bytes is a *single* LF-delimited line whose column 0 is the subject, so under
-    the population the load publishes -- column-0 keyed lines of the whole message,
-    split on ``\\n`` -- there is no trailer to lose. This is a bound on the claim,
-    not a hole in it: the same rule is what the loss-free canary's own baseline
-    greps, so both sides agree the count is zero, and no line is silently dropped
-    from a population that ever contained it.
+    The second input shape #410 names, and the *unkeyed-first-line* half of the CR
+    bound. A body whose separators are lone ``CR`` bytes is a *single* LF-delimited
+    line whose column 0 here is the subject, so under the population the load
+    publishes -- column-0 keyed lines of the whole message, split on ``\\n`` --
+    there is no trailer to lose. This is a bound on the claim, not a hole in it: the
+    same rule is what the loss-free canary's own baseline greps, so both sides agree
+    the count is zero, and no line is silently dropped from a population that ever
+    contained it.
+
+    This test **cannot** exhibit the keyed-first-line counterexample -- its fixture
+    opens with a subject, so its first line is never a candidate. The sibling below
+    covers the case where the first line *is* keyed (#404 R1-4), which is why the
+    old blanket "a CR message carries no keyed line at all" was false.
 
     Asserted here so a later "helpfully" CR-aware split cannot land without a
     recorded decision -- it would widen the accepted set while the population the
@@ -706,6 +712,52 @@ def test_a_lone_cr_message_carries_no_column_zero_line_and_balances(tmp_path: Pa
 
     assert [f.finding_text for f in load.accepted] == ["a normal body"]
     assert load.rejected == ()
+    assert len(load.accepted) + len(load.rejected) == len(keyed)
+
+
+def test_a_keyed_first_line_after_a_lone_cr_swallows_the_remainder(tmp_path: Path) -> None:
+    """#404 R1-4: a keyed FIRST line in a CR-separated message is one finding, not none.
+
+    The counterexample the old bound denied. A CR-separated message is one
+    ``\\n``-delimited line, so *at most its first line* is a candidate -- but when
+    that first line is keyed it IS a candidate, and a trailer value is exactly one
+    physical line (D2), so the CR-joined remainder (a second trailer, a sign-off)
+    becomes that one finding's opaque, byte-preserved text rather than further
+    findings. The blanket claim "a CR message carries no column-0 keyed line at
+    all" was therefore false: it holds only when the first line is unkeyed.
+
+    Pinned as the true behaviour, not a defect to change: the finding is
+    well-formed, its text is byte-preserved (the ``\\r`` bytes survive), and the
+    accounting still balances -- exactly one keyed line, one accepted finding.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit_body_file(
+        clone,
+        (
+            "Review-Finding: security HIGH — the first finding\r"
+            "Review-Finding: adversarial LOW — swallowed, not its own finding\r"
+            "Signed-off-by: Tester <tester@example.com>"
+        ).encode(),
+        when="2026-01-01T00:00:00",
+    )
+    _publish(clone)
+
+    whole = _git(clone, "log", "refs/remotes/origin/main", "--format=%B")
+    keyed = [line for line in whole.split("\n") if line.startswith(TRAILER_KEY)]
+    assert len(keyed) == 1, "the CR-separated message must be exactly one column-0 keyed line"
+
+    load = GitTrailerFindingSource(clone).load_findings()
+
+    # Exactly one finding: the second trailer is swallowed into the first's text.
+    assert [(f.reviewer, f.severity) for f in load.accepted] == [
+        (ReviewerToken.SECURITY, FindingSeverity.HIGH)
+    ]
+    assert load.rejected == ()
+    swallowed = load.accepted[0].finding_text
+    assert swallowed.startswith("the first finding\r")  # the CR bytes are byte-preserved (D2)
+    assert "Review-Finding: adversarial LOW — swallowed, not its own finding" in swallowed
+    assert "Signed-off-by: Tester" in swallowed
+    # The accounting balances: one keyed line in, one finding out, none lost.
     assert len(load.accepted) + len(load.rejected) == len(keyed)
 
 

@@ -938,11 +938,15 @@ unchanged — nothing here serves a finding, and `pullRequest`, `family` and
   column-0 trailer folded into an unseparated subject reached neither tuple of the
   load. The source reads `%B`, and `FindingLoad`'s loss-free invariant now states
   the population it ranges over, with its two bounds: a message whose separators
-  are lone `CR` bytes is one line and carries no column-0 keyed line at all, and a
-  keyed subject is a finding like any other
+  are lone `CR` bytes is one line, so at most its first line is a candidate — an
+  unkeyed first line means no finding, a keyed first line makes the CR-joined
+  remainder (further trailers, a sign-off) that one finding's opaque text (D2),
+  never further findings (#404 R1-4) — and a keyed subject is a finding like any
+  other
   (`test_git_trailer_source.py::test_a_trailer_folded_into_the_subject_paragraph_is_accounted`,
   `test_a_subject_that_is_itself_a_keyed_line_is_a_finding`,
-  `test_a_lone_cr_message_carries_no_column_zero_line_and_balances`). **D2 is
+  `test_a_lone_cr_message_with_an_unkeyed_first_line_holds_no_trailer`,
+  `test_a_keyed_first_line_after_a_lone_cr_swallows_the_remainder`). **D2 is
   untouched and was never wrong here:** D2 refuses a trailer *value* spanning two
   lines, while #410 was about a trailer *line* a format never emitted — the shared
   word "folded" names two different mechanisms. The live corpus was and is

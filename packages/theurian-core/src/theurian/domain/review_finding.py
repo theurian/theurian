@@ -238,10 +238,13 @@ class FindingLoad:
     whose first character starts the key. It was the ``%b`` *body* until #410: git's
     ``%b`` drops the first paragraph rather than the first line, so a trailer folded
     into an unseparated subject was in neither tuple and the invariant was false for
-    it. Two bounds remain, and they are bounds on the population rather than holes
-    in the accounting: a message separated by lone ``CR`` bytes is a single line and
-    therefore carries no column-0 keyed line at all, and a line's *offset* in the
-    message is not part of the key, so a keyed subject is a finding.
+    it. Two bounds remain, both consequences of "line" meaning ``\\n``-delimited:
+    a message separated by lone ``CR`` bytes is a **single** line, so at most its
+    first line is a candidate -- if that line is not keyed the message carries no
+    finding, and if it *is* keyed the CR-joined remainder (any further trailers, a
+    sign-off) is that one finding's opaque byte-preserved text (D2), never further
+    findings (#404 R1-4); and a line's *offset* in the message is not part of the
+    key, so a keyed subject is a finding.
     """
 
     accepted: tuple[ReviewFinding, ...]

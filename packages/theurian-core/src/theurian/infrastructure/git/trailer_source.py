@@ -214,10 +214,12 @@ class GitTrailerFindingSource:
         keyed line like any other, and a subject that is itself a keyed line is a
         finding rather than an excluded special case. Two bounds this states rather
         than hides: "line" means ``\\n``-delimited, so a message whose separators are
-        lone ``CR`` bytes is one line carrying no column-0 keyed line at all (nothing
-        is dropped, because nothing was ever in the population); and the subject
-        arrives with no marker saying it *is* the subject, which is what keeps the
-        deleted ``pull_request``-from-subject heuristic (D5) unreachable.
+        lone ``CR`` bytes is one line -- at most its first line is a candidate, and
+        when that line is keyed the CR-joined remainder (further trailers, a
+        sign-off) becomes that one finding's opaque text (D2), not further findings
+        (#404 R1-4); and the subject arrives with no marker saying it *is* the
+        subject, which is what keeps the deleted ``pull_request``-from-subject
+        heuristic (D5) unreachable.
 
         **The load is loss-free by accounting, not by aborting** (AC-1, D3): every
         column-0 keyed line whose record has a valid committer date is either an
