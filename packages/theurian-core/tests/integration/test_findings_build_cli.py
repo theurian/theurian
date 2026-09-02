@@ -323,11 +323,12 @@ def test_a_build_that_cannot_record_its_provenance_reports_a_failed_build(
     """T-19's build side: a store nothing vouches for is exit 1, not a success.
 
     ``findings build`` records the build in ``THEURIAN_DATA_DIR`` **inside** the
-    same ``try`` that grades every other failure, and the ``except OSError`` arm
-    that converts a refusal there was driven by no test at all: a guard no input
-    reaches survives its own deletion, and T-19 said so in as many words -- "the
-    *failure* arm ... is asserted by no test, and is stated here as read from the
-    source rather than as measured".
+    same ``try`` that grades every other failure, and until this test landed the
+    ``except OSError`` arm that converts a refusal there was driven by nothing: a
+    guard no input reaches survives its own deletion. T-19 recorded the gap in as
+    many words -- that arm was *asserted by no test, and stated there as read from
+    the source rather than as measured* -- and that paragraph now cites this test
+    instead.
 
     What must not happen is a **green** build whose artifact `review.findings`
     will then refuse. That is the silent shape: a caller sees ``built: true``,

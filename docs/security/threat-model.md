@@ -5745,8 +5745,14 @@ installation could not record is exit 1 naming the precondition, not a success
 whose artifact `review.findings` will refuse (`cli/findings_commands.py`). The
 recording arm is pinned by
 `test_findings_build_cli.py::test_a_build_records_that_this_installation_produced_the_store`;
-the *failure* arm — a provenance write that raises `OSError` — is asserted by no
-test, and is stated here as read from the source rather than as measured.
+the *failure* arm — a provenance write that raises `OSError` — was asserted by no
+test until PR #504 and stated here as read from the source; it is now measured by
+`::test_a_build_that_cannot_record_its_provenance_reports_a_failed_build`, which
+holds exit 1, the data-directory remedy and the absence of `built`, and by
+`::test_the_store_a_failed_provenance_build_left_behind_is_not_served_until_it_is_recorded`,
+which holds the half that makes the exit code truthful: the store that failed
+build leaves on disk is really refused by `review.findings`, and recording the
+build turns those same bytes into rows.
 
 **Residual, recorded rather than closed.** Provenance vouches for a *hash*, not
 for the database bytes — verifying bytes would mean hashing the whole database on
