@@ -45,12 +45,10 @@ import re
 from typing import Final
 
 import pytest
-from write_lock_claims import REPO_ROOT, collapsed
+from threat_model_claims import SPELLED_NUMBERS, WORD_FOR_COUNT, entry, prose
+from write_lock_claims import REPO_ROOT
 
 pytestmark = pytest.mark.unit
-
-#: The document this module reads.
-THREAT_MODEL: Final = REPO_ROOT / "docs/security/threat-model.md"
 
 #: The module that owns the spawn arm and its pinned set, and the constant's
 #: name. This is the path T-7's own bullet cites, so a move breaks the entry's
@@ -76,12 +74,10 @@ NETWORK_CALL_SITES: Final = (
 )
 SPAWN_SITES_CONSTANT: Final = "PROCESS_SPAWN_SITES"
 
-#: T-7's heading, and every heading level that ends the entry. The marker carries
-#: its ``\n`` and its trailing space so the slice anchors on a line start and on a
-#: whole threat id: a bare ``#### T-7`` would also open on a ``T-7a`` heading, and
-#: an unanchored ``T-7`` matches the id inside another entry's prose.
-_ENTRY_HEADING: Final = "\n#### T-7 "
-_HEADING_MARKERS: Final = ("\n## ", "\n### ", "\n#### ")
+#: The entry this module reads, sliced by ``threat_model_claims.entry`` -- which
+#: is where the anchoring rules and the reason for them live, because every
+#: entry's pin needs them.
+_THREAT_ID: Final = "T-7"
 
 #: A top-level Markdown bullet. Column-anchored, so a bullet's own soft-wrapped
 #: continuation lines -- indented two spaces -- stay with the bullet they belong
@@ -107,50 +103,6 @@ SPAWN_BULLET_ANCHOR: Final = "process spawns, structurally"
 #: fails naming both rather than silently reading the first.
 _SPELLED_COUNT: Final = re.compile(r"\bpermits ([a-z]+) sites\b")
 
-#: The spelled numbers the bullet could carry, mapped to what they mean. Spelled
-#: rather than digits because that is how the entry writes it, and a pin reading
-#: digits would pass over the sentence it exists to hold. The range brackets the
-#: live figure with room to move on both sides; a word outside it fails loudly,
-#: since a bullet that started spelling the count some other way has stopped
-#: being the sentence this pin reads.
-_SPELLED_NUMBERS: Final = {
-    "one": 1,
-    "two": 2,
-    "three": 3,
-    "four": 4,
-    "five": 5,
-    "six": 6,
-    "seven": 7,
-    "eight": 8,
-    "nine": 9,
-    "ten": 10,
-    "eleven": 11,
-    "twelve": 12,
-    "thirteen": 13,
-    "fourteen": 14,
-    "fifteen": 15,
-    "sixteen": 16,
-    "seventeen": 17,
-    "eighteen": 18,
-    "nineteen": 19,
-    "twenty": 20,
-}
-
-#: The same mapping the other way round, so a RED can name the word the bullet
-#: should now carry rather than leaving an editor to work it out from a count.
-_WORD_FOR_COUNT: Final = {count: word for word, count in _SPELLED_NUMBERS.items()}
-
-
-def _prose(text: str) -> str:
-    """*text* normalised for a prose scan: no markup, no wraps, lower case.
-
-    ``collapsed`` (from ``write_lock_claims``, the shared primitive every claim
-    pin uses) lowercases and flattens the soft wraps. Backticks and asterisks go
-    first, because the bullet writes its module paths in code spans and bolds the
-    number word, and a key written the way the sentence reads would miss both.
-    """
-    return collapsed(text.replace("`", "").replace("*", ""))
-
 
 def _spawn_bullet() -> str:
     """T-7's process-spawn bullet, normalised, located by its anchor phrase.
@@ -160,18 +112,7 @@ def _spawn_bullet() -> str:
     and a document-wide split would put whichever paragraph fell between two
     lists inside the preceding bullet.
     """
-    text = THREAT_MODEL.read_text(encoding="utf-8")
-    assert text.count(_ENTRY_HEADING) == 1, (
-        f"the threat model has {text.count(_ENTRY_HEADING)} lines starting "
-        f"`{_ENTRY_HEADING.strip()}`, expected 1; with none of them this module "
-        f"scans nothing, and with two it scans whichever came first"
-    )
-
-    rest = text.split(_ENTRY_HEADING, 1)[1]
-    ends = [found for marker in _HEADING_MARKERS if (found := rest.find(marker)) >= 0]
-    entry = rest[: min(ends)] if ends else rest
-
-    bullets = [_prose(bullet) for bullet in _BULLET_START.split(entry)[1:]]
+    bullets = [prose(bullet) for bullet in _BULLET_START.split(entry(_THREAT_ID))[1:]]
     carrying = [bullet for bullet in bullets if SPAWN_BULLET_ANCHOR in bullet]
 
     assert len(carrying) == 1, (
@@ -261,7 +202,7 @@ def test_the_t7_spawn_bullet_names_every_pinned_spawn_site_and_spells_how_many()
         f"spelled number matching `{_SPELLED_COUNT.pattern}`, so this pin has "
         f"nothing to hold against the pinned set: {spelled}"
     )
-    assert spelled[0] in _SPELLED_NUMBERS, (
+    assert spelled[0] in SPELLED_NUMBERS, (
         f"T-7's spawn bullet spells its site count as `{spelled[0]}`, which is not "
         f"a number this pin can read; the bullet has to say how many, or the count "
         f"is back to being a claim nobody can check"
@@ -281,8 +222,8 @@ def test_the_t7_spawn_bullet_names_every_pinned_spawn_site_and_spells_how_many()
         f"complete, so an unnamed member reads as a spawn site nobody reviewed: "
         f"{bullet[:400]}"
     )
-    should_carry = _WORD_FOR_COUNT.get(len(sites), "no word this pin can spell")
-    assert _SPELLED_NUMBERS[spelled[0]] == len(sites), (
+    should_carry = WORD_FOR_COUNT.get(len(sites), "no word this pin can spell")
+    assert SPELLED_NUMBERS[spelled[0]] == len(sites), (
         f"T-7's spawn bullet permits `{spelled[0]}` sites; `{SPAWN_SITES_CONSTANT}` "
         f"holds {len(sites)} entries over {len(modules)} modules ({modules}). "
         f"Whichever side moved, the record and the pin have to be brought back "
