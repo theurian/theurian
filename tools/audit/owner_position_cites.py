@@ -13,6 +13,14 @@ rows a person has to read, and that is what this is: closed number, an
 owner-position phrase within :data:`_PROXIMITY` characters of the cite, and no
 historical marker in the sentence.
 
+**A sentence's own block is not the whole record.** This repository retracts a
+paragraph by amending it *in place*, in the block below, so a verdict formed from
+the flagged sentence alone reads deliberately preserved history as a live claim.
+Round one graded four such rows ``DEFECT`` on that reading and all four were
+wrong; #503 was filed on it and closed by refutation. :data:`_SUPERSEDED` and
+:func:`succeeding_blocks` are the probe that closes it, and
+:data:`SUPERSEDED_IN_PLACE` is the verdict a retracted sentence gets.
+
 Three population rules earn their place, each because leaving it out produced
 noise a reader would have had to filter by hand:
 
@@ -27,14 +35,15 @@ noise a reader would have had to filter by hand:
   :data:`tracker_state.OPEN_STATES` is where it is enforced.
 
 **This class terminates as a classified population, not as a fix set** -- unit
-B's Definition of Ready says so explicitly. Every suspect carries a hand verdict
-in :data:`SUSPECTS`, and a verdict of ``DEFECT`` is a *filing*, not something
-this audit's own branch corrects.
+B's Definition of Ready says so explicitly. Every judged row carries a hand
+verdict in :data:`SUSPECTS`, and a verdict of ``DEFECT`` is a *filing*, not
+something this audit's own branch corrects.
 
 Run it::
 
     uv run --frozen python tools/audit/owner_position_cites.py
     uv run --frozen python tools/audit/owner_position_cites.py --positive-control
+    uv run --frozen python tools/audit/owner_position_cites.py --overlap
 """
 
 from __future__ import annotations
@@ -96,6 +105,71 @@ _OWNER_POSITION: Final = re.compile(
 #: How far from the cite an owner-position phrase may sit and still be about it.
 _PROXIMITY: Final = 60
 
+#: An in-place amendment: the form this repository uses to retract a paragraph
+#: without deleting it.
+#:
+#: **Why a forward walk and not a wider sentence key.** Round one graded four hand
+#: ``DEFECT`` verdicts here and all four were wrong the same way: the flagged
+#: sentence is real, and the block *after* it retracts it. ADR-0018:150 says
+#: "#468 stays open for both halves" and :155 opens "**Closed on 2026-09-01
+#: ([#468])**"; ADR-0023:351, threat-model:4560 and ADR-0027:460 are the same
+#: shape. A verdict formed from the sentence's own block cannot see any of them,
+#: which is why #503 was filed and closed by refutation
+#: (``issuecomment-5508377135``) -- and why executing its proposed fix would have
+#: edited deliberately preserved history.
+#:
+#: ``further amended`` needs no alternative of its own: ``\bamended\b`` reaches it.
+_SUPERSEDED: Final = re.compile(
+    r"\bamended\b|\bsuperseded\b|\bclosed\s+on\b|\bno\s+longer\s+holds\b"
+    r"|\bleft\s+standing\b|\bdated\s+history\b",
+    re.IGNORECASE,
+)
+
+#: The **bold run a block opens with**, and the reason the marker is looked for
+#: only there.
+#:
+#: Measured, not assumed: all four in-place amendments in this repository are
+#: written as an emphasised opener -- ``**Closed on 2026-09-01 ([#468]).**``,
+#: ``**Amended in Milestone 6: ...**``, ``**Amended in Milestone 6. Everything
+#: from ... is left standing ...**``, ``**Further amended in Milestone 7 ...**``.
+#: Searching the *whole* following block instead was tried first and cleared a
+#: row it must not: SECURITY.md:452's #198 cite, whose next-but-one block happens
+#: to say "a file that **no longer holds** the withdrawn rows" about an index
+#: file. The marker has to be the block's own claim about the record above it,
+#: which is what an opener is and what a sentence buried in a paragraph is not.
+#:
+#: A bullet-led amendment (``- **Amended ...**``) is deliberately outside this
+#: key: nothing in the tree is written that way, and admitting the form is what
+#: re-opened the false clear above.
+_AMENDMENT_OPENER: Final = re.compile(r"^\*\*(?P<opener>[^*]+)\*\*")
+
+#: How many blocks past the sentence's own the walk reads, and it is a measured
+#: number rather than a chosen one.
+#:
+#: Measured at ``be4b67c`` over the four superseded members: the retraction sits
+#: **one** block later in ADR-0018, ADR-0023 and the threat model, and **two**
+#: later in ADR-0027, where a paragraph about T-15's grade sits between. Two is
+#: therefore the smallest reach that covers every member, and it is the reach used
+#: -- a larger one buys nothing and costs false clears. The threat model's #15 row
+#: is the control in the other direction: it is a genuine dead owner, and no
+#: block within this reach carries an amendment marker, so it stays ``SUSPECT``.
+#:
+#: The walk stops at a heading, because a reader following a heading has left the
+#: region the amendment was written for.
+_SUPERSESSION_REACH: Final = 2
+
+#: A section boundary, spelled the way :mod:`claim_surfaces` spells it. ``#468``
+#: is deliberately not one: an ATX heading needs the space.
+_HEADING: Final = re.compile(r"^#{1,6}\s")
+
+#: The verdict a sentence gets when the block after it retracts it. Named rather
+#: than spelled inline because the ledger's own reconciliation compares against
+#: it, and a typo on either side would read as drift rather than as a typo.
+SUPERSEDED_IN_PLACE: Final = "history (superseded in place)"
+
+#: The verdicts that put a row in front of a person, and so into the ledger.
+_JUDGED_VERDICTS: Final[frozenset[str]] = frozenset({"SUSPECT", SUPERSEDED_IN_PLACE})
+
 #: Historical framing anywhere in the sentence. Present, the cite is a provenance
 #: record and a closed number is correct.
 _HISTORICAL: Final = re.compile(
@@ -140,7 +214,54 @@ def _in_owner_position(text: str, number: str) -> bool:
     return False
 
 
-def classify(sentence: Sentence, number: str, state: str) -> str:
+def succeeding_blocks(rows: list[Sentence]) -> list[tuple[str, ...]]:
+    """For each sentence of one file, the blocks that follow its own.
+
+    Parallel to ``rows``, so element *i* is what the supersession probe reads for
+    ``rows[i]``. The blocks of one file arrive from :func:`claim_surfaces.sentences`
+    in document order and every sentence of a block carries the *same* block
+    object, so the position is recovered by identity rather than by matching text
+    -- two paragraphs of a document can be byte-identical, and a text match would
+    walk forward from the wrong one.
+
+    Returned as separate blocks and never as one joined string, because the probe
+    reads each block's *opener*: joining them would put the second block's first
+    words in the middle of the first block's text, where the key does not look.
+    """
+    blocks: list[str] = []
+    position: list[int] = []
+    for sentence in rows:
+        if not blocks or blocks[-1] is not sentence.block:
+            blocks.append(sentence.block)
+        position.append(len(blocks) - 1)
+
+    def ahead(start: int) -> tuple[str, ...]:
+        read: list[str] = []
+        for block in blocks[start : start + _SUPERSESSION_REACH]:
+            if _HEADING.match(block):
+                break
+            read.append(block)
+        return tuple(read)
+
+    return [ahead(at + 1) for at in position]
+
+
+def amendment_opener(block: str) -> str:
+    """The block's emphasised opener when it retracts what came before, else ``""``."""
+    match = _AMENDMENT_OPENER.match(block)
+    if match is None:
+        return ""
+    opener = match.group("opener")
+    return opener if _SUPERSEDED.search(opener) else ""
+
+
+def classify(sentence: Sentence, number: str, state: str, succeeding: tuple[str, ...] = ()) -> str:
+    """The verdict for one cite, read with the blocks that follow it.
+
+    ``succeeding`` defaults to empty so a planted sentence can be classified with
+    no document around it, which is what most of the synthetic controls do. Every
+    real row is classified with :func:`succeeding_blocks` supplying it.
+    """
     if state in tracker_state.OPEN_STATES:
         return "open owner"
     if sentence.path.endswith(_RELEASE_RECORDS):
@@ -148,6 +269,8 @@ def classify(sentence: Sentence, number: str, state: str) -> str:
     if _HISTORICAL.search(sentence.text):
         return "history"
     if _in_owner_position(sentence.text, number):
+        if any(amendment_opener(block) for block in succeeding):
+            return SUPERSEDED_IN_PLACE
         return "SUSPECT"
     return "unmarked"
 
@@ -159,7 +282,9 @@ def sweep(root: Path, *, offline: bool = False) -> tuple[list[Cite], str, int]:
     for path in governed_paths(root):
         if not in_scope(path):
             continue
-        for sentence in sentences(root, path):
+        found = sentences(root, path)
+        following = succeeding_blocks(found)
+        for sentence, succeeding in zip(found, following, strict=True):
             occurrences = list(_CITE.finditer(sentence.text))
             raw += len(occurrences)
             for number in _numbers(sentence.text):
@@ -168,14 +293,14 @@ def sweep(root: Path, *, offline: bool = False) -> tuple[list[Cite], str, int]:
                     Cite(
                         number=number,
                         state=state,
-                        verdict=classify(sentence, number, state),
+                        verdict=classify(sentence, number, state, succeeding),
                         sentence=sentence,
                     )
                 )
     return rows, provenance, raw
 
 
-#: Every suspect the sweep produces, with the verdict a person reached, as
+#: Every row the sweep hands a person, with the verdict they reached, as
 #: ``(path, number, verdict, why)``.
 #:
 #: **DEFECT here means "file it", not "fix it in this branch".** Unit B's DoR puts
@@ -183,9 +308,17 @@ def sweep(root: Path, *, offline: bool = False) -> tuple[list[Cite], str, int]:
 #: classified population plus proposed filings, because the fix set is bounded by
 #: the files that unit names.
 #:
-#: Exact in both directions, like every ledger in this directory: a suspect with
-#: no row is a finding, and a row the sweep no longer produces means the cite was
-#: repointed and the row goes with it.
+#: **The population is ``SUSPECT`` *and* :data:`SUPERSEDED_IN_PLACE`.** A row the
+#: supersession probe clears is still a row a person read, and dropping it here
+#: would delete the record of that reading -- and with it the only thing that
+#: would notice if the amendment block were later deleted. So the reconciliation
+#: compares the *machine* verdict against the one recorded in the row's opening
+#: words: a superseded row whose amendment goes away comes back as ``SUSPECT``,
+#: the two no longer agree, and the audit exits 1.
+#:
+#: Exact in both directions, like every ledger in this directory: a judged row
+#: with no ledger entry is a finding, and an entry the sweep no longer produces
+#: means the cite was repointed and the row goes with it.
 SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     (
         "SECURITY.md",
@@ -198,35 +331,44 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     (
         "docs/adr/0018-single-writer-synchronous-in-m1.md",
         "468",
-        "DEFECT -- file",
-        "The sentence says '#468 stays open for both halves'. #468 closed COMPLETED on "
-        "2026-09-01 (the `migrate apply` serialisation). #439 beside it is open and "
-        "correct, which is why only half the sentence is wrong -- the shape a reader "
-        "trusts most.",
+        f"{SUPERSEDED_IN_PLACE} -- ADR-0018:155",
+        "The sentence says '#468 stays open for both halves', and #468 closed COMPLETED on "
+        "2026-09-01. It is not a live claim: :128-130 marks the paragraph "
+        "'**Superseded by the 2026-09-01 closure below -- read this paragraph as dated "
+        "history**', :155 opens '**Closed on 2026-09-01 ([#468])**', and :179 says '#468 "
+        "is closed for both halves.' Round one graded this `DEFECT` from the sentence's "
+        "own block alone; #503 was filed on that reading and closed by refutation.",
     ),
     (
         "docs/adr/0023-trigram-index-beside-the-word-index.md",
         "16",
-        "DEFECT -- file",
+        f"{SUPERSEDED_IN_PLACE} -- ADR-0023:356",
         "'a mitigation for this one gap, removed when `IndexStore` states its own "
-        "exhaustion ([#16])'. #16 closed COMPLETED on 2026-08-08 and its title is that "
-        "exact sentence, so either the mitigation should be gone or the owner is dead.",
+        "exhaustion ([#16])', with #16 closed COMPLETED on 2026-08-08. The next block, "
+        ":356, is '**Amended in Milestone 6: #16 landed, and the second call is gone "
+        "rather than made cheap.**' -- the retraction, in place, one block down.",
     ),
     (
         "docs/adr/0027-accept-validates-before-it-moves.md",
         "349",
-        "DEFECT -- file",
+        f"{SUPERSEDED_IN_PLACE} -- ADR-0027:479",
         "'a YAML comment, and the migration and body filenames, are unscanned and tracked "
-        "as their own face ([#349])'. #349 closed COMPLETED on 2026-08-26, and the threat "
-        "model now says the opposite at :1524 -- 'the scan covers ... the artifacts it "
-        "lands them as ([#349])'. Two governed surfaces disagree about a security control.",
+        "as their own face ([#349])', with #349 closed COMPLETED on 2026-08-26. :479 is "
+        "'**Further amended in Milestone 7, by the artifact-scan CL ([#349]) ... that "
+        "boundary no longer holds**', and it quotes this sentence verbatim in order to "
+        "retract it. Round one's `DEFECT` verdict here carried the claim that two "
+        "governed surfaces disagree about #349's scan; that claim was false. "
+        "threat-model:1524, SECURITY.md:470 and this :479 amendment record the widening "
+        "consistently, and the fourth surface is the paragraph :479 retracts. This is the "
+        "member whose retraction sits two blocks down rather than one, and it is what "
+        "sets `_SUPERSESSION_REACH`.",
     ),
     (
         "docs/security/threat-model.md",
         "349",
         "history",
-        "The other side of that disagreement, and the one that matches #349's completion: "
-        "a provenance cite for a shipped widening.",
+        "The provenance cite for that same shipped widening, and the one that matches "
+        "#349's completion.",
     ),
     (
         "docs/security/threat-model.md",
@@ -242,29 +384,46 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
         "DEFECT -- file",
         "The confirmed (a)-class member #427 recorded and #464 owns: 'the index purge in "
         "[#15] removes this face', with #15 closed. This audit reproducing it is the "
-        "positive control for the whole key.",
+        "positive control for the whole key -- and, since round one, for the supersession "
+        "probe too: no block within `_SUPERSESSION_REACH` of it carries an amendment "
+        "marker, which is what a genuine dead owner looks like beside the four that are "
+        "retracted in place.",
     ),
     (
         "docs/security/threat-model.md",
         "16",
-        "DEFECT -- file",
+        f"{SUPERSEDED_IN_PLACE} -- threat-model:4566",
         "'Both go with the cache when [#16] lands', #16 closed. The sibling of the "
-        "ADR-0023 row above: one residue, two surfaces, one dead owner.",
+        "ADR-0023 row above, and superseded the same way: :4566 opens '**Amended in "
+        "Milestone 6. Everything from ... to here is the Milestone 5 record and is left "
+        "standing; none of it describes code that still exists.**'",
     ),
 )
 
 #: What the key must do before any count is read, as
-#: ``(what it demonstrates, sentence, number, state, expected verdict)``.
+#: ``(what it demonstrates, sentence, the blocks that follow it, number, state,
+#: expected verdict)``.
 #:
-#: The first row is #427's own confirmed member, transcribed. The rest are the
-#: three verdicts the classifier has to keep apart -- a live owner, a provenance
+#: The first row is #427's own confirmed member, transcribed. The next three are
+#: the verdicts the classifier has to keep apart -- a live owner, a provenance
 #: cite, and a merged pull request standing in owner position, which is the #444
 #: shape and a defect rather than an exemption.
-POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
+#:
+#: **The last four drive the routes round one found unexercised.** Three are the
+#: supersession probe, planted so the classifier is run on blocks it has never
+#: seen: the amendment shape, ordinary prose, and the shape that actually broke
+#: the first version of this probe -- a following block whose *middle* says "no
+#: longer holds" about something else entirely. The fourth is the ``_HISTORICAL``
+#: over-clear that M-a measures: an incidental past tense anywhere in the sentence
+#: outranks the owner phrasing, and the expected verdict here records that
+#: behaviour rather than wishing it away. :func:`main` prints how many real rows
+#: it reaches.
+POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str], ...]] = (
     (
         "#427's confirmed member: a closed issue named as what removes a residual",
         "The index purge in [#15](https://github.com/theurian/theurian/issues/15) "
         "removes this face.",
+        (),
         "15",
         "issue:closed",
         "SUSPECT",
@@ -273,6 +432,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "a provenance cite, which a closed number makes correct",
         "The allowlist wording was corrected in [#129](https://github.com/theurian/"
         "theurian/issues/129).",
+        (),
         "129",
         "issue:closed",
         "history",
@@ -280,6 +440,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     (
         "an open owner, which needs no further judgement",
         "It is owed by [#429](https://github.com/theurian/theurian/issues/429).",
+        (),
         "429",
         "issue:open",
         "open owner",
@@ -287,6 +448,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     (
         "a merged pull request in owner position (#444's shape)",
         "That residue is owned by [#113](https://github.com/theurian/theurian/pull/113).",
+        (),
         "113",
         "pr:merged",
         "SUSPECT",
@@ -294,29 +456,208 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     (
         "a bare mention, which the bracket-only key of earlier sweeps could not see",
         "#468 stays open for both halves.",
+        (),
         "468",
         "issue:closed",
+        "SUSPECT",
+    ),
+    (
+        "the same sentence retracted by the next block, which is the ADR-0018 shape",
+        "#468 stays open for both halves.",
+        (
+            "**Closed on 2026-09-01 ([#468](https://github.com/theurian/theurian/issues/"
+            "468)).** The engineering landed with the serialisation.",
+        ),
+        "468",
+        "issue:closed",
+        SUPERSEDED_IN_PLACE,
+    ),
+    (
+        "an un-superseded sentence whose next block is ordinary prose -- still a suspect",
+        "#468 stays open for both halves.",
+        (
+            "The single writer is the daemon, and the CLI reaches it over the socket "
+            "rather than opening the database itself.",
+        ),
+        "468",
+        "issue:closed",
+        "SUSPECT",
+    ),
+    (
+        "SECURITY.md:452's shape: a marker word buried mid-block, about something else",
+        "#468 stays open for both halves.",
+        (
+            "- **Search ranking, during a withdrawal.** A search after the apply is "
+            "scored against a file that no longer holds the withdrawn rows.",
+        ),
+        "468",
+        "issue:closed",
+        "SUSPECT",
+    ),
+    (
+        "a live owner cite carrying an incidental past tense, which `_HISTORICAL` clears",
+        "The index purge in [#15](https://github.com/theurian/theurian/issues/15) removes "
+        "this face, and the read count was measured at fifty.",
+        (),
+        "15",
+        "issue:closed",
+        "history",
+    ),
+)
+
+#: The two verdicts the supersession probe has to keep apart, checked against the
+#: **real documents** rather than against planted text, as ``(what it
+#: demonstrates, path, number, expected verdict)``.
+#:
+#: A synthetic control shows the key can fire; it cannot show the key fires on the
+#: surface it was written for. Round one's four false ``DEFECT`` verdicts all lived
+#: in real amendment blocks, and the reach the walk needs was measured on them --
+#: so ADR-0027's member, whose retraction sits two blocks down, is the one that
+#: pins :data:`_SUPERSESSION_REACH` from above. The threat model's #15 pins it
+#: from below: it is a genuine dead owner, and a walk that grew until it started
+#: clearing that row would be reported here.
+TREE_CONTROLS: Final[tuple[tuple[str, str, str, str], ...]] = (
+    (
+        "ADR-0027's member, retracted two blocks down by the `:479` amendment",
+        "docs/adr/0027-accept-validates-before-it-moves.md",
+        "349",
+        SUPERSEDED_IN_PLACE,
+    ),
+    (
+        "ADR-0018's member, retracted one block down by the `:155` closure note",
+        "docs/adr/0018-single-writer-synchronous-in-m1.md",
+        "468",
+        SUPERSEDED_IN_PLACE,
+    ),
+    (
+        "the threat model's #15: a dead owner with no amendment in reach, still a suspect",
+        "docs/security/threat-model.md",
+        "15",
+        "SUSPECT",
+    ),
+    (
+        "SECURITY.md's #198: the row a whole-block search wrongly cleared",
+        "SECURITY.md",
+        "198",
         "SUSPECT",
     ),
 )
 
 
-def _run_positive_controls() -> int:
+def _run_positive_controls(*, offline: bool) -> int:
     failures = 0
     print("=== POSITIVE CONTROLS ===")
-    for label, text, number, state, expected in POSITIVE_CONTROLS:
+    for label, text, succeeding, number, state, expected in POSITIVE_CONTROLS:
         verdict = classify(
-            Sentence(path="control.md", line=0, text=text, block=text), number, state
+            Sentence(path="control.md", line=0, text=text, block=text),
+            number,
+            state,
+            succeeding,
         )
         status = "OK  " if verdict == expected else "FAIL"
         failures += status == "FAIL"
         print(f"  {status} {label}: got {verdict!r}, expected {expected!r}")
+
+    root = repo_root()
+    table, provenance = tracker_state.states(offline=offline)
+    print(f"\n=== TREE CONTROLS (tracker states: {provenance}) ===")
+    for label, path, number, expected in TREE_CONTROLS:
+        found = sentences(root, path)
+        following = succeeding_blocks(found)
+        verdicts = [
+            classify(sentence, number, table.get(number, "(absent from the tracker)"), succeeding)
+            for sentence, succeeding in zip(found, following, strict=True)
+            if number in _numbers(sentence.text)
+            and _in_owner_position(sentence.text, number)
+            and not _HISTORICAL.search(sentence.text)
+        ]
+        status = "OK  " if verdicts == [expected] else "FAIL"
+        failures += status == "FAIL"
+        print(f"  {status} {label}: got {verdicts}, expected {[expected]}")
     return 1 if failures else 0
+
+
+def _historical_overlap(root: Path, *, offline: bool) -> int:
+    """How many rows the historical rule clears that the owner key would flag.
+
+    M-a: ``_HISTORICAL`` runs over the whole sentence and outranks the owner
+    phrasing, so one incidental ``was`` anywhere in a sentence clears a cite that
+    is otherwise in owner position. That is the audit's largest silent
+    over-clear, and it is printed as a number rather than described -- a reader
+    who wants to see the members lists them with ``--overlap``.
+    """
+    return len(_historical_overlap_rows(root, offline=offline))
+
+
+def _historical_overlap_rows(root: Path, *, offline: bool) -> list[tuple[str, int, str, str]]:
+    table, _ = tracker_state.states(offline=offline)
+    found: list[tuple[str, int, str, str]] = []
+    for path in governed_paths(root):
+        if not in_scope(path) or path.endswith(_RELEASE_RECORDS):
+            continue
+        for sentence in sentences(root, path):
+            if not _HISTORICAL.search(sentence.text):
+                continue
+            for number in _numbers(sentence.text):
+                if table.get(number, "") in tracker_state.OPEN_STATES:
+                    continue
+                if _in_owner_position(sentence.text, number):
+                    found.append((path, sentence.line, number, sentence.text[:_MAX_EXCERPT]))
+    return found
+
+
+def _report_drift(judged: list[Cite]) -> int:
+    """Reconcile the judged population against the ledger, in three directions.
+
+    *Unrecorded* is a row nobody read; *stale* is a ledger entry the sweep no
+    longer produces; *drift* is the third and the one the supersession probe
+    needs -- a row recorded as superseded that comes back a suspect means the
+    amendment block moved or was deleted, and the sentence is a live dead-owner
+    claim again with a ledger row saying otherwise.
+    """
+    produced = {(row.sentence.path, row.number) for row in judged}
+    unrecorded = [
+        row
+        for row in judged
+        if not any(entry[0] == row.sentence.path and entry[1] == row.number for entry in SUSPECTS)
+    ]
+    stale = [entry for entry in SUSPECTS if (entry[0], entry[1]) not in produced]
+    disagreed = [
+        (row, entry)
+        for row in judged
+        for entry in SUSPECTS
+        if entry[0] == row.sentence.path
+        and entry[1] == row.number
+        and entry[2].startswith(SUPERSEDED_IN_PLACE) is not (row.verdict == SUPERSEDED_IN_PLACE)
+    ]
+
+    if unrecorded:
+        print("\nUNRECORDED SUSPECTS -- a closed number in owner position nobody judged:")
+        for row in unrecorded:
+            print(f"  {row.sentence.path}:{row.sentence.line}  #{row.number}")
+    if stale:
+        print("\nSTALE LEDGER ROWS -- the sweep no longer produces these:")
+        for path, number, verdict, _ in stale:
+            print(f"  {path}  #{number}  [{verdict}]")
+    if disagreed:
+        print("\nVERDICT DRIFT -- the ledger and the classifier disagree about supersession:")
+        for row, entry in disagreed:
+            print(
+                f"  {row.sentence.path}:{row.sentence.line}  #{row.number}  "
+                f"classifier says {row.verdict!r}, the ledger says {entry[2]!r}"
+            )
+        print(
+            "\n  A row recorded as superseded that comes back a suspect means the amendment\n"
+            "  block moved or was deleted, and the sentence is a live dead-owner claim again."
+        )
+    if not judged and not SUSPECTS:
+        print("\n  none -- run --positive-control before reading that as a clean tree")
+    return 1 if unrecorded or stale or disagreed else 0
 
 
 def main(argv: list[str]) -> int:
     if "--positive-control" in argv:
-        return _run_positive_controls()
+        return _run_positive_controls(offline="--offline" in argv)
 
     root = repo_root()
     rows, provenance, raw = sweep(root, offline="--offline" in argv)
@@ -342,6 +683,20 @@ def main(argv: list[str]) -> int:
         "  --unmarked and read it; that is the work this class terminates as."
     )
 
+    overlap = _historical_overlap_rows(root, offline="--offline" in argv)
+    print(
+        f"\n  `history` rows that are ALSO in owner position: {len(overlap)}\n"
+        "  The second measured escape space, and the larger one. `_HISTORICAL` runs over\n"
+        "  the whole sentence and outranks the owner key, so one incidental `was` clears a\n"
+        "  cite that names a dead owner. These rows are cleared without a person reading\n"
+        "  them; --overlap lists them."
+    )
+    if "--overlap" in argv:
+        print("\n=== HISTORY/OWNER-POSITION OVERLAP (cleared by tense alone) ===")
+        for path, line, number, text in overlap:
+            print(f"  #{number:<5} {path}:{line}")
+            print(f"      {text}")
+
     if "--unmarked" in argv:
         print("\n=== UNMARKED (the escape space, listed) ===")
         for row in rows:
@@ -349,9 +704,9 @@ def main(argv: list[str]) -> int:
                 print(f"  #{row.number:<5} {row.sentence.path}:{row.sentence.line}")
                 print(f"      {row.sentence.text[:_MAX_EXCERPT]}")
 
-    suspects = [row for row in rows if row.verdict == "SUSPECT"]
-    print("\n=== SUSPECTS (closed number, owner-position phrasing, no historical marker) ===")
-    for row in suspects:
+    judged = [row for row in rows if row.verdict in _JUDGED_VERDICTS]
+    print("\n=== JUDGED (closed number, owner-position phrasing, no historical marker) ===")
+    for row in judged:
         recorded = next(
             (
                 entry
@@ -362,29 +717,11 @@ def main(argv: list[str]) -> int:
         )
         print(
             f"  #{row.number:<5} [{row.state}] {row.sentence.path}:{row.sentence.line}"
-            f"  {recorded[2] if recorded else 'UNRECORDED'}"
+            f"  [{row.verdict}]  {recorded[2] if recorded else 'UNRECORDED'}"
         )
         print(f"      {row.sentence.text[:_MAX_EXCERPT]}")
 
-    produced = {(row.sentence.path, row.number) for row in suspects}
-    unrecorded = [
-        row
-        for row in suspects
-        if not any(entry[0] == row.sentence.path and entry[1] == row.number for entry in SUSPECTS)
-    ]
-    stale = [entry for entry in SUSPECTS if (entry[0], entry[1]) not in produced]
-
-    if unrecorded:
-        print("\nUNRECORDED SUSPECTS -- a closed number in owner position nobody judged:")
-        for row in unrecorded:
-            print(f"  {row.sentence.path}:{row.sentence.line}  #{row.number}")
-    if stale:
-        print("\nSTALE LEDGER ROWS -- the sweep no longer produces these:")
-        for path, number, verdict, _ in stale:
-            print(f"  {path}  #{number}  [{verdict}]")
-    if not suspects and not SUSPECTS:
-        print("\n  none -- run --positive-control before reading that as a clean tree")
-    return 1 if unrecorded or stale else 0
+    return _report_drift(judged)
 
 
 if __name__ == "__main__":
