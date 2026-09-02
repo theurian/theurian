@@ -797,15 +797,21 @@ def test_an_undecodable_message_excerpt_is_bounded_and_replacement_decoded(
     A commit message is unbounded author-controlled input, and the rejection is
     written to the store and counted in an operator's build report, so the excerpt
     that locates the failure is capped rather than copied. The plant is a
-    multi-kilobyte message whose first bytes are ordinary ASCII and whose tail is
-    thousands of raw ``0x80`` bytes, so the expected excerpt is hand-writable
-    exactly -- the ASCII head, then replacement characters to the cap -- rather
-    than re-derived with the adapter's own slice-and-decode.
+    ~8 KB message whose first 100 bytes are ordinary ASCII and whose tail is
+    thousands of raw ``0x80`` bytes.
+
+    Two assertions that are not the same one twice. The **bound** is written as a
+    hard number the plant is far larger than, so it fires however the cap constant
+    is spelled -- an assertion phrased only against :data:`_UNDECODABLE_EXCERPT_BYTES`
+    would be satisfied by a cap of a megabyte. The **value** is then hand-written
+    against the recorded cap -- the ASCII head, then replacement characters to 120
+    -- rather than re-derived with the adapter's own slice-and-decode, which is why
+    the cap itself is pinned first: it is a recorded decision, and moving it must
+    redden here rather than quietly re-baseline the expectation.
     """
     _origin, clone = _origin_and_clone(tmp_path)
     _commit(clone, "fix: valid (#1)", "Review-Finding: security HIGH — a valid finding")
     head = b"chore: a huge message whose tail is undecodable" + b"x" * 53
-    assert len(head) == _UNDECODABLE_EXCERPT_BYTES - 20, "the head is sized to the cap on purpose"
     huge = _commit_with_raw_message(clone, head + b"\x80" * 8000)
     _publish(clone)
     with pytest.raises(UnicodeDecodeError):  # the premise: git kept the raw bytes
@@ -816,10 +822,15 @@ def test_an_undecodable_message_excerpt_is_bounded_and_replacement_decoded(
     assert [f.finding_text for f in load.accepted] == ["a valid finding"]
     (rejected,) = load.rejected
     assert rejected.commit_sha == huge
+    assert len(rejected.raw_line) <= 1024, (
+        f"a {len(head) + 8000}-byte commit message reached the rejection row "
+        f"unbounded ({len(rejected.raw_line)} characters)"
+    )
+    assert _UNDECODABLE_EXCERPT_BYTES == 100 + 20, (
+        "the recorded excerpt cap moved; the hand-written expectation below is "
+        "written against 120 bytes and has to move with it"
+    )
     assert rejected.raw_line == head.decode("ascii") + "�" * 20
-    assert len(rejected.raw_line) == _UNDECODABLE_EXCERPT_BYTES
-    # The cap is what makes the row bounded: the message it summarises is ~67x it.
-    assert len(head) + 8000 > 60 * _UNDECODABLE_EXCERPT_BYTES
 
 
 def test_split_records_marks_an_undecodable_message_and_still_decodes_the_metadata(
@@ -881,7 +892,12 @@ def test_a_record_failing_both_the_decode_and_the_date_is_accounted_exactly_once
     assert load.accepted == ()
     assert len(load.rejected) == 1
     assert "not valid UTF-8" in load.rejected[0].reason
-    assert "10000" not in load.rejected[0].reason  # the decode is the reason given
+    # The decode is the reason given, not the date. Keyed on the date rejection's
+    # own phrase rather than on "10000": the excerpt cap's byte count is spelled in
+    # this same reason, so a digit key collides with it (measured -- raising the cap
+    # to 1000000 in a perturbation run made a "10000 not in reason" assertion fail
+    # for a reason that had nothing to do with the date).
+    assert "committer date" not in load.rejected[0].reason
 
 
 #: The two git-generated metadata fields, each planted as bytes that cannot be
