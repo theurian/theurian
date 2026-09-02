@@ -242,13 +242,19 @@ class Row:
 #: ``{0,2}`` over one character class admits a mismatched pair (`` `" ``), which
 #: over-approximates in the direction that costs a read rather than a miss.
 #:
-#: **Widening this run is not what closed the markup family, and round two is
-#: why.** Any run spelled here is a run some wrapper is outside of: bold defeated
-#: this one because ``*`` is not in the class, and adding it would have left the
-#: next wrapper. :func:`as_read` removes the emphasis before any key runs, so the
-#: composition stops being enumerable rather than being enumerated one delimiter
-#: at a time. What this run still does is separate a *spelled* reference from a
-#: bare English word, which is why it stays.
+#: **Widening this run is not what closed the *emphasis* family, and round two
+#: is why.** Any run spelled here is a run some emphasis wrapper is outside of:
+#: bold defeated this one because ``*`` is not in the class, and adding it would
+#: have left italic and the underscore form. :func:`as_read` removes emphasis
+#: before any key runs, so *that* composition stops being enumerable rather than
+#: being enumerated one delimiter at a time.
+#:
+#: **Markup composition in general is not closed, and saying so is the point of
+#: the escape table.** Emphasis is one wrapper family; a Markdown link's ``[``
+#: and a three-backtick run are markup this key still has to spell, and it does
+#: not -- both are live rows in :data:`MEASURED_ESCAPES`. What this run still
+#: does is separate a *spelled* reference from a bare English word, which is why
+#: it stays.
 _DELIMITER_RUN: Final = r"[`\"'“”]{0,2}"
 
 #: The same run where a delimiter is **required**, for the bare-leaf key surface.

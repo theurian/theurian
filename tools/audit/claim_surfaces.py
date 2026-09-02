@@ -116,9 +116,17 @@ def without_emphasis(text: str) -> str:
     wheel-shipped module left the census, all five audits and the whole suite
     green, because the delimiter run in front of the path cannot step over the
     two asterisks. The escape is composition -- any key over spelled markup has a
-    wrapper it does not spell -- and the answer is to stop matching on the markup
-    at all, which is what ``test_raptor_config_claims.py`` had already done on
-    the pin side and the census had not.
+    wrapper it does not spell -- and the answer here is to stop matching on
+    *emphasis*, which is what ``test_raptor_config_claims.py`` had already done
+    on the pin side and the census had not.
+
+    **This closes the emphasis family, not markup composition generally**, and
+    the difference is measured rather than hedged: a path written as a Markdown
+    link or in a three-backtick run is still out of reach, and both are live
+    rows in ``config_object_claims.MEASURED_ESCAPES``. Emphasis earns the
+    normalisation because it is invisible in the rendered sentence -- a reader
+    sees the same claim -- while a link and a code fence are visible choices a
+    key can be widened to spell.
 
     **Not applied to every audit here, and the exception is load-bearing.**
     ``owner_position_cites.py``'s supersession probe reads a block's *bold
