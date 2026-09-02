@@ -494,15 +494,22 @@ def test_a_failed_rebuild_leaves_the_previous_store_and_no_residue(tmp_path: Pat
     assert [f.finding_text for f in store.dump().findings] == ["the good store"]
 
 
-def test_a_failed_rebuild_cleans_up_its_building_sibling(tmp_path: Path) -> None:
-    """#404: a half-built file is removed, never left where a later build would extend it.
+def test_a_killed_builds_leftover_working_file_never_becomes_rows(tmp_path: Path) -> None:
+    """#404: a leftover ``.building`` file from a killed prior build is cleared, not extended.
 
-    Forced by an unwritable ``state/`` directory, so the build fails *after* the
-    working file exists. Two things follow: the sibling is gone, and -- because
-    ``replace_all`` also clears it on the way *in* -- a residue that did survive a
-    kill could not become rows in the next store. Both matter: the first keeps the
-    directory honest, the second is what makes wholesale-from-empty true even after
-    a crash this ``except`` never ran for.
+    This drives the **success** path and the *pre-write* cleanup, not the ``except``
+    -- a residue that survived an earlier kill (a whole ``.building`` file with rows)
+    must not become rows in the next store, because ``replace_all`` unlinks the
+    working name on the way *in*, before it writes. The build here succeeds, so the
+    working file is gone by rename, and the new store holds only its own rows -- the
+    leftover's ``a killed build's leftover`` row never appears.
+
+    The ``except``-path cleanup (a mid-write *failure* removing the working file it
+    already wrote) is a different driver:
+    :func:`test_a_sidecar_reap_failure_before_the_rename_publishes_nothing` forces an
+    ``OSError`` after the working file exists and asserts the ``except`` unlinks it
+    -- verified by mutation (dropping that unlink reddens there), which this
+    success-path test cannot do.
     """
     store = _store(tmp_path)
     store.replace_all(FindingLoad(accepted=(_finding(_sha("a")),), rejected=()))

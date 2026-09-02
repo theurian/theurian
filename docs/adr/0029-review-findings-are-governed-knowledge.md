@@ -893,7 +893,8 @@ unchanged — nothing here serves a finding, and `pullRequest`, `family` and
   implementation lane and not re-run for this note). A failed
   rebuild leaves the previous store whole and strands nothing
   (`test_a_failed_rebuild_leaves_the_previous_store_and_no_residue`,
-  `test_a_failed_rebuild_cleans_up_its_building_sibling`,
+  `test_a_sidecar_reap_failure_before_the_rename_publishes_nothing`,
+  `test_a_killed_builds_leftover_working_file_never_becomes_rows`,
   `test_the_published_store_carries_no_sidecar_from_the_file_it_replaced`), and
   the working name is a contained sibling so the rename cannot cross a filesystem
   (`test_the_building_sibling_stays_inside_the_state_directory`).
