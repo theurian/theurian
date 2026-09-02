@@ -9,15 +9,22 @@ those five misses demonstrate, and the rule this module is built on:
 **you cannot enumerate the phrasings of a claim; you can enumerate the
 references to a bounded object.**
 
-**The qualifier the theorem needs, which round two measured.** Enumerating the
-objects bounds *what* a claim can be about; it does not bound *how the sentence
-spells the reference*, and that is a second surface with its own escapes. A path
-wrapped in bold is the same reference to the same enumerated object and defeated
-every key here (R2-B); :func:`as_read` is what removes that whole dimension, by
-matching on text whose emphasis is gone rather than on text whose markup a
-pattern has to anticipate. What is left of the dimension is not argued away:
-:data:`MEASURED_ESCAPES` runs it, so the bound is a table that fails rather than
-a sentence that rots.
+**The qualifier the theorem needs, which round two measured and round three
+sharpened.** Enumerating the objects bounds *what* a claim can be about; it does
+not bound *how the sentence spells the reference*, and that is a second surface
+with its own escapes. A path wrapped in bold is the same reference to the same
+enumerated object and defeated every key here (R2-B); :func:`as_read` removes the
+**emphasis** part of that dimension -- asterisks, underscores and the HTML tags
+that render as them -- by matching on text a reader would see rather than on
+markup a pattern has to anticipate.
+
+The rest of the dimension is open and is not argued away. A Markdown link, a
+three-backtick fence, JSON's ``\\/`` escape and an ``e.g.`` between a negation and
+its object each still defeat these keys; every one is a row in
+:data:`MEASURED_ESCAPES`, which **runs**, so the bound fails rather than rots.
+Closing them one syntax at a time is the move that produced this list, and the
+terminal form -- normalise to rendered text, then match -- is #512's
+(https://github.com/theurian/theurian/issues/512).
 
 So the population is built the other way round. First an *inventory* of objects,
 each derived by a machine rather than transcribed:
@@ -84,6 +91,7 @@ from claim_surfaces import (
     print_control_tally,
     repo_root,
     sentences,
+    split_sentences,
     without_emphasis,
 )
 
@@ -243,12 +251,13 @@ class Row:
 #: ``{0,2}`` over one character class admits a mismatched pair (`` `" ``), which
 #: over-approximates in the direction that costs a read rather than a miss.
 #:
-#: **Widening this run is not what closed the *emphasis* family, and round two
-#: is why.** Any run spelled here is a run some emphasis wrapper is outside of:
-#: bold defeated this one because ``*`` is not in the class, and adding it would
-#: have left italic and the underscore form. :func:`as_read` removes emphasis
-#: before any key runs, so *that* composition stops being enumerable rather than
-#: being enumerated one delimiter at a time.
+#: **Widening this run is not what closed the *emphasis* family, and rounds two
+#: and three are both why.** Any run spelled here is a run some emphasis wrapper is
+#: outside of: bold defeated this one because ``*`` is not in the class, adding it
+#: would have left italic and the underscore form, and adding those three would
+#: have left ``<b>``. :func:`as_read` strips emphasis before any key runs, which is
+#: what makes the family a closed set -- the forms a reader cannot see -- rather
+#: than a list extended one delimiter at a time.
 #:
 #: **Markup composition in general is not closed, and saying so is the point of
 #: the escape table.** Emphasis is one wrapper family; a Markdown link's ``[``
@@ -494,10 +503,15 @@ def as_read(sentence: Sentence) -> Sentence:
     the ledger fragments all run against this and none of them against the raw
     text, so a markup form that defeats one cannot defeat only one.
 
-    Today the normalisation is :func:`claim_surfaces.without_emphasis`, and round
-    two's R2-B is why. The population and the line numbers are unaffected -- the
-    row still reports the raw sentence at the line it opens on, because that is
-    what a person opens.
+    Today the normalisation is :func:`claim_surfaces.without_emphasis` -- the
+    asterisk and underscore runs round two's R2-B found, and the ``<b>``, ``<i>``,
+    ``<em>`` and ``<strong>`` tags round three found rendering as them. The
+    population and the line numbers are unaffected -- the row still reports the raw
+    sentence at the line it opens on, because that is what a person opens.
+
+    It is one seam and not a general answer: what it normalises is the markup that
+    is *invisible in the render*. Everything else the reference dimension admits is
+    a row in :data:`MEASURED_ESCAPES`.
     """
     return Sentence(
         path=sentence.path,
@@ -919,6 +933,23 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, str], ...]] = (
         False,
         "none",
     ),
+    (
+        "round three's HTML face of the same family: `<b>` renders as `**` and the "
+        "asterisk-only strip could not see it, in a wheel-shipped module",
+        "packages/theurian-core/src/theurian/security/project_config.py",
+        "Nothing in `src/` reads <b>`.theurian/config.yaml`</b>, so no default here is in force.",
+        True,
+        "none",
+    ),
+    (
+        "the HTML house style the strip must NOT turn into a claim: `README.md` writes "
+        "`<b>` labels, and this is ADR-0028's negative in that form",
+        "docs/adr/0028-a-local-proposal-is-a-different-directory.md",
+        "<b>`.theurian/proposals-local/<proposal-id>/`</b> is a different directory, and "
+        "nothing in `src/` reads a draft the author has not published.",
+        False,
+        "none",
+    ),
 )
 
 #: The escape space, as a table that **runs** rather than a sentence that rots, as
@@ -932,20 +963,37 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, str], ...]] = (
 #: a FAIL either way round: an escape that closed is news the record has to carry,
 #: and an escape that opened is a key that moved.
 #:
-#: **Every row here is a way of writing a reference, not a way of phrasing a
-#: claim** -- which is precisely the dimension the module's opening theorem does
-#: not bound, and the reason it now carries a qualifier.
+#: **The last row is a ``reached=True`` one, and it is not decoration.** Every
+#: other row records ``no match``, which is exactly what a harness that had stopped
+#: matching at all would report -- five silent rows and a green run. One row the key
+#: does reach is the positive control on this table's own loop, and it carries its
+#: claim in the *second* sentence of the plant so that it holds the sentence split
+#: that loop performs as well.
 #:
-#: **What the last two would cost to close, measured rather than guessed.**
-#: Adding ``[`` and ``]`` to :data:`_DELIMITER_RUN`'s class and taking its bound
-#: from ``{0,2}`` to ``{0,3}`` reaches both. Measured at ``f7eac97``: that variant
-#: takes both rows to ``SUSPECT`` and leaves the tree exactly where it is -- 55
-#: rows, 19 suspects, no drift in any ledger direction -- with the passive-voice
-#: row and the ADR-0028 negative both still clear. It is not taken here because it
-#: is a *second* mechanism in a round whose closure argument is the first one, and
-#: a delimiter class widened to reach two more spellings is the enumeration this
-#: module exists to stop doing. Recorded so the next change decides it on a
-#: measurement rather than rediscovering it.
+#: **Every row here is a way of writing or breaking up a reference, not a way of
+#: phrasing a claim** -- which is precisely the dimension the module's opening
+#: theorem does not bound, and the reason it now carries a qualifier.
+#:
+#: **What the link and fence rows would cost to close, measured rather than
+#: guessed.** Adding ``[`` and ``]`` to :data:`_DELIMITER_RUN`'s class and taking
+#: its bound from ``{0,2}`` to ``{0,3}`` reaches both. Measured at ``f7eac97``:
+#: that variant takes both rows to ``SUSPECT`` and leaves the tree exactly where it
+#: is -- 55 rows, 19 suspects, no drift in any ledger direction -- with the
+#: passive-voice row and the ADR-0028 negative both still clear. It is not taken
+#: here because it is a *second* mechanism in a round whose closure argument is the
+#: first one, and a delimiter class widened to reach two more spellings is the
+#: enumeration this module exists to stop doing. Recorded so the next change
+#: decides it on a measurement rather than rediscovering it.
+#:
+#: **The last two rows are round three's, and they are why the enumeration has to
+#: end rather than lengthen.** Neither is a delimiter: one is JSON's own optional
+#: ``\/`` escape, which every parser accepts and this module's JSON reader does not
+#: undo, and one is the sentence split, where an abbreviation puts a negation and
+#: its object in different strings. They are recorded rather than closed because
+#: closing them one at a time is the same move that produced bold, then HTML, then
+#: these -- the terminal form is to normalise to *rendered text* before any key
+#: runs, which is #512's north star
+#: (https://github.com/theurian/theurian/issues/512).
 MEASURED_ESCAPES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     (
         "adv-L3: passive voice -- the object first, the negation as the agent",
@@ -965,6 +1013,27 @@ MEASURED_ESCAPES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "docs/architecture/raptor.md",
         "Nothing in `src/` reads ```.theurian/config.yaml```, so the default is safe to flip.",
         False,
+    ),
+    (
+        "round three: JSON's `\\/` escape, which a parser undoes and this reader does not (#512)",
+        PROJECT_CONFIG_SCHEMA,
+        "Nothing in src/ reads .theurian\\/config.yaml, so no value in it takes effect today.",
+        False,
+    ),
+    (
+        "round three: an `e.g.` between the negation and its object, which the sentence "
+        "split separates (#512)",
+        "docs/architecture/raptor.md",
+        "Nothing in `src/` reads, e.g. `.theurian/config.yaml`, so the default is safe to flip.",
+        False,
+    ),
+    (
+        "this table's own positive control: the claim in the *second* sentence of a plant, "
+        "which is reached",
+        "docs/architecture/raptor.md",
+        "`.theurian/config.yaml` is the file this block is about. Nothing in `src/` reads "
+        "`.theurian/config.yaml`, so the default is safe to flip.",
+        True,
     ),
 )
 
@@ -1213,15 +1282,29 @@ def _run_escape_controls(
     members: tuple[WatchedObject, ...],
     keys: dict[str, tuple[tuple[str, re.Pattern[str]], ...]],
 ) -> int:
-    """Run the recorded escape space, so the bound fails instead of rotting."""
+    """Run the recorded escape space, so the bound fails instead of rotting.
+
+    **Each plant is read as a block of sentences**, which is how :func:`sweep`
+    hands text to the keys and is the difference between recording an escape and
+    inventing one: the ``e.g.`` row escapes *because* the sentence split puts the
+    negation and its object in different strings, and a harness that matched the
+    plant whole would have reported that row as caught. The ``block`` stays the
+    whole plant, again as ``sweep`` does, so a pronoun still resolves in its
+    paragraph.
+    """
     failures = 0
     ran = 0
     print("\n=== MEASURED ESCAPES (the bound, run) ===")
     for label, path, planted, reached in MEASURED_ESCAPES:
         ran += 1
-        verdict = _verdict_for_planted(
-            members, keys, Sentence(path=path, line=0, text=planted, block=planted)
-        )
+        verdicts = [
+            _verdict_for_planted(
+                members, keys, Sentence(path=path, line=0, text=piece.strip(), block=planted)
+            )
+            for piece in split_sentences(planted)
+            if piece.strip()
+        ]
+        verdict = next((one for one in verdicts if one.startswith("SUSPECT")), "no match")
         found = verdict.startswith("SUSPECT")
         status = "OK  " if found is reached else "FAIL"
         failures += status == "FAIL"

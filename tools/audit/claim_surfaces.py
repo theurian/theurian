@@ -94,6 +94,20 @@ _YAML_INLINE_COMMENT: Final = re.compile(r"\s#[ \t]?(?P<comment>.*)$")
 #: demands whitespace, the trap both the ADR-0013 and ADR-0018 modules record.
 _SENTENCE_END: Final = re.compile(r"(?<=[.!?])\s+")
 
+
+def split_sentences(block: str) -> list[str]:
+    """One block's sentences, by the rule :func:`sentences` splits a document with.
+
+    Exported so a planted control can be read the way the sweep reads a file
+    rather than handed to a key whole. The difference is a live escape: an
+    abbreviation ends a sentence here -- *"Nothing in `src/` reads, e.g.
+    `.theurian/config.yaml`"* becomes two -- so a key needing a negation and its
+    object in one string sees neither half. A control that skipped this seam would
+    report that claim as caught while the sweep misses it.
+    """
+    return _SENTENCE_END.split(block)
+
+
 #: CommonMark's two emphasis delimiters, wherever a reader sees none.
 #:
 #: An asterisk run is unconditional: CommonMark gives ``*`` no other job in
@@ -102,7 +116,23 @@ _SENTENCE_END: Final = re.compile(r"(?<=[.!?])\s+")
 #: ``providers.review.repositories`` carries none, but ``project_config.py``,
 #: ``SUMMARY_MAX_TOKENS`` and every dunder in the tree do, and a rule that ate
 #: them would rewrite the symbol names these audits key on.
-_EMPHASIS_DELIMITERS: Final = re.compile(r"\*+|(?<![0-9A-Za-z_])_+(?![0-9A-Za-z_])")
+#:
+#: **The HTML forms are the third member, and this repository writes them.**
+#: Markdown admits raw HTML, and ``README.md`` uses it -- seven lines at
+#: ``b7a26c4``, a commit on #501's branch and not on ``main``: six carry ``<b>``
+#: (the banner, the navigation row and four ``<summary>`` labels) and one carries
+#: ``<i>`` (the footer). ``<b>``, ``<i>``, ``<em>`` and ``<strong>`` render as
+#: exactly what ``**`` and ``*`` render as, so a claim wrapped in one is invisible
+#: to a reader as emphasis and invisible to a key as markup: round three planted
+#: ``Nothing in `src/` reads <b>`.theurian/config.yaml`</b>`` in a wheel-shipped
+#: module and the census, the audits and the whole suite stayed green.
+#:
+#: Only the tags that *are* emphasis. ``<code>`` and ``<summary>`` are not
+#: stripped, because they are not invisible in the rendered sentence -- the
+#: criterion this whole normalisation rests on.
+_EMPHASIS_DELIMITERS: Final = re.compile(
+    r"\*+|(?<![0-9A-Za-z_])_+(?![0-9A-Za-z_])|</?(?:b|i|em|strong)>", re.IGNORECASE
+)
 
 
 def without_emphasis(text: str) -> str:
@@ -120,13 +150,23 @@ def without_emphasis(text: str) -> str:
     *emphasis*, which is what ``test_raptor_config_claims.py`` had already done
     on the pin side and the census had not.
 
+    **The family is the forms that are invisible in the rendered sentence, and
+    that criterion is what admitted the HTML tags in round three.** ``**`` and
+    ``<b>`` render identically, so a key that strips one and not the other closes
+    an escape a writer can reopen by typing four characters -- which is what the
+    round-three plant did, in a wheel-shipped module, with every check green.
+    ``<b>``, ``<i>``, ``<em>`` and ``<strong>`` are therefore stripped beside the
+    asterisk and underscore runs; ``<code>`` and ``<summary>`` are not, because
+    they are visible in the render and a key can be widened to spell them.
+
     **This closes the emphasis family, not markup composition generally**, and
     the difference is measured rather than hedged: a path written as a Markdown
-    link or in a three-backtick run is still out of reach, and both are live
-    rows in ``config_object_claims.MEASURED_ESCAPES``. Emphasis earns the
-    normalisation because it is invisible in the rendered sentence -- a reader
-    sees the same claim -- while a link and a code fence are visible choices a
-    key can be widened to spell.
+    link, in a three-backtick run, with JSON's ``\\/`` escape, or split from its
+    negation by an ``e.g.`` is still out of reach, and all four are live rows in
+    ``config_object_claims.MEASURED_ESCAPES``. The terminal form -- normalising to
+    rendered text before any key runs, which ends the syntax enumeration rather
+    than extending it -- is #512's, and the table is what keeps the current bound
+    honest until then.
 
     **Not applied to every audit here, and the exception is load-bearing.**
     ``owner_position_cites.py``'s supersession probe reads a block's *bold
@@ -511,7 +551,7 @@ def sentences(root: Path, path: str) -> list[Sentence]:
     found: list[Sentence] = []
     for block, origin in reader(text):
         offset = 0
-        for piece in _SENTENCE_END.split(block):
+        for piece in split_sentences(block):
             start = block.find(piece, offset)
             if start < 0:  # pragma: no cover - split pieces are always present
                 start = offset
