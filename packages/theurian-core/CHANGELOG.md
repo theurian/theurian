@@ -46,11 +46,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `tests/unit/test_config_key_call_sites.py`: the root,
   `security.secretScan` and `providers.review.repositories`. The other nine are
   unpinned. Reaching the root at all is what is new; every earlier key
-  enumerated *key blocks*, and the root is not one. It is also the only one
-  pinned **whole**, by an exact match on `SCHEMA_ROOT_DESCRIPTION`, so a
-  fabricated control claim *added* beside the required fragments is RED — the
-  two key rows hold named fragments, which catches a deletion and not an
-  addition. The schema separately joined
+  enumerated *key blocks*, and the root is not one. **Two of the three are
+  pinned whole** — the root and `security.secretScan`, each by an exact match on
+  its own recorded text — so a fabricated control claim *added* beside the
+  required fragments is RED. A fragment row catches a reword and a deletion and
+  cannot catch an addition, which is why the description carrying SEC-11's whole
+  bound stopped being one; `providers.review.repositories` keeps named fragments,
+  because it describes a key nothing reads and a sentence added to it asserts
+  nothing a reader can act on. The schema separately joined
   `tests/unit/test_raptor_config_claims.py`'s scanned prose surfaces. A reader
   added for any of the five spellings in `WATCHED_SPELLINGS` — four of them
   published key blocks, plus `raptor.maxLevels`, which has no block — reddens
