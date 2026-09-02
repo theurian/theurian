@@ -27,6 +27,7 @@ from theurian.domain.review_finding import (
     ReviewerToken,
     ReviewFinding,
     finding_from_trailer,
+    keyed_lines,
     parse_trailer_line,
 )
 
@@ -286,6 +287,37 @@ def test_a_finding_rejects_a_naive_date() -> None:
             pull_request=None,
             date=datetime(2026, 8, 26, 12, 0),  # noqa: DTZ001 - the naive date is the fixture
         )
+
+
+def test_keyed_lines_is_column_zero_only_and_keeps_the_line_index() -> None:
+    """#404 R1-6: the extraction rule is column-0 exact -- indented and mid-line excluded.
+
+    A direct driver for :func:`keyed_lines` at its own level, not only through the
+    stamp. The stamp's behaviour section would also redden an lstrip-widening (an
+    indented trailer becomes a candidate, so a probe verdict moves) -- this pins it
+    one layer lower so the extraction rule is held whether or not the stamp reaches
+    it. Every ``\\n``-delimited line whose first character starts the key is a
+    candidate, at its original message index; an indented line and a line carrying
+    the key mid-way are not.
+    """
+    message = (
+        "Review-Finding: security HIGH — a keyed subject\n"  # 0: candidate
+        "an ordinary line\n"  # 1: not keyed
+        "    Review-Finding: security HIGH — indented\n"  # 2: indented, not column 0
+        "text before Review-Finding: security HIGH — mid-line\n"  # 3: mid-line, not column 0
+        "Review-Finding: adversarial LOW — at column zero"  # 4: candidate
+    )
+
+    extracted = keyed_lines(message)
+
+    assert [index for index, _line in extracted] == [0, 4], (
+        "keyed_lines returned a non-column-0 line (an lstrip- or contains-widening), "
+        "or lost the original line index"
+    )
+    assert [line.split(" — ")[1] for _index, line in extracted] == [
+        "a keyed subject",
+        "at column zero",
+    ]
 
 
 # --- PARSER_STAMP: the forcing function covers every grammar element --------
@@ -607,6 +639,119 @@ def test_the_matching_surface_is_empty_for_a_vocabulary_that_adds_nothing() -> N
     assert review_finding._matching_surface(Plain) == ()
     assert review_finding._matching_surface(ReviewerToken) == ()
     assert review_finding._matching_surface(FindingSeverity) == ()
+
+
+def _probe_verdicts() -> list[str]:
+    """Every probe line's verdict, in order -- the stamp's behaviour section."""
+    return [
+        review_finding._probe_verdict(line)
+        for probe in review_finding._STAMP_PROBES
+        for _position, line in review_finding.keyed_lines(probe)
+    ]
+
+
+def test_the_matching_section_is_a_load_bearing_input_the_behaviour_section_cannot_replace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#404 R1-6: blinding the matching section moves the stamp, so a test must catch it.
+
+    The sibling ``..._gains_a_matching_hook`` widens *acceptance*, which the
+    behaviour probes also catch, so it left the matching section itself unheld:
+    ``_matching_surface`` returning ``()`` unconditionally, or the two
+    ``*-matching=`` material lines being dropped, both survived the suite green
+    (measured). This isolates the section: a vocabulary with an **inert** extra
+    member -- one that widens ``vars(cls)`` but changes no acceptance -- moves the
+    stamp *only* through the matching surface, because every probe verdict is
+    byte-identical before and after.
+
+    So the premise is asserted first (the probe verdicts do not move), and then the
+    stamp must. Blinding ``_matching_surface`` to ``()`` or deleting its material
+    lines leaves the stamp unmoved under this fixture, which reddens here -- exactly
+    the mutations that used to survive.
+    """
+
+    class InertlyExtendedReviewerToken(StrEnum):
+        """A reviewer vocabulary with an inert helper -- same members, same acceptance."""
+
+        CODE_REVIEW = "code-review"
+        SECURITY = "security"
+        ADVERSARIAL = "adversarial"
+
+        def _an_inert_helper(self) -> None:
+            """Widens vars(cls); never consulted by the parser."""
+
+    # Premise 1: the member values are identical (this is not the vocabulary
+    # section moving), and acceptance is unchanged.
+    assert sorted(t.value for t in InertlyExtendedReviewerToken) == sorted(
+        t.value for t in ReviewerToken
+    )
+    with pytest.raises(ValueError, match="CODE-REVIEW"):
+        InertlyExtendedReviewerToken("CODE-REVIEW")  # still refused, like the real one
+
+    before = _probe_verdicts()
+    monkeypatch.setattr(review_finding, "ReviewerToken", InertlyExtendedReviewerToken)
+
+    # Premise 2: the behaviour section is byte-identical, so it cannot be what
+    # moves the stamp -- only the matching surface changed.
+    assert _probe_verdicts() == before, (
+        "the inert member changed a probe verdict, so this fixture no longer "
+        "isolates the matching section"
+    )
+    assert review_finding._matching_surface(InertlyExtendedReviewerToken) != (), (
+        "the inert member is not in the matching surface, so nothing to isolate"
+    )
+
+    assert review_finding._compute_parser_stamp() != PARSER_STAMP, (
+        "an inert change to a vocabulary's class body left PARSER_STAMP unchanged: "
+        "the matching section is not a load-bearing input, so a hook the behaviour "
+        "probes do not distinguish would go unstamped (#404 R1-6)"
+    )
+
+
+def test_a_base_class_matching_hook_escapes_the_surface_but_the_behaviour_section_catches_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#404 R1-6: the matching surface reads the class's OWN body, so a base hook escapes it.
+
+    ``_matching_surface`` reads ``vars(cls)`` -- the class's *own* body -- so a
+    ``_missing_`` (or ``__new__``) placed on a **base class** the vocabulary
+    inherits, or injected by a metaclass ``__call__``, is not in the surface at
+    all. The section's totality is therefore over the class body, not over every
+    way matching can widen. This pins the residual and shows the backstop: such a
+    hook that widens *acceptance* is caught by the behaviour section instead, so
+    the overall stamp still moves.
+    """
+
+    class _CaseFoldingBase(StrEnum):
+        @classmethod
+        @override
+        def _missing_(cls, value: object) -> _CaseFoldingBase | None:
+            if isinstance(value, str):
+                return cls.__members__.get(value.upper().replace("-", "_"))
+            return None
+
+    class BaseHookReviewerToken(_CaseFoldingBase):
+        CODE_REVIEW = "code-review"
+        SECURITY = "security"
+        ADVERSARIAL = "adversarial"
+
+        __doc__ = ReviewerToken.__doc__  # cancel __doc__ so only the base hook differs
+
+    # The residual: the base-class hook is NOT in the subclass's own body ...
+    assert "_missing_" not in vars(BaseHookReviewerToken)
+    assert review_finding._matching_surface(BaseHookReviewerToken) == (), (
+        "the base-class hook leaked into the class-body surface; the residual this "
+        "test records no longer holds"
+    )
+    # ... yet it widens acceptance, which the behaviour probes DO see.
+    assert BaseHookReviewerToken("CODE-REVIEW") is BaseHookReviewerToken.CODE_REVIEW
+
+    monkeypatch.setattr(review_finding, "ReviewerToken", BaseHookReviewerToken)
+
+    assert review_finding._compute_parser_stamp() != PARSER_STAMP, (
+        "a base-class _missing_ that the matching surface cannot see also went "
+        "unseen by the behaviour probes, so the stamp missed a real widening"
+    )
 
 
 def test_the_parser_stamp_is_byte_identical_across_two_fresh_interpreters() -> None:

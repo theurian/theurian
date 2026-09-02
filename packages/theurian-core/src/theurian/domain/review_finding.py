@@ -401,13 +401,15 @@ _STAMP_PROBES: Final[tuple[str, ...]] = (
     "text before Review-Finding: security HIGH — mid-line\n"
     "Review-Finding: security HIGH — at column zero",
     # The separator after the key: exactly one ASCII space is consumed, and no
-    # other whitespace is. A TAB- or lstrip-tolerant widening flips lines 3 and 4.
+    # other whitespace is (measured line numbers are 1-based within this probe). A
+    # TAB-tolerant widening flips line 4; an lstrip-tolerant one flips lines 3 and 4.
     "Review-Finding: code-review HIGH — one space\n"
     "Review-Finding:code-review HIGH — no space\n"
     "Review-Finding:  code-review HIGH — two spaces\n"
     "Review-Finding:\tcode-review HIGH — a tab",
     # The `<reviewer> SP <SEVERITY>` arity: exactly two tokens before the
-    # separator. A `split(" ", 1)` or a `>= 2` widening flips lines 2 and 3.
+    # separator. A `split(" ", 1)` or a `>= 2` widening flips line 2 (measured);
+    # line 3 is the too-few-tokens control, refused under both and by the grammar.
     "Review-Finding: code-review HIGH — exactly two\n"
     "Review-Finding: code-review HIGH extra — three tokens\n"
     "Review-Finding: code-review — one token",
@@ -419,12 +421,17 @@ _STAMP_PROBES: Final[tuple[str, ...]] = (
     "Review-Finding: CODE-REVIEW HIGH — a member upper-cased\n"
     "Review-Finding: Security HIGH — a member title-cased\n"
     "Review-Finding: security high — a severity lower-cased",
-    # The separator itself, split on the FIRST occurrence, and the empty-text
-    # refusal. An `rsplit` or a `strip()` changes the text the first line yields.
+    # The separator itself, split on the FIRST occurrence; the empty-text refusal;
+    # and byte-preservation of the finding text (decision 3). Line 1's text is
+    # `a — b — c`, so an `rsplit` (split on the LAST separator) changes it to `c`.
+    # Line 5's text carries leading and trailing spaces, so a `.strip()` on the
+    # finding text changes it -- the byte-preservation face no other probe covers
+    # (#404 R1-6). Line 4 is the empty-text control, refused.
     "Review-Finding: security HIGH — a — b — c\n"
     "Review-Finding: security HIGH - an ASCII hyphen\n"
     "Review-Finding: security HIGH —no spaces around it\n"
-    "Review-Finding: security HIGH — ",
+    "Review-Finding: security HIGH — \n"
+    "Review-Finding: security HIGH —  padded text, trailing kept  ",
 )
 
 
@@ -437,16 +444,29 @@ def _matching_surface(vocabulary: type[StrEnum]) -> tuple[str, ...]:
     ``ReviewerToken(...)`` accepts while every member *value* -- and so every
     literal the vocabulary section hashes -- stays byte-identical.
 
-    The account is total rather than a list of hooks. Every entry of ``vars(cls)``
-    that is not a member is recorded as ``name=provenance``, where provenance is
-    the attribute's ``__qualname__`` when it has one and its type's name otherwise;
-    the same set is taken over :class:`_MatchingBaseline` and subtracted. Machinery
-    appears identically on both sides and cancels -- ``__new__`` reads
-    ``Enum.__new__`` for a plain ``StrEnum`` and for a widened one alike, which is
-    why a user ``__new__`` is caught through the ``_new_member_`` /
+    The account is total **over the class's own body**, not a list of hooks. Every
+    entry of ``vars(cls)`` that is not a member is recorded as ``name=provenance``,
+    where provenance is the attribute's ``__qualname__`` when it has one and its
+    type's name otherwise; the same set is taken over :class:`_MatchingBaseline` and
+    subtracted. Machinery appears identically on both sides and cancels --
+    ``__new__`` reads ``Enum.__new__`` for a plain ``StrEnum`` and for a widened one
+    alike, which is why a user ``__new__`` is caught through the ``_new_member_`` /
     ``__new_member__`` entries ``EnumType`` moves it to (measured), not through
     ``__new__`` -- and an override is caught because its qualname roots in *this*
     class rather than in ``str``, ``Enum`` or ``StrEnum``.
+
+    **``vars(cls)`` is the class's *own* body, so a matching change made outside it
+    is not in this surface** (#404 R1-6): a ``_missing_`` or ``__new__`` placed on a
+    **base class** the vocabulary inherits, or injected by a metaclass ``__call__``,
+    does not appear here. That is not a hole in the stamp, only in *this section*: a
+    base-class hook that widens what ``ReviewerToken(...)`` accepts is caught by the
+    behaviour section (:data:`_STAMP_PROBES`), because a probe verdict changes. A
+    base-class change that altered matching in a way **no probe distinguishes** would
+    be missed by both -- the same residual the behaviour section carries, and it owes
+    a probe (``test_review_finding.py`` drives both faces:
+    ``_the_matching_section_is_a_load_bearing_input...`` isolates this section, and
+    ``_a_base_class_matching_hook_escapes_the_surface...`` shows the behaviour
+    backstop).
 
     Two consequences worth stating. Nothing here depends on knowing what a given
     CPython's enum machinery contains, so a Python upgrade that reshapes it moves
