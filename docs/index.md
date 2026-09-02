@@ -80,8 +80,8 @@ That makes an answer inspectable instead of merely plausible.
 Theurian keeps an explicit boundary between AI output and approved engineering
 knowledge.
 
-**No MCP write tool can directly create approved knowledge.** The five tools a
-client can call today are read-only, and `system.capabilities` reports
+**No MCP write tool can directly create approved knowledge.** Every tool a
+client can call today is read-only, and `system.capabilities` reports
 `writeTools: false`.
 
 This is intentional.
