@@ -358,16 +358,31 @@ _ANY_CLAIM: Final = re.compile(
 
 
 def _referring(members: tuple[WatchedObject, ...], path: str, block: str) -> list[WatchedObject]:
-    """Which watched objects a block is about.
+    """Which watched objects a block is about: the ones it names, **and** its home.
 
-    A named reference wins outright. The *home* rule -- "every sentence in the
-    published schema is about the file the schema governs" -- is the fallback and
-    only the fallback, because applied unconditionally it makes each of the
-    schema's eleven key descriptions a claim about the whole file, and the
-    key-scoped sentences #426 landed would read as the universal returning.
+    The two rules are **additive, not ranked**, and round one is why. As a
+    fallback the home rule was suppressed by any key name appearing in the block,
+    so a file-wide liveness claim written into the wheel-shipped schema *root* --
+    a description that mentions ``security.secretScan`` in one clause and denies
+    that anything reads the file in the next -- carried only the key object,
+    cleared as ``record (key-scoped)``, and shipped with every audit and every pin
+    green. That is the #461 shape one surface over: the sentence that names a key
+    is not automatically a sentence *about* only that key.
+
+    The cost of adding rather than ranking is the false RED the fallback was
+    written to avoid: a genuinely key-scoped sentence inside a home now carries
+    the file object too and reaches :func:`_classify` as a suspect. That direction
+    is the safe one -- it puts a row in front of a person -- and the schema's
+    ``providers.review.repositories`` description is the member that pays it,
+    recorded in :data:`SUSPECTS` with its verdict.
     """
     named = [member for member in members if member.reference.search(block)]
-    return named or [member for member in members if path in member.homes]
+    at_home = [
+        member
+        for member in members
+        if path in member.homes and not any(member is other for other in named)
+    ]
+    return named + at_home
 
 
 def sweep(root: Path) -> list[Row]:
@@ -565,6 +580,22 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "docs/architecture/raptor.md",
         "Two sentences said nothing in `src/` reads `.theurian/config.yaml`. Each was "
         "true when written.",
+        False,
+    ),
+    (
+        "round one's H-B: the wheel-shipped schema root naming a key while denying the "
+        "file has a reader at all",
+        PROJECT_CONFIG_SCHEMA,
+        "Per-repository configuration. `security.secretScan` is published here, and "
+        "nothing reads it today.",
+        True,
+    ),
+    (
+        "the narrowed key-scoped sentence in a home, which the additive rule must still let past",
+        "examples/sample-project/.theurian/config.yaml",
+        "This file is read -- `security/project_config.py` opens it for "
+        "`security.secretScan` alone -- but nothing in `src/` reads "
+        "`providers.review.repositories`, so the allowlist is not in force.",
         False,
     ),
 )
