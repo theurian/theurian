@@ -337,8 +337,12 @@ def _landed_verdict(root: Path, token: str, reference: str) -> str:
 #: three occurrences of ``61747b3`` in the threat model is a fact about the
 #: document that only changes when somebody adds or removes an anchor.
 #:
-#: **Exact in both directions**, like every ledger in this directory: a row the
-#: sweep stops producing means the sentence moved and the row has to go with it.
+#: **Exact in both directions**, which every ledger in this directory is at
+#: minimum: a row the sweep stops producing means the sentence moved and the row
+#: has to go with it. The third direction here is the occurrence count; two of the
+#: siblings carry a *fragment* key instead and need cardinality rather than a
+#: count, which is what their ``ambiguous`` direction is. The README beside this
+#: file tabulates which audit has which.
 #: A hex-looking English word stays here rather than being filtered out of the
 #: key, so the filter cannot quietly widen.
 CLASSIFIED: Final[tuple[tuple[str, str, int, str, str], ...]] = (

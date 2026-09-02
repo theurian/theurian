@@ -29,8 +29,12 @@ noise a reader would have had to filter by hand:
   to 25 at ``141cf6f`` without dropping a member a person then judged defective.
 * **A dated CHANGELOG entry is a record.** Every released section states what a
   release did on its date, so a closed owner in one is correct by construction and
-  correcting it would falsify the record. ``[Unreleased]`` is not such an entry
-  and is classified like any other governed prose (round one's M-j).
+  correcting it would falsify the record. The rule is asked positively -- is this
+  line *inside* a dated section? -- so both of its faces are one rule:
+  ``[Unreleased]`` is not such an entry (round one's M-j), and neither is any line
+  of a changelog with no dated sections at all, which the repository-root
+  ``CHANGELOG.md`` is (round two's R2-j). Both are classified like any other
+  governed prose.
 * **A merged pull request in owner position is a defect**, not an exemption: a
   merged PR closes and can own nothing afterwards. That is the #444 shape, and
   :data:`tracker_state.OPEN_STATES` is where it is enforced.

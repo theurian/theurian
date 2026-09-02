@@ -920,14 +920,14 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, str], ...]] = (
 #:
 #: **What the last two would cost to close, measured rather than guessed.**
 #: Adding ``[`` and ``]`` to :data:`_DELIMITER_RUN`'s class and taking its bound
-#: from ``{0,2}`` to ``{0,3}`` reaches both: measured at ``484bbf9``, that variant
-#: takes both rows to ``SUSPECT`` and leaves the tree byte-for-byte where it is --
-#: 55 rows, 19 suspects, one unrecorded row, no ledger drift, and the passive-voice
-#: row and the ADR-0028 negative both unchanged. It is not taken here because it
+#: from ``{0,2}`` to ``{0,3}`` reaches both. Measured at ``f7eac97``: that variant
+#: takes both rows to ``SUSPECT`` and leaves the tree exactly where it is -- 55
+#: rows, 19 suspects, no drift in any ledger direction -- with the passive-voice
+#: row and the ADR-0028 negative both still clear. It is not taken here because it
 #: is a *second* mechanism in a round whose closure argument is the first one, and
-#: a delimiter class widened to reach two spellings is the enumeration this module
-#: exists to stop doing. Recorded so the next change decides it on a measurement
-#: rather than rediscovering it.
+#: a delimiter class widened to reach two more spellings is the enumeration this
+#: module exists to stop doing. Recorded so the next change decides it on a
+#: measurement rather than rediscovering it.
 MEASURED_ESCAPES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     (
         "adv-L3: passive voice -- the object first, the negation as the agent",
