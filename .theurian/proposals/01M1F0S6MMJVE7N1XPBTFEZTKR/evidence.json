@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M1F0S6MMJVE7N1XPBTFEZTKR",
+  "migrationId": "01M1F0S6MMJVE7N1XPBTFEZTKS",
+  "itemId": "architecture.trigram-index-beside-the-word-index",
+  "agentId": "claude-code-theurian-python",
+  "taskId": "315-reseed-487-drifted-twins",
+  "model": "claude-opus-5",
+  "reasoning": "Verbatim copy of the tracked ADR-0023 at f706329, read with `git cat-file blob`. The tracked document is the source of truth; the revision this replaces pins a body docs/adr/0023-trigram-index-beside-the-word-index.md no longer matches, so Theurian's own agents retrieve superseded text labelled approved and reviewed (#315).",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "f706329cd9a14b990dc78f3bd7ec0ac6bfb4e070",
+      "filePath": "docs/adr/0023-trigram-index-beside-the-word-index.md"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+apiVersion: theurian.dev/v1
+id: 01M1ETR9TE2Z8BY2RTESVZXA08
+createdAt: '2026-09-01T15:52:38+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0001 twin from the current source ADR: the corpus pins docs/adr/0001-monorepo-with-independent-artifacts.md
+  as it stood at 2a98d4c, and the tracked document has moved since (#315).'
+operations:
+- op: createItem
+  itemId: architecture.monorepo-with-independent-artifacts
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.monorepo-with-independent-artifacts
+  revisionId: 01M1ETR9TE2Z8BY2RTESVZXA09
+  expectedRevision: 01M0D5GSKA479Y85296S745522
+  contentFile: ../knowledge/architecture/monorepo-with-independent-artifacts.01M1ETR9TE2Z8BY2RTESVZXA09.md
+  contentSha256: 7e441c2027f02979e6ceb416ed4848c88b33650bc5bd71e189e75f88c7511c6e
+  metadata:
+    title: 'ADR-0001: Monorepo with independently released artifacts'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0001
+    scope:
+      paths:
+      - '**'
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 266e6b668a5e0723ee63accf23f3ae70b501e193
+      filePath: docs/adr/0001-monorepo-with-independent-artifacts.md

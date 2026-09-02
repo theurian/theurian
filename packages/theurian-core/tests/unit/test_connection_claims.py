@@ -423,6 +423,22 @@ WRITE_LOCK_EXERCISE: Final = "packages/theurian-core/tests/integration/test_cano
 CROSS_PROCESS_CONTENTION_EXERCISE: Final = (
     "packages/theurian-core/tests/integration/test_findings_build_cli.py"
 )
+#: The narrow key, as a whole word rather than as a substring.
+#:
+#: ``"WriteLock" in text`` also matches ``WriteLockTimeoutError`` -- the exception
+#: ``write_transaction`` raises on contention, which is an ordinary
+#: ``TheurianError`` that any test may name without going anywhere near the lock.
+#: A test naming only that exception was reported here as a new lock holder
+#: (#491), which is a false positive against this module's actual claim: the
+#: sentence being guarded is about test files that *construct a* ``WriteLock``.
+#:
+#: The narrowing takes nothing away. ``\b`` after ``WriteLock`` fails against the
+#: ``T`` of ``WriteLockTimeoutError`` and matches every other spelling --
+#: ``WriteLock(``, ``WriteLock)``, ``WriteLock`` in prose -- so any file that
+#: really names the class still lands in the population, and the equality
+#: assertion below is its own positive control: were the key to stop matching,
+#: ``holders`` would be empty and the test would fail rather than pass.
+_NAMES_THE_WRITE_LOCK: Final = re.compile(r"\bWriteLock\b")
 
 #: The wider key: every test that enters the write path **in this process**,
 #: either by building the lock itself or by opening the transaction that builds
@@ -1496,7 +1512,7 @@ def test_the_only_test_that_constructs_the_write_lock_runs_in_one_process() -> N
     holders = sorted(
         path
         for path, text in sources.items()
-        if "WriteLock" in text and path not in _excluded_from_the_narrow_key
+        if _NAMES_THE_WRITE_LOCK.search(text) and path not in _excluded_from_the_narrow_key
     )
 
     assert holders == [WRITE_LOCK_EXERCISE], (

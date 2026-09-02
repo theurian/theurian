@@ -5,11 +5,15 @@ shipped source. This is the arm that reads the running registry: it constructs t
 MCP server the daemon builds and asks it, rather than ``mcp/tools.py``, what tools
 exist. Two things the source scan cannot see are visible here:
 
-- a tool registered by some mechanism other than the ``@server.tool(name=...)``
-  decorator the AST arm keys on -- an ``add_tool`` call, a name assembled at
-  runtime -- still appears in ``server._tool_manager.list_tools()``;
+- a tool registered by some mechanism other than the registration decorators the
+  AST arm keys on -- an ``add_tool`` call, a name assembled at runtime -- still
+  appears in ``server._tool_manager.list_tools()``;
 - a tool that reaches a store *symbol* in its own bytecode is caught by walking
-  ``tool.fn``'s code, which is stronger than a name check for the direct case.
+  ``tool.fn`` and everything it wraps, which is stronger than a name check for
+  the direct case. The ``__wrapped__`` hop is load-bearing rather than
+  incidental: since #491 ``tool.fn`` is ``mcp/tools.py``'s ``_forwarding``
+  wrapper, and a walk that stopped there saw three names belonging to the
+  wrapper while a planted store symbol in the tool body passed unnoticed.
 
 Together with the unit prongs, the boundary is held from both ends: the serving
 layer cannot *import* the store (prong a), no serving module names its *tables*
@@ -82,9 +86,22 @@ def _referenced_names(function: Any) -> set[str]:
     Follows nested code objects, so a store constructed inside a comprehension or
     an inner helper of the tool is still visible. The same walk
     ``test_mcp_tools.py`` uses to pin that no tool reaches a canonical write.
+
+    **And follows ``__wrapped__``.** Since #491 every tool is registered through
+    ``mcp/tools.py``'s ``_tool`` seam, so ``Tool.fn`` is ``_forwarding``'s
+    wrapper and reaches the real body through a *free variable*, which is not in
+    ``co_consts``. Walking ``Tool.fn`` alone saw the wrapper's own three names
+    and a planted store symbol inside a tool body passed this guard. The whole
+    chain is walked -- wrapper *and* wrapped, not ``inspect.unwrap``'s innermost
+    function alone -- so a store reference introduced in an intermediate wrapper
+    is still seen.
     """
     seen: set[str] = set()
-    pending = [function.__code__]
+    pending: list[Any] = []
+    fn: Any = function
+    while fn is not None and hasattr(fn, "__code__"):
+        pending.append(fn.__code__)
+        fn = getattr(fn, "__wrapped__", None)
     while pending:
         code = pending.pop()
         seen.update(code.co_names)
@@ -97,9 +114,10 @@ def test_the_built_server_registers_exactly_the_known_read_tools(
 ) -> None:
     """The running registry matches the pinned read-only set -- however tools land.
 
-    The unit arm reads ``@server.tool(name=...)`` from source; this reads the tool
-    manager of the constructed server. A tool added by a mechanism the source scan
-    does not key on would show up here and nowhere else, so this whole-set equality
+    The unit arm reads the ``_tool(server, name=...)`` registrations from source;
+    this reads the tool manager of the constructed server. A tool added by a
+    mechanism the source scan does not key on would show up here and nowhere
+    else, so this whole-set equality
     is the drift guard for the runtime surface -- and, like its unit twin, forces a
     new tool through classification before it can be registered unremarked.
     """
@@ -150,4 +168,56 @@ def test_no_registered_tool_serves_or_reaches_a_finding(empty_registry: ProjectR
         "hides from the module-level import scan. The findings serving lane lands "
         "with its own disclosure round (ADR-0029), not as a reach from a Milestone "
         "3 read tool."
+    )
+
+
+def _names_without_following_wrapped(function: Any) -> set[str]:
+    """``_referenced_names``' walk with the ``__wrapped__`` hop removed.
+
+    The reblinded walk, kept beside the real one so the premise check below can
+    say what the hop is worth. Identical in every respect but that one hop.
+    """
+    seen: set[str] = set()
+    pending = [function.__code__]
+    while pending:
+        code = pending.pop()
+        seen.update(code.co_names)
+        pending.extend(const for const in code.co_consts if hasattr(const, "co_names"))
+    return seen
+
+
+def test_the_findings_walk_reaches_a_real_tool_body(empty_registry: ProjectRegistry) -> None:
+    """The premise the disclosure guard above rests on, asserted not assumed.
+
+    ``test_no_registered_tool_serves_or_reaches_a_finding`` answers "does any
+    tool reach a store symbol?" and reports *no* as clean. A walk that reaches
+    nothing therefore passes it while checking nothing -- exactly what the #491
+    seam caused when ``Tool.fn`` became a wrapper whose body hangs off a free
+    variable: the walk collapsed to the wrapper's own names, and a planted
+    ``SqliteReviewFindingStore`` inside a tool body passed.
+
+    ``test_mcp_tools.py`` grew this ratchet in round one; this file's walker did
+    not, so reverting *its* ``__wrapped__`` hop alone -- no plant -- survived the
+    full suite while the ADR-0029 disclosure guard passed vacuously (adversarial
+    R2-B). The two walkers now carry the same premise check.
+
+    Stated as a strict superset per tool rather than as a count: following
+    ``__wrapped__`` must add at least one name for every registered tool, or the
+    walk that backs the disclosure guard is inspecting the wrapper, not the body.
+    """
+    server = build_server(empty_registry)
+    tools = server._tool_manager.list_tools()
+    assert tools, "an empty tool list would pass this test vacuously"
+
+    thin: dict[str, int] = {}
+    for tool in tools:
+        full = _referenced_names(tool.fn)
+        wrapper_only = _names_without_following_wrapped(tool.fn)
+        if not wrapper_only < full:
+            thin[tool.name] = len(full)
+
+    assert not thin, (
+        f"following `__wrapped__` added no name for these tools, so the disclosure "
+        f"guard that walks them is inspecting the wrapper rather than the tool body "
+        f"and would report a store reference in a tool as clean: {thin}"
     )

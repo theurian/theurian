@@ -49,29 +49,59 @@ the correction from the retraction the moment either is reverted while ids
 stay pinned, and a *future*, legitimate re-seed changes the current revision
 id again without this test's other assertions changing at all.
 
-**The same class recurs, pre-empted rather than re-found.** #199 unit C's
-second wave (#471) re-seeds three more items the same way #416 re-seeded
-ADR-0013 -- ``propose``/``accept`` through the real write path -- and the
-#440 round's ADV-RC MEDIUM-1 lesson generalises immediately: reverting any of
-the three wave commits (payload, not ``expectedRevision``) would leave this
-whole suite green at the same test count, for the identical reason the
-ADR-0013 revert did. So each of the three gets its own content-shaped pin
-below, pre-emptively, rather than waiting for a round to rediscover the same
-class a fourth time.
+**The same class recurs, and every re-seed pays the same toll.** #199 unit C's
+second wave (#471) re-seeded three more items the same way #416 re-seeded
+ADR-0013 -- ``propose``/``accept`` through the real write path -- and #315's
+drift sweep re-seeded eleven more. The #440 round's ADV-RC MEDIUM-1 lesson
+generalises to every one of them, but **only at one revert depth**, and saying
+so precisely is the point -- an earlier version of this paragraph claimed the
+whole class was invisible to everything else, and the adversarial round
+measured that false. Three depths, measured 2026-09-02:
 
-**Population, and why it is narrower than the governance module's.** Loads
-the real directory listing, but only after confirming -- via ``git``, never
-the ``tools/mutate.py`` manifest -- that the listing holds nothing git does
-not track: :func:`load_migrations` reads every ``.yaml`` file physically
-present in ``.theurian/migrations/`` with no regard for tracking, so an
-untracked local draft sitting there on a contributor's own machine would
-otherwise be tested as if it were the committed corpus. A ``tools/mutate.py``
-copy carries a manifest and *could* answer from it, but this test's subject is
-a real SQLite database and a real transaction -- work, not YAML arithmetic --
-and running it once per worker tree for every mutation in a batch that
-touches nothing under ``.theurian/`` would tax the harness for no return. So
-it skips loudly there rather than passing vacuously: the manifest answer is
-refused on purpose, not because it would be wrong.
+- **body + ``contentSha256``.** Caught already, by
+  ``test_dogfood_corpus_governance.py``'s
+  ``test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``: the
+  body no longer matches the blob at the anchor its own migration still names.
+- **\\+ the migration's ``sourceAnchors[].commitSha``.** Still caught, by
+  ``test_every_evidence_anchor_is_one_a_committed_migration_also_names``: the
+  evidence file names an anchor no migration does any more.
+- **\\+ the matching ``evidence.json`` ``commitSha``.** Nothing else notices.
+  Every remaining rule compares author-supplied values against themselves -- a
+  body against the digest its own migration declares, that body against the
+  blob at the anchor that same migration now names -- and a three-file
+  coordinated revert is internally consistent at all of them.
+
+That third shape is what :data:`_RESEED_PAYLOAD_MARKERS` below exists for, and
+it is the only one it is the sole catcher of. The one rule that reads the
+*current* ``docs/`` tree, ``tools/corpus_drift.py``, would see all three, but
+CI runs it ``--advisory`` (``.github/workflows/core.yml``): exit 0 even on
+drift, by design, so it gates nothing.
+
+**Population, and why it is narrower than the governance module's.** The
+population is ``git ls-files -- .theurian``, copied into a scratch tree and
+loaded from there, so what gets applied is the *committed* corpus by
+construction. :func:`load_migrations` reads every ``.yaml`` physically present
+with no regard for tracking, so loading the real directory in place would
+apply an untracked local draft as if it had been committed.
+
+That used to be handled by skipping the whole test whenever an untracked
+``.yaml`` sat in the directory, which put this file to sleep exactly where it
+is needed most: the maintainer's dogfooding machine keeps machine-local vault
+notes under ``.theurian/`` (fenced in ``.git/info/exclude``), so every
+assertion here -- the twelve payload markers included -- was disabled on the
+one tree where re-seeds are authored and a mis-measured marker would first be
+written. Filtering serves the original concern strictly better than skipping
+did: the draft is not stepped around, it is never loaded (#490 round two).
+
+One skip remains, for the one case where there is no tracked set to filter to:
+``git`` absent, or unable to answer for this checkout -- a ``tools/mutate.py``
+copy, which carries no ``.git`` on purpose. That copy carries a manifest and
+*could* answer from it, but this test's subject is a real SQLite database and a
+real transaction -- work, not YAML arithmetic -- and running it once per worker
+tree for every mutation in a batch that touches nothing under ``.theurian/``
+would tax the harness for no return. So it skips loudly there rather than
+passing vacuously: the manifest answer is refused on purpose, not because it
+would be wrong.
 """
 
 from __future__ import annotations
@@ -79,6 +109,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
@@ -89,8 +120,13 @@ from fakes.clock import FrozenClock
 from theurian.application.project_service import ProjectPaths, resolve_state_hash
 from theurian.cli.context import schema_root
 from theurian.cli.migration_pipeline import apply_migration_set
-from theurian.domain.identifiers import ItemId, ProjectId
-from theurian.domain.migration import MIGRATION_ENGINE_VERSION, current_revision_in
+from theurian.domain.identifiers import ItemId, ProjectId, RevisionId
+from theurian.domain.migration import (
+    MIGRATION_ENGINE_VERSION,
+    LoadedMigrations,
+    UpsertRevision,
+    current_revision_in,
+)
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY, Project
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
 from theurian.infrastructure.sqlite.connection import create_database, open_read_connection
@@ -118,11 +154,18 @@ MIGRATIONS_DIRECTORY: Final = REPO_ROOT / ".theurian" / "migrations"
 #: a coincidence: a re-seed is a second migration, and a second revision,
 #: over an item that already exists, so it grows the migration count
 #: without growing the item count -- which is *why* the two populations
-#: diverge even though the two floor constants do not. Measured 2026-09-01
-#: at 7b2ca67: four items now carry two revisions each -- the ADR-0013
-#: re-seed (#416) plus the three #199 unit C second-wave re-seeds (#471,
-#: :data:`_SECOND_WAVE_MARKERS`) -- and the corpus still holds exactly 26
-#: distinct items.
+#: diverge even though the two floor constants do not. **How far they have
+#: diverged is not recorded here.** The live record is
+#: ``EXPECTED_CORPUS_POPULATION`` in ``test_dogfood_corpus_governance.py``,
+#: whose ``multi_revision_items`` and ``distinct_items`` are recomputed from
+#: the tracked corpus on every run and moved deliberately in the same change
+#: that moves the corpus; a second narration of the same numbers here would go
+#: stale silently, which is the class #458 closed. What stays is one dated
+#: point measurement, frozen at the commit named beside it: measured
+#: 2026-09-01 at ``7b2ca67``, four items carried two revisions each -- the
+#: ADR-0013 re-seed (#416) plus the three #199 unit C second-wave re-seeds
+#: (#471) -- over 26 distinct items. #315's eleven-item drift sweep moved both
+#: of those figures afterwards, and moved them in the live record.
 MINIMUM_KNOWLEDGE_ITEMS: Final = 26
 
 #: The item the #416 re-seed gave a second revision -- the one member of this
@@ -130,13 +173,37 @@ MINIMUM_KNOWLEDGE_ITEMS: Final = 26
 #: first ``upsertRevision``.
 _RESEEDED_ITEM: Final = ItemId("architecture.ai-writes-produce-proposals")
 
-#: #199 unit C's second wave (#471): three more items re-seeded through
-#: propose/accept, and a literal string each corrected body carries that
-#: neither the original seed nor a partially-corrected intermediate state
-#: does -- pre-empted from the ADV-RC MEDIUM-1 class the #440 round found
-#: (a reverted re-seed payload leaves the whole suite green at the same
-#: test count, because a revision-id check alone cannot tell a correction
-#: from a reverted one).
+
+@dataclass(frozen=True, slots=True)
+class _PayloadMarker:
+    """A token whose occurrence count in an item's current body no earlier body shares.
+
+    ``count`` is the whole point: see :data:`_RESEED_PAYLOAD_MARKERS` for the
+    measurement that retired the membership form this replaces.
+    """
+
+    item_id: ItemId
+    token: str
+    count: int
+
+    def __post_init__(self) -> None:
+        """A marker that pins zero pins nothing -- it passes on a body that never had it."""
+        if self.count < 1:
+            raise ValueError(
+                f"{self.item_id.value} pins {self.token!r} at {self.count}, but a marker "
+                f"asserting an absence cannot distinguish a correct payload from a reverted "
+                f"one: every body that never carried the token satisfies it. Pin a token the "
+                f"current body actually carries, measured against every earlier state of its "
+                f"source document."
+            )
+
+
+#: One entry per re-seeded item: a literal token its *current* body carries a
+#: measured number of times, where no earlier state of that item's source
+#: document carries it the same number of times -- pre-empted from the ADV-RC
+#: MEDIUM-1 class the #440 round found (a reverted re-seed payload leaves the
+#: whole suite green at the same test count, because a revision-id check alone
+#: cannot tell a correction from a reverted one).
 #:
 #: **Three-point measured, not two -- this round's own lesson.** A round-one
 #: version of this pin keyed on ``write.lock``/``ADR-0025``, measured only
@@ -151,46 +218,101 @@ _RESEEDED_ITEM: Final = ItemId("architecture.ai-writes-produce-proposals")
 #: intermediate correction commit in the item's ``docs/adr/`` history,
 #: current -- not just the two ends.
 #:
-#: Wrap-safe single tokens, deliberately: an issue reference like ``#436``
-#: cannot split across a Markdown line wrap the way a multi-word phrase can
-#: (the ``#414``/"owed, not shipped" trap the ADR-0013 check above already
-#: works around by checking two substrings rather than one contiguous
-#: phrase).
+#: **A count, not a presence -- #315's own lesson, and the reason this
+#: constant was renamed.** The #471 form asserted ``marker in body``. That
+#: holds whenever the token is present *at all*, so it stops discriminating
+#: the moment a later correction to the same document keeps the token while
+#: changing everything around it. Measured 2026-09-02: this entry's
+#: predecessor keyed ``architecture.single-writer-synchronous-in-m1`` on
+#: ``#436``, which the #471 body (revision ``01M1C8VS6C7SXBWJNBV3W5QEP9``) and
+#: #315's re-seed (revision ``01M1EVGVTNMDR2NQ9P49PARD1A``) both carry **5**
+#: times -- the pin had silently become a two-point marker with both points on
+#: the same side. ``#468``, on the same pair, counts **3** and **5**. So each
+#: entry pins the number, and the assertion is equality, not membership.
 #:
-#: **No clean negative twin for any of the three.** A ``not in`` pin needs a
-#: token present in the superseded body and absent from current *and* from
-#: every intermediate -- and this corpus's ADR-amendment convention quotes
-#: the retracted claim verbatim inside its own correction note, so the
-#: retracted wording reappears in the corrected text and fails to
-#: discriminate. Measured: "on the state database" (0018's retracted lock
-#: claim) appears 0 times in the superseded body and 1 time in the current
-#: one, quoted as part of the correction; "an operator cannot yet move it"
-#: (0008's retracted config claim) appears once in both; "reads either back
-#: today" (0024's retracted claim) appears once in both. No twin added for
-#: any of the three; each item is pinned by its correction marker alone.
+#: Wrap-safe tokens, deliberately: a Markdown line wrap breaks at whitespace,
+#: so a token containing none cannot be split by one (the ``#414``/"owed, not
+#: shipped" trap the ADR-0013 check above works around by checking two
+#: substrings rather than one contiguous phrase). An issue reference is one
+#: instance of that property rather than the only one, which matters because
+#: five of #315's items carry no ``#NNN`` whose count is unique to their
+#: current text; those are keyed on a backticked identifier or a measured
+#: figure the same correction introduced.
 #:
-#: Measured 2026-09-01, ``grep -cF <marker>`` -- ``-F``, literal, named
-#: because it is not the instrument the round-one version used: plain
-#: ``grep -c "write.lock"`` treats the ``.`` as "any character" and reports
-#: 8 for a body a literal count reports 3 for. Three points each --
-#: seed, intermediate, current:
+#: **One drifted twin deliberately absent, and one clean twin deliberately
+#: left alone -- they are not the same case.**
+#: ``architecture.index-lives-in-its-own-database`` (ADR-0022) *is* drifted:
+#: ``f706329`` moved its source and the corpus still pins the older digest, so
+#: ``tools/corpus_drift.py`` reports it, on purpose, until the further
+#: correction its document is due lands and one revision can carry both halves.
+#: ``architecture.a-purge-is-a-build`` (ADR-0024) is **not** drifted -- its pin
+#: is byte-identical to its source as measured 2026-09-02 -- and is left alone
+#: only because that document is likewise due a correction; there is nothing to
+#: re-seed yet. Calling both "drifted" is the error this paragraph replaces.
 #:
-#: - ``architecture.single-writer-synchronous-in-m1`` / ``#436``: 0 (seed,
-#:   ``2a98d4c``) / 0 (intermediate, ``14dd466`` -- #432, the lock-file
-#:   claim's *own* correction commit, moved the claim but not yet to the
-#:   wording #436 later added) / 5 (current, ``5a9a1e5``, this item's #471
-#:   anchor).
-#: - ``architecture.raptor-forest`` / ``#426``: 0 (seed, ``2a98d4c``) / 0
-#:   (intermediate, ``b857c1a`` -- #119/#352's sensitivity-enforcement
-#:   change, the commit the withdrawn ``ADR-0025`` marker had mis-attributed
-#:   to #448) / 2 (current, ``3749581``, this item's #471 anchor).
-#: - ``architecture.a-purge-is-a-build`` / ``#426``: 0 (seed, ``2a98d4c``) /
-#:   0 (intermediate, ``b857c1a``, same commit as above) / 1 (current,
-#:   ``3749581``, this item's #471 anchor).
-_SECOND_WAVE_MARKERS: Final[tuple[tuple[ItemId, str], ...]] = (
-    (ItemId("architecture.single-writer-synchronous-in-m1"), "#436"),
-    (ItemId("architecture.raptor-forest"), "#426"),
-    (ItemId("architecture.a-purge-is-a-build"), "#426"),
+#: **No clean negative twin for any entry, and the reason generalises.** A
+#: ``not in`` pin needs a token present in the superseded body and absent from
+#: current *and* from every intermediate -- and this corpus's ADR-amendment
+#: convention quotes the retracted claim verbatim inside its own correction
+#: note, so the retracted wording reappears in the corrected text and stops
+#: discriminating. That convention applies to every ADR here, which is why no
+#: entry carries a negative twin rather than only the three it was first
+#: measured on. Those three, measured when the mechanism was #471's: "on the
+#: state database" (0018's retracted lock claim) appears 0 times in the
+#: superseded body and 1 time in the current one, quoted as part of the
+#: correction; "an operator cannot yet move it" (0008's retracted config
+#: claim) appears once in both; "reads either back today" (0024's retracted
+#: claim) appears once in both. Every entry is pinned by its correction marker
+#: alone, and the boundary rule below is what a negative twin was reaching for.
+#:
+#: **Instrument, named on both sides.** ``str.count`` -- *occurrences* --
+#: because that is what :func:`test_the_committed_root_corpus_applies_cleanly_to_an_empty_store`
+#: asserts with. ``grep -c`` counts matching *lines* and is a different
+#: measurement; it happens to agree on every token below, and agreeing is not
+#: being the same. The round-one version's own instrument error is why this
+#: paragraph exists: plain ``grep -c "write.lock"`` treats the ``.`` as "any
+#: character" and reports 8 for a body a literal count reports 3 for.
+#:
+#: **Every point, not three.** "Seed / intermediate / current" names the
+#: shape; each token was measured against *every* commit that touched its
+#: item's source document, which is a superset of it, and qualified only when
+#: its count at the current point differed from its count at every one of
+#: them. Each token is additionally drawn from the **added** lines of the last
+#: such commit, so it names the correction whose absence a reverted payload
+#: would show rather than a word that happens to be new.
+#:
+#: **The per-item selection matrix is not narrated here.** Twelve rows of
+#: item/token/count/points, hand-carried in a docstring, is the #458 stale-count
+#: shape exactly: a dozen numbers no rule recomputes, going stale on the first
+#: re-seed nobody re-narrated. The rows are archived in PR #490's round-two
+#: record. What is *live* is below and in the test: the counts themselves, and
+#: the boundary rule that recomputes each token's count in the revision its
+#: item's latest re-seed replaced and fails when it equals the pin.
+#:
+#: **``raptor-forest`` re-keyed for the same reason, one commit later.** It
+#: shipped ``#426`` at 2, and #487 (``f706329``) moved the document again
+#: without touching that count: measured 2026-09-02, ``#426`` is 2 in both
+#: the #471 body (``3749581``) and #315's re-seed of it (``f706329``). A
+#: presence check and a count keyed on ``#426`` are equally blind there, so
+#: the entry moved to ``#464`` -- the issue #487's own correction cites -- at
+#: 1 against 0 everywhere before. ``a-purge-is-a-build`` keeps ``#426``: #487
+#: did not touch ADR-0024, so nothing about that row moved. The general rule
+#: this makes concrete: **a re-seed re-measures its item's marker**, because
+#: the token that discriminated the previous revision need not discriminate
+#: the next one.
+_RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
+    _PayloadMarker(ItemId("architecture.monorepo-with-independent-artifacts"), "`Core`", 1),
+    _PayloadMarker(ItemId("architecture.sqlite-is-a-derived-artifact"), "#87", 1),
+    _PayloadMarker(ItemId("architecture.yaml-knowledge-migrations"), "#245", 1),
+    _PayloadMarker(ItemId("architecture.dependency-pinning-and-pre-1-0-isolation"), "`3.13`", 1),
+    _PayloadMarker(ItemId("architecture.dco-over-cla"), "30/30", 1),
+    _PayloadMarker(ItemId("architecture.state-hash-covers-the-working-tree"), "`contentSha256`", 1),
+    _PayloadMarker(ItemId("architecture.sqlite-schema-versioning"), "#117", 3),
+    _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#468", 5),
+    _PayloadMarker(ItemId("architecture.rank-fusion-over-score-normalisation"), "T-17a's", 1),
+    _PayloadMarker(ItemId("architecture.raptor-forest"), "#464", 1),
+    _PayloadMarker(ItemId("architecture.trigram-index-beside-the-word-index"), "#464", 2),
+    _PayloadMarker(ItemId("architecture.a-purge-is-a-build"), "#426", 1),
 )
 
 #: Frozen rather than ``datetime.now()``: a project row's ``registered_at`` is
@@ -200,25 +322,34 @@ _SECOND_WAVE_MARKERS: Final[tuple[tuple[ItemId, str], ...]] = (
 _REGISTERED_AT: Final = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
 
 
-def _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files() -> None:
-    """Refuse to run over anything ``git`` cannot vouch for.
+def _tracked_corpus_paths() -> tuple[str, ...]:
+    """Every path git tracks under ``.theurian/``, or a skip when git cannot say.
 
-    Two distinct refusals, both loud:
+    One refusal remains, and only one: no git, or git cannot answer for this
+    checkout (a ``tools/mutate.py`` copy, which carries no ``.git`` on
+    purpose -- see the module docstring for why this test does not fall back to
+    the copy's manifest the way ``test_dogfood_corpus_governance.py``'s
+    ``_tracked()`` does). Without git there is no tracked set to speak of, so
+    there is nothing to filter *to*.
 
-    - No git, or git cannot answer for this checkout (a ``tools/mutate.py``
-      copy, which carries no ``.git`` on purpose -- see the module docstring
-      for why this test does not fall back to the copy's manifest the way
-      ``test_dogfood_corpus_governance.py``'s ``_tracked()`` does).
-    - Git answers, but the directory holds a ``.yaml`` file it does not
-      track. :func:`load_migrations` reads the whole directory with no
-      regard for tracking, so an uncommitted local draft would otherwise be
-      loaded and applied as if it were part of the corpus this PR ships.
+    **What used to be a second refusal is now a filter** (#490 round two).
+    :func:`load_migrations` reads every ``.yaml`` physically present with no
+    regard for tracking, and the old answer to that was to skip the whole test
+    whenever an untracked one sat in the directory. That is dormancy exactly
+    where it hurts most: the maintainer's own dogfooding machine keeps
+    machine-local vault notes under ``.theurian/`` (fenced in
+    ``.git/info/exclude``), so every assertion in this file -- the twelve
+    payload markers included -- was disabled on the one tree where re-seeds are
+    authored and where a mis-measured marker would first be committed. Copying
+    the tracked set out and loading *that* serves the original concern strictly
+    better: an untracked draft is not skipped around, it is never loaded.
     """
     git = shutil.which("git")
     if git is None:
         pytest.skip(
-            f"no git on this machine: nothing here can confirm {MIGRATIONS_DIRECTORY} holds "
-            f"only tracked files, so this test declines to load it and report a false answer"
+            f"no git on this machine: nothing here can name the tracked subset of "
+            f"{REPO_ROOT / '.theurian'}, so this test declines to load it and report a "
+            f"false answer"
         )
 
     completed = subprocess.run(  # noqa: S603 - fixed argv, no shell, no caller input
@@ -231,7 +362,7 @@ def _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files(
             "ls-files",
             "-z",
             "--",
-            str(MIGRATIONS_DIRECTORY.relative_to(REPO_ROOT)),
+            ".theurian",
         ],
         capture_output=True,
         check=False,
@@ -245,64 +376,84 @@ def _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files(
             f"rather than falling back to the copy's manifest."
         )
 
-    tracked_names = {
-        entry.rsplit("/", 1)[-1]
-        for entry in completed.stdout.decode("utf-8", "surrogateescape").split("\0")
-        if entry
-    }
-    # `name.endswith(".yaml")`, matching the loader's own filter exactly
-    # (`migration_loader.py`'s `candidates` line): `path.suffix` would miss a
-    # bare `.yaml` filename (`Path(".yaml").suffix == ""`), which the loader
-    # still accepts.
-    on_disk_names = {
-        path.name for path in MIGRATIONS_DIRECTORY.iterdir() if path.name.endswith(".yaml")
-    }
-    untracked = sorted(on_disk_names - tracked_names)
-    if untracked:
-        pytest.skip(
-            f"{MIGRATIONS_DIRECTORY} holds .yaml file(s) git does not track: {untracked}. "
-            f"`load_migrations` reads the whole directory regardless of tracking, so this "
-            f"would apply a local draft as if it were the committed corpus. Commit it, "
-            f"remove it, or move it elsewhere before running this test."
-        )
+    paths = tuple(
+        entry for entry in completed.stdout.decode("utf-8", "surrogateescape").split("\0") if entry
+    )
+    assert paths, (
+        f"git tracks nothing under {REPO_ROOT / '.theurian'}. The committed corpus is gone -- "
+        f"which is a finding, not a reason for this test to skip and read as green."
+    )
+    return paths
 
 
-def _current_body(database: Path, project_id: ProjectId, item_id: ItemId) -> str:
-    """The applied store's current body for ``item_id``.
+def _committed_corpus(destination: Path) -> Path:
+    """A tree holding exactly the tracked ``.theurian/`` paths, and nothing else.
 
-    The same two-hop read the ADR-0013 check below performs inline --
-    ``knowledge_items`` for the pointer, ``knowledge_revisions`` for what it
-    points at -- pulled out once so each of the second-wave pins is two
-    lines: fetch the body, assert its marker. Not used by the ADR-0013 check
-    itself, which additionally cross-checks the pointer against
-    :func:`current_revision_in` and stays as originally written rather than
-    being rewired through a helper introduced for a later item.
+    The population is ``git ls-files``, so what gets applied below is the
+    committed corpus by construction rather than by a precondition someone has
+    to keep true. Copies rather than symlinks: the loader refuses irregular
+    entries under its own root, and a symlinked tree would be testing that
+    refusal instead of the corpus.
+
+    ``.theurian/knowledge/`` comes along because a migration's ``contentFile``
+    is relative to the migrations directory (``../knowledge/...``) and the
+    loader resolves it inside the root it was handed; the tracked bodies are
+    exactly the ones the tracked migrations name, which
+    ``test_dogfood_corpus_governance.py`` holds separately in both directions.
+    """
+    for relative in _tracked_corpus_paths():
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / relative, target)
+    return destination
+
+
+def _revision_chain(loaded: LoadedMigrations) -> dict[ItemId, tuple[RevisionId, ...]]:
+    """Every item's revisions, in the loader's own application order.
+
+    The same fold :func:`current_revision_in` performs, kept whole instead of
+    collapsed to its last element: the marker rules below need the *previous*
+    revision as well as the current one, and re-deriving the order from file
+    names would be the wrong key -- a ``MigrationSet`` iterates in Kahn order
+    over the migration documents' own ids, which a filename sort does not
+    reproduce (the fold-key finding the #440 round caught).
+
+    Cross-checked against ``current_revision_in`` at the call site, so the two
+    orderings cannot silently diverge.
+    """
+    chain: dict[ItemId, tuple[RevisionId, ...]] = {}
+    for migration in loaded.migration_set:
+        for operation in migration.operations:
+            if isinstance(operation, UpsertRevision):
+                chain[operation.item_id] = (
+                    *chain.get(operation.item_id, ()),
+                    operation.revision_id,
+                )
+    return chain
+
+
+def _bodies_by_revision(database: Path, project_id: ProjectId) -> dict[str, str]:
+    """Every applied revision's body, in one connection and one query.
+
+    One read for the whole test rather than the two-hop read once per marker:
+    twelve markers each needing a current *and* a superseded body was twenty-four
+    connection open/close pairs for data that does not change between them.
+    Keyed by revision id, because that is what :func:`_revision_chain` hands
+    back; the current-revision pointer is cross-checked separately, so nothing
+    here has to re-read ``knowledge_items``.
+
+    Superseded revisions are in this table too -- ``upsertRevision`` inserts a
+    row per revision and only moves the pointer -- which is what makes the
+    boundary rule below readable from the store rather than from the tree.
     """
     with closing(open_read_connection(database)) as connection:
-        row = connection.execute(
-            "SELECT current_revision_id FROM knowledge_items WHERE project_id = ? AND item_id = ?",
-            (project_id.value, item_id.value),
-        ).fetchone()
-        assert row is not None, (
-            f"{item_id.value} has no row in knowledge_items after applying. Every "
-            f"migration that names it as a createItem target should have created it."
-        )
-        current_revision = row["current_revision_id"]
-        assert current_revision is not None, (
-            f"{item_id.value} has no current revision after applying, so there is no "
-            f"body to check its content."
-        )
-        body_row = connection.execute(
-            "SELECT body FROM knowledge_revisions WHERE project_id = ? AND revision_id = ?",
-            (project_id.value, current_revision),
-        ).fetchone()
-        assert body_row is not None, (
-            f"knowledge_revisions holds no row for {current_revision!r}, the revision "
-            f"knowledge_items.current_revision_id just named for {item_id.value}. A "
-            f"pointer with nothing behind it is a store the engine's own write "
-            f"transaction should never produce."
-        )
-        return str(body_row["body"])
+        return {
+            str(row["revision_id"]): str(row["body"])
+            for row in connection.execute(
+                "SELECT revision_id, body FROM knowledge_revisions WHERE project_id = ?",
+                (project_id.value,),
+            )
+        }
 
 
 def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: Path) -> None:
@@ -333,24 +484,23 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
     the module docstring's third check for why an id match alone is not
     enough (ADV-RC MEDIUM-1).
 
-    A fourth family, added for #199 unit C's second wave (#471): the same
-    content-shaped pin, once per :data:`_SECOND_WAVE_MARKERS` entry, run
-    pre-emptively rather than waiting for a round to reproduce ADV-RC
-    MEDIUM-1 a second time against a different item. Each reverts its own
-    item's re-seed commit RED and nothing else's -- see the entries'
-    docstring for the measured three-point (seed / intermediate / current)
-    discrimination each correction-keyed marker was chosen for, and for why
-    the round's own first version of this pin (a two-point, general-word
-    marker) is not what ships here.
+    A fourth family, one entry per re-seeded item
+    (:data:`_RESEED_PAYLOAD_MARKERS`): the same content-shaped pin, carried by
+    every re-seed rather than only by the one a round happened to reproduce.
+    Each turns its own item's re-seed commit RED when that commit's payload is
+    reverted, and nothing else's -- see the entries' docstring for the
+    per-point counts behind each token, for why an equality on the count and
+    not a membership test is what ships, and for the two earlier versions of
+    this pin (a two-point general-word marker, then a presence-only one) that
+    do not.
     """
-    _skip_unless_git_confirms_the_migrations_directory_holds_only_tracked_files()
-
-    paths = ProjectPaths.of(REPO_ROOT)
+    corpus_root = _committed_corpus(tmp_path / "corpus")
+    paths = ProjectPaths.of(corpus_root)
     loaded = load_migrations(paths.root, paths.migrations, schema_root())
 
     project = Project(
         project_id=ProjectId("root-corpus-applicability-test"),
-        root_path=str(REPO_ROOT),
+        root_path=str(corpus_root),
         repository_url=None,
         default_branch="main",
         knowledge_directory=DEFAULT_KNOWLEDGE_DIRECTORY,
@@ -447,18 +597,113 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
         f"carries the retracted claim 'warns past a threshold' (#252)."
     )
 
-    # Pre-empted from the same class: #199 unit C's second wave (#471)
-    # re-seeded three more items through the real write path, and reverting
-    # any one wave commit's payload would leave the suite green at the same
-    # test count for the identical reason the ADR-0013 revert above did --
-    # see :data:`_SECOND_WAVE_MARKERS`'s docstring for the measured
-    # three-point (seed / intermediate / current) discrimination behind
-    # each correction-keyed marker.
-    for item_id, marker in _SECOND_WAVE_MARKERS:
-        second_wave_body = _current_body(database, project.project_id, item_id)
-        assert marker in second_wave_body, (
-            f"the applied body for {item_id.value} does not carry {marker!r}. Reverting "
-            f"this item's #471 re-seed payload -- the body, not its expectedRevision pin -- "
-            f"would leave this assertion the only one in this test file to notice, per the "
-            f"ADV-RC MEDIUM-1 class the #440 round found."
+    # The same class, once per re-seeded item -- see
+    # :data:`_RESEED_PAYLOAD_MARKERS`'s docstring for how each token was
+    # measured, and the module docstring for the one revert depth these
+    # assertions are the sole catcher of.
+    chain = _revision_chain(loaded)
+    bodies = _bodies_by_revision(database, project.project_id)
+
+    # _revision_chain re-folds what current_revision_in folds, so the two are
+    # held to the same answer rather than trusted to agree -- the fold key is
+    # exactly what the #440 round caught being wrong once already.
+    disagreements = {
+        item.value: (revisions[-1].value, current_revision_in(loaded.migration_set, item))
+        for item, revisions in chain.items()
+        if current_revision_in(loaded.migration_set, item) != revisions[-1]
+    }
+    assert not disagreements, (
+        f"_revision_chain's last revision and current_revision_in disagree for "
+        f"{disagreements}. They fold the same operations in the same order, so a "
+        f"disagreement means this test's own reconstruction has drifted from the production "
+        f"helper and every marker below is reading the wrong body."
+    )
+
+    # The census. Without it, deleting an entry from the tuple is invisible --
+    # measured: mutation m4, dropping the last _PayloadMarker, left the whole
+    # suite green. It is also what makes the *next* re-seed's missing marker
+    # RED: a re-seed gives its item a second revision, so the item joins this
+    # set the moment the migration lands, whether or not anyone adds a pin.
+    multi_revision = {item for item, revisions in chain.items() if len(revisions) > 1}
+    pinned = tuple(marker.item_id for marker in _RESEED_PAYLOAD_MARKERS)
+    assert len(set(pinned)) == len(pinned), (
+        f"_RESEED_PAYLOAD_MARKERS names an item twice: "
+        f"{sorted({item.value for item in pinned if pinned.count(item) > 1})}. Two entries "
+        f"for one item let one of them be wrong while the other passes."
+    )
+    accounted = set(pinned) | {_RESEEDED_ITEM}
+    assert accounted == multi_revision, (
+        f"the pinned set and the multi-revision set disagree. Pinned but not re-seeded: "
+        f"{sorted(item.value for item in accounted - multi_revision)}; "
+        f"re-seeded but unpinned: "
+        f"{sorted(item.value for item in multi_revision - accounted)}. "
+        f"Every item with more than one revision has had a payload replaced, so every one of "
+        f"them needs a content pin -- add a _PayloadMarker measured against every point in "
+        f"its source document's history. {_RESEEDED_ITEM.value} is the exception because the "
+        f"#414 assertions above pin it by hand."
+    )
+
+    checked: list[ItemId] = []
+    for marker in _RESEED_PAYLOAD_MARKERS:
+        checked.append(marker.item_id)
+        revisions = chain[marker.item_id]
+        applied_body = bodies[revisions[-1].value]
+        assert applied_body.count(marker.token) == marker.count, (
+            f"the applied body for {marker.item_id.value} carries {marker.token!r} "
+            f"{applied_body.count(marker.token)} time(s); this item's re-seed pinned it at "
+            f"{marker.count}. A three-file coordinated revert of this item's payload -- body, "
+            f"contentSha256 and both anchors -- would leave this assertion the only one in "
+            f"the suite to notice, per the ADV-RC MEDIUM-1 class the #440 round found. If the "
+            f"source document legitimately moved, re-measure the token against every point "
+            f"in its history and update the count here in the same change."
         )
+
+        # The boundary. A marker discriminates only while its count *differs*
+        # across the revision it replaced, and that property decays silently:
+        # `#436` on single-writer and `#426` on raptor-forest each stopped
+        # discriminating when a later correction kept the token's count, and
+        # both were caught by hand rather than by the suite. Reading the
+        # superseded body live means the next re-seed that lands without
+        # re-measuring goes RED here instead of shipping a dead pin.
+        superseded_body = bodies[revisions[-2].value]
+        assert superseded_body.count(marker.token) != marker.count, (
+            f"{marker.item_id.value}'s marker {marker.token!r} no longer discriminates: it "
+            f"counts {marker.count} in the current body and {superseded_body.count(marker.token)} "
+            f"in revision {revisions[-2].value}, the one this item's latest re-seed replaced. "
+            f"A revert to that body would satisfy the pin above, so the pin catches nothing. "
+            f"Re-measure a token whose count at the current point differs from its count at "
+            f"every earlier point of {marker.item_id.value}'s source document, and update both "
+            f"the entry and its recorded measurement."
+        )
+
+    # The census proves the *list* is complete; this proves the list was
+    # *walked*. Measured: replacing the loop's iterable with
+    # `_RESEED_PAYLOAD_MARKERS[:0]` (mutation m7) left every assertion above
+    # unexecuted and the suite green -- the census passed because it reads the
+    # constant directly, not the loop. Comparing what the loop actually visited
+    # against the constant is what closes that.
+    assert tuple(checked) == pinned, (
+        f"the marker loop visited {[item.value for item in checked]}, but "
+        f"_RESEED_PAYLOAD_MARKERS names {[item.value for item in pinned]}. Every entry has to "
+        f"be reached: an iterable that skips entries leaves their pins unasserted while every "
+        f"other rule in this test still passes."
+    )
+
+
+@pytest.mark.parametrize("count", [0, -1])
+def test_a_payload_marker_refuses_a_count_that_asserts_an_absence(count: int) -> None:
+    """:class:`_PayloadMarker`'s own guard, driven rather than merely written.
+
+    A guard no input reaches survives its own deletion. Measured: weakening
+    ``count < 1`` to ``count < 0`` (mutation m5) left the whole suite green, and
+    so did that weakening *plus* an entry pinning a token no body carries at
+    zero (m6) -- the vacuous pin the guard exists to refuse, shipped green.
+
+    Zero is the case that matters and negative is the case that proves the
+    boundary is the right one: a marker pinning an absence is satisfied by every
+    body that never carried the token, including the superseded one, so it
+    cannot distinguish a correct payload from a reverted one -- which is the
+    entire job.
+    """
+    with pytest.raises(ValueError, match="cannot distinguish a correct payload"):
+        _PayloadMarker(ItemId("architecture.any-item"), "#404", count)

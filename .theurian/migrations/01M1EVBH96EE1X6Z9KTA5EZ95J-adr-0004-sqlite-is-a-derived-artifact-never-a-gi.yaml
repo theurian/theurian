@@ -1,0 +1,38 @@
+apiVersion: theurian.dev/v1
+id: 01M1EVBH96EE1X6Z9KTA5EZ95J
+createdAt: '2026-09-01T16:03:08+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0004 twin from the current source ADR: the corpus pins docs/adr/0004-sqlite-is-a-derived-artifact.md
+  as it stood at 2a98d4c, and the tracked document has moved since (#315).'
+operations:
+- op: createItem
+  itemId: architecture.sqlite-is-a-derived-artifact
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.sqlite-is-a-derived-artifact
+  revisionId: 01M1EVBH96EE1X6Z9KTA5EZ95K
+  expectedRevision: 01M0D5GTZN1YPYAPJ18TAP7NAD
+  contentFile: ../knowledge/architecture/sqlite-is-a-derived-artifact.01M1EVBH96EE1X6Z9KTA5EZ95K.md
+  contentSha256: 3176ad59ff47429a00129bbd0be1e8b9eaedb778e5f7547413df69acbd550207
+  metadata:
+    title: 'ADR-0004: SQLite is a derived artifact, never a Git-tracked one'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0004
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 266e6b668a5e0723ee63accf23f3ae70b501e193
+      filePath: docs/adr/0004-sqlite-is-a-derived-artifact.md
