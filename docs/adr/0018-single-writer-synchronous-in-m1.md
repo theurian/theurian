@@ -373,3 +373,27 @@ Still owed, with the issue or milestone that will satisfy it:
   > [#439](https://github.com/theurian/theurian/issues/439).
 - **NFR-4 is not discharged**, per the amendment above. It belongs with the same
   blue/green work.
+
+  > **Corrected on 2026-09-01
+  > ([#140](https://github.com/theurian/theurian/issues/140) member 1): that
+  > blue/green work has landed, so this bullet is stale rather than wrong.** What
+  > it says about *this* ADR does not move — WAL does not reach the retrieval
+  > index, and nothing in this document discharges NFR-4 — so the bullet and the
+  > Neutral amendment it cites are left standing. What has changed is its second
+  > half: "it belongs with the same blue/green work" now has an answer.
+  > [ADR-0024](0024-a-purge-is-a-build.md) points 6 and 7 are that work —
+  > publishing stops reaping, reclaiming becomes `theurian index gc`, and a search
+  > holds one read connection for the duration of a request — and that ADR's
+  > Compliance section carries the reconciliation and names the pins:
+  > `tests/integration/test_gc_during_a_search.py`, decision 7's own acceptance
+  > module, whose four tests include the no-session counterexample;
+  > `test_publishing_a_build_no_longer_reclaims_the_one_it_replaced`; and
+  > `test_a_read_of_a_missing_index_creates_no_file`.
+  >
+  > **What is still owed is a test, not a mechanism**, and it is recorded under
+  > [ADR-0007](0007-state-hash-partitioned-databases.md)'s Still owed rather than
+  > restated here: no test in the suite issues a query while a build is running,
+  > so "the previously published index answers every query while a new build runs"
+  > is argued from pinned elements rather than measured. Read this bullet as *not
+  > discharged here*, which is what it has always meant, and not as *not
+  > discharged anywhere*.

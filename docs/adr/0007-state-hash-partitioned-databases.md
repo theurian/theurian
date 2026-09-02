@@ -135,6 +135,29 @@ Still owed, with the milestone that will satisfy it:
   that NFR-4 is not discharged. This bullet asserted as tested exactly what two
   other ADRs record as missing. It belongs with the blue/green work (Milestone
   6).
+
+  > **Corrected on 2026-09-01
+  > ([#140](https://github.com/theurian/theurian/issues/140) member 1): this
+  > bullet's own claim survives and is now the *whole* residue, while the two
+  > records it cites as agreeing with it no longer do.** Verified at `fe2925c`:
+  > no test in the suite issues a query while a build is running, so nothing
+  > still asserts the composite. What moved underneath it is the support —
+  > [ADR-0024](0024-a-purge-is-a-build.md) points 6 and 7 shipped the blue/green
+  > work, and ADR-0022's Still-owed opener and ADR-0018's NFR-4 bullet each now
+  > carry a dated correction saying so. **What is left is a missing test rather
+  > than a missing mechanism.** Every element the composite rests on is pinned: a
+  > build writes to a `.building` name `theurian index gc` will not reap
+  > (`test_a_build_is_written_under_a_name_gc_will_not_reclaim`,
+  > `tests/integration/test_index_gc_cli.py`), a build over an existing index
+  > file is refused (`test_building_over_an_existing_file_is_refused`,
+  > `tests/integration/test_index_store.py`), publishing retains the build it
+  > replaced (`test_publishing_a_build_no_longer_reclaims_the_one_it_replaced`),
+  > and the pointer swap is a write-to-temp plus `os.replace`. So a query during
+  > a build resolves the pointer to a file the build never opens — an argument
+  > from pinned elements, which is not a measurement, and saying so is what this
+  > bullet has been for since it was written. **Milestone 6 has passed and no
+  > open issue owns this**; ADR-0024's Compliance section carries the
+  > reconciliation and names this bullet as where the residue lives.
 - **Nothing asserts two worktrees keep independent active states.** This section
   claimed a test; the string `worktree` does not appear anywhere under
   `tests/`. This is the case ADR-0016's amendment makes load-bearing — the state
