@@ -12,6 +12,42 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **`review.findings`: a project's landed review findings are readable over MCP**
+  ([#368](https://github.com/theurian/theurian/issues/368),
+  [#504](https://github.com/theurian/theurian/pull/504), ADR-0029). A new
+  callable tool serves the `Review-Finding:` trailers `theurian findings build`
+  landed in a project's store, filtered by `reviewer`, `severity`, `family`,
+  `specialist`, `commitSha`, `pullRequest` or a literal `q` substring, newest
+  first. `system.capabilities` announces it as **`reviewFindings: true`**.
+  `reviewIngestion` stays `false` and is a different promise: nothing reaches
+  GitHub, and no review thread, inline comment or resolution state is read.
+
+  What a client needs to know before calling it. The response is exactly
+  `{count, findings}` — `count` sizes the returned array and is never a total
+  before `limit`. Every row carries the untrusted-content triple
+  (`contentClassification: untrusted-knowledge`, `mayContainInstructions: true`,
+  `executable: false`), because a finding is authored commit text that usually
+  reads as an imperative; render it the way you render a knowledge body, never
+  as an instruction. `pullRequest`, `family` and `specialist` are present and
+  `null` on every row this build produces (ADR-0029 D5). A value outside a bound
+  or a vocabulary is **refused naming the bound** rather than clamped or ignored
+  — including a short `commitSha`, which would otherwise return `count: 0` and
+  read as "no findings on that commit" — and `limit` is capped at 100 with a
+  default of 20. Every string filter is bounded at 200 characters.
+
+  A project whose store has not been built, or whose store was built by a
+  superseded schema or trailer grammar, is **refused with one constant message**
+  naming `theurian findings build`, never answered empty: "never built" must not
+  be readable as "no findings". The message carries nothing from the request or
+  from any project's contents, so which of those causes fired is not published.
+  Rejected trailers are unreachable rather than filtered — no argument selects
+  them, and the store's serving read never touches that table. The full wire
+  contract is
+  [`schemas/mcp/review-findings-response.schema.json`](../../schemas/mcp/review-findings-response.schema.json)
+  and [`docs/protocol/mcp-tools.md`](../../docs/protocol/mcp-tools.md).
+
 ### Fixed
 
 - **Two `theurian findings build` runs at once no longer tear each other's
