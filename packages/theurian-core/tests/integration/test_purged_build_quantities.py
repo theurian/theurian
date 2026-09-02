@@ -10,12 +10,47 @@ count -- canonical reads, retriever passes, peak memory -- that moves with **how
 many rows were withheld**, which is the one quantity SEC-13 arranges the response
 not to state.
 
-The re-measurement's finding has one shape everywhere: *the purge does not make
-these quantities smaller, it removes the term they are functions of.* On a purged
-build `|ranking|` is the visible count at every withheld level, so there is
-nothing left for a per-withheld-row rate to multiply. This file is that finding
-turned into pins, so that a change putting the withheld term back goes RED here
-rather than being rediscovered by a fourth review round.
+The re-measurement's finding has one shape over **the three quantities this file
+pins**: *the purge does not make them smaller, it removes the term they are
+functions of.* The three are the canonical-read count, the retriever pass count
+and the `tracemalloc` peak. This file is that finding turned into pins, so that a
+change putting the withheld term back goes RED here rather than being
+rediscovered by a fourth review round.
+
+**The scope is those three quantities and not "any quantity", and the boundary is
+not a hedge.** PR #498's round-one adversarial review measured *query duration* on
+the trigram path, where the purge only shrinks the term rather than removing it:
+FTS5's `'delete'` writes a tombstone, the row's postings stay in the segment
+structure until a merge, and nothing in the shipped purge merges. Isolated at
+5,950 withdrawn rows, the substring scan costs 16.8 ms on a purged build against
+1.2 ms on a never-held one. That face is owned by
+[#499](https://github.com/theurian/theurian/issues/499) and recorded under T-17a
+in `docs/security/threat-model.md`.
+
+**None of this module's instruments can see that face**, which is why the scope
+above is a boundary a reader must not widen. `tracemalloc` traces memory
+allocated through Python's own allocator, and `CountingReadSession` and
+:class:`Measured` count Python-level calls; a tombstoned posting list is walked
+inside SQLite's C code during one `execute`, producing no row, no Python
+allocation and no additional call. The two instruments are measured disagreeing
+on the same builds in that same T-17a note: peak memory flat to 0.1 KB across the
+whole 0 -> 5,950 sweep while the clock on the same query rises to 5.67x. **A
+green run of this file says the three pinned quantities carry no withheld term.
+It says nothing about duration, and it cannot.**
+
+**Why the per-withheld-row term goes to zero is branch-dependent, and stating it
+as one mechanism was this file's own error, caught in review.** On the branch that
+never truncates -- `search_substring`'s scan below the trigram floor, which
+carries no `LIMIT` -- the purged `|ranking|` *is* the visible count, because the
+whole match set is handed to the gate. On the branches that truncate, `|ranking|`
+is `depth` whatever was withheld, before and after the purge alike. **The
+refutation of the unconditional form is this file's own pass-count pin**:
+`test_a_purged_build_stays_at_one_retriever_pass_across_the_first_pass_depth_edge`
+measures 100 canonical reads -- `FIRST_PASS_DEPTH`, not the visible count -- over
+a 200-row visible corpus, at every one of its four withheld levels. **The
+conclusion holds on every branch**: no quantity pinned here carries a
+per-withheld-row term. Only the scan branch reaches it by `|ranking|` collapsing
+to the visible count.
 
 **Every test carries a stale positive control, and the control is what makes the
 flatness mean anything.** "The purged column is flat" is satisfied by a harness
@@ -527,13 +562,19 @@ def test_a_purged_build_reads_canonical_once_per_visible_row_however_many_were_w
     10 / 11 / 60 / 210 / 6,000 -- against a build that still held the withdrawn
     rows, and round five's argument was that such a quantity "goes away only when
     the index stops holding withdrawn rows". This is that argument measured on the
-    shipped purge: on the purged build `|ranking|` is the visible count at every
-    withheld level, so the per-withheld-row rate has nothing left to multiply.
+    shipped purge: over the counts swept here the purged build's canonical-read
+    count is the visible count at every withheld level, so the per-withheld-row
+    rate has nothing left to multiply.
 
     The retriever is `search_substring`'s scan below the trigram floor, which is
     the branch that carries no `LIMIT` and therefore hands the gate the entire
-    match set. That is where the residual is unbounded -- on the branches that
-    truncate, the read count is `depth` whatever was withheld.
+    match set. **That is what makes `|ranking|` the visible count here, and it is
+    a property of this branch rather than of the purge**: on the branches that
+    truncate, `|ranking|` is `depth` whatever was withheld, which is what the
+    pass-count pin measures at 100 reads over 200 visible rows. This is also where
+    the stale residual is unbounded, which is why the branch is the one worth
+    pinning: it is the only shipped retriever whose read count a withheld row can
+    grow without limit.
 
     **RED path.** The stale control is asserted first and against exact derived
     values, so this test cannot pass over a corpus whose index never held the
@@ -671,11 +712,20 @@ def test_a_purged_builds_peak_memory_stops_moving_with_the_withheld_count(
     each other, and the stale peaks strictly increase.
 
     Equality rather than a tolerance, because the claim is structural.
-    `tracemalloc` traces Python allocations, `|ranking|` is the visible count on
-    every purged build, and the rows are the same objects -- so identical peaks
-    are what "the term was removed" *means* here. A tolerance would be a number
-    nobody could defend, and it would stay green against a residual smaller than
-    itself.
+    `tracemalloc` traces Python allocations, `|ranking|` on the branch measured
+    here -- the scan below the trigram floor, the same one the read-count pin
+    uses -- is the visible count on a purged build, and the rows are the same
+    objects, so identical peaks are what "the term was removed" *means* here. A
+    tolerance would be a number nobody could defend, and it would stay green
+    against a residual smaller than itself.
+
+    **What equality here does not cover is a residue Python never allocates.**
+    The module docstring states the instrument limit in full: FTS5's tombstoned
+    postings are walked inside SQLite's C code, and the same builds that hold this
+    peak flat carry a 5.67x duration ratio
+    ([#499](https://github.com/theurian/theurian/issues/499)). Equality of a
+    `tracemalloc` peak is evidence about the Python heap and about nothing below
+    it.
 
     **Scope, stated rather than assumed.** The work log isolated a 4.3 KB step in
     the *composite* purged column that appears only above 200 withheld, is not
