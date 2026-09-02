@@ -34,7 +34,9 @@ allocated through Python's own allocator, and `CountingReadSession` and
 inside SQLite's C code during one `execute`, producing no row, no Python
 allocation and no additional call. The two instruments are measured disagreeing
 on the same builds in that same T-17a note: peak memory flat to 0.1 KB across the
-whole 0 -> 5,950 sweep while the clock on the same query rises to 5.67x. **A
+whole 0 -> 5,950 sweep while the clock on the same query rises by +27.4 ms -- the
+delta is the stable figure (+27.59 to +28.18 ms over six re-runs) where the ratio
+moves with its denominator, 5.08-5.67x depending on the run, median 5.41x. **A
 green run of this file says the three pinned quantities carry no withheld term.
 It says nothing about duration, and it cannot.**
 
@@ -770,7 +772,9 @@ def test_a_purged_builds_peak_memory_stops_moving_with_the_withheld_count(
     **What equality here does not cover is a residue Python never allocates.**
     The module docstring states the instrument limit in full: FTS5's tombstoned
     postings are walked inside SQLite's C code, and the same builds that hold this
-    peak flat carry a 5.67x duration ratio
+    peak flat cost +27.4 ms more end to end -- the delta is the stable figure
+    (+27.59 to +28.18 ms over six re-runs) where the ratio moves with its
+    denominator, 5.08-5.67x depending on the run, median 5.41x
     ([#499](https://github.com/theurian/theurian/issues/499)). Equality of a
     `tracemalloc` peak is evidence about the Python heap and about nothing below
     it.
