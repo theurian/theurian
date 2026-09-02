@@ -566,22 +566,19 @@ def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_one
 #: The schema root's ``description``, in full, as the wheel publishes it.
 #:
 #: **A fragment pin is subtraction-proof and not addition-proof, which is round
-#: one's adv-L1.** :data:`WATCHED_KEY_DESCRIPTIONS`' root row lists four
-#: fragments the description has to keep, so deleting any of them is RED. Adding
-#: a *fifth* sentence is not: a fabricated control asserted in the same
-#: description -- "the review allowlist below is consulted before Theurian
-#: contacts any repository" -- kept all four fragments, shipped in the built
-#: wheel, and left every audit in ``tools/audit/`` and every pin in this file
-#: green. Two such mutations were run and both survived.
+#: one's adv-L1.** The root row used to list four fragments the description had to
+#: keep, so deleting any of them was RED. Adding a *fifth* sentence was not: a
+#: fabricated control asserted in the same description -- "the review allowlist
+#: below is consulted before Theurian contacts any repository" -- kept all four
+#: fragments, shipped in the built wheel, and left every audit in ``tools/audit/``
+#: and every pin in this file green. Two such mutations were run and both survived.
 #:
-#: The root is the one description where that matters most: it is the first thing
-#: a reader of the published schema sees, it is outside every key-block count
-#: (#455), and it was false from ADR-0027 decision 3 until #199 unit B rewrote
-#: it. So it is pinned whole. A wording change is a deliberate act here, and the
-#: diff that makes this RED is the diff that has to say what moved.
-#:
-#: The key rows below stay fragment-pinned: their descriptions carry tuning
-#: guidance a reviewer may reword, and the sentences that matter are named.
+#: The root is where that matters most: it is the first thing a reader of the
+#: published schema sees, it is outside every key-block count (#455), and it was
+#: false from ADR-0027 decision 3 until #199 unit B rewrote it. So it is pinned
+#: whole -- as, since round three, is every other published description
+#: (:data:`WATCHED_KEY_DESCRIPTIONS`). A wording change is a deliberate act here,
+#: and the diff that makes this RED is the diff that has to say what moved.
 SCHEMA_ROOT_DESCRIPTION: Final = (
     "Per-repository configuration, Git-tracked. Contains no secrets: credentials live "
     "in ~/.theurian and the OS secret store (ADR-0011). This file has one reader: "
@@ -656,9 +653,15 @@ def _described_node(pointer: tuple[str, ...]) -> str:
 #: addition-proof one constant above (:data:`SCHEMA_ROOT_DESCRIPTION`) and then
 #: left the description that carries SEC-11's whole bound fragment-pinned.
 #:
-#: This is the second and last description pinned whole. The other nine stay
-#: fragment-pinned on purpose: they describe reserved keys, so a sentence added to
-#: one asserts nothing a reader can act on.
+#: It is one of twelve pinned whole now, and the sentence that used to stand here
+#: -- "the other nine stay fragment-pinned on purpose: they describe reserved keys,
+#: so a sentence added to one asserts nothing a reader can act on" -- was false in
+#: two places, which round three planted. ``retrieval.includeStatuses`` describes
+#: the status gate ("Defaults to approved only, so an unreviewed draft is never
+#: returned as though it were a team decision"), and ``security.maxSourceFileBytes``
+#: describes a limit ``security/paths.py`` enforces. Contradicting either is a
+#: false claim about a shipped control, in the built wheel, and both plants were
+#: green.
 SECRET_SCAN_DESCRIPTION: Final = (
     "In force. What `theurian propose accept` does when a body it would land appears to "  # noqa: S105 - a published schema description, not a credential
     "contain a secret (SEC-11, ADR-0027 decision 3): `block` refuses the acceptance and "
@@ -918,104 +921,240 @@ def test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it() -> Non
 #: Pinning the wording closes it, and pins the wording *deliberately*: these are
 #: not stylistic sentences.
 #:
+#: **Every published description, in full, and that is round three's finding.**
+#: The table used to hold three rows of *fragments*, on the argument that the
+#: other nine "describe reserved keys, so a sentence added to one asserts nothing
+#: a reader can act on". Two of the nine falsify that argument on their face:
+#: ``retrieval.includeStatuses`` describes the **status gate** — the reason an
+#: unreviewed draft is not returned as though it were a team decision — and
+#: ``security.maxSourceFileBytes`` describes the **limit ``security/paths.py``
+#: enforces** (SEC-8). A sentence added to either contradicts a shipped control in
+#: the built wheel, and both plants were green. A fragment pin cannot see an
+#: addition at all, so the fix is not more fragments: it is the whole text.
+#:
+#: So a row is ``(key, pointer, the description as the wheel publishes it)`` and
+#: the test below is an equality. The cost is real and is the point: rewording any
+#: published description is now a two-file diff that somebody reads. The two
+#: descriptions that already had a whole pin keep their own named tests —
+#: :func:`test_the_schema_root_description_is_exactly_what_this_file_records` and
+#: :func:`test_the_secret_scan_description_is_exactly_what_this_file_records`,
+#: both cited from the plugin changelog's mutation record — and they read their
+#: expected text from this table rather than carrying a second copy of it.
+#:
+#: **The root is a row here, and it is the row that was missing.** ``pointer`` is
+#: empty for it, so :func:`_published_description` reads the top-level
+#: ``description`` — the one every population key for this class counted past,
+#: because they counted *key blocks* and the root is not one (#455). It was
+#: wheel-shipped, false since ADR-0027 decision 3, contradicted by the
+#: ``secretScan`` row three lines down in the same artifact, and pinned by nothing
+#: at all.
+#:
 #: ``secretScan``'s row is the one that turned over with ADR-0027 decision 3. It
 #: used to require "No shipped code reads this key" and "no default is
-#: published"; it now requires the opposite claim and the reach that bounds it,
+#: published"; it now states the opposite claim and the reach that bounds it,
 #: because the sentence a reader has to be able to trust is no longer "this does
 #: nothing" but "this does exactly this much".
 #:
-#: **The root description is a row here, and it is the row that was missing.**
-#: ``pointer`` is empty for it, so the walk below stops at the parsed document and
-#: reads the top-level ``description`` — the one every population key for this
-#: class counted past, because they counted *key blocks* and the root is not one
-#: (#455). It was wheel-shipped, false since ADR-0027 decision 3, contradicted by
-#: the ``secretScan`` row three lines down in the same artifact, and pinned by
-#: nothing at all. Its four required fragments are the four things #199 unit B
-#: rewrote it to say: that the file has a reader, which module that is, which key
-#: it takes, and who owns the allowlist now that #129 is closed.
-WATCHED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+#: The eleven key rows are in the order :func:`_described_key_paths` derives, so
+#: the changelog sentence built from this table and the sentence built from the
+#: schema list the same names in the same order.
+WATCHED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("(schema root)", (), SCHEMA_ROOT_DESCRIPTION),
     (
-        "(schema root)",
-        (),
+        "providers",
         (
-            "This file has one reader",
-            "`security/project_config.py` takes `security.secretScan` from it and nothing else",
-            "every other key published here is reserved",
-            "https://github.com/theurian/theurian/issues/429",
+            "properties",
+            "providers",
         ),
+        "Adapter selection. Every provider defaults to a deterministic in-tree "
+        "implementation that needs no network and no API key (ADR-0009).",
     ),
     (
-        "security.secretScan",
-        ("properties", "security", "properties", "secretScan"),
+        "providers.embedding.apiKeyEnv",
         (
-            "In force",
-            "theurian propose accept",
-            "best effort",
-            "`theurian ingest` and index building run no scan",
-            "https://github.com/theurian/theurian/issues/198",
+            "properties",
+            "providers",
+            "properties",
+            "embedding",
+            "properties",
+            "apiKeyEnv",
         ),
+        "Name of the environment variable holding the API key. Storing a key in this file "
+        "is a configuration error.",
+    ),
+    (
+        "providers.embedding.endpointEnv",
+        (
+            "properties",
+            "providers",
+            "properties",
+            "embedding",
+            "properties",
+            "endpointEnv",
+        ),
+        "Name of the environment variable holding the endpoint. The value itself is never "
+        "stored here.",
     ),
     (
         "providers.review.repositories",
-        ("properties", "providers", "properties", "review", "properties", "repositories"),
         (
-            "Not in force",
-            "Nothing reads it today",
-            # The live owner. #429 owns the T-7 fetch controls the allowlist
-            # belongs to; #129 closed on 2026-08-22 on the wording rather than on
-            # the control, so it owned nothing afterwards (#428's class). The
-            # closed number stays in the description, in *historical* position and
-            # pinned as such by the fragment below, because deleting it would lose
-            # why the owner moved.
-            "https://github.com/theurian/theurian/issues/429",
-            "closed on the wording rather than on the control",
+            "properties",
+            "providers",
+            "properties",
+            "review",
+            "properties",
+            "repositories",
         ),
+        "Not in force. Allowlist of `owner/repo` values that review ingestion must "
+        "consult before contacting a repository (SEC-10). Nothing reads it today; owed "
+        "with the first external fetch path "
+        "(https://github.com/theurian/theurian/issues/429 owns the fetch controls; "
+        "https://github.com/theurian/theurian/issues/129 closed on the wording rather "
+        "than on the control).",
+    ),
+    (
+        "raptor.enabled",
+        (
+            "properties",
+            "raptor",
+            "properties",
+            "enabled",
+        ),
+        "Whether `theurian index build` derives a summary forest. Off by default "
+        "(ADR-0008 decision 10): a capability whose acceptance tests are owed and whose "
+        "build cost is unmeasured is turned on by a decision, not by an upgrade. "
+        "`theurian index build --raptor` is the same switch on one build.",
+    ),
+    (
+        "raptor.minChildrenPerSummary",
+        (
+            "properties",
+            "raptor",
+            "properties",
+            "minChildrenPerSummary",
+        ),
+        "Below this, a level is skipped. Summarising a single document adds cost and no "
+        "information.",
+    ),
+    (
+        "retrieval.includeStatuses",
+        (
+            "properties",
+            "retrieval",
+            "properties",
+            "includeStatuses",
+        ),
+        "Defaults to approved only, so an unreviewed draft is never returned as though it "
+        "were a team decision.",
+    ),
+    (
+        "retrieval.rrfK",
+        (
+            "properties",
+            "retrieval",
+            "properties",
+            "rrfK",
+        ),
+        "Reciprocal Rank Fusion smoothing constant.",
+    ),
+    (
+        "security.maxSourceFileBytes",
+        (
+            "properties",
+            "security",
+            "properties",
+            "maxSourceFileBytes",
+        ),
+        "The default documents the shipped limit rather than setting it: "
+        "`MAX_SOURCE_FILE_BYTES` in `security/paths.py` is 8388608 and is what ingestion "
+        "enforces (SEC-8). Nothing reads this key, so changing the value here has no "
+        "effect on that limit (https://github.com/theurian/theurian/issues/129).",
+    ),
+    (
+        "security.secretScan",
+        (
+            "properties",
+            "security",
+            "properties",
+            "secretScan",
+        ),
+        SECRET_SCAN_DESCRIPTION,
+    ),
+    (
+        "traceabilityPolicy",
+        (
+            "properties",
+            "traceabilityPolicy",
+        ),
+        "What each change type must be able to prove (§22). Unlisted change types default "
+        "to permissive, so adopting the policy never blocks unrelated work.",
     ),
 )
 
 
+def _published_description(pointer: tuple[str, ...]) -> str:
+    """The description the schema publishes at ``pointer``, the root included.
+
+    One reader for both shapes, because the root is a member of this population
+    and an empty pointer is how it is spelled (#455).
+    """
+    if not pointer:
+        published = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))["description"]
+        assert isinstance(published, str), "the schema publishes no root description"
+        return published
+    return _described_node(pointer)
+
+
 @pytest.mark.parametrize(
-    ("key", "pointer", "required"),
+    ("key", "pointer", "recorded"),
     WATCHED_KEY_DESCRIPTIONS,
     ids=[case[0] for case in WATCHED_KEY_DESCRIPTIONS],
 )
-def test_each_watched_key_still_publishes_the_reach_the_scan_enforces(
-    key: str, pointer: tuple[str, ...], required: tuple[str, ...]
+def test_each_watched_key_publishes_exactly_the_description_this_file_records(
+    key: str, pointer: tuple[str, ...], recorded: str
 ) -> None:
     """The other direction of the same claim, which the scan above cannot reach.
 
     The scan goes red when the source tree stops matching the published
-    description. It stays green if the *description* moves instead — a key
-    quietly re-described as working, with no reader anywhere, leaves the schema
-    asserting a control that does not exist and every document resting on it
-    unchanged. That is the #198 defect exactly, arriving from the other side, and
-    it has a mirror now that one of the two keys works: a description that stops
-    bounding ``secretScan``'s reach lets a reader believe ingest is covered.
+    description. It stays green if the *description* moves instead — a key quietly
+    re-described as working, with no reader anywhere, leaves the schema asserting a
+    control that does not exist and every document resting on it unchanged. That is
+    the #198 defect exactly, arriving from the other side, and it has a mirror now
+    that one of the keys works: a description that stops bounding ``secretScan``'s
+    reach lets a reader believe ingest is covered.
 
-    So the two halves are pinned in one file: the description states the reach,
-    and the source tree is held to it.
+    So the two halves are pinned in one file: the description states the reach, and
+    the source tree is held to it.
+
+    **An equality and not a fragment list**, because a fragment list is blind to
+    the shape that ships a false control claim -- a sentence *added* beside the
+    fragments, which keeps every one of them matching. Round three planted that in
+    ``retrieval.includeStatuses`` and ``security.maxSourceFileBytes``, whose
+    descriptions state the status gate and SEC-8's enforced limit, and both plants
+    shipped in the built wheel with every check green.
+
+    If this is RED because a wording genuinely improved, copy the new text in --
+    and say in the same commit what claim it now makes, because that review is what
+    the pin exists to force.
     """
-    description = (
-        json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))["description"]
-        if not pointer
-        else _described_node(pointer)
-    )
+    published = _published_description(pointer)
 
-    for sentence in required:
-        assert sentence in description, (
-            f"{key}: the published description no longer says {sentence!r}.\n\n"
-            f"It reads:\n  {description!r}\n\n"
-            f"That sentence is what six documents rest on — SECURITY.md, "
-            f"docs/security/threat-model.md (T-15 and T-7), "
-            f"docs/architecture/requirements-analysis.md, "
-            f"docs/architecture/review-knowledge.md, "
-            f"plugins/claude-code/commands/ingest.md and the sample project's "
-            f"config.yaml all tell a reader how far to trust the control (#198, "
-            f"#129). If what the key does has changed, "
-            f"`test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_ones` "
-            f"is where the readers get recorded and those documents are where "
-            f"the claim gets corrected; if it has not, restore the sentence."
-        )
+    assert published == recorded, (
+        f"{key}: the published description is not the recorded one.\n\n"
+        f"  published: {published!r}\n\n"
+        f"  recorded : {recorded!r}\n\n"
+        f"These descriptions are wheel-shipped, and six documents rest on them -- "
+        f"SECURITY.md, docs/security/threat-model.md (T-15 and T-7), "
+        f"docs/architecture/requirements-analysis.md, "
+        f"docs/architecture/review-knowledge.md, "
+        f"plugins/claude-code/commands/ingest.md and the sample project's "
+        f"config.yaml all tell a reader how far to trust a control (#198, #129).\n\n"
+        f"If what the key does has changed, "
+        f"`test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_ones` "
+        f"is where the readers get recorded and those documents are where the claim "
+        f"gets corrected. If the wording improved, copy it in and say what claim it "
+        f"now makes -- an addition is the direction a fragment pin could not see."
+    )
 
 
 #: The prose surfaces that state how far SEC-11's control reaches, as
@@ -1630,22 +1769,28 @@ def test_the_changelog_states_the_pin_reach_this_module_actually_has() -> None:
     :data:`WATCHED_SPELLINGS` and the published schema, and the sentence is
     rebuilt from the results rather than pattern-matched.
 
-    So the pin fails in both directions a coverage claim can drift. Pinning a
-    fourth key without touching the entry is RED, because the rebuilt sentence
-    says "4 of the 12" and the file still says three. Publishing a twelfth key
-    block is RED for the same reason from the schema side. And a rewrite that
-    quietly restores "as well as the eleven key blocks" is RED because that
-    sentence is not the one this builds.
+    So the pin fails in both directions a coverage claim can drift. **Unpinning**
+    a key without touching the entry is RED, because the rebuilt sentence says "11
+    of the 12" where the file says twelve. Publishing a *thirteenth* key block is
+    RED for the same reason from the schema side. And a rewrite that quietly
+    restores "as well as the eleven key blocks" is RED because that sentence is not
+    the one this builds.
 
     The names are derived too, not only the counts: swapping which key is pinned
     keeps every number identical and still reddens.
+
+    **The closing clause has two shapes because the count reached its ceiling.**
+    Round three took the table from three rows to all twelve, so "The other zero
+    are unpinned" was what the old shape rendered. The clause is chosen by the
+    same derivation that produces the numbers, and either shape is RED against a
+    changelog carrying the other.
     """
     described = _described_key_paths()
     published = 1 + len(described)
     pinned = len(WATCHED_KEY_DESCRIPTIONS)
     watched_blocks = tuple(sorted(WATCHED_SPELLINGS.keys() & set(described)))
     unblocked = tuple(sorted(WATCHED_SPELLINGS.keys() - set(described)))
-    dotted = tuple(key for key, _pointer, _required in WATCHED_KEY_DESCRIPTIONS if _pointer)
+    dotted = tuple(key for key, _pointer, _recorded in WATCHED_KEY_DESCRIPTIONS if _pointer)
     changelog = " ".join(CORE_CHANGELOG.read_text(encoding="utf-8").split())
 
     assert len(unblocked) == 1, (
@@ -1653,12 +1798,17 @@ def test_the_changelog_states_the_pin_reach_this_module_actually_has() -> None:
         f"and there are now {len(unblocked)}: {list(unblocked)}. The sentence's "
         f"shape has to move with them, so rewrite it before repairing this pin."
     )
+    remainder = (
+        "Every published description is pinned."
+        if pinned == published
+        else f"The other {_number_word(published - pinned)} are unpinned."
+    )
     reach = (
         f"the schema publishes **{published}** descriptions — the root and "
         f"{len(described)} key blocks — and **{pinned} of the {published}** carry a "
         f"`WATCHED_KEY_DESCRIPTIONS` row in `tests/unit/test_config_key_call_sites.py`: "
         f"{_english_list(('the root', *(f'`{key}`' for key in dotted)))}. "
-        f"The other {_number_word(published - pinned)} are unpinned."
+        f"{remainder}"
     )
     spellings = (
         f"A reader added for any of the {_number_word(len(WATCHED_SPELLINGS))} spellings "

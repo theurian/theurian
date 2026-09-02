@@ -40,20 +40,24 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
   **Pinned in both directions for the first time**, which is why the false
   sentence survived four sweeps unnoticed. What is pinned is stated as a
-  derivation rather than as coverage, because it is partial by design. Measured
-  at `378878a`: the schema publishes **12** descriptions — the root and 11 key
-  blocks — and **3 of the 12** carry a `WATCHED_KEY_DESCRIPTIONS` row in
-  `tests/unit/test_config_key_call_sites.py`: the root,
-  `security.secretScan` and `providers.review.repositories`. The other nine are
-  unpinned. Reaching the root at all is what is new; every earlier key
-  enumerated *key blocks*, and the root is not one. **Two of the three are
-  pinned whole** — the root and `security.secretScan`, each by an exact match on
-  its own recorded text — so a fabricated control claim *added* beside the
-  required fragments is RED. A fragment row catches a reword and a deletion and
-  cannot catch an addition, which is why the description carrying SEC-11's whole
-  bound stopped being one; `providers.review.repositories` keeps named fragments,
-  because it describes a key nothing reads and a sentence added to it asserts
-  nothing a reader can act on. The schema separately joined
+  derivation rather than as coverage. Re-derived after round three widened the
+  table: the schema publishes **12** descriptions — the root and 11 key blocks —
+  and **12 of the 12** carry a `WATCHED_KEY_DESCRIPTIONS` row in
+  `tests/unit/test_config_key_call_sites.py`: the root, `providers`,
+  `providers.embedding.apiKeyEnv`, `providers.embedding.endpointEnv`,
+  `providers.review.repositories`, `raptor.enabled`,
+  `raptor.minChildrenPerSummary`, `retrieval.includeStatuses`, `retrieval.rrfK`,
+  `security.maxSourceFileBytes`, `security.secretScan` and `traceabilityPolicy`.
+  Every published description is pinned. Reaching the root at all is what is new;
+  every earlier key enumerated *key blocks*, and the root is not one. **Each row
+  is the whole published text**, matched exactly, so a fabricated control claim
+  *added* beside a description's real sentences is RED — the direction no
+  fragment row has. Three rows carried fragments until round three, on the
+  argument that a reserved key's description "asserts nothing a reader can act
+  on". That is false of `retrieval.includeStatuses`, which describes the status
+  gate, and of `security.maxSourceFileBytes`, which describes the limit
+  `security/paths.py` enforces: a contradicting sentence added to either shipped
+  in the built wheel with every check green. The schema separately joined
   `tests/unit/test_raptor_config_claims.py`'s scanned prose surfaces. A reader
   added for any of the five spellings in `WATCHED_SPELLINGS` — four of them
   published key blocks, plus `raptor.maxLevels`, which has no block — reddens
