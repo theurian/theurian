@@ -136,13 +136,15 @@ here; the *behaviour* underneath is
 ``test_review_findings_tool.py::test_no_response_carries_a_byte_of_a_rejected_trailer``
 and ``test_findings_store_reads_are_governed.py``, not this module.
 
-The response's shape is held the same way. The note says the response is **two
-members** and names both, and
+The response's shape is held the same way. The note says the response is **three
+members** and names each, and
 :func:`test_the_served_response_holds_exactly_the_members_the_note_names`
 recomputes them from :func:`findings_payload` rather than restating them: a
 surface that added a rejected count or the store's stamp -- the two values the
 note says were considered and left out -- moves the live key set and the record
-has to move with it.
+has to move with it. The count is read from the live payload rather than spelled
+here for exactly the reason it has already moved once: ``truncated`` was the
+third member added by PR #504 round 1 (R1-4).
 
 The prose half is the note's own anchor and its one verbatim sentence.
 **Staleness speaks only through the constant refusal** is pinned literally
@@ -1031,14 +1033,35 @@ def test_the_query_type_cannot_ask_for_a_rejection_or_an_unbounded_read() -> Non
     disclosure round, which is what this RED is for. The behaviour underneath is
     ``test_review_findings_tool.py::test_no_response_carries_a_byte_of_a_rejected_trailer``
     and ``test_findings_store_reads_are_governed.py``'s runtime audit.
+
+    **The population is an equality against a spelled allowlist, not a search for
+    the word "reject".** That search was the key here until PR #504 round 1
+    (LOW): it catches ``include_rejected`` and misses ``with_malformed``,
+    ``include_discarded`` and ``unparsed`` -- every spelling somebody adding the
+    member would plausibly choose once they had read the note saying no such
+    member exists. An equality has no such blind spot: any new member fails until
+    it is written down here, which is where the disclosure argument gets asked
+    for.
     """
     members = {field.name: field for field in dataclasses.fields(FindingQuery)}
+    published = {
+        "limit",
+        "reviewer",
+        "severity",
+        "family",
+        "specialist",
+        "commit_sha",
+        "pull_request",
+        "text_contains",
+    }
 
-    assert members, "FindingQuery carries no fields at all, so the scan below reads nothing"
-    naming_a_rejection = sorted(name for name in members if "reject" in name)
-    assert not naming_a_rejection, (
-        f"`FindingQuery` gained {naming_a_rejection}, so ADR-0029's slice-3 note is wrong "
-        f"that no member of the query type can select a rejected trailer"
+    assert set(members) == published, (
+        f"`FindingQuery`'s members are {sorted(members)}, and this pin admits "
+        f"{sorted(published)}. ADR-0029's slice-3 note rests its rejected-trailer "
+        f"exclusion on the *shape* of this type -- there is no member that selects a "
+        f"rejection -- so a member added or removed here changes what a serving read "
+        f"can ask for. Add it to the list once its disclosure argument is written, "
+        f"never before."
     )
     assert "limit" in members, (
         "`FindingQuery` has no `limit`, so the note's `the type cannot express an "
@@ -1054,12 +1077,14 @@ def test_the_query_type_cannot_ask_for_a_rejection_or_an_unbounded_read() -> Non
 def test_the_served_response_holds_exactly_the_members_the_note_names() -> None:
     """RED means the response grew or lost a member and the record did not follow.
 
-    The note says the response is two members and names both, and its disclosure
-    argument turns on the ones that are *absent*: a rejected count would be a
-    statistic over rows this tool never serves, and the store's stamp would
-    publish build metadata the refusal already stands for. Adding either moves the
-    live key set, so the count and the names are recomputed from
-    :func:`findings_payload` rather than restated here.
+    The note names each member of the response, and its disclosure argument turns
+    on the ones that are *absent*: a rejected count would be a statistic over rows
+    this tool never serves, and the store's stamp would publish build metadata the
+    refusal already stands for. Adding either moves the live key set, so the count
+    and the names are recomputed from :func:`findings_payload` rather than
+    restated here -- which is why this test needed no edit when ``truncated``
+    became the third member (PR #504 round 1, R1-4) and the note's own number
+    word did.
 
     Both halves are asserted: the number word the note spells, and each member's
     own name. A note that kept saying `two` while naming one of them would pass

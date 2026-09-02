@@ -315,6 +315,15 @@ def _violations(reads: list[_Read]) -> dict[str, list[str]]:
     A pure function over the log, so the drive below and the synthetic evasive
     reader are graded by the same code -- a check asserted in one place and
     demonstrated in another proves nothing about the check that runs.
+
+    **A statement naming both tables counts as stamping, and that is the ``elif``
+    below rather than an accident of it.** One ``SELECT`` that joins ``findings``
+    to ``findings_metadata`` has read the stamp in the same statement -- and, being
+    one statement on one connection, from the same file -- which is exactly what
+    the third prong asks for; reporting it as an unstamped read as well would fail
+    a reader that satisfied the promise in a single round trip. The other two
+    prongs still see it: a join is graded for the rejected table and for its bound
+    in the first loop, where no ``elif`` intervenes.
     """
     broken: dict[str, list[str]] = {}
     for read in reads:

@@ -1072,6 +1072,40 @@ async def test_the_truncation_signal_is_computed_over_servable_rows_alone(
 # -- AC-3: the store cannot be served from ----------------------------------
 
 
+def test_the_unservable_refusal_says_what_it_has_always_said() -> None:
+    """The words themselves, which every other assertion here reads symbolically.
+
+    Every other assertion on this refusal reads the constant symbolically -- six
+    ``FINDINGS_UNAVAILABLE_REFUSAL in ...`` checks and one ``not in``, measured in
+    this file on 2026-09-03 -- and every one of them would hold if the constant
+    were reworded to anything at all, including something that named which of the
+    four causes fired or that dropped the remedy (PR #504 round 1, LOW). This is
+    the one place the sentence is compared against text written down
+    independently of it, so changing it is a decision somebody makes rather than
+    a drift nothing notices.
+
+    What the wording carries and must not lose: the remedy a caller can act on
+    (``theurian findings build``, and *in the project*, since the cure is local
+    even when the store arrived with the repository), the "it has not been built"
+    reading that covers the provenance arm without naming it, and the closing
+    sentence that says the message is a constant -- the sentence SEC-13 makes
+    load-bearing, and the one a reader checks the message against.
+    """
+    assert FINDINGS_UNAVAILABLE_REFUSAL == (
+        "This project has no review-finding store that can be served: it has not been "
+        "built, or it was built by a superseded schema or trailer grammar. Run "
+        "`theurian findings build` in the project to rebuild it from git history. This "
+        "refusal message is a constant: it carries nothing from your request or from "
+        "any project's contents."
+    ), (
+        "the constant `review.findings` refuses an unservable store with has been "
+        "reworded. "
+        "That is a published sentence: correct this pin in the same change, and check "
+        "that the new wording still carries the local rebuild remedy and still says "
+        "nothing about which of the four causes fired (SEC-13)."
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_project_with_no_findings_store_is_refused_not_answered_empty(
     project: ProjectRegistry,
