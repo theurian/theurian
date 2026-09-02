@@ -353,12 +353,37 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   was not caught, "because nothing is left to be inconsistent with"; a pinned
   figure fails on that too, since the tally line simply stops being printed —
   the last row above. The audit's own `--positive-control` still exits 0 under
-  both deletion edits, so the guard is what catches them. The bound that *does*
-  hold is narrower and stated so it can be attacked: **every check here asks
-  whether a control ran, none asks whether it still asserts anything.** A row
-  duplicated to keep the count, or a row whose expected value is edited to match
-  what the code now does, passes every one of them. That is what review is for.
-  Full populations, keys and mutation controls:
+  both deletion edits, so the guard is what catches them.
+
+  **Round four then found the guard reading one of the three signals a failing
+  control row produces.** A row that disagrees with its key is printed as
+  `FAIL <label>`, counted into the `failed=` half of its table's `CONTROL-TALLY`
+  line, and folded into the exit code — and the guard read the exit code. One
+  token separates it from the truth, and the two edits launder different halves:
+
+  | The edit, applied with a control row genuinely failing | Audit `--pc` | Guard before | Guard now |
+  | :-- | :-- | :-- | :-- |
+  | `return 1 if failures else 0` → `return 0` in the escape runner | exit 0, `failed=1`, one `FAIL` row printed | green | **RED** |
+  | `failures += status == "FAIL"` → `failures += 0` in the escape runner | exit 0, `failed=0`, one `FAIL` row printed | green | **RED** |
+  | `(1 if failures else 0) \|` → `0 \|` in `_run_positive_controls` | exit 0, `failed=21`, 21 `FAIL` rows printed | green | **RED** |
+
+  The guard now asserts both printed signals, and neither is derived from the
+  other: the first edit is caught by the `failed=` figure and the second is not,
+  and the `FAIL` row line is what catches the second. Getting past both takes
+  two edits rather than one.
+
+  **What the guard still does not reach, named rather than left implicit.** Two
+  edits pass every check here, and both were run against the guard as it now
+  stands. A control row that keeps its place in the count while it stops
+  asserting anything — a row duplicated, or its expected value edited to match
+  what the code does — is what review is for. And a loop that sets
+  `ran = len(TABLE)` and then iterates a slice of it prints `ran=21` from a loop
+  that executed none: the point of the tally is that the number comes from the
+  loop, this edit produces it elsewhere, and comparing it back to the table's own
+  length cannot separate the two. Measured green under the guard before and
+  after; catching it wants a line per executed row, which is
+  [#512](https://github.com/theurian/theurian/issues/512)'s. Full populations,
+  keys and mutation controls:
   [`docs/work-logs/2026-09-02-199-unit-b-census.md`](../../docs/work-logs/2026-09-02-199-unit-b-census.md).
 
 - **ADR-0008's two dated measurement anchors say which pull requests they belong

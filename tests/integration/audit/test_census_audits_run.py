@@ -28,11 +28,29 @@ pins those counts, the call graph is read to catch a runner nobody reaches, and
 :func:`test_this_guards_own_control_keys_select_something` holds the guard to the
 rule it holds the audits to.
 
-**What none of it reaches**, so the bound is a sentence a reader can attack: a
-control row that keeps its place in the count while it stops asserting anything
--- a row duplicated, or its expected value edited to match what the code now
-does. Every check here is about whether a control *ran*; whether the row is worth
-running is what review is for.
+**And a fourth claim, which round four is why.** A failing control row is
+reported three ways -- printed as ``FAIL <label>``, counted into the ``failed=``
+half of its table's ``CONTROL-TALLY`` line, and folded into the exit code -- and
+until round four this guard read the exit code alone. One token separates it from
+the truth: ``return 1 if failures else 0`` becoming ``return 0`` leaves the row
+printed and counted above a zero exit, and ``failures += status == "FAIL"``
+becoming ``failures += 0`` leaves it printed above a zero count and a zero exit.
+:func:`test_no_census_audit_reports_a_failed_control_row` asserts the two printed
+signals, neither derived from the other, so no single token gets past them.
+
+**Two edits it does not reach**, written down so the bound is a sentence a reader
+can attack rather than one nobody wrote:
+
+* a control row that keeps its place in the count while it stops asserting
+  anything -- a row duplicated, or its expected value edited to match what the
+  code now does. Every check here is about whether a control *ran* and whether it
+  agreed; whether the row is worth running is what review is for.
+* a loop that sets ``ran = len(TABLE)`` and then iterates a slice of it. The
+  point of :func:`claim_surfaces.print_control_tally` is that ``ran`` is produced
+  by the loop, and this edit produces it somewhere else; comparing it back to the
+  table's own length cannot separate the two. Catching it wants a line per
+  executed row rather than a count, which is
+  [#512](https://github.com/theurian/theurian/issues/512)'s.
 
 **The audit set is derived, not listed.** A module in ``tools/audit/`` is a
 census audit when it offers ``--positive-control``; the population keys beside
@@ -277,14 +295,28 @@ def _is_control_table(name: str) -> bool:
     return name.endswith("_CONTROLS") or name in set(REQUIRED_BY_RUNNER.values())
 
 
-def _tallies(stdout: str) -> dict[str, int]:
-    """The rows each control table reported **running**, parsed out of one run."""
-    found: dict[str, int] = {}
+def _tallies(stdout: str) -> dict[str, tuple[int, int]]:
+    """Per control table, the rows it reported **running** and how many **failed**.
+
+    Both halves of the line are parsed, and the second half is round four's. The
+    ``failed=`` figure was printed and read by nobody: an audit whose control row
+    disagrees with its key reports the disagreement on this line and then folds it
+    into an exit code, so a runner that stops folding it in -- ``failures += 0``,
+    or a ``return 0`` where the failure count was consulted -- leaves the audit
+    exiting 0 with a FAIL printed above the tally. The run beside this one reads
+    the exit code and saw a working instrument.
+    """
+    found: dict[str, tuple[int, int]] = {}
     for line in stdout.splitlines():
         match = _TALLY_LINE.match(line.strip())
         if match is not None:
-            found[match.group("table")] = int(match.group("ran"))
+            found[match.group("table")] = (int(match.group("ran")), int(match.group("failed")))
     return found
+
+
+def _rows_run(stdout: str) -> dict[str, int]:
+    """Just the ``ran`` half of :func:`_tallies`, for the pinned-count comparison."""
+    return {table: ran for table, (ran, _failed) in _tallies(stdout).items()}
 
 
 @pytest.mark.parametrize("script", CENSUS_AUDITS, ids=_IDS)
@@ -428,18 +460,83 @@ def test_each_census_audit_runs_the_control_rows_this_guard_records(
     The numbers are pinned rather than derived from ``len(TABLE)`` for that last
     reason, and the cost is that adding a control row is a two-file edit. Read a
     diff that *lowers* one of these as the finding it is.
+
+    **The one edit in this family this check does not see**, stated because a
+    bound nobody writes down is a bound nobody attacks: a loop that assigns
+    ``ran = len(TABLE)`` and then iterates a slice of it. The tally is then a
+    number the loop did not produce, which is the property
+    :func:`claim_surfaces.print_control_tally` exists to have, and reading it back
+    against the table's own length cannot tell the two apart. Catching it needs a
+    line per executed row rather than a count, which is #512's
+    (https://github.com/theurian/theurian/issues/512).
     """
     done = _run(script, CONTROL_FLAG, OFFLINE)
     recorded = CONTROL_TALLIES[script.stem]
 
-    assert _tallies(done.stdout) == recorded, (
-        f"`{script.name} {CONTROL_FLAG}` ran {_tallies(done.stdout)} control rows, "
+    assert _rows_run(done.stdout) == recorded, (
+        f"`{script.name} {CONTROL_FLAG}` ran {_rows_run(done.stdout)} control rows, "
         f"and this guard records {recorded}.\n\n"
         f"A table missing from the run has stopped being executed -- its runner "
         f"returns early, or nothing calls it, or the table is gone. A count that "
         f"dropped means the loop no longer covers the table it names. A count that "
         f"rose means a control row was added, which is the one case where the fix "
         f"is to update the figure here.\n\n" + _report(done, script, f"{CONTROL_FLAG} {OFFLINE}")
+    )
+
+
+#: A control row the audit printed as failing, as every runner here spells one.
+#:
+#: Each control loop computes ``status = "OK  " if <verdict> else "FAIL"`` and
+#: prints ``f"  {status} {label}"``, in all five audits. So a stripped line opening
+#: ``FAIL`` is one row disagreeing with its key -- a second signal beside the
+#: ``failed=`` figure, and deliberately not derived from it.
+_FAILING_ROW: Final = re.compile(r"^FAIL\b")
+
+
+@pytest.mark.parametrize("script", CENSUS_AUDITS, ids=_IDS)
+def test_no_census_audit_reports_a_failed_control_row(script: pathlib.Path) -> None:
+    """RED means a control row disagreed with its key while the run still exited 0.
+
+    ``--positive-control`` says three things about a failing row and this guard
+    read one of them. It prints the row as ``FAIL <label>``, counts it into the
+    ``failed=`` half of that table's ``CONTROL-TALLY`` line, and folds the count
+    into the process exit code. Until round four only the exit code was read, and
+    the two edits that separate it from the truth are each one token:
+
+    * ``return 1 if failures else 0`` becoming ``return 0`` -- the row prints
+      ``FAIL``, the tally prints ``failed=1``, the process exits 0;
+    * ``failures += status == "FAIL"`` becoming ``failures += 0`` -- the row still
+      prints ``FAIL``, and now the tally prints ``failed=0`` as well.
+
+    Neither moves a table, a row count or the call graph, so every other check in
+    this module stays green through both. **Both printed signals are asserted
+    here, and neither is derived from the other**: the first edit is caught by the
+    tally figure and the second is not, and the row line is what catches the
+    second. An audit would have to stop printing the row *and* stop counting it to
+    get past both, which is no longer one token.
+
+    A failing row means the key and the row disagree. Either the key stopped
+    matching what the row plants, or the row's recorded verdict is no longer what
+    the code does -- the audit's own output names which row, and the row is not the
+    thing to edit until you know which.
+    """
+    done = _run(script, CONTROL_FLAG, OFFLINE)
+
+    counted = sorted(table for table, (_ran, failed) in _tallies(done.stdout).items() if failed)
+    printed = [
+        line.strip() for line in done.stdout.splitlines() if _FAILING_ROW.match(line.strip())
+    ]
+
+    assert not counted and not printed, (
+        f"`{script.name} {CONTROL_FLAG}` exited {done.returncode} with "
+        f"{len(printed)} row(s) printed as FAIL and failures counted in "
+        f"{counted}.\n\n"
+        f"Rows printed as failing: {printed}\n\n"
+        "If the exit code is 0, the audit is reporting a failure it does not fold "
+        "into its own status, which is what makes the run beside this one read a "
+        "broken key as a working instrument. If a row printed FAIL and no table "
+        "counted it, the counter itself has been separated from the report.\n\n"
+        + _report(done, script, f"{CONTROL_FLAG} {OFFLINE}")
     )
 
 
