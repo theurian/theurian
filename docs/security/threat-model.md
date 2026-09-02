@@ -106,7 +106,8 @@ token. This raises the bar from "any script" to "already has filesystem access";
 it does not eliminate the class, and SECURITY.md says so.
 
 **Accepted deployment precondition (recorded 2026-09-02, with ADR-0029's serving
-slice): the MCP audience is not broader than the repository's readers.** The
+slice): the MCP audience is not broader than the readers of every repository the
+daemon serves.** The
 `review.findings` tool serves the `Review-Finding:` trailers of a project's own
 git history, read from the pinned `refs/remotes/origin/main` by
 `theurian findings build`. What it hands a caller is therefore what a `git log`
@@ -115,7 +116,18 @@ caller who can read that clone's `.git`**, and an MCP caller is a distinct
 audience from a local repository reader. So the reach argument is recorded as a
 precondition on the deployment rather than claimed as a property of the code:
 *the daemon's MCP audience must not be broader than the set of principals who
-may read the repository it serves from.*
+may read **every** repository it serves from.*
+
+**Plural, and the plural is the load-bearing word.** One daemon serves every
+project in its registry (ADR-0002), `projectId` names which one, and nothing
+scopes a caller to a subset — so a caller who may read one registered
+repository can call `review.findings` against all of them. The set the
+precondition bounds is therefore the **intersection** of the read-sets, not any
+one repository's: registering a second project narrows what the deployment may
+share its token with, and a repository whose trailers are not for this audience
+must not be registered on this daemon at all. The singular wording this entry
+carried until PR #504 round 1 read as a per-repository condition, which is
+weaker than what holds.
 
 - **Why it holds in the shipped default.** The daemon binds loopback only and
   *refuses* anything else — `DaemonConfig.__post_init__` raises on a host outside
@@ -151,8 +163,8 @@ may read the repository it serves from.*
   what it states is a condition on the deployment, not a defect in the shipped
   code: nothing in this build violates it. The change that would make it a graded
   entry with its own T-number is the one that widens the audience — a
-  non-loopback bind, a shared token, or a daemon serving a repository its callers
-  may not read.
+  non-loopback bind, a shared token, or a daemon that registers **any**
+  repository its callers may not read.
 
 #### T-2 — A web page reaches the daemon via DNS rebinding (Spoofing, High)
 
@@ -842,6 +854,14 @@ argument it carried is not true of the other two.
 | `IndexStore.search_dense` | `fetchall` over every embedding in the project, then a `struct.unpack` and a Python cosine per row, then a sort | **yes** — `_dense_ranking` is pure Python | **nothing.** The port takes no `limit`, and one would not have bounded it — see below |
 | `mcp.search._scan`, behind `substring_answer` | one `list_items_by_status` materialising every *surfaceable* item in the project — the withheld rows are dropped by a SQL `status IN (...)` filter over `idx_items_status`, never read (#158) — then two queries per document, the revision then its source anchors, and a Python `in` over the whole of its title and body | **yes** — the match is a Python `in` | `limit`, and only for a query that *matches*. One that matches nothing walks every surfaceable document, and `list_items_by_status` materialises the whole surfaceable set before the first comparison either way — so its rows and memory are still bounded by nothing the caller passes. What it no longer carries is the *withheld* count: since #158 the read is planned through `idx_items_status` and never touches a withheld row (`test_the_substring_scan_materializes_the_same_rows_however_many_are_withheld`) |
 
+**A fourth query-side member landed after those three** — `review.findings`
+(ADR-0029 phase-2 slice-3) — **and it is enumerated at the end of this entry's
+query material**, under *The fourth query-side member: `review.findings`*. It is set apart rather
+than added as a row because every "all three" and "the third member" statement
+between here and there was measured against the Milestone 5 set and continues to
+range over it: the cost table, the GIL columns, the concurrency figures and the
+`knowledge_search` admission gate are all statements about those three.
+
 All three are reachable from the public API with no tuning and no privileges. The
 scan needs eight two-character terms with the matching one typed last — roughly
 24 characters, a hundredth of `MAX_QUERY_CHARS`. The dense path needs
@@ -1256,6 +1276,72 @@ bytes it sent. `Registered:` names ids the same caller reads from `project.list`
 which is why `_unresolvable` publishes them at all (SEC-13); those ids and the
 unreadable list are the daemon's own registry contents, not caller input, so they
 need no bound. What was unbounded was the amplification, not the audience.
+
+**The fourth query-side member: `review.findings`.**
+Added by ADR-0029 phase-2 slice-3 (2026-09-02), after the three above and with
+its own bounds rather than a share of theirs. It is a documented entry point
+that reads a database on a caller's request, so it belongs in this entry; it is
+listed separately because none of the measurements above ranges over it.
+
+| Dimension | Bound | Refuses or clamps |
+| :-- | :-- | :-- |
+| rows returned | `mcp/findings.py::MAX_FINDINGS_LIMIT` (100), `DEFAULT_FINDINGS_LIMIT` (20) when the caller sends none | **refuses.** A silent clamp would let a caller read "these are the findings matching my filter" off a page cut from more |
+| bytes per served `findingText` | `mcp/findings.py::max_finding_text_chars()`, derived from `MAX_QUERY_CHARS` (2,000) rather than respelled | **clamps**, and marks the cut — the one bound on this surface that does, see below |
+| bytes per string filter, before anything is matched or echoed | `mcp/findings.py::MAX_FILTER_CHARS` (200) | **refuses**, reporting the length and never quoting the value (#17's amplification discipline) |
+| magnitude of `pullRequest` | `mcp/findings.py::MAX_PULL_REQUEST`, defined as the widest value the store's signed 64-bit column can hold (`2**63 - 1`); a refusal quotes at most `MAX_ECHOED_DIGITS` (20) decimal digits and describes anything larger by its digit count | **refuses** |
+| concurrent occupancy | its own `threading.BoundedSemaphore` sized by `MAX_CONCURRENT_SEARCHES` (4), waited on for `ADMISSION_WAIT_SECONDS` (1.0 s), refusing with `FINDINGS_CAPACITY_REFUSAL` | **refuses** |
+| wall clock per call | **nothing**, for the reason recorded above: a sync tool's worker thread is not stopped by cancelling the awaiting task, so a transport timeout bounds the wait and not the spend |
+
+**Only the row count was bounded when the tool was first written, and that was
+not a bound on anything a caller receives.** `findingText` is byte-preserved
+from a commit message, a commit message line has no length limit, and the store
+copies it through without inspecting it — so one planted trailer set the size of
+the response. Measured in PR #504 round 1 against `857d3b0`, 2026-09-02: a 2 MiB
+trailer line served at `limit=40` produced **83.9 MB in one response**. The cap
+figure the round also recorded — of the order of 210 MB at `limit=100` — is that
+measurement scaled by row count, not a second measurement. The planting actor is
+T-5's contributor, not the caller.
+
+**The byte bound clamps where every other bound here refuses, and the split is
+the decision.** Every bound a *caller* can provoke refuses, because a truncated
+answer to a filtered question reads as the whole answer. `findingText` is the
+one value whose over-long input is a **stored row rather than a request**:
+refusing it would let one planted commit message deny the whole tool to every
+caller, and the caller who would be refused is not the one who wrote the row. So
+it is cut at the bound and an explicit marker is appended, the shape
+`knowledge.search`'s excerpt already uses. Pinned in both directions by
+`test_review_findings_tool.py::test_an_oversized_finding_is_served_bounded_and_visibly_cut`
+— the long row comes back cut and marked, the ordinary row beside it
+byte-identical, so a bound of one character would not pass.
+
+**The scan behind the page is corpus-bounded, not caller-bounded.** `findings`
+carries no index but its primary key and the serve orders on `committed_at`, so
+one call is a full pass over the accepted-findings table whatever the filter:
+502 accepted findings on this repository's own history (`origin/main` @
+`141cf6f`, measured 2026-09-02). No filter a caller sends makes that larger, and
+`limit` bounds what comes back rather than what is read.
+
+**Its admission gate is its own, and that is a recorded default rather than a
+tuning.** Sharing `knowledge.search`'s semaphore would have made a findings
+flood refuse searches with `SEARCH_CAPACITY_REFUSAL`, whose published text says
+the daemon is answering its maximum number of concurrent *searches* — a message
+made false by load on a different tool. Each gate now describes its own
+occupancy and nothing else, asserted by
+`test_review_findings_tool.py::test_the_findings_read_is_admission_gated_like_a_search`,
+which requires the findings refusal *and* requires the search cap's wording to
+be absent. The size is the same constant deliberately: a second number would be
+a tuning claim nothing here has measured. There is no operator config key for
+either, as with `MAX_CONCURRENT_SEARCHES` itself (#26).
+
+**The recorded cost of that split.** Concurrent occupancy across the two tools
+is `2 × MAX_CONCURRENT_SEARCHES` — **8** worker threads — rather than one bound
+of 4. Both still sit under `anyio`'s own default thread limiter (40 tokens,
+`anyio` 4.14.2, measured 2026-08-30), which is what bounds them together; what
+each cap bounds is an unbounded queue building up behind whatever is already
+running on *that* tool. The queue-depth figures recorded above for a
+`knowledge.search` flood were not re-taken for this member, and no GIL or
+asyncio-tick measurement was taken for it at all — stated rather than inferred
+from "a bounded SQLite read ought to be cheaper".
 
 **Controls on `propose accept`'s body-materialisation cost**
 ([#306](https://github.com/theurian/theurian/issues/306),
@@ -5522,8 +5608,12 @@ rebuild strands nothing.
 Class: **derived state trusted by filesystem presence rather than by provenance.**
 
 Everything under `.theurian/state/` — the active pointers (`active.json`,
-`active-index.json`) and the two database families they name, the canonical state
-(`theurian-state-*`) and the published retrieval index (`theurian-index-*`) — is
+`active-index.json`) and the **three** database families that live beside them:
+the canonical state (`theurian-state-*`) and the published retrieval index
+(`theurian-index-*`), both named by a pointer, and — since ADR-0029's serving
+slice — the review-finding store (`theurian-findings-*`), which no pointer names
+because `theurian findings build` writes it under a constant id
+(`FINDINGS_STORE_ID`) — is
 derived and git-ignored (ADR-0004). A repository contributor can nonetheless force-add a
 doctored copy past that ignore (`git add -f`), and a victim who clones (or
 downloads the ZIP/tarball) + `theurian project register` + serves over MCP,
@@ -5546,16 +5636,21 @@ self-consistent by construction. The only property the author of the repository
 cannot forge is whether *this installation* built the artifact.
 
 **Control: an out-of-tree build-provenance anchor, enforced at resolution.**
-`theurian migrate apply` and `theurian index build` record — in
+`theurian migrate apply`, `theurian index build` and `theurian findings build`
+record — in
 `THEURIAN_DATA_DIR/provenance.json`, beside the project registry and out of the
-repository tree where a contributor cannot write — the state hash and index build
-id this installation produced for each project root (`BuildProvenance`). Every
-serve path checks it before a byte of `.theurian/state/` reaches a caller: the
+repository tree where a contributor cannot write — the state hash, index build
+id and findings store id this installation produced for each project root
+(`BuildProvenance`). Every
+serve path checks it before a byte of `.theurian/state/` reaches a caller, and
+that sentence now ranges over all three families: the
 MCP tools' `_resolve` refuses a canonical state whose hash this install did not
 build (`verify_state_provenance`, covering `knowledge.get`, `knowledge.search`
-and `knowledge.status`), and the ranked path stands aside from an index build id
+and `knowledge.status`); the ranked path stands aside from an index build id
 this install did not build (`index-unbuilt`, degrading to the canonical scan that
-`_resolve` has already gated). Both paths that can generate an index are gated on
+`_resolve` has already gated); and `review.findings` refuses a findings store
+this install did not build (`BuildProvenance.has_findings`, checked *before* the
+store is constructed, so an unprovenanced file is never opened at all). Both paths that can generate an index are gated on
 source-index provenance, so neither launders a committed index into a build the
 serve path trusts: `index build` refuses to build *from* an unprovenanced
 canonical state, and — since 0.1.0.dev4 (commit `dc6aa79`) — the withdrawal purge
@@ -5584,6 +5679,46 @@ metadata and leaves the file present-but-untracked. Pinned by
 query against two checkouts: a checkout shipping derived state and one shipping
 none produce identical served knowledge, both refused until the state is built
 locally.
+
+**The third family joined this entry with ADR-0029's serving slice, and the
+sentence above was false for the length of that branch — never on `main`.**
+`review.findings` is the first surface to serve from `theurian-findings-*`. Its
+first working commits opened
+`.theurian/state/theurian-findings-local.sqlite` straight after `_resolve`,
+which gates the *canonical* state and says nothing about the findings store, and
+`theurian findings build` recorded nothing in `BuildProvenance` — so the trust
+on that path was filesystem presence, exactly the class this entry names.
+Reproduced end to end (PR #504 round 1, R1-1): a clone shipping a fabricated
+store force-added past ADR-0004's ignore was served as the repository's own
+review history to a victim who never ran `findings build`, on a repository whose
+history holds zero `Review-Finding:` trailers. It is graded **High** rather than
+Critical as a finding, because the findings store has no withheld population to
+disclose — the damage is fabricated content, which is the T-3/containment
+grading — and the entry stays Critical on its original state/index faces. The
+window is recorded rather than deleted, and it is bounded: `review.findings` has
+never existed on `main`, so no release and no `main` commit ever served an
+unprovenanced findings store. The two arms are pinned separately —
+`test_review_findings_tool.py::test_a_store_this_installation_did_not_build_is_not_served`
+and `::test_recording_the_build_is_what_makes_the_same_store_servable`, over one
+unchanged file whose bytes are asserted identical across the two calls — and the
+closure is the same transposed form the state family already carries:
+`::test_a_checkout_that_ships_a_store_answers_as_one_that_ships_none` runs one
+eight-query battery against two registered checkouts, one force-adding a
+fabricated store and one shipping none, and requires every response to be equal
+as bytes, with a positive control that recording the local build then changes
+the answers. A planted store and an absent one are refused in the same words
+(`::test_a_planted_store_is_refused_in_the_same_words_as_a_missing_one`), so
+which of the two states a caller is in is not published (SEC-13).
+
+**The build side records provenance or reports a failed build.** `theurian
+findings build` calls `BuildProvenance.record_findings` inside the same `try`
+that grades every other failure, so a store written to disk that this
+installation could not record is exit 1 naming the precondition, not a success
+whose artifact `review.findings` will refuse (`cli/findings_commands.py`). The
+recording arm is pinned by
+`test_findings_build_cli.py::test_a_build_records_that_this_installation_produced_the_store`;
+the *failure* arm — a provenance write that raises `OSError` — is asserted by no
+test, and is stated here as read from the source rather than as measured.
 
 **Residual, recorded rather than closed.** Provenance vouches for a *hash*, not
 for the database bytes — verifying bytes would mean hashing the whole database on
