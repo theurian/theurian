@@ -39,13 +39,23 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   same repoint.
 
   **Pinned in both directions for the first time**, which is why the false
-  sentence survived four sweeps unnoticed:
-  `tests/unit/test_config_key_call_sites.py` now watches the root description as
-  well as the eleven key blocks — the root sits outside that count, and every
-  earlier key that enumerated key blocks missed it by construction — and the
-  schema joined `tests/unit/test_raptor_config_claims.py`'s scanned prose
-  surfaces. A reader added for `providers.review.repositories` reddens the first;
-  a sentence drifting back to the universal reddens the second.
+  sentence survived four sweeps unnoticed. What is pinned is stated as a
+  derivation rather than as coverage, because it is partial by design. Measured
+  at `378878a`: the schema publishes **12** descriptions — the root and 11 key
+  blocks — and **3 of the 12** carry a `WATCHED_KEY_DESCRIPTIONS` row in
+  `tests/unit/test_config_key_call_sites.py`: the root,
+  `security.secretScan` and `providers.review.repositories`. The other nine are
+  unpinned. Reaching the root at all is what is new; every earlier key
+  enumerated *key blocks*, and the root is not one. It is also the only one
+  pinned **whole**, by an exact match on `SCHEMA_ROOT_DESCRIPTION`, so a
+  fabricated control claim *added* beside the required fragments is RED — the
+  two key rows hold named fragments, which catches a deletion and not an
+  addition. The schema separately joined
+  `tests/unit/test_raptor_config_claims.py`'s scanned prose surfaces. A reader
+  added for any of the five spellings in `WATCHED_SPELLINGS` — four of them
+  published key blocks, plus `raptor.maxLevels`, which has no block — reddens
+  the call-site scan; a sentence drifting back to the universal reddens the
+  prose surface.
 
 ### Fixed
 
