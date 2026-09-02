@@ -63,18 +63,20 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   *added* beside the bound are each RED; a fragment pin catches the first two
   and not the third. The shared clause is then derived from the published schema
   and matched byte for byte in the document, so neither side can move alone.
-  Measured at `f5e29e0`, a commit on this pull request's branch and not on
-  `main`: the sixth sentence *"Ingested content is screened on the way in as
-  well"* appended to the schema fails
-  `test_the_secret_scan_description_is_exactly_what_this_file_records`, the same
-  sentence appended to this bullet fails
-  `test_the_ingest_command_states_the_config_bound_and_nothing_beside_it`, and
-  rewording the clause on the schema side alone fails
-  `test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it` — each
-  one test of the module's forty-seven. **What is not held**: the same
-  contradiction written into a *different* bullet of this document ships with
-  all forty-seven green and the census at exit 0, measured the same way. The
-  pins hold the paragraph that carries the claim, not the file around it.
+  Measured at `7ddfd16`, a commit on this pull request's branch and not on
+  `main`, against the forty-seven tests of
+  `tests/unit/test_config_key_call_sites.py`:
+
+  | The plant | What goes RED |
+  | :-- | :-- |
+  | *"Ingested content is screened on the way in as well"* appended to the schema description | `test_the_secret_scan_description_is_exactly_what_this_file_records` — 1 failed, 46 passed |
+  | the same sentence appended to this bullet | `test_the_ingest_command_states_the_config_bound_and_nothing_beside_it` — 1 failed, 46 passed |
+  | the shared clause reworded on the schema side alone | `test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it`, and the fragment row with it — 2 failed, 45 passed |
+
+  **What is not held**: the same contradiction written into a *different* bullet
+  of this document ships with all forty-seven green and the census at exit 0,
+  measured the same way. The pins hold the paragraph that carries the claim, not
+  the file around it.
 - **`/theurian:propose` told the agent the secret scan reads the body only.** It
   said to keep credentials out of `--title`, `--description`, `--label` and the
   `--source-*` anchors because "those are not scanned". Core now scans the
