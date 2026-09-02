@@ -1571,6 +1571,48 @@ async def test_the_refusal_for_an_absurd_number_is_built_rather_than_crashing(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("argument", ["pullRequest", "limit"])
+async def test_a_number_at_the_echo_bound_is_quoted_and_one_digit_more_is_not(
+    project: ProjectRegistry, argument: str
+) -> None:
+    """The integer echo bound's own boundary, the string bound's case one over.
+
+    ``MAX_ECHOED_DIGITS`` decides where a refusal stops quoting a caller's number
+    and starts describing it, and every other test here works thousands of digits
+    away from it: the walk above starts at CPython's 4,300-digit render limit, so
+    raising the constant from 20 to 40 left the whole suite green (measured
+    2026-09-03 on the verdict path; mutation ``echoed-digits-40``, 4,909 tests, 0
+    failures). That is the same drift ``test_a_filter_of_exactly_the_bound_is
+    _searched_and_one_more_is_refused`` closes for the *string* bound, so it is
+    closed here the same way -- one digit either side, both directions asserted.
+
+    Below the bound the caller's own number is quoted deliberately, because a
+    typo is what the refusal exists to make visible; above it the number is
+    described by its size and its bytes stay out of the response (#17). A
+    constant that drifted up would start echoing what it was chosen not to echo,
+    and one that drifted down would stop naming the value a caller mistyped.
+    """
+    _land(project)
+    at_the_bound = 10 ** (MAX_ECHOED_DIGITS - 1)
+    one_digit_more = 10**MAX_ECHOED_DIGITS
+
+    quoted = await _call_failing(project, projectId="demo", **{argument: at_the_bound})
+    described = await _call_failing(project, projectId="demo", **{argument: one_digit_more})
+
+    assert str(at_the_bound) in quoted, (
+        f"a {MAX_ECHOED_DIGITS}-digit value -- the largest this build says it will "
+        f"quote -- was described rather than quoted, so a caller cannot see the "
+        f"number they actually sent: {quoted}"
+    )
+    assert f"a {MAX_ECHOED_DIGITS + 1}-digit number" in described, (
+        f"a {MAX_ECHOED_DIGITS + 1}-digit value was not described by its size: {described}"
+    )
+    assert str(one_digit_more) not in described, (
+        "the refusal quoted a value past the echo bound back verbatim"
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("filter_name", STRING_FILTERS)
 async def test_an_over_long_filter_is_reported_by_length_and_never_echoed(
     project: ProjectRegistry, filter_name: str
@@ -1773,6 +1815,38 @@ def test_the_published_bounds_are_the_bounds_this_build_enforces() -> None:
         f"long a caller-controlled string this surface will quote back in a refusal. "
         f"Widening it silently was green against the whole suite until this sentence "
         f"was published, which is why the number and not only the property is held."
+    )
+
+
+def test_the_echoed_digit_bound_is_one_digit_past_the_largest_storable_pull_request() -> None:
+    """The number behind the integer echo bound, which no behavioural test can hold.
+
+    ``test_a_number_at_the_echo_bound_is_quoted_and_one_digit_more_is_not`` drives
+    the boundary, and it derives both inputs from ``MAX_ECHOED_DIGITS`` -- so it
+    holds the *comparison* and cannot see the constant itself move: raising it
+    from 20 to 40 keeps that test green (measured 2026-09-03; mutation
+    ``echoed-digits-40`` SURVIVED a full-suite verdict run before this pin, and
+    still passes the boundary test after it).
+
+    What fixes the number is its derivation, which ``MAX_ECHOED_DIGITS``' own
+    docstring states: one digit more than :data:`MAX_PULL_REQUEST` has, so every
+    value a caller could plausibly have meant is still quoted verbatim while
+    anything past the column's range is described by its size. Recomputed here
+    from that constant rather than restated as ``20``, so the pin follows a
+    column whose width changes and fails a number chosen for no reason.
+
+    Unlike ``limit`` and the filter bound, this one is not published in
+    ``docs/protocol/mcp-tools.md``: a caller never has to know it, because it
+    changes only how their own value is quoted back to them. That is why the pin
+    is a derivation rather than a documentation row.
+    """
+    assert len(str(MAX_PULL_REQUEST)) + 1 == MAX_ECHOED_DIGITS, (
+        f"MAX_ECHOED_DIGITS is {MAX_ECHOED_DIGITS} and MAX_PULL_REQUEST has "
+        f"{len(str(MAX_PULL_REQUEST))} digits. The bound is derived as one digit more "
+        f"than the largest storable pull request: larger, and a refusal quotes a "
+        f"number nothing could ever have matched (#17's reflector); smaller, and a "
+        f"caller who mistyped a legitimate PR number is told its size instead of the "
+        f"number they sent."
     )
 
 
