@@ -1019,7 +1019,11 @@ registered tool serves a finding, and that it is this one
   exception, and `dump()` took the same treatment; so the honest statement is
   that a store this tool cannot serve from speaks only through the constant
   refusal, whether what is wrong with it is its staleness, its readability or
-  its values (`SqliteReviewFindingStore.serve_findings`). The narrow tuple was a
+  its values (`SqliteReviewFindingStore.serve_findings`;
+  `test_findings_store.py::test_a_value_damaged_column_is_the_graded_error_and_not_a_crash`,
+  which damages `position` and `pull_request` in turn on a store it first
+  asserts serves, and requires both `serve_findings` and `dump` to raise the
+  graded class). The narrow tuple was a
   list of the damage shapes somebody had thought of, and the round found the one
   nobody had.
   The staleness comparison runs **inside the one `mode=ro` connection the rows
@@ -1133,7 +1137,10 @@ a distinct audience from a local repository reader, so the reach argument is a
 **precondition on the deployment**, not a property of the code: *the daemon's MCP
 audience must not be broader than the set of principals who may read **every**
 repository it serves from.* The plural is load-bearing — one daemon serves every
-project in its registry and nothing scopes a caller to a subset, so the set the
+project in its registry, the only authorization seam on the project-scoped tools
+takes its grant from the deployment's configuration rather than from the
+request, and `project.list` enumerates every registered project to whoever holds
+the token — so the set the
 precondition bounds is the intersection of the read-sets, not any one
 repository's. On a clone of the private embargo fork the daemon
 therefore sits **inside** the embargo boundary, and the URL verification that

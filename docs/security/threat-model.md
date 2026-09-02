@@ -120,8 +120,12 @@ may read **every** repository it serves from.*
 
 **Plural, and the plural is the load-bearing word.** One daemon serves every
 project in its registry (ADR-0002), `projectId` names which one, and nothing
-scopes a caller to a subset — so a caller who may read one registered
-repository can call `review.findings` against all of them. The set the
+scopes a caller to a subset: the only authorization seam on the project-scoped
+tools is `_tenant_boundary_refusal`, whose grant comes from *this deployment's
+own configuration and never from the caller's request*, and `project.list`
+enumerates every registered project to whoever holds the token
+(`mcp/tools.py`, that function's own docstring). So a caller who may read one
+registered repository can call `review.findings` against all of them. The set the
 precondition bounds is therefore the **intersection** of the read-sets, not any
 one repository's: registering a second project narrows what the deployment may
 share its token with, and a repository whose trailers are not for this audience
@@ -1314,12 +1318,26 @@ it is cut at the bound and an explicit marker is appended, the shape
 — the long row comes back cut and marked, the ordinary row beside it
 byte-identical, so a bound of one character would not pass.
 
-**The scan behind the page is corpus-bounded, not caller-bounded.** `findings`
-carries no index but its primary key and the serve orders on `committed_at`, so
-one call is a full pass over the accepted-findings table whatever the filter:
-502 accepted findings on this repository's own history (`origin/main` @
-`141cf6f`, measured 2026-09-02). No filter a caller sends makes that larger, and
-`limit` bounds what comes back rather than what is read.
+**The read behind the page is corpus-bounded, not caller-bounded.** `findings`
+carries no index but its primary key `(commit_sha, position)`, and the serve
+orders on `committed_at`, which no index covers. So every filter but one is a
+full pass plus a sort — `EXPLAIN QUERY PLAN` on the shipped statement, run
+2026-09-02 against the shipped schema:
+
+```
+(no filter)                    SCAN findings / USE TEMP B-TREE FOR ORDER BY
+WHERE reviewer = ?             SCAN findings / USE TEMP B-TREE FOR ORDER BY
+WHERE finding_text LIKE ?      SCAN findings / USE TEMP B-TREE FOR ORDER BY
+WHERE commit_sha = ?           SEARCH findings USING INDEX sqlite_autoindex_findings_1
+                               USE TEMP B-TREE FOR ORDER BY
+```
+
+`commitSha` is the exception, and it is the cheapest filter for that reason;
+`severity`, `reviewer`, `q` and an unfiltered call are all one pass over the
+accepted-findings table. That population is this repository's own history — 502
+accepted findings on `origin/main` @ `141cf6f`, measured 2026-09-02. The point
+for this entry is the *shape*: no filter a caller sends makes the pass larger,
+and `limit` bounds what comes back rather than what is read.
 
 **Its admission gate is its own, and that is a recorded default rather than a
 tuning.** Sharing `knowledge.search`'s semaphore would have made a findings
@@ -1338,10 +1356,20 @@ is `2 × MAX_CONCURRENT_SEARCHES` — **8** worker threads — rather than one b
 of 4. Both still sit under `anyio`'s own default thread limiter (40 tokens,
 `anyio` 4.14.2, measured 2026-08-30), which is what bounds them together; what
 each cap bounds is an unbounded queue building up behind whatever is already
-running on *that* tool. The queue-depth figures recorded above for a
-`knowledge.search` flood were not re-taken for this member, and no GIL or
-asyncio-tick measurement was taken for it at all — stated rather than inferred
-from "a bounded SQLite read ought to be cheaper".
+running on *that* tool.
+
+**What is not measured for this member, said rather than inferred.** It has no
+row in the per-member cost table above and no entry in the GIL or asyncio-tick
+tables, because no such measurement was taken for it: the queue-depth figures
+recorded above are a `knowledge.search` flood and were not re-taken here, and
+nothing has priced this tool's GIL-held time. The one timing figure that does
+exist for it answered a different question — PR #504 round 1 measured whether a
+response's *duration* varies with what the store holds (SEC-13, the "a duration"
+observable family), and found it flat across a 53× store-size range at medians
+of 684/672/673 µs. That is a single-call disclosure result, not a concurrency
+price, and it is not evidence that this member is cheaper than the three above.
+The reason the cap is the same constant is that a second number would be a
+tuning claim, not that a measurement supports one.
 
 **Controls on `propose accept`'s body-materialisation cost**
 ([#306](https://github.com/theurian/theurian/issues/306),
