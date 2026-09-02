@@ -1777,7 +1777,7 @@ async def test_a_bad_filter_is_refused_before_the_project_is_resolved(
 
 
 def test_the_published_bounds_are_the_bounds_this_build_enforces() -> None:
-    """The one independent statement of three numbers nothing else held.
+    """The one independent statement of four numbers nothing else held.
 
     Every bound test above names ``MAX_FINDINGS_LIMIT``,
     ``DEFAULT_FINDINGS_LIMIT`` and ``MAX_FILTER_CHARS`` symbolically, which is
@@ -1789,12 +1789,19 @@ def test_the_published_bounds_are_the_bounds_this_build_enforces() -> None:
     each). Those three measurements stand as records of that commit; what
     changed since is this pin, not the mutations' behaviour then.
 
-    ``docs/protocol/mcp-tools.md`` is where all three are published, so it is
+    ``docs/protocol/mcp-tools.md`` is where all four are published, so it is
     the pin: each is recomputed here from the live constant rather than
     restated. A client reads the limit row to size its own paging, and a build
     whose cap is not the published cap has told it something false about how
     much of an answer it is getting; the filter bound is published because a
     caller writing a ``q`` has no other way to learn where the refusal starts.
+
+    **The fourth is the served-text bound**, published in the docs round that
+    followed those mutations. It is the one bound on this surface that *clamps*,
+    so a client that does not know the number cannot tell a cut ``findingText``
+    from a whole one by length alone -- and the number itself is derived from
+    ``MAX_QUERY_CHARS``, which means it moves when that constant moves and the
+    published sentence has to move with it.
     """
     published = (REPO_ROOT / "docs/protocol/mcp-tools.md").read_text(encoding="utf-8")
 
@@ -1815,6 +1822,14 @@ def test_the_published_bounds_are_the_bounds_this_build_enforces() -> None:
         f"long a caller-controlled string this surface will quote back in a refusal. "
         f"Widening it silently was green against the whole suite until this sentence "
         f"was published, which is why the number and not only the property is held."
+    )
+    served = f"is cut at {max_finding_text_chars():,} characters"
+    assert served in published, (
+        f"docs/protocol/mcp-tools.md does not carry {served!r}. This is the one bound "
+        f"on this surface that clamps rather than refuses, so the published number is "
+        f"how a client tells a cut `findingText` from a whole one; it is derived from "
+        f"`MAX_QUERY_CHARS`, so a change there moves it and this sentence has to move "
+        f"too."
     )
 
 
