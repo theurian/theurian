@@ -304,7 +304,7 @@ starts from symbols and therefore cannot see a module nothing imports yet.
 :func:`test_every_lock_in_the_package_belongs_to_one_of_the_two_known_families`
 starts from the filesystem instead: every line under the package source matching
 :data:`_LOCK_POPULATION_KEY` must fall in :data:`KNOWN_LOCK_FAMILIES`, which
-names five files and the two reasons -- ``ProjectPaths.write_lock``'s
+names six files and the two reasons -- ``ProjectPaths.write_lock``'s
 state-database family and ``daemon/instance.py``'s single-instance lock. A lock
 anywhere else is one nobody has classified.
 
@@ -1285,7 +1285,7 @@ SINGLE_INSTANCE_LOCK: Final = "the daemon's single-instance lock"
 #: classified as the state-database family and pass -- the narrow sweep and
 #: ADR-0024's own point 4 are what cover that shape. What this catches is the
 #: realistic one: an index write lock lands where index writes live, which is any
-#: file but these five.
+#: file but these six.
 #:
 #: **The API coverage is narrower than "a lock", and this is where that is
 #: written down because it is where ADR-0024's correction sends its reader.** That
@@ -1320,6 +1320,32 @@ KNOWN_LOCK_FAMILIES: Final[dict[str, str]] = {
     "application/project_service.py": STATE_DATABASE_LOCK,
     "cli/commands.py": STATE_DATABASE_LOCK,
     "cli/migration_pipeline.py": STATE_DATABASE_LOCK,
+    # `findings build` takes the write lock on `paths.write_lock` (lines 90 and
+    # 150), and `paths.write_lock` is `.theurian/runtime/write.lock` -- the
+    # canonical `ProjectPaths.write_lock`, the exact same file `migrate apply`
+    # locks. The PascalCase lock-class name is deliberately not spelled here: the
+    # whole-word token trips `test_connection_claims.py`'s one-process
+    # write-lock-construction census (#494), whose key is that class name searched
+    # over this file's whole text, comments included -- so this file must reach the
+    # lock only through `paths.write_lock`. Two clauses, and the second is why the
+    # reason is written out rather than left as the bare family string:
+    #
+    # (1) **It IS the state-database lock, not an index one.** The store it guards
+    #     is `findings_for(...)` -> `.theurian/state/theurian-findings-<id>.sqlite`,
+    #     a state database beside the migration state, not a `theurian-index-*`
+    #     build. So ADR-0018's Compliance claim -- "there is no index write lock in
+    #     the package" -- is untouched: this is remedy (2), a lock of the existing
+    #     state-database kind, never remedy (1). If it were an index lock this entry
+    #     would be wrong and that claim would have to change; it is not, and it does
+    #     not.
+    # (2) **The consequence is deliberate serialisation, and it must not be
+    #     "fixed" apart.** Because it is the one shared `write.lock`, `findings
+    #     build` and `migrate apply` serialise against each other on it: a rebuild
+    #     racing `migrate apply` waits for it (#404). That single shared lock is the
+    #     point. Giving `findings build` its own separate lock file to "reduce
+    #     contention" would silently reopen #404 -- the state-database race this one
+    #     lock exists to prevent -- so the shared lock is required, not incidental.
+    "cli/findings_commands.py": STATE_DATABASE_LOCK,
     "infrastructure/sqlite/connection.py": STATE_DATABASE_LOCK,
     "daemon/instance.py": SINGLE_INSTANCE_LOCK,
 }
@@ -3284,7 +3310,7 @@ def test_every_lock_in_the_package_belongs_to_one_of_the_two_known_families() ->
 
     1. the source root resolves and holds Python files;
     2. every accepted file still exists -- a rename must fail naming itself rather
-       than quietly shrinking the accepted set to four;
+       than quietly shrinking the accepted set to five;
     3. every accepted file still *matches*. An entry that has stopped matching is
        an allowlist that has gone stale, and a stale allowlist widens what the
        conclusion below covers without anyone deciding to.
