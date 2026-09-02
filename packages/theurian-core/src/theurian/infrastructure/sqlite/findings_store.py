@@ -154,8 +154,25 @@ def committed_at_text(moment: datetime) -> str:
     one, and this store writes no other date. That refusal is what keeps
     ``astimezone`` from silently reading the *machine's* local offset into a stored
     value, which would make the store a function of where it was built.
+
+    **An out-of-range UTC shift is a graded refusal, not a bare crash** (#405 R1-1).
+    ``__post_init__`` admits *any* aware datetime, so a directly-constructed
+    ``FindingLoad`` can carry a max-year negative-offset (or min-year positive-offset)
+    date whose ``astimezone(UTC)`` raises ``OverflowError`` -- an ``ArithmeticError``,
+    not a ``ValueError``. The shipped git path never reaches this: its
+    ``_parse_committer_date`` rejects such a date upstream. This is the mirror guard
+    for the port's documented direct-construction path, so the overflow surfaces as a
+    :class:`FindingsStoreError` a ``TheurianError`` handler catches rather than a
+    traceback -- and its remedy is the default rebuild-from-git, because git history
+    is the one source that cannot produce this value.
     """
-    return moment.astimezone(UTC).isoformat(timespec="microseconds")
+    try:
+        return moment.astimezone(UTC).isoformat(timespec="microseconds")
+    except (ValueError, OverflowError) as exc:
+        raise FindingsStoreError(
+            f"committer date {moment.isoformat()!r} is out of range once converted to UTC, "
+            "so it cannot be stored"
+        ) from exc
 
 
 def _finding_rows(accepted: tuple[ReviewFinding, ...]) -> list[_FindingRow]:

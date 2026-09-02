@@ -38,6 +38,7 @@ from theurian.infrastructure.git.trailer_source import (
     GitOutputFramingError,
     GitTrailerFindingSource,
     _decode_git_output,
+    _parse_committer_date,
     _split_records,
 )
 
@@ -1241,7 +1242,97 @@ def test_an_offsetless_date_is_accounted_as_a_rejection_not_a_fatal_abort(
     assert [f.finding_text for f in load.accepted] == ["on a well-formed sibling"]
     assert len(load.rejected) == 1
     assert load.rejected[0].commit_sha == "a" * 40
-    assert "2026-01-01T00:00:00" in load.rejected[0].reason
+
+
+# --- #405 R1-1: a UTC conversion that overflows is a rejection, not a crash ---
+#
+# `fromisoformat` guards year >= 10000, but `astimezone(UTC)` shifts a
+# representable local datetime *across* datetime's range and raises OverflowError
+# -- an ArithmeticError, not a ValueError -- at TWO boundaries: a max-year value
+# with a NEGATIVE offset (23:59 -01:00 lands in year 10000), and a min-year value
+# with a POSITIVE offset (00:00 +05:00 lands before year 1). Both are inward-safe
+# with the opposite-sign offset. git can emit the first (verified) but refuses the
+# second (a pre-year-1 epoch is rejected), so the second is driven at the seam.
+
+_OVERFLOWING_COMMITTER_DATES: tuple[tuple[str, str], ...] = (
+    ("9999-12-31T23:00:00-01:00", "max year, negative offset -> shifts past year 9999"),
+    ("9999-12-31T23:00:00-14:00", "max year, extreme negative offset"),
+    ("0001-01-01T00:00:00+05:00", "min year, positive offset -> shifts below year 1"),
+    ("0001-01-01T00:00:00+14:00", "min year, extreme positive offset"),
+)
+
+_SAFE_EDGE_COMMITTER_DATES: tuple[tuple[str, str], ...] = (
+    ("9999-01-01T00:00:00-11:00", "max year, negative offset shifts INWARD -> holds"),
+    ("0001-12-31T00:00:00+05:00", "min year, positive offset shifts INWARD -> holds"),
+)
+
+
+@pytest.mark.parametrize("date_iso, why", _OVERFLOWING_COMMITTER_DATES)
+def test_parse_committer_date_returns_none_when_utc_conversion_overflows(
+    date_iso: str, why: str
+) -> None:
+    """R1-1: a date whose UTC instant is out of range is unrepresentable, never a raise.
+
+    ``astimezone(UTC)`` raises ``OverflowError`` -- an ``ArithmeticError``, which the
+    ``except ValueError`` above it does not catch -- when a representable local
+    datetime shifts across ``datetime``'s range. Both boundaries are covered: a
+    max-year value with a negative offset, and a min-year value with a positive one.
+    The fixture's premise is asserted first (``astimezone`` really does raise for
+    each), so a change that stopped raising would not leave this passing vacuously.
+    """
+    parsed = datetime.fromisoformat(date_iso)  # representable as a local datetime ...
+    with pytest.raises(OverflowError):  # ... but not once shifted to UTC (the premise)
+        parsed.astimezone(UTC)
+
+    # The parse must return None rather than let the OverflowError escape.
+    assert _parse_committer_date(date_iso) is None, why
+
+
+@pytest.mark.parametrize("date_iso, why", _SAFE_EDGE_COMMITTER_DATES)
+def test_parse_committer_date_holds_an_inward_shifting_edge(date_iso: str, why: str) -> None:
+    """R1-1 control: an offset that shifts a boundary year INWARD is representable.
+
+    Without this, the test above could pass for a parse that returned ``None`` for
+    every extreme year regardless of the shift direction -- discarding a valid
+    committer date. Here the offset moves the instant away from the boundary, so the
+    conversion holds and the parse returns an aware UTC datetime.
+    """
+    result = _parse_committer_date(date_iso)
+    assert result is not None, why
+    assert result.tzinfo is UTC
+    assert result == datetime.fromisoformat(date_iso).astimezone(UTC)
+
+
+def test_an_overflowing_committer_date_is_a_rejection_and_siblings_still_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R1-1 end-to-end (min-year edge): one overflow rejects its record, others load.
+
+    Drives the min-year positive-offset edge git cannot emit, through the whole of
+    ``load_findings`` at the subprocess seam -- the accounting, the sort keys and
+    the rejection reason -- so a crafted date that bricks the corpus at the parse is
+    accounted as exactly one rejection (D3), never a fatal abort. The max-year edge,
+    which git *can* emit, is driven end-to-end through the real CLI in
+    ``test_findings_build_cli.py``.
+    """
+    stream = _record_stream(
+        "a" * 40,
+        "0001-01-01T00:00:00+05:00",  # overflows to before year 1 on the UTC shift
+        "Review-Finding: security HIGH — on the overflowing record",
+        "b" * 40,
+        "2026-02-01T00:00:00+00:00",
+        "Review-Finding: security LOW — on a well-formed sibling",
+    )
+    source = GitTrailerFindingSource(tmp_path)
+    monkeypatch.setattr(GitTrailerFindingSource, "_git_log", lambda _self: stream)
+
+    load = source.load_findings()  # must not raise
+
+    assert [f.finding_text for f in load.accepted] == ["on a well-formed sibling"]
+    assert len(load.rejected) == 1
+    assert load.rejected[0].commit_sha == "a" * 40
+    assert "0001-01-01T00:00:00+05:00" in load.rejected[0].raw_line
+    assert "0001-01-01T00:00:00+05:00" in load.rejected[0].reason
     assert "committer date" in load.rejected[0].reason
 
 

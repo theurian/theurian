@@ -26,7 +26,7 @@ import sqlite3
 import threading
 import time
 from contextlib import closing
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -51,6 +51,7 @@ from theurian.infrastructure.sqlite.findings_schema import FINDINGS_DDL, FINDING
 from theurian.infrastructure.sqlite.findings_store import (
     FindingsStoreError,
     SqliteReviewFindingStore,
+    committed_at_text,
 )
 from theurian.infrastructure.sqlite.schema import read_only_uri
 
@@ -564,6 +565,58 @@ def test_the_building_sibling_stays_inside_the_state_directory(tmp_path: Path) -
 
     assert store.building_path.parent == store.path.parent
     assert store.building_path.name == store.path.name + ".building"
+
+
+# --- #405 R1-1: an un-normalisable date is a graded refusal at the store too ---
+
+
+@pytest.mark.parametrize(
+    "when, why",
+    [
+        ("9999-12-31T23:00:00-01:00", "max year, negative offset -> shifts past year 9999"),
+        ("0001-01-01T00:00:00+05:00", "min year, positive offset -> shifts below year 1"),
+    ],
+)
+def test_committed_at_text_raises_a_graded_error_rather_than_overflowing(
+    when: str, why: str
+) -> None:
+    """R1-1 store side: a date whose UTC instant is out of range is a graded error.
+
+    The shipped git path rejects such a date upstream (``_parse_committer_date``
+    returns ``None``), but the port lets a caller build a ``FindingLoad`` directly,
+    and ``ReviewFinding.__post_init__`` admits any *aware* datetime -- including a
+    max-year negative-offset or min-year positive-offset one whose ``astimezone(UTC)``
+    overflows. That must surface as a :class:`FindingsStoreError` a ``TheurianError``
+    handler catches, never a bare ``OverflowError``.
+
+    The fixture's premise is asserted first: the datetime is aware (so it passes
+    ``__post_init__``) and its UTC conversion really does raise.
+    """
+    moment = datetime.fromisoformat(when)
+    assert moment.tzinfo is not None  # passes ReviewFinding.__post_init__
+    with pytest.raises(OverflowError):  # the premise: the raw conversion overflows
+        moment.astimezone(UTC)
+
+    with pytest.raises(FindingsStoreError):
+        committed_at_text(moment)
+
+
+def test_replace_all_refuses_an_overflowing_date_without_a_bare_crash(tmp_path: Path) -> None:
+    """R1-1 store side, end-to-end: a directly-built overflowing finding is a graded refusal.
+
+    Through ``replace_all`` -- the one write -- a finding whose committer date cannot
+    become a UTC instant raises :class:`FindingsStoreError`, not ``OverflowError``,
+    so the composition root's ``except TheurianError`` catches it. No partial file is
+    left at either the publish name or the working name.
+    """
+    store = _store(tmp_path)
+    overflowing = _finding(_sha("a"), text="unwritable date", when="9999-12-31T23:00:00-01:00")
+
+    with pytest.raises(FindingsStoreError):
+        store.replace_all(FindingLoad(accepted=(overflowing,), rejected=()))
+
+    assert not store.path.exists()
+    assert not store.building_path.exists()
 
 
 # --- #405: committed_at TEXT is a chronological sort key --------------------

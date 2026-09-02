@@ -109,6 +109,27 @@ def _commit(root: Path, subject: str, *trailers: str, when: str = "2026-03-01T12
     _git(root, "commit", "--allow-empty", "-m", message, env=_identity_env(when))
 
 
+def _commit_at_raw_date(root: Path, subject: str, raw_committer_date: str) -> None:
+    """Commit with a ``GIT_COMMITTER_DATE`` git echoes verbatim into ``%cI``.
+
+    ``raw_committer_date`` is git's ``@<epoch> <±hhmm>`` form, which lets a test
+    author a committer date the ISO ``when`` helper cannot -- in particular the
+    max-year value ``9999-12-31T23:00:00-01:00`` whose UTC shift overflows
+    ``datetime`` (R1-1). The author date is set to the same value so the commit is
+    reproducible.
+    """
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Tester",
+        "GIT_AUTHOR_EMAIL": "tester@example.com",
+        "GIT_COMMITTER_NAME": "Tester",
+        "GIT_COMMITTER_EMAIL": "tester@example.com",
+        "GIT_AUTHOR_DATE": raw_committer_date,
+        "GIT_COMMITTER_DATE": raw_committer_date,
+    }
+    _git(root, "commit", "--allow-empty", "-m", subject, env=env)
+
+
 def _publish(root: Path) -> None:
     """Push ``main`` and refresh ``refs/remotes/origin/main``, the one ref the source reads."""
     _git(root, "push", "origin", "main")
@@ -437,6 +458,39 @@ def test_concurrent_builds_all_succeed_and_leave_one_complete_store(project: Pat
     assert len(dump.rejected) == 6
     assert store.is_current()
     assert not store.building_path.exists(), "a working file was stranded beside the published one"
+
+
+def test_a_max_year_negative_offset_committer_date_is_a_graded_refusal_not_a_crash(
+    project: Path,
+) -> None:
+    """R1-1 (real CLI): a UTC-overflowing committer date must not brick the corpus.
+
+    git emits ``9999-12-31T23:00:00-01:00`` for a crafted committer date, and
+    ``astimezone(UTC)`` shifts it into year 10000 and raises ``OverflowError`` -- an
+    ``ArithmeticError`` the ``except ValueError`` in ``_parse_committer_date`` did
+    not catch. Before the fix, through ``findings build --json``, this reached the
+    process boundary as a Rich traceback with an empty ``--json`` stdout and exit 1
+    -- the D3-forbidden "one crafted commit bricks the whole corpus" shape, and the
+    crafted commit carries no trailer of its own.
+
+    The record must instead be accounted as a rejection while every valid finding
+    still loads: the build succeeds, and its report counts the crafted commit
+    among the rejected, not among a load that never happened. The min-year
+    positive-offset mirror edge git cannot emit (a pre-year-1 epoch is refused), so
+    it is driven at the seam in ``test_git_trailer_source.py``.
+    """
+    _commit(project, "fix: a valid one (#1)", "Review-Finding: security HIGH — a valid finding")
+    # A trailer-less crafted commit whose %cI is year 9999 with a -01:00 offset.
+    _commit_at_raw_date(project, "chore: far-future negative offset", "@253402300800 -0100")
+    _publish(project)
+
+    code, payload = _invoke("findings", "build")
+
+    assert code == 0, payload
+    assert payload["built"] is True
+    assert payload["findings"] == 1
+    # The crafted date-only commit is accounted, not lost, and did not abort.
+    assert payload["rejected"] == 1
 
 
 def test_dump_raises_on_a_half_built_store_instead_of_reading_it_empty(tmp_path: Path) -> None:

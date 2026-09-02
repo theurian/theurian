@@ -415,14 +415,27 @@ def _parse_committer_date(date_iso: str) -> datetime | None:
     branch such a value also reached ``ReviewFinding.__post_init__``'s
     timezone-aware check and raised a ``DomainError`` no caller catches -- a fatal
     abort of the whole load, which is precisely what D3 forbids.
+
+    **Two operations can raise, and they raise *different* exception types, which is
+    why the guard names both** (#405 R1-1). ``fromisoformat`` raises ``ValueError``
+    on a year >= 10000. ``astimezone(UTC)`` raises ``OverflowError`` -- an
+    ``ArithmeticError``, not a ``ValueError`` -- when it shifts a *representable*
+    local datetime across ``datetime``'s range: a max-year value with a negative
+    offset (``9999-12-31T23:00:00-01:00`` lands in year 10000), or a min-year value
+    with a positive one (``0001-01-01T00:00:00+05:00`` lands before year 1). The
+    opposite-sign offset at each boundary shifts *inward* and is representable.
+    Catching only ``ValueError`` here let the ``OverflowError`` escape past every
+    ``TheurianError`` handler as a raw traceback, bricking the whole corpus on one
+    crafted trailer-less commit -- the exact D3 abort this function exists to
+    prevent, reintroduced on an axis its first cut did not cover.
     """
     try:
         parsed = datetime.fromisoformat(date_iso)
-    except ValueError:
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(UTC)
+    except (ValueError, OverflowError):
         return None
-    if parsed.tzinfo is None:
-        return None
-    return parsed.astimezone(UTC)
 
 
 def _split_records(stdout: str, repo_root: Path) -> list[_Record]:
