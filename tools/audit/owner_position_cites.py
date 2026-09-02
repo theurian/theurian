@@ -58,11 +58,11 @@ from typing import Final
 import tracker_state
 from claim_surfaces import (
     Sentence,
+    dated_lines,
     governed_paths,
     planted_changelog,
     repo_root,
     sentences,
-    unreleased_lines,
 )
 
 #: Directory prefixes in scope.
@@ -87,8 +87,10 @@ GOVERNED_FILES: Final[tuple[str, ...]] = (
 #: ``[Unreleased]`` is **not** one of those entries, which is round one's M-j.
 #: It describes the tree a reader has checked out, it is rewritten on every
 #: merge, and a dead owner written into it is a live claim in a governed file.
-#: The blanket rule cleared it unread; :func:`claim_surfaces.unreleased_lines`
-#: is what separates the two now.
+#: Neither is a changelog with no dated sections at all -- the root
+#: ``CHANGELOG.md`` -- which round two's R2-j is.
+#: :func:`claim_surfaces.dated_lines` answers both by asking whether the line is
+#: *inside* a dated section rather than whether it is outside ``[Unreleased]``.
 _RELEASE_RECORDS: Final = "CHANGELOG.md"
 
 #: Every spelling of a cite: bracketed, as a URL, or bare. The bare form is in the
@@ -275,7 +277,7 @@ def classify(
     number: str,
     state: str,
     succeeding: tuple[str, ...] = (),
-    unreleased: frozenset[int] = frozenset(),
+    dated: frozenset[int] = frozenset(),
 ) -> str:
     """The verdict for one cite, read with the blocks that follow it.
 
@@ -285,7 +287,7 @@ def classify(
     """
     if state in tracker_state.OPEN_STATES:
         return "open owner"
-    if sentence.path.endswith(_RELEASE_RECORDS) and sentence.line not in unreleased:
+    if sentence.path.endswith(_RELEASE_RECORDS) and sentence.line in dated:
         return "record (release note)"
     if _HISTORICAL.search(sentence.text):
         return "history"
@@ -305,8 +307,8 @@ def sweep(root: Path, *, offline: bool = False) -> tuple[list[Cite], str, int]:
             continue
         found = sentences(root, path)
         following = succeeding_blocks(found)
-        unreleased = (
-            unreleased_lines((root / path).read_text(encoding="utf-8", errors="surrogateescape"))
+        dated = (
+            dated_lines((root / path).read_text(encoding="utf-8", errors="surrogateescape"))
             if path.endswith(_RELEASE_RECORDS)
             else frozenset()
         )
@@ -319,7 +321,7 @@ def sweep(root: Path, *, offline: bool = False) -> tuple[list[Cite], str, int]:
                     Cite(
                         number=number,
                         state=state,
-                        verdict=classify(sentence, number, state, succeeding, unreleased),
+                        verdict=classify(sentence, number, state, succeeding, dated),
                         sentence=sentence,
                     )
                 )
@@ -481,7 +483,7 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
 #: outranks the owner phrasing, and the expected verdict here records that
 #: behaviour rather than wishing it away. :func:`main` prints how many real rows
 #: it reaches.
-POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, bool, str], ...]] = (
+POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, str], ...]] = (
     (
         "#427's confirmed member: a closed issue named as what removes a residual",
         "The index purge in [#15](https://github.com/theurian/theurian/issues/15) "
@@ -489,7 +491,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, bool, 
         (),
         "15",
         "issue:closed",
-        False,
+        "none",
         "SUSPECT",
     ),
     (
@@ -499,7 +501,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, bool, 
         (),
         "129",
         "issue:closed",
-        False,
+        "none",
         "history",
     ),
     (
@@ -508,7 +510,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, bool, 
         (),
         "429",
         "issue:open",
-        False,
+        "none",
         "open owner",
     ),
     (
@@ -517,7 +519,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, bool, 
         (),
         "113",
         "pr:merged",
-        False,
+        "none",
         "SUSPECT",
     ),
     (
@@ -526,7 +528,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, bool, 
         (),
         "468",
         "issue:closed",
-        False,
+        "none",
         "SUSPECT",
     ),
     (
@@ -538,7 +540,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, bool, 
         ),
         "468",
         "issue:closed",
-        False,
+        "none",
         SUPERSEDED_IN_PLACE,
     ),
     (
@@ -550,7 +552,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, bool, 
         ),
         "468",
         "issue:closed",
-        False,
+        "none",
         "SUSPECT",
     ),
     (
@@ -562,7 +564,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, bool, 
         ),
         "468",
         "issue:closed",
-        False,
+        "none",
         "SUSPECT",
     ),
     (
@@ -572,7 +574,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, bool, 
         (),
         "15",
         "issue:closed",
-        False,
+        "none",
         "history",
     ),
     (
@@ -582,7 +584,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, bool, 
         (),
         "129",
         "issue:closed",
-        True,
+        "unreleased",
         "SUSPECT",
     ),
     (
@@ -592,8 +594,20 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, bool, 
         (),
         "129",
         "issue:closed",
-        False,
+        "dated",
         "record (release note)",
+    ),
+    (
+        "round two's R2-j: the same sentence in a changelog with no dated sections at "
+        "all, which is the root `CHANGELOG.md` and which the outside-`[Unreleased]` "
+        "rule cleared whole",
+        "It now states FR-V5 as owed with review ingestion "
+        "([#129](https://github.com/theurian/theurian/issues/129)).",
+        (),
+        "129",
+        "issue:closed",
+        "none",
+        "SUSPECT",
     ),
 )
 
@@ -782,16 +796,16 @@ def _run_ledger_controls() -> int:
 def _run_positive_controls(*, offline: bool) -> int:
     failures = 0
     print("=== POSITIVE CONTROLS ===")
-    for label, text, succeeding, number, state, unreleased, expected in POSITIVE_CONTROLS:
+    for label, text, succeeding, number, state, section, expected in POSITIVE_CONTROLS:
         # The section membership is *computed* by the rule under test over a
         # synthetic document, never asserted here -- round two's R2-g. The old
         # control handed `classify` a hardcoded `frozenset({0})` and asserted the
         # verdict that premise implies, so gutting `unreleased_lines` survived it.
-        section, line = planted_changelog(text, unreleased=unreleased)
+        lines, line = planted_changelog(text, section=section)
         verdict = classify(
             Sentence(
                 path="plugins/claude-code/CHANGELOG.md"
-                if unreleased or "record" in expected
+                if section != "none" or "record" in expected
                 else "control.md",
                 line=line,
                 text=text,
@@ -800,7 +814,7 @@ def _run_positive_controls(*, offline: bool) -> int:
             number,
             state,
             succeeding,
-            section,
+            lines,
         )
         status = "OK  " if verdict == expected else "FAIL"
         failures += status == "FAIL"

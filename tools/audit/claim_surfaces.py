@@ -156,79 +156,105 @@ class Sentence:
         return f"{self.path}:{self.line}"
 
 
-#: A ``## [Unreleased]`` heading, and any ``## [`` heading that ends it.
+#: A **dated** release heading, and any ``##`` heading that ends its section.
 #:
-#: Both audits that clear a CHANGELOG sentence as a record rely on this. Keep-a-
-#: Changelog spells a released section ``## [0.1.0.dev17] - 2026-09-02``: the
-#: version, then a date. ``[Unreleased]`` has no date because it has not
-#: happened, and that is exactly what makes it different -- it is a statement
-#: about the tree as it stands, not a record of what a release did.
-_UNRELEASED_HEADING: Final = re.compile(r"^##\s+\[Unreleased\]", re.IGNORECASE)
-_VERSION_HEADING: Final = re.compile(r"^##\s+\[")
+#: Keep-a-Changelog spells a released section ``## [0.1.0.dev17] - 2026-09-02``:
+#: the version, then a date. The date is the whole signal -- it is what says this
+#: text is a record of what a release did rather than a statement about the tree.
+#: ``## [Unreleased]`` has no date because it has not happened.
+#:
+#: The terminator is any ``##`` heading and not only a ``## [`` one, so a
+#: document that ends its release sections with an ordinary ``## Notes`` does not
+#: leave every line after it inside the last release.
+_DATED_HEADING: Final = re.compile(
+    "^##" + r"\s+\[[^\]]+\]\s+[-\u2013\u2014]\s+" + r"\d{4}-\d{2}-\d{2}"
+)
+_SECTION_HEADING: Final = re.compile(r"^##\s")
 
 
-def unreleased_lines(text: str) -> frozenset[int]:
-    """Line numbers of one CHANGELOG's ``## [Unreleased]`` section, heading included.
+def dated_lines(text: str) -> frozenset[int]:
+    """Line numbers inside one document's dated release sections, headings included.
 
-    **The blanket "a CHANGELOG entry is a record" rule is false here, which is
-    round one's M-j.** Every dated section states what a release did on its date,
-    so a retracted claim quoted in one is history by construction and correcting
-    it would falsify the record. ``[Unreleased]`` is the opposite: it describes
-    the tree a reader has checked out, it is edited on every merge, and a false
-    liveness claim or a dead owner written into it is live prose in a governed
-    file. Two audits cleared it unread.
+    **The rule both audits clear a CHANGELOG sentence by, and it is stated
+    positively for a reason.** Round one asked "is this line outside
+    ``[Unreleased]``?", which is the right question only in a document that has an
+    ``[Unreleased]`` section: ``CHANGELOG.md`` at the repository root carries no
+    Keep-a-Changelog headings at all, so every line in it was outside, and the
+    whole file cleared as a release record unread. Round two's R2-j. Asking "is
+    this line inside a dated section?" collapses both faces into one rule -- a
+    line is history because a dated release states it, never because a heading
+    that would have contradicted that is missing.
 
-    Returns an empty set for a document with no such section, which is what
-    ``CHANGELOG.md`` at the repository root is -- it carries no
-    Keep-a-Changelog headings at all.
+    Returns an empty set for a document with no dated section, which is the
+    root ``CHANGELOG.md`` and every governed file that is not a changelog: in
+    both, nothing is a release record and every sentence is classified like any
+    other governed prose.
     """
     inside = False
     found: set[int] = set()
     for number, line in enumerate(text.splitlines(), start=1):
-        if _UNRELEASED_HEADING.match(line):
+        if _DATED_HEADING.match(line):
             inside = True
-        elif inside and _VERSION_HEADING.match(line):
+        elif _SECTION_HEADING.match(line):
             inside = False
         if inside:
             found.add(number)
     return frozenset(found)
 
 
-def planted_changelog(planted: str, *, unreleased: bool) -> tuple[frozenset[int], int]:
-    """A synthetic CHANGELOG carrying ``planted``, read by :func:`unreleased_lines`.
+#: Where a positive control's planted sentence sits in its synthetic changelog.
+#:
+#: Three, because the rule has three cases and round one only had two of them:
+#: inside a dated release section (a record), inside ``[Unreleased]`` (live prose
+#: about the tree), and in a document with no dated sections at all -- which is
+#: the root ``CHANGELOG.md``, and which round two's R2-j found cleared whole.
+PLANT_SECTIONS: Final[tuple[str, ...]] = ("dated", "unreleased", "none")
 
-    Returns ``(the unreleased line set, the line the plant sits on)``, so a
-    positive control can classify a planted sentence with the section membership
-    the real classifier would compute for it.
+
+def planted_changelog(planted: str, *, section: str) -> tuple[frozenset[int], int]:
+    """A synthetic CHANGELOG carrying ``planted``, read by :func:`dated_lines`.
+
+    Returns ``(the dated line set, the line the plant sits on)``, so a positive
+    control can classify a planted sentence with the section membership the real
+    classifier would compute for it.
 
     **The point is that the control does not know the answer**, which is round
     two's R2-g. Both audits that clear a release note used to hand ``_classify``
     a hardcoded ``frozenset({0})`` for their ``[Unreleased]`` row and
     ``frozenset()`` for their dated row -- the two verdicts the rule has to keep
-    apart, asserted against a premise the control supplied itself. Gutting
-    :func:`unreleased_lines` to ``return frozenset()`` left every such control
-    green. Now the set comes from the function under test, and that mutation
-    turns the ``[Unreleased]`` row red.
+    apart, asserted against a premise the control supplied itself. Gutting the
+    line-set function to ``return frozenset()`` left every such control green.
+    Now the set comes from the function under test, and that mutation turns the
+    ``[Unreleased]`` row red.
 
-    The document carries **both** kinds of section every time, with the plant
-    moved between them, so the control exercises the scoping and not merely the
-    presence of a heading: a rule that answered "everything" or "nothing" fails
-    one of the two rows whichever way it is broken.
+    The ``dated`` and ``unreleased`` documents carry **both** kinds of section,
+    with the plant moved between them, so the control exercises the scoping and
+    not merely the presence of a heading: a rule that answered "everything" or
+    "nothing" fails one of the two whichever way it is broken. The ``none``
+    document has no headings at all, which is the shape that made "outside
+    ``[Unreleased]``" clear a whole file.
     """
+    if section not in PLANT_SECTIONS:
+        message = f"{section!r} is not one of {PLANT_SECTIONS}"
+        raise ValueError(message)
     filler = "- An unrelated entry."
     entry = f"- {planted}"
     lines = (
-        "# Changelog",
-        "",
-        "## [Unreleased]",
-        "",
-        entry if unreleased else filler,
-        "",
-        "## [0.1.0.dev17] - 2026-09-02",
-        "",
-        filler if unreleased else entry,
+        ("# Changelog", "", entry)
+        if section == "none"
+        else (
+            "# Changelog",
+            "",
+            "## [Unreleased]",
+            "",
+            entry if section == "unreleased" else filler,
+            "",
+            "## [0.1.0.dev17] - 2026-09-02",
+            "",
+            filler if section == "unreleased" else entry,
+        )
     )
-    return unreleased_lines("\n".join(lines)), lines.index(entry) + 1
+    return dated_lines("\n".join(lines)), lines.index(entry) + 1
 
 
 def repo_root(start: Path | None = None) -> Path:

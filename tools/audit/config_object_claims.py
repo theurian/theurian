@@ -77,12 +77,12 @@ from typing import Final
 
 from claim_surfaces import (
     Sentence,
+    dated_lines,
     governed_paths,
     load_json,
     planted_changelog,
     repo_root,
     sentences,
-    unreleased_lines,
     without_emphasis,
 )
 
@@ -165,8 +165,10 @@ _RECORD_MARKERS: Final = re.compile(
 #:
 #: ``[Unreleased]`` is **not** one of those entries, which is round one's M-j:
 #: it describes the tree a reader has checked out rather than what a release did,
-#: it is edited on every merge, and it was cleared unread.
-#: :func:`claim_surfaces.unreleased_lines` is what separates the two.
+#: it is edited on every merge, and it was cleared unread. Neither is a changelog
+#: with no dated sections at all -- the root ``CHANGELOG.md`` -- which round two's
+#: R2-j is. :func:`claim_surfaces.dated_lines` answers both by asking whether the
+#: line is *inside* a dated section rather than whether it is outside one.
 _RELEASE_RECORDS: Final = "CHANGELOG.md"
 
 #: A ``.theurian/`` path a document names, at the depth a claim is made about.
@@ -397,7 +399,7 @@ def _keys_for(member: WatchedObject) -> tuple[tuple[str, re.Pattern[str]], ...]:
 
 
 def _classify(
-    shape: str, kinds: set[str], sentence: Sentence, *, unreleased: frozenset[int] = frozenset()
+    shape: str, kinds: set[str], sentence: Sentence, *, dated: frozenset[int] = frozenset()
 ) -> str:
     """The verdict, in the order the rules have to be applied.
 
@@ -408,11 +410,12 @@ def _classify(
     #461 shape exactly, and it stays a suspect as long as one file object is in
     its reference set.
 
-    ``unreleased`` carries the lines of the document's ``[Unreleased]`` section,
-    so the first rule can decline to clear them. A sentence there is not a record
-    of anything: it describes the tree.
+    ``dated`` carries the lines the document's *dated* release sections cover, so
+    the first rule clears a sentence only where a release states it. A sentence in
+    ``[Unreleased]``, or anywhere in a changelog that has no dated sections at
+    all, is not a record of anything: it describes the tree.
     """
-    if sentence.path.endswith(_RELEASE_RECORDS) and sentence.line not in unreleased:
+    if sentence.path.endswith(_RELEASE_RECORDS) and sentence.line in dated:
         return "record (release note)"
     if _RECORD_MARKERS.search(sentence.text):
         return "record (past tense)"
@@ -502,8 +505,8 @@ def sweep(root: Path) -> list[Row]:
     for path in governed_paths(root):
         if path.startswith(SELF):
             continue
-        unreleased = (
-            unreleased_lines((root / path).read_text(encoding="utf-8", errors="surrogateescape"))
+        dated = (
+            dated_lines((root / path).read_text(encoding="utf-8", errors="surrogateescape"))
             if path.endswith(_RELEASE_RECORDS)
             else frozenset()
         )
@@ -527,7 +530,7 @@ def sweep(root: Path) -> list[Row]:
                         matched[0][1],
                         {member.kind for member, _ in matched},
                         read,
-                        unreleased=unreleased,
+                        dated=dated,
                     ),
                     sentence=sentence,
                 )
@@ -752,13 +755,13 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
 #: about something else entirely. That last row is not vacuous: :data:`_ANY_CLAIM`
 #: fires on it and the block names a watched object, so it reaches the per-object
 #: keys and is declined there rather than filtered out before they run.
-POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, bool], ...]] = (
+POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, str], ...]] = (
     (
         "the schema root as it shipped before #455 (corrected)",
         "schemas/config/project-config.schema.json",
         "Nothing in src/ reads this file, so no value in it takes effect today.",
         True,
-        False,
+        "none",
     ),
     (
         "the plugin claim as it shipped before #461 (corrected)",
@@ -766,28 +769,28 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, bool], ...]] = (
         "A repository will have to be on the allowlist in `.theurian/config.yaml`; "
         "nothing reads that file today.",
         True,
-        False,
+        "none",
     ),
     (
         "the bare pronoun, which no path-bearing key reaches",
         "docs/architecture/raptor.md",
         "`.theurian/config.yaml` is the file. Nothing reads it today.",
         True,
-        False,
+        "none",
     ),
     (
         "no config surface -- the measured escape of the phrasing-keyed scan",
         "docs/architecture/raptor.md",
         "The summariser's budget lives in `.theurian/config.yaml` terms. It has no config surface.",
         True,
-        False,
+        "none",
     ),
     (
         "the narrowed sentence #426 landed, which must NOT be a suspect",
         "docs/architecture/raptor.md",
         "Nothing in `src/` reads `raptor.enabled`, nor any other key in the `raptor` block.",
         False,
-        False,
+        "none",
     ),
     (
         "a past-tense record, which must NOT be a suspect",
@@ -795,7 +798,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, bool], ...]] = (
         "Two sentences said nothing in `src/` reads `.theurian/config.yaml`. Each was "
         "true when written.",
         False,
-        False,
+        "none",
     ),
     (
         "round one's H-B: the wheel-shipped schema root naming a key while denying the "
@@ -804,7 +807,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, bool], ...]] = (
         "Per-repository configuration. `security.secretScan` is published here, and "
         "nothing reads it today.",
         True,
-        False,
+        "none",
     ),
     (
         "round one's H-F: the same claim in this repository's RST house style, in a "
@@ -812,21 +815,21 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, bool], ...]] = (
         "packages/theurian-core/src/theurian/application/forest_builder.py",
         "Nothing in ``src/`` reads ``.theurian/config.yaml``, so no default here is in force.",
         True,
-        False,
+        "none",
     ),
     (
         "the RST form of the *narrowed* sentence, which must still NOT be a suspect",
         "docs/architecture/raptor.md",
         "Nothing in ``src/`` reads ``raptor.enabled``, nor any other key in the ``raptor`` block.",
         False,
-        False,
+        "none",
     ),
     (
         "round one's M-i: a live universal with a future clause, which `until` cleared",
         "docs/architecture/raptor.md",
         "Nothing in `src/` reads `.theurian/config.yaml` until review ingestion lands.",
         True,
-        False,
+        "none",
     ),
     (
         "round one's M-i: the same universal inside a modal, which the bare verb `read` "
@@ -834,28 +837,36 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, bool], ...]] = (
         "docs/architecture/raptor.md",
         "Nothing in `src/` can read `.theurian/config.yaml`, so the default is safe to flip.",
         True,
-        False,
+        "none",
     ),
     (
         "the past tense the corrected rationale actually uses, which must still be cleared",
         "docs/architecture/raptor.md",
         "When this was written nothing in `src/` read `.theurian/config.yaml` at all.",
         False,
-        False,
+        "none",
     ),
     (
         "round one's M-j: a live universal in a CHANGELOG's `[Unreleased]` section",
         "plugins/claude-code/CHANGELOG.md",
         "Nothing in `src/` reads `.theurian/config.yaml`, so the allowlist is not in force.",
         True,
-        True,
+        "unreleased",
     ),
     (
         "the same sentence in a dated release section, which stays a record",
         "plugins/claude-code/CHANGELOG.md",
         "Nothing in `src/` reads `.theurian/config.yaml`, so the allowlist is not in force.",
         False,
-        False,
+        "dated",
+    ),
+    (
+        "round two's R2-j: the same sentence in a changelog with no dated sections at all, "
+        "which is the root `CHANGELOG.md` and which the outside-`[Unreleased]` rule cleared whole",
+        "CHANGELOG.md",
+        "Nothing in `src/` reads `.theurian/config.yaml`, so the allowlist is not in force.",
+        True,
+        "none",
     ),
     (
         "the narrowed key-scoped sentence in a home, which the additive rule must still let past",
@@ -864,7 +875,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, bool], ...]] = (
         "`security.secretScan` alone -- but nothing in `src/` reads "
         "`providers.review.repositories`, so the allowlist is not in force.",
         False,
-        False,
+        "none",
     ),
     (
         "round two's R2-B: the same claim with the path wrapped in bold, in a wheel-shipped "
@@ -872,14 +883,14 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, bool], ...]] = (
         "packages/theurian-core/src/theurian/security/project_config.py",
         "Nothing in ``src/`` reads **`.theurian/config.yaml`**, so no default here is in force.",
         True,
-        False,
+        "none",
     ),
     (
         "the same claim italicised on its verb, the emphasis form that is not bold",
         "docs/architecture/raptor.md",
         "Nothing in `src/` *reads* `.theurian/config.yaml`, so the default is safe to flip.",
         True,
-        False,
+        "none",
     ),
     (
         "the house style the strip must NOT turn into a claim: a bold-wrapped path in a "
@@ -888,7 +899,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, bool], ...]] = (
         "**`.theurian/proposals-local/<proposal-id>/`** is a different directory, and "
         "nothing in `src/` reads a draft the author has not published.",
         False,
-        False,
+        "none",
     ),
 )
 
@@ -1127,7 +1138,7 @@ def _verdict_for_planted(
     members: tuple[WatchedObject, ...],
     keys: dict[str, tuple[tuple[str, re.Pattern[str]], ...]],
     planted: Sentence,
-    unreleased: frozenset[int] = frozenset(),
+    dated: frozenset[int] = frozenset(),
 ) -> str:
     """One planted sentence classified through exactly the seam :func:`sweep` uses.
 
@@ -1146,7 +1157,7 @@ def _verdict_for_planted(
                 break
     if hit is None:
         return "no match"
-    return _classify(hit, kinds, read, unreleased=unreleased)
+    return _classify(hit, kinds, read, dated=dated)
 
 
 def _run_positive_controls() -> int:
@@ -1156,15 +1167,15 @@ def _run_positive_controls() -> int:
     keys = {member.name: _keys_for(member) for member in members}
     failures = 0
     print("=== POSITIVE CONTROLS ===")
-    for label, path, planted, expected, unreleased in POSITIVE_CONTROLS:
+    for label, path, planted, expected, section in POSITIVE_CONTROLS:
         # The section membership is *computed* by the rule under test over a
         # synthetic document, never asserted here -- round two's R2-g.
-        section, line = planted_changelog(planted, unreleased=unreleased)
+        lines, line = planted_changelog(planted, section=section)
         verdict = _verdict_for_planted(
             members,
             keys,
             Sentence(path=path, line=line, text=planted, block=planted),
-            section,
+            lines,
         )
         found = verdict.startswith("SUSPECT")
         status = "OK  " if found is expected else "FAIL"
