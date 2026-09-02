@@ -205,13 +205,17 @@ class RejectedTrailer:
     locate the failure -- the commit it is on, the raw text verbatim, and why it was
     refused -- without pretending it is a finding.
 
-    Two kinds land here. A **grammar** rejection is a column-0 ``Review-Finding:``
-    line whose value failed the grammar; its ``raw_line`` is that trailer line. A
-    **metadata** rejection is a whole record whose committer date git emitted
-    outside ``datetime``'s range (a crafted year >= 10000): the record cannot carry
-    a valid date -- a published, order-bearing field -- so its trailers are skipped
-    and the record is accounted once, with ``raw_line`` the offending ``%cI`` value.
-    In both cases ``commit_sha`` is git's own ``%H`` (D4), never author-forgeable.
+    Three kinds land here. A **grammar** rejection is a column-0
+    ``Review-Finding:`` line whose value failed the grammar; its ``raw_line`` is
+    that trailer line. The other two are whole records, each skipped once because
+    it cannot become a finding at all: a **metadata** rejection is a record whose
+    committer date git emitted outside ``datetime``'s range (a crafted year >=
+    10000), which cannot carry a valid date -- a published, order-bearing field --
+    so its ``raw_line`` is the offending ``%cI`` value; and an **undecodable
+    message** rejection is a record whose ``%B`` bytes are not valid UTF-8 (#496),
+    which has no candidate lines to read at all, so its ``raw_line`` is a bounded,
+    replacement-decoded excerpt of those bytes rather than the bytes themselves. In
+    all three ``commit_sha`` is git's own ``%H`` (D4), never author-forgeable.
     """
 
     commit_sha: str
@@ -225,12 +229,15 @@ class FindingLoad:
 
     **The accounting invariant (AC-1, loss-free):** the load never aborts, and no
     record is silently dropped. Every column-0 ``Review-Finding:`` line on a record
-    with a valid committer date appears in exactly one of the two tuples; a record
-    whose committer date is unrepresentable (a crafted year >= 10000) is accounted
-    as a single record-level :class:`RejectedTrailer`, its trailers skipped rather
-    than lost. A single malformed line, and a single crafted date, each stay one
-    :class:`RejectedTrailer` while every well-formed sibling still loads -- which is
-    what makes "loss-free" hold under a corpus that cannot be edited.
+    with a readable message and a valid committer date appears in exactly one of
+    the two tuples; a record whose committer date is unrepresentable (a crafted
+    year >= 10000), or whose message git emitted as bytes that are not valid UTF-8
+    (#496), is accounted as a single record-level :class:`RejectedTrailer`, its
+    trailers skipped rather than lost -- once, whichever of the two skipped it. A
+    single malformed line, a single crafted date, and a single undecodable message
+    each stay one :class:`RejectedTrailer` while every well-formed sibling still
+    loads -- which is what makes "loss-free" hold under a corpus that cannot be
+    edited.
 
     **The population the invariant ranges over is stated, because it was once
     narrower than the sentence above implied** (#410). A "column-0 line" is a
