@@ -194,6 +194,43 @@ def unreleased_lines(text: str) -> frozenset[int]:
     return frozenset(found)
 
 
+def planted_changelog(planted: str, *, unreleased: bool) -> tuple[frozenset[int], int]:
+    """A synthetic CHANGELOG carrying ``planted``, read by :func:`unreleased_lines`.
+
+    Returns ``(the unreleased line set, the line the plant sits on)``, so a
+    positive control can classify a planted sentence with the section membership
+    the real classifier would compute for it.
+
+    **The point is that the control does not know the answer**, which is round
+    two's R2-g. Both audits that clear a release note used to hand ``_classify``
+    a hardcoded ``frozenset({0})`` for their ``[Unreleased]`` row and
+    ``frozenset()`` for their dated row -- the two verdicts the rule has to keep
+    apart, asserted against a premise the control supplied itself. Gutting
+    :func:`unreleased_lines` to ``return frozenset()`` left every such control
+    green. Now the set comes from the function under test, and that mutation
+    turns the ``[Unreleased]`` row red.
+
+    The document carries **both** kinds of section every time, with the plant
+    moved between them, so the control exercises the scoping and not merely the
+    presence of a heading: a rule that answered "everything" or "nothing" fails
+    one of the two rows whichever way it is broken.
+    """
+    filler = "- An unrelated entry."
+    entry = f"- {planted}"
+    lines = (
+        "# Changelog",
+        "",
+        "## [Unreleased]",
+        "",
+        entry if unreleased else filler,
+        "",
+        "## [0.1.0.dev17] - 2026-09-02",
+        "",
+        filler if unreleased else entry,
+    )
+    return unreleased_lines("\n".join(lines)), lines.index(entry) + 1
+
+
 def repo_root(start: Path | None = None) -> Path:
     """The checkout that owns ``start``, found by walking up to a ``.git`` entry.
 

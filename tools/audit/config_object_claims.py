@@ -79,6 +79,7 @@ from claim_surfaces import (
     Sentence,
     governed_paths,
     load_json,
+    planted_changelog,
     repo_root,
     sentences,
     unreleased_lines,
@@ -1125,10 +1126,8 @@ def _run_ledger_controls() -> int:
 def _verdict_for_planted(
     members: tuple[WatchedObject, ...],
     keys: dict[str, tuple[tuple[str, re.Pattern[str]], ...]],
-    path: str,
-    planted: str,
-    *,
-    unreleased: frozenset[int],
+    planted: Sentence,
+    unreleased: frozenset[int] = frozenset(),
 ) -> str:
     """One planted sentence classified through exactly the seam :func:`sweep` uses.
 
@@ -1136,10 +1135,10 @@ def _verdict_for_planted(
     matched the raw plant would report a key reaching a sentence the sweep never
     hands it, which is the failure mode a positive control exists to rule out.
     """
-    read = as_read(Sentence(path=path, line=0, text=planted, block=planted))
+    read = as_read(planted)
     hit: str | None = None
     kinds: set[str] = set()
-    for member in _referring(members, path, read.block):
+    for member in _referring(members, planted.path, read.block):
         for shape, key in keys[member.name]:
             if key.search(read.text):
                 hit = hit or shape
@@ -1158,14 +1157,14 @@ def _run_positive_controls() -> int:
     failures = 0
     print("=== POSITIVE CONTROLS ===")
     for label, path, planted, expected, unreleased in POSITIVE_CONTROLS:
+        # The section membership is *computed* by the rule under test over a
+        # synthetic document, never asserted here -- round two's R2-g.
+        section, line = planted_changelog(planted, unreleased=unreleased)
         verdict = _verdict_for_planted(
             members,
             keys,
-            path,
-            planted,
-            # The planted sentence sits at line 0, so a control marked
-            # `unreleased` is one whose line is inside the section.
-            unreleased=frozenset({0}) if unreleased else frozenset(),
+            Sentence(path=path, line=line, text=planted, block=planted),
+            section,
         )
         found = verdict.startswith("SUSPECT")
         status = "OK  " if found is expected else "FAIL"
@@ -1183,7 +1182,9 @@ def _run_escape_controls(
     failures = 0
     print("\n=== MEASURED ESCAPES (the bound, run) ===")
     for label, path, planted, reached in MEASURED_ESCAPES:
-        verdict = _verdict_for_planted(members, keys, path, planted, unreleased=frozenset())
+        verdict = _verdict_for_planted(
+            members, keys, Sentence(path=path, line=0, text=planted, block=planted)
+        )
         found = verdict.startswith("SUSPECT")
         status = "OK  " if found is reached else "FAIL"
         failures += status == "FAIL"

@@ -59,6 +59,7 @@ import tracker_state
 from claim_surfaces import (
     Sentence,
     governed_paths,
+    planted_changelog,
     repo_root,
     sentences,
     unreleased_lines,
@@ -782,21 +783,24 @@ def _run_positive_controls(*, offline: bool) -> int:
     failures = 0
     print("=== POSITIVE CONTROLS ===")
     for label, text, succeeding, number, state, unreleased, expected in POSITIVE_CONTROLS:
+        # The section membership is *computed* by the rule under test over a
+        # synthetic document, never asserted here -- round two's R2-g. The old
+        # control handed `classify` a hardcoded `frozenset({0})` and asserted the
+        # verdict that premise implies, so gutting `unreleased_lines` survived it.
+        section, line = planted_changelog(text, unreleased=unreleased)
         verdict = classify(
             Sentence(
                 path="plugins/claude-code/CHANGELOG.md"
                 if unreleased or "record" in expected
                 else "control.md",
-                line=0,
+                line=line,
                 text=text,
                 block=text,
             ),
             number,
             state,
             succeeding,
-            # The planted sentence sits at line 0, so a control marked
-            # `unreleased` is one whose line is inside that section.
-            frozenset({0}) if unreleased else frozenset(),
+            section,
         )
         status = "OK  " if verdict == expected else "FAIL"
         failures += status == "FAIL"
