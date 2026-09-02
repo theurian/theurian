@@ -3,8 +3,9 @@
 A commit anchor is the strongest citation this repository writes: it says *this
 sentence was true at this tree, go and look*. An anchor that does not resolve on
 ``main`` says the same thing and cannot be checked, which is worse than no
-anchor at all -- and two of them have been sitting in ADR-0008 since the branch
-that wrote them was squashed away.
+anchor at all -- and two of them sat unqualified in ADR-0008 from the squash of
+the branch that wrote them until #199 unit B named the pull requests they belong
+to. Ten more like them are still open under #463.
 
 **The key is deliberately dumb**: ``\\b[0-9a-f]{7,40}\\b`` over governed prose.
 That matches English words spelled in hex -- ``defaced``, ``decade``, ``face`` --
@@ -171,20 +172,21 @@ def _is_ancestor(root: Path, token: str, reference: str) -> bool:
 #: A hex-looking English word stays here rather than being filtered out of the
 #: key, so the filter cannot quietly widen.
 CLASSIFIED: Final[tuple[tuple[str, str, str], ...]] = (
-    # -- Twelve real commits that are not on `main` ---------------------------
+    # -- Ten real commits that are not on `main` ------------------------------
     # Every one of these resolves in a checkout that still has the branch and in
     # none that does not: `git cat-file -t` says `commit` here, and
     # `merge-base --is-ancestor <token> origin/main` says no. They are pre-squash
     # branch commits, which is what makes the anchor uncheckable for a reader who
-    # cloned the repository -- #463's class, and its population is twelve rather
-    # than the two ADR-0008 members that were known when it was filed.
+    # cloned the repository -- #463's class. The census measured that class at
+    # twelve, not the two ADR-0008 members known when #463 was filed; those two
+    # are absent from this ledger because #199 unit B qualified them in the ADR
+    # itself, so they now discharge on the pull-request route above rather than
+    # on a row here. The ten below stay with #463.
     (
         "1a37c86",
         "DANGLING, #463",
         "ADR-0007 and ADR-0024 both anchor a dated count to it; a branch commit.",
     ),
-    ("4bfec1d", "DANGLING, #463", "ADR-0008's first known member, named in unit B's DoR."),
-    ("1cc2fa8", "DANGLING, #463", "ADR-0008's second known member, named in unit B's DoR."),
     ("67727eb", "DANGLING, #463", "ADR-0027 and the threat model both anchor a corpus count."),
     ("a8c1ce3", "DANGLING, #463", "#26's branch commit; the squash that landed on main is not it."),
     ("b8d2030", "DANGLING, #463", "A measurement anchor in T-6's concurrency reproduction."),
@@ -218,9 +220,15 @@ CLASSIFIED: Final[tuple[tuple[str, str, str], ...]] = (
 #: anchors in ADR-0008 written against a branch that was squashed away. If the key
 #: stops producing them the ledger's zeros mean nothing, and the run says so
 #: rather than reporting a clean tree.
+#:
+#: **They stay controls after being fixed, and that is the point.** #199 unit B
+#: qualified both sentences rather than deleting the tokens, so each is still an
+#: unreachable sha sitting in governed prose -- exactly the shape the key and the
+#: reachability test have to keep separating. What changed is how they discharge,
+#: not whether the instrument can see them.
 POSITIVE_CONTROLS: Final[tuple[tuple[str, str, bool, bool], ...]] = (
-    ("ADR-0008's first dangling anchor (#463)", "4bfec1d", False, True),
-    ("ADR-0008's second dangling anchor (#463)", "1cc2fa8", False, True),
+    ("ADR-0008's first unreachable anchor, now qualified (#463)", "4bfec1d", False, True),
+    ("ADR-0008's second unreachable anchor, now qualified (#463)", "1cc2fa8", False, True),
     ("a fabricated object id, which nothing writes", "0ff1ce0", False, False),
     ("this branch's own base commit", "141cf6f", True, False),
 )

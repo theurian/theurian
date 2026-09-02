@@ -1477,12 +1477,15 @@ Milestone 6, which is where the README roadmap puts the RAPTOR forest.
 > lines that assert nothing.** Against `c565c88`, the `main` this CL branched
 > from, the search matches **64 lines in 22 files**, and **the 27 assertion sites
 > in 12 files below are counted there** — that is the tree in which every member
-> of the family still stood. Against `4bfec1d`, the tree this documentation pass
-> started from, the same search matches **90 lines in 24 files**: by then the CL
-> had added `extractive.py`, its test file, and the amendment blocks correcting
-> the first ten members, all of which name the package or the port without making
-> a claim about either. A site can span two lines and a line can match two
-> patterns, so neither count subtracts against the other.
+> of the family still stood. Against the working tree this documentation pass
+> started from — `4bfec1d`, a commit on the branch that landed as `56582b2`
+> ([#142](https://github.com/theurian/theurian/pull/142)) and was rewritten at
+> the squash, so the tree it names is not preserved on `main` — the same search
+> matches **90 lines in 24 files**: by then the CL had added `extractive.py`, its
+> test file, and the amendment blocks correcting the first ten members, all of
+> which name the package or the port without making a claim about either. A site
+> can span two lines and a line can match two patterns, so neither count
+> subtracts against the other.
 >
 > | File | Sites |
 > | :-- | --: |
@@ -1577,10 +1580,13 @@ Milestone 6, which is where the README roadmap puts the RAPTOR forest.
 > ```
 >
 > Against `main` (`56582b2`), the tree this CL branched from, it matches **85
-> lines in 27 files**; against `1cc2fa8`, the tree this documentation pass started
-> from, **81 lines in 29 files** — the CL having already corrected some members
-> and added new files that match without asserting anything. Neither number is the
-> population: a line can match two patterns and a site can span several lines.
+> lines in 27 files**; against the working tree this documentation pass started
+> from — `1cc2fa8`, a commit on the branch that landed as `d1e79b1`
+> ([#145](https://github.com/theurian/theurian/pull/145)) and was rewritten at
+> the squash, so the tree it names is not preserved on `main` — **81 lines in 29
+> files**, the CL having already corrected some members and added new files that
+> match without asserting anything. Neither number is the population: a line can
+> match two patterns and a site can span several lines.
 >
 > **The population is 58 assertion sites in 16 files, every hit read in the
 > section it sits in.** One site is one sentence or bullet asserting the
