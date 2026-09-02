@@ -661,28 +661,113 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool], ...]] = (
 )
 
 
-def _ledger_drift(rows: list[Row]) -> tuple[list[Row], list[tuple[str, str, str, str]]]:
-    """Suspects no ledger row covers, and ledger rows the sweep no longer produces."""
-    unrecorded = [
-        row
-        for row in rows
-        if row.verdict.startswith("SUSPECT")
-        and not any(
-            row.sentence.path == path and fragment in row.sentence.text
-            for path, fragment, _, _ in SUSPECTS
-        )
-    ]
-    stale = [
-        entry
-        for entry in SUSPECTS
-        if not any(
-            row.verdict.startswith("SUSPECT")
-            and row.sentence.path == entry[0]
-            and entry[1] in row.sentence.text
-            for row in rows
-        )
-    ]
+def _covers(entry: tuple[str, str, str, str], row: Row) -> bool:
+    """Whether one ledger entry is the record of this suspect.
+
+    **Case-insensitive on the fragment**, which is round one's H-C on this
+    audit. A fragment is a slice of a sentence, and a sentence moved to the head
+    of a rewritten paragraph is recapitalised: keyed case-sensitively, the same
+    claim then reads as a new unrecorded suspect *and* leaves its own row stale --
+    two findings for one edit, neither of them real. The sibling ledgers here take
+    the same rule.
+    """
+    return row.sentence.path == entry[0] and entry[1].lower() in row.sentence.text.lower()
+
+
+def ledger_drift(
+    rows: list[Row], ledger: tuple[tuple[str, str, str, str], ...]
+) -> tuple[list[Row], list[tuple[str, str, str, str]]]:
+    """Suspects no ledger row covers, and ledger rows the sweep no longer produces.
+
+    The ledger is a parameter so both directions can be **driven** from planted
+    input rather than only observed on a tree where neither fires --
+    :data:`LEDGER_CONTROLS`, and round one's code-M6 across all five audits here.
+    """
+    suspects = [row for row in rows if row.verdict.startswith("SUSPECT")]
+    unrecorded = [row for row in suspects if not any(_covers(entry, row) for entry in ledger)]
+    stale = [entry for entry in ledger if not any(_covers(entry, row) for row in suspects)]
     return unrecorded, stale
+
+
+def _ledger_drift(rows: list[Row]) -> tuple[list[Row], list[tuple[str, str, str, str]]]:
+    return ledger_drift(rows, SUSPECTS)
+
+
+#: What the ledger reconciliation must do, driven from synthetic rows, as
+#: ``(what it demonstrates, the produced rows, the ledger, unrecorded, stale)``.
+#:
+#: Round one's code-M6: every ledger here claimed exactness in both directions and
+#: no control ran either one. The last row is the case that made the claim false
+#: on this audit -- a fragment keyed case-sensitively turns one recapitalisation
+#: into two findings, neither of them real.
+LEDGER_CONTROLS: Final[
+    tuple[
+        tuple[
+            str, tuple[tuple[str, str, str], ...], tuple[tuple[str, str, str, str], ...], int, int
+        ],
+        ...,
+    ]
+] = (
+    (
+        "a suspect its ledger row covers: no drift in either direction",
+        (("a.md", "SUSPECT", "nothing reads it today, and nothing will"),),
+        (("a.md", "nothing reads it today", "true", "why"),),
+        0,
+        0,
+    ),
+    (
+        "a suspect with no ledger row -- the unrecorded direction",
+        (("a.md", "SUSPECT", "nothing reads it today, and nothing will"),),
+        (),
+        1,
+        0,
+    ),
+    (
+        "a ledger row the sweep no longer produces -- the stale direction",
+        (),
+        (("a.md", "nothing reads it today", "true", "why"),),
+        0,
+        1,
+    ),
+    (
+        "a cleared row, which is not a suspect and must leave its ledger row stale",
+        (("a.md", "record (past tense)", "nothing reads it today, and nothing will"),),
+        (("a.md", "nothing reads it today", "true", "why"),),
+        0,
+        1,
+    ),
+    (
+        "the same sentence recapitalised at the head of a rewritten paragraph, which "
+        "a case-sensitive fragment reported as both a new suspect and a stale row",
+        (("a.md", "SUSPECT", "Nothing reads it today, and nothing will"),),
+        (("a.md", "nothing reads it today", "true", "why"),),
+        0,
+        0,
+    ),
+)
+
+
+def _run_ledger_controls() -> int:
+    """Drive both reconciliation directions from planted rows and planted ledgers."""
+    failures = 0
+    print("\n=== LEDGER CONTROLS (the reconciliation, driven) ===")
+    for label, produced, ledger, want_new, want_stale in LEDGER_CONTROLS:
+        rows = [
+            Row(
+                objects=(".theurian/config.yaml",),
+                shape="named",
+                verdict=verdict,
+                sentence=Sentence(path=path, line=0, text=text, block=text),
+            )
+            for path, verdict, text in produced
+        ]
+        unrecorded, stale = ledger_drift(rows, ledger)
+        got = (len(unrecorded), len(stale))
+        want = (want_new, want_stale)
+        status = "OK  " if got == want else "FAIL"
+        failures += status == "FAIL"
+        print(f"  {status} {label}: (unrecorded, stale)={got}, expected {want}")
+    return 1 if failures else 0
 
 
 def _run_positive_controls() -> int:
@@ -711,7 +796,7 @@ def _run_positive_controls() -> int:
         failures += status == "FAIL"
         print(f"  {status} {label}")
         print(f"        expected suspect={expected}  got {verdict!r}")
-    return 1 if failures else 0
+    return (1 if failures else 0) | _run_ledger_controls()
 
 
 def main(argv: list[str]) -> int:

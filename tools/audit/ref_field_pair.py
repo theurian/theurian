@@ -18,6 +18,29 @@ The engineering half of #246 -- actually resolving the other keywords -- is
 deliberately not this audit's business. This checks the *claim*, which is the
 half that is false now.
 
+**What section granularity reaches, and what it lets past -- stated, because it
+was measured rather than reasoned about.** The discharge rule is "the narrowing
+is in the block, or in the section the block sits in", so it catches a field
+named in a section that does not state the narrowing and it does **not** catch a
+false reading planted *inside* a section that does. Measured at ``ef345c9``:
+inserting
+
+    **``unresolvedRefCount`` is a total of the external references a document
+    holds, and a caller may read it as one.**
+
+into the threat model's T-7 -- verbatim the reading #246 records as false --
+takes the block count from four to five and leaves this audit at **exit 0**,
+because T-7's own narrowing sentence discharges the new block along with the
+others. The same sentence under a new heading is exit 1, which is the control
+that already runs.
+
+That is the reach a reader gets, and it is a deliberate trade rather than an
+oversight: requiring the narrowing per *block* would demand the sentence be
+repeated at every mention, which is a rule nobody keeps and which this module's
+third positive control exists to say. Round one recorded the gap as MEDIUM with
+the mechanism change deferred; what is not deferred is a reader believing this
+audit catches a contradiction in the section it was written for. It does not.
+
 Run it::
 
     uv run --frozen python tools/audit/ref_field_pair.py
@@ -188,6 +211,21 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, int, int], ...]] = (
         " else.** Not occurrences.\n",
         1,
         1,
+    ),
+    (
+        "a document naming neither field, which `main` reads as a dead key rather than "
+        "as a clean tree",
+        "#### T-7\n\nIngest records what it could not resolve, and fetches nothing.\n",
+        0,
+        0,
+    ),
+    (
+        "the reach this audit does NOT have: a false reading planted inside a section "
+        "that states the narrowing, which discharges",
+        f"#### T-7\n\n{_CONTRACT_SENTENCE}\n\n**`unresolvedRefCount` is a total of the"
+        " external references a document holds.**\n",
+        2,
+        2,
     ),
 )
 

@@ -70,10 +70,25 @@ _SRC_SYMBOL: Final = re.compile(
 _TEST: Final = re.compile(r"tests?/[\w/]+\.py|\btest_\w+\.py|::test_\w+", re.IGNORECASE)
 
 #: The markers that say a control is not (fully) in force, so somebody owes it.
+#:
+#: **The active voice was missing, which is round one's M-d.** Every "owed"
+#: alternative here was passive -- ``is owed``, ``are owed``, ``owed by`` -- so a
+#: block writing the same obligation the other way round ("#429 owes the three
+#: fetch controls") carried no not-shipped marker and never reached the
+#: dead-owner check, whatever it cited. ``\bowes?\b`` closes that, and
+#: ``no <reader|loader|consumer> yet`` closes the sibling shape: an absence stated
+#: as a missing component rather than as an unshipped control.
+#:
+#: Measured at ``ef345c9``, both directions: the widening marks **no** additional
+#: member of the tree today -- not-shipped stays 5 of 34 and the dead-owner count
+#: stays 0 -- so what it changes is the *floor*, which is why the two shapes are
+#: driven by controls rather than by a count that did not move.
 _NOT_SHIPPED: Final = re.compile(
     r"\bdo(?:es)?\s+not\s+ship\b|\bnot\s+built\b|\bis\s+owed\b|\bare\s+owed\b|\bowed\s+(?:by|with|to)\b"
+    r"|\bowes?\b"
     r"|\bnone\s+that\s+remove\b|\bunbuilt\b|\bnot\s+in\s+force\b|\bfuture\s+controls\b"
-    r"|\bdoes\s+not\s+exist\b|\bno\s+such\s+control\b|\bstill\s+owe",
+    r"|\bdoes\s+not\s+exist\b|\bno\s+such\s+control\b|\bstill\s+owe"
+    r"|\bno\s+(?:reader|loader|consumer)\s+yet\b",
     re.IGNORECASE,
 )
 
@@ -86,12 +101,34 @@ _MAX_EXCERPT: Final = 130
 
 @dataclass(frozen=True, slots=True)
 class Member:
-    """One published control claim, and where a reader finds it."""
+    """One published control claim, and where a reader finds it.
+
+    ``where`` is for a person to open -- a path and a line, or a path and a
+    dotted key. ``path`` and ``label`` are the *ledger* key, and they are separate
+    from ``where`` for the reason round one's M-b records: a line number is
+    invalidated by any edit above it, so a ledger keyed on ``where`` goes RED on a
+    typo fix three thousand lines up. The sibling ledger in
+    ``config_object_claims.py`` had already stated that rule about itself; this
+    one was line-keyed against it.
+
+    ``exact_key`` says which of the two label shapes this is. A schema
+    description's label is the whole dotted key, so the ledger matches it by
+    equality: ``providers`` is a *prefix* of ``providers.embedding.apiKeyEnv``,
+    and a substring rule would let one row cover four members. A ``**Controls``
+    opener is a truncated line of prose, where a fragment is the only stable
+    handle.
+    """
 
     population: str
+    path: str
     where: str
     label: str
     text: str
+    exact_key: bool
+
+    def covered_by(self, fragment: str) -> bool:
+        """Whether a ledger row's second field names this member."""
+        return fragment == self.label if self.exact_key else fragment in self.label
 
 
 def _controls_blocks(root: Path) -> list[Member]:
@@ -113,9 +150,11 @@ def _controls_blocks(root: Path) -> list[Member]:
         found.append(
             Member(
                 population="threat-model `**Controls` block",
+                path=THREAT_MODEL,
                 where=f"{THREAT_MODEL}:{number}",
                 label=line[:80],
                 text=" ".join(lines[number - 1 : end]),
+                exact_key=False,
             )
         )
     return found
@@ -139,9 +178,11 @@ def _schema_descriptions(root: Path) -> list[Member]:
             found.append(
                 Member(
                     population="project-config schema description",
+                    path=PROJECT_CONFIG_SCHEMA,
                     where=f"{PROJECT_CONFIG_SCHEMA}::{'.'.join(dotted) or '(root)'}",
                     label=".".join(dotted) or "(root)",
                     text=description,
+                    exact_key=True,
                 )
             )
         for key, value in node.items():
@@ -182,7 +223,10 @@ class Verdict:
             self.names_symbol
             or self.names_test
             or (self.not_shipped and bool(self.open_cites))
-            or any(entry[0] == self.member.where for entry in PROSE_ONLY)
+            or any(
+                entry[0] == self.member.path and self.member.covered_by(entry[1])
+                for entry in PROSE_ONLY
+            )
         )
 
     @property
@@ -207,104 +251,126 @@ class Verdict:
 #: delete it -- the discipline ``test_raptor_config_claims.py``'s
 #: ``UNNARROWED_UNIVERSALS`` runs on, and for the same reason: a ledger nobody has
 #: to empty is a ledger that grows.
-PROSE_ONLY: Final[tuple[tuple[str, str], ...]] = (
+PROSE_ONLY: Final[tuple[tuple[str, str, str], ...]] = (
     (
-        f"{THREAT_MODEL}:100",
+        THREAT_MODEL,
+        "bearer token",
         "T-1's transport controls are properties of the daemon's request handling, not of "
         "one symbol: a token length, a comparison, and two file modes.",
     ),
     (
-        f"{THREAT_MODEL}:113",
+        THREAT_MODEL,
+        "bind loopback only",
         "T-2 names the SDK setting it passes rather than a symbol of this package.",
     ),
     (
-        f"{THREAT_MODEL}:165",
+        THREAT_MODEL,
+        "never a literal",
         "T-4's control is the *absence* of a literal in generated configuration, asserted "
         "by a test this block describes without naming.",
     ),
     (
-        f"{THREAT_MODEL}:204",
+        THREAT_MODEL,
+        "**Controls that exist**",
         "A list opener: the surfaces are enumerated in the rows beneath it, and the block "
         "extent rule stops at the blank line above them.",
     ),
     (
-        f"{THREAT_MODEL}:393",
+        THREAT_MODEL,
+        "an OS advisory file lock",
         "Three independent mechanisms (a file lock, a health probe, a handshake), named "
         "by what they are rather than by where they live.",
     ),
     (
-        f"{THREAT_MODEL}:405",
+        THREAT_MODEL,
+        "every path resolved with `realpath`",
         "T-5's controls are two standard-library calls and a cap, described by behaviour.",
     ),
     (
-        f"{THREAT_MODEL}:416",
+        THREAT_MODEL,
+        "resolution precedes comparison",
         "The same, for the resolution-order half of T-5.",
     ),
     (
-        f"{THREAT_MODEL}:486",
+        THREAT_MODEL,
+        "**Controls at ingestion**",
         "A list opener whose own sentence promises the symbols in the rows beneath it.",
     ),
     (
-        f"{THREAT_MODEL}:1690",
+        THREAT_MODEL,
+        "release-core.yml",
         "The control is a workflow file, linked rather than spelled as a `src/` symbol.",
     ),
     (
-        f"{THREAT_MODEL}:5338",
+        THREAT_MODEL,
+        "no MCP tool reaches a write path",
         "The control is an absence -- no MCP tool reaches a write path -- and its pin is "
         "described as an enumeration test without a file name.",
     ),
     (
-        f"{THREAT_MODEL}:5365",
+        THREAT_MODEL,
+        "write-time enforcement of INV-2",
         "A list opener: `append_revision`, `InvariantViolationError` and the pointer guard "
         "are named in the bullets beneath it, past the blank line the extent rule stops at.",
     ),
     (
-        f"{THREAT_MODEL}:5791",
+        THREAT_MODEL,
+        "**Controls, the MCP configuration:**",
         "Setup's merge-never-replace controls are described by behaviour, with the test "
         "named as 'a test' rather than by path.",
     ),
     (
-        f"{THREAT_MODEL}:5795",
+        THREAT_MODEL,
+        "**Controls, `~/.theurian/env`:**",
         "The `~/.theurian/env` half of the same entry.",
     ),
     (
-        f"{PROJECT_CONFIG_SCHEMA}::providers",
+        PROJECT_CONFIG_SCHEMA,
+        "providers",
         "A section header: 'every provider defaults to a deterministic in-tree "
         "implementation', which is a statement about the defaults below it.",
     ),
     (
-        f"{PROJECT_CONFIG_SCHEMA}::providers.embedding.endpointEnv",
+        PROJECT_CONFIG_SCHEMA,
+        "providers.embedding.endpointEnv",
         "Names an environment variable convention, not a control.",
     ),
     (
-        f"{PROJECT_CONFIG_SCHEMA}::providers.embedding.apiKeyEnv",
+        PROJECT_CONFIG_SCHEMA,
+        "providers.embedding.apiKeyEnv",
         "The same, for the key half.",
     ),
     (
-        f"{PROJECT_CONFIG_SCHEMA}::retrieval.rrfK",
+        PROJECT_CONFIG_SCHEMA,
+        "retrieval.rrfK",
         "A tuning constant with no control claim to discharge.",
     ),
     (
-        f"{PROJECT_CONFIG_SCHEMA}::retrieval.includeStatuses",
+        PROJECT_CONFIG_SCHEMA,
+        "retrieval.includeStatuses",
         "States the default's effect; the enforcing symbol is named in the threat model "
         "and in `test_config_key_call_sites.py`, not here.",
     ),
     (
-        f"{PROJECT_CONFIG_SCHEMA}::raptor.enabled",
+        PROJECT_CONFIG_SCHEMA,
+        "raptor.enabled",
         "Names the CLI surface (`theurian index build`) and an ADR, which is the switch "
         "this key is *not* -- ADR-0008 decision 10.",
     ),
     (
-        f"{PROJECT_CONFIG_SCHEMA}::raptor.minChildrenPerSummary",
+        PROJECT_CONFIG_SCHEMA,
+        "raptor.minChildrenPerSummary",
         "Explains a threshold's meaning; `application/forest_builder.py` carries the "
         "constant, and ADR-0008 is where the claim is pinned.",
     ),
     (
-        f"{PROJECT_CONFIG_SCHEMA}::traceabilityPolicy",
+        PROJECT_CONFIG_SCHEMA,
+        "traceabilityPolicy",
         "Points at a specification section rather than at a symbol.",
     ),
     (
-        f"{PROJECT_CONFIG_SCHEMA}::security.secretScan",
+        PROJECT_CONFIG_SCHEMA,
+        "security.secretScan",
         "Names the CLI gate (`theurian propose accept`) rather than the reader. The reader "
         "is `security/project_config.py::read_secret_scan_policy` and the pin is "
         "`test_config_key_call_sites.py`'s `WATCHED_KEY_DESCRIPTIONS` row; the description "
@@ -382,13 +448,156 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, bool, bool], ...]] = (
 )
 
 
+def ledger_drift(
+    verdicts: list[Verdict], ledger: tuple[tuple[str, str, str], ...]
+) -> tuple[list[tuple[str, str, str]], list[tuple[tuple[str, str, str], list[str]]]]:
+    """``(stale rows, ambiguous rows)`` for one verdict set against one ledger.
+
+    *Stale* is a row whose member now names a symbol or a test, so the debt it
+    records has been paid and the row has to go. *Ambiguous* is the direction the
+    fragment key opened and the line key did not have: one row covering two
+    members reads as coverage of both while a person judged one.
+
+    The ledger is a parameter so both can be **driven** from planted input --
+    :data:`LEDGER_CONTROLS`, and round one's code-M6 across the five audits here.
+    """
+    owing = [v.member for v in verdicts if not (v.names_symbol or v.names_test)]
+    every = [v.member for v in verdicts]
+    stale = [
+        entry
+        for entry in ledger
+        if not any(entry[0] == m.path and m.covered_by(entry[1]) for m in owing)
+    ]
+    ambiguous = [
+        (entry, covered)
+        for entry in ledger
+        if len(covered := [m.where for m in every if entry[0] == m.path and m.covered_by(entry[1])])
+        > 1
+    ]
+    return stale, ambiguous
+
+
+#: What the ledger reconciliation must do, driven from planted members, as
+#: ``(what it demonstrates, the members as (path, label, text, exact key), the
+#: ledger, stale, ambiguous)``.
+#:
+#: Round one's code-M6 on this audit. The last row is the trap the fragment key
+#: introduced and the line key could not have: ``providers`` is a prefix of
+#: ``providers.embedding.apiKeyEnv``, so a substring rule applied to the schema
+#: population lets one recorded row discharge four members nobody judged.
+LEDGER_CONTROLS: Final[
+    tuple[
+        tuple[
+            str,
+            tuple[tuple[str, str, str, bool], ...],
+            tuple[tuple[str, str, str], ...],
+            int,
+            int,
+        ],
+        ...,
+    ]
+] = (
+    (
+        "a prose-discharged member its ledger row covers: no drift",
+        ((THREAT_MODEL, "**Controls:** bind loopback only; validate", "prose", False),),
+        ((THREAT_MODEL, "bind loopback only", "why"),),
+        0,
+        0,
+    ),
+    (
+        "a ledger row whose member now names a symbol -- the stale direction",
+        (
+            (
+                THREAT_MODEL,
+                "**Controls:** bind loopback only; validate",
+                "`daemon/app.py` binds it",
+                False,
+            ),
+        ),
+        ((THREAT_MODEL, "bind loopback only", "why"),),
+        1,
+        0,
+    ),
+    (
+        "a ledger row whose member is gone entirely -- also stale",
+        (),
+        ((THREAT_MODEL, "bind loopback only", "why"),),
+        1,
+        0,
+    ),
+    (
+        "a fragment that is a prefix of three other schema keys, which exact matching "
+        "must keep from covering them",
+        (
+            (PROJECT_CONFIG_SCHEMA, "providers", "a section header", True),
+            (PROJECT_CONFIG_SCHEMA, "providers.embedding.apiKeyEnv", "an env var", True),
+            (PROJECT_CONFIG_SCHEMA, "providers.embedding.endpointEnv", "an env var", True),
+        ),
+        ((PROJECT_CONFIG_SCHEMA, "providers", "why"),),
+        0,
+        0,
+    ),
+    (
+        "the same fragment matched as a substring, which is what ambiguity looks like",
+        (
+            (THREAT_MODEL, "**Controls:** the token is required", "prose", False),
+            (
+                THREAT_MODEL,
+                "**Controls:** the token is refused when world-readable",
+                "prose",
+                False,
+            ),
+        ),
+        ((THREAT_MODEL, "the token is", "why"),),
+        0,
+        1,
+    ),
+)
+
+
+def _run_ledger_controls(table: dict[str, str]) -> int:
+    """Drive both reconciliation directions from planted members and planted ledgers."""
+    failures = 0
+    print("\n=== LEDGER CONTROLS (the reconciliation, driven) ===")
+    for label, planted, ledger, want_stale, want_ambiguous in LEDGER_CONTROLS:
+        verdicts = [
+            verdict_for(
+                Member(
+                    population="control",
+                    path=path,
+                    where=f"{path}::{member_label}",
+                    label=member_label,
+                    text=text,
+                    exact_key=exact,
+                ),
+                table,
+            )
+            for path, member_label, text, exact in planted
+        ]
+        stale, ambiguous = ledger_drift(verdicts, ledger)
+        got = (len(stale), len(ambiguous))
+        want = (want_stale, want_ambiguous)
+        status = "OK  " if got == want else "FAIL"
+        failures += status == "FAIL"
+        print(f"  {status} {label}: (stale, ambiguous)={got}, expected {want}")
+    return 1 if failures else 0
+
+
 def _run_positive_controls(*, offline: bool) -> int:
     table, provenance = tracker_state.states(offline=offline)
     failures = 0
     print(f"=== POSITIVE CONTROLS (tracker states: {provenance}) ===")
     for label, text, discharged, dead in POSITIVE_CONTROLS:
         verdict = verdict_for(
-            Member(population="control", where="control", label=label, text=text), table
+            Member(
+                population="control",
+                path="control",
+                where="control",
+                label=label,
+                text=text,
+                exact_key=False,
+            ),
+            table,
         )
         ok = verdict.discharged is discharged and verdict.owner_is_dead is dead
         status = "OK  " if ok else "FAIL"
@@ -397,7 +606,7 @@ def _run_positive_controls(*, offline: bool) -> int:
             f"  {status} {label}: discharged={verdict.discharged} (expected {discharged}), "
             f"dead owner={verdict.owner_is_dead} (expected {dead})"
         )
-    return 1 if failures else 0
+    return (1 if failures else 0) | _run_ledger_controls(table)
 
 
 def main(argv: list[str]) -> int:
@@ -431,11 +640,15 @@ def main(argv: list[str]) -> int:
         )
         print(f"  {how:<17} {verdict.member.where}  cites={list(verdict.cites)}")
 
+    return _report(verdicts)
+
+
+def _report(verdicts: list[Verdict]) -> int:
+    """Print every way the tree and the ledger disagree, and grade the run."""
     undischarged = [v for v in verdicts if not v.discharged]
     dead = [v for v in verdicts if v.owner_is_dead]
     unknown = [v for v in verdicts if v.unknown_cites]
-    produced = {v.member.where for v in verdicts if not (v.names_symbol or v.names_test)}
-    stale = [entry for entry in PROSE_ONLY if entry[0] not in produced]
+    stale, ambiguous = ledger_drift(verdicts, PROSE_ONLY)
 
     if undischarged:
         print("\nUNDISCHARGED -- a published control claim nothing makes checkable:")
@@ -452,10 +665,14 @@ def main(argv: list[str]) -> int:
             print(f"  {verdict.member.where}  {list(verdict.unknown_cites)}")
     if stale:
         print("\nSTALE LEDGER ROWS -- these now name a symbol or a test; delete the row:")
-        for where, _ in stale:
-            print(f"  {where}")
+        for path, fragment, _ in stale:
+            print(f"  {path}  {fragment!r}")
+    if ambiguous:
+        print("\nAMBIGUOUS LEDGER ROWS -- one recorded judgement covering several members:")
+        for (path, fragment, _), covered in ambiguous:
+            print(f"  {path}  {fragment!r} covers {covered}")
 
-    return 1 if undischarged or dead or unknown or stale else 0
+    return 1 if undischarged or dead or unknown or stale or ambiguous else 0
 
 
 if __name__ == "__main__":

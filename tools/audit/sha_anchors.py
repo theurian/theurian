@@ -46,8 +46,9 @@ to be discovered:**
   check narrows the qualifier's escape space to the number; it does not close
   it.
 * **The key is the phrase ``landed as``**, which is how all three shipped
-  qualifiers write it (two in ADR-0008, one in the threat model's T-14 release
-  note). A qualifier naming its landed commit some other way -- "merged to
+  qualifiers write it (two in ADR-0008, one in the threat model's **T-16**
+  release note at ``:2582`` -- the entry about a compromised release artifact,
+  not T-14). A qualifier naming its landed commit some other way -- "merged to
   ``main`` as", "squashed to" -- is outside the key and discharges on route 2
   unexamined, exactly as it did before.
 * It says nothing about whether the named sha is the *right* commit. It says a
@@ -101,8 +102,29 @@ _DECIMAL_ONLY: Final = re.compile(r"^[0-9]+$")
 #: the branch or the pull request it lives on. Matched within a window ahead of
 #: or behind the token, because both orders occur ("on PR #470's branch, `abc123`"
 #: and "`abc123` (PR #470)").
+#:
+#: **Phrases, not words, and round one's M-c is why.** The first version of this
+#: key admitted a bare ``\bbranch\b``, a bare ``PR`` and a bare ``pull/\d+``
+#: anywhere in a 240-character window. Every one of those occurs in ordinary
+#: prose beside an anchor that is *not* a branch commit: "the same figure holds
+#: on every long-lived branch of the tree" discharged a fabricated sha, and any
+#: sentence citing a merged pull request beside a measurement anchor discharged
+#: that anchor. The route is a writer's assertion that the reader cannot reach
+#: this commit, so the key has to be a phrase making that assertion **about the
+#: token**, not a word that happens to share a line with it.
+#:
+#: Measured at ``ef345c9``: the narrowed key admits **two** anchors, both of them
+#: ADR-0008's, both written "a commit on the branch that landed as ...". Every
+#: other unreachable anchor in governed prose is dangling and carries a row in
+#: :data:`CLASSIFIED`.
 _PULL_QUALIFIER: Final = re.compile(
-    r"\b(?:pull\s*request|PR)\b|\bbranch\b|\bpull/\d+|\bunmerged\b|\bbefore\s+the\s+squash\b",
+    r"\bcommits?\s+on\s+(?:the|a|an|its|this|that|\w+'s)\s+branch\b"
+    r"|\bon\s+(?:the|a|an|its|this|that|\w+'s)\s+branch\b"
+    r"|\bbranch\s+commit\b"
+    r"|\bbefore\s+the\s+squash\b|\bat\s+the\s+squash\b|\bsquashed\s+away\b"
+    r"|\bunmerged\b"
+    r"|\blanded\s+as\b"
+    r"|\bnot\s+(?:on|reachable\s+from)\s+`?(?:origin/)?main`?\b",
     re.IGNORECASE,
 )
 
@@ -300,51 +322,182 @@ def _landed_verdict(root: Path, token: str, reference: str) -> str:
     return ""
 
 
-#: The tokens a person has judged, as ``(token, verdict, why)``.
+#: The anchors a person has judged, as ``(token, path, occurrences, verdict, why)``.
 #:
-#: **Exact in both directions**, like every ledger in this directory: a token the
+#: **Keyed per occurrence, and round one's H-C is why.** Keyed on the token alone,
+#: a *new* dangling anchor reusing a token this ledger already carries was
+#: absorbed: appending "Measured at ``1a37c86``, a tree this reader can go and
+#: look at" to another document left the audit at exit 0, because the token was
+#: recorded. The path and the count are the missing dimensions -- a new anchor in
+#: a new file has no row, and a new anchor in a file that already has one moves
+#: the count. Both are exit status 1.
+#:
+#: The count is the exact form the ``(token, path)`` key would otherwise leave
+#: open, and it is cheap here because these are anchors rather than sentences:
+#: three occurrences of ``61747b3`` in the threat model is a fact about the
+#: document that only changes when somebody adds or removes an anchor.
+#:
+#: **Exact in both directions**, like every ledger in this directory: a row the
 #: sweep stops producing means the sentence moved and the row has to go with it.
 #: A hex-looking English word stays here rather than being filtered out of the
 #: key, so the filter cannot quietly widen.
-CLASSIFIED: Final[tuple[tuple[str, str, str], ...]] = (
-    # -- Ten real commits that are not on `main` ------------------------------
+CLASSIFIED: Final[tuple[tuple[str, str, int, str, str], ...]] = (
+    # -- Ten real commits that are not on `main`, in twelve places ------------
     # Every one of these resolves in a checkout that still has the branch and in
     # none that does not: `git cat-file -t` says `commit` here, and
     # `merge-base --is-ancestor <token> origin/main` says no. They are pre-squash
     # branch commits, which is what makes the anchor uncheckable for a reader who
-    # cloned the repository -- #463's class. The census measured that class at
-    # twelve, not the two ADR-0008 members known when #463 was filed; those two
-    # are absent from this ledger because #199 unit B qualified them in the ADR
-    # itself, so they now discharge on the pull-request route above rather than
-    # on a row here. The ten below stay with #463.
+    # cloned the repository -- #463's class. The two ADR-0008 members known when
+    # #463 was filed are absent from this ledger because #199 unit B qualified
+    # them in the ADR itself, so they discharge on the pull-request route above
+    # rather than on a row here. The rows below stay with #463.
     (
         "1a37c86",
+        "docs/adr/0007-state-hash-partitioned-databases.md",
+        1,
         "DANGLING, #463",
-        "ADR-0007 and ADR-0024 both anchor a dated count to it; a branch commit.",
+        "A dated count anchored to a branch commit.",
     ),
-    ("67727eb", "DANGLING, #463", "ADR-0027 and the threat model both anchor a corpus count."),
-    ("a8c1ce3", "DANGLING, #463", "#26's branch commit; the squash that landed on main is not it."),
-    ("b8d2030", "DANGLING, #463", "A measurement anchor in T-6's concurrency reproduction."),
-    ("db36089", "DANGLING, #463", "Cited as what closed #17."),
-    ("2793d7b", "DANGLING, #463", "Cited as #19's commit."),
-    ("b8fa3e3", "DANGLING, #463", "Three remedy-string anchors in one entry."),
-    ("61747b3", "DANGLING, #463", "T-18's mechanism anchor, three occurrences."),
-    ("6087be4", "DANGLING, #463", "A dated real-CLI measurement anchor."),
-    ("dc6aa79", "DANGLING, #463", "Named as the 0.1.0.dev4 commit for the withdrawal purge."),
+    (
+        "1a37c86",
+        "docs/adr/0024-a-purge-is-a-build.md",
+        1,
+        "DANGLING, #463",
+        "The same token, the same count, a second document. Two rows rather than one, "
+        "because a token-keyed ledger absorbs the second.",
+    ),
+    (
+        "67727eb",
+        "docs/adr/0027-accept-validates-before-it-moves.md",
+        1,
+        "DANGLING, #463",
+        "A corpus count anchored to a branch commit.",
+    ),
+    (
+        "67727eb",
+        "docs/security/threat-model.md",
+        1,
+        "DANGLING, #463",
+        "The threat model's half of the same corpus count.",
+    ),
+    (
+        "a8c1ce3",
+        "docs/security/threat-model.md",
+        3,
+        "DANGLING, #463",
+        "#26's branch commit; the squash that landed on main is not it.",
+    ),
+    (
+        "b8d2030",
+        "docs/security/threat-model.md",
+        2,
+        "DANGLING, #463",
+        "A measurement anchor in T-6's concurrency reproduction.",
+    ),
+    (
+        "db36089",
+        "docs/security/threat-model.md",
+        1,
+        "DANGLING, #463",
+        "Cited as what closed #17.",
+    ),
+    (
+        "2793d7b",
+        "docs/security/threat-model.md",
+        1,
+        "DANGLING, #463",
+        "Cited as #19's commit.",
+    ),
+    (
+        "b8fa3e3",
+        "docs/security/threat-model.md",
+        3,
+        "DANGLING, #463",
+        "Three remedy-string anchors in one entry.",
+    ),
+    (
+        "61747b3",
+        "docs/security/threat-model.md",
+        3,
+        "DANGLING, #463",
+        "T-18's mechanism anchor, three occurrences.",
+    ),
+    (
+        "6087be4",
+        "docs/security/threat-model.md",
+        1,
+        "DANGLING, #463",
+        "A dated real-CLI measurement anchor.",
+    ),
+    (
+        "dc6aa79",
+        "docs/security/threat-model.md",
+        1,
+        "DANGLING, #463",
+        "Named as the 0.1.0.dev4 commit for the withdrawal purge.",
+    ),
     # -- Eight tokens that are not object ids at all --------------------------
     # `git cat-file -t` finds no object for any of them, and reading the sentence
     # says why: each is an illustrative content or state hash inside a quoted
     # error message or a sample table. They are in the population because the key
     # is deliberately dumb, and they are classified rather than filtered -- the
     # #470 precedent for the Mermaid hex colours, applied to the same shape.
-    ("abc7cdb70713", "not an anchor", "A content hash inside ADR-0013's quoted refusal."),
-    ("4f9c5503e198", "not an anchor", "The pinned half of the same quoted refusal."),
-    ("7e1eb70348da", "not an anchor", "The same example, in the migration protocol."),
-    ("9a1584226439", "not an anchor", "The pinned half of it."),
-    ("ee3ab796ab22f936", "not an anchor", "A `stateHash` in a sample `doctor` table."),
-    ("8624b114c4bc0017", "not an anchor", "The differing half of the same row."),
-    ("f1711b98d302", "not an anchor", "A state hash inside a quoted database filename."),
-    ("2e8880bf25be", "not an anchor", "A new state hash in the same worked example."),
+    (
+        "abc7cdb70713",
+        "docs/adr/0013-ai-writes-produce-proposals.md",
+        1,
+        "not an anchor",
+        "A content hash inside ADR-0013's quoted refusal.",
+    ),
+    (
+        "4f9c5503e198",
+        "docs/adr/0013-ai-writes-produce-proposals.md",
+        1,
+        "not an anchor",
+        "The pinned half of the same quoted refusal.",
+    ),
+    (
+        "7e1eb70348da",
+        "docs/protocol/migrations.md",
+        1,
+        "not an anchor",
+        "The same example, in the migration protocol.",
+    ),
+    (
+        "9a1584226439",
+        "docs/protocol/migrations.md",
+        1,
+        "not an anchor",
+        "The pinned half of it.",
+    ),
+    (
+        "ee3ab796ab22f936",
+        "docs/security/threat-model.md",
+        1,
+        "not an anchor",
+        "A `stateHash` in a sample `doctor` table.",
+    ),
+    (
+        "8624b114c4bc0017",
+        "docs/security/threat-model.md",
+        1,
+        "not an anchor",
+        "The differing half of the same row.",
+    ),
+    (
+        "f1711b98d302",
+        "docs/security/threat-model.md",
+        1,
+        "not an anchor",
+        "A state hash inside a quoted database filename.",
+    ),
+    (
+        "2e8880bf25be",
+        "docs/security/threat-model.md",
+        1,
+        "not an anchor",
+        "A new state hash in the same worked example.",
+    ),
 )
 
 
@@ -417,6 +570,112 @@ LANDED_CLAIM_CONTROLS: Final[tuple[tuple[str, str, str | None, bool], ...]] = (
 )
 
 
+def ledger_drift(
+    dangling: list[Anchor], ledger: tuple[tuple[str, str, int, str, str], ...]
+) -> tuple[
+    list[Anchor],
+    list[tuple[str, str, int, str, str]],
+    list[tuple[str, str, int, int]],
+]:
+    """``(unclassified, stale, occurrence drift)`` for one dangling set against one ledger.
+
+    Three directions, one per way the ledger and the tree can disagree: an anchor
+    at a ``(token, path)`` nobody judged, a judged ``(token, path)`` the sweep no
+    longer produces, and a judged ``(token, path)`` whose occurrence count moved.
+    The third is what a token-keyed ledger could not see at all.
+
+    The ledger is a parameter so all three can be **driven** from planted input --
+    :data:`LEDGER_CONTROLS`, and round one's code-M6 across the five audits here.
+    """
+    produced: dict[tuple[str, str], int] = {}
+    for anchor in dangling:
+        produced[anchor.token, anchor.path] = produced.get((anchor.token, anchor.path), 0) + 1
+    recorded = {(token, path): count for token, path, count, _, _ in ledger}
+
+    unclassified = [anchor for anchor in dangling if (anchor.token, anchor.path) not in recorded]
+    stale = [entry for entry in ledger if (entry[0], entry[1]) not in produced]
+    miscounted = [
+        (token, path, count, produced[token, path])
+        for (token, path), count in recorded.items()
+        if (token, path) in produced and produced[token, path] != count
+    ]
+    return unclassified, stale, miscounted
+
+
+#: What the ledger reconciliation must do, driven from synthetic anchors, as
+#: ``(what it demonstrates, the dangling anchors as (token, path), the ledger,
+#: unclassified, stale, miscounted)``.
+#:
+#: Round one's code-M6 and H-C together: no control drove either direction, and
+#: the key had one dimension where it needed three. The second and third rows are
+#: the absorption -- a token this ledger carries, reused in a new document and
+#: reused again in the file it was recorded for.
+LEDGER_CONTROLS: Final[
+    tuple[
+        tuple[
+            str,
+            tuple[tuple[str, str], ...],
+            tuple[tuple[str, str, int, str, str], ...],
+            int,
+            int,
+            int,
+        ],
+        ...,
+    ]
+] = (
+    (
+        "a dangling anchor its ledger row covers: no drift in any direction",
+        (("1a37c86", "a.md"),),
+        (("1a37c86", "a.md", 1, "DANGLING, #463", "why"),),
+        0,
+        0,
+        0,
+    ),
+    (
+        "the same token in a document nobody judged -- the unclassified direction",
+        (("1a37c86", "a.md"), ("1a37c86", "b.md")),
+        (("1a37c86", "a.md", 1, "DANGLING, #463", "why"),),
+        1,
+        0,
+        0,
+    ),
+    (
+        "a second occurrence in the file the row was written for -- the count moves",
+        (("1a37c86", "a.md"), ("1a37c86", "a.md")),
+        (("1a37c86", "a.md", 1, "DANGLING, #463", "why"),),
+        0,
+        0,
+        1,
+    ),
+    (
+        "a ledger row the sweep no longer produces -- the stale direction",
+        (),
+        (("1a37c86", "a.md", 1, "DANGLING, #463", "why"),),
+        0,
+        1,
+        0,
+    ),
+)
+
+
+def _run_ledger_controls() -> int:
+    """Drive all three reconciliation directions from planted anchors and ledgers."""
+    failures = 0
+    print("\n=== LEDGER CONTROLS (the reconciliation, driven) ===")
+    for label, produced, ledger, want_new, want_stale, want_count in LEDGER_CONTROLS:
+        dangling = [
+            Anchor(path=path, line=0, token=token, context=f"measured at `{token}`")
+            for token, path in produced
+        ]
+        unclassified, stale, miscounted = ledger_drift(dangling, ledger)
+        got = (len(unclassified), len(stale), len(miscounted))
+        want = (want_new, want_stale, want_count)
+        status = "OK  " if got == want else "FAIL"
+        failures += status == "FAIL"
+        print(f"  {status} {label}: (unclassified, stale, miscounted)={got}, expected {want}")
+    return 1 if failures else 0
+
+
 def _run_positive_controls(root: Path, reference: str) -> int:
     """Both halves: the key still produces the known members, and the reachability
     test still separates a commit on ``main`` from one that is not.
@@ -454,7 +713,7 @@ def _run_landed_controls(root: Path, reference: str) -> int:
             f"  {status} {label}: extracted={extracted} (expected {expected}), "
             f"violation={violated} (expected {must_violate})"
         )
-    return 1 if failures else 0
+    return (1 if failures else 0) | _run_ledger_controls()
 
 
 def main(argv: list[str]) -> int:
@@ -487,31 +746,47 @@ def main(argv: list[str]) -> int:
     print(f"  resolve on `{reference}`: {len(resolved)}")
     print(f"  carry the pull-request qualifier: {len(qualified)}")
     print(f"  neither: {len(dangling)}")
-    print(f"  `landed as` promises inside a qualifier: {len(promises)}")
+    print(f"  `landed as` promises in governed prose: {len(promises)}")
     print(f"  of those, unreachable or unresolvable: {len(broken)}")
 
-    classified = {token for token, _, _ in CLASSIFIED}
-    unclassified = [anchor for anchor in dangling if anchor.token not in classified]
-    stale = [entry for entry in CLASSIFIED if entry[0] not in {a.token for a in dangling}]
+    return _report(dangling, broken)
+
+
+def _report(dangling: list[Anchor], broken: list[tuple[LandedClaim, str]]) -> int:
+    """Print every way the tree and the ledger disagree, and grade the run."""
+    unclassified, stale, miscounted = ledger_drift(dangling, CLASSIFIED)
 
     if dangling:
         print("\n=== NEITHER RESOLVED NOR QUALIFIED ===")
         for anchor in dangling:
             verdict = next(
-                (entry[1] for entry in CLASSIFIED if entry[0] == anchor.token), "UNCLASSIFIED"
+                (
+                    entry[3]
+                    for entry in CLASSIFIED
+                    if entry[0] == anchor.token and entry[1] == anchor.path
+                ),
+                "UNCLASSIFIED",
             )
             print(f"  {anchor.path}:{anchor.line}  {anchor.token}  [{verdict}]")
             print(f"      {anchor.context[:130]}")
+    if unclassified:
+        print("\nUNCLASSIFIED ANCHORS -- a dangling anchor at a place nobody judged:")
+        for anchor in unclassified:
+            print(f"  {anchor.path}:{anchor.line}  {anchor.token}")
     if stale:
-        print("\nSTALE LEDGER ROWS -- the sweep no longer produces these tokens:")
-        for token, verdict, _ in stale:
-            print(f"  {token}  [{verdict}]")
+        print("\nSTALE LEDGER ROWS -- the sweep no longer produces these:")
+        for token, path, occurrences, verdict, _ in stale:
+            print(f"  {token}  {path}  x{occurrences}  [{verdict}]")
+    if miscounted:
+        print("\nOCCURRENCE DRIFT -- an anchor was added to or removed from a judged file:")
+        for token, path, recorded, produced in miscounted:
+            print(f"  {token}  {path}  recorded x{recorded}, produced x{produced}")
     if broken:
         print("\n=== QUALIFIERS PROMISING A COMMIT A READER CANNOT REACH ===")
         for claim, verdict in broken:
             print(f"  {claim.path}:{claim.line}  {claim.token}  {verdict}")
             print(f"      {claim.context[:170]}")
-    return 1 if unclassified or stale or broken else 0
+    return 1 if unclassified or stale or miscounted or broken else 0
 
 
 if __name__ == "__main__":

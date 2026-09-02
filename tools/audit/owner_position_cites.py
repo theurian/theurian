@@ -301,7 +301,16 @@ def sweep(root: Path, *, offline: bool = False) -> tuple[list[Cite], str, int]:
 
 
 #: Every row the sweep hands a person, with the verdict they reached, as
-#: ``(path, number, verdict, why)``.
+#: ``(path, number, fragment, verdict, why)``.
+#:
+#: **The fragment is the third key dimension, and round one is why.** Keyed on
+#: ``(path, number)`` alone, a *new* dead-owner sentence naming a number this file
+#: already carries is absorbed by the existing row: the sweep produces two rows,
+#: the ledger has one, and both directions of the reconciliation stay silent.
+#: Reproduced -- a second "the index purge in [#15] removes this one too" appended
+#: to the threat model left this audit at exit 0. So the key carries a fragment of
+#: the sentence, matched case-insensitively, and a second sentence about the same
+#: number in the same file is an unrecorded suspect.
 #:
 #: **DEFECT here means "file it", not "fix it in this branch".** Unit B's DoR puts
 #: the general cite classification in the known-unfinished set: it terminates as a
@@ -319,10 +328,11 @@ def sweep(root: Path, *, offline: bool = False) -> tuple[list[Cite], str, int]:
 #: Exact in both directions, like every ledger in this directory: a judged row
 #: with no ledger entry is a finding, and an entry the sweep no longer produces
 #: means the cite was repointed and the row goes with it.
-SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
+SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     (
         "SECURITY.md",
         "198",
+        "lands with them",
         "history",
         "Provenance: #198 is what shipped the `propose accept` scan, and the sentence "
         "describes the shipped control. It is here only because `lands with them` sits "
@@ -331,6 +341,7 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     (
         "docs/adr/0018-single-writer-synchronous-in-m1.md",
         "468",
+        "stays open for both halves",
         f"{SUPERSEDED_IN_PLACE} -- ADR-0018:155",
         "The sentence says '#468 stays open for both halves', and #468 closed COMPLETED on "
         "2026-09-01. It is not a live claim: :128-130 marks the paragraph "
@@ -342,6 +353,7 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     (
         "docs/adr/0023-trigram-index-beside-the-word-index.md",
         "16",
+        "removed when `IndexStore` states its own exhaustion",
         f"{SUPERSEDED_IN_PLACE} -- ADR-0023:356",
         "'a mitigation for this one gap, removed when `IndexStore` states its own "
         "exhaustion ([#16])', with #16 closed COMPLETED on 2026-08-08. The next block, "
@@ -351,6 +363,7 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     (
         "docs/adr/0027-accept-validates-before-it-moves.md",
         "349",
+        "tracked as their own face",
         f"{SUPERSEDED_IN_PLACE} -- ADR-0027:479",
         "'a YAML comment, and the migration and body filenames, are unscanned and tracked "
         "as their own face ([#349])', with #349 closed COMPLETED on 2026-08-26. :479 is "
@@ -366,6 +379,7 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     (
         "docs/security/threat-model.md",
         "349",
+        "the artifacts it lands them as",
         "history",
         "The provenance cite for that same shipped widening, and the one that matches "
         "#349's completion.",
@@ -373,6 +387,7 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     (
         "docs/security/threat-model.md",
         "40",
+        "announces it will do",
         "history",
         "A table cell under the column heading 'Corrected in'. The owner key fires on "
         "'what `/theurian:setup` announces it will do' in the *previous* column, which is "
@@ -381,6 +396,7 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     (
         "docs/security/threat-model.md",
         "15",
+        "removes this face",
         "DEFECT -- file",
         "The confirmed (a)-class member #427 recorded and #464 owns: 'the index purge in "
         "[#15] removes this face', with #15 closed. This audit reproducing it is the "
@@ -392,6 +408,7 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     (
         "docs/security/threat-model.md",
         "16",
+        "Both go with the cache when",
         f"{SUPERSEDED_IN_PLACE} -- threat-model:4566",
         "'Both go with the cache when [#16] lands', #16 closed. The sibling of the "
         "ADR-0023 row above, and superseded the same way: :4566 opens '**Amended in "
@@ -544,6 +561,115 @@ TREE_CONTROLS: Final[tuple[tuple[str, str, str, str], ...]] = (
 )
 
 
+#: What the ledger reconciliation must do, driven from synthetic rows, as
+#: ``(what it demonstrates, the judged rows, the ledger, unrecorded, stale,
+#: drifted)``.
+#:
+#: **Round one's code-M6, closed here and in the four audits beside this one.**
+#: Every ledger in this directory claimed to be exact in both directions and no
+#: control ran either one, so the exactness was an assertion about code nobody had
+#: executed with a mismatch in it. The third row is the absorption the fragment
+#: key exists for: a *second* dead-owner sentence about a number the file already
+#: carries, which a ``(path, number)`` key reports as recorded.
+LEDGER_CONTROLS: Final[
+    tuple[
+        tuple[
+            str,
+            tuple[tuple[str, str, str], ...],
+            tuple[tuple[str, str, str, str, str], ...],
+            int,
+            int,
+            int,
+        ],
+        ...,
+    ]
+] = (
+    (
+        "a judged row its ledger entry covers: no drift in any direction",
+        (("a.md", "15", "the purge in [#15] removes this face"),),
+        (("a.md", "15", "removes this face", "DEFECT -- file", "why"),),
+        0,
+        0,
+        0,
+    ),
+    (
+        "a judged row with no ledger entry at all -- the unrecorded direction",
+        (("a.md", "15", "the purge in [#15] removes this face"),),
+        (),
+        1,
+        0,
+        0,
+    ),
+    (
+        "a second sentence about a number the file already carries -- the absorption "
+        "a `(path, number)` key reports as recorded",
+        (
+            ("a.md", "15", "the purge in [#15] removes this face"),
+            ("a.md", "15", "a second residue: [#15] removes this one too"),
+        ),
+        (("a.md", "15", "removes this face", "DEFECT -- file", "why"),),
+        1,
+        0,
+        0,
+    ),
+    (
+        "a ledger entry the sweep no longer produces -- the stale direction",
+        (),
+        (("a.md", "15", "removes this face", "DEFECT -- file", "why"),),
+        0,
+        1,
+        0,
+    ),
+    (
+        "the same sentence recapitalised, which must NOT read as a new member",
+        (("a.md", "15", "Removes This Face, the purge in [#15] does"),),
+        (("a.md", "15", "removes this face", "DEFECT -- file", "why"),),
+        0,
+        0,
+        0,
+    ),
+    (
+        "a row recorded as superseded that comes back a suspect -- the verdict drift",
+        (("a.md", "16", "both go with the cache when [#16] lands"),),
+        (
+            (
+                "a.md",
+                "16",
+                "go with the cache",
+                f"{SUPERSEDED_IN_PLACE} -- a.md:99",
+                "why",
+            ),
+        ),
+        0,
+        0,
+        1,
+    ),
+)
+
+
+def _run_ledger_controls() -> int:
+    """Drive both reconciliation directions from planted rows and planted ledgers."""
+    failures = 0
+    print("\n=== LEDGER CONTROLS (the reconciliation, driven) ===")
+    for label, produced, ledger, want_new, want_stale, want_drift in LEDGER_CONTROLS:
+        judged = [
+            Cite(
+                number=number,
+                state="issue:closed",
+                verdict="SUSPECT",
+                sentence=Sentence(path=path, line=0, text=text, block=text),
+            )
+            for path, number, text in produced
+        ]
+        unrecorded, stale, disagreed = ledger_drift(judged, ledger)
+        got = (len(unrecorded), len(stale), len(disagreed))
+        want = (want_new, want_stale, want_drift)
+        status = "OK  " if got == want else "FAIL"
+        failures += status == "FAIL"
+        print(f"  {status} {label}: (unrecorded, stale, drift)={got}, expected {want}")
+    return 1 if failures else 0
+
+
 def _run_positive_controls(*, offline: bool) -> int:
     failures = 0
     print("=== POSITIVE CONTROLS ===")
@@ -574,22 +700,17 @@ def _run_positive_controls(*, offline: bool) -> int:
         status = "OK  " if verdicts == [expected] else "FAIL"
         failures += status == "FAIL"
         print(f"  {status} {label}: got {verdicts}, expected {[expected]}")
-    return 1 if failures else 0
+    return (1 if failures else 0) | _run_ledger_controls()
 
 
-def _historical_overlap(root: Path, *, offline: bool) -> int:
-    """How many rows the historical rule clears that the owner key would flag.
+def _historical_overlap_rows(root: Path, *, offline: bool) -> list[tuple[str, int, str, str]]:
+    """The rows the historical rule clears that the owner key would otherwise flag.
 
     M-a: ``_HISTORICAL`` runs over the whole sentence and outranks the owner
     phrasing, so one incidental ``was`` anywhere in a sentence clears a cite that
     is otherwise in owner position. That is the audit's largest silent
-    over-clear, and it is printed as a number rather than described -- a reader
-    who wants to see the members lists them with ``--overlap``.
+    over-clear; :func:`main` prints the count and ``--overlap`` lists the members.
     """
-    return len(_historical_overlap_rows(root, offline=offline))
-
-
-def _historical_overlap_rows(root: Path, *, offline: bool) -> list[tuple[str, int, str, str]]:
     table, _ = tracker_state.states(offline=offline)
     found: list[tuple[str, int, str, str]] = []
     for path in governed_paths(root):
@@ -606,6 +727,48 @@ def _historical_overlap_rows(root: Path, *, offline: bool) -> list[tuple[str, in
     return found
 
 
+def _covers(entry: tuple[str, str, str, str, str], row: Cite) -> bool:
+    """Whether one ledger entry is the record of this judged row.
+
+    Three dimensions, and the fragment is matched **case-insensitively** so a
+    sentence recapitalised at the head of a rewritten paragraph does not read as
+    a new member.
+    """
+    return (
+        entry[0] == row.sentence.path
+        and entry[1] == row.number
+        and entry[2].lower() in row.sentence.text.lower()
+    )
+
+
+def ledger_drift(
+    judged: list[Cite], ledger: tuple[tuple[str, str, str, str, str], ...]
+) -> tuple[
+    list[Cite],
+    list[tuple[str, str, str, str, str]],
+    list[tuple[Cite, tuple[str, str, str, str, str]]],
+]:
+    """``(unrecorded, stale, verdict drift)`` for one produced set against one ledger.
+
+    Both arguments are parameters rather than module globals, so the
+    reconciliation can be **driven** from synthetic input. Round one's code-M6
+    was that no ``--positive-control`` in this directory exercised any ledger
+    direction at all: a reconciliation that had stopped reporting would have
+    reported the same clean tree a clean tree reports.
+    :data:`LEDGER_CONTROLS` is what drives it now.
+    """
+    unrecorded = [row for row in judged if not any(_covers(entry, row) for entry in ledger)]
+    stale = [entry for entry in ledger if not any(_covers(entry, row) for row in judged)]
+    disagreed = [
+        (row, entry)
+        for row in judged
+        for entry in ledger
+        if _covers(entry, row)
+        and entry[3].startswith(SUPERSEDED_IN_PLACE) is not (row.verdict == SUPERSEDED_IN_PLACE)
+    ]
+    return unrecorded, stale, disagreed
+
+
 def _report_drift(judged: list[Cite]) -> int:
     """Reconcile the judged population against the ledger, in three directions.
 
@@ -615,36 +778,23 @@ def _report_drift(judged: list[Cite]) -> int:
     amendment block moved or was deleted, and the sentence is a live dead-owner
     claim again with a ledger row saying otherwise.
     """
-    produced = {(row.sentence.path, row.number) for row in judged}
-    unrecorded = [
-        row
-        for row in judged
-        if not any(entry[0] == row.sentence.path and entry[1] == row.number for entry in SUSPECTS)
-    ]
-    stale = [entry for entry in SUSPECTS if (entry[0], entry[1]) not in produced]
-    disagreed = [
-        (row, entry)
-        for row in judged
-        for entry in SUSPECTS
-        if entry[0] == row.sentence.path
-        and entry[1] == row.number
-        and entry[2].startswith(SUPERSEDED_IN_PLACE) is not (row.verdict == SUPERSEDED_IN_PLACE)
-    ]
+    unrecorded, stale, disagreed = ledger_drift(judged, SUSPECTS)
 
     if unrecorded:
         print("\nUNRECORDED SUSPECTS -- a closed number in owner position nobody judged:")
         for row in unrecorded:
             print(f"  {row.sentence.path}:{row.sentence.line}  #{row.number}")
+            print(f"      {row.sentence.text[:_MAX_EXCERPT]}")
     if stale:
         print("\nSTALE LEDGER ROWS -- the sweep no longer produces these:")
-        for path, number, verdict, _ in stale:
-            print(f"  {path}  #{number}  [{verdict}]")
+        for path, number, fragment, verdict, _ in stale:
+            print(f"  {path}  #{number}  [{verdict}]  {fragment!r}")
     if disagreed:
         print("\nVERDICT DRIFT -- the ledger and the classifier disagree about supersession:")
         for row, entry in disagreed:
             print(
                 f"  {row.sentence.path}:{row.sentence.line}  #{row.number}  "
-                f"classifier says {row.verdict!r}, the ledger says {entry[2]!r}"
+                f"classifier says {row.verdict!r}, the ledger says {entry[3]!r}"
             )
         print(
             "\n  A row recorded as superseded that comes back a suspect means the amendment\n"
