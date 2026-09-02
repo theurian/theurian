@@ -56,18 +56,49 @@ FROZEN_SHA = "4c4a78475dc73d4689637fa995da76c4732c0511"
 # --- git fixture helpers ---------------------------------------------------
 
 
-def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> str:
+def _child_env(env: dict[str, str] | None, *, hermetic: bool) -> dict[str, str]:
+    """The environment one fixture ``git`` runs under.
+
+    **A hermetic call ignores the developer's own git configuration**, not only
+    the parts that set a commit identity: ``GIT_CONFIG_GLOBAL`` and
+    ``GIT_CONFIG_SYSTEM`` are pinned to ``os.devnull``, applied *after* ``env`` is
+    merged so a caller that forgets cannot override it. ``init`` and ``clone``
+    read global config too, not only ``commit`` -- a ``core.hooksPath`` or a clone
+    template would otherwise run under the developer's real settings, and a
+    ``commit.gpgsign = true`` makes this file's fixture commits sign with their
+    live key: a passphrase or hardware-token prompt with no test invoking one.
+    Measured 2026-09-03 while building the #496 plants -- a fixture-shaped ``git
+    commit -F`` without this pin produced a signed commit on this machine.
+    ``test_findings_build_cli.py`` records the same finding from its own round-two
+    review and pins the same two variables for the same reason.
+
+    **``hermetic=False`` is for a read against the *real* checkout**, and the
+    distinction is load-bearing rather than tidiness: ``safe.directory`` lives in
+    global config, and a checkout owned by another user -- the offline CI job runs
+    as root -- is refused without it. Pinning it away there would turn the live
+    canary into a silent skip (its ``origin/main`` probe answering "absent") or a
+    hard error, which is a guard that stops guarding. Five other modules in this
+    suite pass ``-c safe.directory=`` for exactly that reason. Only the two calls
+    that address the checkout these tests live in pass it.
+    """
+    base = env if env is not None else dict(os.environ)
+    if not hermetic:
+        return base
+    return {**base, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+
+def _git(root: Path, *args: str, env: dict[str, str] | None = None, hermetic: bool = True) -> str:
     result = subprocess.run(  # noqa: S603
         ["git", *args],  # noqa: S607 - git resolved via PATH, args are test-controlled
         cwd=root,
         check=True,
         capture_output=True,
-        env=env,
+        env=_child_env(env, hermetic=hermetic),
     )
     return result.stdout.decode("utf-8")
 
 
-def _git_ok(root: Path, *args: str) -> bool:
+def _git_ok(root: Path, *args: str, hermetic: bool = True) -> bool:
     """True when ``git *args`` exits zero -- for a ref/object existence probe."""
     return (
         subprocess.run(  # noqa: S603
@@ -75,6 +106,7 @@ def _git_ok(root: Path, *args: str) -> bool:
             cwd=root,
             check=False,
             capture_output=True,
+            env=_child_env(None, hermetic=hermetic),
         ).returncode
         == 0
     )
@@ -160,6 +192,10 @@ def _git_bytes(root: Path, *args: str, stdin: bytes | None = None) -> bytes:
     hand-built commit object is written by feeding its raw bytes to ``git
     hash-object``, and the premise that git kept those bytes verbatim is read back
     with ``cat-file``/``log``, where decoding is the very thing under test.
+
+    Always hermetic, with no opt-out: every caller addresses a repository this file
+    built, so the live-checkout exemption :func:`_child_env` documents has nobody
+    to serve here.
     """
     result = subprocess.run(  # noqa: S603
         ["git", *args],  # noqa: S607 - git resolved via PATH, args are test-controlled
@@ -167,6 +203,7 @@ def _git_bytes(root: Path, *args: str, stdin: bytes | None = None) -> bytes:
         check=True,
         capture_output=True,
         input=stdin,
+        env=_child_env(None, hermetic=True),
     )
     return result.stdout
 
@@ -269,7 +306,13 @@ def _real_object_store() -> Path | None:
 
 
 def _origin_main_present(repo: Path) -> bool:
-    return _git_ok(repo, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main")
+    # One of the two calls that address the *real* checkout, so it keeps the
+    # developer's global config: without it a `safe.directory` refusal on a
+    # differently-owned checkout answers "no origin/main" and the live canary
+    # skips itself (see `_child_env`).
+    return _git_ok(
+        repo, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main", hermetic=False
+    )
 
 
 # --- AC-3 / D7: the source reads only public refs/remotes/origin/main -------
@@ -1500,7 +1543,9 @@ def test_live_origin_main_accounts_for_every_trailer_loss_free() -> None:
 
     assert load == again  # deterministic across two calls
 
-    raw = _git(repo, "log", "refs/remotes/origin/main", "--format=%B")
+    # The second of the two calls that address the *real* checkout, so it keeps the
+    # developer's global config for the same `safe.directory` reason (`_child_env`).
+    raw = _git(repo, "log", "refs/remotes/origin/main", "--format=%B", hermetic=False)
     keyed = [line for line in raw.split("\n") if line.startswith(TRAILER_KEY)]
     # Loss-free population accounting: every column-0 keyed line is accounted for
     # in exactly one tuple, none silently dropped, and there really are some.
