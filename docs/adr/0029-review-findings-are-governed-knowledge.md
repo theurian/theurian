@@ -1008,12 +1008,39 @@ registered tool serves a finding, and that it is this one
   in `mcp/tools.py`;
   `test_review_findings_tool.py::test_every_unservable_store_gives_the_same_constant_refusal`
   and `::test_the_unservable_refusal_does_not_vary_with_what_the_store_holds`).
+  **That sentence is narrower than what now holds, and the widening is
+  deliberate rather than incidental** (#504 round 1, R1-2 face iv): *value*
+  damage speaks through the same constant too. A store whose `position` or
+  `pull_request` column holds text rather than a number — SQLite types columns
+  by affinity, so nothing stops one — raised `ValueError` in the row conversion,
+  which sat *outside* the read's `except` and escaped as a different error shape
+  for a different kind of damage. The conversion moved inside the boundary and
+  the boundary widened from a named tuple of `sqlite3.Error`/`OSError` to every
+  exception, and `dump()` took the same treatment; so the honest statement is
+  that a store this tool cannot serve from speaks only through the constant
+  refusal, whether what is wrong with it is its staleness, its readability or
+  its values (`SqliteReviewFindingStore.serve_findings`). The narrow tuple was a
+  list of the damage shapes somebody had thought of, and the round found the one
+  nobody had.
   The staleness comparison runs **inside the one `mode=ro` connection the rows
   come back on**, so a rebuild landing mid-call cannot have the check pass on one
   file and the rows come from another. That is why `is_current()` is
   deliberately dead in production rather than merely unused — a caller that asked
   it first would open a second connection and reintroduce the split
   (`test_findings_store_is_unreachable.py::test_no_shipped_module_asks_the_store_whether_it_is_current`).
+- **The three axes D5 leaves underivable are refused, not answered `count: 0`.**
+  `pullRequest`, `family` and `specialist` are `NULL` on every row this build's
+  source produces, so a filter on one matched nothing and published an absence a
+  caller reads as "nothing was recorded on that PR" — the same misreadable
+  absence `_commit_sha`'s refusal already exists to prevent, and worse, because
+  no value would have worked (#504 round 1, R1-5). All three are refused
+  together by one build constant naming this decision
+  (`mcp/findings.py::INERT_FILTER_REFUSAL`), which interpolates nothing — not
+  which axis was sent, not the value, not the project — so refusal uniformity is
+  untouched and the refusal is lifted per axis in the same change that starts
+  deriving values for it. They stay published *fields* on every row, for the
+  reason `finding_row` gives: a key that appears only when it has a value cannot
+  be told apart from a server that predates the key.
 - **A rejected trailer is excluded at the type, not filtered out.** `FindingQuery`
   has no member that can select one, and the serving statement names `findings`
   alone, so a rejected line's author-controlled `raw_line` and `reason` are never
@@ -1042,6 +1069,29 @@ registered tool serves a finding, and that it is this one
   static prongs remain the arm for unreachable code), and a reader that built a
   `sqlite3.Connection` directly or parsed the file's bytes without SQLite is
   outside it.
+
+**Recorded acceptance — the store-read audit's bounds.** Carried verbatim from
+PR #504's round-1 record, where the adversarial reviewer measured it on
+2026-09-02 against `857d3b0`:
+
+> The store-read audit in
+> `packages/theurian-core/tests/integration/test_findings_store_reads_are_governed.py`
+> intercepts `sqlite3.connect`. Two reader shapes are outside it, and both were
+> demonstrated on 2026-09-02 against 857d3b0 by planting them on
+> `review.findings`' served path in an isolated copy and running the full
+> 4838-test suite: a reader that constructs `sqlite3.Connection` directly, and a
+> reader that parses the store file's bytes with no SQLite. Each read
+> `rejected_trailers` content and each left the suite GREEN. The instrument's own
+> positive control (the same read via `sqlite3.connect`) went RED in the same
+> batch, so the two greens are the bound and not a broken check. Neither shape is
+> reachable without a diff at least as visible as the one the audit catches. What
+> the audit does not need to cover is content reaching a caller:
+> `test_no_response_carries_a_byte_of_a_rejected_trailer` is a black-box check
+> independent of how a reader is spelled.
+
+The figures inside the quotation are that measurement's, at that commit: the
+suite has grown since, and the bound the acceptance states is a property of the
+instrument rather than of any test count.
 
 **Discharged from the owed list above: a served `findingText` carries the SEC-15
 safety triple.** The bullet asked for a test on the serving path plus a companion
@@ -1081,8 +1131,11 @@ threat model.** Slice-1 pinned the source to `refs/remotes/origin/main`, so what
 show — but only *for a caller who can read that clone's `.git`*. An MCP caller is
 a distinct audience from a local repository reader, so the reach argument is a
 **precondition on the deployment**, not a property of the code: *the daemon's MCP
-audience must not be broader than the set of principals who may read the
-repository it serves from.* On a clone of the private embargo fork the daemon
+audience must not be broader than the set of principals who may read **every**
+repository it serves from.* The plural is load-bearing — one daemon serves every
+project in its registry and nothing scopes a caller to a subset, so the set the
+precondition bounds is the intersection of the read-sets, not any one
+repository's. On a clone of the private embargo fork the daemon
 therefore sits **inside** the embargo boundary, and the URL verification that
 would make that structural is still Amendment 1's D7 stated non-goal. Per-finding
 embargo control arrives with the GitHub arm, which is the path that has advisory
