@@ -1368,24 +1368,78 @@ async def test_the_refusal_for_an_absurd_number_is_built_rather_than_crashing(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("filter_name", STRING_FILTERS)
 async def test_an_over_long_filter_is_reported_by_length_and_never_echoed(
-    project: ProjectRegistry,
+    project: ProjectRegistry, filter_name: str
 ) -> None:
     """The amplifier this project already closed for ``query`` and ``itemId``.
 
     Echoing an over-long value back turns a refusal into a ~1x reflector of
     whatever the caller sent (#17). The length is named instead -- which is what
     the caller needs -- and the bytes stay out of the response.
+
+    **Every string filter, because ``_bounded`` is applied per filter and a
+    filter that skips it is invisible from the one this test used to drive.**
+    Dropping the call from ``_commit_sha``, ``_reviewer`` or ``_severity`` left
+    the whole suite green (PR #504 round 1, M2): each then refused on its
+    vocabulary instead, quoting the caller's unbounded value back verbatim.
+    Dropping it from ``specialist`` was green for a different reason (M6): the
+    inert-axis refusal fires next and says nothing about length, so an over-long
+    ``specialist`` was answered by a constant that names no bound at all.
+
+    That is why the assertions are the *length refusal's* own two numbers rather
+    than "some refusal came back": ``family`` and ``specialist`` reach a refusal
+    either way, and only the numbers tell the two refusals apart.
     """
     _land(project)
     oversized = "z" * (MAX_FILTER_CHARS + 500)
 
-    message = await _call_failing(project, projectId="demo", q=oversized)
+    message = await _call_failing(project, projectId="demo", **{filter_name: oversized})
 
-    assert str(MAX_FILTER_CHARS) in message
+    assert f"`{filter_name}`" in message, (
+        f"the refusal does not name the filter that was too long: {message}"
+    )
+    assert str(MAX_FILTER_CHARS) in message, (
+        f"the refusal does not name the bound, so `{filter_name}` was refused by "
+        f"something other than its length: {message}"
+    )
     assert str(len(oversized)) in message
     assert oversized not in message
     assert len(message) < len(oversized), "the refusal is smaller than what provoked it"
+
+
+@pytest.mark.asyncio
+async def test_a_filter_of_exactly_the_bound_is_searched_and_one_more_is_refused(
+    project: ProjectRegistry,
+) -> None:
+    """The boundary itself, which every other bound test here leaves slack around.
+
+    The refusal tests above send ``MAX_FILTER_CHARS + 500`` and the reflector test
+    sends exactly the bound, so between them the comparison in ``_bounded`` could
+    drift by 499 characters unnoticed -- widening it to ``> MAX_FILTER_CHARS +
+    499`` was suite-green (PR #504 round 1, M3). Both sides of one character are
+    what pins it: the last admitted value is *searched*, and the first refused one
+    is refused by its length.
+
+    ``q`` is the filter driven here because it is the one with no vocabulary
+    behind the bound, so "admitted" is observable as an answer rather than as a
+    different refusal. One filter is enough for the boundary itself:
+    :func:`test_an_over_long_filter_is_reported_by_length_and_never_echoed` is
+    what holds that all six go through this same comparison.
+    """
+    _land(project)
+
+    admitted = await _call(project, projectId="demo", q="z" * MAX_FILTER_CHARS)
+    message = await _call_failing(project, projectId="demo", q="z" * (MAX_FILTER_CHARS + 1))
+
+    assert admitted["count"] == 0, (
+        f"a filter of exactly {MAX_FILTER_CHARS} characters -- the last one the "
+        f"published bound admits -- was not searched: {admitted}"
+    )
+    assert str(MAX_FILTER_CHARS) in message
+    assert str(MAX_FILTER_CHARS + 1) in message, (
+        f"one character past the bound was not refused by its length: {message}"
+    )
 
 
 @pytest.mark.asyncio
@@ -1546,9 +1600,14 @@ async def test_a_call_with_no_limit_returns_the_default_page_not_the_whole_store
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "length, quoted",
+    [(MAX_FILTER_CHARS, True), (MAX_QUERY_CHARS * 4, False)],
+    ids=["at-the-bound", "far-past-the-bound"],
+)
 @pytest.mark.parametrize("filter_name", ["reviewer", "severity", "commitSha"])
 async def test_a_refusal_is_never_a_bigger_reflector_than_the_published_echo(
-    project: ProjectRegistry, filter_name: str
+    project: ProjectRegistry, filter_name: str, length: int, quoted: bool
 ) -> None:
     """What ``MAX_FILTER_CHARS`` buys, asserted as a property and not as a number.
 
@@ -1577,6 +1636,17 @@ async def test_a_refusal_is_never_a_bigger_reflector_than_the_published_echo(
     The three filters here are exactly the ones that quote: ``family``,
     ``specialist`` and ``q`` accept any in-bound string and answer ``count: 0``
     rather than refusing, so they echo nothing to bound.
+
+    **Driven past the bound as well as at it**, which is what makes the
+    amplification claim hold rather than merely be stated. Sending only the
+    at-the-bound value asserts the property over inputs ``_bounded`` never has to
+    stop: dropping its call from ``_commit_sha``, ``_reviewer`` and ``_severity``
+    was suite-green (PR #504 round 1, M2), because a 200-character token quoted
+    back is a small refusal either way. The far-past case is the one that
+    separates them -- with the length check gone, the vocabulary refusal quotes
+    an arbitrarily long value and the response is a reflector of it. The size is
+    a multiple of ``MAX_QUERY_CHARS`` on purpose: the refusal must stay under the
+    echo bound *even when what provoked it is several times larger*.
     """
     longest_legitimate = max(
         # A SHA-256 repository's commit sha, the longest value any of these
@@ -1591,19 +1661,30 @@ async def test_a_refusal_is_never_a_bigger_reflector_than_the_published_echo(
         f"refused for its length"
     )
     _land(project)
+    sent = "z" * length
 
-    message = await _call_failing(
-        project, projectId="demo", **{filter_name: "z" * MAX_FILTER_CHARS}
-    )
+    message = await _call_failing(project, projectId="demo", **{filter_name: sent})
 
     assert len(message) < MAX_QUERY_CHARS, (
-        f"a `{filter_name}` at the length bound provoked a {len(message)}-character "
+        f"a `{filter_name}` of {length} characters provoked a {len(message)}-character "
         f"refusal, past the {MAX_QUERY_CHARS} this daemon publishes as the largest "
         f"caller-controlled string it will echo. MAX_FILTER_CHARS is {MAX_FILTER_CHARS}: "
         f"a refusal that quotes the caller's own token turns this surface into a "
         f"reflector as soon as the bound is wide enough to be worth pointing at "
         f"something else."
     )
+    if quoted:
+        assert sent in message, (
+            f"a `{filter_name}` inside the bound was not quoted back. The echo is "
+            f"deliberate -- a typo is what the refusal exists to make visible -- so "
+            f"this half is asserted too, or the bound above could be met by quoting "
+            f"nothing at all and the two halves would stop being a trade-off"
+        )
+    else:
+        assert sent not in message, (
+            f"a `{filter_name}` past the length bound was quoted back verbatim: the "
+            f"refusal is a reflector of {length} caller-controlled characters"
+        )
 
 
 # -- The project gate -------------------------------------------------------
