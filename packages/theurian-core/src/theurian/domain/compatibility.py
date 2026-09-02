@@ -129,10 +129,14 @@ CURRENT_PROTOCOL_VERSION: Final = "theurian/v1"
 #: trailing newline, so ``"theurian/v1\n"`` constructs here while the published
 #: ``schemas/protocol/compatibility.schema.json`` pattern refuses it under
 #: ECMA-262 and RE2, where ``$`` means end of input. ``domain/identifiers.py``
-#: took the other answer for the four identifier types in ``80f94b6``; this
-#: pattern, ``MediaType`` and ``ContentHash`` are its three remaining siblings.
+#: took the other answer for the four identifier types in ``80f94b6`` -- a commit
+#: on the branch of https://github.com/theurian/theurian/pull/32, which landed as
+#: ``21e1ba9`` and was rewritten at the squash, so the tree ``80f94b6`` names is
+#: not preserved on ``main`` and a reader who cloned this repository cannot check
+#: it out (#463). This pattern, ``MediaType`` and ``ContentHash`` are its three
+#: remaining siblings.
 #:
-#: **Measured, because ``80f94b6`` recorded a claim about this one without
+#: **Measured, because that branch commit recorded a claim about this one without
 #: measuring it.** The claim was that it is fail-closed and costs only a confusing
 #: error message. Both halves hold: ``resolve_compatibility`` returns
 #: ``PROTOCOL_MISMATCH`` and the CLI exits 3, ``CompatibilityVerdict``'s published
