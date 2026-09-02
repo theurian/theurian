@@ -38,6 +38,19 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   milestone anchor. `providers.review.repositories`' own description carries the
   same repoint.
 
+  **A fourth face, found in review of the rewrite itself.** The replacement
+  sentence said *"Each reserved key's own description says what it is owed
+  with"*, and three of the ten reserved keys carry such a clause —
+  `providers.review.repositories`, `raptor.enabled` and
+  `security.maxSourceFileBytes`. It is a claim about the artifact a reader is
+  holding, on the artifact's most-read line, and it sent that reader to seven
+  descriptions to look for something not there. Deleted; the specific statement
+  it introduced — that the review-ingestion allowlist is owed with the first
+  external fetch path — stands on its own and keeps its
+  [#429](https://github.com/theurian/theurian/issues/429) pointer. The
+  whole-text pin moved in the same commit, and the built wheel was JSON-parsed
+  to confirm the shipped copy carries the corrected sentence.
+
   **Pinned in both directions for the first time**, which is why the false
   sentence survived four sweeps unnoticed. What is pinned is stated as a
   derivation rather than as coverage, and the sentence below is *rebuilt* from

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://theurian.dev/schemas/config/project-config.schema.json",
   "title": "Theurian project configuration (.theurian/config.yaml)",
-  "description": "Per-repository configuration, Git-tracked. Contains no secrets: credentials live in ~/.theurian and the OS secret store (ADR-0011). This file has one reader: `security/project_config.py` takes `security.secretScan` from it and nothing else (ADR-0027 decision 3), so that one key is in force and every other key published here is reserved. Setting a reserved key changes nothing, and where a default below is also honoured by the product the code carries its own copy rather than reading this file. Each reserved key's own description says what it is owed with; the review-ingestion allowlist is owed with the first external fetch path (https://github.com/theurian/theurian/issues/429).",
+  "description": "Per-repository configuration, Git-tracked. Contains no secrets: credentials live in ~/.theurian and the OS secret store (ADR-0011). This file has one reader: `security/project_config.py` takes `security.secretScan` from it and nothing else (ADR-0027 decision 3), so that one key is in force and every other key published here is reserved. Setting a reserved key changes nothing, and where a default below is also honoured by the product the code carries its own copy rather than reading this file. The review-ingestion allowlist is owed with the first external fetch path (https://github.com/theurian/theurian/issues/429).",
   "type": "object",
   "required": ["apiVersion", "projectId"],
   "additionalProperties": false,

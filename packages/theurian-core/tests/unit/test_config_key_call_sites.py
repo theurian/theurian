@@ -586,8 +586,8 @@ SCHEMA_ROOT_DESCRIPTION: Final = (
     "(ADR-0027 decision 3), so that one key is in force and every other key published "
     "here is reserved. Setting a reserved key changes nothing, and where a default "
     "below is also honoured by the product the code carries its own copy rather than "
-    "reading this file. Each reserved key's own description says what it is owed with; "
-    "the review-ingestion allowlist is owed with the first external fetch path "
+    "reading this file. The review-ingestion allowlist is owed with the first external "
+    "fetch path "
     "(https://github.com/theurian/theurian/issues/429)."
 )
 
@@ -595,18 +595,23 @@ SCHEMA_ROOT_DESCRIPTION: Final = (
 def test_the_schema_root_description_is_exactly_what_this_file_records() -> None:
     """RED means the wheel's root description moved, in either direction.
 
-    The fragment pins beside this one catch a *deletion*: drop "This file has one
-    reader" and the row goes RED. They cannot catch an **addition**, and an
-    addition is the shape that ships a false control claim -- a sentence asserting
-    that the review allowlist is consulted before Theurian contacts a repository
-    keeps all four required fragments, is published in the built wheel, and left
-    every audit and every pin green when it was planted.
+    **This row used to be four fragments, and that is round one's adv-L1.** A
+    fragment list catches a *deletion*: drop "This file has one reader" and the row
+    goes RED. It cannot catch an **addition**, and an addition is the shape that
+    ships a false control claim -- a sentence asserting that the review allowlist
+    is consulted before Theurian contacts a repository kept all four fragments, was
+    published in the built wheel, and left every audit and every pin green when it
+    was planted. Round three then gave every published description the same
+    treatment, so the four fragments this paragraph describes are history rather
+    than a sibling pin.
 
-    An exact match is affordable here because there is exactly one root
-    description and it is the schema's most-read sentence. If this is RED because
-    the wording genuinely improved, copy the new text in -- and say in the same
-    commit what claim it now makes, because that is the review this pin exists to
-    force.
+    An exact match is affordable here because there is one root description and it
+    is the schema's most-read sentence. If this is RED because the wording
+    genuinely improved, copy the new text in -- and say in the same commit what
+    claim it now makes, because that is the review this pin exists to force. Round
+    four is why the sentence is worth reading rather than copying: the description
+    said "Each reserved key's own description says what it is owed with", and three
+    of the ten reserved keys carry such a clause.
     """
     schema = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
 
@@ -1128,9 +1133,10 @@ def test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it() -> Non
 #: published description is now a two-file diff that somebody reads. The two
 #: descriptions that already had a whole pin keep their own named tests —
 #: :func:`test_the_schema_root_description_is_exactly_what_this_file_records` and
-#: :func:`test_the_secret_scan_description_is_exactly_what_this_file_records`,
-#: both cited from the plugin changelog's mutation record — and they read their
-#: expected text from this table rather than carrying a second copy of it.
+#: :func:`test_the_secret_scan_description_is_exactly_what_this_file_records`, the
+#: second of which the plugin changelog's mutation record cites by name — and they
+#: read their expected text from this table rather than carrying a second copy of
+#: it.
 #:
 #: **The root is a row here, and it is the row that was missing.** ``pointer`` is
 #: empty for it, so :func:`_published_description` reads the top-level
@@ -1148,7 +1154,9 @@ def test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it() -> Non
 #:
 #: The eleven key rows are in the order :func:`_described_key_paths` derives, so
 #: the changelog sentence built from this table and the sentence built from the
-#: schema list the same names in the same order.
+#: schema list the same names in the same order. That agreement is asserted by
+#: :func:`test_the_watched_descriptions_are_ordered_the_way_the_schema_derives_them`
+#: rather than left to a reader keeping two lists in step by eye.
 WATCHED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("(schema root)", (), SCHEMA_ROOT_DESCRIPTION),
     (
@@ -1345,6 +1353,38 @@ def test_each_watched_key_publishes_exactly_the_description_this_file_records(
         f"is where the readers get recorded and those documents are where the claim "
         f"gets corrected. If the wording improved, copy it in and say what claim it "
         f"now makes -- an addition is the direction a fragment pin could not see."
+    )
+
+
+def test_the_watched_descriptions_are_ordered_the_way_the_schema_derives_them() -> None:
+    """RED means the pinned table and the schema list the same keys in different orders.
+
+    :func:`test_the_changelog_states_the_pin_reach_this_module_actually_has`
+    rebuilds a changelog sentence that names the pinned keys, and it takes the
+    names from this table while it takes the *count* from the schema. Those two
+    sources agreeing on order is what makes the rebuilt sentence stable across a
+    schema edit that adds a key in the middle -- and until round four the agreement
+    was a sentence in :data:`WATCHED_KEY_DESCRIPTIONS`' own comment and nothing
+    else. A comment claiming an ordering is exactly the kind of claim that stays
+    green while it stops being true.
+
+    The root row is excluded because it has no dotted path: it is the member every
+    key-block derivation counts past (#455), and it is carried first here for the
+    same reason the changelog names it first.
+    """
+    tabled = tuple(key for key, pointer, _recorded in WATCHED_KEY_DESCRIPTIONS if pointer)
+
+    assert tabled == _described_key_paths(), (
+        f"`WATCHED_KEY_DESCRIPTIONS` lists {list(tabled)}\n"
+        f"and the schema derives  {list(_described_key_paths())}.\n\n"
+        "The changelog sentence rebuilt by "
+        "`test_the_changelog_states_the_pin_reach_this_module_actually_has` takes "
+        "its names from the table and its count from the schema. If the two "
+        "disagree on order, that sentence names the pinned keys in an order no "
+        "reader of the schema will see, and the disagreement is invisible from "
+        "either side alone.\n\n"
+        "A key published in the middle of the schema goes into the middle of the "
+        "table, not at the end."
     )
 
 
@@ -1642,10 +1682,15 @@ SECRET_SCAN_POLICY_IMPORTERS: tuple[str, ...] = (
 
 #: Number words as the changelog spells them, index = value.
 #:
-#: The sentence pinned below mixes digits and words -- "**12** descriptions",
-#: "The other nine are unpinned" -- so a derived number has to be rendered the
-#: way the prose renders it. Twelve is the ceiling because the surface being
-#: counted is twelve descriptions; a thirteenth is a schema change, and
+#: The sentences rebuilt below mix digits and words: a quantity that is the subject
+#: of the claim is bolded as a numeral -- "**12** descriptions", "**12 of the
+#: 12**" -- and a quantity in passing is spelled out, as in "five spellings in
+#: `WATCHED_SPELLINGS` -- four of them published key blocks". A derived number
+#: therefore has to be rendered the way the prose renders it, and this table is the
+#: word half.
+#:
+#: Twelve is the ceiling because the largest quantity these sentences carry is the
+#: number of published descriptions. A thirteenth is a schema change, and
 #: :func:`_number_word` refuses rather than silently formatting a digit into a
 #: sentence that spells its neighbours out.
 _NUMBER_WORDS: Final[tuple[str, ...]] = (
