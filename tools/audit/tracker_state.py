@@ -58,8 +58,24 @@ def _gh(*arguments: str) -> str | None:
     return completed.stdout if completed.returncode == 0 else None
 
 
+#: How many issues and how many pull requests one ``gh list`` call asks for.
+#:
+#: **The page size is a silent-truncation risk, and that is the false-green
+#: direction.** ``gh`` returns the newest ``--limit`` entries and says nothing
+#: when there are more, so a repository that outgrew this number would hand the
+#: audits a table missing its *oldest* numbers -- and a number absent from the
+#: table is not open, which is the verdict a cite of it then gets. Every audit
+#: here would quietly stop reporting the dead owners it exists to find.
+_PAGE: Final = 2000
+
+
 def _live() -> dict[str, str] | None:
-    """Every issue and pull-request state the tracker holds, or ``None``."""
+    """Every issue and pull-request state the tracker holds, or ``None``.
+
+    Raises when a page comes back full, because a full page cannot be
+    distinguished from a truncated one and the failure is silent in the
+    direction that matters: see :data:`_PAGE`.
+    """
     found: dict[str, str] = {}
     for kind, command in (
         ("issue", ("issue", "list")),
@@ -72,13 +88,23 @@ def _live() -> dict[str, str] | None:
             "--state",
             "all",
             "--limit",
-            "2000",
+            str(_PAGE),
             "--json",
             "number,state",
         )
         if payload is None:
             return None
-        for entry in json.loads(payload):
+        entries = json.loads(payload)
+        if len(entries) >= _PAGE:
+            message = (
+                f"`gh {' '.join(command)}` returned {len(entries)} entries at "
+                f"--limit {_PAGE}: the page is full, so the tracker table may be "
+                f"missing its oldest numbers. A number the table does not carry "
+                f"reads as `not open`, which silently clears every dead-owner "
+                f"verdict below it. Raise `_PAGE` and re-run."
+            )
+            raise RuntimeError(message)
+        for entry in entries:
             found[str(entry["number"])] = f"{kind}:{entry['state'].lower()}"
     return found or None
 

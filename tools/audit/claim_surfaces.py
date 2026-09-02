@@ -210,18 +210,40 @@ def _collapse(lines: list[tuple[int, str]]) -> tuple[str, list[int]]:
         origin.extend([number] * len(piece))
     joined = "".join(text)
     collapsed = re.sub(r"\s+", " ", joined)
-    if len(collapsed) == len(joined):
-        return collapsed, origin
-    # Whitespace runs inside a single source line collapse too; rebuild the map
-    # by walking both strings, which is exact and costs nothing at this size.
+    return collapsed, _rebuild_origin(joined, origin)
+
+
+def _rebuild_origin(joined: str, origin: list[int]) -> list[int]:
+    """The line map for ``re.sub(r"\\s+", " ", joined)``, walked run by run.
+
+    One entry per character of the collapsed string: a whitespace *run* becomes
+    one space and contributes one entry, and every other character contributes
+    itself.
+
+    **This walks the runs rather than matching characters, which is round one's
+    M-e.** The previous rebuild scanned ``joined`` for each character of the
+    collapsed string, so when a run collapsed to a space it went looking for a
+    literal ``" "`` -- and a run made of tabs has none. It skipped past the tabs
+    to the next real space and every attribution after that point was off by a
+    line. Measured: ``alpha\\t\\tbeta gamma`` on line 10 joined with a second
+    source line reported ``beta`` at line 11.
+
+    The old fast path had the same flaw one step earlier. It returned the
+    unrebuilt map whenever the two strings were the same length, which is true of
+    a *single* tab -- correct there by luck, since one character still maps to
+    one character, but a rule that reads length rather than structure. There is
+    one path now.
+    """
     rebuilt: list[int] = []
     index = 0
-    for character in collapsed:
-        while index < len(joined) and joined[index] != character:
+    while index < len(joined):
+        rebuilt.append(origin[index])
+        if joined[index].isspace():
+            while index < len(joined) and joined[index].isspace():
+                index += 1
+        else:
             index += 1
-        rebuilt.append(origin[index] if index < len(origin) else origin[-1])
-        index += 1
-    return collapsed, rebuilt
+    return rebuilt
 
 
 def _markdown_blocks(text: str) -> list[tuple[str, list[int]]]:
