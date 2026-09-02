@@ -15,14 +15,21 @@ literal of those three keys is how one surface ends up labelling and another
 not, which is a knowledge body reaching an agent with nothing saying it is a
 document.
 
-**Every bound is here, and each is a refusal rather than a clamp.**
-``knowledge.search`` clamps an out-of-range ``limit``, deliberately: a caller
-asking for a million results wants "as much as you have", and that tool answers
-a *ranked* question where fewer results is a worse answer, not a wrong one. This
-tool answers a *filtered* question with no paging, so a silent clamp would let a
-caller read "these are the 20 findings matching my filter" off a response that
-was truncated from more. Naming the bound is the honest form; the caller narrows
-with a filter.
+**Every bound is here, and every bound on a caller's *request* is a refusal
+rather than a clamp.** ``knowledge.search`` clamps an out-of-range ``limit``,
+deliberately: a caller asking for a million results wants "as much as you have",
+and that tool answers a *ranked* question where fewer results is a worse answer,
+not a wrong one. This tool answers a *filtered* question with no paging, so a
+silent clamp would let a caller read "these are the 20 findings matching my
+filter" off a response that was truncated from more. Naming the bound is the
+honest form; a page that does end early says so, through ``truncated``.
+
+**One bound is a clamp, and it is the one whose input is not the request.**
+:func:`_bounded_text` cuts an over-long stored ``findingText`` and marks the cut.
+Refusing there would let one planted commit message deny the whole tool, and the
+caller who would be refused is not the one who wrote the row -- so the response
+carries the cut with an explicit marker instead. Every bound a *caller* can
+provoke still refuses.
 
 **Refusals name the bound and never echo an over-long input.** A filter longer
 than :data:`MAX_FILTER_CHARS` is reported by its length, never quoted -- the

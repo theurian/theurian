@@ -15,8 +15,10 @@ Five properties this file exists to hold, each named where it is asserted below:
 
 - a served row carries the SEC-15 triple, **and the check that says so can fail**
   (ADR-0029 Compliance: "a result missing the triple is rejected");
-- every filter selects exactly its rows, and an unknown token or an over-bound
-  value is refused naming the bound rather than silently scanning;
+- every filter this build can serve selects exactly its rows; an unknown token or
+  an over-bound value is refused naming the bound rather than silently scanning;
+  and the three axes the shipped source derives no value for are refused with one
+  build constant rather than answered ``count: 0``;
 - a store that cannot be served from produces **one constant refusal** carrying
   the rebuild remedy -- never an empty result, and never a message that varies
   with what the store holds;
