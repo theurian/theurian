@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from claim_surfaces import governed_paths, repo_root
+from claim_surfaces import governed_paths, print_control_tally, repo_root
 
 #: Where a published-field claim is governed. Source is excluded on purpose: the
 #: parser's own comments are the implementation's reasoning, and #246's face is
@@ -232,8 +232,10 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, int, int], ...]] = (
 
 def _run_positive_controls() -> int:
     failures = 0
+    ran = 0
     print("=== POSITIVE CONTROLS ===")
     for label, document, expected_sites, expected_discharged in POSITIVE_CONTROLS:
+        ran += 1
         found = sites_in_text("control.md", document)
         discharged = sum(1 for site in found if site.discharged)
         ok = len(found) == expected_sites and discharged == expected_discharged
@@ -243,6 +245,7 @@ def _run_positive_controls() -> int:
             f"  {status} {label}: sites={len(found)} (expected {expected_sites}), "
             f"discharged={discharged} (expected {expected_discharged})"
         )
+    print_control_tally("POSITIVE_CONTROLS", ran, failures)
     return 1 if failures else 0
 
 

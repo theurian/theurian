@@ -81,6 +81,7 @@ from claim_surfaces import (
     governed_paths,
     load_json,
     planted_changelog,
+    print_control_tally,
     repo_root,
     sentences,
     without_emphasis,
@@ -1131,8 +1132,10 @@ LEDGER_CONTROLS: Final[
 def _run_ledger_controls() -> int:
     """Drive all three reconciliation directions from planted rows and planted ledgers."""
     failures = 0
+    ran = 0
     print("\n=== LEDGER CONTROLS (the reconciliation, driven) ===")
     for label, produced, ledger, want_new, want_stale, want_ambiguous in LEDGER_CONTROLS:
+        ran += 1
         rows = [
             Row(
                 objects=(".theurian/config.yaml",),
@@ -1148,6 +1151,7 @@ def _run_ledger_controls() -> int:
         status = "OK  " if got == want else "FAIL"
         failures += status == "FAIL"
         print(f"  {status} {label}: (unrecorded, stale, ambiguous)={got}, expected {want}")
+    print_control_tally("LEDGER_CONTROLS", ran, failures)
     return 1 if failures else 0
 
 
@@ -1183,8 +1187,10 @@ def _run_positive_controls() -> int:
     members = inventory(root)
     keys = {member.name: _keys_for(member) for member in members}
     failures = 0
+    ran = 0
     print("=== POSITIVE CONTROLS ===")
     for label, path, planted, expected, section in POSITIVE_CONTROLS:
+        ran += 1
         # The section membership is *computed* by the rule under test over a
         # synthetic document, never asserted here -- round two's R2-g.
         lines, line = planted_changelog(planted, section=section)
@@ -1199,6 +1205,7 @@ def _run_positive_controls() -> int:
         failures += status == "FAIL"
         print(f"  {status} {label}")
         print(f"        expected suspect={expected}  got {verdict!r}")
+    print_control_tally("POSITIVE_CONTROLS", ran, failures)
     return (1 if failures else 0) | _run_escape_controls(members, keys) | _run_ledger_controls()
 
 
@@ -1208,8 +1215,10 @@ def _run_escape_controls(
 ) -> int:
     """Run the recorded escape space, so the bound fails instead of rotting."""
     failures = 0
+    ran = 0
     print("\n=== MEASURED ESCAPES (the bound, run) ===")
     for label, path, planted, reached in MEASURED_ESCAPES:
+        ran += 1
         verdict = _verdict_for_planted(
             members, keys, Sentence(path=path, line=0, text=planted, block=planted)
         )
@@ -1217,6 +1226,7 @@ def _run_escape_controls(
         status = "OK  " if found is reached else "FAIL"
         failures += status == "FAIL"
         print(f"  {status} {label}: recorded reached={reached}, got {verdict!r}")
+    print_control_tally("MEASURED_ESCAPES", ran, failures)
     return 1 if failures else 0
 
 

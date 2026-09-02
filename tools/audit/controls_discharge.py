@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Final
 
 import tracker_state
-from claim_surfaces import load_json, repo_root
+from claim_surfaces import load_json, print_control_tally, repo_root
 
 THREAT_MODEL: Final = "docs/security/threat-model.md"
 PROJECT_CONFIG_SCHEMA: Final = "schemas/config/project-config.schema.json"
@@ -558,8 +558,10 @@ LEDGER_CONTROLS: Final[
 def _run_ledger_controls(table: dict[str, str]) -> int:
     """Drive both reconciliation directions from planted members and planted ledgers."""
     failures = 0
+    ran = 0
     print("\n=== LEDGER CONTROLS (the reconciliation, driven) ===")
     for label, planted, ledger, want_stale, want_ambiguous in LEDGER_CONTROLS:
+        ran += 1
         verdicts = [
             verdict_for(
                 Member(
@@ -580,14 +582,17 @@ def _run_ledger_controls(table: dict[str, str]) -> int:
         status = "OK  " if got == want else "FAIL"
         failures += status == "FAIL"
         print(f"  {status} {label}: (stale, ambiguous)={got}, expected {want}")
+    print_control_tally("LEDGER_CONTROLS", ran, failures)
     return 1 if failures else 0
 
 
 def _run_positive_controls(*, offline: bool) -> int:
     table, provenance = tracker_state.states(offline=offline)
     failures = 0
+    ran = 0
     print(f"=== POSITIVE CONTROLS (tracker states: {provenance}) ===")
     for label, text, discharged, dead in POSITIVE_CONTROLS:
+        ran += 1
         verdict = verdict_for(
             Member(
                 population="control",
@@ -606,6 +611,7 @@ def _run_positive_controls(*, offline: bool) -> int:
             f"  {status} {label}: discharged={verdict.discharged} (expected {discharged}), "
             f"dead owner={verdict.owner_is_dead} (expected {dead})"
         )
+    print_control_tally("POSITIVE_CONTROLS", ran, failures)
     return (1 if failures else 0) | _run_ledger_controls(table)
 
 

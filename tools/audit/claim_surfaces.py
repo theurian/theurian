@@ -265,6 +265,29 @@ def planted_changelog(planted: str, *, section: str) -> tuple[frozenset[int], in
     return dated_lines("\n".join(lines)), lines.index(entry) + 1
 
 
+#: The prefix every control tally line carries, so one grep finds them all.
+#:
+#: ``tests/integration/audit/test_census_audits_run.py`` parses these lines out of
+#: each audit's ``--positive-control`` stdout and holds them to a pinned count per
+#: table. The prefix is the wire format between the two, and it is transcribed on
+#: the guard's side: a rename here makes every audit report no tallies at all,
+#: which is a loud failure rather than a silent one.
+CONTROL_TALLY: Final = "CONTROL-TALLY"
+
+
+def print_control_tally(table: str, ran: int, failed: int) -> None:
+    """Report how many rows of ``table`` this run **executed**, and how many failed.
+
+    ``ran`` is counted inside the loop, never from ``len(TABLE)``, and that is the
+    whole point of the line. Round three's cheap-edit escapes were four ways of
+    running fewer rows than the table has -- ``for row in ()``, ``TABLE[:1]``, a
+    runner returning ``0`` before its loop, and a runner nobody calls -- and every
+    one of them leaves ``len(TABLE)`` untouched while the audit still exits 0.
+    A number produced by the loop is the only one that moves when the loop does.
+    """
+    print(f"{CONTROL_TALLY} {table} ran={ran} failed={failed}")
+
+
 def repo_root(start: Path | None = None) -> Path:
     """The checkout that owns ``start``, found by walking up to a ``.git`` entry.
 

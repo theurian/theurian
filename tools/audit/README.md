@@ -123,6 +123,14 @@ control loop over an empty table reports zero failures, which is how an
 instrument stops checking without anything going red. Before it existed, six
 mutations reverting round-one fixes survived the whole suite.
 
+**How much ran is checked too, because "the controls passed" is not "the controls
+ran".** Every control runner counts the rows its loop executes and prints one
+`CONTROL-TALLY <TABLE> ran=<n> failed=<m>` line; the guard pins those counts per
+audit and reads the call graph so a runner nobody reaches is RED. Five one-line
+edits — a runner opening `return 0`, two loops rewritten to iterate `()`, a table
+sliced to its first row, and the guard's own required-table set emptied — each
+left the whole suite green before that, and each fails now.
+
 Tracker states come from [`tracker_state.py`](tracker_state.py): a live `gh`
 query by default, falling back to the committed `tracker-state.json` with its
 measurement date printed. `--offline` forces the snapshot, which is what makes a

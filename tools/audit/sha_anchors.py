@@ -71,7 +71,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from claim_surfaces import governed_paths, repo_root
+from claim_surfaces import governed_paths, print_control_tally, repo_root
 
 #: Where an anchor is governed. Prose that promises a commit, not source that
 #: happens to hold a hex literal: a test fixture's digest is a value, not a cite.
@@ -665,8 +665,10 @@ LEDGER_CONTROLS: Final[
 def _run_ledger_controls() -> int:
     """Drive all three reconciliation directions from planted anchors and ledgers."""
     failures = 0
+    ran = 0
     print("\n=== LEDGER CONTROLS (the reconciliation, driven) ===")
     for label, produced, ledger, want_new, want_stale, want_count in LEDGER_CONTROLS:
+        ran += 1
         dangling = [
             Anchor(path=path, line=0, token=token, context=f"measured at `{token}`")
             for token, path in produced
@@ -677,6 +679,7 @@ def _run_ledger_controls() -> int:
         status = "OK  " if got == want else "FAIL"
         failures += status == "FAIL"
         print(f"  {status} {label}: (unclassified, stale, miscounted)={got}, expected {want}")
+    print_control_tally("LEDGER_CONTROLS", ran, failures)
     return 1 if failures else 0
 
 
@@ -689,8 +692,10 @@ def _run_positive_controls(root: Path, reference: str) -> int:
     """
     found = {anchor.token for anchor in anchors(root)}
     failures = 0
+    ran = 0
     print(f"=== POSITIVE CONTROLS (reachability measured against `{reference}`) ===")
     for label, token, reachable, in_prose in POSITIVE_CONTROLS:
+        ran += 1
         resolves = _is_ancestor(root, token, reference)
         produced = token in found
         status = "OK  " if resolves == reachable and produced == in_prose else "FAIL"
@@ -700,14 +705,17 @@ def _run_positive_controls(root: Path, reference: str) -> int:
             f"reachable={resolves} (expected {reachable}), "
             f"in governed prose={produced} (expected {in_prose})"
         )
+    print_control_tally("POSITIVE_CONTROLS", ran, failures)
     return (1 if failures else 0) | _run_landed_controls(root, reference)
 
 
 def _run_landed_controls(root: Path, reference: str) -> int:
     """The qualifier-content key and its verdict, against planted sentences."""
     failures = 0
+    ran = 0
     print(f"\n=== QUALIFIER-CONTENT CONTROLS (measured against `{reference}`) ===")
     for label, sentence, expected, must_violate in LANDED_CLAIM_CONTROLS:
+        ran += 1
         claims = landed_claims_in(sentence)
         extracted = claims[0].token if claims else None
         violated = any(_landed_verdict(root, claim.token, reference) for claim in claims)
@@ -717,6 +725,7 @@ def _run_landed_controls(root: Path, reference: str) -> int:
             f"  {status} {label}: extracted={extracted} (expected {expected}), "
             f"violation={violated} (expected {must_violate})"
         )
+    print_control_tally("LANDED_CLAIM_CONTROLS", ran, failures)
     return (1 if failures else 0) | _run_ledger_controls()
 
 

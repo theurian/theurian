@@ -65,6 +65,7 @@ from claim_surfaces import (
     dated_lines,
     governed_paths,
     planted_changelog,
+    print_control_tally,
     repo_root,
     sentences,
 )
@@ -782,6 +783,7 @@ LEDGER_CONTROLS: Final[
 def _run_ledger_controls() -> int:
     """Drive all four reconciliation directions from planted rows and planted ledgers."""
     failures = 0
+    ran = 0
     print("\n=== LEDGER CONTROLS (the reconciliation, driven) ===")
     for (
         label,
@@ -792,6 +794,7 @@ def _run_ledger_controls() -> int:
         want_drift,
         want_ambiguous,
     ) in LEDGER_CONTROLS:
+        ran += 1
         judged = [
             Cite(
                 number=number,
@@ -807,13 +810,16 @@ def _run_ledger_controls() -> int:
         status = "OK  " if got == want else "FAIL"
         failures += status == "FAIL"
         print(f"  {status} {label}: (unrecorded, stale, drift, ambiguous)={got}, expected {want}")
+    print_control_tally("LEDGER_CONTROLS", ran, failures)
     return 1 if failures else 0
 
 
 def _run_positive_controls(*, offline: bool) -> int:
     failures = 0
+    ran = 0
     print("=== POSITIVE CONTROLS ===")
     for label, text, succeeding, number, state, section, expected in POSITIVE_CONTROLS:
+        ran += 1
         # The section membership is *computed* by the rule under test over a
         # synthetic document, never asserted here -- round two's R2-g. The old
         # control handed `classify` a hardcoded `frozenset({0})` and asserted the
@@ -836,11 +842,15 @@ def _run_positive_controls(*, offline: bool) -> int:
         status = "OK  " if verdict == expected else "FAIL"
         failures += status == "FAIL"
         print(f"  {status} {label}: got {verdict!r}, expected {expected!r}")
+    print_control_tally("POSITIVE_CONTROLS", ran, failures)
 
+    tree_ran = 0
+    tree_failures = 0
     root = repo_root()
     table, provenance = tracker_state.states(offline=offline)
     print(f"\n=== TREE CONTROLS (tracker states: {provenance}) ===")
     for label, path, number, expected in TREE_CONTROLS:
+        tree_ran += 1
         found = sentences(root, path)
         following = succeeding_blocks(found)
         verdicts = [
@@ -851,9 +861,10 @@ def _run_positive_controls(*, offline: bool) -> int:
             and not _HISTORICAL.search(sentence.text)
         ]
         status = "OK  " if verdicts == [expected] else "FAIL"
-        failures += status == "FAIL"
+        tree_failures += status == "FAIL"
         print(f"  {status} {label}: got {verdicts}, expected {[expected]}")
-    return (1 if failures else 0) | _run_ledger_controls()
+    print_control_tally("TREE_CONTROLS", tree_ran, tree_failures)
+    return (1 if failures or tree_failures else 0) | _run_ledger_controls()
 
 
 def _historical_overlap_rows(root: Path, *, offline: bool) -> list[tuple[str, int, str, str]]:
