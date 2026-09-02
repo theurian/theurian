@@ -305,13 +305,33 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   [`packages/` extension](https://github.com/theurian/theurian/issues/463#issuecomment-5507928206)
   and the
   [two CHANGELOG members](https://github.com/theurian/theurian/issues/463#issuecomment-5509455089),
-  each hand-classified there. It is a **lower** bound and stays one on purpose:
-  run unclassified over `packages/`, the same key returns 72 unqualified
-  unreachable tokens, and most of them are test literals — `deadbeef`,
-  `abcdef1`, a run of `b`s — rather than anchors anybody cited. Separating those
-  by hand is the work `GOVERNED_ROOTS` being `("docs/",)` defers. #463 owns both
-  halves; widening
-  `GOVERNED_ROOTS` is its ratchet.
+  each hand-classified there. It is a **lower** bound and stays one on purpose.
+  Run the same key unclassified over `packages/` and it returns **77** unqualified
+  unreachable tokens on this entry's own tree, against **71** at `141cf6f` — the
+  branch point on `main` — so the figure moves with the tree and is derived here
+  rather than quoted (measured 2026-09-03):
+
+  ```sh
+  uv run --frozen python - <<'PY'
+  import sys; sys.path.insert(0, "tools/audit")
+  import sha_anchors as s
+  root = s.repo_root()
+  reference = s.main_reference(root)
+  s.GOVERNED_ROOTS = ("packages/",)   # the widening #463 owns
+  unqualified = {a.token for a in s.anchors(root) if not s._qualified(a)}
+  loose = sorted(t for t in unqualified if not s._is_ancestor(root, t, reference))
+  print(len(loose), sum(1 for t in loose if s._resolves(root, t)))
+  PY
+  # 77 55
+  ```
+
+  **55 of the 77 resolve to a commit object in a full clone and 22 do not**, so
+  the population is not mostly fixture literals — the sentence this replaces said
+  it was, on a count that reproduced at neither tree. `deadbeef`, `abcdef1` and a
+  22-character run of `b`s are three of the 22; the 55 are branch and
+  squashed-away commits that a reader still cannot reach. Telling a cited anchor
+  from a fixture literal is the hand work `GOVERNED_ROOTS` being `("docs/",)`
+  defers. #463 owns both halves; widening `GOVERNED_ROOTS` is its ratchet.
 
 - **ADR-0029 no longer records the four findings-pipeline residuals as open, and
   its trailer census is keyed on `%B`**
