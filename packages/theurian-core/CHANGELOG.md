@@ -209,9 +209,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ([#142](https://github.com/theurian/theurian/pull/142)) and `d1e79b1`
   ([#145](https://github.com/theurian/theurian/pull/145)) — and says the measured
   tree is not preserved, which is the honest form and the one the anchor audit
-  above accepts. **Ten further unreachable anchors remain**, in ADR-0007,
-  ADR-0024, ADR-0027 and the threat model; the census measured that population
-  and #463 owns it.
+  above accepts. **Ten further unreachable anchors remain inside the audit's own
+  scope** — its `GOVERNED_ROOTS` is `("docs/",)` — in ADR-0007, ADR-0024,
+  ADR-0027 and the threat model. Ten is what this instrument can see and not
+  #463's whole population: the members outside `docs/` were measured and filed on
+  the issue rather than absorbed here, and they put the cross-scope remainder at
+  ≥14 distinct tokens beyond the ten. #463 owns both halves; widening
+  `GOVERNED_ROOTS` is its ratchet.
 
 - **ADR-0029 no longer records the four findings-pipeline residuals as open, and
   its trailer census is keyed on `%B`**
