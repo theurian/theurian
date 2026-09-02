@@ -258,6 +258,8 @@ def test_the_build_publishes_inside_one_continuous_write_section(tmp_path: Path)
         def serve_findings(
             self,
             query: FindingQuery,  # noqa: ARG002 - the port's signature
+            *,
+            text_chars: int,  # noqa: ARG002 - the port's signature
         ) -> tuple[StoredFinding, ...]:
             # Present because the port declares it. The builder is a write path
             # and never serves, so this returns nothing rather than recording an

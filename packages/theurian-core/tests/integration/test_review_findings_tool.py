@@ -568,6 +568,134 @@ async def test_a_finding_up_to_the_bound_is_served_exactly_as_it_was_stored(
     )
 
 
+def _clamped_from_the_whole_value(text: str) -> str:
+    """What the wire carried when the clamp saw the **whole** stored value.
+
+    The oracle for "the cut did not move" when the cut moved *house*: the bound is
+    now applied by SQLite inside the serving ``SELECT``, so the shipped path never
+    sees more than ``bound + 1`` characters. This computes the answer from the
+    whole stored string instead -- the input the Python-side clamp used to get --
+    so an agreement between the two is a statement about the boundary, not a
+    re-derivation of whatever the surface happens to do now.
+    """
+    bound = max_finding_text_chars()
+    return text if len(text) <= bound else text[:bound] + "..."
+
+
+#: One planted ``findingText`` per shape whose cut a code-point-counting boundary
+#: could get wrong. Every one of them straddles the bound, because the bound is
+#: where the two counting rules would disagree if they ever did:
+#:
+#: * ``cjk`` -- multi-byte characters, where a byte-counting ``substr`` would cut
+#:   short and, worse, mid-sequence;
+#: * ``astral`` -- characters outside the BMP, one Python character each and one
+#:   SQLite character each, but four UTF-8 bytes and two UTF-16 units;
+#: * ``combining`` -- two code points per rendered glyph, so a cut at an odd
+#:   offset separates a base from its accent (which is *correct* here: both sides
+#:   count code points, and the wire is not in the business of grapheme
+#:   clustering);
+#: * ``exactly-the-bound`` / ``one-past-the-bound`` -- the boundary itself, the one
+#:   pair that tells a value that fits from one that was cut.
+_CUT_SHAPES: Final = {
+    "short-ascii": "a finding of ordinary length",
+    "cjk": "署名付きトークンを持つ" * 400,
+    "astral": "\U0001f600\U0001f9ea" * 2_000,
+    # Escaped rather than written as a literal: an editor that normalises this
+    # file to NFC would collapse it to one precomposed U+00E9 per glyph and
+    # delete the two-code-point property this row is here for.
+    "combining": "e\u0301" * 3_000,
+    "exactly-the-bound": _finding_text_of(MAX_QUERY_CHARS),
+    "one-past-the-bound": _finding_text_of(MAX_QUERY_CHARS + 1),
+    "far-past-the-bound": _finding_text_of(MAX_QUERY_CHARS * 3),
+}
+
+
+@pytest.mark.asyncio
+async def test_the_wire_cut_is_the_one_the_whole_value_would_have_produced(
+    project: ProjectRegistry,
+) -> None:
+    """Moving the bound into the store's read must not move the published cut.
+
+    The daemon no longer fetches an over-long ``findingText`` and then clamps it:
+    the serving read asks SQLite for ``bound + 1`` characters, so a planted 1 MiB
+    trailer costs the page's bound rather than the corpus's whatever. That is a
+    change of *where* the cut happens, and this is the assertion that it is not
+    also a change of *what* the caller receives -- computed against the whole
+    stored value by :func:`_clamped_from_the_whole_value`, which is the input the
+    Python-side clamp used to see.
+
+    The shapes are chosen where the two counting rules could disagree: SQLite's
+    ``substr`` counts UTF-8 characters and Python's ``len`` counts code points,
+    which agree -- but a byte-counting boundary would cut CJK short and split an
+    astral character, and neither failure is visible on ASCII fixtures. The
+    boundary pair (exactly the bound, one past it) is what keeps the ``+ 1`` in
+    ``text_fetch_chars`` honest: fetch the bound itself and the two become
+    indistinguishable, and one of them gets the wrong answer.
+    """
+    shas = {name: _sha(chr(ord("a") + index)) for index, name in enumerate(_CUT_SHAPES)}
+    _land(
+        project,
+        FindingLoad(
+            accepted=tuple(
+                _finding(shas[name], text=text, when="2026-08-25T09:00:00+00:00")
+                for name, text in _CUT_SHAPES.items()
+            ),
+            rejected=(),
+        ),
+    )
+
+    payload = await _call(project, projectId="demo", limit=len(_CUT_SHAPES))
+    served = {row["commitSha"]: row["findingText"] for row in payload["findings"]}
+
+    assert served == {
+        shas[name]: _clamped_from_the_whole_value(text) for name, text in _CUT_SHAPES.items()
+    }, (
+        "the published cut is no longer the one the whole stored value produces, "
+        "so moving the bound into the store's SELECT changed what a caller reads "
+        "and not only what the daemon spends reading it"
+    )
+    assert served[shas["one-past-the-bound"]].endswith("..."), (
+        "a value one character past the bound came back unmarked: the read fetches "
+        "bound + 1 precisely so this row can be told from one that fits"
+    )
+    assert not served[shas["exactly-the-bound"]].endswith("..."), (
+        "a value of exactly the bound was marked as cut, which is a lie about authored data"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_text_filter_matches_past_the_served_bound(project: ProjectRegistry) -> None:
+    """``q`` is matched against the whole stored line, never against the cut one.
+
+    The ``WHERE`` clause names the column and only the ``SELECT`` list cuts it, so
+    a phrase living past the bound still selects its row -- served cut and marked,
+    without the phrase in it. That asymmetry is deliberate. Matching the *cut*
+    value would answer ``count: 0`` for a phrase that is really in the history,
+    which is a false absence, and this surface refuses a short sha and three inert
+    axes precisely to avoid manufacturing one. Nothing is withheld by the cut
+    either: the tail is a line of the project's own public git history, which the
+    caller can read in the repository the store projects.
+    """
+    bound = max_finding_text_chars()
+    needle = "the needle past the served bound"
+    _land(
+        project,
+        FindingLoad(
+            accepted=(_finding(_sha("a"), text="x" * (bound * 2) + needle),),
+            rejected=(),
+        ),
+    )
+
+    payload = await _call(project, projectId="demo", q=needle)
+
+    assert payload["count"] == 1, (
+        "a phrase past the served-text bound did not match, so `q` is running "
+        "against the cut projection and the tool reports a finding as absent"
+    )
+    assert payload["findings"][0]["findingText"] == "x" * bound + "..."
+    assert needle not in payload["findings"][0]["findingText"]
+
+
 @pytest.mark.asyncio
 async def test_the_findings_read_is_admission_gated_like_a_search(
     project: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
@@ -602,7 +730,12 @@ async def test_the_findings_read_is_admission_gated_like_a_search(
         def __init__(self, path: Path) -> None:
             self._path = path
 
-        def serve_findings(self, query: Any) -> tuple[Any, ...]:  # noqa: ARG002 - port shape
+        def serve_findings(
+            self,
+            query: Any,  # noqa: ARG002 - port shape
+            *,
+            text_chars: int,  # noqa: ARG002 - port shape
+        ) -> tuple[Any, ...]:
             nonlocal entered
             with lock:
                 entered += 1

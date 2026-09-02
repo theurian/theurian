@@ -31,7 +31,7 @@ from contextlib import closing
 from dataclasses import astuple
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -68,6 +68,16 @@ pytestmark = pytest.mark.integration
 _NEEDS_SYMLINKS = pytest.mark.skipif(
     sys.platform == "win32", reason="symlinks need privileges on Windows"
 )
+
+#: The ``text_chars`` bound the serves below run under, unless the test *is* about
+#: that bound. Larger than every fixture finding in this file, so a served row
+#: reads as the whole stored one and an equality against the load stays honest.
+#:
+#: Stated at every call because the port gives it no default: a serving surface
+#: has to name its own text bound, for the reason ``FindingQuery.limit`` has no
+#: default either. The tests that exercise the bound itself pass their own value
+#: and say so.
+_SERVE_TEXT_CHARS: Final = 10_000
 
 
 def _sha(seed: str) -> str:
@@ -1197,7 +1207,10 @@ def _served_load() -> FindingLoad:
 def _served(store: SqliteReviewFindingStore, **filters: object) -> tuple[str, ...]:
     """The finding texts one serve returns, in the order it returned them."""
     query = FindingQuery(**{"limit": 50, **filters})  # type: ignore[arg-type]
-    return tuple(finding.finding_text for finding in store.serve_findings(query))
+    return tuple(
+        finding.finding_text
+        for finding in store.serve_findings(query, text_chars=_SERVE_TEXT_CHARS)
+    )
 
 
 def test_a_serve_returns_every_accepted_finding_newest_first(tmp_path: Path) -> None:
@@ -1224,7 +1237,9 @@ def test_a_serve_carries_every_stored_column_of_the_row_it_returns(tmp_path: Pat
     store = _store(tmp_path)
     store.replace_all(_served_load())
 
-    served = store.serve_findings(FindingQuery(limit=1, commit_sha=_sha("b")))
+    served = store.serve_findings(
+        FindingQuery(limit=1, commit_sha=_sha("b")), text_chars=_SERVE_TEXT_CHARS
+    )
 
     assert served == (
         StoredFinding(
@@ -1260,14 +1275,14 @@ def test_a_serve_never_returns_a_rejected_trailer(tmp_path: Path) -> None:
 
     every_value = [
         str(value)
-        for finding in store.serve_findings(FindingQuery(limit=50))
+        for finding in store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS)
         for value in astuple(finding)
     ]
 
     assert rejected[0].raw_line not in every_value
     assert rejected[0].reason not in every_value
     assert not any(rejected[0].reason in value for value in every_value)
-    assert len(store.serve_findings(FindingQuery(limit=50))) == 3
+    assert len(store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS)) == 3
 
 
 def test_a_rejected_row_does_not_move_what_a_serve_returns(tmp_path: Path) -> None:
@@ -1294,7 +1309,9 @@ def test_a_rejected_row_does_not_move_what_a_serve_returns(tmp_path: Path) -> No
         FindingQuery(limit=50, severity=FindingSeverity.CRITICAL),
         FindingQuery(limit=50, commit_sha=_sha("c")),
     ):
-        assert with_rejected.serve_findings(query) == without_rejected.serve_findings(query)
+        assert with_rejected.serve_findings(
+            query, text_chars=_SERVE_TEXT_CHARS
+        ) == without_rejected.serve_findings(query, text_chars=_SERVE_TEXT_CHARS)
 
 
 def test_a_query_cannot_be_built_without_a_positive_limit() -> None:
@@ -1305,6 +1322,111 @@ def test_a_query_cannot_be_built_without_a_positive_limit() -> None:
         assert "at least 1" in str(raised.value)
 
     assert FindingQuery(limit=1).limit == 1
+
+
+# --- The text bound: applied by the read, not to what the read returned ------
+#
+# The row count was the only bounded dimension of a serve, and `finding_text` is
+# byte-preserved from a commit message whose line length nothing limits. A surface
+# that clamped the value after `serve_findings` returned had already materialised
+# every planted byte -- `limit` of them per call, once per concurrent call. These
+# three pin the bound where it now is: in the SELECT.
+
+#: A planted trailer, two orders of magnitude past any bound a surface publishes.
+#: Not a round number of the bound's own size, so a cut *at* the bound is visible
+#: as a cut rather than as an alignment.
+_PLANTED_TEXT_CHARS: Final = 200_000
+
+
+def test_a_serve_hands_python_no_more_text_than_the_bound_it_was_given(
+    tmp_path: Path,
+) -> None:
+    """The read is bounded in text, and the store still holds the whole value.
+
+    Both halves matter. The first is the bound: whatever the row holds, a serve
+    returns at most ``text_chars`` characters of it, so the cost of one call is
+    ``limit * text_chars`` and not ``limit * (whatever a contributor committed)``.
+    The second is that the cut is a *projection*, not a loss -- ``dump`` still
+    reads the whole stored value, which is what keeps the store a faithful
+    projection of git history (ADR-0004) and keeps AC-1/AC-6's equality against
+    the source available to a verification read.
+
+    Written so that moving the cut back out of the SELECT goes RED on the first
+    assertion: a store that fetched the column whole would return all
+    200,000 characters here, and a surface-level clamp cannot un-fetch them.
+    """
+    store = _store(tmp_path)
+    planted = "x" * _PLANTED_TEXT_CHARS
+    store.replace_all(FindingLoad(accepted=(_finding(_sha("a"), text=planted),), rejected=()))
+
+    served = store.serve_findings(FindingQuery(limit=1), text_chars=2_001)
+
+    assert len(served[0].finding_text) == 2_001, (
+        "the serving read handed back more (or less) than the text bound it was "
+        "given, so the daemon's per-call cost is decided by the corpus rather "
+        "than by the bound"
+    )
+    assert served[0].finding_text == planted[:2_001]
+    assert store.dump().findings[0].finding_text == planted, (
+        "the cut reached the stored value: the bound belongs to the serving "
+        "projection, and a dump is the verification read that must still see "
+        "what git history holds"
+    )
+
+
+def test_a_match_living_past_the_text_bound_still_selects_its_row(tmp_path: Path) -> None:
+    """``text_chars`` cuts the projection and never the predicate.
+
+    ``text_contains`` is matched against the whole stored column -- the ``WHERE``
+    clause names the column, only the ``SELECT`` list cuts it -- so a substring
+    that lives past the bound still finds its row. The row then comes back cut,
+    without the matched text in it, which is the honest answer: a serve that
+    matched the *cut* value would report ``count: 0`` for a phrase that is really
+    there, and a false absence is the failure every refusal on the surface above
+    exists to prevent. What the cut hides is public git history, not withheld
+    content.
+    """
+    store = _store(tmp_path)
+    needle = "the needle past the bound"
+    store.replace_all(
+        FindingLoad(
+            accepted=(_finding(_sha("a"), text="x" * _PLANTED_TEXT_CHARS + needle),), rejected=()
+        )
+    )
+
+    served = store.serve_findings(FindingQuery(limit=1, text_contains=needle), text_chars=100)
+
+    assert len(served) == 1, (
+        "a substring past the served-text bound was not found, so the predicate "
+        "is running against the cut projection and the tool reports a false absence"
+    )
+    assert served[0].finding_text == "x" * 100
+    assert needle not in served[0].finding_text
+
+
+@pytest.mark.parametrize("text_chars", [0, -1, -2_000])
+def test_a_serve_refuses_a_non_positive_text_bound(tmp_path: Path, text_chars: int) -> None:
+    """A bound that is not a bound is a wrong answer, so the read refuses it.
+
+    ``substr(x, 1, 0)`` is the empty string and ``substr(x, 1, -n)`` reads the
+    characters *before* the start, so a non-positive value would serve every
+    finding as ``""`` -- and a surface above, seeing a value comfortably inside
+    its own bound, would publish that emptiness unmarked as the whole text. The
+    same shape ``FindingQuery`` refuses a non-positive ``limit`` with, and the same
+    reason: the failure is silent, so the type refuses instead of trusting.
+
+    Driven with a synthetic value because no shipped caller can produce one --
+    ``mcp/tools.py`` passes a constant -- and an unreachable guard is the shape
+    that survives its own deletion.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+
+    with pytest.raises(DomainError) as raised:
+        store.serve_findings(FindingQuery(limit=1), text_chars=text_chars)
+
+    assert "at least 1" in str(raised.value)
+    assert store.serve_findings(FindingQuery(limit=1), text_chars=1)[0].finding_text != ""
 
 
 def test_a_serve_returns_no_more_than_the_limit(tmp_path: Path) -> None:
@@ -1483,7 +1605,7 @@ def test_serving_a_missing_store_raises_rather_than_answering_empty(tmp_path: Pa
     store = _store(tmp_path)
 
     with pytest.raises(FindingsStoreError) as raised:
-        store.serve_findings(FindingQuery(limit=10))
+        store.serve_findings(FindingQuery(limit=10), text_chars=_SERVE_TEXT_CHARS)
 
     assert raised.value.remedy == _REBUILD_REMEDY
 
@@ -1518,7 +1640,7 @@ def test_serving_a_missing_store_does_not_conjure_one(tmp_path: Path) -> None:
     assert not store.path.exists(), "the premise: the directory exists and the store does not"
 
     with pytest.raises(FindingsStoreError):
-        store.serve_findings(FindingQuery(limit=10))
+        store.serve_findings(FindingQuery(limit=10), text_chars=_SERVE_TEXT_CHARS)
 
     assert not store.path.exists(), (
         f"serving a missing store created {store.path}. The read connection must be "
@@ -1587,14 +1709,16 @@ def test_serving_a_stale_or_unstamped_store_raises_rather_than_answering(
     """
     store = _store(tmp_path)
     store.replace_all(_served_load())
-    assert store.serve_findings(FindingQuery(limit=50)), "the premise: it serves before the damage"
+    assert store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS), (
+        "the premise: it serves before the damage"
+    )
 
     with closing(sqlite3.connect(store.path)) as connection:
         connection.execute(damage)
         connection.commit()
 
     with pytest.raises(FindingsStoreError) as raised:
-        store.serve_findings(FindingQuery(limit=50))
+        store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS)
 
     assert raised.value.remedy == _REBUILD_REMEDY
 
@@ -1611,7 +1735,7 @@ def test_serving_an_unreadable_store_raises_with_the_rebuild_remedy(tmp_path: Pa
     store.path.write_bytes(b"not a database at all")
 
     with pytest.raises(FindingsStoreError) as raised:
-        store.serve_findings(FindingQuery(limit=50))
+        store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS)
 
     assert raised.value.remedy == _REBUILD_REMEDY
 
@@ -1643,14 +1767,16 @@ def test_a_value_damaged_column_is_the_graded_error_and_not_a_crash(
     """
     store = _store(tmp_path)
     store.replace_all(_served_load())
-    assert store.serve_findings(FindingQuery(limit=50)), "the premise: it serves before the damage"
+    assert store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS), (
+        "the premise: it serves before the damage"
+    )
 
     with closing(sqlite3.connect(store.path)) as connection:
         connection.execute(damage)
         connection.commit()
 
     with pytest.raises(FindingsStoreError) as raised:
-        store.serve_findings(FindingQuery(limit=50))
+        store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS)
     assert raised.value.remedy == _REBUILD_REMEDY
 
     with pytest.raises(FindingsStoreError):
@@ -1673,7 +1799,9 @@ def test_a_filter_wider_than_the_column_is_the_graded_error_and_not_an_overflow(
     store.replace_all(_served_load())
 
     with pytest.raises(FindingsStoreError) as raised:
-        store.serve_findings(FindingQuery(limit=50, pull_request=2**63))
+        store.serve_findings(
+            FindingQuery(limit=50, pull_request=2**63), text_chars=_SERVE_TEXT_CHARS
+        )
 
     assert raised.value.remedy == _REBUILD_REMEDY
 
@@ -1754,7 +1882,7 @@ def test_a_serve_reads_one_store_through_one_connection(tmp_path: Path) -> None:
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(sqlite3, "connect", counting_connect)
-        served = store.serve_findings(FindingQuery(limit=50))
+        served = store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS)
 
     assert len(served) == 3, "the premise: the serve really answered from the store"
     assert len(opens) == 1, (

@@ -480,10 +480,34 @@ def max_finding_text_chars() -> int:
     largest string it will accept in a ``query`` and the largest it will hand back
     in a finding -- which is the number ``test_a_refusal_is_never_a_bigger_reflector
     _than_the_published_echo`` already measures this surface against.
+
+    The structural cure for the function-scope import -- moving ``MAX_QUERY_CHARS``
+    into a module both of these import -- is a refactor deliberately left out of
+    this change rather than overlooked: it moves a published constant's home, and
+    doing that inside a fix for a serving bound would put an unrelated import graph
+    change in the same diff.
     """
     from theurian.mcp.tools import MAX_QUERY_CHARS  # noqa: PLC0415 - import cycle
 
     return MAX_QUERY_CHARS
+
+
+def text_fetch_chars() -> int:
+    """How many characters of a stored ``findingText`` the store read fetches.
+
+    One more than :func:`max_finding_text_chars`, and the extra character is the
+    entire mechanism: the read cuts in SQL
+    (``SqliteReviewFindingStore.serve_findings``'s ``text_chars``), so the only
+    evidence left that a row *was* longer is whether that one extra character came
+    back. :func:`_bounded_text` decides from exactly that.
+
+    Asking for the bound itself would delete the distinction -- a finding of
+    exactly the bound and a 2 MiB one would arrive identical, and the surface would
+    have to either mark both (lying about an authored value that fits) or mark
+    neither (publishing a cut as the whole value, which is the failure the marker
+    exists to prevent).
+    """
+    return max_finding_text_chars() + 1
 
 
 def _bounded_text(text: str) -> str:
@@ -501,6 +525,22 @@ def _bounded_text(text: str) -> str:
     message, a commit message line has no length limit, and a 2 MiB trailer served
     at ``limit=40`` measured 83.9 MB in one response (PR #504 round 1, R1-3). The
     row count was the only dimension bounded; this is the byte dimension.
+
+    **It trims at most one character, because the store already did the cutting.**
+    The serving read fetches :func:`text_fetch_chars` -- ``bound + 1`` -- so the
+    longest value that reaches here is one character past the bound, whatever the
+    row holds. This function's job is therefore not to move bytes but to *decide*:
+    the extra character means the row was longer, and a marked cut is what says so.
+    That is why the clamp stayed here after the read gained the bound; removing it
+    would publish a value cut by SQLite with nothing on the wire admitting it.
+
+    **The match is not cut with the text.** ``q`` is tested against the whole
+    stored value in SQL, so a row whose only match lies past the bound is still
+    served -- cut and marked, but present. Matching the cut text instead would
+    manufacture a false absence, which is what every refusal on this surface exists
+    to prevent, and the tail it hides is public git history rather than withheld
+    content: the caller can read the whole line in the repository this store
+    projects.
 
     The shape is ``knowledge.search``'s excerpt: cut at the bound, then an explicit
     marker, so a truncated value cannot be read as the whole one. The length is

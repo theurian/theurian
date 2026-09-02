@@ -64,6 +64,7 @@ from theurian.mcp.findings import (
     build_query,
     findings_payload,
     probing,
+    text_fetch_chars,
 )
 from theurian.mcp.results import result_payload
 from theurian.mcp.search import Fallback, hybrid_answer, substring_answer
@@ -1711,11 +1712,15 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         predates it.
 
         **Bounded in three dimensions, not one.** ``limit`` bounds the rows;
-        :func:`~theurian.mcp.findings._bounded_text` bounds each row's bytes, so
-        one planted commit message cannot make a response arbitrarily large; and
-        the admission gate below bounds how many of these reads run at once. The
-        row bound alone was the shipped state, and a 2 MiB trailer served 83.9 MB
-        at ``limit=40`` under it (PR #504 round 1, R1-3).
+        ``text_chars`` bounds each row's text **in the store's own read**, so one
+        planted commit message cannot make a response -- or the daemon's own
+        footprint while assembling it -- arbitrarily large; and the admission gate
+        below bounds how many of these reads run at once. The row bound alone was
+        the shipped state, and a 2 MiB trailer served 83.9 MB at ``limit=40``
+        under it (PR #504 round 1, R1-3). Cutting only on the way out closed the
+        response and not the read: the rows still arrived whole,
+        ``limit + 1`` of them per call and once per concurrent call, before
+        anything could clamp them.
 
         **Project-scoped, through the same gate as every other project tool.**
         ``projectId`` is required (ADR-0002: many agents share one daemon, so an
@@ -1818,7 +1823,16 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             # `probing`, not `query`: the read asks for one row past the page so
             # the response can say whether the page ended early. The extra row is
             # discarded by `findings_payload` -- read, never shaped, never served.
-            served = store.serve_findings(probing(query))
+            #
+            # `text_fetch_chars()`, so the byte bound is applied BY the read rather
+            # than to what it returned. Clamping afterwards left this process
+            # holding every planted byte -- `limit + 1` rows of whatever a
+            # contributor committed, times however many of these calls are in
+            # flight -- before `_bounded_text` could cut a single one. The value is
+            # `max_finding_text_chars() + 1`: one character past what will be
+            # published, which is the evidence `_bounded_text` needs to tell a
+            # finding that *fits* the bound from one that was cut at it.
+            served = store.serve_findings(probing(query), text_chars=text_fetch_chars())
         except FindingsStoreError as exc:
             # Deliberately not `str(exc)`, which the `_forwarding` seam would
             # otherwise forward: the adapter's message names the file and the

@@ -30,8 +30,10 @@ than a per-surface argument that a later surface inherits by accident:
   both author-controlled untrusted text with no reviewed serving surface (see
   :class:`StoredRejection`). The read cannot be *asked* for one either: no member
   of :class:`FindingQuery` selects a rejection;
-* it is bounded by construction -- :class:`FindingQuery` requires a positive
-  ``limit``, so the type cannot express an unbounded read;
+* it is bounded by construction in **both** dimensions -- :class:`FindingQuery`
+  requires a positive ``limit`` and the method requires a positive ``text_chars``,
+  so the signature can express neither an unbounded row count nor an unbounded
+  fetch of the one column whose size the corpus, not the caller, decides;
 * it refuses a store whose stamp is not current, in the same connection that
   reads the rows.
 
@@ -86,6 +88,15 @@ class StoredFinding:
     reviewer: str
     severity: str
     #: Untrusted authored content, byte-preserved from the trailer (ADR-0029 D3).
+    #:
+    #: **Whole from :meth:`ReviewFindingStore.dump`, cut from
+    #: :meth:`ReviewFindingStore.serve_findings`.** The dump is a verification read
+    #: and hands back what was stored; the serving read takes a ``text_chars``
+    #: bound and returns at most that many characters, because a trailer line has
+    #: no length limit and a serving surface that fetched the whole column would
+    #: have paid for a planted one before it could clamp it. So a value from
+    #: ``serve_findings`` is byte-preserved *up to its bound* -- an equality
+    #: against the source belongs on a dump, not on a serve.
     finding_text: str
     provider: str
     source_uri: str
@@ -291,10 +302,10 @@ class ReviewFindingStore(Protocol):
         """
         ...
 
-    def serve_findings(self, query: FindingQuery) -> tuple[StoredFinding, ...]:
+    def serve_findings(self, query: FindingQuery, *, text_chars: int) -> tuple[StoredFinding, ...]:
         """The accepted findings ``query`` selects, newest first, at most ``limit``.
 
-        **The one sanctioned serving read** (module docstring). Four properties
+        **The one sanctioned serving read** (module docstring). Five properties
         are promises of this port rather than of one adapter, because each of
         them is what a serving surface above would otherwise have to re-argue:
 
@@ -303,17 +314,31 @@ class ReviewFindingStore(Protocol):
            author-controlled untrusted text with no reviewed serving surface
            (:class:`StoredRejection`), and this method is why a caller cannot
            reach one: not by a filter, not by a limit, not by an empty query.
-        2. **Bounded.** At most ``query.limit`` rows, and
+        2. **Bounded in rows.** At most ``query.limit`` rows, and
            :class:`FindingQuery` refuses a non-positive one, so no call issues an
            unbounded read.
-        3. **Current, or nothing.** A store whose recorded stamp is not the
+        3. **Bounded in text, and the bound is applied by the read itself.** Each
+           row's ``finding_text`` comes back cut to at most ``text_chars``
+           characters. The parameter has **no default**, for the reason
+           ``FindingQuery.limit`` has none: ``finding_text`` is byte-preserved
+           authored commit text, a commit-message line has no length limit, and a
+           caller that forgot the bound would materialise whatever a contributor
+           planted -- per row, per concurrent call -- before any surface above
+           could clamp it. Bounded at the signature, not by each caller
+           remembering. An implementation applies it *in the read* rather than
+           trimming what it fetched; trimming afterwards satisfies the wording and
+           none of the point. It bounds the **projection only**: a
+           ``text_contains`` predicate is still matched against the whole stored
+           value, so a substring past the bound still selects its row rather than
+           reading as absent.
+        4. **Current, or nothing.** A store whose recorded stamp is not the
            current (schema version, parser stamp) pair raises rather than
            answering: rows parsed by a superseded grammar are not served as
            though they were current. An implementation checks the stamp **in the
            same connection** it reads the rows through, so a rebuild landing
            mid-call cannot have the check pass on one store and the rows come
            from another.
-        4. **A total, deterministic order** -- most recently committed first,
+        5. **A total, deterministic order** -- most recently committed first,
            ties broken by ``(commit_sha, position)``, which is unique. Two calls
            over one store return the same rows in the same order, so ``limit``
            truncates a defined sequence rather than an arbitrary one.
@@ -323,6 +348,10 @@ class ReviewFindingStore(Protocol):
         caller that cannot tell them apart reports one as the other.
 
         Raises:
+            DomainError: If ``text_chars`` is not positive -- the same shape
+                :class:`FindingQuery` refuses a non-positive ``limit`` with, and
+                for the same reason: a bound that is not a bound is a wrong
+                answer rather than a smaller one.
             TheurianError: If the store is missing, stale, or unreadable. The
                 implementation's error carries the rebuild remedy; the store is a
                 projection of git history (ADR-0004), so rebuilding it is the cure

@@ -40,7 +40,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, final
 
-from theurian.domain.errors import TheurianError
+from theurian.domain.errors import DomainError, TheurianError
 from theurian.domain.ports.review_finding_store import (
     FindingQuery,
     FindingsDump,
@@ -73,10 +73,52 @@ _INSERT_METADATA: Final = (
 )
 
 #: The eleven columns of one accepted finding, in :class:`StoredFinding` order.
-#: One string, so the dump and the serving read cannot drift on what a row is.
-_FINDING_COLUMNS: Final = (
-    "commit_sha, position, reviewer, severity, finding_text, provider, source_uri, "
-    "committed_at, pull_request, family, specialist"
+#: One tuple, so the dump and the serving read cannot drift on what a row is --
+#: not on which columns, not on their order, not on their number.
+_FINDING_COLUMN_NAMES: Final = (
+    "commit_sha",
+    "position",
+    "reviewer",
+    "severity",
+    "finding_text",
+    "provider",
+    "source_uri",
+    "committed_at",
+    "pull_request",
+    "family",
+    "specialist",
+)
+
+#: The dump's projection: every column whole. :meth:`dump` is a verification read
+#: over a store a test built, so it hands back exactly what was stored.
+_FINDING_COLUMNS: Final = ", ".join(_FINDING_COLUMN_NAMES)
+
+#: The serving projection: the same eleven columns, with ``finding_text`` **cut by
+#: SQLite** to the caller's ``text_chars`` rather than fetched whole and cut in
+#: Python.
+#:
+#: Where the cut happens is the whole point. ``finding_text`` is byte-preserved
+#: from a commit message and a commit message line has no length limit, so a
+#: planted trailer sized the row -- and a serving surface that clamped *after*
+#: ``fetchall`` had already materialised every planted byte in this process, once
+#: per row, once per concurrent call, before the clamp could refuse a single one
+#: of them. Cutting in the ``SELECT`` means SQLite never hands Python more than
+#: ``text_chars`` characters per row, so the read's own footprint is bounded by
+#: the page size rather than by whatever the corpus holds. The measured
+#: difference over 21 rows of a 1 MiB planted trailer: 22.0 MB of Python heap
+#: (``tracemalloc`` peak over the call) before, 0.1 MB after.
+#:
+#: ``AS finding_text`` keeps the row key the projection had, so
+#: :func:`_stored_finding` reads one name whichever statement produced the row.
+#:
+#: **Characters, and they are Python's characters.** SQLite's ``substr`` on a
+#: TEXT value counts UTF-8 *code points*, which is what ``len`` counts too --
+#: verified across ASCII, CJK, combining sequences and astral planes (2026-09-03,
+#: SQLite 3.51.2), so a bound stated in characters means the same thing on both
+#: sides of the boundary and the surface above can reason in ``len``.
+_SERVE_COLUMNS: Final = ", ".join(
+    "substr(finding_text, 1, ?) AS finding_text" if name == "finding_text" else name
+    for name in _FINDING_COLUMN_NAMES
 )
 
 #: The served order: most recently committed first, ties broken by the primary
@@ -554,11 +596,11 @@ class SqliteReviewFindingStore:
             raise FindingsStoreError(f"reading {self._path.name}: {exc}") from exc
         return dumped
 
-    def serve_findings(self, query: FindingQuery) -> tuple[StoredFinding, ...]:
+    def serve_findings(self, query: FindingQuery, *, text_chars: int) -> tuple[StoredFinding, ...]:
         """The accepted findings ``query`` selects, newest first, at most ``limit``.
 
         The one sanctioned serving read (see the port). What this implementation
-        adds to the port's four promises is *how* each is kept:
+        adds to the port's five promises is *how* each is kept:
 
         **Accepted rows only, by the statement.** The ``SELECT`` names
         ``findings``; ``rejected_trailers`` appears nowhere on this path, so a
@@ -578,7 +620,7 @@ class SqliteReviewFindingStore:
         and one publish behind. A reader that asked :meth:`is_current` first and
         then opened a second connection would have exactly the split this avoids.
 
-        **Bounded.** ``LIMIT`` is bound as a parameter from
+        **Bounded in rows.** ``LIMIT`` is bound as a parameter from
         :class:`FindingQuery`'s already-positive value. The scan behind it is a
         full pass over ``findings`` for every filter except ``commit_sha``,
         which ``EXPLAIN QUERY PLAN`` shows as a ``SEARCH`` on the table's one
@@ -587,6 +629,26 @@ class SqliteReviewFindingStore:
         **corpus-bounded, not caller-bounded**: no filter a caller sends makes it
         larger, and the corpus is this repository's own history -- 502 accepted
         findings measured on ``origin/main`` @ ``141cf6f``, 2026-09-02 (T-6).
+
+        **Bounded in text, at the read.** ``text_chars`` is required and cuts
+        ``finding_text`` inside the ``SELECT`` (:data:`_SERVE_COLUMNS`), so the
+        rows this method materialises are bounded by ``limit * text_chars``
+        whatever the corpus holds. A serving surface clamping the value *after*
+        this returned would already have paid for every planted byte: the row
+        count was the only bounded dimension, and one 1 MiB trailer served at
+        ``limit=20`` cost 22.0 MB of Python heap per call (``tracemalloc`` peak,
+        2026-09-03) against 0.1 MB once the cut moved into the statement. The
+        surface above still decides what a cut *means* to a caller -- it asks for
+        one character more than it will publish, and marks the row when that
+        character arrives (``mcp/findings._bounded_text``).
+
+        **``text_chars`` bounds the projection, never the match.** The ``WHERE``
+        clause names the column; only the ``SELECT`` list cuts it. So
+        ``text_contains`` is tested against the **whole** stored value and a
+        substring living past ``text_chars`` still selects its row -- deliberately,
+        because matching the cut text would manufacture false absences on a
+        surface whose other refusals exist to prevent exactly that. What is cut is
+        what is *published*, which is public git history either way.
 
         **Substring matching folds ASCII case and nothing else.** ``LIKE`` is
         SQLite's, which case-folds the 26 ASCII letters and leaves every other
@@ -598,6 +660,14 @@ class SqliteReviewFindingStore:
         on the claim it cannot keep.
 
         Raises:
+            DomainError: If ``text_chars`` is not positive. Refused rather than
+                passed to ``substr``, which answers a non-positive length with the
+                empty string (or, for a negative one, with the characters
+                *preceding* the start) -- so a caller's arithmetic slip would
+                silently serve every finding as ``""`` while the surface above,
+                seeing a value inside its own bound, published it unmarked. That
+                is the one way this parameter can produce a wrong answer instead
+                of a bounded one, so it is the one the type does not admit.
             FindingsStoreError: If the store is missing, its metadata row is
                 absent, its stamp is stale, it cannot be read, or a row it
                 returned cannot be converted -- a column holding a value its type
@@ -609,12 +679,23 @@ class SqliteReviewFindingStore:
                 store is a projection of git history (ADR-0004) and rebuilding is
                 the cure for each.
         """
+        if text_chars < 1:
+            raise DomainError(
+                f"serve_findings text_chars must be at least 1, got {text_chars}. A "
+                "non-positive cut is not a smaller answer, it is a wrong one: SQLite "
+                "would serve every finding's text as empty and the surface above would "
+                "publish it as the whole value."
+            )
         where, parameters = _where(query)
         # Interpolated: this module's column list, `_where`'s fixed column names
         # and operators, and the fixed order clause. Every *value* -- including
-        # the limit -- is a bound parameter, so no caller text reaches the
-        # statement text (S608).
-        statement = f"SELECT {_FINDING_COLUMNS} FROM findings {where} {_SERVE_ORDER} LIMIT ?"  # noqa: S608
+        # the text cut and the limit -- is a bound parameter, so no caller text
+        # reaches the statement text (S608).
+        #
+        # `text_chars` binds FIRST: its placeholder is in the SELECT list, which
+        # precedes both the WHERE clause's and the LIMIT's, and sqlite3 fills
+        # positional parameters in statement order.
+        statement = f"SELECT {_SERVE_COLUMNS} FROM findings {where} {_SERVE_ORDER} LIMIT ?"  # noqa: S608
         try:
             with self._read() as connection:
                 stamp_row = connection.execute(
@@ -634,7 +715,9 @@ class SqliteReviewFindingStore:
                         f"{self._path.name} was built by a superseded schema or trailer "
                         "grammar, so its rows would be read differently now"
                     )
-                rows = connection.execute(statement, (*parameters, query.limit)).fetchall()
+                rows = connection.execute(
+                    statement, (text_chars, *parameters, query.limit)
+                ).fetchall()
                 # Converted inside the boundary, not after it (R1-2 face iv). A
                 # store whose `position` or `pull_request` holds text rather than a
                 # number -- SQLite's columns are typed by affinity, so nothing stops
@@ -659,6 +742,15 @@ class SqliteReviewFindingStore:
             # nobody had. Input-side mistakes are refused at the surface
             # (`mcp/findings.py`) rather than arriving here, so this arm's rebuild
             # remedy stays the right cure for everything it does catch.
+            #
+            # The trade, recorded rather than traded away: this width also swallows
+            # a *product* defect raised in this block -- an `AttributeError` or a
+            # `KeyError` from a future edit -- and reports it to the caller as "the
+            # store needs rebuilding", which is a remedy that will not help. It is
+            # accepted because the alternative leaks refusal shapes to a caller
+            # (SEC-13) and this block is small, exception-chained (`from exc`, so
+            # the real cause is in the traceback), and covered by tests that assert
+            # what it serves rather than only what it refuses.
             raise FindingsStoreError(f"reading {self._path.name}: {exc}") from exc
         return served
 
