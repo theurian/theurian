@@ -297,7 +297,16 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ADR-0027 and the threat model. Ten is what this instrument can see and not
   #463's whole population: the members outside `docs/` were measured and filed on
   the issue rather than absorbed here, and they put the cross-scope remainder at
-  ≥14 distinct tokens beyond the ten. #463 owns both halves; widening
+  ≥14 distinct tokens beyond the ten — the
+  [`packages/` extension](https://github.com/theurian/theurian/issues/463#issuecomment-5507928206)
+  and the
+  [two CHANGELOG members](https://github.com/theurian/theurian/issues/463#issuecomment-5509455089),
+  each hand-classified there. It is a **lower** bound and stays one on purpose:
+  run unclassified over `packages/`, the same key returns 72 unqualified
+  unreachable tokens, and most of them are test literals — `deadbeef`,
+  `abcdef1`, a run of `b`s — rather than anchors anybody cited. Separating those
+  by hand is the work `GOVERNED_ROOTS` being `("docs/",)` defers. #463 owns both
+  halves; widening
   `GOVERNED_ROOTS` is its ratchet.
 
 - **ADR-0029 no longer records the four findings-pipeline residuals as open, and
