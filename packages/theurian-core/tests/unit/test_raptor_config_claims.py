@@ -1276,6 +1276,47 @@ _NOTE_COUNTS: Final[dict[pathlib.Path, int]] = {
     SCHEMAS_TEST: 0,
 }
 
+#: The file set :data:`SCANNED_SURFACES` must name, and why each is in it.
+#:
+#: **The composition itself was unpinned, which is round one's M-h.**
+#: :func:`test_every_scanned_surface_has_a_recorded_note_count` holds
+#: :data:`SCANNED_SURFACES` and :data:`_NOTE_COUNTS` in step with each other, and
+#: that is all it does: dropping a surface from *both* moved neither side out of
+#: step and every test in this module stayed green, with the file simply no
+#: longer scanned. Two tables agreeing about a set they both lost a member from
+#: is not a pin on the set.
+#:
+#: So the set is stated once, here, with the reason each member is in it, and
+#: held by equality. Adding a surface to the scan without adding it here is RED,
+#: and so is quietly dropping one.
+_EXPECTED_SURFACES: Final[tuple[tuple[pathlib.Path, str], ...]] = (
+    (ADR_0008, "the record #426 narrowed, and the one that carries the dated correction note"),
+    (RAPTOR_MD, "the architecture document whose 'Three levels' section carries the claim"),
+    (SAMPLE_CONFIG, "the annotation an operator reads beside the key itself"),
+    (PROJECT_CONFIG_SCHEMA, "wheel-shipped, and where #455's false root description lived"),
+    (FOREST_BUILDER, "wheel-shipped source; #447 narrowed its block"),
+    (FOREST_DERIVATION_TEST, "a test whose prose transcribes the same claim"),
+    (SCHEMAS_TEST, "the third Python surface #447 narrowed"),
+)
+
+#: The surfaces :data:`_THIS_FILE_UNREAD` may ride, and the rule that decides it.
+#:
+#: A pronoun resolves only where it has one possible referent. In the sample
+#: config and in the published schema, "this file" is
+#: ``.theurian/config.yaml`` -- one *is* the file and the other describes it. In
+#: an ADR, an architecture document or a Python module, "this file" is the
+#: document or the module a reader is holding, and a sentence about a document
+#: that reads nothing is not this claim at all.
+#:
+#: Stated as a constant because the assignment was a fact about a tuple literal
+#: and nothing checked it: dropping ``_THIS_FILE_UNREAD`` from either row left
+#: every test here green, because no live sentence in the tree takes the pronoun
+#: form today. The pattern's own docstring makes exactly this claim, so the
+#: constant and the docstring stand or fall together.
+_PRONOUN_SURFACES: Final[frozenset[pathlib.Path]] = frozenset(
+    {SAMPLE_CONFIG, PROJECT_CONFIG_SCHEMA}
+)
+
 #: The parametrized form, **derived from :data:`SCANNED_SURFACES` rather than
 #: written out beside it**, which is round three's M-1.
 #:
@@ -1923,6 +1964,99 @@ def test_every_scanned_surface_has_a_recorded_note_count() -> None:
         f"`_CORRECTION_NOTE` exclusion unmeasured on it, and one in the second reads "
         f"as coverage of a file this module never opens. Record the count, or drop it "
         f"with the surface."
+    )
+
+
+def test_the_scan_covers_exactly_the_recorded_file_set() -> None:
+    """RED means a surface joined or left the scan without anybody saying so.
+
+    :func:`test_every_scanned_surface_has_a_recorded_note_count` holds
+    :data:`SCANNED_SURFACES` and :data:`_NOTE_COUNTS` in step with **each
+    other**, and that is all it does. Dropping a file from both moved neither
+    side out of step: the two tables still agreed, every test here stayed green,
+    and the file was simply no longer read. Two tables agreeing about a set they
+    both lost a member from is not a pin on the set.
+
+    :data:`_EXPECTED_SURFACES` is the set, stated once with a reason per member.
+    A new surface has to be argued for here as well as added; a dropped one has
+    to be argued away.
+    """
+    scanned = {path for path, _, _ in SCANNED_SURFACES}
+
+    assert scanned == {path for path, _ in _EXPECTED_SURFACES}, (
+        f"the scan's file set and `_EXPECTED_SURFACES` disagree.\n\n"
+        f"  scanned but not expected: "
+        f"{sorted(path.name for path in scanned - {p for p, _ in _EXPECTED_SURFACES})}\n"
+        f"  expected but not scanned: "
+        f"{sorted(path.name for path, _ in _EXPECTED_SURFACES if path not in scanned)}\n\n"
+        f"Every file here is watched because a false claim about "
+        f"`.theurian/config.yaml` has been written into it or into its sibling. "
+        f"Add the surface with its reason, or record why it stopped mattering."
+    )
+
+
+def test_the_pronoun_pattern_rides_exactly_the_two_surfaces_it_can_resolve_on() -> None:
+    """RED means a pronoun rule moved onto prose where "this file" means something else.
+
+    :data:`_THIS_FILE_UNREAD` matches "nothing in ``src/`` reads **this file**",
+    which is only the watched claim where the pronoun has one possible referent:
+    the sample config *is* ``.theurian/config.yaml`` and the published schema
+    describes it. In an ADR, in ``raptor.md`` or in a Python module, "this file"
+    is the document a reader is holding.
+
+    Both directions cost something and neither was checked. Adding the pattern to
+    a Markdown surface buys one shape for a false RED on prose that is true;
+    **dropping it from either row it belongs on left every test in this module
+    green**, because no live sentence in the tree takes the pronoun form today --
+    the schema's did until #199 unit B rewrote it, which is the whole reason the
+    surface is scanned.
+
+    ``_FILE_UNREAD`` is asserted on every surface for the same reason: it is what
+    the scan is *for*, and a row that quietly lost it would be a file read for
+    nothing.
+    """
+    riding = {path for path, _, patterns in SCANNED_SURFACES if _THIS_FILE_UNREAD in patterns}
+
+    assert riding == _PRONOUN_SURFACES, (
+        f"`_THIS_FILE_UNREAD` rides {sorted(path.name for path in riding)}, expected "
+        f"{sorted(path.name for path in _PRONOUN_SURFACES)}. Its docstring states the "
+        f"rule: the pronoun resolves only where 'this file' can mean nothing but "
+        f"`.theurian/config.yaml`."
+    )
+    assert all(_FILE_UNREAD in patterns for _, _, patterns in SCANNED_SURFACES), (
+        "a scanned surface is not scanned for the path-bearing universal at all: "
+        + str([path.name for path, _, patterns in SCANNED_SURFACES if _FILE_UNREAD not in patterns])
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "blocks"),
+    [(path, blocks) for path, blocks, _ in SCANNED_SURFACES],
+    ids=[path.name for path, _, _ in SCANNED_SURFACES],
+)
+def test_a_recorded_note_count_of_zero_is_a_measurement_rather_than_a_silence(
+    path: pathlib.Path, blocks: Callable[[str], list[str]]
+) -> None:
+    """RED means a surface's block reader returns nothing and its zero counts nothing.
+
+    Five of the seven surfaces record ``0`` in :data:`_NOTE_COUNTS`, and
+    :func:`test_each_scanned_surface_carries_the_notes_the_exclusion_is_defined_for`
+    checks each by asserting ``len(notes) == 0``. That assertion is satisfied by a
+    surface with no note **and** by a reader that returns no blocks at all -- and
+    the second case takes the universal scan down with it, silently, because a
+    file with no blocks has no sentences to find a claim in.
+
+    So the zeros are load-bearing only once somebody has shown the reader reaches
+    the file. Neutering ``_published_descriptions``, ``_python_prose`` or
+    ``_comment_blocks`` to return ``[]`` left every other test in this module
+    green.
+    """
+    produced = blocks(path.read_text(encoding="utf-8"))
+
+    assert any(block.strip() for block in produced), (
+        f"{path.name} yields no readable block, so its `_NOTE_COUNTS` entry is true by "
+        f"vacuity and the universal scan reads an empty file. The block reader is "
+        f"broken, not the document."
     )
 
 

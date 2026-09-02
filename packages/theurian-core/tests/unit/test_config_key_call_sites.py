@@ -563,6 +563,68 @@ def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_one
     )
 
 
+#: The schema root's ``description``, in full, as the wheel publishes it.
+#:
+#: **A fragment pin is subtraction-proof and not addition-proof, which is round
+#: one's adv-L1.** :data:`WATCHED_KEY_DESCRIPTIONS`' root row lists four
+#: fragments the description has to keep, so deleting any of them is RED. Adding
+#: a *fifth* sentence is not: a fabricated control asserted in the same
+#: description -- "the review allowlist below is consulted before Theurian
+#: contacts any repository" -- kept all four fragments, shipped in the built
+#: wheel, and left every audit in ``tools/audit/`` and every pin in this file
+#: green. Two such mutations were run and both survived.
+#:
+#: The root is the one description where that matters most: it is the first thing
+#: a reader of the published schema sees, it is outside every key-block count
+#: (#455), and it was false from ADR-0027 decision 3 until #199 unit B rewrote
+#: it. So it is pinned whole. A wording change is a deliberate act here, and the
+#: diff that makes this RED is the diff that has to say what moved.
+#:
+#: The key rows below stay fragment-pinned: their descriptions carry tuning
+#: guidance a reviewer may reword, and the sentences that matter are named.
+SCHEMA_ROOT_DESCRIPTION: Final = (
+    "Per-repository configuration, Git-tracked. Contains no secrets: credentials live "
+    "in ~/.theurian and the OS secret store (ADR-0011). This file has one reader: "
+    "`security/project_config.py` takes `security.secretScan` from it and nothing else "
+    "(ADR-0027 decision 3), so that one key is in force and every other key published "
+    "here is reserved. Setting a reserved key changes nothing, and where a default "
+    "below is also honoured by the product the code carries its own copy rather than "
+    "reading this file. Each reserved key's own description says what it is owed with; "
+    "the review-ingestion allowlist is owed with the first external fetch path "
+    "(https://github.com/theurian/theurian/issues/429)."
+)
+
+
+def test_the_schema_root_description_is_exactly_what_this_file_records() -> None:
+    """RED means the wheel's root description moved, in either direction.
+
+    The fragment pins beside this one catch a *deletion*: drop "This file has one
+    reader" and the row goes RED. They cannot catch an **addition**, and an
+    addition is the shape that ships a false control claim -- a sentence asserting
+    that the review allowlist is consulted before Theurian contacts a repository
+    keeps all four required fragments, is published in the built wheel, and left
+    every audit and every pin green when it was planted.
+
+    An exact match is affordable here because there is exactly one root
+    description and it is the schema's most-read sentence. If this is RED because
+    the wording genuinely improved, copy the new text in -- and say in the same
+    commit what claim it now makes, because that is the review this pin exists to
+    force.
+    """
+    schema = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
+
+    assert schema["description"] == SCHEMA_ROOT_DESCRIPTION, (
+        "the published schema's root description is not the recorded one.\n\n"
+        f"  published: {schema['description']!r}\n\n"
+        f"  recorded : {SCHEMA_ROOT_DESCRIPTION!r}\n\n"
+        "This description is wheel-shipped and is the first thing a reader of the "
+        "contract sees. It was false from ADR-0027 decision 3 until #199 unit B "
+        "rewrote it, and nothing but the four fragments in "
+        "`WATCHED_KEY_DESCRIPTIONS` watched it -- which let a fabricated control "
+        "claim be *added* beside them with every check green."
+    )
+
+
 #: The exact sentences each watched key's published description has to keep, and
 #: the issue that owns it.
 #:
