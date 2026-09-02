@@ -1359,7 +1359,7 @@ def test_the_findings_captures_reach_both_sides_of_the_nullable_fields(
     assert {row["family"] for row in rows} == {"a published field", None}
     assert {row["specialist"] for row in rows} == {"theurian-python", None}
     assert findings_responses["filtered"]["count"] == 1
-    assert findings_responses["empty"] == {"count": 0, "findings": []}
+    assert findings_responses["empty"] == {"count": 0, "truncated": False, "findings": []}
 
 
 @pytest.mark.integration

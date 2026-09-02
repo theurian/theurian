@@ -59,7 +59,12 @@ from theurian.infrastructure.sqlite.findings_store import (
 )
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
-from theurian.mcp.findings import DEFAULT_FINDINGS_LIMIT, build_query, findings_payload
+from theurian.mcp.findings import (
+    DEFAULT_FINDINGS_LIMIT,
+    build_query,
+    findings_payload,
+    probing,
+)
 from theurian.mcp.results import result_payload
 from theurian.mcp.search import Fallback, hybrid_answer, substring_answer
 
@@ -1671,14 +1676,16 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         should change; that is a description of a rule, never an instruction
         addressed to the agent reading it.
 
-        **Every published value is a function of the rows this call served.**
-        ``count`` sizes the returned array and nothing else; each row is stored
-        columns, unmodified. Nothing in the response is computed over rows the
-        caller did not receive -- no total before ``limit``, no count of rejected
-        trailers, no store metadata (see
-        :func:`~theurian.mcp.findings.findings_payload` for the three members
-        considered and left out, and why each would have been a statistic over
-        content this tool does not serve).
+        **Every published value is a function of the rows this call served, or of
+        this page's own boundary.** ``count`` sizes the returned array and nothing
+        else; each row is stored columns, bounded in length and otherwise
+        unmodified; ``truncated`` says whether a matching row existed past the
+        page, which is one bit about where this page ends rather than a number
+        over rows the caller did not receive. Nothing here is a total before
+        ``limit``, a count of rejected trailers, or store metadata (see
+        :func:`~theurian.mcp.findings.findings_payload` for the members considered
+        and left out, and why each would have been a statistic over content this
+        tool does not serve).
 
         **Rejected trailers are unreachable, not filtered.** A malformed keyed
         line is captured in its own table so the corpus stays loss-free, and both
@@ -1798,7 +1805,10 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             # connection it reads the rows through, so a `findings build` landing
             # mid-request cannot have the check pass on one file and the rows come
             # from another (`SqliteReviewFindingStore.serve_findings`).
-            served = store.serve_findings(query)
+            # `probing`, not `query`: the read asks for one row past the page so
+            # the response can say whether the page ended early. The extra row is
+            # discarded by `findings_payload` -- read, never shaped, never served.
+            served = store.serve_findings(probing(query))
         except FindingsStoreError as exc:
             # Deliberately not `str(exc)`, which the `_forwarding` seam would
             # otherwise forward: the adapter's message names the file and the
@@ -1807,7 +1817,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             raise ToolError(FINDINGS_UNAVAILABLE_REFUSAL) from exc
         finally:
             findings_admission.release()
-        return findings_payload(served)
+        return findings_payload(served, page_size=query.limit)
 
     @_tool(
         server,

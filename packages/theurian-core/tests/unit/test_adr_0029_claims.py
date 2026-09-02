@@ -183,7 +183,7 @@ from theurian.domain.review_finding import keyed_lines
 from theurian.infrastructure.git import trailer_source
 from theurian.infrastructure.sqlite.findings_schema import FINDINGS_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.findings_store import SqliteReviewFindingStore
-from theurian.mcp.findings import findings_payload
+from theurian.mcp.findings import DEFAULT_FINDINGS_LIMIT, findings_payload
 
 ADR_0029: Final = REPO_ROOT / "docs" / "adr" / "0029-review-findings-are-governed-knowledge.md"
 CHANGELOG: Final = REPO_ROOT / "packages" / "theurian-core" / "CHANGELOG.md"
@@ -1064,8 +1064,14 @@ def test_the_served_response_holds_exactly_the_members_the_note_names() -> None:
     Both halves are asserted: the number word the note spells, and each member's
     own name. A note that kept saying `two` while naming one of them would pass
     the first and fail the second.
+
+    ``page_size`` is whatever the caller asked for; it does not change the key
+    set, so an empty page is still the whole population of members. Passed
+    explicitly rather than defaulted, because a default here would let a caller
+    forget the page the rows were cut to and publish ``truncated`` against a
+    boundary nothing checked.
     """
-    members = sorted(findings_payload(()))
+    members = sorted(findings_payload((), page_size=DEFAULT_FINDINGS_LIMIT))
     note = collapsed(_slice_3_note())
 
     assert len(members) in _NUMBER_WORDS, (

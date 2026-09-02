@@ -363,12 +363,13 @@ the team already rejected.
 
 ### `review.findings`
 
-Two keys, both always present. The contract is
+Three keys, all always present. The contract is
 [`schemas/mcp/review-findings-response.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/review-findings-response.schema.json).
 
 ```json
 {
   "count": 1,
+  "truncated": false,
   "findings": [
     {
       "commitSha": "3e45c7b…",
@@ -418,7 +419,10 @@ clamped and not treated as "no filter": a truncated page reads as the whole
 answer, a short sha would match nothing and read as "no findings on that
 commit", and an unrecognised reviewer treated as no filter would return
 everything. `count` sizes the returned array and is never a total before
-`limit`.
+`limit`; `truncated` is `true` when at least one matching finding existed past
+`limit`, which is how a full page is told apart from the whole answer. It is one
+bit about the page's boundary, not a count: the server reads one row past
+`limit` and discards it.
 
 `count: 0` means the filter matched nothing. A project whose store has not been
 built — or whose store is stale or damaged — is **refused**, with one constant

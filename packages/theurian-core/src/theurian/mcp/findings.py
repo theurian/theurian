@@ -60,6 +60,7 @@ is the one written here.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import Any, Final
 
 from theurian.domain.errors import TheurianError
@@ -70,8 +71,16 @@ from theurian.mcp.results import SAFETY
 #: How many findings one call may return. A hard cap, not a clamp: see the module
 #: docstring. 100 against a corpus of 502 accepted findings (this repository's own
 #: history, ``origin/main`` @ ``141cf6f``, 2026-09-02) is a page a caller can read
-#: and a bound the daemon can promise; a caller wanting more narrows by filter,
-#: which is the axis this tool actually offers.
+#: and a bound the daemon can promise.
+#:
+#: **A caller that hits the cap is told so, rather than told to narrow.** The
+#: earlier sentence here said the remedy was a narrower filter, and it was false
+#: against the very corpus it cited: ``(code-review, MEDIUM)`` matches 128 rows,
+#: and the axes left to narrow on -- ``pullRequest``, ``family``, ``specialist``
+#: -- are ``null`` on every row this build produces. So the response carries
+#: ``truncated`` (see :func:`findings_payload`), which is the honest signal; the
+#: filters that do work (``reviewer``, ``severity``, ``commitSha``, ``q``) are
+#: still how a caller narrows when one of them applies.
 MAX_FINDINGS_LIMIT: Final = 100
 
 #: What a caller gets without asking. Smaller than the cap on purpose: the common
@@ -475,16 +484,50 @@ def finding_row(finding: StoredFinding) -> dict[str, Any]:
     }
 
 
-def findings_payload(findings: tuple[StoredFinding, ...]) -> dict[str, Any]:
-    """The whole response: the rows, and how many of them there are.
+def probing(query: FindingQuery) -> FindingQuery:
+    """``query``, asking for one row past its page.
 
-    **Two members, and the shortness is the point.** Every value here is a
-    function of the served rows alone, which is ADR-0029's closure stated at the
-    response rather than at a field:
+    The whole mechanism behind ``truncated``: a page of ``limit`` rows cannot say
+    whether an eleventh row matched, so the read asks for ``limit + 1`` and the
+    response serves ``limit``. The extra row is **read and discarded** -- it is
+    never shaped, never counted, never published.
 
-    * ``count`` is ``len(findings)`` -- the rows in *this* response, not a total
-      before ``limit`` and not a count of anything the caller did not receive;
-    * ``findings`` is those rows.
+    Deliberately not a ``COUNT(*)`` over the matching rows. That would publish a
+    number computed over rows the caller did not receive, which is precisely the
+    "statistic over rows the caller may not see" family
+    :func:`findings_payload` refuses a rejected count for. One row past the
+    window is a property *of the window's boundary*: it says the page ends
+    somewhere, not how much is behind it.
+
+    The probe goes through the same statement every serve uses, so it selects
+    from ``findings`` alone -- a rejected trailer cannot occupy the probe slot any
+    more than it can occupy a served one, and ``truncated`` therefore cannot carry
+    a bit about the rejected population.
+    """
+    return replace(query, limit=query.limit + 1)
+
+
+def findings_payload(probed: tuple[StoredFinding, ...], *, page_size: int) -> dict[str, Any]:
+    """The whole response: the rows, how many, and whether the page ended early.
+
+    ``probed`` is what :func:`probing` asked for -- up to ``page_size + 1`` rows.
+    The page is the first ``page_size`` of them; the extra row, if it came back,
+    is discarded here and is the entire basis of ``truncated``.
+
+    **Three members, and the shortness is still the point.** Every value is a
+    function of the served rows and of this page's own boundary, which is
+    ADR-0029's closure stated at the response rather than at a field:
+
+    * ``count`` is the number of rows in *this* response, not a total before
+      ``limit`` and not a count of anything the caller did not receive;
+    * ``findings`` is those rows;
+    * ``truncated`` is whether a matching row existed past the page. It is one
+      bit about *this* page's edge, and it is what stops a full page from being
+      misread as the whole answer -- the false claim it replaces: `(code-review,
+      MEDIUM)` matched 128 rows on this repository's own corpus, served 100 with
+      no signal, and the remedy the record offered ("narrow by filter") was
+      unavailable because the remaining axes are ``null`` on every row (PR #504
+      round 1, R1-4).
 
     Three members that were considered and are deliberately absent. A **rejected
     count** would be a statistic over rows this tool never serves, so a malformed
@@ -496,7 +539,18 @@ def findings_payload(findings: tuple[StoredFinding, ...]) -> dict[str, Any]:
     the filters** would restate the caller's own request back at it, which
     reads like confirmation and drifts the first time a filter is renamed.
 
+    A **total matching count** belongs on that list too, and ``truncated`` is
+    what it was rejected in favour of: the total is a number over unserved rows,
+    while one boundary bit is a property of the page that was served.
+
     The differential this shape is written to survive: a store holding a rejected
-    row and a store that never held one answer identically, to every query.
+    row and a store that never held one answer identically, to every query --
+    ``truncated`` included, which holds because the probe row comes from the same
+    ``findings``-only read as every served row.
     """
-    return {"count": len(findings), "findings": [finding_row(f) for f in findings]}
+    served = probed[:page_size]
+    return {
+        "count": len(served),
+        "truncated": len(probed) > page_size,
+        "findings": [finding_row(f) for f in served],
+    }

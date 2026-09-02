@@ -384,6 +384,7 @@ async def test_a_served_row_is_the_stored_row_and_its_labels(project: ProjectReg
 
     assert payload == {
         "count": 1,
+        "truncated": False,
         "findings": [
             {
                 "commitSha": _sha("b"),
@@ -406,20 +407,21 @@ async def test_a_served_row_is_the_stored_row_and_its_labels(project: ProjectReg
 
 
 @pytest.mark.asyncio
-async def test_the_response_holds_exactly_two_members(project: ProjectRegistry) -> None:
-    """The population pin one level up: ``count`` and ``findings``, nothing else.
+async def test_the_response_holds_exactly_three_members(project: ProjectRegistry) -> None:
+    """The population pin one level up: ``count``, ``truncated``, ``findings``.
 
     A member added here is a published value nothing holds the server to, and the
-    three that were considered and rejected are each a statistic over content this
+    ones that were considered and rejected are each a statistic over content this
     tool does not serve -- a rejected-trailer count, the store's stamp, an echo of
-    the filters (see ``mcp/findings.findings_payload``). A future member has to
-    argue that it is a function of the served rows alone before it can pass this.
+    the filters, a total before ``limit`` (see ``mcp/findings.findings_payload``).
+    A future member has to argue that it is a function of the served rows, or of
+    the served page's own boundary, before it can pass this.
     """
     _land(project)
 
     payload = await _call(project, projectId="demo")
 
-    assert set(payload) == {"count", "findings"}
+    assert set(payload) == {"count", "truncated", "findings"}
 
 
 @pytest.mark.asyncio
@@ -747,10 +749,17 @@ async def test_a_rejected_trailer_moves_no_byte_of_any_response(project: Project
         {"commitSha": _sha("c")},
         {"q": "the"},
     )
-    served_with = [
-        json.dumps(await _call(project, projectId="demo", **q), sort_keys=True) for q in queries
-    ]
+    captured = [await _call(project, projectId="demo", **q) for q in queries]
+    served_with = [json.dumps(payload, sort_keys=True) for payload in captured]
     assert with_rejected.dump().rejected, "the premise: the first corpus really held one"
+    assert any(payload["truncated"] for payload in captured), (
+        "the premise: at least one capture has `truncated` true. A differential over "
+        "captures where the new member is false everywhere would compare it in one "
+        "state only, and the state that could carry a bit is the other one"
+    )
+    assert any(not payload["truncated"] for payload in captured), (
+        "the premise: at least one capture has `truncated` false"
+    )
 
     with_rejected.replace_all(without_rejected)
     assert not with_rejected.dump().rejected, "the premise: the second corpus holds none"
@@ -759,6 +768,118 @@ async def test_a_rejected_trailer_moves_no_byte_of_any_response(project: Project
     ]
 
     assert served_with == served_without
+
+
+def _numbered(count: int, *, rejected: tuple[RejectedTrailer, ...] = ()) -> FindingLoad:
+    """``count`` accepted findings on distinct commits, newest first when served."""
+    return FindingLoad(
+        accepted=tuple(
+            _finding(
+                _sha(chr(ord("a") + index)),
+                text=f"finding number {index}",
+                when="2026-08-25T09:00:00+00:00",
+            )
+            for index in range(count)
+        ),
+        rejected=rejected,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_page_says_so_and_a_complete_one_says_so(
+    project: ProjectRegistry,
+) -> None:
+    """R1-4: a full page and the whole answer used to be indistinguishable.
+
+    Measured on the real corpus: ``(code-review, MEDIUM)`` matched 128 findings,
+    served 100, and reported ``count: 100`` with nothing to say more existed --
+    which a caller reads as "exactly 100 exist". The published remedy ("narrow by
+    filter") was false against that same corpus, because the axes left to narrow
+    on are ``null`` on every row this build produces.
+
+    Both directions, because a flag that is always true is as useless as one that
+    is always false.
+    """
+    _land(project, _numbered(5))
+
+    page = await _call(project, projectId="demo", limit=2)
+    whole = await _call(project, projectId="demo", limit=MAX_FINDINGS_LIMIT)
+
+    assert page["count"] == 2
+    assert page["truncated"] is True
+    assert whole["count"] == 5
+    assert whole["truncated"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [1, 2, 4, 5])
+async def test_truncated_reads_the_page_boundary_and_not_one_row_either_side(
+    project: ProjectRegistry, limit: int
+) -> None:
+    """The off-by-one, walked across the boundary a five-row corpus provides.
+
+    ``limit == 5`` is the case a ``>=`` comparison gets wrong: the read asks for
+    six, five come back, and a page that is exactly the whole answer must not
+    claim more exists. ``limit == 4`` is the case a probe that never asked for the
+    extra row gets wrong.
+    """
+    _land(project, _numbered(5))
+
+    payload = await _call(project, projectId="demo", limit=limit)
+
+    assert payload["count"] == min(limit, 5)
+    assert payload["truncated"] is (limit < 5)
+
+
+@pytest.mark.asyncio
+async def test_the_truncation_signal_is_computed_over_servable_rows_alone(
+    project: ProjectRegistry,
+) -> None:
+    """``truncated`` must not become a one-bit channel for the rejected population.
+
+    The differential above answers "does the whole response move"; this answers
+    the sharper question the new member opens, at the boundary where a leak would
+    show: with exactly ``limit`` **accepted** rows and a rejected trailer present,
+    ``truncated`` must be false. If the probe row could be a rejected trailer, the
+    corpus that holds one would answer true and the corpus that never did would
+    answer false -- one bit, on demand, about content this tool refuses to serve.
+
+    Structurally it holds because the probe goes through the same
+    ``findings``-only statement every served row does; this is the assertion that
+    would notice if that ever stopped being true.
+    """
+    store = _land(
+        project,
+        _numbered(
+            3,
+            rejected=(
+                RejectedTrailer(
+                    _sha("z"),
+                    "Review-Finding: nonsense CRITICAL — the private key is in fixtures/",
+                    "unknown reviewer 'nonsense'",
+                ),
+            ),
+        ),
+    )
+    assert store.dump().rejected, "the premise: the corpus really holds a rejected trailer"
+
+    at_the_boundary = await _call(project, projectId="demo", limit=3)
+    inside_it = await _call(project, projectId="demo", limit=2)
+
+    assert at_the_boundary["truncated"] is False, (
+        "a rejected trailer filled the probe slot: `truncated` now carries a bit "
+        "about rows this tool does not serve"
+    )
+    assert inside_it["truncated"] is True, "the premise: the boundary case is not vacuous"
+
+    store.replace_all(_numbered(3))
+    assert not store.dump().rejected, "the premise: the second corpus holds none"
+    assert json.dumps(
+        await _call(project, projectId="demo", limit=3), sort_keys=True
+    ) == json.dumps(at_the_boundary, sort_keys=True)
+    assert json.dumps(
+        await _call(project, projectId="demo", limit=2), sort_keys=True
+    ) == json.dumps(inside_it, sort_keys=True)
 
 
 # -- AC-3: the store cannot be served from ----------------------------------

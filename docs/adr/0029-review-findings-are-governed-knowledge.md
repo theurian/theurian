@@ -983,10 +983,20 @@ registered tool serves a finding, and that it is this one
 (`tests/unit/test_findings_store_is_unreachable.py`,
 `tests/integration/test_findings_tool_registry.py`).
 
-- **The response is two members, and each is a function of the rows it
-  returned.** `{count, findings}`: `count` sizes the returned array — never a
-  total before `limit` — and each row is stored columns, unmodified, under the
-  SEC-15 triple. Three values were considered and are deliberately absent: a
+- **The response is three members, and each is a function of the rows it
+  returned or of the served page's own boundary.** `{count, truncated,
+  findings}`: `count` sizes the returned array — never a total before `limit` —
+  each row is stored columns under the SEC-15 triple, bounded in length and
+  otherwise unmodified, and `truncated` is one bit saying whether a matching row
+  existed past the page. That bit is a property of the boundary rather than a
+  statistic over unserved rows: the read asks for `limit + 1` rows through the
+  same accepted-findings statement and discards the extra one, so a store
+  holding a rejected trailer and a store that never did produce the same value.
+  It replaced a false published sentence — a full page was indistinguishable
+  from the whole answer, and the remedy the record offered ("narrow by filter")
+  was unavailable, since the axes left to narrow on are `null` on every row this
+  build produces (#504 round 1, R1-4). Three values were considered and are
+  deliberately absent: a
   **rejected count** (a statistic over rows this tool never serves, so a
   malformed trailer somebody committed would move a served value), the store's
   **stamp** (build metadata whose only purpose is a staleness decision the tool
