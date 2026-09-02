@@ -63,6 +63,7 @@ from theurian.domain.review_finding import (
     ReviewerToken,
     ReviewFinding,
 )
+from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
 from theurian.infrastructure.sqlite.findings_store import SqliteReviewFindingStore
 from theurian.mcp.findings import (
     DEFAULT_FINDINGS_LIMIT,
@@ -89,6 +90,11 @@ pytestmark = pytest.mark.integration
 #: test that spelled the number would be asserting about a limit this run may not
 #: have. It is the threshold the refusal-path tests below walk.
 _INT_MAX_STR_DIGITS = sys.get_int_max_str_digits()
+
+#: The one ref `theurian findings build` reads, and therefore the one the
+#: corpus-clearance check below has to measure against: a trailer on a local
+#: branch is not part of the corpus this tool serves (ADR-0029 D7).
+ORIGIN_MAIN: Final = "refs/remotes/origin/main"
 
 #: The repository root, for the one published statement of this tool's bounds.
 #: Four parents up: ``integration`` -> ``tests`` -> ``theurian-core`` ->
@@ -453,6 +459,34 @@ async def test_a_served_row_is_the_stored_row_and_its_labels(project: ProjectReg
 
 
 @pytest.mark.asyncio
+async def test_two_findings_on_one_commit_carry_their_own_positions(
+    project: ProjectRegistry,
+) -> None:
+    """``position`` is this row's ordinal within its commit, and it is published.
+
+    The whole-row pin above reads a commit carrying **one** finding, so its
+    ``position`` is 0 -- and every other row this corpus serves through that
+    assertion is 0 too. A ``finding_row`` that published the literal ``0`` instead
+    of ``finding.position`` was therefore suite-green, which makes the field
+    unpinned rather than merely under-asserted: it is the only thing telling two
+    findings on one commit apart, and ADR-0029's closure measured seventeen
+    trailers on a single commit, so the multi-finding commit is the *ordinary*
+    shape rather than an edge case.
+
+    Asserted as a mapping from text to position, so the two rows are pinned to
+    their own ordinals rather than to a set that a swap would satisfy.
+    """
+    _land(project)
+
+    payload = await _call(project, projectId="demo", commitSha=_sha("a"))
+
+    assert {row["findingText"]: row["position"] for row in payload["findings"]} == {
+        "a bearer token reached the log": 0,
+        "a name reads as its opposite": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_the_response_holds_exactly_three_members(project: ProjectRegistry) -> None:
     """The population pin one level up: ``count``, ``truncated``, ``findings``.
 
@@ -776,25 +810,74 @@ async def test_the_findings_read_is_admission_gated_like_a_search(
     )
 
 
-@pytest.mark.asyncio
-async def test_the_real_corpus_never_reaches_the_finding_text_bound(
-    project: ProjectRegistry,
-) -> None:
+def _live_repo_root() -> Path | None:
+    """The checkout these tests live in, or ``None`` when there is none.
+
+    ``None`` rather than a raised ``CalledProcessError`` when the tree is not
+    inside a git repository, which is ``tools/mutate.py``'s copied tree: it
+    excludes ``.git``, and a test that errored there would redden the mutation
+    harness's unmutated control and void every verdict in the batch. The same
+    helper ``test_git_trailer_source.py`` uses, for the same reason.
+    """
+    here = Path(__file__).resolve().parent
+    proc = subprocess.run(  # noqa: S603
+        ["git", "-C", str(here), "rev-parse", "--show-toplevel"],  # noqa: S607
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    return Path(proc.stdout.strip())
+
+
+def test_the_real_corpus_never_reaches_the_finding_text_bound() -> None:
     """The bound is a ceiling on planted data, not a truncation of authored data.
 
-    Measured against this repository's own history: the longest landed finding is
-    193 characters, an order of magnitude inside the bound. Asserted against the
-    live constant rather than restated, so raising or lowering the bound is
-    checked against the corpus it has to clear rather than against a number
-    somebody wrote down once.
-    """
-    longest_real_finding = 193
+    **Derived from the corpus, not from a number somebody wrote down.** This
+    assertion used to compare the live bound against the literal 193 -- a figure
+    measured once, on a tip that has moved since, and pinned by nothing that would
+    notice when it stopped being true. A corpus that grew a longer finding would
+    leave this green while the tool quietly started cutting authored review
+    history, which is precisely the failure the sentence claims cannot happen.
 
-    assert longest_real_finding < max_finding_text_chars(), (
-        f"the served-text bound is {max_finding_text_chars()}, which is not clear of "
-        f"the longest finding this repository's own history holds "
-        f"({longest_real_finding} characters as of 2026-09-02) -- so the bound would "
-        f"start cutting authored review findings rather than planted ones"
+    So the longest finding is read now, through the shipped
+    :class:`GitTrailerFindingSource` over ``refs/remotes/origin/main`` -- the same
+    ref ``theurian findings build`` reads, so what is measured is the corpus this
+    tool will actually serve. Both directions are asserted: the bound clears the
+    corpus, and the corpus is non-empty, so an unresolvable ref cannot pass this by
+    finding nothing.
+
+    Skips where the checkout or its remote-tracking ref is unresolvable -- a
+    shallow clone, or the mutation harness's ``.git``-less copy -- rather than
+    failing, which keeps the unmutated control GREEN.
+    """
+    repo = _live_repo_root()
+    if repo is None:
+        pytest.skip("not inside a git checkout (a non-repo tree, e.g. mutate.py's copy)")
+    resolved = subprocess.run(  # noqa: S603
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", ORIGIN_MAIN],  # noqa: S607
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if resolved.returncode != 0:
+        pytest.skip(f"{ORIGIN_MAIN} is not resolvable in this checkout")
+
+    accepted = GitTrailerFindingSource(repo).load_findings().accepted
+    longest = max((len(finding.finding_text) for finding in accepted), default=0)
+
+    assert accepted, (
+        f"{ORIGIN_MAIN} resolved but carries no accepted `Review-Finding:` trailer, "
+        f"so this comparison would pass against an empty corpus -- which says "
+        f"nothing about whether the bound clears authored data"
+    )
+    assert longest < max_finding_text_chars(), (
+        f"the served-text bound is {max_finding_text_chars()} and the longest "
+        f"finding on {ORIGIN_MAIN} @ {resolved.stdout.strip()[:7]} is {longest} "
+        f"characters, so the bound has started cutting authored review findings "
+        f"rather than planted ones. Raise the bound or say in the docs that "
+        f"authored findings are now cut"
     )
 
 
@@ -1266,42 +1349,71 @@ async def test_a_project_with_no_findings_store_is_refused_not_answered_empty(
     assert "theurian findings build" in message
 
 
+def _stale_parser_stamp(path: Path) -> None:
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("UPDATE findings_metadata SET parser_stamp = 'old' WHERE id = 1")
+        connection.commit()
+
+
+def _stale_schema_version(path: Path) -> None:
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("UPDATE findings_metadata SET findings_schema_version = -1 WHERE id = 1")
+        connection.commit()
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "damage",
-    ["stale-parser-stamp", "stale-schema-version", "unreadable-file", "missing-file"],
-)
-async def test_every_unservable_store_gives_the_same_constant_refusal(
-    project: ProjectRegistry, damage: str
+async def test_every_unservable_state_answers_with_one_identical_message(
+    project: ProjectRegistry,
 ) -> None:
-    """One message for four states, and it is a constant (SEC-13, AC-3).
+    """Six states, one string -- asserted as a **set**, not state by state.
 
-    A message that named which state fired would publish something about a file
-    the caller cannot read, and would let a caller tell "stale" from "absent" from
-    "corrupt" -- the error-distinguishability family, arriving through a refusal
-    rather than through a field. The cure is the same rebuild for all four, so
-    there is nothing a distinction would buy.
+    Every one of these was already asserted to *contain*
+    :data:`FINDINGS_UNAVAILABLE_REFUSAL`, and containment is the wrong shape for
+    the property: appending the adapter's own message to the constant --
+    ``ToolError(f"{FINDINGS_UNAVAILABLE_REFUSAL} ({exc})")`` -- keeps every one of
+    those assertions green while handing the caller a message that names the file
+    and the failure. That is the error-distinguishability family (SEC-13) arriving
+    through the one channel this tool cannot avoid having, and a set of size one is
+    what refuses it.
+
+    The six span both enforcement points: the first two are refused before the
+    store is opened at all (nothing built here; a store this installation has no
+    record of building), the last four by the read itself (two staleness arms, a
+    file that is not a database, a file that is gone). The cure is the same
+    ``theurian findings build`` for all six, so a distinction would buy nothing and
+    would cost the provenance arm its silence.
+
+    Sequenced rather than parametrised because the states are cumulative on one
+    project -- the provenance record, once made, cannot be unmade -- and running
+    them in one call battery is also what makes the comparison exact rather than
+    per-case.
     """
-    _land(project)
     path = _store_path(project)
-    if damage == "stale-parser-stamp":
-        with closing(sqlite3.connect(path)) as connection:
-            connection.execute("UPDATE findings_metadata SET parser_stamp = 'old' WHERE id = 1")
-            connection.commit()
-    elif damage == "stale-schema-version":
-        with closing(sqlite3.connect(path)) as connection:
-            connection.execute(
-                "UPDATE findings_metadata SET findings_schema_version = -1 WHERE id = 1"
-            )
-            connection.commit()
-    elif damage == "unreadable-file":
-        path.write_bytes(b"not a database at all")
-    else:
-        path.unlink()
+    messages: dict[str, str] = {}
 
-    message = await _call_failing(project, projectId="demo")
+    messages["missing-store"] = await _call_failing(project, projectId="demo")
 
-    assert FINDINGS_UNAVAILABLE_REFUSAL in message
+    _plant(project)
+    messages["planted-store"] = await _call_failing(project, projectId="demo")
+
+    for state, damage in (
+        ("stale-parser-stamp", _stale_parser_stamp),
+        ("stale-schema-version", _stale_schema_version),
+        ("unreadable-file", lambda p: p.write_bytes(b"not a database at all")),
+        ("deleted-file", Path.unlink),
+    ):
+        _land(project)
+        damage(path)
+        messages[state] = await _call_failing(project, projectId="demo")
+
+    assert len(set(messages.values())) == 1, (
+        "the refusal varies with which unservable state the store is in, so the "
+        "error channel carries a second input:\n"
+        + "\n".join(f"  {state}: {message}" for state, message in messages.items())
+    )
+    # `in`, not `==`: the SDK prefixes a failing tool's message with "Error
+    # executing tool review.findings: ", which is the transport's and constant.
+    assert FINDINGS_UNAVAILABLE_REFUSAL in next(iter(messages.values()))
 
 
 @pytest.mark.asyncio
@@ -1484,8 +1596,6 @@ async def test_the_unservable_refusal_does_not_vary_with_what_the_store_holds(
         ({"pullRequest": 0}, ["must be a positive number"]),
         ({"commitSha": "141cf6f"}, ["40 or 64 lower-case hex"]),
         ({"commitSha": "Z" * 40}, ["40 or 64 lower-case hex"]),
-        ({"q": ""}, ["`q` is empty"]),
-        ({"family": ""}, ["`family` is empty"]),
     ],
     ids=[
         "reviewer-historical-alias",
@@ -1498,8 +1608,6 @@ async def test_the_unservable_refusal_does_not_vary_with_what_the_store_holds(
         "pull-request-zero",
         "commit-sha-short",
         "commit-sha-not-hex",
-        "q-empty",
-        "family-empty",
     ],
 )
 async def test_a_value_outside_its_bound_is_refused_naming_the_bound(
@@ -1525,10 +1633,78 @@ async def test_a_value_outside_its_bound_is_refused_naming_the_bound(
         assert fragment in message, f"the refusal did not name {fragment!r}: {message}"
 
 
-#: Every string filter this tool publishes. The population for the two
+#: Every string filter this tool publishes. The population for the emptiness and
 #: transportability refusals below, so a seventh filter added without the guard
 #: fails here rather than being covered by whichever three somebody listed.
 STRING_FILTERS = ("reviewer", "severity", "family", "specialist", "commitSha", "q")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filter_name", STRING_FILTERS)
+async def test_an_empty_string_filter_is_refused_naming_the_filter(
+    project: ProjectRegistry, filter_name: str
+) -> None:
+    """An empty filter matches nothing rather than everything, so it is refused.
+
+    ``""`` is the value a caller sends by accident -- an unset variable, a
+    stripped field, a form that submitted a blank box -- and both readings of it
+    are wrong answers a caller acts on. Matched literally, ``reviewer=""`` selects
+    no row and reads as "nobody reviewed this"; treated as "no filter", it silently
+    widens a query the caller thought was narrow.
+
+    Over **all six** filters, because the guard lives in one place
+    (``mcp/findings._bounded``) and the only cases previously driven were ``q`` and
+    ``family``: narrowing that guard to those two -- the shape a refactor produces
+    when it moves emptiness next to the one filter someone was thinking about --
+    was suite-green. The population is :data:`STRING_FILTERS` rather than a list
+    written here, so a seventh filter arrives with this test already asserting
+    about it.
+    """
+    _land(project)
+
+    message = await _call_failing(project, projectId="demo", **{filter_name: ""})
+
+    assert f"`{filter_name}` is empty" in message, (
+        f"an empty `{filter_name}` was not refused by name: {message}"
+    )
+    assert f"Omit `{filter_name}`" in message, (
+        "the refusal did not say how to not filter on this axis, which is the whole "
+        f"remedy for a caller who did not mean to send one: {message}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    ["A" * 40, "141CF6F0" * 5, "3E45C7B" + "a" * 33, "A" * 64],
+    ids=["all-upper-40", "upper-40-mixed-digits", "upper-prefix-40", "all-upper-64"],
+)
+async def test_an_upper_case_commit_sha_is_refused_rather_than_matched(
+    project: ProjectRegistry, value: str
+) -> None:
+    """Hex is a case-insensitive notation and this column is not, so case is refused.
+
+    ``git log --format=%H`` writes lower-case, and the store keys on exactly what
+    it wrote, so an upper-case sha compares unequal to every row. Relaxing the
+    pattern to ``[0-9a-fA-F]`` is the obvious "helpful" edit -- it looks like
+    accepting a valid spelling of the same number -- and it is the one that turns a
+    refusal into ``count: 0``, which a caller reads as "no findings on that
+    commit". The refusal names the form instead, which is the answer that cannot be
+    misread.
+
+    Case-folding the *input* would be the other repair and is not taken here for
+    the reason the module records: this surface's contract is exact equality on
+    stored columns, and a second normalisation step is a second place for the two
+    sides to disagree.
+    """
+    _land(project)
+
+    message = await _call_failing(project, projectId="demo", commitSha=value)
+
+    assert "lower-case hex" in message, (
+        f"an upper-case sha was accepted or refused without naming the form: {message}"
+    )
+    assert "40 or 64" in message
 
 
 @pytest.mark.asyncio
