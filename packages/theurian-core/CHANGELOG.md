@@ -48,10 +48,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   reaches its caller" is a property of the surface. Two tests hold that,
   and the division matters: a source scan catches a *decorator* that names
   something other than the seam, and a runtime check asks the built server
-  whether each registered tool is actually wrapped. Only the second can
-  fail when the seam is bypassed from *inside* the registration helper —
-  the first reads spelling, and adversarial review demonstrated a bypass
-  that left every decorator identical and the whole suite green.
+  whether each registered tool *is* the forwarding seam — identified by the
+  code object every one of its wrappers shares, not by the presence of a
+  `functools.wraps` marker, which a lookalike wrapper also carries. Only the
+  second can fail when the seam is bypassed from *inside* the registration
+  helper — the first reads spelling, and adversarial review demonstrated
+  bypasses (a deleted application, then a `wraps` lookalike) that left every
+  decorator identical and the whole suite green.
 
   **Nothing a caller reads moves.** The seam forwards the refusal's own text
   and adds nothing to it — not `remedy`, not a path, not the class name, not
