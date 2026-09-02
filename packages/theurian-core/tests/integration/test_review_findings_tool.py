@@ -40,7 +40,7 @@ from collections.abc import Iterator
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
@@ -145,12 +145,25 @@ def _finding(  # noqa: PLR0913 - one keyword per filterable column
     pull_request: int | None = None,
     family: str | None = None,
     specialist: str | None = None,
+    source_uri: str | None = None,
 ) -> ReviewFinding:
+    """One finding, with ``source_uri`` separable from the commit sha.
+
+    The shipped git source sets both to the same value (``finding_from_trailer``),
+    which is why a fixture that mirrored it left ``commitSha`` and ``sourceUri``
+    interchangeable on the wire: swapping the two in ``finding_row`` was
+    suite-green (PR #504 round 1, M5). The record admits a differing anchor -- a
+    later source that publishes a commit URL is exactly the shape #479 carries --
+    so the corpus below uses one, and the two fields are then separately
+    observable through the one public surface.
+    """
     return ReviewFinding(
         reviewer=reviewer,
         severity=severity,
         finding_text=text,
-        anchor=SourceAnchor(provider="git", source_uri=sha, commit_sha=sha),
+        anchor=SourceAnchor(
+            provider="git", source_uri=sha if source_uri is None else source_uri, commit_sha=sha
+        ),
         pull_request=pull_request,
         date=datetime.fromisoformat(when),
         family=family,
@@ -197,6 +210,10 @@ LANDED = FindingLoad(
             pull_request=12,
             family="a published field",
             specialist="theurian-tests",
+            # Deliberately NOT the commit sha: two fields carrying one value are
+            # two fields nothing can tell apart on the wire (M5, and `_finding`
+            # above for why the shipped source makes them equal today).
+            source_uri=f"https://example.invalid/commit/{_sha('b')}",
         ),
     ),
     rejected=(
@@ -380,6 +397,14 @@ async def test_a_served_row_is_the_stored_row_and_its_labels(project: ProjectReg
     and ``specialist`` are ``None`` on every row the shipped git source produces
     (ADR-0029 D5), and a field that appeared only when set could not be told
     apart from a server that predates it.
+
+    **``commitSha`` and ``sourceUri`` differ on this row on purpose.** They carry
+    one value on every row the shipped source builds, so a fixture that mirrored
+    that made the two fields interchangeable: swapping them in ``finding_row``
+    passed the whole suite (PR #504 round 1, M5). With the anchor's own URI
+    distinct, each field is pinned to its own column and the swap moves this
+    assertion. The filter is still ``commitSha``, which is the other half -- a
+    swap that also reached the *query* would answer nothing for this sha.
     """
     _land(project)
 
@@ -396,7 +421,7 @@ async def test_a_served_row_is_the_stored_row_and_its_labels(project: ProjectReg
                 "severity": "HIGH",
                 "findingText": "the test stays green with the code deleted",
                 "provider": "git",
-                "sourceUri": _sha("b"),
+                "sourceUri": f"https://example.invalid/commit/{_sha('b')}",
                 "committedAt": "2026-08-26T09:00:00.000000+00:00",
                 "pullRequest": 12,
                 "family": "a published field",
@@ -464,6 +489,65 @@ async def test_an_oversized_finding_is_served_bounded_and_visibly_cut(
         "value that is not marked reads as the whole one"
     )
     assert served[_sha("b")] == ordinary, "a finding inside the bound was altered"
+
+
+#: A finding of a given length whose bytes are worth preserving exactly.
+#:
+#: Not a run of one character: a truncation is visible in a length comparison,
+#: but a re-encoding, a strip or a fold is not, and this surface promises a
+#: stored row's text is served *unmodified* (ADR-0029 D3 -- byte-preserved from
+#: the commit message). The seed carries the shapes that get "helpfully"
+#: repaired: non-ASCII, LIKE's own metacharacters, an em dash, and the leading
+#: and trailing spaces a strip would eat.
+_TEXT_SEED: Final = " 署名付きトークン — a finding with %_\\ in it "
+
+
+def _finding_text_of(length: int) -> str:
+    """``_TEXT_SEED``, repeated and cut to exactly ``length`` characters."""
+    return (_TEXT_SEED * (length // len(_TEXT_SEED) + 1))[:length]
+
+
+@pytest.mark.asyncio
+async def test_a_finding_up_to_the_bound_is_served_exactly_as_it_was_stored(
+    project: ProjectRegistry,
+) -> None:
+    """The non-truncation half of the byte bound, walked up to the bound itself.
+
+    R1-3's fix cuts an over-long ``findingText``; this is what stops the cut from
+    creeping down onto authored data. Before the bound existed, truncating every
+    served finding to 60 characters was suite-green (PR #504 round 1, M4) --
+    66.1% of this repository's own findings are longer than that -- because the
+    only fixture texts were short enough that a 60-character cut was invisible.
+
+    So the lengths below straddle that number and end *at* the bound: a cut
+    anywhere inside the admitted range moves one of them, while the deliberate
+    bound above it stays untouched (that direction is
+    :func:`test_an_oversized_finding_is_served_bounded_and_visibly_cut`). The
+    equality is over the whole string rather than its length, because a fold or
+    a strip is a modification a length check cannot see.
+    """
+    bound = max_finding_text_chars()
+    lengths = (1, 61, 193, bound - 1, bound)
+    stored = {_sha(chr(ord("a") + index)): _finding_text_of(n) for index, n in enumerate(lengths)}
+    _land(
+        project,
+        FindingLoad(
+            accepted=tuple(
+                _finding(sha, text=text, when="2026-08-25T09:00:00+00:00")
+                for sha, text in stored.items()
+            ),
+            rejected=(),
+        ),
+    )
+
+    payload = await _call(project, projectId="demo", limit=len(lengths))
+    served = {row["commitSha"]: row["findingText"] for row in payload["findings"]}
+
+    assert served == stored, (
+        "a finding inside the served-text bound came back changed. Every one of "
+        "these is authored data the tool promises to hand over unmodified; the "
+        "cut belongs above the bound and nowhere else"
+    )
 
 
 @pytest.mark.asyncio
