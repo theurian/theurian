@@ -1,0 +1,789 @@
+"""The `review.findings` MCP tool, called in process (ADR-0029 phase-2 slice-3).
+
+The serving surface for landed ``Review-Finding:`` trailers. Called through
+``server.call_tool`` -- the entry point the transport uses -- against a project
+the real CLI built, with a findings store landed by the real adapter.
+
+The store is written by :class:`SqliteReviewFindingStore` directly rather than by
+``theurian findings build``, and that is deliberate: the build command reads
+``refs/remotes/origin/main``, which a throwaway fixture repository does not have,
+and the *content* under test here is a synthetic load whose oracle is a value
+this file wrote. ``tests/integration/test_findings_build_cli.py`` is where the
+build command is driven end to end.
+
+Four properties this file exists to hold, each named where it is asserted below:
+
+- a served row carries the SEC-15 triple, **and the check that says so can fail**
+  (ADR-0029 Compliance: "a result missing the triple is rejected");
+- every filter selects exactly its rows, and an unknown token or an over-bound
+  value is refused naming the bound rather than silently scanning;
+- a store that cannot be served from produces **one constant refusal** carrying
+  the rebuild remedy -- never an empty result, and never a message that varies
+  with what the store holds;
+- a rejected trailer is not served, and its presence does not move a single byte
+  of any response (the two-corpora differential ADR-0029's closure is stated as).
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import subprocess
+from collections.abc import Iterator
+from contextlib import closing
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import pytest
+from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from migration_fixtures import body_pin
+from typer.testing import CliRunner
+
+from theurian.application.project_service import FINDINGS_STORE_ID, ProjectPaths, ProjectRegistry
+from theurian.cli.main import app
+from theurian.daemon.runner import build_server
+from theurian.domain.knowledge import SourceAnchor
+from theurian.domain.review_finding import (
+    FindingLoad,
+    FindingSeverity,
+    RejectedTrailer,
+    ReviewerToken,
+    ReviewFinding,
+)
+from theurian.infrastructure.sqlite.findings_store import SqliteReviewFindingStore
+from theurian.mcp.findings import MAX_FILTER_CHARS, MAX_FINDINGS_LIMIT
+from theurian.mcp.results import SAFETY
+from theurian.mcp.tools import FINDINGS_UNAVAILABLE_REFUSAL
+
+pytestmark = pytest.mark.integration
+
+runner = CliRunner()
+
+MIGRATION_ID = "01K1AAAAAA01234567890ABCDE"
+REVISION_ID = "01K1AAAREV01234567890ABCDE"
+BODY = "# Authentication policy\n\nEvery call carries a signed token.\n"
+
+MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {MIGRATION_ID}
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.auth-policy
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.auth-policy
+    revisionId: {REVISION_ID}
+    contentFile: ../knowledge/architecture/auth-policy.md
+    contentSha256: {body_pin(BODY)}
+    metadata:
+      title: Authentication policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/auth-policy.md
+"""
+
+
+def _sha(seed: str) -> str:
+    """A 40-hex commit sha built from one character, so tests read declaratively."""
+    return seed * 40
+
+
+def _finding(  # noqa: PLR0913 - one keyword per filterable column
+    sha: str,
+    *,
+    reviewer: ReviewerToken = ReviewerToken.CODE_REVIEW,
+    severity: FindingSeverity = FindingSeverity.HIGH,
+    text: str = "a finding",
+    when: str = "2026-08-27T12:00:00+00:00",
+    pull_request: int | None = None,
+    family: str | None = None,
+    specialist: str | None = None,
+) -> ReviewFinding:
+    return ReviewFinding(
+        reviewer=reviewer,
+        severity=severity,
+        finding_text=text,
+        anchor=SourceAnchor(provider="git", source_uri=sha, commit_sha=sha),
+        pull_request=pull_request,
+        date=datetime.fromisoformat(when),
+        family=family,
+        specialist=specialist,
+    )
+
+
+#: The corpus every serving test below reads. Three accepted findings across two
+#: commits -- two of them sharing a commit, which is the *standard* shape of this
+#: data (ADR-0029's closure measured 17 trailers on one commit) -- and one
+#: rejected trailer whose raw line reads exactly like a real finding.
+#:
+#: The rejected member is load-bearing in every test that uses this load, not
+#: only in the ones that name it: an assertion that a response holds three rows
+#: proves nothing about withholding over a corpus with nothing to withhold.
+LANDED = FindingLoad(
+    accepted=(
+        _finding(
+            _sha("a"),
+            reviewer=ReviewerToken.SECURITY,
+            severity=FindingSeverity.CRITICAL,
+            text="a bearer token reached the log",
+            when="2026-08-25T09:00:00+00:00",
+            pull_request=11,
+            family="a published field",
+            specialist="theurian-python",
+        ),
+        _finding(
+            _sha("a"),
+            reviewer=ReviewerToken.CODE_REVIEW,
+            severity=FindingSeverity.LOW,
+            text="a name reads as its opposite",
+            when="2026-08-25T09:00:00+00:00",
+            pull_request=11,
+            family="a duration",
+            specialist="theurian-tests",
+        ),
+        _finding(
+            _sha("b"),
+            reviewer=ReviewerToken.ADVERSARIAL,
+            severity=FindingSeverity.HIGH,
+            text="the test stays green with the code deleted",
+            when="2026-08-26T09:00:00+00:00",
+            pull_request=12,
+            family="a published field",
+            specialist="theurian-tests",
+        ),
+    ),
+    rejected=(
+        RejectedTrailer(
+            _sha("c"),
+            "Review-Finding: nonsense CRITICAL — the private key is in fixtures/",
+            "unknown reviewer 'nonsense'",
+        ),
+    ),
+)
+
+
+def _run(*args: str) -> None:
+    result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
+    assert result.exit_code == 0, result.stdout + (result.stderr or "")
+
+
+@pytest.fixture
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ProjectRegistry]:
+    """A registered, migrated project -- with no findings store yet.
+
+    Built by the real CLI, because ``review.findings`` resolves through the same
+    ``_resolve`` every project-scoped tool does: the registry entry, the active
+    state pointer, and the ADR-0004/SEC-7 provenance check all have to be real
+    for this tool to be reached at all.
+    """
+    root = tmp_path / "demo"
+    root.mkdir()
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    data_dir = tmp_path / "datadir"
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    monkeypatch.chdir(root)
+    _run("init")
+    (root / ".theurian/knowledge/architecture/auth-policy.md").write_text(BODY)
+    (root / f".theurian/migrations/{MIGRATION_ID}-auth.yaml").write_text(MIGRATION)
+    _run("project", "register")
+    _run("migrate", "apply")
+
+    yield ProjectRegistry.default(data_dir)
+
+
+def _store_path(registry: ProjectRegistry, project_id: str = "demo") -> Path:
+    """Where this project's findings store lives, as the *build* command names it.
+
+    Resolved through ``ProjectPaths.findings_for(FINDINGS_STORE_ID)`` -- the same
+    call ``theurian findings build`` makes -- rather than by writing the filename
+    out here. A test that spelled the path itself would keep passing if the tool
+    and the build command ever stopped agreeing on it, which is exactly the
+    failure the shared constant exists to prevent.
+    """
+    root = Path(registry.load()[project_id]["rootPath"])
+    return ProjectPaths.of(root).findings_for(FINDINGS_STORE_ID)
+
+
+def _land(registry: ProjectRegistry, load: FindingLoad = LANDED) -> SqliteReviewFindingStore:
+    store = SqliteReviewFindingStore(_store_path(registry))
+    store.replace_all(load)
+    return store
+
+
+async def _call(registry: ProjectRegistry, **arguments: Any) -> dict[str, Any]:
+    """One `review.findings` call, returned as the payload a client sees."""
+    result = await build_server(registry).call_tool("review.findings", arguments)
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        payload: dict[str, Any] = structured
+        return payload
+    content: Any = result.content  # type: ignore[union-attr]
+    loaded: dict[str, Any] = json.loads(content[0].text)
+    return loaded
+
+
+async def _call_failing(registry: ProjectRegistry, **arguments: Any) -> str:
+    """One `review.findings` call that must fail, as the message a client reads."""
+    with pytest.raises(SdkToolError) as raised:
+        await _call(registry, **arguments)
+    return str(raised.value)
+
+
+def _texts(payload: dict[str, Any]) -> list[str]:
+    return [row["findingText"] for row in payload["findings"]]
+
+
+def carries_the_triple(row: dict[str, Any]) -> bool:
+    """Whether ``row`` carries the SEC-15 trust triple, all three, correctly.
+
+    A predicate rather than three inline assertions, so the "can fail" companion
+    below governs the *same* check the acceptance test uses. A check asserted in
+    one place and mutated in another proves nothing about the check that ships.
+    """
+    return (
+        row.get("contentClassification") == "untrusted-knowledge"
+        and row.get("mayContainInstructions") is True
+        and row.get("executable") is False
+    )
+
+
+# -- AC-1: what a served finding is ----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_every_served_finding_carries_the_trust_triple(project: ProjectRegistry) -> None:
+    """SEC-15, ADR-0029 decision 3: a finding's text is untrusted content.
+
+    A reviewer's one-line finding is authored commit text, and it reads as an
+    imperative because it *describes* what should change -- which is exactly the
+    shape T-3 grades High when an agent takes it as an instruction addressed to
+    it. The triple is what says otherwise, on every row rather than on the
+    response, because a client renders rows.
+    """
+    _land(project)
+
+    payload = await _call(project, projectId="demo")
+
+    assert payload["count"] == 3
+    assert payload["findings"], "an empty array would satisfy the loop below vacuously"
+    for row in payload["findings"]:
+        assert carries_the_triple(row), f"a served finding carries no trust triple: {row}"
+
+
+def test_the_trust_triple_check_can_fail() -> None:
+    """The companion ADR-0029's Compliance section names: the check must reject.
+
+    ``carries_the_triple`` reporting *true* is only worth something if it can
+    report false, and each of the three labels is separately load-bearing: a row
+    marked ``executable: true`` invites an agent to run it, and one missing
+    ``mayContainInstructions`` invites it to read a finding as an instruction. So
+    every single-field mutation is asserted to be caught, not merely a wholesale
+    empty row.
+    """
+    intact = {"findingText": "a finding", **SAFETY}
+    assert carries_the_triple(intact), "the fixture's premise: an intact row passes"
+
+    for key in SAFETY:
+        assert not carries_the_triple({k: v for k, v in intact.items() if k != key}), (
+            f"a row missing {key!r} was accepted; the triple check cannot fail and "
+            f"the acceptance test above is asserting nothing"
+        )
+    assert not carries_the_triple({**intact, "executable": True})
+    assert not carries_the_triple({**intact, "mayContainInstructions": False})
+    assert not carries_the_triple({**intact, "contentClassification": "trusted"})
+
+
+@pytest.mark.asyncio
+async def test_a_served_row_is_the_stored_row_and_its_labels(project: ProjectRegistry) -> None:
+    """The whole wire shape of one finding, pinned as a value rather than by key.
+
+    Every key is always present, ``null`` included: ``pullRequest``, ``family``
+    and ``specialist`` are ``None`` on every row the shipped git source produces
+    (ADR-0029 D5), and a field that appeared only when set could not be told
+    apart from a server that predates it.
+    """
+    _land(project)
+
+    payload = await _call(project, projectId="demo", commitSha=_sha("b"))
+
+    assert payload == {
+        "count": 1,
+        "findings": [
+            {
+                "commitSha": _sha("b"),
+                "position": 0,
+                "reviewer": "adversarial",
+                "severity": "HIGH",
+                "findingText": "the test stays green with the code deleted",
+                "provider": "git",
+                "sourceUri": _sha("b"),
+                "committedAt": "2026-08-26T09:00:00.000000+00:00",
+                "pullRequest": 12,
+                "family": "a published field",
+                "specialist": "theurian-tests",
+                "contentClassification": "untrusted-knowledge",
+                "mayContainInstructions": True,
+                "executable": False,
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_response_holds_exactly_two_members(project: ProjectRegistry) -> None:
+    """The population pin one level up: ``count`` and ``findings``, nothing else.
+
+    A member added here is a published value nothing holds the server to, and the
+    three that were considered and rejected are each a statistic over content this
+    tool does not serve -- a rejected-trailer count, the store's stamp, an echo of
+    the filters (see ``mcp/findings.findings_payload``). A future member has to
+    argue that it is a function of the served rows alone before it can pass this.
+    """
+    _land(project)
+
+    payload = await _call(project, projectId="demo")
+
+    assert set(payload) == {"count", "findings"}
+
+
+@pytest.mark.asyncio
+async def test_the_count_sizes_the_array_it_is_returned_with(project: ProjectRegistry) -> None:
+    """``count`` is ``len(findings)``, including under a truncating ``limit``.
+
+    Not a total before the limit: that would be a count over rows the caller did
+    not receive, which is a different promise and one this tool deliberately does
+    not make.
+    """
+    _land(project)
+
+    truncated = await _call(project, projectId="demo", limit=2)
+
+    assert truncated["count"] == 2 == len(truncated["findings"])
+
+
+@pytest.mark.asyncio
+async def test_findings_are_served_newest_first_and_truncated_in_that_order(
+    project: ProjectRegistry,
+) -> None:
+    """A total order, so ``limit`` truncates a defined sequence.
+
+    The two findings on commit ``a`` share an instant, so only the
+    ``(commitSha, position)`` tiebreak keeps their order stable -- without it a
+    two-row page would vary between runs over an unchanged store.
+    """
+    _land(project)
+
+    everything = await _call(project, projectId="demo")
+    page = await _call(project, projectId="demo", limit=2)
+
+    assert _texts(everything) == [
+        "the test stays green with the code deleted",
+        "a bearer token reached the log",
+        "a name reads as its opposite",
+    ]
+    assert _texts(page) == _texts(everything)[:2]
+
+
+# -- AC-2: the filters ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments, expected",
+    [
+        ({"reviewer": "security"}, ["a bearer token reached the log"]),
+        ({"reviewer": "code-review"}, ["a name reads as its opposite"]),
+        ({"reviewer": "adversarial"}, ["the test stays green with the code deleted"]),
+        ({"severity": "CRITICAL"}, ["a bearer token reached the log"]),
+        ({"severity": "MEDIUM"}, []),
+        (
+            {"family": "a published field"},
+            ["the test stays green with the code deleted", "a bearer token reached the log"],
+        ),
+        (
+            {"specialist": "theurian-tests"},
+            ["the test stays green with the code deleted", "a name reads as its opposite"],
+        ),
+        (
+            {"commitSha": _sha("a")},
+            ["a bearer token reached the log", "a name reads as its opposite"],
+        ),
+        (
+            {"pullRequest": 11},
+            ["a bearer token reached the log", "a name reads as its opposite"],
+        ),
+        ({"q": "bearer"}, ["a bearer token reached the log"]),
+        ({"q": "BEARER"}, ["a bearer token reached the log"]),
+        ({"q": "nothing matches this"}, []),
+        (
+            {"reviewer": "security", "severity": "CRITICAL"},
+            ["a bearer token reached the log"],
+        ),
+        ({"reviewer": "security", "severity": "LOW"}, []),
+    ],
+    ids=[
+        "reviewer-security",
+        "reviewer-code-review",
+        "reviewer-adversarial",
+        "severity-critical",
+        "severity-matching-nothing",
+        "family",
+        "specialist",
+        "commit-sha",
+        "pull-request",
+        "q-substring",
+        "q-substring-other-case",
+        "q-matching-nothing",
+        "two-filters-conjoined",
+        "two-filters-conjoined-empty",
+    ],
+)
+async def test_each_filter_returns_exactly_the_matching_findings(
+    project: ProjectRegistry, arguments: dict[str, Any], expected: list[str]
+) -> None:
+    """Every published filter, driven through the wire surface.
+
+    ``family`` and ``specialist`` are ``None`` on every row the shipped source
+    produces today, so their predicates have no live input; the fixture
+    constructs rows that carry them, because a guard no data reaches survives its
+    own deletion.
+
+    The two conjunction cases are why an ``OR`` would not pass: one row matches
+    each filter alone, and only one matches both.
+    """
+    _land(project)
+
+    payload = await _call(project, projectId="demo", **arguments)
+
+    assert _texts(payload) == expected
+    assert payload["count"] == len(expected)
+
+
+@pytest.mark.asyncio
+async def test_a_wildcard_in_the_text_filter_is_a_literal_character(
+    project: ProjectRegistry,
+) -> None:
+    """``q`` is a substring, never a pattern: ``%`` matches a percent sign.
+
+    Unescaped, a caller who typed ``%`` would get every finding back and read it
+    as "everything matches my search" -- a wrong answer wearing the shape of a
+    broad one.
+    """
+    _land(
+        project,
+        FindingLoad(
+            accepted=(
+                _finding(_sha("a"), text="a 100% regression", when="2026-08-25T09:00:00+00:00"),
+                _finding(_sha("b"), text="plain text", when="2026-08-24T09:00:00+00:00"),
+            ),
+            rejected=(),
+        ),
+    )
+
+    assert _texts(await _call(project, projectId="demo", q="%")) == ["a 100% regression"]
+    assert _texts(await _call(project, projectId="demo", q="_")) == []
+
+
+# -- AC-5: a rejected trailer is not reachable ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_response_carries_a_byte_of_a_rejected_trailer(project: ProjectRegistry) -> None:
+    """AC-5: the rejected row's raw line and reason reach no response, on any path.
+
+    Both fields are author-controlled untrusted text with no reviewed serving
+    surface, and the fixture's rejected line is written to look like a real
+    finding carrying a secret -- so a leak would read as an ordinary extra row.
+    Searched for over the *serialized* response rather than over a field list,
+    because a leak that arrived inside ``sourceUri`` is the same disclosure as one
+    inside ``findingText``, and a field-by-field check only ever covers the fields
+    somebody thought of.
+    """
+    store = _land(project)
+    rejected = store.dump().rejected
+    assert len(rejected) == 1, "the fixture's premise: the store really holds a rejected row"
+
+    for arguments in (
+        {},
+        {"limit": MAX_FINDINGS_LIMIT},
+        {"commitSha": _sha("c")},
+        {"q": "private key"},
+        {"q": "nonsense"},
+        {"severity": "CRITICAL"},
+    ):
+        payload = await _call(project, projectId="demo", **arguments)
+        serialized = json.dumps(payload, ensure_ascii=False)
+        assert "private key" not in serialized
+        assert rejected[0].raw_line not in serialized
+        assert rejected[0].reason not in serialized
+        assert "nonsense" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_trailer_moves_no_byte_of_any_response(project: ProjectRegistry) -> None:
+    """The two-corpora differential ADR-0029 states its closure as.
+
+    One corpus holds a rejected trailer; the other never did. Every response must
+    be **byte-identical** across the two -- not merely equal on the fields
+    somebody enumerated, which is the check that missed a candidate-displacement
+    leak the last time this project ran it field by field. Serialized with sorted
+    keys so key *order* cannot mask a difference or manufacture one.
+    """
+    with_rejected = _land(project, LANDED)
+    without_rejected = FindingLoad(accepted=LANDED.accepted, rejected=())
+
+    queries: tuple[dict[str, Any], ...] = (
+        {},
+        {"limit": 1},
+        {"limit": MAX_FINDINGS_LIMIT},
+        {"reviewer": "security"},
+        {"severity": "CRITICAL"},
+        {"commitSha": _sha("c")},
+        {"q": "the"},
+    )
+    served_with = [
+        json.dumps(await _call(project, projectId="demo", **q), sort_keys=True) for q in queries
+    ]
+    assert with_rejected.dump().rejected, "the premise: the first corpus really held one"
+
+    with_rejected.replace_all(without_rejected)
+    assert not with_rejected.dump().rejected, "the premise: the second corpus holds none"
+    served_without = [
+        json.dumps(await _call(project, projectId="demo", **q), sort_keys=True) for q in queries
+    ]
+
+    assert served_with == served_without
+
+
+# -- AC-3: the store cannot be served from ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_project_with_no_findings_store_is_refused_not_answered_empty(
+    project: ProjectRegistry,
+) -> None:
+    """ "Never built" must not read as "no findings" (ADR-0029 AC-3).
+
+    ``count: 0`` here would be a false absence a caller acts on -- and this is the
+    default state of every project until somebody runs the build, so it is the
+    answer most callers meet first.
+    """
+    assert not _store_path(project).exists(), "the premise: no store has been built"
+
+    message = await _call_failing(project, projectId="demo")
+
+    # `in`, not `==`: the SDK prefixes a failing tool's message with "Error
+    # executing tool review.findings: ". That prefix is the transport's and is
+    # constant; what this file pins is the refusal Theurian wrote.
+    assert FINDINGS_UNAVAILABLE_REFUSAL in message
+    assert "theurian findings build" in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "damage",
+    ["stale-parser-stamp", "stale-schema-version", "unreadable-file", "missing-file"],
+)
+async def test_every_unservable_store_gives_the_same_constant_refusal(
+    project: ProjectRegistry, damage: str
+) -> None:
+    """One message for four states, and it is a constant (SEC-13, AC-3).
+
+    A message that named which state fired would publish something about a file
+    the caller cannot read, and would let a caller tell "stale" from "absent" from
+    "corrupt" -- the error-distinguishability family, arriving through a refusal
+    rather than through a field. The cure is the same rebuild for all four, so
+    there is nothing a distinction would buy.
+    """
+    _land(project)
+    path = _store_path(project)
+    if damage == "stale-parser-stamp":
+        with closing(sqlite3.connect(path)) as connection:
+            connection.execute("UPDATE findings_metadata SET parser_stamp = 'old' WHERE id = 1")
+            connection.commit()
+    elif damage == "stale-schema-version":
+        with closing(sqlite3.connect(path)) as connection:
+            connection.execute(
+                "UPDATE findings_metadata SET findings_schema_version = -1 WHERE id = 1"
+            )
+            connection.commit()
+    elif damage == "unreadable-file":
+        path.write_bytes(b"not a database at all")
+    else:
+        path.unlink()
+
+    message = await _call_failing(project, projectId="demo")
+
+    assert FINDINGS_UNAVAILABLE_REFUSAL in message
+
+
+@pytest.mark.asyncio
+async def test_the_unservable_refusal_does_not_vary_with_what_the_store_holds(
+    project: ProjectRegistry,
+) -> None:
+    """The other half of "constant": it does not move with the corpus either.
+
+    A refusal that varied with the store's content -- its size, its commits, the
+    text of a finding -- would be a channel back into exactly what the refusal is
+    declining to serve. Two stores with disjoint content, both made unservable the
+    same way, must produce one string.
+    """
+    messages = set()
+    for load in (
+        LANDED,
+        FindingLoad(
+            accepted=(_finding(_sha("f"), text="a completely different corpus"),) * 1,
+            rejected=(RejectedTrailer(_sha("f"), "Review-Finding: junk", "unknown reviewer"),),
+        ),
+    ):
+        _land(project, load)
+        path = _store_path(project)
+        path.write_bytes(b"not a database at all")
+        messages.add(await _call_failing(project, projectId="demo"))
+
+    assert len(messages) == 1, f"the refusal varied with the store's content: {messages}"
+    assert FINDINGS_UNAVAILABLE_REFUSAL in messages.pop()
+
+
+# -- AC-4: bounds and vocabularies ------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments, expected_fragments",
+    [
+        ({"reviewer": "code"}, ["code-review, security, adversarial", "'code'"]),
+        ({"reviewer": "SECURITY"}, ["code-review, security, adversarial"]),
+        ({"severity": "high"}, ["CRITICAL, HIGH, MEDIUM, LOW", "'high'"]),
+        ({"severity": "URGENT"}, ["CRITICAL, HIGH, MEDIUM, LOW"]),
+        ({"limit": 0}, [f"between 1 and {MAX_FINDINGS_LIMIT}"]),
+        ({"limit": MAX_FINDINGS_LIMIT + 1}, [f"between 1 and {MAX_FINDINGS_LIMIT}"]),
+        ({"limit": -5}, [f"between 1 and {MAX_FINDINGS_LIMIT}"]),
+        ({"pullRequest": 0}, ["must be a positive number"]),
+        ({"commitSha": "141cf6f"}, ["40 or 64 lower-case hex"]),
+        ({"commitSha": "Z" * 40}, ["40 or 64 lower-case hex"]),
+        ({"q": ""}, ["`q` is empty"]),
+        ({"family": ""}, ["`family` is empty"]),
+    ],
+    ids=[
+        "reviewer-historical-alias",
+        "reviewer-wrong-case",
+        "severity-wrong-case",
+        "severity-unknown",
+        "limit-zero",
+        "limit-over-cap",
+        "limit-negative",
+        "pull-request-zero",
+        "commit-sha-short",
+        "commit-sha-not-hex",
+        "q-empty",
+        "family-empty",
+    ],
+)
+async def test_a_value_outside_its_bound_is_refused_naming_the_bound(
+    project: ProjectRegistry, arguments: dict[str, Any], expected_fragments: list[str]
+) -> None:
+    """AC-4: refused, and told what to send -- not clamped, not silently empty.
+
+    Each of these has a plausible silent alternative that is worse. An over-cap
+    ``limit`` clamped to 100 reads as the whole answer; a short ``commitSha``
+    matched literally returns nothing and reads as "no findings on that commit";
+    an unknown reviewer token treated as "no filter" returns everything. The
+    refusal is the only one of the four that cannot be misread.
+
+    The historical alias ``code`` is here on purpose: the parser normalises it in
+    signed history, so no stored row carries it, and accepting it at this surface
+    would be a second spelling of one value.
+    """
+    _land(project)
+
+    message = await _call_failing(project, projectId="demo", **arguments)
+
+    for fragment in expected_fragments:
+        assert fragment in message, f"the refusal did not name {fragment!r}: {message}"
+
+
+@pytest.mark.asyncio
+async def test_an_over_long_filter_is_reported_by_length_and_never_echoed(
+    project: ProjectRegistry,
+) -> None:
+    """The amplifier this project already closed for ``query`` and ``itemId``.
+
+    Echoing an over-long value back turns a refusal into a ~1x reflector of
+    whatever the caller sent (#17). The length is named instead -- which is what
+    the caller needs -- and the bytes stay out of the response.
+    """
+    _land(project)
+    oversized = "z" * (MAX_FILTER_CHARS + 500)
+
+    message = await _call_failing(project, projectId="demo", q=oversized)
+
+    assert str(MAX_FILTER_CHARS) in message
+    assert str(len(oversized)) in message
+    assert oversized not in message
+    assert len(message) < len(oversized), "the refusal is smaller than what provoked it"
+
+
+@pytest.mark.asyncio
+async def test_a_bad_filter_is_refused_before_the_store_is_reached(
+    project: ProjectRegistry,
+) -> None:
+    """Bounds are checked before any file is opened (T-6), and that is observable.
+
+    With no store built at all, a request carrying a bad token comes back with the
+    *token's* refusal rather than the store's: the only way that ordering holds is
+    if nothing touched the store first. It also keeps the refusal a caller gets
+    for a malformed filter independent of the project's own state.
+    """
+    assert not _store_path(project).exists(), "the premise: there is no store to read"
+
+    message = await _call_failing(project, projectId="demo", reviewer="nobody")
+
+    assert "code-review, security, adversarial" in message
+    assert FINDINGS_UNAVAILABLE_REFUSAL not in message
+
+
+# -- The project gate -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_unregistered_project_is_refused_with_the_registered_ids(
+    project: ProjectRegistry,
+) -> None:
+    """The same gate every project-scoped tool passes (ADR-0002, SEC-13).
+
+    The refusal names what *is* registered -- an id is not another project's
+    content -- and never anything about what any project holds.
+    """
+    _land(project)
+
+    message = await _call_failing(project, projectId="not-registered")
+
+    assert "not registered" in message
+    assert "demo" in message
+    assert "bearer token" not in message
+
+
+@pytest.mark.asyncio
+async def test_the_tool_requires_an_explicit_project(project: ProjectRegistry) -> None:
+    """No implicit "current project" (ADR-0002): many agents share one daemon."""
+    _land(project)
+
+    with pytest.raises(SdkToolError):
+        await _call(project)

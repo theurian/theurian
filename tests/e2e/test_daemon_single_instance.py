@@ -407,10 +407,32 @@ def test_the_tool_set_is_read_only(running_daemon: Daemon) -> None:
         "knowledge.search",
         "knowledge.status",
         "project.list",
+        "review.findings",
         "system.capabilities",
     ]
     for name in tools:
         assert not any(verb in name for verb in ("create", "update", "delete", "write", "apply"))
+
+
+def test_findings_are_refused_rather_than_answered_empty_before_a_build(
+    running_daemon: Daemon,
+) -> None:
+    """ADR-0029 AC-3, over the wire: "never built" must not read as "no findings".
+
+    The fixture project has never run `theurian findings build`, which is the
+    state every project starts in -- so this is the answer most callers meet
+    first, and `count: 0` here would be a false absence they act on. Driven
+    through the real transport because that is where the refusal has to arrive
+    as `isError` content rather than as a result: in-process tests see the
+    exception, and the transport is the layer that turns it into what a client
+    reads.
+    """
+    with _McpClient(running_daemon.port, running_daemon.token, "probe") as client:
+        result = client.call("review.findings", {"projectId": "demo"})
+
+    assert "_error" in result, f"a project with no findings store answered: {result}"
+    assert "theurian findings build" in result["_error"]
+    assert "count" not in result
 
 
 def test_results_carry_provenance_and_trust_labels(running_daemon: Daemon) -> None:

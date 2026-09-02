@@ -1,14 +1,27 @@
-"""AC-7: the review-finding store is reachable by NO serving path (ADR-0029).
+"""AC-7: the review-finding store is reachable by EXACTLY ONE serving path (ADR-0029).
 
-The security boundary of phase-2 slice-2. The store lands parsed findings from a
-wholesale rebuild of public git history, and this slice ships **no serving read**:
-a findings *search* -- a surface that returns finding content to a caller -- is a
-later lane with its own disclosure round. Until that lane is designed, the
-property the threat model rests on is not a filter but an **absence**: nothing a
-caller can reach hands out a finding, because the serving layer cannot reach the
-store at all.
+The security boundary of the findings surface. Slice-2 landed the store and held
+this boundary as an **absence**: nothing a caller could reach touched the store,
+because no serving module imported it and no registered tool named a finding.
+Slice-3 serves findings, so the absence is gone and something narrower has to
+replace it -- or the boundary would simply have been deleted.
 
-Like ``test_network_call_sites.py`` (T-7), that absence is enforced here by nothing
+What replaces it: **exactly one sanctioned reader, named here, and any second one
+fails.** The prongs below are the same prongs, inverted rather than relaxed. Each
+still walks the whole serving layer; what changed is that a hit in
+:data:`SANCTIONED_STORE_READERS` is permitted *and required*, while a hit anywhere
+else is the failure it always was. The planted-second-reader scenario this file
+was written against -- ``review/findings_search.py``, importing the store and
+passing the whole suite in a round-two review -- is still caught, because
+``review/`` is walked and that file is not on the list.
+
+Requiring the sanctioned hits is not decoration: a scan that silently stopped
+resolving imports used to pass this file forever, and "no module reaches the
+store" and "the scanner is broken" are the same observation from the outside. Now
+the shipped serving reader must be *seen* reaching it, so a broken scanner fails
+loudly instead of certifying an empty search.
+
+Like ``test_network_call_sites.py`` (T-7), the boundary is enforced here by nothing
 else, so it is asserted outright -- structurally, over the shipped source, in two
 prongs each blind to what the other catches.
 
@@ -69,27 +82,34 @@ placeholder for a layer that is "not yet implemented" by its own module
 docstring -- and it is exactly the gap that made ``review/`` above the one
 exception, walked rather than acknowledged.
 
-**Prong (a) -- no serving-layer module imports the store [AST].** Every module in
-the assembled :data:`SERVING_MODULES` set is parsed and its imports are scanned;
-none may reach the store port, the store adapter, or the standalone builder. This
-catches a store reference added anywhere under the walked directories or the
-hand-picked remainder, including on a path no test drives -- but it reads
-*imports*, so a serving module that reached the store's SQLite *table* directly,
-importing nothing, would slip past it. Prong (b) is the half that sees that.
+**Prong (a) -- only the sanctioned modules import the store [AST].** Every module
+in the assembled :data:`SERVING_MODULES` set is parsed and its imports are
+scanned. A module outside :data:`SANCTIONED_STORE_READERS` may reach neither the
+store port, nor the store adapter, nor the standalone builder; a module inside it
+may reach exactly the names recorded there and no others -- so widening the
+sanctioned reader's own reach (adding the *builder* to the tool surface, say) is
+as visible as adding a second reader. This catches a store reference added
+anywhere under the walked directories or the hand-picked remainder, including on
+a path no test drives -- but it reads *imports*, so a serving module that reached
+the store's SQLite *table* directly, importing nothing, would slip past it. Prong
+(b) is the half that sees that.
 
-**Prong (b) -- the store's tables never appear in a serving module, and no
-registered tool serves a finding [grep + AST].** The distinctive table and
+**Prong (b) -- the store's tables never appear in a serving module, and exactly
+one registered tool serves a finding [grep + AST].** The distinctive table and
 artifact tokens (``findings_metadata``, ``rejected_trailers``, ``theurian-findings``,
 the ``findings`` table SQL, matched loosely enough to catch a quoted or
 schema-qualified table name) are grepped out of every serving module -- the arm
-that catches a raw ``SELECT ... FROM findings`` an import scan cannot see. And the
-MCP tool registry in ``mcp/tools.py`` is parsed for every tool it registers --
-through the ``_tool`` seam or straight onto ``server.tool``, both shapes -- pinned
-to the known read-only set, and asserted to expose no tool whose name serves a
-finding. (The runtime companion -- that the *built* server
-registers exactly that set and no registered tool reaches a store symbol in its
-bytecode -- lives in ``tests/integration/test_findings_tool_registry.py``, because
-it constructs a server.)
+that catches a raw ``SELECT ... FROM findings`` an import scan cannot see. **That
+arm is unchanged by slice-3 and still admits nothing**: the sanctioned reader
+goes through the port, so no serving module names a table, and a hand-written
+query in the read path is as much a defect as it ever was. And the MCP tool
+registry in ``mcp/tools.py`` is parsed for every tool it registers -- through the
+``_tool`` seam or straight onto ``server.tool``, both shapes -- pinned to the
+known set, and asserted to expose exactly one tool whose name serves a finding.
+(The runtime companion -- that the *built* server registers exactly that set and
+that exactly the sanctioned tool reaches a store symbol in its bytecode -- lives
+in ``tests/integration/test_findings_tool_registry.py``, because it constructs a
+server.)
 
 **The WRITE path is exempt, by design, and that exemption is pinned not assumed.**
 ``cli/findings_commands.py`` (the ``findings build`` rebuild command) and
@@ -106,17 +126,25 @@ returns none.
 string concatenation -- a table name or filename assembled at runtime from split
 pieces rather than written as one literal, for example ``"find" + "ings"`` -- evades
 both the AST import scan and the grep tokens, since neither looks for anything but
-a literal match on a real module or table name. Closing that residual needs a
-store-level universal invariant over every value kind a disclosure could ride on,
-not another string pattern here -- it is owed to the slice-3 review-ingestion
-serving lane, not fixed in this file. Separately, the
+a literal match on a real module or table name. What answers that residual is not
+another string pattern here but the store-level invariant slice-3 landed: the
+port's one serving read never selects the rejected table, refuses a stale store,
+and cannot express an unbounded query, so a module that reached the file by a
+concatenated name would still have to reimplement those controls to get anything
+out of it -- and reimplementing them is a diff, not an accident. It stays a
+residual for the *unsanctioned-reader* question, which is what this file answers.
+Separately, the
 runtime bytecode arm in ``tests/integration/test_findings_tool_registry.py`` walks
 a *tool's own* code object and its nested consts (a comprehension, a closure
 defined inline), but not a *named helper function* the tool calls out to: a tool
 that called a module-level helper which itself referenced a store symbol would
 show only the helper's name in the tool's own ``co_names``, not the symbol the
-helper's code references one hop away -- a one-hop transitivity gap, also owed to
-the same later lane rather than fixed by walking further here.
+helper's code references one hop away -- a one-hop transitivity gap. Slice-3
+narrows it rather than closing it: the sanctioned tool constructs the store in
+its *own* body precisely so that arm sees the symbol there and can now require
+it, so a store reach that hid one hop away would have to *also* remove the
+sanctioned tool's own reach to go unnoticed, which fails that arm's positive
+half. Following the hop is still owed.
 
 **A static sibling of that same one-hop gap.** Prong (a) reads each
 :data:`SERVING_MODULES` member's *own* import statements; it does not follow an
@@ -258,6 +286,36 @@ WRITE_PATH_MODULES: tuple[str, ...] = (
     "cli/findings_commands.py",
     "application/findings_builder.py",
 )
+
+#: The **serving** modules sanctioned to reach the store, and exactly what each
+#: may reach (ADR-0029 phase-2 slice-3). A module absent from this mapping may
+#: reach nothing; a module present may reach these names and no others.
+#:
+#: Two entries, and the split between them is the reason there are two modules:
+#:
+#: - ``mcp/tools.py`` is the composition root (ADR-0003). It names the concrete
+#:   adapter because it constructs it -- and it constructs it **in the tool's own
+#:   body**, deliberately, so the runtime bytecode arm in
+#:   ``tests/integration/test_findings_tool_registry.py`` can *require* the
+#:   sanctioned tool to reach a store symbol rather than only forbidding others
+#:   from doing so;
+#: - ``mcp/findings.py`` names the **port module** only, for the query and row
+#:   value types it validates into and shapes out of. It constructs no store,
+#:   opens no file, and reaches no adapter.
+#:
+#: The values are what :func:`_store_references` reports, which is module
+#: components plus :data:`STORE_SYMBOLS` members -- so ``FindingsStoreError``,
+#: ``FindingQuery`` and ``StoredFinding`` do not appear here even though those
+#: modules import them: they are error and value types, not the store.
+#:
+#: **The builder is on neither entry, and that is the point of recording an exact
+#: set rather than a list of blessed files.** ``FindingsBuilder`` rebuilds the
+#: store from git; a serving module reaching it would be the read path acquiring a
+#: write, and it would fail this even though the module is "sanctioned".
+SANCTIONED_STORE_READERS: dict[str, frozenset[str]] = {
+    "mcp/tools.py": frozenset({"findings_store", "SqliteReviewFindingStore"}),
+    "mcp/findings.py": frozenset({"review_finding_store"}),
+}
 
 #: Every other ``.py`` file directly under ``application/``: neither serving
 #: content the way ``retrieval_service.py``/``visibility.py`` do, nor the
@@ -578,41 +636,93 @@ def _serving_source(module: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_no_serving_module_imports_the_finding_store() -> None:
-    """Prong (a): the serving layer cannot reach the store, so it cannot serve one.
+def test_only_the_sanctioned_serving_modules_import_the_finding_store() -> None:
+    """Prong (a): one reader, named, and every other serving module reaches nothing.
 
-    AC-7, the import half. A findings *search* is a later lane with its own
-    disclosure round; until it exists, the property the threat model rests on is
-    that no path a caller reaches can hand out a finding. That holds structurally
-    if -- and only if -- the serving layer imports neither the store port, the
-    store adapter, nor the standalone builder: with no import, there is no
-    transitive call, on any path, driven or not.
+    AC-7's import half, inverted for slice-3 rather than relaxed. A finding now
+    reaches a caller, so "nothing touches the store" is no longer the property;
+    what replaces it is that the set of serving modules touching it is exactly
+    :data:`SANCTIONED_STORE_READERS`, each reaching exactly the names recorded
+    beside it. Both directions fail:
 
-    The one exemption is the write path (:data:`WRITE_PATH_MODULES`), which is not
-    in the serving set and is pinned to reach the store by the test below -- so
-    this assertion is the *absence* of a store reference in the *serving* set,
-    proven against every serving module, not a subset that happens to be driven.
+    * a module outside the mapping with any hit -- the planted
+      ``review/findings_search.py`` shape, and any future one;
+    * a sanctioned module reaching a name it is not recorded as reaching -- the
+      read path acquiring the *builder*, say.
+
+    The write path (:data:`WRITE_PATH_MODULES`) stays outside the serving set and
+    is pinned separately to reach the store, so the scan is proven to fire against
+    real repository files rather than only against snippets.
     """
-    offenders = {
+    unsanctioned = {
         module: sorted(hits)
         for module in SERVING_MODULES
-        if (hits := _store_references(_serving_source(module), module))
+        if module not in SANCTIONED_STORE_READERS
+        and (hits := _store_references(_serving_source(module), module))
     }
 
-    assert not offenders, (
-        "a serving-layer module imports the review-finding store:\n"
-        + "\n".join(f"  {module} :: {names}" for module, names in sorted(offenders.items()))
-        + "\n\nThe store lands parsed findings and ships NO serving read in this "
-        "slice (ADR-0029 phase-2 slice-2): a findings search is a later lane with "
-        "its own disclosure round. What stands in for that gate until it is "
-        "designed is that nothing a caller reaches can touch the store. A serving "
-        "module importing the store port, adapter, or builder is a path to a "
-        "finding that the disclosure round has not reviewed.\n\n"
-        "If this is the serving lane landing, it does not land here: it lands with "
-        "the disclosure round ADR-0029 owes it. The write/maintenance path "
-        "(`findings build`) is exempt and lives in cli/findings_commands.py and "
-        "application/findings_builder.py, which are deliberately outside "
-        "SERVING_MODULES."
+    assert not unsanctioned, (
+        "a serving-layer module that is not a sanctioned reader imports the "
+        "review-finding store:\n"
+        + "\n".join(f"  {module} :: {names}" for module, names in sorted(unsanctioned.items()))
+        + "\n\nExactly one serving path may reach the store (ADR-0029 phase-2 "
+        "slice-3): `mcp/tools.py` constructs the adapter for the `review.findings` "
+        "tool, and `mcp/findings.py` names the port for its value types. A second "
+        "reader is a second set of serving controls -- the stale-store refusal, the "
+        "rejected-trailer exclusion, the bound -- that no review has seen.\n\n"
+        "If this is a new serving surface, it lands with its own disclosure round "
+        "and its own entry in SANCTIONED_STORE_READERS, not by being added here "
+        "quietly. The write/maintenance path (`findings build`) is exempt and lives "
+        "in cli/findings_commands.py and application/findings_builder.py, which are "
+        "deliberately outside SERVING_MODULES."
+    )
+
+    overreaching = {
+        module: sorted(hits - permitted)
+        for module, permitted in SANCTIONED_STORE_READERS.items()
+        if (hits := _store_references(_serving_source(module), module)) - permitted
+    }
+
+    assert not overreaching, (
+        "a sanctioned reader reaches more of the store than it is recorded as "
+        "reaching:\n"
+        + "\n".join(f"  {module} :: {names}" for module, names in sorted(overreaching.items()))
+        + "\n\nThe entry in SANCTIONED_STORE_READERS is an exact set, not a "
+        "permission to touch anything findings-shaped. `FindingsBuilder` in "
+        "particular is the rebuild path: a serving module reaching it is the read "
+        "surface acquiring a write."
+    )
+
+
+def test_each_sanctioned_reader_really_reaches_the_store() -> None:
+    """The positive half, without which prong (a) certifies a broken scanner.
+
+    ``test_only_the_sanctioned_serving_modules_import_the_finding_store`` answers
+    "does an unsanctioned module reach the store?" and reports *no* as clean --
+    which is also what a scanner that resolved nothing would report, forever. The
+    write-path test below has always been this file's answer to that, and this is
+    the same guard aimed at the serving side: the modules that are *supposed* to
+    reach the store are asserted to be seen reaching it.
+
+    It is also the drift guard on the mapping itself. A sanctioned entry whose
+    module stopped importing the store -- renamed, refactored, or removed -- is a
+    stale permission sitting in a security-relevant list, and a stale permission
+    is how the next module inherits one nobody meant to grant.
+    """
+    missing = {
+        module: sorted(permitted)
+        for module, permitted in SANCTIONED_STORE_READERS.items()
+        if not _store_references(_serving_source(module), module)
+    }
+
+    assert not missing, (
+        "a module recorded as a sanctioned store reader imports nothing of the "
+        "store:\n"
+        + "\n".join(f"  {module} :: expected {names}" for module, names in sorted(missing.items()))
+        + "\n\nEither the serving path moved -- in which case update "
+        "SANCTIONED_STORE_READERS, and check whether its new home is scanned at all "
+        "-- or the import scan has stopped resolving real files, in which case "
+        "prong (a) is now vacuous and its green result means nothing."
     )
 
 
@@ -973,19 +1083,25 @@ def test_the_sql_table_pattern_does_not_false_positive_on_prose_or_other_tables(
 
 # -- Prong (b) AST: the MCP tool registry serves no finding ------------------
 
-#: The read-only tools this slice ships (Milestone 3's surface). Pinned as a whole
-#: set, not a subset, so a *new* ``_tool(server, name=...)`` fails this test until
-#: it is classified here -- the drift guard that stops a findings-serving tool from
-#: being added silently and read as "not on the list, so fine".
+#: The read-only tools this build ships. Pinned as a whole set, not a subset, so a
+#: *new* ``_tool(server, name=...)`` fails this test until it is classified here --
+#: the drift guard that stops a second findings-serving tool from being added
+#: silently and read as "not on the list, so fine".
 KNOWN_TOOL_NAMES = frozenset(
     {
         "knowledge.search",
         "knowledge.get",
         "knowledge.status",
         "project.list",
+        "review.findings",
         "system.capabilities",
     }
 )
+
+#: The one tool that serves findings (ADR-0029 phase-2 slice-3). Its disclosure
+#: round is what makes it permitted; a second name matching
+#: :data:`_FINDING_TOOL_PATTERN` has had no such round.
+FINDINGS_TOOL_NAME = "review.findings"
 
 #: A tool name that would serve a finding. Matched case-insensitively so
 #: ``knowledge.findings`` and ``review.finding`` both trip it.
@@ -1036,14 +1152,14 @@ def _registered_tool_names(tools_source: str) -> Iterator[str]:
                 yield value.value
 
 
-def test_the_tool_registry_registers_exactly_the_known_read_tools() -> None:
+def test_the_tool_registry_registers_exactly_the_known_tools() -> None:
     """Guards the finding-tool check: a new tool must be classified, not defaulted in.
 
     Pinned as a whole-set equality so a new registration reddens this until
     someone adds it to :data:`KNOWN_TOOL_NAMES` -- which is the moment they must
-    decide whether it serves a finding. Without the pin, a findings-serving tool
-    whose name did not literally contain "finding" would sail past the check below;
-    with it, every new tool is seen.
+    decide whether it serves a finding. Without the pin, a second findings-serving
+    tool whose name did not literally contain "finding" would sail past the check
+    below; with it, every new tool is seen.
     """
     tools_source = (SRC / "mcp/tools.py").read_text(encoding="utf-8")
 
@@ -1052,20 +1168,25 @@ def test_the_tool_registry_registers_exactly_the_known_read_tools() -> None:
     assert registered == set(KNOWN_TOOL_NAMES), (
         f"mcp/tools.py registers {sorted(registered)}, pinned set is "
         f"{sorted(KNOWN_TOOL_NAMES)}. A tool was added or removed. If you added "
-        f"one, classify it: does it return finding content? If so it needs the "
-        f"disclosure round ADR-0029 owes the findings serving lane, not a place on "
-        f"this list. If not, add its name here."
+        f"one, classify it: does it return finding content? If so it needs its own "
+        f"disclosure round -- `{FINDINGS_TOOL_NAME}` had one (ADR-0029 phase-2 "
+        f"slice-3) and a second surface does not inherit it. If not, add its name "
+        f"here."
     )
 
 
-def test_no_registered_tool_name_serves_a_finding() -> None:
-    """Prong (b): the daemon tool surface exposes no finding-serving tool (AC-7).
+def test_exactly_one_registered_tool_name_serves_a_finding() -> None:
+    """Prong (b): the tool surface exposes the sanctioned findings tool and no other.
 
-    The store holds parsed findings and this slice ships no reviewed way to serve
-    them, so the daemon -- the surface a caller actually speaks to -- must register
-    no tool that hands one out. Read from the registration source; the whole-set
-    pin above is what makes "no name says finding" meaningful, by forcing every new
-    tool through classification first.
+    Slice-3 makes one tool serve findings, so this is an equality rather than an
+    emptiness -- and it fails in both directions. A **second** name matching
+    ``finding`` is a serving surface with no disclosure round of its own. **Zero**
+    names matching it is the pin having gone vacuous or the tool having been
+    renamed out from under the rest of this file, including the runtime arm that
+    keys on the same name.
+
+    Read from the registration source; the whole-set pin above is what makes the
+    name check meaningful, by forcing every new tool through classification first.
     """
     tools_source = (SRC / "mcp/tools.py").read_text(encoding="utf-8")
 
@@ -1073,9 +1194,12 @@ def test_no_registered_tool_name_serves_a_finding() -> None:
         name for name in _registered_tool_names(tools_source) if _FINDING_TOOL_PATTERN.search(name)
     )
 
-    assert not serving, (
-        f"the MCP tool registry exposes finding-serving tool(s): {serving}. A "
-        f"findings search returns parsed review findings to a caller, which is the "
-        f"disclosure surface ADR-0029 defers to a later lane with its own review "
-        f"round. It does not land as a tool here."
+    assert serving == [FINDINGS_TOOL_NAME], (
+        f"the MCP tool registry exposes finding-serving tool(s) {serving}, and the "
+        f"sanctioned set is ['{FINDINGS_TOOL_NAME}']. A tool that returns parsed "
+        f"review findings to a caller is a disclosure surface: the sanctioned one "
+        f"went through ADR-0029's round with its rejected-trailer exclusion, its "
+        f"constant stale-store refusal and its bound, and none of that transfers to "
+        f"a second tool by being findings-shaped. An empty list here is the other "
+        f"failure: the tool was renamed and this file no longer checks anything."
     )
