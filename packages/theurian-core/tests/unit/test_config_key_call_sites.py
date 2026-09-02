@@ -46,6 +46,33 @@ left is the standing obligation, now pointing both ways: a reader added for
 ``repositories`` must redden this file, and so must a reader for ``secretScan``
 being *removed* while the prose still describes a shipped control.
 
+**The prose pins hold spelling, and only spelling — that is their whole reach.**
+:data:`SECRET_SCAN_PROSE_SURFACES` asserts that a named fragment is still present
+in a named document. It is blind to whether the fragment is *true*: every row
+would stay green against a build that shipped a reader for
+``providers.review.repositories`` tomorrow and left each document asserting the
+opposite. Truth is the other half's job, and it lives in this same module —
+:data:`WATCHED_SPELLINGS` and the scan
+:func:`test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_ones`
+runs over the imported package, which reddens when a module names a watched
+spelling and whose bound is the "What this cannot see" paragraph below. The two
+halves are separate tests because neither is sufficient: the scan cannot see a
+document, and these pins cannot see the source tree.
+
+**So a fragment here may be relaxed only when its claim has stopped being
+load-bearing, never because the sentence became inconvenient to keep.** The
+scan going RED is what says the claim moved; until it does, a fragment that no
+longer matches means the document drifted and the document is what gets fixed.
+
+``plugins/claude-code/commands/ingest.md`` is the row that shows why the
+positive direction had to be pinned at all. Its allowlist paragraph reached a
+warning that is still correct from the premise #426 retracted, so #199 unit B
+narrowed the premise instead of dropping the warning — and nothing then asserted
+the narrowed wording. The only thing watching it ran the other way:
+``tools/audit/config_object_claims.py`` reddens on a *reversion* to the
+file-wide universal, which a reword that never returns to that shape does not
+trip. #461's row below closes that direction.
+
 **The population key**, so a reader can attack the key rather than the number:
 the scan walks every ``*.py`` under the *imported* ``theurian`` package —
 ``tools/``, ``plugins/`` and the tests themselves are outside it — and flags a
@@ -668,6 +695,14 @@ def test_each_watched_key_still_publishes_the_reach_the_scan_enforces(
 #:   directly. Each row therefore pins a sentence asserting the control **and** a
 #:   sentence bounding it.
 #:
+#: **One row per document, and the ``ingest.md`` row carries a second claim.**
+#: SEC-11's reach is what four of the five fragment groups here are about; the
+#: ``ingest.md`` row also pins the #461 correction, which states from the config
+#: side which key of ``.theurian/config.yaml`` is in force and which is not. The
+#: two belong in one row because they are one paragraph's worth of bound on one
+#: document, and splitting them would put two rows for one file in a table whose
+#: rows have to be kept in step by hand.
+#:
 #: Matched after collapsing runs of whitespace to a single space, because these
 #: are line-wrapped Markdown: a sentence routinely breaks across two source
 #: lines, and a raw substring match would miss the real wording and pass
@@ -760,10 +795,32 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "plugins/claude-code/commands/ingest.md",
         "plugins/claude-code/commands/ingest.md",
-        # Unchanged by ADR-0027 decision 3, and that is the claim: `ingest`
-        # stores no content and runs no scan, so the sentence that was true when
-        # nothing scanned anywhere is still exactly true.
-        ("stores no content",),
+        (
+            # Unchanged by ADR-0027 decision 3, and that is the claim: `ingest`
+            # stores no content and runs no scan, so the sentence that was true
+            # when nothing scanned anywhere is still exactly true.
+            "stores no content",
+            # -- the #461 correction, pinned here for the first time ----------
+            # This document's allowlist paragraph reached a warning that is
+            # still correct from the premise #426 retracted, and #199 unit B
+            # narrowed the premise rather than dropping the warning. Nothing
+            # asserted the narrowed wording afterwards: the object-keyed census
+            # reddens on a reversion to the file-wide universal, so a reword
+            # that never returns to that shape moved nothing.
+            #
+            # Four fragments, because the corrected argument has four moving
+            # parts and each can be dropped on its own: the narrowed premise,
+            # the reader that bounds it, the key that still has none, and the
+            # conclusion the paragraph exists to deliver. The last is pinned
+            # for the reason `RAPTOR_MD_SENTENCES` in
+            # `test_raptor_config_claims.py` records -- a rewrite that keeps
+            # only the conclusion leaves a reader no way to check it, and one
+            # that keeps only the premises leaves the warning unsaid.
+            "That file is read today, but for one key only",
+            "`security/project_config.py` takes `security.secretScan` from it and nothing else",
+            "Nothing reads the `providers.review.repositories` allowlist",
+            "do not tell the user the allowlist is protecting them",
+        ),
     ),
 )
 
