@@ -374,6 +374,30 @@ CLASSIFIED: Final[tuple[tuple[str, str, int, str, str], ...]] = (
         "because a token-keyed ledger absorbs the second.",
     ),
     (
+        "857d3b0",
+        "docs/adr/0029-review-findings-are-governed-knowledge.md",
+        2,
+        "DANGLING, #463",
+        "Arrived at the #504 merge seam (2026-09-03): slice-3's ADR-0029 demonstration "
+        "record anchors to a pre-squash branch commit of that PR.",
+    ),
+    (
+        "394c850",
+        "docs/roadmap.md",
+        1,
+        "DANGLING, #463",
+        "Arrived at the same #504 merge seam: a roadmap-appendix population key "
+        "anchored to the same PR's pre-squash branch.",
+    ),
+    (
+        "857d3b0",
+        "docs/security/threat-model.md",
+        1,
+        "DANGLING, #463",
+        "The same #504 pre-squash token's third occurrence: a threat-model "
+        "measurement from that PR's round 1.",
+    ),
+    (
         "67727eb",
         "docs/adr/0027-accept-validates-before-it-moves.md",
         1,
@@ -525,7 +549,10 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, bool, bool], ...]] = (
     ("ADR-0008's first unreachable anchor, now qualified (#463)", "4bfec1d", False, True),
     ("ADR-0008's second unreachable anchor, now qualified (#463)", "1cc2fa8", False, True),
     ("a fabricated object id, which nothing writes", "0ff1ce0", False, False),
-    ("this branch's own base commit", "141cf6f", True, False),
+    # 141cf6f served here until the #504 merge wrote it into ADR-0029 and the
+    # threat model as a measurement base (2026-09-03); an exemplar rots the day
+    # someone anchors to it, so the row moved to a merge commit prose never cites.
+    ("a reachable commit no governed prose cites", "8ff8c72", True, False),
 )
 
 
