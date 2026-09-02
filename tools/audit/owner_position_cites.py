@@ -331,11 +331,12 @@ def sweep(root: Path, *, offline: bool = False) -> tuple[list[Cite], str, int]:
 #: **The fragment is the third key dimension, and round one is why.** Keyed on
 #: ``(path, number)`` alone, a *new* dead-owner sentence naming a number this file
 #: already carries is absorbed by the existing row: the sweep produces two rows,
-#: the ledger has one, and both directions of the reconciliation stay silent.
+#: the ledger has one, and every direction of the reconciliation stays silent.
 #: Reproduced -- a second "the index purge in [#15] removes this one too" appended
 #: to the threat model left this audit at exit 0. So the key carries a fragment of
 #: the sentence, matched case-insensitively, and a second sentence about the same
-#: number in the same file is an unrecorded suspect.
+#: number in the same file is an unrecorded suspect **unless it contains that
+#: fragment**, which is what the ambiguity direction added in round two catches.
 #:
 #: **DEFECT here means "file it", not "fix it in this branch".** Unit B's DoR puts
 #: the general cite classification in the known-unfinished set: it terminates as a
@@ -350,9 +351,13 @@ def sweep(root: Path, *, offline: bool = False) -> tuple[list[Cite], str, int]:
 #: words: a superseded row whose amendment goes away comes back as ``SUSPECT``,
 #: the two no longer agree, and the audit exits 1.
 #:
-#: Exact in both directions, like every ledger in this directory: a judged row
-#: with no ledger entry is a finding, and an entry the sweep no longer produces
-#: means the cite was repointed and the row goes with it.
+#: Reconciled in four directions: a judged row with no ledger entry is a finding;
+#: an entry the sweep no longer produces means the cite was repointed and the row
+#: goes with it; a recorded verdict the classifier disagrees with is drift; and an
+#: entry covering *two* judged rows is one judgement absorbing a sentence nobody
+#: read, which the fragment key made rarer without making it impossible (round
+#: two's R2-A). Every fragment below is chosen to identify one sentence, and
+#: :data:`LEDGER_CONTROLS`' last row is what holds that.
 SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     (
         "SECURITY.md",
@@ -632,7 +637,7 @@ TREE_CONTROLS: Final[tuple[tuple[str, str, str, str], ...]] = (
 
 #: What the ledger reconciliation must do, driven from synthetic rows, as
 #: ``(what it demonstrates, the judged rows, the ledger, unrecorded, stale,
-#: drifted)``.
+#: drifted, ambiguous)``.
 #:
 #: **Round one's code-M6, closed here and in the four audits beside this one.**
 #: Every ledger in this directory claimed to be exact in both directions and no
@@ -640,12 +645,19 @@ TREE_CONTROLS: Final[tuple[tuple[str, str, str, str], ...]] = (
 #: executed with a mismatch in it. The third row is the absorption the fragment
 #: key exists for: a *second* dead-owner sentence about a number the file already
 #: carries, which a ``(path, number)`` key reports as recorded.
+#:
+#: **The last row is round two's R2-A**, and it is the absorption the *fragment*
+#: key still had: the second sentence there contains the recorded fragment rather
+#: than merely sharing its number, so the three directions above it all read it as
+#: recorded. Nothing in the tree drives it -- every fragment in :data:`SUSPECTS`
+#: identifies one sentence -- which is why it has to be planted.
 LEDGER_CONTROLS: Final[
     tuple[
         tuple[
             str,
             tuple[tuple[str, str, str], ...],
             tuple[tuple[str, str, str, str, str], ...],
+            int,
             int,
             int,
             int,
@@ -660,12 +672,14 @@ LEDGER_CONTROLS: Final[
         0,
         0,
         0,
+        0,
     ),
     (
         "a judged row with no ledger entry at all -- the unrecorded direction",
         (("a.md", "15", "the purge in [#15] removes this face"),),
         (),
         1,
+        0,
         0,
         0,
     ),
@@ -680,6 +694,7 @@ LEDGER_CONTROLS: Final[
         1,
         0,
         0,
+        0,
     ),
     (
         "a ledger entry the sweep no longer produces -- the stale direction",
@@ -688,11 +703,13 @@ LEDGER_CONTROLS: Final[
         0,
         1,
         0,
+        0,
     ),
     (
         "the same sentence recapitalised, which must NOT read as a new member",
         (("a.md", "15", "Removes This Face, the purge in [#15] does"),),
         (("a.md", "15", "removes this face", "DEFECT -- file", "why"),),
+        0,
         0,
         0,
         0,
@@ -712,30 +729,52 @@ LEDGER_CONTROLS: Final[
         0,
         0,
         1,
+        0,
+    ),
+    (
+        "a second sentence that CONTAINS the recorded fragment -- the absorption the "
+        "fragment key still had, and only a cardinality check sees",
+        (
+            ("a.md", "15", "the purge in [#15] removes this face"),
+            ("a.md", "15", "a second residue, which [#15] removes this face of too"),
+        ),
+        (("a.md", "15", "removes this face", "DEFECT -- file", "why"),),
+        0,
+        0,
+        0,
+        1,
     ),
 )
 
 
 def _run_ledger_controls() -> int:
-    """Drive both reconciliation directions from planted rows and planted ledgers."""
+    """Drive all four reconciliation directions from planted rows and planted ledgers."""
     failures = 0
     print("\n=== LEDGER CONTROLS (the reconciliation, driven) ===")
-    for label, produced, ledger, want_new, want_stale, want_drift in LEDGER_CONTROLS:
+    for (
+        label,
+        produced,
+        ledger,
+        want_new,
+        want_stale,
+        want_drift,
+        want_ambiguous,
+    ) in LEDGER_CONTROLS:
         judged = [
             Cite(
                 number=number,
                 state="issue:closed",
                 verdict="SUSPECT",
-                sentence=Sentence(path=path, line=0, text=text, block=text),
+                sentence=Sentence(path=path, line=line, text=text, block=text),
             )
-            for path, number, text in produced
+            for line, (path, number, text) in enumerate(produced)
         ]
-        unrecorded, stale, disagreed = ledger_drift(judged, ledger)
-        got = (len(unrecorded), len(stale), len(disagreed))
-        want = (want_new, want_stale, want_drift)
+        unrecorded, stale, disagreed, ambiguous = ledger_drift(judged, ledger)
+        got = (len(unrecorded), len(stale), len(disagreed), len(ambiguous))
+        want = (want_new, want_stale, want_drift, want_ambiguous)
         status = "OK  " if got == want else "FAIL"
         failures += status == "FAIL"
-        print(f"  {status} {label}: (unrecorded, stale, drift)={got}, expected {want}")
+        print(f"  {status} {label}: (unrecorded, stale, drift, ambiguous)={got}, expected {want}")
     return 1 if failures else 0
 
 
@@ -826,8 +865,9 @@ def ledger_drift(
     list[Cite],
     list[tuple[str, str, str, str, str]],
     list[tuple[Cite, tuple[str, str, str, str, str]]],
+    list[tuple[tuple[str, str, str, str, str], list[str]]],
 ]:
-    """``(unrecorded, stale, verdict drift)`` for one produced set against one ledger.
+    """``(unrecorded, stale, verdict drift, ambiguous)`` for one set against one ledger.
 
     Both arguments are parameters rather than module globals, so the
     reconciliation can be **driven** from synthetic input. Round one's code-M6
@@ -835,6 +875,14 @@ def ledger_drift(
     direction at all: a reconciliation that had stopped reporting would have
     reported the same clean tree a clean tree reports.
     :data:`LEDGER_CONTROLS` is what drives it now.
+
+    **Ambiguity is the fourth direction and round two's R2-A.** The fragment
+    dimension round one added closed the ``(path, number)`` absorption only for a
+    second sentence whose wording *differs*: :func:`_covers` tests containment and
+    counts nothing, so a second dead-owner sentence about the same number in the
+    same file that happens to contain the recorded fragment is covered by the
+    existing row, and unrecorded, stale and drift all stay silent. One recorded
+    judgement then stands in for two live sentences.
     """
     unrecorded = [row for row in judged if not any(_covers(entry, row) for entry in ledger)]
     stale = [entry for entry in ledger if not any(_covers(entry, row) for row in judged)]
@@ -845,19 +893,31 @@ def ledger_drift(
         if _covers(entry, row)
         and entry[3].startswith(SUPERSEDED_IN_PLACE) is not (row.verdict == SUPERSEDED_IN_PLACE)
     ]
-    return unrecorded, stale, disagreed
+    ambiguous = [
+        (entry, covered)
+        for entry in ledger
+        if len(
+            covered := [
+                f"{row.sentence.path}:{row.sentence.line}" for row in judged if _covers(entry, row)
+            ]
+        )
+        > 1
+    ]
+    return unrecorded, stale, disagreed, ambiguous
 
 
 def _report_drift(judged: list[Cite]) -> int:
-    """Reconcile the judged population against the ledger, in three directions.
+    """Reconcile the judged population against the ledger, in four directions.
 
     *Unrecorded* is a row nobody read; *stale* is a ledger entry the sweep no
     longer produces; *drift* is the third and the one the supersession probe
     needs -- a row recorded as superseded that comes back a suspect means the
     amendment block moved or was deleted, and the sentence is a live dead-owner
-    claim again with a ledger row saying otherwise.
+    claim again with a ledger row saying otherwise. *Ambiguous* is the fourth: one
+    entry covering two judged rows is one judgement absorbing a sentence nobody
+    read.
     """
-    unrecorded, stale, disagreed = ledger_drift(judged, SUSPECTS)
+    unrecorded, stale, disagreed, ambiguous = ledger_drift(judged, SUSPECTS)
 
     if unrecorded:
         print("\nUNRECORDED SUSPECTS -- a closed number in owner position nobody judged:")
@@ -879,9 +939,17 @@ def _report_drift(judged: list[Cite]) -> int:
             "\n  A row recorded as superseded that comes back a suspect means the amendment\n"
             "  block moved or was deleted, and the sentence is a live dead-owner claim again."
         )
+    if ambiguous:
+        print("\nAMBIGUOUS LEDGER ROWS -- one judgement covering more than one judged row:")
+        for (path, number, fragment, _, _), covered in ambiguous:
+            print(f"  {path}  #{number}  {fragment!r}  covers {covered}")
+        print(
+            "\n  A person judged one sentence and the fragment absorbs another. Narrow the\n"
+            "  fragment until it identifies one, and judge the rest."
+        )
     if not judged and not SUSPECTS:
         print("\n  none -- run --positive-control before reading that as a clean tree")
-    return 1 if unrecorded or stale or disagreed else 0
+    return 1 if unrecorded or stale or disagreed or ambiguous else 0
 
 
 def main(argv: list[str]) -> int:

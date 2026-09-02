@@ -36,14 +36,16 @@ measurably does not catch, and ``application/forest_builder.py``'s corrected
 block opens with exactly those words. :data:`_PRONOUN_TEMPLATE` is *"nothing
 reads it"*, the bare pronoun, which no path-bearing key can see at all.
 
-**Every row is classified, and the classification is exact in both directions.**
+**Every row is classified, and the ledger reconciles in three directions.**
 The machine clears the rows it can defend -- a *dated* CHANGELOG entry, a
 past-tense sentence, a key-scoped claim -- and everything left is a *suspect*
 that a person
 verified and recorded in :data:`SUSPECTS` with a verdict. A suspect the ledger
 does not carry is a finding; a ledger row the sweep no longer produces means
 somebody fixed or moved a sentence and the ledger has to be discharged in the
-same change. Both are exit status 1.
+same change; and a ledger row that covers *more than one* suspect is one
+judgement standing in for two sentences, which is what a substring key absorbs
+(round two's R2-A). All three are exit status 1.
 
 Run it::
 
@@ -495,11 +497,16 @@ def sweep(root: Path) -> list[Row]:
 #: invalidated by any edit above it and a ledger that goes RED on unrelated
 #: reflowing is a ledger somebody deletes.
 #:
-#: **Exact in both directions.** A suspect no row covers is a finding: a live
-#: file-wide liveness claim nobody has judged. A row the sweep no longer produces
-#: means the sentence was fixed, moved or reworded, and the row has to be
+#: **Reconciled in three directions.** A suspect no row covers is a finding: a
+#: live file-wide liveness claim nobody has judged. A row the sweep no longer
+#: produces means the sentence was fixed, moved or reworded, and the row has to be
 #: discharged in the same change -- which is what makes the fix and the record
-#: land together instead of the record rotting behind the fix.
+#: land together instead of the record rotting behind the fix. And a row covering
+#: two suspects is a judgement about one sentence absorbing another, which the
+#: first two directions cannot see: the fragment is a substring test, so a second
+#: live claim containing a recorded fragment reads as recorded (round two's R2-A).
+#: Every fragment below is therefore chosen to identify exactly one sentence, and
+#: :data:`LEDGER_CONTROLS`' last row is what holds that.
 SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     (
         "docs/adr/0027-accept-validates-before-it-moves.md",
@@ -811,42 +818,81 @@ def _covers(entry: tuple[str, str, str, str], row: Row) -> bool:
 
 def ledger_drift(
     rows: list[Row], ledger: tuple[tuple[str, str, str, str], ...]
-) -> tuple[list[Row], list[tuple[str, str, str, str]]]:
-    """Suspects no ledger row covers, and ledger rows the sweep no longer produces.
+) -> tuple[
+    list[Row],
+    list[tuple[str, str, str, str]],
+    list[tuple[tuple[str, str, str, str], list[str]]],
+]:
+    """``(unrecorded, stale, ambiguous)`` for one produced set against one ledger.
 
-    The ledger is a parameter so both directions can be **driven** from planted
-    input rather than only observed on a tree where neither fires --
+    *Unrecorded* is a suspect no ledger row covers; *stale* is a ledger row the
+    sweep no longer produces; *ambiguous* is the third direction, and it is the
+    one a substring key needs. :func:`_covers` tests containment and counts
+    nothing, so a **second** live suspect whose sentence contains a recorded
+    fragment is absorbed by the row written for the first: the sweep produces two
+    suspects, the ledger carries one judgement, and both of the other directions
+    stay silent. Round two's R2-A, converged on by three reviewers, and the
+    direction ``controls_discharge.py`` already carried while this module and
+    ``owner_position_cites.py`` did not.
+
+    The ledger is a parameter so all three directions can be **driven** from
+    planted input rather than only observed on a tree where none fires --
     :data:`LEDGER_CONTROLS`, and round one's code-M6 across all five audits here.
     """
     suspects = [row for row in rows if row.verdict.startswith("SUSPECT")]
     unrecorded = [row for row in suspects if not any(_covers(entry, row) for entry in ledger)]
     stale = [entry for entry in ledger if not any(_covers(entry, row) for row in suspects)]
-    return unrecorded, stale
+    ambiguous = [
+        (entry, covered)
+        for entry in ledger
+        if len(covered := [str(row.sentence) for row in suspects if _covers(entry, row)]) > 1
+    ]
+    return unrecorded, stale, ambiguous
 
 
-def _ledger_drift(rows: list[Row]) -> tuple[list[Row], list[tuple[str, str, str, str]]]:
+def _ledger_drift(
+    rows: list[Row],
+) -> tuple[
+    list[Row],
+    list[tuple[str, str, str, str]],
+    list[tuple[tuple[str, str, str, str], list[str]]],
+]:
     return ledger_drift(rows, SUSPECTS)
 
 
 #: What the ledger reconciliation must do, driven from synthetic rows, as
-#: ``(what it demonstrates, the produced rows, the ledger, unrecorded, stale)``.
+#: ``(what it demonstrates, the produced rows, the ledger, unrecorded, stale,
+#: ambiguous)``.
 #:
 #: Round one's code-M6: every ledger here claimed exactness in both directions and
-#: no control ran either one. The last row is the case that made the claim false
+#: no control ran either one. The fifth row is the case that made the claim false
 #: on this audit -- a fragment keyed case-sensitively turns one recapitalisation
 #: into two findings, neither of them real.
+#:
+#: **The last row is round two's R2-A**, and it drives the direction this ledger
+#: did not have: a second live suspect whose sentence *contains* the recorded
+#: fragment. Both other directions read it as recorded, which is the shape the
+#: shipped rows deliberately avoid -- every fragment in :data:`SUSPECTS` is
+#: distinctive enough that no sibling sentence contains it, so nothing in the tree
+#: exercises the absorption and only a plant can.
 LEDGER_CONTROLS: Final[
     tuple[
         tuple[
-            str, tuple[tuple[str, str, str], ...], tuple[tuple[str, str, str, str], ...], int, int
+            str,
+            tuple[tuple[str, str, str], ...],
+            tuple[tuple[str, str, str, str], ...],
+            int,
+            int,
+            int,
         ],
         ...,
     ]
 ] = (
     (
-        "a suspect its ledger row covers: no drift in either direction",
+        "a suspect its ledger row covers: no drift in any direction",
         (("a.md", "SUSPECT", "nothing reads it today, and nothing will"),),
         (("a.md", "nothing reads it today", "true", "why"),),
+        0,
         0,
         0,
     ),
@@ -856,6 +902,7 @@ LEDGER_CONTROLS: Final[
         (),
         1,
         0,
+        0,
     ),
     (
         "a ledger row the sweep no longer produces -- the stale direction",
@@ -863,6 +910,7 @@ LEDGER_CONTROLS: Final[
         (("a.md", "nothing reads it today", "true", "why"),),
         0,
         1,
+        0,
     ),
     (
         "a cleared row, which is not a suspect and must leave its ledger row stale",
@@ -870,6 +918,7 @@ LEDGER_CONTROLS: Final[
         (("a.md", "nothing reads it today", "true", "why"),),
         0,
         1,
+        0,
     ),
     (
         "the same sentence recapitalised at the head of a rewritten paragraph, which "
@@ -878,30 +927,43 @@ LEDGER_CONTROLS: Final[
         (("a.md", "nothing reads it today", "true", "why"),),
         0,
         0,
+        0,
+    ),
+    (
+        "a second live suspect whose sentence contains the recorded fragment -- the "
+        "absorption a substring key has and only a cardinality check sees",
+        (
+            ("a.md", "SUSPECT", "nothing reads it today, and nothing will"),
+            ("a.md", "SUSPECT", "A second residue: nothing reads it today either."),
+        ),
+        (("a.md", "nothing reads it today", "true", "why"),),
+        0,
+        0,
+        1,
     ),
 )
 
 
 def _run_ledger_controls() -> int:
-    """Drive both reconciliation directions from planted rows and planted ledgers."""
+    """Drive all three reconciliation directions from planted rows and planted ledgers."""
     failures = 0
     print("\n=== LEDGER CONTROLS (the reconciliation, driven) ===")
-    for label, produced, ledger, want_new, want_stale in LEDGER_CONTROLS:
+    for label, produced, ledger, want_new, want_stale, want_ambiguous in LEDGER_CONTROLS:
         rows = [
             Row(
                 objects=(".theurian/config.yaml",),
                 shape="named",
                 verdict=verdict,
-                sentence=Sentence(path=path, line=0, text=text, block=text),
+                sentence=Sentence(path=path, line=number, text=text, block=text),
             )
-            for path, verdict, text in produced
+            for number, (path, verdict, text) in enumerate(produced)
         ]
-        unrecorded, stale = ledger_drift(rows, ledger)
-        got = (len(unrecorded), len(stale))
-        want = (want_new, want_stale)
+        unrecorded, stale, ambiguous = ledger_drift(rows, ledger)
+        got = (len(unrecorded), len(stale), len(ambiguous))
+        want = (want_new, want_stale, want_ambiguous)
         status = "OK  " if got == want else "FAIL"
         failures += status == "FAIL"
-        print(f"  {status} {label}: (unrecorded, stale)={got}, expected {want}")
+        print(f"  {status} {label}: (unrecorded, stale, ambiguous)={got}, expected {want}")
     return 1 if failures else 0
 
 
@@ -939,6 +1001,37 @@ def _run_positive_controls() -> int:
         print(f"  {status} {label}")
         print(f"        expected suspect={expected}  got {verdict!r}")
     return (1 if failures else 0) | _run_ledger_controls()
+
+
+def _report_drift(rows: list[Row]) -> int:
+    """Reconcile the produced suspects against the ledger, in three directions.
+
+    *Unrecorded* is a suspect nobody judged; *stale* is a ledger row the sweep no
+    longer produces; *ambiguous* is one recorded judgement covering two suspects,
+    which is what a substring fragment can do and neither of the others can see.
+    """
+    unrecorded, stale, ambiguous = _ledger_drift(rows)
+    if unrecorded:
+        print("\nUNRECORDED SUSPECTS -- a liveness claim about a watched object nobody judged:")
+        for row in unrecorded:
+            print(f"  {row.sentence}  {row.sentence.text[:_MAX_ROW_TEXT]}")
+    if stale:
+        print("\nSTALE LEDGER ROWS -- the sweep no longer produces these:")
+        for path, fragment, verdict, _ in stale:
+            print(f"  {path}  [{verdict}]  {fragment!r}")
+        print(
+            "\n  This is the good direction: a sentence was fixed, moved or reworded. "
+            "Delete the row in the same commit as the change that discharged it."
+        )
+    if ambiguous:
+        print("\nAMBIGUOUS LEDGER ROWS -- one judgement covering more than one suspect:")
+        for (path, fragment, _, _), covered in ambiguous:
+            print(f"  {path}  {fragment!r}  covers {covered}")
+        print(
+            "\n  A person judged one sentence and the fragment absorbs another. Narrow the\n"
+            "  fragment until it identifies one, and judge the rest."
+        )
+    return 1 if unrecorded or stale or ambiguous else 0
 
 
 def main(argv: list[str]) -> int:
@@ -980,20 +1073,7 @@ def main(argv: list[str]) -> int:
         print(f"  {row.sentence}  [{row.shape}]  {recorded[2] if recorded else 'UNRECORDED'}")
         print(f"      {row.sentence.text[:_MAX_ROW_TEXT]}")
 
-    unrecorded, stale = _ledger_drift(rows)
-    if unrecorded:
-        print("\nUNRECORDED SUSPECTS -- a liveness claim about a watched object nobody judged:")
-        for row in unrecorded:
-            print(f"  {row.sentence}  {row.sentence.text[:_MAX_ROW_TEXT]}")
-    if stale:
-        print("\nSTALE LEDGER ROWS -- the sweep no longer produces these:")
-        for path, fragment, verdict, _ in stale:
-            print(f"  {path}  [{verdict}]  {fragment!r}")
-        print(
-            "\n  This is the good direction: a sentence was fixed, moved or reworded. "
-            "Delete the row in the same commit as the change that discharged it."
-        )
-    return 1 if unrecorded or stale else 0
+    return _report_drift(rows)
 
 
 if __name__ == "__main__":
