@@ -268,12 +268,6 @@ PROSE_ONLY: Final[tuple[tuple[str, str], ...]] = (
         "The `~/.theurian/env` half of the same entry.",
     ),
     (
-        f"{PROJECT_CONFIG_SCHEMA}::(root)",
-        "The root description states what the file is and who reads it; the reader it "
-        "names is a module path in prose, not in code markup. #455 is what rewrites this "
-        "sentence, and this row is expected to be discharged with it.",
-    ),
-    (
         f"{PROJECT_CONFIG_SCHEMA}::providers",
         "A section header: 'every provider defaults to a deterministic in-tree "
         "implementation', which is a statement about the defaults below it.",

@@ -141,34 +141,38 @@ contain, and has its own pin in
 :func:`test_a_quotation_carrying_a_sentence_end_joins_across_the_seam`. All four
 cost a read; the direction they refuse to trade for costs the claim.
 
-**The population of this class outside the three files scanned here is tracked
-in the issues, not counted here.** #447 records the Python members narrowed the
-same way on 2026-09-01, still outside this module's scope, so their prose is
-unpinned; #455 holds the wheel-shipped root ``description`` in
-``schemas/config/project-config.schema.json``, and #461 a Markdown member in
-``plugins/``. Two attempts to state that population as a number have been wrong —
-round one said the schema string was the only one outside ``src/``, and round two
-found the ``plugins/`` member outside every key either attempt had used — so this
-docstring names the issues and stops counting. What is asserted here, because
-this module's own patterns decide it, is #455's member: the schema's root
-``description`` sentence is invisible to :data:`_FILE_UNREAD`, which requires the
-path after the verb, and visible to :data:`_THIS_FILE_UNREAD`, which is confined
-to the sample config because the pronoun's referent is only unambiguous there.
-That sentence rides both case tables as its own row, transcribed from the schema
-at ``5a14145`` (byte-identical there to ``8286336``), so which pattern would see
-it is a test result rather than a paragraph. Extending the pronoun pattern past
-the sample config is #199 unit B's, with the file; #455 carries the
-delimiter-tolerant sweep key that found it.
+**The population of this class outside the files scanned here is tracked in the
+issues, not counted here.** #447 records the Python members narrowed the same way
+on 2026-09-01, still outside this module's scope, so their prose is unpinned, and
+#461 a Markdown member in ``plugins/``. Two attempts to state that population as
+a number have been wrong — round one said the schema string was the only one
+outside ``src/``, and round two found the ``plugins/`` member outside every key
+either attempt had used — so this docstring names the issues and stops counting.
+
+**#455's member is no longer in that list: the schema is a scanned surface.**
+Its root ``description`` is invisible to :data:`_FILE_UNREAD`, which requires the
+path after the verb, and visible to :data:`_THIS_FILE_UNREAD`, which is what made
+extending the pronoun pattern past the sample config the fix rather than widening
+the path pattern. #199 unit B took the file, rewrote the sentence to name the one
+reader ``.theurian/config.yaml`` has, and added
+``schemas/config/project-config.schema.json`` to :data:`SCANNED_SURFACES` in the
+same commit — so a rewrite back to the universal is RED here, and the positive
+direction is held by ``test_config_key_call_sites.py``'s
+``WATCHED_KEY_DESCRIPTIONS`` root row. The retracted sentence stays in both case
+tables, transcribed from the schema at ``5a14145`` (byte-identical there to
+``8286336``), so which pattern sees it remains a test result rather than a
+paragraph.
 
 **The ledger is empty, and that is a measured state rather than a scope
 boundary** — see :data:`UNNARROWED_UNIVERSALS`.
 
-Pure: it reads two Markdown files and one YAML file as text, and opens no
-database, no socket and no temporary directory.
+Pure: it reads two Markdown files, one YAML file and one JSON schema as text, and
+opens no database, no socket and no temporary directory.
 """
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 from collections.abc import Callable, Sequence
@@ -185,6 +189,7 @@ REPO_ROOT: Final = pathlib.Path(__file__).resolve().parents[4]
 ADR_0008: Final = REPO_ROOT / "docs" / "adr" / "0008-raptor-forest.md"
 RAPTOR_MD: Final = REPO_ROOT / "docs" / "architecture" / "raptor.md"
 SAMPLE_CONFIG: Final = REPO_ROOT / "examples" / "sample-project" / ".theurian" / "config.yaml"
+PROJECT_CONFIG_SCHEMA: Final = REPO_ROOT / "schemas" / "config" / "project-config.schema.json"
 
 #: Leading Markdown blockquote markers, however deeply nested.
 #:
@@ -552,12 +557,13 @@ UNIVERSAL_CASES: Final[tuple[tuple[str, bool], ...]] = (
         False,
     ),
     # -- #455's member, transcribed from the schema at `5a14145` -------------
-    # The wheel-shipped root `description` in
-    # `schemas/config/project-config.schema.json`. It is a live member of this
-    # class outside the three files scanned here, and it names no path, so this
-    # pattern is blind to it -- the half of the module docstring's #455 note that
-    # this table makes a test result rather than a sentence. Its other half is the
-    # matching row in `PRONOUN_CASES`.
+    # The wheel-shipped root `description` as it read until #199 unit B rewrote
+    # it. The schema is a scanned surface now, so this row no longer says "a live
+    # member nothing here watches"; what it still says, and the reason it stays,
+    # is that *this* pattern is blind to the sentence because it names no path.
+    # `_THIS_FILE_UNREAD` is what sees it, and the matching row in `PRONOUN_CASES`
+    # is that half. Keeping both rows is what makes "which pattern catches the
+    # schema root" a test result rather than a paragraph.
     (
         "Nothing in src/ reads this file, so no value in it takes effect today: where a "
         "default here is also honoured by the product, the code carries its own copy.",
@@ -565,12 +571,13 @@ UNIVERSAL_CASES: Final[tuple[tuple[str, bool], ...]] = (
     ),
 )
 
-#: One case per form the sample config's pronoun scan claims to catch, and per
-#: form it claims to let past.
+#: One case per form the pronoun scan claims to catch, and per form it claims to
+#: let past.
 #:
 #: The first positive is the exact sentence the example carried before #426. The
-#: negatives are transcribed from the annotation it carries now, so a pattern that
-#: misread one would be RED on a clean tree.
+#: negatives are transcribed from the annotation it carries now, and from the
+#: schema description #199 unit B rewrote, so a pattern that misread one would be
+#: RED on a clean tree.
 PRONOUN_CASES: Final[tuple[tuple[str, bool], ...]] = (
     (
         "The allowlist review ingestion will read (SEC-10). Nothing in `src/` reads this "
@@ -581,15 +588,28 @@ PRONOUN_CASES: Final[tuple[tuple[str, bool], ...]] = (
     ("No module reads that configuration file", True),
     ("nothing in `src/` reads the file", True),
     # #455's member, transcribed from `schemas/config/project-config.schema.json`
-    # at `5a14145`. It is in this table and *not* pinned against the schema file,
-    # because the pattern is confined to the sample config on purpose
-    # (:data:`_THIS_FILE_UNREAD` records why) -- what this row asserts is that the
-    # pattern would see the sentence, which is what #199 unit B needs to know
-    # before it takes the file.
+    # at `5a14145`. This row used to say the pattern *would* see the sentence if
+    # the schema were ever scanned; #199 unit B scanned it, so the row now says
+    # what the scan does. Restoring that sentence to the published schema is RED
+    # in `test_no_scanned_surface_reasserts_that_nothing_in_src_reads_the_config_file`
+    # by way of this pattern, and this row is what proves the pattern is the one
+    # that gets there -- `_FILE_UNREAD` never does, which its own table records.
     (
         "Nothing in src/ reads this file, so no value in it takes effect today: where a "
         "default here is also honoured by the product, the code carries its own copy.",
         True,
+    ),
+    # -- the descriptions the schema carries now, which must keep passing ----
+    (
+        "This file has one reader: `security/project_config.py` takes `security.secretScan` "
+        "from it and nothing else (ADR-0027 decision 3), so that one key is in force and "
+        "every other key published here is reserved.",
+        False,
+    ),
+    (
+        "Setting a reserved key changes nothing, and where a default below is also honoured "
+        "by the product the code carries its own copy rather than reading this file.",
+        False,
     ),
     # -- the annotation the example carries now, which must keep passing -----
     (
@@ -773,6 +793,43 @@ def _paragraphs(text: str) -> list[str]:
         blocks[-1].append(line)
 
     return [collapsed for block in blocks if (collapsed := _collapsed(" ".join(block)))]
+
+
+def _published_descriptions(text: str) -> list[str]:
+    """Every ``description`` a JSON Schema publishes, one block each, root included.
+
+    The third block reader, and it exists because the third scanned surface is
+    neither Markdown nor YAML. ``project-config.schema.json`` is **wheel-shipped**
+    (``hatch_build.py`` force-includes ``schemas/``), so every string here is a
+    published field a user reads out of an installed artifact.
+
+    Parsed rather than read as lines, for two reasons that both cut the same way.
+    A JSON string cannot carry a raw newline, so there is no wrap to join and the
+    *whole file as one block* — what :func:`_paragraphs` would produce, since the
+    document holds no blank line — would let one description's sentence borrow the
+    next one's exclusion. And the walk reaches the **root** description, which is
+    not inside any ``properties`` block: that is precisely the member every
+    population key for this class counted past (#455), because they counted key
+    blocks and the root is not one.
+
+    Non-``description`` strings are left out. They are enums, patterns and
+    ``$id``s, and none of them is prose a reader takes a claim from.
+    """
+    blocks: list[str] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            description = node.get("description")
+            if isinstance(description, str):
+                blocks.append(_collapsed(description))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(json.loads(text))
+    return blocks
 
 
 def _comment_blocks(text: str) -> list[str]:
@@ -1012,14 +1069,26 @@ def _decision_three_amendment(text: str) -> str:
 #: The files this module scans, as ``(path, how its prose is blocked, what it is
 #: scanned for)``.
 #:
-#: The pronoun pattern rides the YAML file alone; :data:`_THIS_FILE_UNREAD`
-#: records why.
+#: The pronoun pattern rides the two surfaces where "this file" has exactly one
+#: possible referent — the sample config and the published schema, both of which
+#: *are* or *describe* ``.theurian/config.yaml``. :data:`_THIS_FILE_UNREAD`
+#: records why it may not ride the two Markdown documents, where "this file"
+#: means the document a reader is holding.
+#:
+#: **The schema joined in #199 unit B, and it is the surface with the most to
+#: lose.** Its root description is wheel-shipped, it was false from ADR-0027
+#: decision 3 until unit B rewrote it, and it survived four sweeps of this class
+#: because every key was subject-shaped and it names no path (#455). Nothing
+#: watched it; this is what watches it now, in the negative direction, while
+#: ``test_config_key_call_sites.py``'s ``WATCHED_KEY_DESCRIPTIONS`` holds the
+#: positive one.
 SCANNED_SURFACES: Final[
     tuple[tuple[pathlib.Path, Callable[[str], list[str]], tuple[re.Pattern[str], ...]], ...]
 ] = (
     (ADR_0008, _paragraphs, (_FILE_UNREAD,)),
     (RAPTOR_MD, _paragraphs, (_FILE_UNREAD,)),
     (SAMPLE_CONFIG, _comment_blocks, (_FILE_UNREAD, _THIS_FILE_UNREAD)),
+    (PROJECT_CONFIG_SCHEMA, _published_descriptions, (_FILE_UNREAD, _THIS_FILE_UNREAD)),
 )
 
 #: How many ``issues/426`` correction notes each scanned surface carries, keyed by
@@ -1041,6 +1110,7 @@ _NOTE_COUNTS: Final[dict[pathlib.Path, int]] = {
     ADR_0008: 1,
     RAPTOR_MD: 0,
     SAMPLE_CONFIG: 0,
+    PROJECT_CONFIG_SCHEMA: 0,
 }
 
 #: The parametrized form, **derived from :data:`SCANNED_SURFACES` rather than

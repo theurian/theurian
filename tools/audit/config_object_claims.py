@@ -445,15 +445,6 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
         "key-scoped claim, and the correct one.",
     ),
     (
-        "packages/theurian-core/tests/unit/test_config_key_call_sites.py",
-        "which still carries an unnarrowed",
-        "quotation of the #455 defect",
-        "The module docstring quotes the schema root's false sentence in order to record "
-        "that it is false and route it to #199 unit B. It is true while the defect is "
-        "there and becomes a stale record the moment the root description is fixed, so it "
-        "is discharged in the same commit as the fix.",
-    ),
-    (
         "packages/theurian-core/tests/unit/test_raptor_config_claims.py",
         'ADR-0008 decision 10\'s rationale, its "switch is the CLI flag" note',
         "transcription",
@@ -511,30 +502,15 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     ),
     (
         "schemas/config/project-config.schema.json",
-        "Nothing in src/ reads this file",
-        "DEFECT, #455",
-        "The wheel-shipped root description, false since ADR-0027 decision 3. The same "
-        "file's `security.secretScan` description says the opposite, so the published "
-        "schema contradicts itself.",
-    ),
-    (
-        "schemas/config/project-config.schema.json",
-        "the rest of the file simply has no loader yet",
-        "DEFECT, #455",
-        "The second half of the same sentence pair: a file-wide 'no loader' claim, a "
-        "stale `#129` owner cite, and a passed-milestone forward anchor. One edit, three "
-        "faces.",
-    ),
-    (
-        "schemas/config/project-config.schema.json",
-        "Nothing reads it today; owed with review ingestion",
+        "Nothing reads it today; owed with",
         "true",
         "`providers.review.repositories`' own description, and the claim is key-scoped "
         "and correct. It is a suspect only because the JSON reader's block is one source "
         "line, so the enclosing key name is not in the block and the home rule supplies "
         "the file object instead -- a limitation whose direction is a false RED, never a "
-        "false clear. Its stale `#129` cite and Milestone-7 anchor are class 3's, not "
-        "this class's.",
+        "false clear. Its owner cite was repointed #129 -> #429 in the same commit that "
+        "rewrote the root description, because class 2's open-owner rule is what "
+        "`controls_discharge.py` reported dead here.",
     ),
 )
 

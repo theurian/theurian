@@ -10,14 +10,14 @@ opposite states:
   ``default: "block"`` — the policy an absent key and an absent config file both
   select (#198).
 - ``providers.review.repositories`` — SEC-10's repository allowlist. **Still
-  reserved**, owed with review ingestion. Nothing reads it, its description says
-  so, and this module is what holds the source tree to that. The description's
-  ``#129`` cite is **stale**: #129 closed on the wording rather than on the
-  control, so the live owner is #429 (the T-7 fetch controls) and the repointing
-  belongs to #428's stale-owner sweep — with the same schema file's *root*
-  description, which still carries an unnarrowed "Nothing in src/ reads this
-  file" (#455). Both stay outside this PR because they land on
-  ``project-config.schema.json``, which #199 unit B owns.
+  reserved**, owed with the first external fetch path. Nothing reads it, its
+  description says so, and this module is what holds the source tree to that.
+  That description used to name ``#129`` as its owner, and the schema's *root*
+  description used to carry an unnarrowed "Nothing in src/ reads this file"
+  (#455); #199 unit B repointed the first to #429 — the live owner of the T-7
+  fetch controls — and narrowed the second to the one reader the file has. Both
+  are pinned below, the root for the first time: a wheel-shipped description with
+  no pin is how the false one survived four sweeps.
 - **Every key in the ``raptor`` block** — ADR-0008 decision 10's switch. **Still
   reserved.** ``docs/architecture/raptor.md`` and ADR-0008 decision 10 used to
   say nothing in ``src/`` read ``.theurian/config.yaml`` at all; ADR-0027
@@ -550,7 +550,27 @@ def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_one
 #: published"; it now requires the opposite claim and the reach that bounds it,
 #: because the sentence a reader has to be able to trust is no longer "this does
 #: nothing" but "this does exactly this much".
+#:
+#: **The root description is a row here, and it is the row that was missing.**
+#: ``pointer`` is empty for it, so the walk below stops at the parsed document and
+#: reads the top-level ``description`` — the one every population key for this
+#: class counted past, because they counted *key blocks* and the root is not one
+#: (#455). It was wheel-shipped, false since ADR-0027 decision 3, contradicted by
+#: the ``secretScan`` row three lines down in the same artifact, and pinned by
+#: nothing at all. Its four required fragments are the four things #199 unit B
+#: rewrote it to say: that the file has a reader, which module that is, which key
+#: it takes, and who owns the allowlist now that #129 is closed.
 WATCHED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        "(schema root)",
+        (),
+        (
+            "This file has one reader",
+            "`security/project_config.py` takes `security.secretScan` from it and nothing else",
+            "every other key published here is reserved",
+            "https://github.com/theurian/theurian/issues/429",
+        ),
+    ),
     (
         "security.secretScan",
         ("properties", "security", "properties", "secretScan"),
@@ -568,7 +588,14 @@ WATCHED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ..
         (
             "Not in force",
             "Nothing reads it today",
-            "https://github.com/theurian/theurian/issues/129",
+            # The live owner. #429 owns the T-7 fetch controls the allowlist
+            # belongs to; #129 closed on 2026-08-22 on the wording rather than on
+            # the control, so it owned nothing afterwards (#428's class). The
+            # closed number stays in the description, in *historical* position and
+            # pinned as such by the fragment below, because deleting it would lose
+            # why the owner moved.
+            "https://github.com/theurian/theurian/issues/429",
+            "closed on the wording rather than on the control",
         ),
     ),
 )
