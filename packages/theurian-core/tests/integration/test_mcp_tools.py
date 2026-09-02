@@ -1967,14 +1967,28 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         f"`note`, or under a camel-cased key (`sensitivityCeiling`) as it is to "
         f"arrive as a new top-level field the population tests would catch."
     )
+    assert result["capabilities"]["reviewFindings"] is True, (
+        "`review.findings` is registered and callable: it serves the "
+        "Review-Finding trailers `theurian findings build` landed in a project's "
+        "store, under the SEC-15 triple (ADR-0029 phase-2 slice-3). The flag "
+        "promises that one read and nothing else -- not GitHub, not review "
+        "threads, not any write intent, which is what `reviewIngestion` below "
+        "stays false for. A client reading `false` here would never call a tool "
+        "this build answers, which is the degradation this whole block exists to "
+        "let it get right."
+    )
     assert result["capabilities"]["reviewIngestion"] is False, (
-        "no review history is ingested: `infrastructure/github/` holds no adapter "
-        "and `theurian ingest` reads local files only, so a client reading `true` "
-        "would offer a feature no code path performs. Flipping it is a "
-        "security-relevant change and not a feature flag -- the T-7 entry in "
-        "docs/security/threat-model.md cites this `false` as what stands in for "
-        "the repository allowlist while SEC-10's reader is owed (#429), so the "
-        "change that flips it owes the allowlist as well."
+        "no review *history* is ingested: `infrastructure/github/` holds no "
+        "adapter, so no thread, inline comment or resolution state is read, and a "
+        "client reading `true` would offer a feature no code path performs. "
+        "`reviewFindings` above is the narrower thing that did land -- an offline "
+        "read of local git trailers -- and does not make this one true. Flipping "
+        "*this* flag is the change that reaches GitHub, which is why the T-7 entry "
+        "in docs/security/threat-model.md cites its `false` as what stands in for "
+        "the repository allowlist while SEC-10's reader is owed (#429): the change "
+        "that adds a GitHub-reaching call site owes the allowlist, and the offline "
+        "trailer read owes none (`test_network_call_sites.py`'s own record of the "
+        "same split)."
     )
     assert result["capabilities"]["traceability"] is False, (
         "no tool answers FR-T3's questions -- which code implements a spec, which "
@@ -2060,6 +2074,7 @@ async def test_the_capability_block_holds_exactly_the_flags_that_are_pinned(
         "hybridRetrieval",
         "raptor",
         "sensitivityEnforcement",
+        "reviewFindings",
         "reviewIngestion",
         "traceability",
         "writeTools",

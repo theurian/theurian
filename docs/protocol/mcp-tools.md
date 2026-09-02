@@ -3,19 +3,20 @@
 Protocol version: `theurian/v1`. Transport: Streamable HTTP at
 `http://127.0.0.1:7419/mcp`.
 
-Today, Core registers five callable MCP tools:
+Today, Core registers six callable MCP tools:
 
 - `knowledge.search`
 - `knowledge.get`
 - `knowledge.status`
 - `project.list`
+- `review.findings`
 - `system.capabilities`
 
 `system.capabilities` is the runtime boundary for clients. In this build it
-reports `writeTools: false`, `reviewIngestion: false`, and
-`traceability: false`; those values mean the write-intent, review, and
-traceability tools described below are designed protocol shape, not callable
-tools in the current server.
+reports `reviewFindings: true` — `review.findings` is callable — beside
+`writeTools: false`, `reviewIngestion: false`, and `traceability: false`; those
+three mean the write-intent, review-*history*, and traceability tools described
+below are designed protocol shape, not callable tools in the current server.
 
 ## Every project-scoped call names its project
 
@@ -334,11 +335,21 @@ The reasoning, the measurements and what remains uncovered are in
 
 ## Review
 
-Review ingestion is planned, not shipped. The current server reports
-`reviewIngestion: false`, and none of these tools are callable today.
+One review tool is shipped. `review.findings` serves the `Review-Finding:`
+trailers a project's own git history carries, landed by `theurian findings
+build` and announced as `reviewFindings: true`
+([ADR-0029](../adr/0029-review-findings-are-governed-knowledge.md)).
+
+Review *history* ingestion — GitHub threads, inline comments, resolution state —
+is still planned, not shipped: the server reports `reviewIngestion: false`, and
+none of the planned tools below is callable. The two flags are separate on
+purpose. `reviewFindings` promises an offline read of local git trailers;
+`reviewIngestion` is the one that reaches GitHub, and it is the change that owes
+the repository allowlist SEC-10 records.
 
 | Tool | Status | Purpose |
 | :-- | :-- | :-- |
+| `review.findings` | Shipped | Landed `Review-Finding:` trailers, filtered by reviewer, severity, commit or text |
 | `review.search` | Planned | Search review history |
 | `review.getThread` | Planned | One thread with comments and resolution |
 | `review.findSimilar` | Planned | Threads resembling a described situation |
@@ -349,6 +360,141 @@ Review ingestion is planned, not shipped. The current server reports
 The designed `review.findSimilar` tool is the one expected to change outcomes:
 it would answer "has this come up before?" before an agent reimplements something
 the team already rejected.
+
+### `review.findings`
+
+Three keys, all always present. The contract is
+[`schemas/mcp/review-findings-response.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/review-findings-response.schema.json).
+
+```json
+{
+  "count": 1,
+  "truncated": false,
+  "findings": [
+    {
+      "commitSha": "3e45c7b…",
+      "position": 0,
+      "reviewer": "adversarial",
+      "severity": "HIGH",
+      "findingText": "byte-identical body accepted under a second item id",
+      "provider": "git",
+      "sourceUri": "3e45c7b…",
+      "committedAt": "2026-08-28T09:14:22.000000+00:00",
+      "pullRequest": null,
+      "family": null,
+      "specialist": null,
+      "contentClassification": "untrusted-knowledge",
+      "mayContainInstructions": true,
+      "executable": false
+    }
+  ]
+}
+```
+
+`findingText` is **authored commit text, and untrusted**. A finding usually
+reads as an imperative, because it describes what should change — which is
+exactly the shape a client must not let an agent act on. Every row carries the
+safety triple for that reason, and a client renders findings under it the same
+way it renders a knowledge body.
+
+Every optional argument is a filter, and each is exact:
+
+| Argument | Selects |
+| :-- | :-- |
+| `reviewer` | one of `code-review`, `security`, `adversarial` |
+| `severity` | one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` |
+| `commitSha` | a full 40- or 64-character sha, never a short one |
+| `q` | a literal substring of `findingText`, ASCII case folded |
+| `limit` | at most 100, default 20 |
+| `pullRequest` | a positive number no larger than the widest value its signed 64-bit column can hold — and **refused in this build** whatever the value, see below |
+| `family`, `specialist` | **refused in this build** — see below |
+
+Findings come back **newest first**: ordered by `committedAt` descending, then
+by `commitSha` and `position` ascending, so two findings committed in the same
+second have a defined order and a page boundary is stable across calls.
+
+`pullRequest`, `family` and `specialist` are still declared arguments — they
+appear in `tools/list` — and are refused by the server with one constant
+message. `theurian findings build` derives none
+of the three, so every stored row carries `null` for them and a filter on one
+would match nothing at all — an empty answer that reads as "nothing was
+recorded" rather than "this filter does not work yet". They remain published
+*fields* on every row, because a key that appears only when it has a value
+cannot be told apart from a server that predates the key.
+
+`pullRequest` carries a range as well as that refusal, and the range is checked
+first, so the two refusals stay distinguishable: a number outside the column's
+range is refused *naming the range*, and only a number the column could hold
+reaches the build-constant refusal above. The ceiling is not a policy choice —
+a PR number past it cannot be stored, so it could never match a row — and it is
+checked here rather than at the database, where it arrived as a crash instead of
+an answer.
+
+Every string filter — `reviewer`, `severity`, `family`, `specialist`,
+`commitSha` and `q` — is bounded at 200 characters. A value inside that bound is
+quoted back in a refusal, because a typo is what the refusal exists to make
+visible; a value past it is reported by its length and never echoed. A number
+past the range its column can hold is refused too, and a number with more
+decimal digits than the largest storable `pullRequest` has is described by its
+digit count rather than quoted — so every number a caller could plausibly have
+meant is still quoted back, and an absurd one is never reflected.
+
+Every string filter also refuses two byte-level shapes rather than repairing
+them. A **NUL** (`U+0000`) is refused because SQLite's pattern matcher stops
+reading at it: a `q` of `"log\u0000zzz"` would silently become a search for
+`log`, and a `q` of `"\u0000"` alone would match every row. A **lone
+surrogate** — a code point in `U+D800`–`U+DFFF` with no pair, which some JSON
+decoders will hand a server — is refused because UTF-8 cannot encode it, so it
+can be neither compared against a stored value nor carried back in the response.
+Neither can appear in a git commit-message line, so no stored value contains one
+and no legitimate filter needs one. `knowledge.search` *folds* an unpaired
+surrogate instead of refusing it; the divergence is deliberate, and the reason is
+the same one that makes `limit` a refusal here and a clamp there — this tool
+answers a filtered question, where quietly searching for a value the caller did
+not send returns `count: 0` about it.
+
+A value outside a bound or a vocabulary is **refused naming the bound**, not
+clamped and not treated as "no filter": a truncated page reads as the whole
+answer, a short sha would match nothing and read as "no findings on that
+commit", and an unrecognised reviewer treated as no filter would return
+everything. `count` sizes the returned array and is never a total before
+`limit`; `truncated` is `true` when at least one **servable** finding matching
+the filter existed past `limit`, which is how a full page is told apart from the
+whole answer. It is one bit about the page's boundary, not a count: the server
+reads one row past `limit`, through the same accepted-findings statement every
+served row comes through, and discards it.
+
+**One bound on this surface clamps instead of refusing, and it is the only
+value whose size the caller does not control.** A served `findingText`
+is cut at 2,000 characters and marked with a trailing `...`, so a cut value
+cannot be read as a whole one. It is the same number `knowledge.search` clamps a
+`query` to, derived from that constant rather than chosen again: one bound
+governs the longest string this daemon will search for and the longest finding
+it will hand back. It fires on nothing a reviewer writes — a finding is one
+trailer line, and the longest in this repository's own history was 193
+characters when the bound was chosen (measured 2026-09-02) — but `findingText`
+is byte-preserved from a commit message, and a commit message line has no length
+limit, so without the cut one planted trailer sets the size of every response
+that matches it. Refusing there would let that one line deny the tool to every
+caller, and the caller refused would not be the one who wrote the row; every
+bound a *caller* can provoke still refuses.
+
+`count: 0` means the filter matched nothing. A project whose store has not been
+built **here** — or whose store is stale or damaged — is **refused**, with one
+constant message naming `theurian findings build`, so "never built" can never be
+read as "no findings".
+
+"Built here" is the load-bearing word, and it is a fourth refusal arm rather than
+a restatement of the first. The store is derived and git-ignored, so a repository
+can ship one anyway — `git add -f` puts it past the ignore, and a ZIP or tarball
+carries it with no tracking metadata at all — and nothing about such a file is
+malformed: correct schema, current stamp, rows naming commits that never existed.
+So presence on disk is not evidence, and **a store that arrived with a clone is
+refused until `theurian findings build` runs locally**, however well-formed it is
+([ADR-0004](../adr/0004-sqlite-is-a-derived-artifact.md), SEC-7, threat-model
+T-19). The refusal is the same constant an absent store gets, deliberately:
+naming this arm would tell whoever planted the store that the plant was detected,
+and the cure is the same local rebuild either way.
 
 ## Specification
 

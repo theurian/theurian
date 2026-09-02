@@ -1162,3 +1162,95 @@ def test_the_retrieval_block_publishes_exactly_the_fields_that_are_emitted() -> 
         "this is what makes a successor to `withheldSuperseded` a schema "
         "violation rather than an addition someone has to notice in review"
     )
+
+
+# -- Review-findings response schema (ADR-0029 phase-2 slice-3) --------------
+
+REVIEW_FINDINGS_RESPONSE = "mcp/review-findings-response.schema.json"
+
+
+def _finding_property(name: str) -> dict[str, Any]:
+    schema = _load(REVIEW_FINDINGS_RESPONSE)
+    published: dict[str, Any] = schema["properties"]["findings"]["items"]["properties"][name]
+    return published
+
+
+def test_every_reviewer_token_a_finding_can_carry_is_published() -> None:
+    """The published vocabulary is recomputed from the enum, never transcribed.
+
+    ``reviewer`` is a closed vocabulary (ADR-0029 decision 2), so a client may
+    switch on it exhaustively -- which is only safe while the published set is
+    the *same* set the parser admits. Compared against ``ReviewerToken`` itself so
+    a member added to the enum reddens this rather than reaching a client as a
+    value its schema forbade.
+
+    The historical alias ``code`` is deliberately absent: the parser normalises it
+    to ``code-review`` before anything is stored, so no served row can carry it.
+    Publishing it would tell a client to expect a value nothing sends.
+    """
+    from theurian.domain.review_finding import _REVIEWER_ALIASES, ReviewerToken
+
+    published = set(_finding_property("reviewer")["enum"])
+
+    assert published == {token.value for token in ReviewerToken}
+    assert published.isdisjoint(_REVIEWER_ALIASES), (
+        "an alias is a spelling the parser normalises away, so no stored row "
+        "carries one and the schema must not promise one"
+    )
+
+
+def test_every_severity_a_finding_can_carry_is_published() -> None:
+    """The same derivation for the four-value scale, upper-case as stored."""
+    from theurian.domain.review_finding import FindingSeverity
+
+    assert set(_finding_property("severity")["enum"]) == {
+        severity.value for severity in FindingSeverity
+    }
+
+
+def test_the_finding_provider_is_published_as_the_invariant_it_is() -> None:
+    """``provider`` is a ``const``, because the record refuses any other value.
+
+    ``ReviewFinding.__post_init__`` raises unless the anchor's provider is
+    ``git``, so publishing a free string -- or an enum with room in it -- would
+    describe alternatives that cannot be constructed.
+    """
+    from datetime import UTC, datetime
+
+    from theurian.domain.errors import DomainError
+    from theurian.domain.knowledge import SourceAnchor
+    from theurian.domain.review_finding import FindingSeverity, ReviewerToken, ReviewFinding
+
+    assert _finding_property("provider")["const"] == "git"
+
+    with pytest.raises(DomainError, match="provenance must be git"):
+        ReviewFinding(
+            reviewer=ReviewerToken.SECURITY,
+            severity=FindingSeverity.HIGH,
+            finding_text="a finding",
+            anchor=SourceAnchor(provider="github", source_uri="x", commit_sha="a" * 40),
+            pull_request=None,
+            date=datetime(2026, 8, 1, tzinfo=UTC),
+        )
+
+
+def test_the_published_finding_safety_triple_is_the_one_the_code_attaches() -> None:
+    """SEC-15: the schema's three labels are `mcp/results.SAFETY`, not a copy.
+
+    A schema that declared a different classification word, or left one of the
+    three optional, would let a client build a renderer that treats a finding as
+    trusted while the server labels it untrusted -- and nothing would reject
+    either side.
+    """
+    from theurian.mcp.results import SAFETY
+
+    items = _load(REVIEW_FINDINGS_RESPONSE)["properties"]["findings"]["items"]
+
+    for key, value in SAFETY.items():
+        assert items["properties"][key]["const"] == value, (
+            f"the schema publishes a different value for {key!r} than the code attaches"
+        )
+        assert key in items["required"], (
+            f"{key!r} is optional in the schema, so a response missing the label "
+            f"would validate -- the triple is only a control if it is required"
+        )

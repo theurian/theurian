@@ -26,7 +26,7 @@ from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, T
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
 from theurian.domain.knowledge import KnowledgeRevision, RevisionMetadata, SourceAnchor
 from theurian.domain.values import MARKDOWN, ValidityPeriod
-from theurian.mcp.results import result_payload
+from theurian.mcp.results import SAFETY, result_payload
 
 pytestmark = pytest.mark.unit
 
@@ -85,4 +85,50 @@ def test_the_payload_reports_the_items_sensitivity_not_the_revisions() -> None:
     assert payload["sensitivity"] == Sensitivity.RESTRICTED.value, (
         "the payload reported the revision's stale sensitivity rather than the item's "
         "current one -- the label decides who may read the content"
+    )
+
+
+def test_the_trust_triple_cannot_be_reassigned_from_anywhere_in_the_process() -> None:
+    """``SAFETY`` is a read-only mapping, and that is a control rather than style.
+
+    Every knowledge result and every served review finding spreads this one
+    constant (``**SAFETY``), so the three SEC-15 labels have exactly one home. That
+    is what stops a second surface from labelling differently -- and it is also
+    what makes a *mutation* of it global: one ``SAFETY["executable"] = True``,
+    executed anywhere in the process, unlabels every result this daemon returns,
+    from any module, with no test naming the line that did it.
+
+    ``MappingProxyType`` turns that into a ``TypeError`` at the assignment instead
+    of a disclosure at the wire. Reverting it to a plain ``dict`` changes no
+    published byte and no assertion about a payload's *contents*, which is exactly
+    why the property needs its own pin: nothing else in the suite can tell the two
+    apart.
+
+    All three keys are asserted too. The proxy is the guard on the container; the
+    values are what the guard is protecting, and a triple that drifted would be a
+    correctly-immutable wrong answer.
+    """
+    assert dict(SAFETY) == {
+        "contentClassification": "untrusted-knowledge",
+        "mayContainInstructions": True,
+        "executable": False,
+    }
+
+    with pytest.raises(TypeError):
+        SAFETY["executable"] = True  # type: ignore[index]
+    with pytest.raises(TypeError):
+        SAFETY["contentClassification"] = "trusted"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        del SAFETY["mayContainInstructions"]  # type: ignore[attr-defined]
+
+    assert SAFETY["executable"] is False, "the triple moved despite the refusals above"
+
+    # The spread every call site uses still works, and still produces a plain,
+    # writable dict -- the proxy protects the constant, not the payload built from
+    # it, which callers legitimately extend.
+    spread = {**SAFETY, "itemId": "architecture.auth-policy"}
+    spread["executable"] = True
+    assert SAFETY["executable"] is False, (
+        "writing to a payload built by spreading `SAFETY` reached the constant, so "
+        "the proxy is being shared rather than copied"
     )

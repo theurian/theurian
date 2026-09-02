@@ -2,7 +2,11 @@
 
 **Not implemented.** This package holds no adapter and no HTTP client; it is the
 place the Milestone 7 ingestion work will land, and ``system.capabilities``
-reports ``reviewIngestion: false`` until it does.
+reports ``reviewIngestion: false`` until it does. ``reviewFindings: true`` is a
+different flag and no part of it lives here: that tool reads ``Review-Finding:``
+trailers out of local git history (ADR-0029), so it contacts no repository and
+needs no allowlist. The first fetch this package performs is what makes SEC-10's
+controls load-bearing.
 
 The adapter will fetch pull requests, reviews, threads, inline comments,
 resolution state, and CI outcomes as structured evidence. It must never

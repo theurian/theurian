@@ -22,9 +22,12 @@ neither this adapter nor its port verifies commit provenance (see
 :class:`~theurian.domain.ports.review_finding_store.ReviewFindingStore`'s port
 docstring for the measured detail).
 
-**No serving read.** The reads are two metadata lookups and one whole-table
-verification dump in a fixed order -- never a query-by-content. A findings search
-is a later slice with its own disclosure round.
+**One serving read, and it is :meth:`SqliteReviewFindingStore.serve_findings`**
+(ADR-0029 phase-2 slice-3). The other reads are two metadata lookups and one
+whole-table verification dump. Every SQL statement in this module that names the
+``rejected_trailers`` table is a write or a dump; the serving statement selects
+from ``findings`` alone, so no rejected trailer's bytes are read on a path that
+answers a caller -- not filtered out afterwards, never fetched.
 """
 
 from __future__ import annotations
@@ -37,8 +40,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, final
 
-from theurian.domain.errors import TheurianError
+from theurian.domain.errors import DomainError, TheurianError
 from theurian.domain.ports.review_finding_store import (
+    FindingQuery,
     FindingsDump,
     FindingsStamp,
     StoredFinding,
@@ -67,6 +71,85 @@ _INSERT_METADATA: Final = (
     "INSERT INTO findings_metadata (id, findings_schema_version, parser_stamp, built_at) "
     "VALUES (1, ?, ?, ?)"
 )
+
+#: The eleven columns of one accepted finding, in :class:`StoredFinding` order.
+#: One tuple, so the dump and the serving read cannot drift on what a row is --
+#: not on which columns, not on their order, not on their number.
+_FINDING_COLUMN_NAMES: Final = (
+    "commit_sha",
+    "position",
+    "reviewer",
+    "severity",
+    "finding_text",
+    "provider",
+    "source_uri",
+    "committed_at",
+    "pull_request",
+    "family",
+    "specialist",
+)
+
+#: The dump's projection: every column whole. :meth:`dump` is a verification read
+#: over a store a test built, so it hands back exactly what was stored.
+_FINDING_COLUMNS: Final = ", ".join(_FINDING_COLUMN_NAMES)
+
+#: The serving projection: the same eleven columns, with ``finding_text`` **cut by
+#: SQLite** to the caller's ``text_chars`` rather than fetched whole and cut in
+#: Python.
+#:
+#: Where the cut happens is the whole point. ``finding_text`` is byte-preserved
+#: from a commit message and a commit message line has no length limit, so a
+#: planted trailer sized the row -- and a serving surface that clamped *after*
+#: ``fetchall`` had already materialised every planted byte in this process, once
+#: per row, once per concurrent call, before the clamp could refuse a single one
+#: of them. Cutting in the ``SELECT`` means SQLite never hands Python more than
+#: ``text_chars`` characters per row, so the read's own footprint is bounded by
+#: the page size rather than by whatever the corpus holds. The measured
+#: difference over 21 rows of a 1 MiB planted trailer: 22.0 MB of Python heap
+#: (``tracemalloc`` peak over the call) before, 0.1 MB after.
+#:
+#: ``AS finding_text`` keeps the row key the projection had, so
+#: :func:`_stored_finding` reads one name whichever statement produced the row.
+#:
+#: **Characters, and they are Python's characters.** SQLite's ``substr`` on a
+#: TEXT value counts UTF-8 *code points*, which is what ``len`` counts too --
+#: verified across ASCII, CJK, combining sequences and astral planes (2026-09-03,
+#: SQLite 3.51.2), so a bound stated in characters means the same thing on both
+#: sides of the boundary and the surface above can reason in ``len``.
+#:
+#: **One value would disagree, and it is one no writer here can produce.**
+#: ``substr`` stops at an embedded NUL (measured: ``substr('abc\0defghij', 1, 8)``
+#: is ``'abc'``), so a stored ``finding_text`` carrying one would serve shorter
+#: than the Python-side clamp would have cut it. Nothing reaches that. The shipped
+#: writer takes its text from ``GitTrailerFindingSource``, which frames ``git log``
+#: output by **splitting on NUL** -- so a NUL in a commit message is consumed by
+#: that split (or mis-frames the stream into a ``GitOutputFramingError``) and can
+#: never survive into a finding's text; and a store this installation did not build
+#: is refused before it is opened at all (ADR-0004, SEC-7, T-19), which is what
+#: stands between this statement and a hand-written store. Recorded rather than
+#: repaired because the difference
+#: fails closed: the value is *shorter*, never longer, so nothing is disclosed
+#: that a whole fetch would have withheld. The byte-based alternative
+#: (``substr(CAST(finding_text AS BLOB), 1, ?)``) has no NUL stop and would split
+#: multi-byte characters instead, which is a worse trade on real data.
+_SERVE_COLUMNS: Final = ", ".join(
+    "substr(finding_text, 1, ?) AS finding_text" if name == "finding_text" else name
+    for name in _FINDING_COLUMN_NAMES
+)
+
+#: The served order: most recently committed first, ties broken by the primary
+#: key. ``committed_at`` is UTC-normalised and fixed-width (#405), so byte order
+#: *is* instant order and a TEXT ``DESC`` really is newest-first;
+#: ``(commit_sha, position)`` is unique, so the whole ordering is total and two
+#: calls over one store return one sequence. Without the tiebreak, `LIMIT` would
+#: truncate an order SQLite is free to vary between runs -- a response that
+#: changes without the store changing.
+_SERVE_ORDER: Final = "ORDER BY committed_at DESC, commit_sha ASC, position ASC"
+
+#: The escape character for the ``finding_text`` substring match. A caller's text
+#: is matched *literally*: ``%`` and ``_`` in it are its own characters, not
+#: wildcards, so ``q`` cannot be turned into a pattern language.
+_LIKE_ESCAPE: Final = "\\"
 
 
 #: The read-path remedy: the store is a projection of git history (ADR-0004), so
@@ -173,6 +256,50 @@ def committed_at_text(moment: datetime) -> str:
             f"committer date {moment.isoformat()!r} is out of range once converted to UTC, "
             "so it cannot be stored"
         ) from exc
+
+
+def _contains_pattern(needle: str) -> str:
+    """``needle`` as a LIKE pattern that matches it literally, anywhere in a value.
+
+    The three characters LIKE gives meaning to -- the escape itself, ``%`` and
+    ``_`` -- are escaped, so a caller's ``%`` matches a percent sign rather than
+    every row. The escape character is doubled *first*: doing it after would also
+    escape the backslashes this function itself just introduced.
+    """
+    escaped = (
+        needle.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace("%", f"{_LIKE_ESCAPE}%")
+        .replace("_", f"{_LIKE_ESCAPE}_")
+    )
+    return f"%{escaped}%"
+
+
+def _where(query: FindingQuery) -> tuple[str, list[str | int]]:
+    """``query``'s filters as a SQL clause and its bound parameters.
+
+    Every value is a **bound parameter**; only the fixed column names and
+    operators below are ever concatenated into SQL, so no caller-supplied text
+    reaches the statement text. An absent filter contributes no clause at all
+    rather than a tautology, so an unfiltered query is a plain ordered read.
+    """
+    clauses: list[str] = []
+    parameters: list[str | int] = []
+    equalities: tuple[tuple[str, str | int | None], ...] = (
+        ("reviewer", None if query.reviewer is None else query.reviewer.value),
+        ("severity", None if query.severity is None else query.severity.value),
+        ("family", query.family),
+        ("specialist", query.specialist),
+        ("commit_sha", query.commit_sha),
+        ("pull_request", query.pull_request),
+    )
+    for column, value in equalities:
+        if value is not None:
+            clauses.append(f"{column} = ?")
+            parameters.append(value)
+    if query.text_contains is not None:
+        clauses.append(f"finding_text LIKE ? ESCAPE '{_LIKE_ESCAPE}'")
+        parameters.append(_contains_pattern(query.text_contains))
+    return ("WHERE " + " AND ".join(clauses) if clauses else ""), parameters
 
 
 def _finding_rows(accepted: tuple[ReviewFinding, ...]) -> list[_FindingRow]:
@@ -404,14 +531,19 @@ class SqliteReviewFindingStore:
 
         ``False`` for a missing, stale-schema, or stale-parser store. The parser
         stamp and the schema version are independent forcing functions; either
-        mismatch is staleness. The signal exists for the consumer that arrives with
-        the serving slice: **no shipped caller reads it today** (verified over the
-        shipped package, 2026-08-28 -- the only production call to
-        :meth:`is_current`, :meth:`stamp`, or :meth:`dump` is this method's own use
-        of :meth:`stamp` below). The one shipped writer, ``findings build``,
-        rebuilds wholesale on every run regardless of staleness -- strictly
-        stronger than staleness-checking, not weaker -- so nothing in this slice
-        needs this signal to decide whether to rebuild.
+        mismatch is staleness.
+
+        **The staleness *reaction* ships, and it is not here.**
+        :meth:`serve_findings` refuses a stale store, but it makes the comparison
+        itself, inside the connection it reads rows through, rather than calling
+        this method first -- two opens would let a rebuild land between the check
+        and the read, leaving the check answering for a file the rows did not come
+        from. So this method still has no shipped caller: it is the standalone
+        question, for a surface asking *about* a store rather than serving from
+        it. The one shipped writer, ``findings build``, rebuilds wholesale on
+        every run regardless of staleness -- strictly stronger than
+        staleness-checking, not weaker -- so nothing needs this signal to decide
+        whether to rebuild either.
         """
         recorded = self.stamp()
         return (
@@ -458,28 +590,201 @@ class SqliteReviewFindingStore:
                         "committed but before its data transaction did"
                     )
                 finding_rows = connection.execute(
-                    "SELECT commit_sha, position, reviewer, severity, finding_text, provider, "
-                    "source_uri, committed_at, pull_request, family, specialist FROM findings "
-                    "ORDER BY commit_sha, position"
+                    # The only interpolation is this module's own column-list
+                    # constant; nothing here comes from a caller (S608).
+                    f"SELECT {_FINDING_COLUMNS} FROM findings ORDER BY commit_sha, position"  # noqa: S608
                 ).fetchall()
                 rejected_rows = connection.execute(
                     "SELECT commit_sha, position, raw_line, reason FROM rejected_trailers "
                     "ORDER BY commit_sha, position"
                 ).fetchall()
-        except (sqlite3.Error, OSError) as exc:
+                # Converted INSIDE the boundary, for the reason `serve_findings`
+                # records: a value-damaged column raises where the row is built, not
+                # where it is fetched, so a conversion left outside this `try` is a
+                # crash escaping a method that promises to raise this class.
+                dumped = FindingsDump(
+                    findings=tuple(_stored_finding(row) for row in finding_rows),
+                    rejected=tuple(_stored_rejection(row) for row in rejected_rows),
+                )
+        except FindingsStoreError:
+            raise
+        except Exception as exc:
             raise FindingsStoreError(f"reading {self._path.name}: {exc}") from exc
-        return FindingsDump(
-            findings=tuple(_stored_finding(row) for row in finding_rows),
-            rejected=tuple(_stored_rejection(row) for row in rejected_rows),
-        )
+        return dumped
+
+    def serve_findings(self, query: FindingQuery, *, text_chars: int) -> tuple[StoredFinding, ...]:
+        """The accepted findings ``query`` selects, newest first, at most ``limit``.
+
+        The one sanctioned serving read (see the port). What this implementation
+        adds to the port's five promises is *how* each is kept:
+
+        **Accepted rows only, by the statement.** The ``SELECT`` names
+        ``findings``; ``rejected_trailers`` appears nowhere on this path, so a
+        rejected trailer's author-controlled ``raw_line`` and ``reason`` are never
+        even read into this process on a call that answers a caller. That is
+        stronger than fetching both and filtering: there is no filter to get
+        wrong.
+
+        **Current, or nothing -- checked through the connection that reads the
+        rows.** ``mode=ro`` binds this connection to the file that existed when it
+        opened, and ``replace_all`` publishes by ``os.replace`` onto that name
+        (see its docstring), which swaps the *directory entry* and leaves an open
+        connection reading the inode it already holds. So a rebuild landing
+        mid-call cannot split this method across two stores: the stamp and the
+        rows come from one file, and the worst a concurrent rebuild does is make
+        this call answer from the immediately-previous store -- whole, consistent,
+        and one publish behind. A reader that asked :meth:`is_current` first and
+        then opened a second connection would have exactly the split this avoids.
+
+        **Bounded in rows.** ``LIMIT`` is bound as a parameter from
+        :class:`FindingQuery`'s already-positive value. The scan behind it is a
+        full pass over ``findings`` for every filter except ``commit_sha``,
+        which ``EXPLAIN QUERY PLAN`` shows as a ``SEARCH`` on the table's one
+        index, the primary-key autoindex (measured 2026-09-03; the sort is on
+        ``committed_at`` either way). The work is
+        **corpus-bounded, not caller-bounded**: no filter a caller sends makes it
+        larger, and the corpus is this repository's own history -- 502 accepted
+        findings measured on ``origin/main`` @ ``141cf6f``, 2026-09-02 (T-6).
+
+        **Bounded in text, at the read.** ``text_chars`` is required and cuts
+        ``finding_text`` inside the ``SELECT`` (:data:`_SERVE_COLUMNS`), so the
+        rows this method materialises are bounded by ``limit * text_chars``
+        whatever the corpus holds. A serving surface clamping the value *after*
+        this returned would already have paid for every planted byte: the row
+        count was the only bounded dimension, and one 1 MiB trailer served at
+        ``limit=20`` cost 22.0 MB of Python heap per call (``tracemalloc`` peak,
+        2026-09-03) against 0.1 MB once the cut moved into the statement. The
+        surface above still decides what a cut *means* to a caller -- it asks for
+        one character more than it will publish, and marks the row when that
+        character arrives (``mcp/findings._bounded_text``).
+
+        **``text_chars`` bounds the projection, never the match.** The ``WHERE``
+        clause names the column; only the ``SELECT`` list cuts it. So
+        ``text_contains`` is tested against the **whole** stored value and a
+        substring living past ``text_chars`` still selects its row -- deliberately,
+        because matching the cut text would manufacture false absences on a
+        surface whose other refusals exist to prevent exactly that. What is cut is
+        what is *published*, which is public git history either way.
+
+        **Substring matching folds ASCII case and nothing else.** ``LIKE`` is
+        SQLite's, which case-folds the 26 ASCII letters and leaves every other
+        codepoint exact: ``critical`` finds ``CRITICAL``, ``É`` does not find
+        ``é``, and text in a script with no case is matched exactly. Recorded
+        rather than fixed here: ``lower()`` has the identical ASCII-only bound
+        without an ICU build, so a "fully case-insensitive" claim is not one this
+        store can make, and stating the bound is what keeps a caller from relying
+        on the claim it cannot keep.
+
+        Raises:
+            DomainError: If ``text_chars`` is not positive. Refused rather than
+                passed to ``substr``, which answers a non-positive length with the
+                empty string (or, for a negative one, with the characters
+                *preceding* the start) -- so a caller's arithmetic slip would
+                silently serve every finding as ``""`` while the surface above,
+                seeing a value inside its own bound, published it unmarked. That
+                is the one way this parameter can produce a wrong answer instead
+                of a bounded one, so it is the one the type does not admit.
+            FindingsStoreError: If the store is missing, its metadata row is
+                absent, its stamp is stale, it cannot be read, or a row it
+                returned cannot be converted -- a column holding a value its type
+                does not admit. **Every** failure raised inside this method's own
+                read arrives as this class, whatever its Python type: the caller
+                above turns this class into one constant refusal, so an escape of
+                any other type is a second refusal shape for a second kind of
+                damage (SEC-13). All of them carry the rebuild remedy, because the
+                store is a projection of git history (ADR-0004) and rebuilding is
+                the cure for each.
+        """
+        if text_chars < 1:
+            raise DomainError(
+                f"serve_findings text_chars must be at least 1, got {text_chars}. A "
+                "non-positive cut is not a smaller answer, it is a wrong one: SQLite "
+                "would serve every finding's text as empty and the surface above would "
+                "publish it as the whole value."
+            )
+        where, parameters = _where(query)
+        # Interpolated: this module's column list, `_where`'s fixed column names
+        # and operators, and the fixed order clause. Every *value* -- including
+        # the text cut and the limit -- is a bound parameter, so no caller text
+        # reaches the statement text (S608).
+        #
+        # `text_chars` binds FIRST: its placeholder is in the SELECT list, which
+        # precedes both the WHERE clause's and the LIMIT's, and sqlite3 fills
+        # positional parameters in statement order.
+        statement = f"SELECT {_SERVE_COLUMNS} FROM findings {where} {_SERVE_ORDER} LIMIT ?"  # noqa: S608
+        try:
+            with self._read() as connection:
+                stamp_row = connection.execute(
+                    "SELECT findings_schema_version, parser_stamp FROM findings_metadata "
+                    "WHERE id = 1"
+                ).fetchone()
+                if stamp_row is None:
+                    raise FindingsStoreError(
+                        f"{self._path.name} carries no stamp, so nothing can say which "
+                        "grammar produced its rows"
+                    )
+                if (
+                    int(stamp_row["findings_schema_version"]) != FINDINGS_SCHEMA_VERSION
+                    or str(stamp_row["parser_stamp"]) != PARSER_STAMP
+                ):
+                    raise FindingsStoreError(
+                        f"{self._path.name} was built by a superseded schema or trailer "
+                        "grammar, so its rows would be read differently now"
+                    )
+                rows = connection.execute(
+                    statement, (text_chars, *parameters, query.limit)
+                ).fetchall()
+                # Converted inside the boundary, not after it (R1-2 face iv). A
+                # store whose `position` or `pull_request` holds text rather than a
+                # number -- SQLite's columns are typed by affinity, so nothing stops
+                # one -- raises `ValueError` in `int()` here, and outside the `try`
+                # that escaped as a crash while this method's contract says a damaged
+                # store raises `FindingsStoreError`. The tool above turns that class
+                # into one constant refusal; a `ValueError` instead reached the caller
+                # as a different error shape for a different kind of damage, which is
+                # the refusal-distinguishability family (SEC-13) arriving by accident.
+                served = tuple(_stored_finding(row) for row in rows)
+        except FindingsStoreError:
+            # The stamp refusals above are already this class, already worded for
+            # their cause; re-wrapping would bury them under "reading <file>".
+            raise
+        except Exception as exc:
+            # Deliberately every exception, not `(sqlite3.Error, OSError)`. What
+            # reaches a caller from a damaged or hostile store must be this class
+            # whatever the damage was: an `OverflowError` binding a parameter, a
+            # `ValueError` converting a column, a `UnicodeDecodeError` on a text
+            # column holding invalid bytes. The narrow tuple was a list of the
+            # damage shapes somebody had thought of, and round 1 found the one
+            # nobody had. Input-side mistakes are refused at the surface
+            # (`mcp/findings.py`) rather than arriving here, so this arm's rebuild
+            # remedy stays the right cure for everything it does catch.
+            #
+            # The trade, recorded rather than traded away: this width also swallows
+            # a *product* defect raised in this block -- an `AttributeError` or a
+            # `KeyError` from a future edit -- and reports it to the caller as "the
+            # store needs rebuilding", which is a remedy that will not help. It is
+            # accepted because the alternative leaks refusal shapes to a caller
+            # (SEC-13) and this block is small, exception-chained (`from exc`, so
+            # the real cause is in the traceback), and covered by tests that assert
+            # what it serves rather than only what it refuses.
+            raise FindingsStoreError(f"reading {self._path.name}: {exc}") from exc
+        return served
 
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:
         """A read-only connection that will not create the file it cannot find.
 
         ``mode=ro`` so a query never conjures an empty database at a path whose file
-        is gone -- the defect `index_store._open_read` records. The caller has
-        already checked the file exists; this refuses to write through it anyway.
+        is gone -- the defect `index_store._open_read` records.
+
+        **Not every caller has checked that the file exists**, and this is what
+        makes that safe. :meth:`stamp` and :meth:`dump` probe first;
+        :meth:`serve_findings` deliberately does not, because a probe followed by
+        an open is two looks at a name a rebuild can move between them -- so the
+        missing-store case arrives here as ``sqlite3.OperationalError`` from the
+        open, converted by that method's own boundary. ``mode=ro`` is what keeps
+        that honest: without it, the serving read would *create* an empty database
+        at the path and then report a store with no stamp.
         """
         connection = sqlite3.connect(read_only_uri(self._path), uri=True)
         try:

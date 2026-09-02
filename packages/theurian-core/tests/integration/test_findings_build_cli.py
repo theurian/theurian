@@ -30,6 +30,7 @@ key: a passphrase or hardware-token prompt with no test invoking one.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -41,10 +42,18 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from typer.testing import CliRunner
 
-from theurian.application.project_service import ProjectPaths
+from theurian.application.project_service import (
+    FINDINGS_STORE_ID,
+    BuildProvenance,
+    ProjectPaths,
+    ProjectRegistry,
+)
+from theurian.cli.findings_commands import _PROVENANCE_REMEDY
 from theurian.cli.main import app
+from theurian.daemon.runner import build_server
 from theurian.domain.review_finding import PARSER_STAMP
 from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
 from theurian.infrastructure.sqlite.findings_schema import FINDINGS_DDL
@@ -52,6 +61,7 @@ from theurian.infrastructure.sqlite.findings_store import (
     FindingsStoreError,
     SqliteReviewFindingStore,
 )
+from theurian.mcp.tools import FINDINGS_UNAVAILABLE_REFUSAL
 
 pytestmark = pytest.mark.integration
 
@@ -163,6 +173,84 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     yield root
 
 
+@pytest.fixture
+def servable_project(project: Path, tmp_path: Path) -> ProjectRegistry:
+    """The same clone, taken far enough that ``review.findings`` can resolve it.
+
+    ``findings build`` itself needs no ``.theurian`` and no registration, which is
+    why the fixture above provides neither. But the *serving* half of what this
+    command produces goes through ``_resolve``, which wants a registry entry, an
+    active state pointer, and ADR-0004/SEC-7 provenance on the **canonical**
+    state. So the two tests that ask "and is the store this build left behind
+    actually served?" need all three to be real, or a refusal would prove only
+    that the project could not be resolved.
+
+    No migration is written: ``migrate apply`` over an empty migration set still
+    creates the database, publishes ``active.json`` and records the canonical
+    state's provenance, which is everything ``_resolve`` reads. Keeping the
+    corpus empty also keeps the two tests honest about *which* gate refused --
+    there is no knowledge content here for a passing response to have come from.
+    """
+    for command in (["init"], ["project", "register"], ["migrate", "apply"]):
+        code, payload = _invoke(*command)
+        assert code == 0, f"fixture premise: `theurian {' '.join(command)}` failed: {payload}"
+
+    return ProjectRegistry.default(tmp_path / "datadir")
+
+
+def _refuse_provenance_writes(monkeypatch: pytest.MonkeyPatch) -> set[str]:
+    """Make the provenance file's write raise, and return the latch that stops it.
+
+    ``BuildProvenance._write`` writes ``provenance.json.tmp`` beside the registry
+    and then ``os.replace``s it into place, so refusing that one file name is an
+    unwritable ``THEURIAN_DATA_DIR`` as far as the recording path is concerned --
+    and nothing else in the run is touched, which matters because the same command
+    writes a store, a lock file and a working file on the way there.
+
+    Fault-injected rather than ``chmod``-ed, so the arm is driven on every runner
+    including the offline root job, where permission bits refuse nobody: the same
+    portability shape ``test_a_write_side_permission_error_is_converted...`` uses
+    for ``unlink``.
+
+    The returned set is the latch. Clearing it makes the injector inert without
+    ``monkeypatch.undo()``, which would also undo the fixture's ``chdir`` and
+    ``THEURIAN_DATA_DIR`` -- a caller that needs to record a build *after* driving
+    the failure has to be able to turn the fault off and nothing else.
+    """
+    refused = {"provenance.json.tmp"}
+    real_write_text = Path.write_text
+
+    def _refuse_the_provenance_write(self: Path, *args: object, **kwargs: object) -> int:
+        if self.name in refused:
+            raise PermissionError(13, "Permission denied")
+        return real_write_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _refuse_the_provenance_write)
+    return refused
+
+
+def _call_findings(registry: ProjectRegistry) -> dict[str, Any]:
+    """One ``review.findings`` call, as the payload a client sees."""
+
+    async def invoke() -> Any:
+        return await build_server(registry).call_tool("review.findings", {"projectId": "demo"})
+
+    result = asyncio.run(invoke())
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        payload: dict[str, Any] = structured
+        return payload
+    loaded: dict[str, Any] = json.loads(result.content[0].text)
+    return loaded
+
+
+def _refused_findings(registry: ProjectRegistry) -> str:
+    """One ``review.findings`` call that must fail, as the message a client reads."""
+    with pytest.raises(SdkToolError) as raised:
+        _call_findings(registry)
+    return str(raised.value)
+
+
 def test_a_json_build_reports_the_real_asymmetric_counts_and_the_live_parser_stamp(
     project: Path,
 ) -> None:
@@ -198,6 +286,134 @@ def test_a_json_build_reports_the_real_asymmetric_counts_and_the_live_parser_sta
     store_path = Path(payload["storePath"])
     assert store_path.is_file(), "the report names a store the build did not actually write"
     assert store_path == ProjectPaths.of(project).findings_for("local")
+
+
+def test_a_build_records_that_this_installation_produced_the_store(
+    project: Path, tmp_path: Path
+) -> None:
+    """The write half of the provenance gate (ADR-0004, SEC-7, T-19).
+
+    ``review.findings`` stands aside any store this installation has no record of
+    building, so a build that landed the file and recorded nothing would ship an
+    artifact nothing can serve -- the failure mode is silent in both directions,
+    which is why both halves are driven. The record is asserted *absent* first: a
+    file that already said yes would make the assertion after the build true for
+    the wrong reason.
+    """
+    provenance = BuildProvenance.default(tmp_path / "datadir")
+    root = ProjectPaths.of(project).root
+    assert not provenance.has_findings(root, FINDINGS_STORE_ID), (
+        "the premise: nothing has recorded a findings build for this project yet"
+    )
+    _commit(project, "fix: a change (#1)", "Review-Finding: code-review HIGH — a finding")
+    _publish(project)
+
+    code, payload = _invoke("findings", "build")
+
+    assert code == 0, payload
+    assert provenance.has_findings(root, FINDINGS_STORE_ID), (
+        "`findings build` wrote a store this installation does not vouch for, so "
+        "`review.findings` will refuse to serve what it just built"
+    )
+
+
+def test_a_build_that_cannot_record_its_provenance_reports_a_failed_build(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-19's build side: a store nothing vouches for is exit 1, not a success.
+
+    ``findings build`` records the build in ``THEURIAN_DATA_DIR`` **inside** the
+    same ``try`` that grades every other failure, and until this test landed the
+    ``except OSError`` arm that converts a refusal there was driven by nothing: a
+    guard no input reaches survives its own deletion. T-19 recorded the gap in as
+    many words -- that arm was *asserted by no test, and stated there as read from
+    the source rather than as measured* -- and that paragraph now cites this test
+    instead.
+
+    What must not happen is a **green** build whose artifact `review.findings`
+    will then refuse. That is the silent shape: a caller sees ``built: true``,
+    the file is on disk, and every read of it is refused forever with a message
+    that says to run the build they just ran. So ``built`` is asserted *absent*,
+    not merely false, and the exit code is 1.
+
+    The remedy is the other half. Every other failure this command reports sends
+    the reader to ``.theurian/``; this one is the only failure whose precondition
+    is a *different* directory, so a handler that reached for the lock's remedy
+    would be wrong in the one way a reader cannot recover from.
+    """
+    _commit(project, "fix: a change (#1)", "Review-Finding: security HIGH — a finding")
+    _publish(project)
+    _refuse_provenance_writes(monkeypatch)
+
+    code, payload = _invoke("findings", "build")
+
+    assert code == 1, payload
+    assert set(payload) == {"error", "remedy"}, (
+        f"a provenance-write refusal must arrive as the graded {{error, remedy}} contract, "
+        f"not a raw traceback; got {sorted(payload)}"
+    )
+    assert "built" not in payload, (
+        f"a build that could not record itself reported a build: {payload}. The artifact it "
+        f"left behind is one `review.findings` refuses, so this has to read as a failure"
+    )
+    assert payload["remedy"] == _PROVENANCE_REMEDY, payload["remedy"]
+    assert "THEURIAN_DATA_DIR" in payload["remedy"], (
+        f"the remedy names the wrong directory: the provenance file lives outside the "
+        f"repository, so `.theurian/` is not the precondition to fix here: {payload['remedy']}"
+    )
+
+
+def test_the_store_a_failed_provenance_build_left_behind_is_not_served_until_it_is_recorded(
+    servable_project: ProjectRegistry, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The load-bearing half: the failed build's exit code describes a real refusal.
+
+    The sibling above holds what the *command* reports. This holds why that report
+    is the truthful one -- that the store sitting on disk afterwards is genuinely
+    unservable, so "exit 1" is not a pessimistic label on a working artifact.
+    Without this, the conversion could be deleted and replaced with a ``built:
+    true`` and only a message would change.
+
+    The premise is asserted first and it is the whole point: the failed build
+    **did** land the file. A refusal over a store that was never written proves
+    nothing about provenance, and that is the vacuous reading this test would
+    otherwise have.
+
+    The closing arm is what makes the refusal mean provenance rather than any of
+    the three other states that share the constant (SEC-13 keeps one message for
+    all of them). Recording the build -- through the same class the command calls,
+    with the store's bytes asserted unchanged across the two calls -- turns the
+    refusal into rows, so the discriminator was the record in
+    ``THEURIAN_DATA_DIR`` and not the file.
+    """
+    _commit(project, "fix: a change (#1)", "Review-Finding: security HIGH — a finding")
+    _publish(project)
+    latch = _refuse_provenance_writes(monkeypatch)
+    code, payload = _invoke("findings", "build")
+    assert code == 1, f"premise: the provenance write has to have been refused, got {payload}"
+    store_path = ProjectPaths.of(project).findings_for(FINDINGS_STORE_ID)
+    assert store_path.is_file(), (
+        "premise: the failed build must have left the store on disk, or `not served` "
+        "below is true for the trivial reason that there is nothing to serve"
+    )
+    landed = store_path.read_bytes()
+
+    refusal = _refused_findings(servable_project)
+
+    assert FINDINGS_UNAVAILABLE_REFUSAL in refusal, refusal
+    latch.clear()
+    BuildProvenance.for_registry(servable_project).record_findings(
+        ProjectPaths.of(project).root, FINDINGS_STORE_ID
+    )
+    served = _call_findings(servable_project)
+    assert served["count"] == 1, (
+        f"the same store stayed unservable after its build was recorded, so the refusal "
+        f"above was not the provenance gate: {served}"
+    )
+    assert store_path.read_bytes() == landed, (
+        "the store was rewritten between the two calls, so this test compared two "
+        "different files rather than one file's provenance"
+    )
 
 
 def test_findings_build_constructs_the_git_source_from_the_project_root(

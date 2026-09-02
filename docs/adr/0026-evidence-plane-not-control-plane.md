@@ -114,6 +114,12 @@ Held by tests today — **one clause of the three**:
 > *capability honesty*: a flag cannot be flipped ahead of the feature it
 > advertises. It is not evidence of the boundary. A build could report every flag
 > truthfully and still orchestrate.
+>
+> `reviewFindings: true` joined that pinned block with ADR-0029's serving slice
+> and is asserted the same way. It is the case in the other direction — a flag
+> that moved *with* the feature it advertises, rather than ahead of it — and it
+> leaves this ADR's boundary where it was: a served review finding is evidence a
+> caller reads, and it gates nothing.
 
 Held by prose and review, not by a test:
 

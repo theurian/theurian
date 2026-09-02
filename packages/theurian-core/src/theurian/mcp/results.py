@@ -15,7 +15,9 @@ the rule moved to the domain, where every caller can reach it.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any, Final
 
 from theurian.domain.enums import KnowledgeStatus, Sensitivity
@@ -31,11 +33,21 @@ from theurian.domain.retrieval import EXCERPT_CHARS, RaptorPathSegment, excerpt
 #: Attached to every knowledge-bearing result (SEC-15). Theurian labels; the
 #: calling agent enforces. That split is stated in SECURITY.md rather than left
 #: for a reader to infer.
-SAFETY: Final[dict[str, object]] = {
-    "contentClassification": "untrusted-knowledge",
-    "mayContainInstructions": True,
-    "executable": False,
-}
+#:
+#: **Read-only at runtime, not only by convention.** `Final` stops the *name*
+#: being rebound and says nothing about the object; a plain dict shared by every
+#: serving surface is one `SAFETY["executable"] = True` away from unlabelling
+#: every result this daemon returns, from anywhere in the process, with no test
+#: naming the line that did it. `MappingProxyType` makes that a `TypeError` at
+#: the mutation rather than a disclosure at the wire. Spreading it (`**SAFETY`)
+#: is unchanged, which is how all three call sites use it.
+SAFETY: Final[Mapping[str, object]] = MappingProxyType(
+    {
+        "contentClassification": "untrusted-knowledge",
+        "mayContainInstructions": True,
+        "executable": False,
+    }
+)
 
 __all__ = ["EXCERPT_CHARS", "SAFETY", "excerpt", "result_payload"]
 
