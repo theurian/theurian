@@ -141,10 +141,13 @@ Nothing yet.
   free pages of 2,372 is 25%. FTS5's `'delete'` writes a **tombstone**: the
   postings stay in the segment structure until a merge, and nothing in the
   shipped purge merges, so a purged build carries 151× a never-held build's
-  trigram postings for rows it no longer serves and `optimize` plus `VACUUM`
-  takes it from 8,564,736 B to 241,664 B. **That reaches a caller as a
-  duration** — 16.8 ms against 1.2 ms isolated at 5,950 withdrawn, 5.67× end to
-  end, crossing the 1.40 ms noise floor between 500 and 1,000 withdrawn rows,
+  trigram postings for rows it no longer serves and `optimize` takes it from
+  8,564,736 B to 241,664 B (the source table records `optimize`; a `VACUUM`
+  applied in the reproduction lands at the same figure). **That reaches a caller as a
+  duration** — 16.8 ms against 1.2 ms isolated at 5,950 withdrawn, and **+27.4
+  ms** end to end there (the delta is the stable figure, +27.59…+28.18 ms over
+  six re-runs; the ratio moves with its denominator at 5.08–5.67×, median
+  5.41×), crossing the 1.40 ms noise floor between 500 and 1,000 withdrawn rows,
   with a five-point calibration reading the withdrawn count off the clock at 3
   of 5. Content is not recovered: responses stay byte-identical, because
   `'delete'` *does* decrement the averages record even while tombstoning the
@@ -239,7 +242,13 @@ Nothing yet.
   ([#317](https://github.com/theurian/theurian/issues/317) is its drift checker).
   The absence behind the gap was re-swept with a widened key covering the
   `asyncio` forms the first one could not see, and the still-zero result was
-  confirmed against a planted positive control. This also answers what the
+  confirmed against a planted positive control. **This entry is in that
+  seven-file population and not in the six-record one**, and the two keys are
+  why: the gap population is every record *stating* that no test issues a query
+  while a build runs, which this entry does; the discharge-status population is
+  every record carrying the dated `#140 member 1` correction marker, which this
+  entry does not — it states NFR-4's status in its own words as release prose
+  rather than correcting an ADR. This also answers what the
   `store.py` NFR-4 correction below left open.
 
 - **T-17's round-5/6/7 residual figures are re-run against a real purged build,

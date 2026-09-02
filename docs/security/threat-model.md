@@ -4417,7 +4417,8 @@ extraction takes and not ceilings.
 > > and not "any quantity"**, and the boundary is not a hedge: PR #498's round-one
 > > adversarial review measured **query duration on the trigram path**, where the
 > > purge only *shrinks* the term because FTS5 `'delete'` tombstones the postings
-> > and nothing merges them — 5.67× end to end at 5,950 withdrawn, owned by
+> > and nothing merges them — **+27.4 ms** end to end at 5,950 withdrawn
+> > (5.08–5.67× the baseline across runs, median 5.41×), owned by
 > > [#499](https://github.com/theurian/theurian/issues/499) and recorded as a
 > > face of T-17a below. The two results do not conflict; they are different
 > > instruments. Everything here is measured below the trigram floor, on the scan
@@ -4776,24 +4777,38 @@ the dense path, which T-6 enumerates as the second member of that class.
 > > adversarial review at 5,950 withdrawn and reproduced by the orchestrator:
 > > a purged build carries 1,481 trigram blocks and 5,403,892 trigram bytes
 > > against a never-held build's 13 and 35,638 — **151× the postings for rows it
-> > no longer serves** — and `optimize` plus `VACUUM` takes that build from
-> > 8,564,736 B to 241,664 B, against the never-held build's 270,336 B. A
+> > no longer serves** — and `optimize` takes that build from 8,564,736 B to
+> > 241,664 B, against the never-held build's 270,336 B. (The source table
+> > records `optimize`; a `VACUUM` was applied in the reproduction and lands at
+> > the same 241,664 B, so the merge is what does the work either way.) A
 > > free-list explanation cannot survive that: `VACUUM` alone would reclaim the
 > > free list, and what collapses the file is the merge.
 > >
+> > **The two file sizes on this page are two builds, not one**, and comparing
+> > them directly would be an instrument error: 9,715,712 B over 2,372 pages is
+> > the work log's fixture at `ec0dbcd`, and 8,564,736 B over 2,091 pages is the
+> > adversarial harness's. Both serve fifty rows at 5,950 withdrawn and both show
+> > the same shape; neither is a re-measurement of the other.
+> >
 > > **So "nothing here reaches a caller through any tool" was false, and the
 > > channel is a duration.** Corrected rather than narrowed. The retriever's
-> > *peak memory* is flat to 0.1 KB across the whole sweep and no query reads a
-> > free page — both still true — but a query above the trigram floor walks the
-> > tombstoned segments. Isolated at 5,950 withdrawn, the substring scan costs
-> > **16.8 ms on the purged build against 1.2 ms on a never-held one** (1.1 ms on
-> > the purged build's own `optimize`d copy, which is what says the merge is the
-> > variable). End to end through `RetrievalService.search` over real adapters,
-> > interleaved A/B, 40 rounds: **1.02× at nothing withdrawn rising to 5.67×
-> > (+27.36 ms) at 5,950**, crossing this model's recorded 1.40 ms end-to-end
-> > floor (TB-1) between 500 and 1,000 withdrawn rows. A five-point calibration
-> > read **the withdrawn count off the clock alone at 3 of 5 exact**, missing to
-> > an adjacent point. Not a fixture artefact (4.38× at 2,000 on a varied-body
+> > *peak memory* is flat to 0.1 KB across the whole sweep — that bound is the
+> > gate-isolation probe's, and an independent retriever-only probe reproduces
+> > the same flatness at 0.22 KB, so read it as "does not move", not as a
+> > tenth-of-a-kilobyte guarantee — and no query reads a free page. Both still
+> > true, but a query above the trigram floor walks the tombstoned segments.
+> > Isolated at 5,950 withdrawn, the substring scan costs **16.8 ms on the purged
+> > build against 1.2 ms on a never-held one** (1.1 ms on the purged build's own
+> > `optimize`d copy, which is what says the merge is the variable). End to end
+> > through `RetrievalService.search` over real adapters, interleaved A/B, 40
+> > rounds: at 5,950 withdrawn the request costs **+27.4 ms** more than at
+> > nothing withdrawn, and **the delta is the stable figure** — +27.59…+28.18 ms
+> > over six re-runs — where the *ratio* moves with its denominator: 5.08–5.67×,
+> > median 5.41×. At nothing withdrawn the ratio is 1.02×, which is a value
+> > inside a 0.91–1.03 noise band and so indistinguishable from 1. The added time
+> > crosses this model's recorded 1.40 ms end-to-end floor (TB-1) between 500 and
+> > 1,000 withdrawn rows. A five-point calibration read **the withdrawn count off
+> > the clock alone at 3 of 5 exact**, missing to an adjacent point. Not a fixture artefact (4.38× at 2,000 on a varied-body
 > > corpus), and it does not clear: ten successive purges leave the file size
 > > constant while the trigram bytes grow, so the residue is bounded by everything
 > > indexed since the last full `theurian index build`, not by one withdrawal.

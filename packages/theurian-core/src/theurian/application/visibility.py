@@ -231,7 +231,8 @@ class CanonicalVisibility:
         of "removes the term" is this method's own quantity.** FTS5's ``'delete'``
         tombstones the postings and nothing in the shipped purge merges them, so
         query duration on the trigram path stays monotone in the withdrawn count
-        — 5.67x end to end at 5,950 withdrawn, measured in PR #498's round-one
+        -- +27.4 ms end to end at 5,950 withdrawn (5.08-5.67x the baseline
+        across runs, median 5.41x), measured in PR #498's round-one
         review and owned by
         `#499 <https://github.com/theurian/theurian/issues/499>`_ as a face of
         T-17a. The canonical-read count this docstring is about is genuinely

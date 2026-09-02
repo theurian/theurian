@@ -189,9 +189,13 @@ stops testing the channel it names.
 > 5,403,892 trigram bytes purged; 11 and 33,439 optimized; 13 and 35,638
 > never-held** — 151× the postings for rows the build no longer serves — with
 > the substring scan at 16.8 ms, 1.1 ms and 1.2 ms and every response identical.
-> End to end the duration is monotone in the withdrawn count: 5.67× at 5,950,
-> crossing the threat model's 1.40 ms end-to-end floor (TB-1) between 500 and
-> 1,000 withdrawn rows.
+> End to end the duration is monotone in the withdrawn count: at 5,950
+> withdrawn a request costs **+27.4 ms** more than at nothing withdrawn, and the
+> delta is the stable figure (+27.59…+28.18 ms over six re-runs) where the ratio
+> moves with its denominator — 5.08–5.67×, median 5.41×. That crosses the threat
+> model's 1.40 ms end-to-end floor (TB-1) between 500 and 1,000 withdrawn rows.
+> The `optimize`d comparison above is the source table's; a `VACUUM` applied in
+> the reproduction lands at the same 241,664 B.
 >
 > So this section's *content* conclusion is unchanged and the *implementation
 > property* under it is narrowed, above, to what `'delete'` actually guarantees.
@@ -361,6 +365,20 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    > daemon's single-instance lock, and its failure message says that a lock
    > landing outside them means this point has to be **re-decided against it**
    > rather than corrected as pending.
+   >
+   > **The pin's reach is narrower than "every lock", and it records its own
+   > limit** — cite it with that limit or the citation overclaims. Its key sees
+   > two `fcntl` calls, three `fcntl` flags and names built on the existing
+   > lock's stem, and nothing else; **`threading` primitives, `asyncio`
+   > primitives and SQLite's own `BEGIN IMMEDIATE` idiom are outside it**, and
+   > three uncovered examples live in this package today with the sweep green
+   > over all of them: `threading.Lock()` at `infrastructure/determinism.py:47`,
+   > `threading.BoundedSemaphore` at `mcp/tools.py:505`, and `BEGIN IMMEDIATE`
+   > at `infrastructure/sqlite/connection.py:318`. So "no index write lock" is
+   > held against the `fcntl` family and the existing lock's naming, which is the
+   > shape an index write lock would realistically arrive in — not against every
+   > conceivable mutual exclusion. Widening the key means classifying those
+   > three, which is separate work; `KNOWN_LOCK_FAMILIES` carries the limit.
    >
    > **False: "there is exactly one such interface". There are eleven writable
    > opens of an index file, across two modules, with no common gate.** An AST
