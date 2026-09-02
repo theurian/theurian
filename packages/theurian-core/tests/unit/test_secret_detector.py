@@ -64,9 +64,9 @@ _CANDIDATE: Final = re.compile(r"\b[A-Za-z0-9_\-]{32,}\b")
 #: here. ``.svg`` was on this list and was the one *text* format on it, so a token
 #: pasted into an asset was invisible; measured, a planted token in an ``.svg`` was
 #: not reported. Removing it changed no verdict today -- the plugin tree holds no
-#: image files at all, and the only file the scan skips is ``LICENSE`` (measured on
-#: 486bb99) -- which is the argument for closing the hole before an asset arrives
-#: rather than after.
+#: image files at all, and the only file the scan skips is ``LICENSE`` (re-measured
+#: at ``0af1568``, a commit on #501's branch and not on ``main``) -- which is the
+#: argument for closing the hole before an asset arrives rather than after.
 #:
 #: :func:`test_no_plugin_file_imports_theurian` keeps its own ``.svg`` skip on
 #: purpose: an ``import theurian`` inside a drawing is not a source-level
@@ -97,12 +97,12 @@ def _secrets_in(tree: pathlib.Path) -> list[str]:
 
     The root is a parameter so that the code scanning the real plugin can be
     pointed at a tree with a token planted in it. Until it was, the scan below
-    could not fail: measured on 486bb99, when this section still lived in
-    ``test_plugin_boundary.py``, replacing its body with ``assert True`` and making
-    it skip every file both left that file green, because no file in the plugin
-    tree holds a candidate that reaches the detector's positive path. The five it
-    does hold are :data:`_TREE_CANDIDATES`, and not one carries an upper-case
-    letter.
+    could not fail: measured on ``486bb99``, a commit on #244's branch and not on
+    ``main``, when this section still lived in ``test_plugin_boundary.py``,
+    replacing its body with ``assert True`` and making it skip every file both left
+    that file green, because no file in the plugin tree holds a candidate that
+    reaches the detector's positive path. The eight it does hold are
+    :data:`_TREE_CANDIDATES`, and not one carries an upper-case letter.
     """
     violations: list[str] = []
     for path in tree.rglob("*"):
@@ -281,16 +281,22 @@ _LOW_ENTROPY: Final = "Aa1" * 12
 _AT_THE_FLOOR: Final = (string.ascii_uppercase[:6] + string.ascii_lowercase[:6] + "0123") * 2
 _UNDER_THE_FLOOR: Final = (string.ascii_uppercase[:6] + string.ascii_lowercase[:6] + "012") * 2
 
-#: Every candidate the scan actually meets in the plugin tree -- measured on 486bb99
-#: rather than remembered. There are five, and an earlier version of this file
-#: claimed two, one of which the scan never sees at all. Three are ADR filenames
-#: quoted in documents; two are the names of tests in ``test_plugin_boundary.py``,
-#: quoted by ``/theurian:upgrade``'s document.
+#: Every candidate the scan actually meets in the plugin tree -- measured rather
+#: than remembered, and re-measured at ``0af1568``, a commit on #501's branch and
+#: not on ``main``. There are eight, and an earlier version of this file claimed
+#: two, one of which the scan never sees at all. Three are ADR filenames quoted in
+#: documents (``0002-`` and ``0012-`` in ``README.md``, ``0013-`` in ``README.md``,
+#: ``CHANGELOG.md`` and ``commands/propose.md``); two are the names of tests in
+#: ``test_plugin_boundary.py``, quoted by ``/theurian:upgrade``'s document; and
+#: three are the names of tests in ``test_config_key_call_sites.py``, quoted by the
+#: plugin ``CHANGELOG.md``'s mutation record. The count was five until that record
+#: named its three tests, which is how a measurement moves without anything being
+#: wrong.
 #:
 #: Not one carries an upper-case letter, so the detector's positive path never
 #: executes against the real tree. That is why the scan needs
 #: :func:`test_the_scan_reports_a_token_planted_in_any_text_file` to be able to fail
-#: at all, and why these five are held here as the negative population rather than
+#: at all, and why these eight are held here as the negative population rather than
 #: standing in for one.
 #:
 #: :func:`test_this_file_still_knows_what_the_scan_meets` fails if the tree and this
@@ -446,7 +452,8 @@ def test_this_file_still_knows_what_the_scan_meets() -> None:
     The population above decides what the test before it proves; if an ADR is
     renamed or a document quotes a new long identifier, the negative cases silently
     stop describing the tree. Compared as a set rather than as a count, because
-    "five" is the part a reader can check and the part that rots first.
+    "eight" is the part a reader can check and the part that rots first -- it was
+    "five" until the plugin changelog quoted three more test names.
 
     This walk is deliberately its own rather than :func:`_secrets_in`'s. A shared
     walker would be a shared blind spot, and the one piece of state the two did
@@ -454,7 +461,7 @@ def test_this_file_still_knows_what_the_scan_meets() -> None:
     once: adding ``.yaml`` to it hid a token in the real ``compatibility.yaml`` from
     the scan *and* from this test together. So this reads every file in the tree
     with no skip list at all, which is measured to change nothing today: ``LICENSE``
-    and the skipped suffixes contribute no candidates, and the set is the same five
+    and the skipped suffixes contribute no candidates, and the set is the same eight
     either way. What the two walks do share is :func:`_readable_text`, which is a
     rule about how one file is decoded rather than about which files exist.
     """
@@ -478,8 +485,11 @@ def test_the_detector_refuses_the_name_of_the_variable_that_carries_a_token() ->
 
     It is *not* something the scan meets, which an earlier version of this file
     claimed: at 18 characters it never matches :data:`_CANDIDATE`'s ``{32,}``, and
-    all seven of its occurrences in the plugin tree sit inside ``${...}`` or a shell
-    assignment, where the word boundaries break it anyway (measured on 486bb99).
+    that alone is what excludes it. Re-measured at ``0af1568``, a commit on #501's
+    branch and not on ``main``: seven occurrences in the plugin tree, six of them
+    inside ``${...}`` or a shell assignment -- where the word boundaries would break
+    it in any case -- and one a bare mention in ``mcp/theurian.mcp.json``'s own
+    description, which is the occurrence the older wording did not account for.
 
     It is worth holding all the same, because the detector is what would judge it if
     the candidate floor ever moved. SEC-5 and ADR-0011 require the configuration to
@@ -505,9 +515,10 @@ def test_the_scan_reports_a_token_planted_in_any_text_file(
     """The scan's positive path never runs against the real tree, so run it here.
 
     A guard no input reaches survives its own deletion, and this one did: measured
-    on 486bb99, replacing the scan's body with ``assert True`` and making it skip
-    every file both left the suite green, because the five candidates the tree
-    holds all stop at the detector's class gate. This is the only test that makes
+    on ``486bb99``, a commit on #244's branch and not on ``main``, replacing the
+    scan's body with ``assert True`` and making it skip every file both left the
+    suite green, because the eight candidates the tree holds all stop at the
+    detector's class gate. This is the only test that makes
     the scan execute the branch it exists for.
 
     The token is planted in a temporary tree, never in the repository. The sites
