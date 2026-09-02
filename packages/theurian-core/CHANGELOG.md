@@ -213,6 +213,33 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   it to zero, and every plant was re-demonstrated against the widened key: single
   backtick, bare path, double quote and the house style all reach exit 1.
 
+  **Widening the run was not the answer, and the review round is how that was
+  found out.** Any delimiter run that is spelled is a run some wrapper sits
+  outside of: the same claim with its path wrapped in bold — in a wheel-shipped
+  module, outside the prose pin's surfaces — passed the widened key, all five
+  audits and the whole suite. So the census stopped matching on emphasis at all.
+  `claim_surfaces.without_emphasis` is applied at one seam, `as_read`, which the
+  pre-filter, the three claim keys, the reference keys, the record markers and
+  the ledger fragments all run against, so a form that defeats one cannot defeat
+  only one. Measured by setting that seam to the identity — which is the census
+  as it stood before — five emphasis forms move `no match` → `SUSPECT`: the path
+  in bold, in italic, in underscores, and the verb in bold or italic. A sixth,
+  emphasis on the negation, was already caught, and ADR-0028's live house style
+  — a bold path in a sentence whose negation is about something else — stays
+  `no match`, so the five were not bought with a false positive on a true
+  sentence.
+
+  **What that closes is the emphasis family, not markup composition.** A path
+  written as a Markdown link or in a three-backtick run is still out of reach,
+  and both are rows in `MEASURED_ESCAPES` — a table that fails when a row's
+  reach changes, rather than a sentence that rots. Closing them costs two
+  characters in the delimiter class and was measured rather than guessed: 55
+  rows, 19 suspects and no ledger drift on both sides, every control holding on
+  both sides, and the two escapes moving to `SUSPECT`. It is not taken, because
+  a delimiter class widened to reach two more spellings is the enumeration this
+  module exists to stop doing, and because it is a second mechanism in a round
+  closed on the first.
+
   Two further properties, both measured. The sweep reads **wrap-joined
   sentences**, not lines: at `75c4c7a`, a commit on this pull request's branch
   and not on `main`, the same key over the same scope returns 19 lines and 31
@@ -220,14 +247,37 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ones a line pass never returns at all. And every run demonstrates its key
   against a **planted positive** before any zero is read, because a key that has
   stopped matching
-  reports exactly what a clean tree reports. Each of the four ledgers is exact in
-  both directions — a suspect no row covers and a row the sweep no longer
-  produces are both exit 1 — and, since round one, each *direction* is itself
-  driven by a control rather than asserted: a ledger whose reconciliation nothing
-  exercises absorbs a new member that shares an existing key and reports the
-  absorption as a clean tree. That is what makes a correction and its record land
-  in one commit instead of the record rotting behind the fix. Full populations,
-  keys and mutation controls:
+  reports exactly what a clean tree reports.
+
+  Each of the four ledgers is exact in both directions — a suspect no row covers
+  and a row the sweep no longer produces are both exit 1 — and that is the
+  **minimum** every ledger here meets rather than the whole of what any of them
+  does. Three further directions were each added because a real member walked
+  past the two above it: **ambiguous**, one row covering two produced members,
+  which a substring fragment absorbs and only a cardinality check sees;
+  **verdict drift**, a row recorded as retracted that comes back a suspect; and
+  an **occurrence count**, a second anchor added to a place already judged. So
+  `owner_position_cites` reconciles in four directions, `config_object_claims`
+  and `sha_anchors` in three, and `controls_discharge` in two. Each *direction*
+  is driven by a control rather than asserted, which is what makes a correction
+  and its record land in one commit instead of the record rotting behind the
+  fix.
+
+  **And the suite runs the audits now, which it did not.** Committing five
+  instruments that nothing invokes leaves them free to rot: mutations reverting
+  the round-one fixes survived the full suite, and emptying a control table was
+  green. A wrapper in `tests/integration/audit/` subprocess-runs all five plus
+  `--positive-control` and asserts each exits 0. Running the control mode is not
+  sufficient on its own — a table emptied to `()` reports zero failures among
+  the rows it has, so its own audit exits 0 — and the same module therefore
+  reads the tables structurally out of the source: every module-level
+  `*_CONTROLS` name must bind a non-empty tuple, `POSITIVE_CONTROLS` is required
+  of every audit, and `LEDGER_CONTROLS` of every audit that defines a ledger
+  runner, derived from the source rather than from a list of four names kept in
+  step by hand. Its reach is stated where it runs: emptying a table is caught;
+  deleting the table *and* its runner *and* the call to it is not, because
+  nothing is left to be inconsistent with. Full
+  populations, keys and mutation controls:
   [`docs/work-logs/2026-09-02-199-unit-b-census.md`](../../docs/work-logs/2026-09-02-199-unit-b-census.md).
 
 - **ADR-0008's two dated measurement anchors say which pull requests they belong
