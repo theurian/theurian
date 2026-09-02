@@ -438,15 +438,20 @@ def _decode_metadata(raw: bytes, *, field: str, repo_root: Path) -> str:
         ) from exc
 
 
-# The trailer grammar is untouched by the containment below, so `PARSER_STAMP` does
-# not move (#496) -- deliberately, not by omission. The stamp answers "would this
-# parser read the corpus differently from the one that built the store", and none
-# of this is parser mechanics: which lines are candidates and what a line means
-# stay `keyed_lines` and `parse_trailer_line`, byte-identical. What changed is the
-# *source*'s framing and decoding, upstream of the grammar. Nor is there a store to
-# mark stale: a history carrying an undecodable message produced NO store before
-# this fix -- the build aborted -- so no file exists that was written under the old
-# behaviour and could now silently diverge from one written under the new.
+# --- the message containment, and why PARSER_STAMP does not move -------------
+#
+# The trailer grammar is untouched by the containment below, so `PARSER_STAMP`
+# stays where it is (#496) -- deliberately, not by omission. The stamp answers
+# "would this parser read the corpus differently from the one that built the
+# store", and none of this is parser mechanics: which lines are candidates and
+# what a line means stay `keyed_lines` and `parse_trailer_line`, byte-identical.
+# What changed is the *source*'s framing and decoding, upstream of the grammar.
+# Nor is there a store to mark stale: a history carrying an undecodable message
+# produced NO store before this fix -- the build aborted -- so no file exists that
+# was written under the old behaviour and could now silently diverge from one
+# written under the new.
+
+
 def _decode_message(raw: bytes) -> tuple[str | None, str, str]:
     """One record's ``%B`` decoded strictly, or the contained account of why not.
 
@@ -473,9 +478,9 @@ def _decode_message(raw: bytes) -> tuple[str | None, str, str]:
     UTF-8 -- a lone ``0x80`` was stored as ``0xc2 0x80`` -- and warn while doing it
     (both measured 2026-09-03), which is why a fixture built with either silently
     exercises valid UTF-8 and proves nothing. So the population is hand-built
-    objects, older
-    or differently-configured gits, and the ``encoding``-header paths -- narrow,
-    but every one of them is a *public commit* the corpus must survive.
+    objects, older or differently-configured gits, and the ``encoding``-header
+    paths -- narrow, but every one of them is a *public commit* the corpus must
+    survive.
 
     The excerpt is untrusted and bounded (:data:`_UNDECODABLE_EXCERPT_BYTES`): the
     raw bytes are sliced *before* decoding and then decoded with
@@ -504,13 +509,13 @@ class _Record:
     what let a subject-folded trailer go unaccounted (#410, and :data:`_FORMAT`).
     Named for what it holds so no reader infers a subject was stripped on the way in.
 
-    It is ``None`` exactly when git emitted message bytes that are not valid UTF-8
-    (#496), and then ``undecodable_excerpt`` and ``undecodable_reason`` carry the
-    bounded account :meth:`GitTrailerFindingSource.load_findings` turns into one
-    record-level rejection; both are empty for every record whose message decoded,
-    which in practice is every record. The two travel on the record rather than
-    being recomputed by the caller so the ``UnicodeDecodeError``'s own byte and
-    position -- the only thing that locates a failure past the excerpt's cap --
+    ``message`` is ``None`` exactly when git emitted message bytes that are not
+    valid UTF-8 (#496), and then ``undecodable_excerpt`` and ``undecodable_reason``
+    carry the bounded account :meth:`GitTrailerFindingSource.load_findings` turns
+    into one record-level rejection; both are empty for every record whose message
+    decoded, which in practice is every record. The two travel on the record rather
+    than being recomputed by the caller so the ``UnicodeDecodeError``'s own byte
+    and position -- the only thing that locates a failure past the excerpt's cap --
     survives the one place it exists (:func:`_decode_message`).
 
     ``committed_at`` is a **UTC instant** (#405) and is ``None`` exactly when git
