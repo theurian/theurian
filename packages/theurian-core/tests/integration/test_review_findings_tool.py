@@ -745,6 +745,14 @@ async def test_a_wildcard_in_the_text_filter_is_a_literal_character(
     Unescaped, a caller who typed ``%`` would get every finding back and read it
     as "everything matches my search" -- a wrong answer wearing the shape of a
     broad one.
+
+    The backslash row is here for the reason the store's own escape test states
+    (``test_findings_store.py::test_the_substring_filter_matches_a_wildcard_as_a
+    _literal_character``): ``\\`` is the ``ESCAPE`` character, so a corpus with
+    no backslash in it answers nothing whether the escape is doubled or not, and
+    an assertion over that corpus holds for the wrong reason (PR #504 round 1,
+    M1). Driven here too rather than only at the store, because "matched
+    literally" is a claim this *tool* publishes.
     """
     _land(
         project,
@@ -752,6 +760,11 @@ async def test_a_wildcard_in_the_text_filter_is_a_literal_character(
             accepted=(
                 _finding(_sha("a"), text="a 100% regression", when="2026-08-25T09:00:00+00:00"),
                 _finding(_sha("b"), text="plain text", when="2026-08-24T09:00:00+00:00"),
+                _finding(
+                    _sha("d"),
+                    text="a path C:\\Users\\ci in a finding",
+                    when="2026-08-23T09:00:00+00:00",
+                ),
             ),
             rejected=(),
         ),
@@ -759,6 +772,9 @@ async def test_a_wildcard_in_the_text_filter_is_a_literal_character(
 
     assert _texts(await _call(project, projectId="demo", q="%")) == ["a 100% regression"]
     assert _texts(await _call(project, projectId="demo", q="_")) == []
+    assert _texts(await _call(project, projectId="demo", q="\\")) == [
+        "a path C:\\Users\\ci in a finding"
+    ]
 
 
 # -- AC-5: a rejected trailer is not reachable ------------------------------

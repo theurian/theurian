@@ -1390,12 +1390,21 @@ def test_each_filter_selects_exactly_the_rows_that_match(
 
 
 def test_the_substring_filter_matches_a_wildcard_as_a_literal_character(tmp_path: Path) -> None:
-    """``q`` is a substring, not a pattern: ``%`` and ``_`` are ordinary characters.
+    """``q`` is a substring, not a pattern: ``%``, ``_`` and ``\\`` are ordinary.
 
     Unescaped, ``%`` is LIKE's "anything" and would return every row for a caller
     who typed a percent sign -- a wrong answer dressed as a broad one. Each
     metacharacter gets both directions: it finds the row that really contains it,
     and it does not find the row that does not.
+
+    **The backslash needs a row that carries one**, which is the half this test
+    was missing (PR #504 round 1, M1). ``\\`` is the ``ESCAPE`` character, so
+    ``_contains_pattern`` doubles it *first*; dropping that doubling leaves
+    ``q="\\"`` searching for a literal ``%`` instead. Over a corpus with no
+    backslash in it, both the correct and the broken form answer nothing, so the
+    old ``== ()`` line was satisfied for the wrong reason and the mutation
+    ``escape-not-doubled`` survived. The row below is what makes the empty answer
+    impossible to fake: the escape has to survive for it to be found at all.
     """
     store = _store(tmp_path)
     store.replace_all(
@@ -1404,6 +1413,11 @@ def test_the_substring_filter_matches_a_wildcard_as_a_literal_character(tmp_path
                 _finding(_sha("a"), text="a 100% regression", when="2026-08-25T09:00:00+00:00"),
                 _finding(_sha("b"), text="an under_scored name", when="2026-08-24T09:00:00+00:00"),
                 _finding(_sha("d"), text="plain text", when="2026-08-23T09:00:00+00:00"),
+                _finding(
+                    _sha("e"),
+                    text="a windows path C:\\Users\\ci in a finding",
+                    when="2026-08-22T09:00:00+00:00",
+                ),
             ),
             rejected=(),
         )
@@ -1414,7 +1428,9 @@ def test_the_substring_filter_matches_a_wildcard_as_a_literal_character(tmp_path
     assert _served(store, text_contains="_") == ("an under_scored name",)
     assert _served(store, text_contains="under_scored") == ("an under_scored name",)
     assert _served(store, text_contains="under scored") == ()
-    assert _served(store, text_contains="\\") == ()
+    assert _served(store, text_contains="\\") == ("a windows path C:\\Users\\ci in a finding",)
+    assert _served(store, text_contains="C:\\Users") == ("a windows path C:\\Users\\ci in a finding",)
+    assert _served(store, text_contains="C:\\\\Users") == ()
 
 
 def test_the_substring_filter_folds_ascii_case_and_nothing_else(tmp_path: Path) -> None:
