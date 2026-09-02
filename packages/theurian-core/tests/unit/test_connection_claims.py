@@ -203,29 +203,32 @@ great deal of ordinary port surface, and a pin that fires on it gets deleted.
     than per process.
   - ``test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself``
     keys on ``WriteLock|write_transaction`` and refuses only a construct by which
-    a second OS process can be **running while the test is**. **Twelve files**, and
+    a second OS process can be **running while the test is**. **Thirteen files**, and
     the number is a dated measurement rather than a property -- taken 2026-09-02 at
-    #404 by the self-excluding key
+    HEAD (after #489's ``test_tool_error_type_contract.py`` joined the population via
+    this branch's merge) by the self-excluding key
     ``git grep -lP '\\bWriteLock\\b|\\bwrite_transaction\\b' --
     packages/theurian-core/tests tests ':!*test_connection_claims.py'``, which is
     the population the tier actually scans: the rule drops this module before it
     looks at anything, so the same key without the pathspec -- the *raw* grep,
-    which answers thirteen -- describes a set the tier never reads. It read *ten* at
-    2026-08-31 (#446); the two members since are
-    ``tests/e2e/test_migrate_apply_concurrency.py`` (#468) and
+    which answers fourteen -- describes a set the tier never reads. It read *ten* at
+    2026-08-31 (#446); the three members since are
+    ``tests/e2e/test_migrate_apply_concurrency.py`` (#468),
     ``tests/integration/test_findings_build_cli.py`` (#404, the acknowledged
-    cross-process exercise, excluded from the assertion by name). Earlier the figure
+    cross-process exercise, excluded from the assertion by name) and
+    ``packages/theurian-core/tests/unit/test_tool_error_type_contract.py`` (#489,
+    which names ``write_transaction`` in a ``#:`` comment). Earlier the figure
     said *nine* while the tree held ten, and *eleven* off the raw grep; a count in
     prose churns on every new member **and** on whichever key its author reached
     for, which is why the test asserts a property and not this list.
 
-    Six of the twelve name ``subprocess``, and four of those are not a finding:
+    Six of the thirteen name ``subprocess``, and four of those are not a finding:
     each uses ``subprocess.run``, which blocks until the child exits, so the child
     cannot be holding the lock while the parent is. The other two genuinely
     contend: ``test_migrate_apply_concurrency.py`` runs two of them on threads (the
     residue this module records above, invisible to the rule), and
     ``test_findings_build_cli.py`` starts real ``findings build`` children with
-    ``Popen`` (the acknowledged exercise, excluded by name). The thirteenth file the
+    ``Popen`` (the acknowledged exercise, excluded by name). The fourteenth file the
     raw grep returns is this module, which names the words only in the prose you are
     reading, and the tier excludes it before the rule runs. A rule that refused
     ``subprocess`` outright would report four false positives and teach the next
