@@ -105,6 +105,52 @@ refused if world-readable.
 token. This raises the bar from "any script" to "already has filesystem access";
 it does not eliminate the class, and SECURITY.md says so.
 
+**Accepted deployment precondition (recorded 2026-09-02, with ADR-0029's serving
+slice): the MCP audience is not broader than the repository's readers.** The
+`review.findings` tool serves the `Review-Finding:` trailers of a project's own
+git history, read from the pinned `refs/remotes/origin/main` by
+`theurian findings build`. What it hands a caller is therefore what a `git log`
+on that same clone would already show — **but that equivalence holds only for a
+caller who can read that clone's `.git`**, and an MCP caller is a distinct
+audience from a local repository reader. So the reach argument is recorded as a
+precondition on the deployment rather than claimed as a property of the code:
+*the daemon's MCP audience must not be broader than the set of principals who
+may read the repository it serves from.*
+
+- **Why it holds in the shipped default.** The daemon binds loopback only and
+  *refuses* anything else — `DaemonConfig.__post_init__` raises on a host outside
+  `{127.0.0.1, localhost, ::1}` (SEC-1), so widening the audience past this
+  machine is a code change, not a configuration — and the token is 0600 in a 0700
+  directory (this entry's controls). A caller that clears both is a process
+  running as the user, which can read the same `.git` directly. The precondition
+  is therefore this entry's own residual risk one surface wider, not a new class.
+- **What would break it.** A deployment that shared the token with a principal
+  holding no read access to the repository, or a future non-loopback bind, makes
+  `review.findings` a disclosure surface for that deployment rather than a
+  restatement of what its caller could already read. Neither is reachable in the
+  shipped build.
+- **On a clone of the private embargo fork, the daemon sits *inside* the embargo
+  boundary.** Embargo work lives on a private fork until its advisory ships, so
+  that clone's own `origin/main` can carry an embargoed trailer. Verifying
+  `remote.origin.url` against a recorded public origin — which is what would tell
+  the two clones apart — is ADR-0029 Amendment 1's stated non-goal (D7), owed to
+  the arm that carries the recorded public-origin identity. Until it lands, the
+  protection on that clone is this same precondition: whoever may call a daemon
+  there must already be inside the embargo.
+- **Owners, read on 2026-09-02 rather than assumed.** Per-finding embargo
+  control — marking a finding where advisory state is available, then refusing it
+  *uniformly* at serve — belongs to the GitHub arm,
+  [#479](https://github.com/theurian/theurian/issues/479) (open, `phase-b`),
+  which needs [#429](https://github.com/theurian/theurian/issues/429)'s fetch
+  controls (open) first. Neither is a control this offline source can run, and
+  ADR-0029 decision 6 records why.
+- **Recorded here as an acceptance rather than as its own graded entry**, because
+  what it states is a condition on the deployment, not a defect in the shipped
+  code: nothing in this build violates it. The change that would make it a graded
+  entry with its own T-number is the one that widens the audience — a
+  non-loopback bind, a shared token, or a daemon serving a repository its callers
+  may not read.
+
 #### T-2 — A web page reaches the daemon via DNS rebinding (Spoofing, High)
 
 A page the user visits resolves a hostname to `127.0.0.1` and issues requests
@@ -1437,10 +1483,18 @@ in `tests/unit/test_network_call_sites.py` cover each other's blind spots.
   `git fetch` reach the network without Theurian importing a client. It watches
   `subprocess`, the `os` spawn/exec family — `system`, `popen`, `spawn*`,
   `posix_spawn*` and `exec*` — and `asyncio.create_subprocess_*`, and permits
-  two sites: the `git` context reads
-  in `cli/context.py` and the service runner in
-  `infrastructure/services/runner.py`, neither of which takes its argument
-  vector from a document.
+  **three** sites, none of which takes its argument vector from a document: the
+  `git` context reads in `cli/context.py`; the service runner in
+  `infrastructure/services/runner.py`; and, since ADR-0029's trailer source
+  landed, `infrastructure/git/trailer_source.py`, which runs `git log` over the
+  pinned `refs/remotes/origin/main` to read `Review-Finding:` trailers. That
+  third one is a spawn and **not** a network client — `git log` reads local
+  object storage and the local remote-tracking ref, contacting no remote — and
+  its argument vector is four constants with the ref pinned rather than passed,
+  so nothing a document or a config carries reaches it. This entry said "two
+  sites" and named the first two until 2026-09-02; the pinned set
+  (`PROCESS_SPAWN_SITES` in `tests/unit/test_network_call_sites.py`) has held
+  three since the trailer source landed.
 - **The socket layer, behaviourally.**
   `test_parsing_a_hostile_document_opens_no_socket` watches
   `socket.create_connection`, `socket.socket` and `socket.getaddrinfo` while
@@ -1457,6 +1511,19 @@ and issued from a child process is outside all three —
 and the spawn arm's own docstring names and measures it.
 
 `system.capabilities` reports `reviewIngestion: false`, pinned by
+`test_capabilities_report_what_is_and_is_not_built`.
+
+**`reviewFindings: true` is beside it and does not weaken it.** The
+`review.findings` tool serves the `Review-Finding:` trailers `theurian findings
+build` already landed in a project's local store (ADR-0029). It **adds no
+network site** — the serving read is a SQLite read of a local artifact — and
+**adds no new spawn site**: the git read behind the store is the
+`infrastructure/git/trailer_source.py` entry already listed above, performed by
+the CLI's rebuild rather than by the tool. So the flag that has to move before
+this entry's controls become load-bearing is still `reviewIngestion`, which is
+the change that reaches GitHub and therefore owes the repository allowlist
+([#429](https://github.com/theurian/theurian/issues/429)). Both flags are
+asserted, with that split stated as the reason, in
 `test_capabilities_report_what_is_and_is_not_built`.
 
 #### T-15 — A secret in a document becomes an approved, indexed revision (Information disclosure, High — the scanner covers one gate, best effort)
