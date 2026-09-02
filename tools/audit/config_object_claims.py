@@ -536,20 +536,16 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
         "key, named in the clause before. It reached the ledger when `_RECORD_MARKERS` "
         "stopped clearing a sentence for carrying the bare verb `read` (round one's M-i).",
     ),
-    (
-        "plugins/claude-code/CHANGELOG.md",
-        "so the allowlist protects no one yet",
-        "DEFECT -- file, outside this assignment's file set",
-        "The retracted universal, live, in the plugin CHANGELOG's `[Unreleased]` section: "
-        "'nothing reads that file, so the allowlist protects no one yet'. ADR-0027 "
-        "decision 3 shipped the reader -- `security/project_config.py` opens the file for "
-        "`security.secretScan` -- so the sentence should name the key rather than the "
-        "file, exactly as #461 did for `ingest.md`. It is the first row this ledger has "
-        "ever carried from a CHANGELOG, because the blanket release-note clear covered "
-        "`[Unreleased]` until round one's M-j scoped it to dated sections. The census "
-        "assignment may not edit `plugins/` or a CHANGELOG, so it is recorded here for "
-        "the prose pass rather than corrected.",
-    ),
+    # `plugins/claude-code/CHANGELOG.md`'s "nothing reads that file, so the
+    # allowlist protects no one yet" stood here as a `DEFECT` until #199 unit B's
+    # prose assignment corrected it. It was the first row this ledger ever
+    # carried from a CHANGELOG: the blanket release-note clear covered
+    # `[Unreleased]` until round one's M-j scoped it to dated sections, and a
+    # `[Unreleased]` section is live prose. The entry now narrows the negation to
+    # `providers.review.repositories` and says the file *is* read for one key --
+    # the #461 treatment one surface over -- so the sweep produces no row for it
+    # and the ledger carries none. A file-wide claim returning to that entry is
+    # an unrecorded suspect again, which is the direction that has to stay RED.
     # The rows below arrived with two round-one fixes and are the evidence that
     # both reach the tree rather than only the controls. The delimiter run (H-F)
     # brought in every quotation written in the RST house style, which a single

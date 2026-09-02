@@ -147,8 +147,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and `infrastructure/github/` holds no adapter, so an agent reading the old
   description would have offered a source Core cannot read. The Rules also told
   the user that "Theurian will not contact a repository that is not listed" in
-  `.theurian/config.yaml`, which reads as a control in force; nothing reads that
-  file, so the allowlist protects no one yet.
+  `.theurian/config.yaml`, which reads as a control in force. It is not one:
+  **nothing reads the `providers.review.repositories` allowlist**, so it protects
+  no one yet. That file itself *is* read, for one key — `security.secretScan`,
+  by `security/project_config.py` and nothing else (ADR-0027 decision 3) — and
+  this entry said the file was unread until this branch narrowed it to the key,
+  the same correction #461 made to `ingest.md` itself
+  ([#501](https://github.com/theurian/theurian/pull/501)).
 
   The document now says review ingestion is owed with Milestone 7, says the
   allowlist is not protecting the user, and enumerates what `theurian ingest`
