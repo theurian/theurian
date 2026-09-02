@@ -61,13 +61,27 @@ def _lock_write_section(lock_path: Path) -> WriteSection:
 
     ``WriteLock(lock_path).held`` is the real section, but its ``__enter__``
     ``mkdir``/``open`` raise a bare ``OSError`` the command's ``except
-    TheurianError`` cannot see (#404 R1-2). This converts *only* that -- an
-    ``OSError`` escaping the acquisition -- into a :class:`FindingsStoreError` a
-    ``TheurianError`` handler catches. It cannot mislabel a body fault: the one
-    thing run inside is ``replace_all``, which converts its own ``(sqlite3.Error,
-    OSError)`` before any escapes, and a ``WriteLockTimeoutError`` is a
-    ``TheurianError``, not an ``OSError``, so it passes straight through with the
-    lock-specific remedy #404 R1-5 gave it.
+    TheurianError`` cannot see (#404 R1-2). The ``except OSError`` below spans the
+    whole ``with`` -- acquisition, body **and** release -- and converts any bare
+    ``OSError`` from it into a :class:`FindingsStoreError` a ``TheurianError``
+    handler catches. Acquisition is the only live source of one; the other two
+    phases are covered but do not raise here:
+
+    - **Body.** The one thing run inside is ``replace_all``, which converts its own
+      ``(sqlite3.Error, OSError)`` before any escapes, and a
+      ``WriteLockTimeoutError`` is a ``TheurianError``, not an ``OSError``, so it
+      passes straight through with the lock-specific remedy #404 R1-5 gave it.
+    - **Release.** ``held``'s ``finally`` clauses (``flock(LOCK_UN)`` then
+      ``handle.close()``) run *after* ``replace_all``'s ``os.replace`` has already
+      published the artifact. A bare ``OSError`` there would be mislabelled
+      "acquiring the write lock" with a make-writable remedy -- accepted, not
+      overlooked: closing a lock file nothing was written to on a still-held
+      descriptor does not raise on a local filesystem, and the rebuild is durable
+      by then, so retrying re-derives the identical store and the remedy is
+      harmless. The broad scope is kept -- narrowing it to ``__enter__`` alone
+      means driving the context manager by hand, more machinery than an
+      unreachable, already-durable residue earns -- and the residue is recorded
+      here instead.
     """
 
     @contextmanager
