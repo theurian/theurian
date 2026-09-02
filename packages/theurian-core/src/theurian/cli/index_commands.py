@@ -605,10 +605,25 @@ def _reclaimable(paths: ProjectPaths, *, published: str) -> list[Path]:
       restored beside it.
 
     **Neither is complete alone, and in the shipped default there is no residual
-    at all.** The daemon serialises every write through one lock (ADR-0018), so
-    only one build or purge runs at a time and the ULID rule is exact: a finished
-    build's id is strictly above the published one until it publishes. A residual
-    appears only under the *unsupported* configuration of concurrent direct-CLI
+    at all.** What bounds it is that both index producers are CLI commands and a
+    person runs one at a time -- ADR-0018's own "serialised by nothing but the
+    fact that a person runs it" -- so only one build or purge is in flight and
+    the ULID rule is exact: a finished build's id is strictly above the published
+    one until it publishes.
+
+    This paragraph said "the daemon serialises every write through one lock
+    (ADR-0018)" until PR #498's round-one review, and both halves were wrong. The
+    daemon runs **no** build and no purge: `IndexBuilder`, `derive_purged` and
+    `publish_purge_for_withdrawal` appear nowhere under `daemon/` or `mcp/`
+    (measured 2026-09-02; the same key returns twelve files elsewhere under
+    `src/`, which is the control that says it can match). And there is no index
+    write lock for them to be serialised by -- ADR-0024 decision 4's dated
+    correction records that no index write path takes one, and that the eleven
+    writable opens across `index_store.py` and `index_purge.py` are serialised
+    against each other by nothing. The lock ADR-0018 names guards the *state*
+    databases.
+
+    A residual appears only under the *unsupported* configuration of concurrent direct-CLI
     builds against one project, and even then it is narrow -- a build reclaimed in
     the write-to-publish window must have an id sorting **below** the published
     one, which means another build minted a later id and published first while

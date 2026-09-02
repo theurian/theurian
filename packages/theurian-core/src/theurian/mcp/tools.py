@@ -1138,6 +1138,28 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # storm 13/15/16 vs 16/13/12. Mechanism pinned by
         # `test_the_substring_scan_reads_items_through_idx_items_status`.
         #
+        # Frame for the 14.7 us figure above (annotated 2026-09-01). It is round
+        # six's, taken on a build that still held the withdrawn rows -- which is
+        # the window the sentence scopes it to, and not a current per-row cost.
+        # Re-taken against a real index and its purged twin at `ec0dbcd`
+        # (`docs/work-logs/2026-09-01-472-purged-build-re-measurement.md`,
+        # F2/F1'): the stale build reproduces the shape at 24.3 us per withheld
+        # row, a different machine 27 days later and so comparable in shape
+        # rather than in magnitude, while the purged build carries no
+        # per-withheld-row term at all. Why it carries none is branch-dependent:
+        # on the scan below the trigram floor, which has no `LIMIT`, the purged
+        # `|ranking|` is the visible count; on the branches that truncate it is
+        # `depth` whatever was withheld, before and after the purge alike.
+        # Pinned over withheld counts 0, 50 and 200 by
+        # `test_a_purged_build_reads_canonical_once_per_visible_row_however_many_were_withheld`
+        # and over 49-52 by
+        # `test_a_purged_build_stays_at_one_retriever_pass_across_the_first_pass_depth_edge`,
+        # both in `tests/integration/test_purged_build_quantities.py`. What the
+        # purge does NOT remove is the segment residue: the withdrawn rows'
+        # postings survive as FTS5 tombstones and make query duration on the
+        # trigram path monotone in the withdrawn count (#499, a face of T-17a),
+        # so this frame bounds the canonical-read term and not the clock.
+        #
         # **`ToolError`, not an empty result or a ninth `fallbackReason`.** A
         # search that goes quiet under load instead of saying why is the
         # failure f30881e closed; answering `count: 0` here would reopen it.

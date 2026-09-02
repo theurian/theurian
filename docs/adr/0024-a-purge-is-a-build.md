@@ -5,8 +5,22 @@
 - Deciders: Theurian maintainers
 - Requirements: FR-R2, NFR-4, NFR-7, SEC-13, T-10, T-17a
 - Answers the open question in [ADR-0022](0022-index-lives-in-its-own-database.md)
-- Discharges the index half of [ADR-0018](0018-single-writer-synchronous-in-m1.md)'s
-  "the derived index has no single-writer contract at all"
+- **Narrows** the index half of
+  [ADR-0018](0018-single-writer-synchronous-in-m1.md)'s "the derived index has no
+  single-writer contract at all": a published build is never written, so there is
+  no live file for a second writer to reach. **That property is decisions 1 and
+  2 plus the naming discipline, not decision 4** — every production writes a new
+  file under a fresh ULID and a `.building` suffix and publishes by `os.replace`,
+  and three tests refuse the alternative
+  (`test_building_over_an_existing_file_is_refused`,
+  `test_a_purge_into_an_existing_path_is_refused`,
+  `test_a_purge_refuses_to_write_over_another_writers_building_file`), with
+  `test_a_purge_leaves_the_published_build_untouched` holding the published build
+  byte-for-byte. It does **not discharge** ADR-0018's contract. This line read
+  "Discharges the index half of…" until 2026-09-01, and decision 4's correction
+  below records the measurement that retired the word. The contract itself is
+  owed and unscheduled, tracked in
+  [#439](https://github.com/theurian/theurian/issues/439).
 
 ## Context
 
@@ -151,13 +165,48 @@ withheld document of average length moves it least:
 untruncated.
 
 **The implementation property this rests on**: FTS5's `'delete'` command, issued
-by `chunks_fts_delete` and `chunks_trigram_delete`, removes the row's postings
-*and* decrements the averages record — `nRow` and the per-column total sizes —
-that `bm25` reads as `N` and `avgdl`. Deleting the `chunks` row is what makes the
-statistics equal, not merely what makes the row absent. If a future FTS5 kept the
-averages record and only removed postings, every line of that table would still
-say "identical" for `nHit` and stop saying it for `avgdl`, so the fixture must
-carry a long-document configuration or it stops testing the channel it names.
+by `chunks_fts_delete` and `chunks_trigram_delete`, stops the row's postings
+being *matched* and decrements the averages record — `nRow` and the per-column
+total sizes — that `bm25` reads as `N` and `avgdl`. Deleting the `chunks` row is
+what makes the statistics equal, not merely what makes the row absent. If a
+future FTS5 kept the averages record and only stopped matching the postings,
+every line of that table would still say "identical" for `nHit` and stop saying
+it for `avgdl`, so the fixture must carry a long-document configuration or it
+stops testing the channel it names.
+
+> **Corrected on 2026-09-02 in PR #498's round-one review. This sentence said
+> `'delete'` "removes the row's postings *and* decrements the averages record",
+> and only the second half is true.** `'delete'` writes a **tombstone**: the
+> postings stay in the segment structure until a merge, and **nothing in the
+> shipped purge merges**. The equality this section measures is real, and its
+> stated mechanism was half wrong. The averages half is what carries the
+> equality — the record *is* decremented, which is why the rankings above are
+> byte-identical — and the postings half is not, and has a measured cost of its
+> own.
+>
+> Measured at 5,950 withdrawn rows (visible 50), a purged build against its own
+> `optimize`d copy against a never-held build: **1,481 trigram blocks and
+> 5,403,892 trigram bytes purged; 11 and 33,439 optimized; 13 and 35,638
+> never-held** — 151× the postings for rows the build no longer serves — with
+> the substring scan at 16.8 ms, 1.1 ms and 1.2 ms and every response identical.
+> End to end the duration is monotone in the withdrawn count: at 5,950
+> withdrawn a request costs **+27.4 ms** more than at nothing withdrawn — the
+> round-one measurement, +27.36 ms — and **six later re-runs give +27.59…+28.18
+> ms**, so the delta is the stable figure across separate runs while the ratio
+> moves with its denominator: 5.08–5.67×, median 5.41×. The conclusion moves on
+> neither. That crosses the threat model's 1.40 ms end-to-end floor (TB-1)
+> between 500 and 1,000 withdrawn rows.
+> The `optimize`d comparison above is the source table's; a `VACUUM` applied in
+> the reproduction lands at the same 241,664 B.
+>
+> So this section's *content* conclusion is unchanged and the *implementation
+> property* under it is narrowed, above, to what `'delete'` actually guarantees.
+> The residue and its closure — merging inside the purge — are owned by
+> [#499](https://github.com/theurian/theurian/issues/499), which is a **face of
+> T-17a** (*the index still holds the withdrawn rows*, surviving at the FTS5
+> segment level) rather than a new class; its recorded closure is the merge or
+> an acceptance carrying the measured bound. The threat model's T-17a entry
+> carries the full measurement, and these records move again when #499 lands.
 
 `認証` is the one row where the control agrees, and that is the expected answer
 rather than a weak fixture: two characters fall below the trigram floor and are
@@ -256,11 +305,129 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    pages, so rowid stability is not a behaviour it could get wrong, and it is the
    faster of the two.
 
-4. **A purge goes through the same single-writer interface as a build, and there
-   is exactly one such interface.** This is ADR-0018 point 1 applied to the index
-   for the first time. `IndexStore.create` and the purge are both *productions of
-   a new build*; publishing is a separate step that takes the index write lock.
-   Nothing outside that interface opens an index file for writing.
+4. **A purge is produced the way a build is: a new file, written through
+   `SqliteIndexStore` and the purge module it delegates to, and published by a
+   pointer swap.** `IndexStore.create` and the purge are both *productions of a
+   new build*; publishing is a separate step, and it writes a pointer rather than
+   an index. **Nothing outside those two modules opens an index file for
+   writing** — which is what makes point 1 keepable, because a writer that cannot
+   reach a published file cannot collide with a reader of one.
+
+   > **Corrected on 2026-09-01 against measurement
+   > ([#445](https://github.com/theurian/theurian/issues/445)); the work log is
+   > `docs/work-logs/2026-09-01-472-purged-build-re-measurement.md`.** This point
+   > made three claims. **One holds and two were false when they were written**,
+   > and the point above is narrowed to the one that holds. What it said is
+   > quoted here rather than deleted, because this ADR's header line and its
+   > Compliance section both rested on the pair that did not.
+   >
+   > It read: *"A purge goes through the same single-writer interface as a build,
+   > and there is exactly one such interface. This is ADR-0018 point 1 applied to
+   > the index for the first time. `IndexStore.create` and the purge are both
+   > productions of a new build; publishing is a separate step that takes the
+   > index write lock. Nothing outside that interface opens an index file for
+   > writing."*
+   >
+   > **False: "publishing … takes the index write lock". There is no index write
+   > lock for it to take.** Publishing is `write_active_index_pointer` in
+   > `application/project_service.py` — a write-to-temp plus `os.replace`, and
+   > nothing else. Measured by calling the purge's publish half exactly as
+   > `application/withdrawal_purge.py` calls it: the lock file at
+   > `<root>/.theurian/runtime/write.lock` does not exist before the publish, does
+   > not exist after it, and is never held, while the pointer is written. **The
+   > source already said so in the files that do the work** —
+   > `withdrawal_purge.py` records "No new index-write lock is taken" and
+   > `project_service.py` records "The purge holds no index-write lock" — so this
+   > point contradicted the code and ADR-0018's own record, which #436 corrected
+   > to *owed*. Statically, at `fe2925c`:
+   >
+   > ```sh
+   > git grep -nE "flock|lockf|LOCK_EX|LOCK_SH|LOCK_NB|write_lock|WriteLock" \
+   >   -- packages/theurian-core/src   # -> 33 lines over 5 files
+   > ```
+   >
+   > **Not one of the 33 is an index write path.** Thirty-one are the
+   > state-database `WriteLock` family — the class, its timeout error and its
+   > `flock` calls in `infrastructure/sqlite/connection.py` (10), the
+   > `ProjectPaths.write_lock` property in `application/project_service.py` (1),
+   > and the lines threading it through `cli/commands.py` (14) and
+   > `cli/migration_pipeline.py` (6) to `write_transaction` — and 2 are
+   > `daemon/instance.py`'s single-instance lock. The same key restricted to the
+   > five index-writing modules (`index_store.py`, `index_purge.py`,
+   > `withdrawal_purge.py`, `index_builder.py`, `cli/index_commands.py`) returns
+   > **0**, against 33 over the whole tree, which is the control that says the key
+   > can match.
+   >
+   > **The count is a dated measurement and it moves** — it was 19 at `ec0dbcd`
+   > and #478's `migrate apply` serialisation took it to 33 without adding an
+   > index lock. **The classification is the claim**, and it is held on `main` by
+   > `test_every_lock_in_the_package_belongs_to_one_of_the_two_known_families` in
+   > `packages/theurian-core/tests/unit/test_adr_0018_claims.py`: every lock line
+   > under the package source must fall in the state-database family or the
+   > daemon's single-instance lock, and its failure message says that a lock
+   > landing outside them means this point has to be **re-decided against it**
+   > rather than corrected as pending.
+   >
+   > **The pin's reach is narrower than "every lock", and it records its own
+   > limit** — cite it with that limit or the citation overclaims. Its key sees
+   > two `fcntl` calls, three `fcntl` flags and names built on the existing
+   > lock's stem, and nothing else; **`threading` primitives, `asyncio`
+   > primitives and SQLite's own `BEGIN IMMEDIATE` idiom are outside it**, and
+   > three uncovered examples live in this package today with the sweep green
+   > over all of them: `threading.Lock()` at `infrastructure/determinism.py:47`,
+   > `threading.BoundedSemaphore` at `mcp/tools.py:505`, and `BEGIN IMMEDIATE`
+   > at `infrastructure/sqlite/connection.py:318`. So "no index write lock" is
+   > held against the `fcntl` family and the existing lock's naming, which is the
+   > shape an index write lock would realistically arrive in — not against every
+   > conceivable mutual exclusion. Widening the key means classifying those
+   > three, which is separate work; `KNOWN_LOCK_FAMILIES` carries the limit.
+   >
+   > **False: "there is exactly one such interface". There are eleven writable
+   > opens of an index file, across two modules, with no common gate.** An AST
+   > walk over `index_store.py` and `index_purge.py` for call sites of the two
+   > module-private factories that hand out a *writable* connection (`_connect`,
+   > `_writing`), plus the one raw `sqlite3.connect(target)` neither factory
+   > covers, at `fe2925c`:
+   >
+   > | Site | Enclosing function | Visibility |
+   > | :-- | :-- | :-- |
+   > | `index_store.py:545` | `create` | public |
+   > | `index_store.py:559` | `add_chunks` | public |
+   > | `index_store.py:626` | `add_nodes` | public |
+   > | `index_store.py:685` | `add_node_embeddings` | public |
+   > | `index_store.py:835` | `delete_nodes_grounded_in_chunks` | public |
+   > | `index_store.py:902` | `add_embeddings` | public |
+   > | `index_store.py:917` | `record_embedding_model` | public |
+   > | `index_purge.py:526` | `_copy` | private |
+   > | `index_purge.py:545` | `_delete` | private |
+   > | `index_purge.py:663` | `_restamp` | private |
+   > | `index_purge.py:690` | `_verify` | private |
+   >
+   > Seven public methods on `SqliteIndexStore` open an index file for writing,
+   > plus `derive_purged`, which delegates to `index_purge.purge_into`. Nothing
+   > serialises them against each other, and nothing serialises either module
+   > against the other. "Exactly one interface" is true only if *interface* means
+   > "the `IndexStore` port plus the purge module it delegates to" — a **layering**
+   > statement, not the single-writer contract ADR-0018 point 1 defines.
+   >
+   > **Holds: "nothing outside that interface opens an index file for writing",
+   > and this is the clause the narrowed point keeps.**
+   > `git grep -n "sqlite3.connect(" -- packages/theurian-core/src` returns eleven
+   > code lines at `fe2925c`, classified by target: three writable index opens
+   > (`index_store.py:265`'s `_connect`, `index_purge.py:394`'s `_writing`,
+   > `index_purge.py:526`'s copy writer), two `mode=ro` index opens
+   > (`index_store.py:303`, `index_purge.py:525`), three state-database opens
+   > (`connection.py:216`, `:237`, `:315`), two findings-store opens
+   > (`findings_store.py:203`, `:335`), and one `:memory:` (`index_store.py:246`).
+   > Every writable index open is inside `index_store.py` or `index_purge.py`.
+   > The one call that looks like a counterexample — `recompute_forest` reaching
+   > `delete_nodes_grounded_in_chunks` and `add_nodes` from the *application*
+   > layer in `withdrawal_purge.py` — writes to the **building** file `purge_into`
+   > hands it, not to the published build, and reaches them through
+   > `SqliteIndexStore` either way. Confirmed at runtime by
+   > `test_a_purge_leaves_the_published_build_untouched`
+   > (`tests/integration/test_index_purge.py`), which holds the published build
+   > byte-for-byte across a real `derive_purged`.
 
 5. **A purge is triggered by the withdrawal, not by a person remembering.**
    Whatever retires, supersedes or rejects a revision publishes the purged build
@@ -301,10 +468,49 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    filename containing `?` would otherwise be read as a query parameter and
    override the mode.
 
-   **Landed.** The whole read surface goes through `_open_read`, pinned by
-   `test_a_read_of_a_missing_index_creates_no_file` over every read method. The
-   pragmas it runs rest on index files being WAL, which
-   `test_a_built_index_is_always_in_wal_mode` pins.
+   **Landed.** The whole read surface goes through `_open_read`, and
+   `test_a_read_of_a_missing_index_creates_no_file` pins **seven of the eleven**
+   public read methods that raise on a missing file. The pragmas it runs rest on
+   index files being WAL, which `test_a_built_index_is_always_in_wal_mode` pins.
+
+   > **Coverage corrected on 2026-09-02 in PR #498's round-one review: this said
+   > "over every read method", and it is seven of eleven.** The population is a
+   > runnable key rather than a description, because the first statement of it
+   > described a procedure and the count moved when a second reader chose a
+   > different key:
+   >
+   > ```sh
+   > uv run --frozen python -c "
+   > import ast,pathlib
+   > s=pathlib.Path('packages/theurian-core/src/theurian/infrastructure/sqlite/index_store.py');src=s.read_text();L=src.splitlines()
+   > c=next(n for n in ast.parse(src).body if isinstance(n,ast.ClassDef) and n.name=='SqliteIndexStore')
+   > r=sorted(n.name for n in c.body if isinstance(n,ast.FunctionDef) and not n.name.startswith('_') and n.name!='session' and 'self._read' in '\n'.join(L[n.lineno-1:n.end_lineno]))
+   > print(len(r),r)"
+   > ```
+   >
+   > **12** at `1a37c86`: `chunk_count`, `chunk_texts`, `holds_any_revision`,
+   > `metadata`, `raptor_path`, `schema_version`, `search_dense`,
+   > `search_lexical`, `search_substring`, `search_summaries`,
+   > `surviving_chunks`, `texts`.
+   >
+   > **The 11 and the 12 are two keys, not a disagreement, and the relation is
+   > one line**: 12 is the public methods that reach `self._read`; **11 is those
+   > that *raise*, which is 12 minus `schema_version`**, whose contract is to
+   > return `0` on an unreadable build. `session` is excluded from both — it is
+   > the context manager the others open through, not a read — and
+   > `is_searchable` appears in neither, because it reaches `_read` only by
+   > calling `schema_version()` and returns `False` rather than raising. Of the
+   > 11, **7 are parametrised** — `chunk_count`, `chunk_texts`, `metadata`,
+   > `search_dense`, `search_lexical`, `search_substring`, `texts` — and **4 are
+   > not**: `holds_any_revision`, `raptor_path`, `search_summaries`,
+   > `surviving_chunks`.
+   >
+   > **The behaviour underneath is correct, and that is why this is a coverage
+   > gap and not a defect.** Each of the four unpinned methods was driven against
+   > a missing index path (2026-09-02, this branch): all four raise
+   > `IndexUnreadableError` and none creates a file. So the decision holds; what
+   > is narrower than the sentence is the *pin*, and a read method added later
+   > that forgets `_open_read` is caught only if it is one of the seven.
 
 8. **Withdrawal is transitive over derived content.** A node whose text is
    *derived* from a chunk — a RAPTOR summary (ADR-0008) is the case this project
@@ -869,10 +1075,122 @@ Landed by the change that implements this ADR:
   source build is not restamped. `Connection.backup` copies pages, so without the
   restamp the copy would carry the parent's id.
 
-Owed to ADR-0018, and satisfied by point 4 rather than by this ADR's own tests:
-its "the derived index has no single-writer contract at all" is discharged for
-the index when one interface owns every index write and a test asserts that
-surface. Its `CanonicalStore.transaction()` half is not touched here.
+Still owed to ADR-0018, and **not** satisfied by point 4: its "the derived index
+has no single-writer contract at all" needs one interface owning every index
+write, and there are eleven writable opens across two modules with no common
+gate. Its `CanonicalStore.transaction()` half is not touched here either.
+
+> **Corrected on 2026-09-01
+> ([#445](https://github.com/theurian/theurian/issues/445)).** This paragraph
+> said the ADR-0018 debt is *"satisfied by point 4 rather than by this ADR's own
+> tests: … discharged for the index when one interface owns every index write and
+> a test asserts that surface."* The condition it names is the right one and it
+> is **not met** — decision 4's dated correction carries the measurement and the
+> eleven-site table. What point 4 does establish is narrower: **nothing outside
+> `index_store.py` and `index_purge.py` opens an index file for writing** — a
+> layering fact, measured, and the only one of its three clauses that held.
+>
+> **The property worth keeping is not point 4's, and attributing it there was
+> this correction's own error, caught in review.** "A published build is never
+> written, so a second writer has no live file to reach" is **decisions 1 and 2
+> plus the naming discipline**: decision 1 states the rule, decision 2 makes a
+> purge a copy-and-publish rather than an in-place edit, and every production
+> writes a new file under a fresh ULID and a `.building` suffix, published by
+> `os.replace`. Three tests refuse the alternative —
+> `test_building_over_an_existing_file_is_refused`,
+> `test_a_purge_into_an_existing_path_is_refused` and
+> `test_a_purge_refuses_to_write_over_another_writers_building_file` — and
+> `test_a_purge_leaves_the_published_build_untouched` holds the published build
+> byte-for-byte across a real `derive_purged`. That is a property of *when*
+> writes happen, not of *how many interfaces* perform them, and the single-writer
+> contract is owed and unscheduled under
+> [#439](https://github.com/theurian/theurian/issues/439).
 
 NFR-4 is discharged by points 6 and 7 together, and by neither alone. It is not
 discharged by this ADR being accepted.
+
+> **Reconciled on 2026-09-01 across every record that states it
+> ([#140](https://github.com/theurian/theurian/issues/140) member 1). Six records
+> state NFR-4's discharge status; the sentence above is the one that stands, and
+> the other five disagreed with it and are corrected.** The population is a key,
+> not a list — every file carrying the dated `#140 member 1` correction, read
+> with blockquote markers stripped and whitespace collapsed: this ADR,
+> `docs/adr/0018-single-writer-synchronous-in-m1.md`,
+> `docs/adr/0022-index-lives-in-its-own-database.md`,
+> `docs/adr/0007-state-hash-partitioned-databases.md`,
+> `packages/theurian-core/src/theurian/indexing/__init__.py` and
+> `packages/theurian-core/src/theurian/infrastructure/sqlite/store.py`. **Six and
+> five is the pair to quote**; earlier drafts of this reconciliation said "three
+> other records", "all four records" and "four different ways", none of which
+> agreed with each other or with the corrected set. ADR-0018's Compliance
+> section, ADR-0022's Still-owed opener and
+> `packages/theurian-core/src/theurian/indexing/__init__.py`'s docstring each
+> recorded NFR-4 as undischarged and owed to "Milestone 6's blue/green work" —
+> which is the work this ADR *is*, and which has landed. Each now carries a dated
+> correction pointing here.
+>
+> **The evidence is the acceptance pins, read rather than re-run.** NFR-4 is "the
+> previously published index answers every query while a new build runs, zero
+> read downtime", and its two clauses are covered differently:
+>
+> - **Zero read downtime — discharged, and this is the clause NFR-4 was recorded
+>   unmet for.** The failure was reaping at publish: 1,889 errors against 163
+>   successful searches in 1.5 seconds, with an empty database left at the reaped
+>   path. Point 6 abolishes that window and
+>   `test_publishing_a_build_no_longer_reclaims_the_one_it_replaced`
+>   (`tests/integration/test_index_gc_cli.py`) holds it through the real CLI —
+>   two builds in a row leave two files. Retention makes reclaiming necessary, so
+>   point 7 closes the window that creates:
+>   `tests/integration/test_gc_during_a_search.py` is decision 7's own acceptance
+>   module and its four tests cover the whole shape — a request in a session
+>   finishes against the build it started on (4 of 4 reads after a forced
+>   unlink), a read of a reaped build never recreates it, a request starting
+>   after the reap reads the published build, and the no-session case is pinned
+>   as the counterexample at 1 of 4. `test_a_read_of_a_missing_index_creates_no_file`
+>   (`tests/integration/test_index_store.py`) holds the `mode=ro` half over every
+>   read method, which is what keeps a reaped path from becoming an empty
+>   database that reports itself healthy.
+> - **"While a new build runs" — true by construction, with every element pinned,
+>   and *no test issues a query while a build is running*.** A build writes to
+>   `<final>.building`, a name `theurian index gc` does not reap
+>   (`test_a_build_is_written_under_a_name_gc_will_not_reclaim`), renames it with
+>   `os.replace`, and publishes by an atomic pointer swap
+>   (`write_active_index_pointer`: write-to-temp plus `os.replace`); a build over
+>   an existing index file is refused outright
+>   (`test_building_over_an_existing_file_is_refused`,
+>   `tests/integration/test_index_store.py`); and the previously published file is
+>   retained. So a query during a build resolves the pointer to a file the build
+>   never opens. **That composite is argued from pinned elements, not measured**:
+>   there is no concurrency test in the suite that runs a search against a build
+>   in progress.
+>
+> **So the mechanism is discharged and one acceptance test is still owed**, and
+> the distinction is the point of this note. ADR-0007's own Still-owed bullet
+> states that residue exactly — "Nothing asserts a query during an in-progress
+> build sees the previous complete state" — and it remains accurate; what has
+> changed underneath it is that the two records it cites as agreeing with it
+> (ADR-0018's and ADR-0022's) no longer do. It is annotated there rather than
+> restated here. **The owed test is owned by
+> [#497](https://github.com/theurian/theurian/issues/497)**, whose definition of
+> done requires every record stating this gap to move in the same pull request
+> the test lands in, because each becomes false the moment it exists. That
+> population is measured rather than listed — a wrap-aware, blockquote-aware
+> search of `while a build is|during a build|during an in-progress build`.
+> **Scoped to the files this record-update branch touches it is seven**:
+> ADR-0007's bullet, ADR-0018's Compliance bullet, ADR-0022's Still-owed opener,
+> this note, `indexing/__init__.py`'s docstring,
+> `infrastructure/sqlite/store.py`'s module docstring, and the CHANGELOG entry.
+> **Run repo-wide the same key returns eight**, and the eighth is
+> `.theurian/knowledge/architecture/state-hash-partitioned-databases.01M0D5GWD03YD4TFJV2E0SHAVW.md`
+> — ADR-0007's **dogfood-corpus twin**, which is served content rather than a
+> record and is re-seeded from its ADR rather than edited in place. It moves when
+> the corpus is re-seeded, and that is the M7 dogfooding lane's, not this
+> reconciliation's; the drift checker that would catch it is
+> [#317](https://github.com/theurian/theurian/issues/317). State the scope with
+> the number or the two disagree: seven is the record population, eight is the
+> repository.
+>
+> A line-oriented `git grep` under-counts either figure, because three of the
+> seven wrap the phrase across a soft line break and one sits inside a nested
+> blockquote — which is why the key above is run over text with the `>` markers
+> stripped and the whitespace collapsed.

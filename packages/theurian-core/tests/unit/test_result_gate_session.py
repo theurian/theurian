@@ -358,8 +358,13 @@ def test_the_canonical_read_count_is_the_ranking_length_and_so_the_withheld_coun
     the visible rows plus the withheld ones and a request pays for documents its
     caller may not read. Measured at about 15 us per distinct document, and on
     this pipeline at 6.047 ms with 400 documents retired after the build against
-    0.163 ms with none: linear, one row at a time, with no threshold in it. Finer
-    than the fifty-row staircase
+    0.163 ms with none: linear, one row at a time, with no threshold in it,
+    **for as long as the ranking handed to ``cleared`` still carries the
+    withdrawn rows.** That condition is the claim's scope rather than a caveat on
+    it, and this test supplies the condition by hand: the ranking above is
+    constructed with the withheld rows in it, so the linearity here is a property
+    of ``cleared`` given such a ranking and not a statement that a shipped
+    request produces one. Finer than the fifty-row staircase
     :data:`~theurian.application.retrieval_service.FIRST_PASS_DEPTH` leaves one
     layer up, which is where the pass-count face of the same residual lives.
 
@@ -384,6 +389,61 @@ def test_the_canonical_read_count_is_the_ranking_length_and_so_the_withheld_coun
     It closes when the index stops holding withdrawn rows: the Milestone 6 purge,
     issue #15, and nothing smaller. Whoever makes these numbers stop reproducing
     owes the T-17a acceptance a re-argument, in either direction.
+
+    **That purge shipped, and the closure was measured on 2026-09-01 rather than
+    argued** (``docs/work-logs/2026-09-01-472-purged-build-re-measurement.md``,
+    F2/F1', against ``ec0dbcd``). Driven end to end over a real index and its
+    purged twin instead of over a hand-built ranking, the stale build reproduces
+    the line -- 10 canonical reads at nothing withheld rising to 6,000 at 5,990,
+    0.2349 ms to 157.7126 ms -- while the purged build reads **10 at every
+    withheld count from 0 to 5,990** and spans 0.2339 ms to 0.2433 ms across the
+    whole sweep. The retriever no longer has the withdrawn rows to hand over, so
+    there is no line left to be linear; the term is removed rather than made
+    smaller. Pinned by
+    ``test_a_purged_build_reads_canonical_once_per_visible_row_however_many_were_withheld``
+    in ``tests/integration/test_purged_build_quantities.py``, whose stale control
+    asserts ``visible + withheld`` first.
+
+    **This test keeps its own scope, and that is why it is not retired by the
+    purge.** It measures ``cleared`` given a ranking that carries withheld rows,
+    which is still what happens in the window between a withdrawal and the purge
+    that follows it. Beyond that window, T-17a's structure is **two residuals,
+    the second of which has three windows**, and this gate is reached in three
+    of those four places -- an attribution this docstring got wrong until PR
+    #498's round-two review, which said "two of the three residual cases" and so
+    dropped a real one:
+
+    * **residual #1** -- a request already in flight at the pointer swap
+      finishes against the pre-purge build;
+    * **residual #2, first window** -- a request already in flight at the moment
+      the taint is written finishes against the pre-taint build, which is the
+      same bound as #1 one step later;
+    * **residual #2, second window** -- a *double* failure, in which the purge
+      fails and the taint write that should have marked the pointer is refused
+      with it, so the stale build stays served. It needs two independent disk
+      faults, not one.
+
+    **The third window is not this test's**, and saying so is the point of
+    listing them: a clean build published by a concurrent ``theurian index
+    build`` and reverted by the non-atomic taint write leaves a pointer still
+    carrying ``purgeFailed: true``, so the serve path stands that build aside and
+    no ranking reaches this gate at all. T-17a records it **SAFE-direction, no
+    disclosure**, a recorded MEDIUM deferred to the derived index's
+    single-writer contract (#439).
+
+    **"A purge that failed" is no longer one of them, and this docstring said it
+    was until PR #498's round-one review.** GHSA-97q9-xxfg-33r6 inverted it:
+    ``mark_active_index_purge_failed`` taints the pointer, and
+    ``mcp.search._published_index`` returns ``_PURGE_FAILED`` on that flag
+    *before* the id, file, provenance, project and flavor gates, so a
+    purge-failed build does not answer at all. A single purge failure therefore
+    reaches this gate with no ranking rather than with a stale one. What is left
+    of it are the two windows named above -- the request already in flight when
+    the taint is written, and the double failure -- which is why neither is
+    called "a purge that failed" here.
+
+    The number this test holds is the price of those windows, not of a healthy
+    request.
     """
     measured = {
         (withheld, placement): _measure(withheld, placement).reads

@@ -296,6 +296,40 @@ lock path property, declared in one of the swept modules, so keeping the token
 would make this sweep RED today against a package that takes no index lock at
 all.
 
+**The reach limit above is what the second lock pin exists for, and the two are
+complements rather than copies.** The bullet's claim is about the *package* --
+"There is no index write lock in the package", with an unanchored ``git grep``
+over ``packages/theurian-core/src`` pasted beside it -- while the sweep above
+starts from symbols and therefore cannot see a module nothing imports yet.
+:func:`test_every_lock_in_the_package_belongs_to_one_of_the_two_known_families`
+starts from the filesystem instead: every line under the package source matching
+:data:`_LOCK_POPULATION_KEY` must fall in :data:`KNOWN_LOCK_FAMILIES`, which
+names five files and the two reasons -- ``ProjectPaths.write_lock``'s
+state-database family and ``daemon/instance.py``'s single-instance lock. A lock
+anywhere else is one nobody has classified.
+
+Neither sweep subsumes the other. The symbol walk moves with a renamed writer and
+this one does not; this one sees a file no symbol reaches and the walk does not.
+The population one restores ``write_lock`` to its key -- unanchored and
+case-insensitively, so ``index_write_lock`` and the PascalCase class name built
+on the same stem are both inside it -- for
+the reason recorded on :data:`_LOCK_NAME_TOKENS`: the two sweeps ask different
+questions, and in *this* one the canonical store's lock is not noise, it is one of
+the two answers. Its own limit is that it classifies per file, so a lock added
+inside an already-accepted file for an index would pass it; that is the shape the
+symbol walk covers.
+
+**That pin carries #445's fact side as well.** ADR-0024 point 4 says a purge
+"goes through the same single-writer interface as a build", that "there is exactly
+one such interface", and that "publishing is a separate step that takes the index
+write lock". Measured 2026-09-01 against ``ec0dbcd``
+(``docs/work-logs/2026-09-01-472-purged-build-re-measurement.md``), the third
+clause has no referent: the pointer swap is a write-to-temp plus ``os.replace``,
+the lock file is never created, and ``application/withdrawal_purge.py`` records
+"No new index-write lock is taken" in its own source. So the day a lock does land,
+that correction has to be re-decided rather than filed as pending -- and the pin
+is what says so at the moment it happens.
+
 The other condition -- that no single write interface has appeared on the
 ``CanonicalStore`` port -- is already pinned on ``main`` by
 ``test_connection_claims.py::test_the_canonical_store_port_declares_no_single_write_interface``
@@ -414,9 +448,11 @@ from __future__ import annotations
 
 import ast
 import functools
+import io
 import pathlib
 import re
 import sys
+import tokenize
 from types import ModuleType
 from typing import Final, NamedTuple
 
@@ -842,7 +878,23 @@ CORRECTION_NOTES: Final[dict[str, CorrectionNote]] = {
 #:   than a category: its deletion removes provenance but resurrects nothing,
 #:   because point 2 was corrected *in place* and is held in both directions by
 #:   :func:`test_adr_0018_says_the_write_lock_is_a_separate_file_and_names_it` and
-#:   :func:`test_adr_0018_does_not_reattach_the_write_lock_to_a_database`.
+#:   :func:`test_adr_0018_does_not_reattach_the_write_lock_to_a_database`;
+#: - the 2026-09-02 correction under the index bullet, which retracts that
+#:   bullet's prediction that ADR-0024 point 4 would discharge it. Three
+#:   paragraphs, none anchored, and **its two clauses are held unequally**. The
+#:   lock clause is pinned in both directions by
+#:   :func:`test_no_index_write_path_module_takes_a_lock` and
+#:   :func:`test_every_lock_in_the_package_belongs_to_one_of_the_two_known_families`,
+#:   which go RED the day an index write lock lands -- inside the API reach
+#:   :data:`KNOWN_LOCK_FAMILIES` states. The eleven-writable-opens clause is
+#:   **not pinned anywhere**: it is an anchored measurement, and the census pin
+#:   that would hold it is owed to
+#:   https://github.com/theurian/theurian/issues/439. So this blockquote's
+#:   deletion is green partly by design and partly by that gap;
+#: - the 2026-09-01 #140 reconciliation under the NFR-4 bullet, which answers
+#:   "it belongs with the same blue/green work" by naming ADR-0024 points 6 and 7
+#:   and #497. Two paragraphs, none anchored; the discharge status it reconciles
+#:   is ADR-0024's own subject and is pinned there.
 #:
 #: **The Neutral point's NFR-4 amendment used to be on that list, and the reason
 #: given was refuted.** It said the amendment is ADR-0022's subject and cited from
@@ -859,27 +911,44 @@ CORRECTION_NOTES: Final[dict[str, CorrectionNote]] = {
 #: returns for this record, one at a time, and run this module.
 #:
 #: At ``155dc08`` that was sixteen paragraphs, of which eight deletions stayed
-#: green -- the two whole blockquotes listed above, plus six paragraphs inside a
-#: pinned blockquote. One of those six is now pinned: the NFR-4 amendment's body,
-#: which the Compliance section cites and which is anchored above on "what this
-#: point is right about is the canonical store". Re-run after that pin against
-#: this module's twenty-six tests, seven deletions stay green and the residue
-#: inside pinned blockquotes is **five**:
+#: green -- two whole blockquotes plus six paragraphs inside a pinned one. One of
+#: those six was then pinned: the NFR-4 amendment's body, anchored above on "what
+#: this point is right about is the canonical store". Re-run after that pin, seven
+#: deletions stayed green and the residue inside pinned blockquotes was five.
+#:
+#: **Re-measured at ``3c299a2`` against this module's thirty tests, and the
+#: figures above were stale by eight paragraphs.** The record is now **eight
+#: blockquotes, twenty-four paragraphs, fifteen deletions green, nine RED.**
+#: Every one of the eight paragraphs added since is green, and they arrived in
+#: three notes: the #468 closure under Decision point 2 (three paragraphs, from
+#: ``main``), and on this branch the index bullet's 2026-09-02 correction (three)
+#: and the NFR-4 bullet's #140 reconciliation (two). Seven of the fifteen are the
+#: four whole blockquotes listed above; the residue inside pinned blockquotes is
+#: **eight**:
 #:
 #: - the Milestone-5 amendment's "decision is not superseded" paragraph, carrying
 #:   the standing ``#15`` cite, and its GOVERNANCE note. That amendment is seven
 #:   paragraphs: four anchored above, a fifth held by
 #:   :data:`AMENDMENT_COUNT_NOTE`, and these two;
-#: - the #468 narrowing's mechanism and not-superseded paragraphs. That blockquote
-#:   is three: one anchored, and these two;
+#: - **five** in the blockquote run under Decision point 2: the #468 narrowing's
+#:   mechanism and not-superseded paragraphs, and the three of #468's closure
+#:   note. That run is six paragraphs with one anchored. **It was recorded here
+#:   as "three: one anchored, and these two", which was true before the closure
+#:   note landed and is the drift this re-measurement found**;
 #: - the NFR-4 amendment's "this point said WAL is ..." paragraph, which argues
 #:   for the retraction its heading states. That blockquote is three, and the other
-#:   two are anchored above.
+#:   two are anchored above -- unchanged.
 #:
 #: They are recorded rather than pinned because each restates
 #: something an anchored paragraph or a live pin already carries, and a pin per
 #: paragraph would go RED on every ordinary rewrite of a record that is rewritten
-#: often.
+#: often. **This is a measurement, not an assertion**: nothing reads these numbers
+#: at run time, so they go stale silently and the re-run above is the only thing
+#: that catches it. Two rounds have now found them stale -- #446's third, which
+#: caught "four" against a swept six, and PR #498's first -- which is the argument
+#: for a pin that recomputes this census from the record instead. Building one is
+#: a new mechanism rather than a line edit, so it is not done inside a fix pass;
+#: this note is the evidence for whoever decides.
 _UNPINNED_BLOCKQUOTES: Final = "recorded above, not enumerated in code"
 
 #: The two things the point-1 bullet's re-measurement has to keep saying. Not
@@ -1191,6 +1260,105 @@ REQUIRED_INDEX_WRITERS: Final = (
     "theurian.application.index_builder",
     "theurian.application.withdrawal_purge",
     "theurian.cli.index_commands",
+)
+
+#: The two accepted reasons a file under ``packages/theurian-core/src`` may name
+#: a lock at all, as the strings a failure quotes back.
+STATE_DATABASE_LOCK: Final = "the ProjectPaths.write_lock state-database family"
+SINGLE_INSTANCE_LOCK: Final = "the daemon's single-instance lock"
+
+#: The whole-package lock population, classified. **Every** line under the
+#: package source matching :data:`_LOCK_POPULATION_KEY` must sit in one of these
+#: files, and a file that is not here is a lock nobody has classified.
+#:
+#: This is the *reach* complement of :func:`test_no_index_write_path_module_takes_a_lock`,
+#: not a second copy of it. That sweep is symbol-derived and therefore narrow --
+#: its own docstring records that "a lock added in a module the derivation
+#: reaches only through an import is still unseen". This one starts from the
+#: filesystem instead, so a lock in a module no index symbol reaches, or in a
+#: module that does not exist yet, is inside it. Neither subsumes the other: the
+#: narrow sweep moves with a renamed writer, this one does not; this one sees a
+#: brand-new module, the narrow one does not.
+#:
+#: **Classified per file, and that is the stated limit.** A ``fcntl.flock`` added
+#: *inside* ``connection.py`` or ``cli/commands.py`` for an index file would be
+#: classified as the state-database family and pass -- the narrow sweep and
+#: ADR-0024's own point 4 are what cover that shape. What this catches is the
+#: realistic one: an index write lock lands where index writes live, which is any
+#: file but these five.
+#:
+#: **The API coverage is narrower than "a lock", and this is where that is
+#: written down because it is where ADR-0024's correction sends its reader.** That
+#: correction cites this pin as the fact side of *"there is no index write lock"*,
+#: so the reach of the key underneath has to be legible from here.
+#: :data:`_LOCK_POPULATION_KEY` matches two ``fcntl`` calls (``flock``, ``lockf``),
+#: three ``fcntl`` flags (``LOCK_EX``, ``LOCK_SH``, ``LOCK_NB``) and names built on
+#: the existing lock's stem (``write_lock``, ``writelock``, unanchored and
+#: case-insensitive, which is what catches ``index_write_lock`` and a PascalCase
+#: class on the same stem). It matches **no other locking idiom**, and the misses
+#: are not hypothetical -- measured at ``7d7d0d4``, three of them are in this
+#: package today and this sweep is green over all three:
+#:
+#: - ``threading.Lock()`` at ``infrastructure/determinism.py:47``;
+#: - ``threading.BoundedSemaphore`` at ``mcp/tools.py:505``;
+#: - ``BEGIN IMMEDIATE`` at ``infrastructure/sqlite/connection.py:318`` -- the
+#:   repo's *own* state-database lock, and invisible here.
+#:
+#: :func:`test_the_lock_population_key_ignores_names_that_merely_contain_a_token`
+#: asserts the first of those must not fire, so the blindness is deliberate at the
+#: identifier level and unexamined at the API level. Also uncovered:
+#: ``filelock.FileLock``, ``os.O_EXLOCK``, ``BEGIN EXCLUSIVE``, ``msvcrt.locking``,
+#: and the ``asyncio`` lock and semaphore types.
+#:
+#: **So the day an index write lock arrives in one of those idioms, this pin stays
+#: green and ADR-0024's citation keeps pointing at a sweep that did not look.**
+#: Widening the key is a change to this population -- every new match needs
+#: classifying, starting with the three above -- so it is a separate piece of work
+#: rather than a line edit, and stating the limit is what keeps the citation
+#: honest until it happens.
+KNOWN_LOCK_FAMILIES: Final[dict[str, str]] = {
+    "application/project_service.py": STATE_DATABASE_LOCK,
+    "cli/commands.py": STATE_DATABASE_LOCK,
+    "cli/migration_pipeline.py": STATE_DATABASE_LOCK,
+    "infrastructure/sqlite/connection.py": STATE_DATABASE_LOCK,
+    "daemon/instance.py": SINGLE_INSTANCE_LOCK,
+}
+
+#: The two *name* tokens :data:`_LOCK_API_TOKENS` deliberately drops, restored
+#: for the population sweep because the two sweeps ask different questions. The
+#: narrow one asks "did an index writer take a lock", where ``write_lock`` names
+#: a canonical-store property declared in a swept module and would make it RED
+#: today against a package with no index lock at all. This one asks "is every
+#: lock in the package accounted for", and there ``ProjectPaths.write_lock`` is
+#: not noise -- it is one of the two families, and a *new* name built on it
+#: (``index_write_lock``, or the PascalCase class name on the same stem) is
+#: exactly the arrival to catch.
+#:
+#: Matched as substrings rather than word-bounded, and only these two.
+#: ``\bwrite_lock\b`` does not match inside ``index_write_lock`` -- ``_`` is a
+#: word character, so there is no boundary to find -- which would let the new
+#: lock arrive under a name derived from the old one and be missed. ADR-0018's
+#: own pasted key is an unanchored ``git grep -E``, so this matches what the
+#: record's reader would get.
+_LOCK_NAME_TOKENS: Final = ("write_lock", "writelock")
+
+#: The API tokens, one wider than :data:`_LOCK_API_TOKENS`: ``LOCK_SH`` and
+#: ``LOCK_NB`` are the shared and non-blocking flags, and a lock taken with
+#: either is still a lock. They are absent from the narrow sweep's key because it
+#: predates this population; adding them there is a change to that pin's
+#: contract, so it is not made here.
+_LOCK_POPULATION_APIS: Final = ("flock", "lockf", "LOCK_EX", "LOCK_SH", "LOCK_NB")
+
+#: Word-bounded for the APIs, unanchored for the names, case-insensitive
+#: throughout -- for the reasons on the two token tuples above.
+_LOCK_POPULATION_KEY: Final = re.compile(
+    "|".join(
+        [
+            *(rf"\b{re.escape(token)}\b" for token in _LOCK_POPULATION_APIS),
+            *(re.escape(token) for token in _LOCK_NAME_TOKENS),
+        ]
+    ),
+    re.IGNORECASE,
 )
 
 
@@ -1632,6 +1800,128 @@ def _owner_cites_of_the_closed_tracker(bullet: str) -> list[str]:
 def _lock_apis(text: str) -> list[str]:
     """Every lock API named in a piece of source text."""
     return _LOCK_API.findall(text)
+
+
+def _character_column(lines: list[str], row: int, byte_column: int) -> int:
+    """An ``ast`` column as an index into a ``str`` line.
+
+    **The two sources of a column in :func:`_code_only_lines` do not agree on what
+    a column is, and mixing them silently corrupted the blank.** ``tokenize``
+    reports character offsets into the decoded line; ``ast`` reports **UTF-8 byte**
+    offsets (`ast.Constant.col_offset` is documented as a UTF-8 byte offset). On an
+    ASCII line the two coincide, which is why this survived a review round and two
+    reviewers found it in the next one.
+
+    Where they diverge the blank runs *past* the string it was told to erase, into
+    the code beside it -- two characters per em-dash, two per CJK character, and
+    this repository's docstrings are em-dash-heavy. Measured on the branch before
+    this fix: ``\"\"\"ロックはProjectPaths.write_lockが持つ。\"\"\"; fcntl.lockf(handle)``
+    blanked through ``fcntl.lockf(ha``, so a **real lock inside the pin's own
+    recorded coverage** was reported as absent. That is the failure direction that
+    matters -- an absence sweep erasing its own evidence.
+
+    A byte offset that lands mid-character cannot come from a parsed span, and if
+    one ever did the ``UnicodeDecodeError`` is a ``ValueError``, which the caller
+    catches into its raw-lines fallback: loud and fail-closed, not silent.
+    """
+    if not 1 <= row <= len(lines):
+        return byte_column
+    return len(lines[row - 1].encode()[:byte_column].decode())
+
+
+def _code_only_lines(source: str) -> list[str]:
+    """*source*'s lines with every comment and every prose string blanked out.
+
+    The population below asks whether a module **takes** a lock. A sentence
+    *about* a lock is not one, and until PR #498's first review round the sweep
+    could not tell them apart: planting the comment ``# The state database is
+    guarded by ProjectPaths.write_lock; no index lock exists.`` in
+    ``index_store.py`` reported that file as an unclassified lock family. A pin
+    that fires on a correct comment is one the next author silences -- and the
+    message it fires with used to offer ``KNOWN_LOCK_FAMILIES`` as the remedy,
+    which would have exempted the very file a real index lock would land in.
+
+    Blanked rather than dropped, so line numbers survive: a failure has to quote
+    ``path:line`` a reader can open.
+
+    **Two classes are removed and a third deliberately is not.**
+
+    - ``COMMENT`` tokens, which is where prose lives in this package -- including
+      the ``#:`` attribute docstrings this file is full of.
+    - String constants standing alone as a statement: every docstring, plus a
+      bare string used as a block comment. Taken from the AST rather than from
+      the token stream, because "is this string a docstring" is a question about
+      the position of the expression, not about the token.
+    - **Not** string literals in general. ``BEGIN IMMEDIATE`` at
+      ``infrastructure/sqlite/connection.py:318`` is SQL in a string and it is a
+      real lock -- the repo's own state-database idiom. Blanking every string
+      would delete exactly the shape a widened key would want to see.
+
+    An unparseable file falls back to its raw lines. A file this function cannot
+    read is not evidence of absence, and an absence sweep must fail loud rather
+    than quiet.
+    """
+    lines = source.splitlines()
+    spans: list[tuple[int, int, int, int]] = []
+
+    try:
+        # `tokenize` columns are already character offsets into the decoded line;
+        # `ast` columns are UTF-8 byte offsets, so they are converted on the way
+        # in and everything below this point is characters. See
+        # `_character_column` for what mixing them erased.
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type == tokenize.COMMENT:
+                spans.append((*token.start, *token.end))
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Constant):
+                continue
+            constant = node.value
+            if isinstance(constant.value, str) and constant.end_lineno is not None:
+                spans.append(
+                    (
+                        constant.lineno,
+                        _character_column(lines, constant.lineno, constant.col_offset),
+                        constant.end_lineno,
+                        _character_column(lines, constant.end_lineno, constant.end_col_offset or 0),
+                    )
+                )
+    except (SyntaxError, tokenize.TokenError, ValueError):
+        return lines
+
+    blanked = list(lines)
+    for start_row, start_column, end_row, end_column in spans:
+        for row in range(start_row, min(end_row, len(blanked)) + 1):
+            line = blanked[row - 1]
+            start = start_column if row == start_row else 0
+            end = end_column if row == end_row else len(line)
+            blanked[row - 1] = line[:start] + " " * (end - start) + line[end:]
+    return blanked
+
+
+def _lock_population(root: pathlib.Path) -> dict[str, tuple[str, ...]]:
+    """Every ``path:line`` under *root* whose **code** names a lock, by module path.
+
+    Walks the filesystem rather than a symbol graph, which is the whole reason
+    this population exists beside :func:`_index_write_path_modules`: a lock in a
+    module nothing imports yet is still a lock, and a symbol walk cannot see one.
+
+    Reads each file through :func:`_code_only_lines`, so a comment or a docstring
+    *mentioning* a lock is not counted as one. That distinction is the finding
+    this function was corrected for, and its own reasoning is on that helper.
+
+    Keyed by the path *relative to root* so the result reads as the entries of
+    :data:`KNOWN_LOCK_FAMILIES` and a failure quotes something a reader can grep.
+    Line-granular rather than file-granular because a file that is expected to
+    match tells the reader nothing about *which* line arrived.
+    """
+    population: dict[str, list[str]] = {}
+    for path in sorted(root.rglob("*.py")):
+        relative = path.relative_to(root).as_posix()
+        source = path.read_text(encoding="utf-8")
+        for number, line in enumerate(_code_only_lines(source), start=1):
+            if _LOCK_POPULATION_KEY.search(line):
+                population.setdefault(relative, []).append(f"{relative}:{number}")
+    return {name: tuple(lines) for name, lines in population.items()}
 
 
 def _index_write_path_modules() -> tuple[ModuleType, ...]:
@@ -2785,4 +3075,260 @@ def test_no_index_write_path_module_takes_a_lock() -> None:
         f"the index write path now takes a lock: {found}. ADR-0018's index bullet "
         f"must stop saying there is no index write lock, and the work it hands to "
         f"{LIVE_OWNER} has moved"
+    )
+
+
+def test_the_lock_population_key_catches_the_fcntl_spellings_and_the_derived_names() -> None:
+    """RED means the population sweep stopped matching, so the pin below passes over nothing.
+
+    Driven by synthetic source for the reason
+    :func:`test_the_lock_api_sweep_catches_a_taken_lock_in_synthetic_source` is:
+    every real match today sits in an accepted file, so an implementation that
+    returned nothing at all would look identical to a working one.
+
+    **This test was named ``...catches_every_shape_a_new_lock_could_take`` and it
+    never held that**, which PR #498's first review round caught. It holds the four
+    arrivals below and no others; :data:`KNOWN_LOCK_FAMILIES` records what the key
+    is blind to, including three idioms already in this package. The name is now
+    what the samples are, because the old one was read as coverage by whoever
+    cited the pin next -- and a name is the only part of a test most readers ever
+    compare against a claim.
+
+    The samples are four shapes a new lock could arrive in -- the two ``fcntl``
+    spellings with each flag, a lock path named after the one that exists, and a
+    class named after the class that exists. The last two are the ones word
+    boundaries would miss: ``\\bwrite_lock\\b`` finds nothing inside
+    ``index_write_lock``, because ``_`` is a word character and there is no
+    boundary there to find. The class sample is also what the case-insensitive
+    half is for: a new lock class is spelled in PascalCase, and the token it has
+    to be matched against is not.
+
+    **The class name is derived rather than typed, and neither half of that is
+    style.** Deriving it -- PascalCase from the snake_case token the key already
+    carries -- is what makes this leg unable to pass vacuously: the sample and the
+    token that has to match it move together, so dropping the case-insensitive
+    spelling from :data:`_LOCK_NAME_TOKENS` takes this RED instead of leaving a
+    hand-typed string matching a hand-typed pattern. And it keeps the literal out
+    of this file, which matters because
+    ``test_connection_claims.py::test_the_only_test_that_constructs_the_write_lock_runs_in_one_process``
+    keys on the lock class's PascalCase name as a plain substring over the whole
+    test tree and permits exactly one member. That guard is about tests that
+    *construct* a lock; this one only describes a string. For the same reason the
+    name is absent from this module's docstrings -- do not spell it back in.
+    """
+    a_new_lock_class = "".join(part.capitalize() for part in _LOCK_NAME_TOKENS[0].split("_"))
+    arrivals = (
+        "    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)",
+        "    fcntl.lockf(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)",
+        "        index_write_lock = self._paths.index_write_lock",
+        f"class Index{a_new_lock_class}:",
+    )
+
+    unmatched = [line for line in arrivals if not _LOCK_POPULATION_KEY.search(line)]
+
+    assert not unmatched, (
+        f"the population key no longer matches these lock arrivals, so a new index "
+        f"lock written this way would land outside every family and be reported as "
+        f"an empty population: {unmatched}"
+    )
+
+
+def test_the_lock_population_key_ignores_names_that_merely_contain_a_token() -> None:
+    """RED means the sweep fires on ordinary code, and gets deleted for crying wolf.
+
+    The API half is word-bounded precisely so these pass. ``lockf`` sits inside
+    ``blockfile`` and ``clockface``, and ``lock_path`` and ``self._lock`` are
+    names any module may use for something that is not an OS advisory lock. A
+    substring rule over the API tokens would report all five, and a pin that fires
+    on unrelated true code is one the next author silences rather than reads.
+    """
+    innocent = (
+        "blockfile = 2",
+        "clockface = render()",
+        "lock_path = paths.runtime / 'write.lock'",
+        "self._lock = threading.Lock()",
+        "unlocked = True",
+    )
+
+    firing = [line for line in innocent if _LOCK_POPULATION_KEY.search(line)]
+
+    assert not firing, (
+        f"the population key fires on identifiers that merely contain one of its "
+        f"tokens, so every new file using one of these ordinary names would be "
+        f"reported as an unclassified lock: {firing}"
+    )
+
+
+def test_prose_naming_a_lock_is_not_counted_and_the_code_beside_it_still_is() -> None:
+    """RED means the sweep is back to reporting sentences about locks as locks.
+
+    PR #498's first review round planted this comment in ``index_store.py`` -- ``#
+    The state database is guarded by ProjectPaths.write_lock; no index lock
+    exists.`` -- and the whole-package pin reported that file as an unclassified
+    lock family. Two things were wrong with that, and the second is the worse one.
+    The sweep's subject is whether a module *takes* a lock, and a correct sentence
+    saying it does not is the opposite of the arrival it watches for. And the
+    failure message offered ``KNOWN_LOCK_FAMILIES`` as the remedy, which exempts a
+    whole *file* -- so the natural way to silence a false alarm was to blind the
+    sweep in exactly the file a real index write lock would land in. The message
+    now separates the three remedies and refuses that one by name.
+
+    Synthetic source, carrying both halves in one module. The control comes first
+    and it is what makes the claim mean anything: every prose sample here is
+    reachable by the key, so "nothing fired" cannot be satisfied by samples the key
+    was never going to match.
+
+    **Two live calls sit next to prose, and each rules out one way of blanking it
+    wrong.** The ``fcntl.flock`` carries a *trailing comment* that also names a
+    lock: a filter dropping any line containing ``#`` would take the call with it.
+    The ``fcntl.lockf`` follows a **non-ASCII** string statement on one physical
+    line, which is the case PR #498's second round found -- ``ast`` columns are
+    UTF-8 byte offsets and the lines are ``str``, so blanking with the raw column
+    ran two characters past the string per CJK character and erased the call
+    itself. Measured on the branch before that fix: this exact line blanked
+    through ``fcntl.lockf(ha`` and the sweep reported **no lock**. The last two
+    assertions are what say each surviving match is its call and not its prose.
+
+    The Japanese is the input, not decoration: an em-dash overruns by two
+    characters and leaves the call standing, so an ASCII-plus-punctuation sample
+    would have stayed green through the defect.
+    """
+    source = "\n".join(
+        (
+            '"""The state database is guarded by ProjectPaths.write_lock."""',
+            "",
+            "import fcntl",
+            "",
+            "#: No index write_lock is taken anywhere in this module.",
+            'RUNTIME = "runtime"',
+            "",
+            "",
+            "def acquire(handle):",
+            '    """Takes ProjectPaths.write_lock, never an index lock.',
+            "",
+            "    A second paragraph mentioning fcntl.flock and LOCK_EX.",
+            '    """',
+            "    # The state database is guarded by ProjectPaths.write_lock; no index lock.",
+            "    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # the write_lock, taken here",
+            "    return handle",
+            '    """ロックはProjectPaths.write_lockが持つ。"""; fcntl.lockf(handle)',
+        )
+    )
+    prose_lines = (1, 5, 10, 12, 14)
+    commented_call, non_ascii_call = 15, 17
+
+    raw = [
+        number
+        for number, line in enumerate(source.splitlines(), start=1)
+        if _LOCK_POPULATION_KEY.search(line)
+    ]
+    blanked = _code_only_lines(source)
+    firing = [
+        number for number, line in enumerate(blanked, start=1) if _LOCK_POPULATION_KEY.search(line)
+    ]
+
+    assert raw == [*prose_lines, commented_call, non_ascii_call], (
+        f"the positive control failed: read raw, this sample must fire on every "
+        f"prose line {prose_lines} and on both calls, which is what makes the "
+        f"assertions below a measurement rather than samples the key was never "
+        f"going to match. Fired on {raw}"
+    )
+
+    assert firing == [commented_call, non_ascii_call], (
+        f"prose and code are no longer being separated. Either a lock named in a "
+        f"comment or a docstring is counted as one taken -- which reports a correct "
+        f"sentence as an unclassified family, and whose tempting remedy exempts the "
+        f"whole file -- or the blank has run past a string into a real call and lost "
+        f"it. Fired on {firing}, expected {[commented_call, non_ascii_call]}"
+    )
+
+    assert _LOCK_POPULATION_KEY.findall(blanked[commented_call - 1]) == ["flock", "LOCK_EX"], (
+        "the surviving match on the commented line is its trailing comment rather "
+        "than the call: blanking must remove the comment and leave the code, or a "
+        "real lock taken on a commented line is reported for the wrong reason"
+    )
+
+    assert _LOCK_POPULATION_KEY.findall(blanked[non_ascii_call - 1]) == ["lockf"], (
+        f"blanking a non-ASCII string statement did not land where the string ends. "
+        f"`ast` columns are UTF-8 byte offsets and these lines are characters, so an "
+        f"unconverted column runs past the string and erases the call beside it -- "
+        f"the direction that hides a real lock. Line reads: "
+        f"{blanked[non_ascii_call - 1]!r}"
+    )
+
+
+def test_every_lock_in_the_package_belongs_to_one_of_the_two_known_families() -> None:
+    """RED means a lock arrived that nobody has classified -- and two records must move.
+
+    The fact side of ADR-0018's Compliance bullet, at the reach that bullet's own
+    pasted key has: *"There is no index write lock in the package ... every one of
+    them the canonical ``ProjectPaths.write_lock`` or the daemon's single-instance
+    lock, and none of them in an index write path."* That is a claim about the
+    **whole package**, and until this pin the only fact half in the suite was the
+    symbol-derived sweep above, whose own docstring records that it does not reach
+    a module no index symbol imports.
+
+    It is also the fact side of the reconciliation
+    https://github.com/theurian/theurian/issues/445 is doing on ADR-0024 point 4,
+    which asserts that a purge "goes through the same single-writer interface as a
+    build, and there is exactly one such interface", and that "publishing is a
+    separate step that takes the index write lock". Measured 2026-09-01 against
+    ``ec0dbcd``: there is no index write lock for publishing to take -- the pointer
+    swap is a write-to-temp plus ``os.replace`` and the lock file is never created
+    -- and ``application/withdrawal_purge.py`` says so in its own source. So the
+    day one *is* taken, that ADR's correction has to be re-decided, and this test
+    is what says so.
+
+    **Three premises before the search**, because a search for an absence reports
+    success when it searches nothing:
+
+    1. the source root resolves and holds Python files;
+    2. every accepted file still exists -- a rename must fail naming itself rather
+       than quietly shrinking the accepted set to four;
+    3. every accepted file still *matches*. An entry that has stopped matching is
+       an allowlist that has gone stale, and a stale allowlist widens what the
+       conclusion below covers without anyone deciding to.
+
+    Only then is the population classified, and what is left is what nobody has
+    accounted for.
+    """
+    assert _SOURCE_ROOT.is_dir(), f"the package source root does not resolve: {_SOURCE_ROOT}"
+    modules = list(_SOURCE_ROOT.rglob("*.py"))
+    assert modules, (
+        f"there are no Python files under {_SOURCE_ROOT}, so the sweep below would "
+        f"report a landed lock as an absence"
+    )
+
+    missing = sorted(name for name in KNOWN_LOCK_FAMILIES if not (_SOURCE_ROOT / name).is_file())
+    assert not missing, (
+        f"these accepted lock files no longer exist, so whatever they held has moved "
+        f"somewhere this test would report as a new lock -- or has stopped being "
+        f"classified at all: {missing}"
+    )
+
+    population = _lock_population(_SOURCE_ROOT)
+    silent = sorted(set(KNOWN_LOCK_FAMILIES) - set(population))
+    assert not silent, (
+        f"these files are accepted as lock families but no longer name a lock, so "
+        f"the accepted set is stale and covers more than it has evidence for. Either "
+        f"the lock moved, or the entry should go: {silent}"
+    )
+
+    unclassified = {
+        name: lines for name, lines in population.items() if name not in KNOWN_LOCK_FAMILIES
+    }
+
+    assert not unclassified, (
+        f"a lock arrived outside {STATE_DATABASE_LOCK} and {SINGLE_INSTANCE_LOCK}: "
+        f"{unclassified}. Three remedies, and they are not interchangeable. (1) If it "
+        f"is an index write lock, ADR-0018's Compliance bullet must stop saying there "
+        f"is none and the work it hands to {LIVE_OWNER} has landed; ADR-0024 point 4's "
+        f"index single-writer claim has to be re-decided against it rather than "
+        f"corrected as pending. (2) If it is a lock of some other kind, classify the "
+        f"file in `KNOWN_LOCK_FAMILIES` with the reason. (3) If it is not a lock at "
+        f"all -- a message or an identifier that merely says one -- reword the "
+        f"mention, and do NOT take remedy (2): an entry there exempts the whole file, "
+        f"so allowlisting a file for a sentence about a lock is what makes a real lock "
+        f"landing in it later pass unseen. Comments and docstrings are already "
+        f"excluded by `_code_only_lines`, so a prose match here is in live code"
     )

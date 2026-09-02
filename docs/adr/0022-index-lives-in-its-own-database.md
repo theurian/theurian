@@ -158,6 +158,34 @@ Still owed, with the milestone that will satisfy it:
   withdrawn. It belongs with the blue/green work. This is also NFR-4, which
   ADR-0018's Neutral consequence cited as satisfied by WAL — it is not, because
   WAL spans one database file and this rebuild replaces one.
+
+  > **Corrected on 2026-09-01
+  > ([#140](https://github.com/theurian/theurian/issues/140) member 1): the
+  > guarantee *has* been replaced, and this bullet's milestone owner is dead.**
+  > This bullet and the next item's ADR-0024 amendment — "publishing stops
+  > reaping … a search holds one connection … The two together are what NFR-4
+  > needs" — have said opposite things in one document since that amendment
+  > landed. The amendment is the one that is right; this bullet is the stale
+  > half. Milestone 6 has passed, and the work it hands the problem to is
+  > [ADR-0024](0024-a-purge-is-a-build.md) points 6 and 7, which shipped.
+  >
+  > **What replaced it, and what did not.** A search is protected across a
+  > *publish*, because publishing no longer reaps the build it replaced
+  > (`test_publishing_a_build_no_longer_reclaims_the_one_it_replaced` in
+  > `tests/integration/test_index_gc_cli.py`), and across a `theurian index gc`
+  > reap, because a request holds one read connection for its duration —
+  > `tests/integration/test_gc_during_a_search.py`, four tests, with the
+  > connection-per-call case pinned as the counterexample at 1 of 4 reads
+  > answered. The **residue** is narrower than this bullet's heading and is a
+  > missing test rather than a missing mechanism: nothing in the suite issues a
+  > query while a build is actually running, which is what
+  > [ADR-0007](0007-state-hash-partitioned-databases.md)'s Still-owed bullet
+  > already records. **That missing test is owned by
+  > [#497](https://github.com/theurian/theurian/issues/497)**, which requires
+  > this bullet to move in the same pull request it lands in. ADR-0024's
+  > Compliance section carries the reconciliation across the six records that
+  > state NFR-4's discharge status, five of which were corrected to agree with it
+  > — this bullet among them.
 - **Something other than a build will write to an index** (answered below; the
   writer discipline owed,
   [#439](https://github.com/theurian/theurian/issues/439)). This ADR's model is
