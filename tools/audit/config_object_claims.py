@@ -253,9 +253,9 @@ class Row:
 #:
 #: **Widening this run is not what closed the *emphasis* family, and rounds two
 #: and three are both why.** Any run spelled here is a run some emphasis wrapper is
-#: outside of: bold defeated this one because ``*`` is not in the class, adding it
-#: would have left italic and the underscore form, and adding those three would
-#: have left ``<b>``. :func:`as_read` strips emphasis before any key runs, which is
+#: outside of: bold defeated this one because ``*`` is not in the class, adding
+#: ``*`` would have left the underscore form, and adding both would have left
+#: ``<b>``. :func:`as_read` strips emphasis before any key runs, which is
 #: what makes the family a closed set -- the forms a reader cannot see -- rather
 #: than a list extended one delimiter at a time.
 #:
@@ -985,8 +985,9 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, str], ...]] = (
 #: enumeration this module exists to stop doing. Recorded so the next change
 #: decides it on a measurement rather than rediscovering it.
 #:
-#: **The last two rows are round three's, and they are why the enumeration has to
-#: end rather than lengthen.** Neither is a delimiter: one is JSON's own optional
+#: **The ``\/`` and ``e.g.`` rows are round three's, and they are why the
+#: enumeration has to end rather than lengthen.** Neither is a delimiter: one is
+#: JSON's own optional
 #: ``\/`` escape, which every parser accepts and this module's JSON reader does not
 #: undo, and one is the sentence split, where an abbreviation puts a negation and
 #: its object in different strings. They are recorded rather than closed because

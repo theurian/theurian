@@ -19,10 +19,10 @@ way a clean tree does.
   repository's own standing rule and the reason both are here.
 
 **And a third claim, which round three is why.** A passing control run says
-nothing about *how much* was run: five edits took an audit from 81 control rows
-to a handful or to none while every check here stayed green -- a runner opening
-``return 0``, a loop rewritten to iterate ``()`` (twice), a table sliced to its
-first row, and this guard's own required-table set emptied. So each audit now
+nothing about *how much* was run: five one-line edits took an audit's controls
+down to a handful or to none while every check here stayed green -- a runner
+opening ``return 0``, a loop rewritten to iterate ``()`` (twice), a table sliced
+to its first row, and this guard's own required-table set emptied. So each audit now
 counts the rows its loops **execute** and prints them, :data:`CONTROL_TALLIES`
 pins those counts, the call graph is read to catch a runner nobody reaches, and
 :func:`test_this_guards_own_control_keys_select_something` holds the guard to the
@@ -358,10 +358,11 @@ def test_every_control_runner_a_census_audit_defines_is_reached(script: pathlib.
 
     So the call graph is read rather than the row count: every module-level
     ``_run_*_controls`` the module defines has to be **reachable** from
-    ``_run_positive_controls``, transitively. Transitively because two of the five
-    already chain -- ``sha_anchors.py`` reaches its ledger controls through
-    ``_run_landed_controls`` -- and a rule that demanded a direct mention would
-    have to be relaxed for a shape that is correct.
+    ``_run_positive_controls``, transitively. Transitively because one of the five
+    already chains -- ``sha_anchors.py`` reaches ``_run_ledger_controls`` through
+    ``_run_landed_controls``, and nothing else here is more than one call deep --
+    and a rule that demanded a direct mention would have to be relaxed for a shape
+    that is correct.
 
     Reached by *name*, never through a variable: these are scripts, and an
     indirection here would be the finding rather than the fix.
