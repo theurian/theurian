@@ -870,16 +870,34 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # reddens on a reversion to the file-wide universal, so a reword
             # that never returns to that shape moved nothing.
             #
-            # Four fragments, because the corrected argument has four moving
+            # Five fragments, because the corrected argument has five moving
             # parts and each can be dropped on its own: the narrowed premise,
-            # the reader that bounds it, the key that still has none, and the
-            # conclusion the paragraph exists to deliver. The last is pinned
-            # for the reason `RAPTOR_MD_SENTENCES` in
-            # `test_raptor_config_claims.py` records -- a rewrite that keeps
-            # only the conclusion leaves a reader no way to check it, and one
-            # that keeps only the premises leaves the warning unsaid.
+            # the reader that bounds it, where that reader's control runs, the
+            # key that still has none, and the conclusion the paragraph exists
+            # to deliver. The last is pinned for the reason
+            # `RAPTOR_MD_SENTENCES` in `test_raptor_config_claims.py` records
+            # -- a rewrite that keeps only the conclusion leaves a reader no
+            # way to check it, and one that keeps only the premises leaves the
+            # warning unsaid.
             "That file is read today, but for one key only",
             "`security/project_config.py` takes `security.secretScan` from it and nothing else",
+            # The bound, and the one fragment here pinned as a **whole
+            # sentence** rather than a phrase. Naming `security.secretScan` as
+            # in force announces a scanning control inside a document about
+            # `theurian ingest`, and a reader who stops at that sentence has
+            # been told a scanner covers this command. The clause is the only
+            # thing that says otherwise, so every clause of it is load-bearing:
+            # which gate it covers, and the two entry points that run no scan.
+            # Its fact side is
+            # `test_the_secret_scan_policy_is_read_at_one_call_site_only`, which
+            # goes RED the day a second call site makes "the approval gate only"
+            # false while this pin -- spelling, and only spelling -- stays green.
+            (
+                "That key selects a control this command never reaches: it covers the "
+                "approval gate only — `theurian ingest` and index building run no scan "
+                "(SEC-11, [#198](https://github.com/theurian/theurian/issues/198)), the "
+                "schema's own wording."
+            ),
             "Nothing reads the `providers.review.repositories` allowlist",
             "do not tell the user the allowlist is protecting them",
         ),
@@ -924,4 +942,224 @@ def test_each_secret_scan_prose_surface_states_the_control_and_its_bound(
             "changed, this document and the readers recorded in "
             "`test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_ones` "
             "belong in the same change; otherwise restore the sentence."
+        )
+
+
+# ---------------------------------------------------------------------------
+# The fact side of ``ingest.md``'s bounding clause, and the record of this
+# module's own reach.
+# ---------------------------------------------------------------------------
+
+#: Where the core changelog's account of this module's pins lives.
+CORE_CHANGELOG = REPO_ROOT / "packages" / "theurian-core" / "CHANGELOG.md"
+
+#: The reader whose *reach* four documents describe, and the one module that calls it.
+#:
+#: The function is defined in ``security/project_config.py`` and called from the
+#: accept path. A grep for the name therefore returns two hits and only one of
+#: them is a call, which is why this is an AST count and not a text count.
+SECRET_SCAN_POLICY_READER = "read_secret_scan_policy"  # noqa: S105 - a function name, not a secret
+
+#: The modules that may call it, as paths under the imported ``theurian`` package.
+SECRET_SCAN_POLICY_CALL_SITES: tuple[str, ...] = ("application/proposal_service.py",)
+
+#: Number words as the changelog spells them, index = value.
+#:
+#: The sentence pinned below mixes digits and words -- "**12** descriptions",
+#: "The other nine are unpinned" -- so a derived number has to be rendered the
+#: way the prose renders it. Twelve is the ceiling because the surface being
+#: counted is twelve descriptions; a thirteenth is a schema change, and
+#: :func:`_number_word` refuses rather than silently formatting a digit into a
+#: sentence that spells its neighbours out.
+_NUMBER_WORDS: Final[tuple[str, ...]] = (
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+)
+
+
+def _number_word(value: int) -> str:
+    """``value`` as the changelog spells it, or an explicit failure."""
+    assert 0 <= value < len(_NUMBER_WORDS), (
+        f"{value} is outside the range this pin can render as a word, so the "
+        f"changelog sentence it builds cannot be checked. Widen `_NUMBER_WORDS` "
+        f"and read the sentence again -- a count this far outside the recorded "
+        f"one is a schema change, not a rendering problem."
+    )
+    return _NUMBER_WORDS[value]
+
+
+def _english_list(items: tuple[str, ...]) -> str:
+    """``items`` joined the way the changelog's prose joins them."""
+    if len(items) < 2:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _described_key_paths() -> tuple[str, ...]:
+    """Every dotted key path the schema publishes *with* a ``description``, sorted.
+
+    A "key block" in the changelog's sense is a published key carrying its own
+    description, which is what a reader of the schema actually sees. The
+    distinction is load-bearing rather than pedantic: ``raptor.maxLevels`` is a
+    published key with no description, so it is watched by
+    :data:`WATCHED_SPELLINGS` and is not one of the blocks -- which is exactly
+    what the sentence pinned below has to say for its two numbers to agree.
+    """
+    schema = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
+
+    def walk(node: object, path: tuple[str, ...]) -> Iterator[str]:
+        if not isinstance(node, dict):
+            return
+        properties = node.get("properties")
+        if not isinstance(properties, dict):
+            return
+        for name, subschema in properties.items():
+            here = (*path, name)
+            if isinstance(subschema, dict) and "description" in subschema:
+                yield ".".join(here)
+            yield from walk(subschema, here)
+
+    return tuple(sorted(walk(schema, ())))
+
+
+def _call_site_modules(function: str) -> tuple[str, ...]:
+    """Every module in the imported package that *calls* ``function``, sorted.
+
+    Calls only. The definition, the import and a docstring mentioning the name
+    are all excluded, because the claim this serves is about where the control
+    runs and not about where its name appears.
+    """
+    modules: set[str] = set()
+    for path in sorted(SRC.rglob("*.py")):
+        module = path.relative_to(SRC).as_posix()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=module)):
+            if not isinstance(node, ast.Call):
+                continue
+            called = node.func
+            if isinstance(called, ast.Name):
+                name: str | None = called.id
+            elif isinstance(called, ast.Attribute):
+                name = called.attr
+            else:
+                name = None
+            if name == function:
+                modules.add(module)
+    return tuple(sorted(modules))
+
+
+def test_the_secret_scan_policy_is_read_at_one_call_site_only() -> None:
+    """SEC-11: the fact side of "it covers the approval gate only" (#198, #461).
+
+    ``plugins/claude-code/commands/ingest.md`` names ``security.secretScan`` as
+    the one key ``.theurian/config.yaml`` has in force, which announces a
+    scanning control inside a document about ``theurian ingest``. The clause that
+    keeps that from misleading a reader -- *"it covers the approval gate only --
+    `theurian ingest` and index building run no scan"* -- is pinned in
+    :data:`SECRET_SCAN_PROSE_SURFACES`, and that pin holds **spelling**: it would
+    stay green word for word against a build that had started reading the policy
+    on the ingest path.
+
+    This is the other half. The policy is read at exactly one call site, in the
+    accept path, so a second call site anywhere makes the clause false and
+    reddens here. The direction that matters is the *addition*: an ingest-time or
+    index-time scan would make four documents over-claim by omission the moment
+    it landed, and this is what makes that change carry them.
+
+    A removal reddens too, and means the opposite -- the control the schema
+    publishes ``default: "block"`` for has gone, and every surface describing a
+    shipped control is now false.
+    """
+    modules = _call_site_modules(SECRET_SCAN_POLICY_READER)
+
+    assert modules == SECRET_SCAN_POLICY_CALL_SITES, (
+        f"`{SECRET_SCAN_POLICY_READER}` is called from {list(modules)}, and the "
+        f"recorded call sites are {list(SECRET_SCAN_POLICY_CALL_SITES)}.\n\n"
+        "A NEW call site: SEC-11's scan now runs somewhere besides `theurian "
+        "propose accept`, so `plugins/claude-code/commands/ingest.md`'s \"it "
+        "covers the approval gate only -- `theurian ingest` and index building "
+        "run no scan\", the identical clause in the schema's `security.secretScan` "
+        "description, SECURITY.md and the threat model's T-15 controls are all "
+        "narrower than the product. Correct them in the same change, then record "
+        "the site here.\n\n"
+        "A MISSING call site: the control is gone while the schema still "
+        'publishes `default: "block"` and four documents still describe a '
+        "shipped gate. Do not simply drop the entry."
+    )
+
+
+def test_the_changelog_states_the_pin_reach_this_module_actually_has() -> None:
+    """#455: the changelog's account of these pins is derived, not narrated.
+
+    The entry first said this module "now watches the root description as well as
+    the eleven key blocks", which read as coverage and was not: three of the
+    twelve descriptions carry a row, and five spellings are watched of which one
+    is not a described block at all. Round one caught it by hand. This is the
+    contract that catches the next one -- every number in the two sentences is
+    recomputed here from :data:`WATCHED_KEY_DESCRIPTIONS`,
+    :data:`WATCHED_SPELLINGS` and the published schema, and the sentence is
+    rebuilt from the results rather than pattern-matched.
+
+    So the pin fails in both directions a coverage claim can drift. Pinning a
+    fourth key without touching the entry is RED, because the rebuilt sentence
+    says "4 of the 12" and the file still says three. Publishing a twelfth key
+    block is RED for the same reason from the schema side. And a rewrite that
+    quietly restores "as well as the eleven key blocks" is RED because that
+    sentence is not the one this builds.
+
+    The names are derived too, not only the counts: swapping which key is pinned
+    keeps every number identical and still reddens.
+    """
+    described = _described_key_paths()
+    published = 1 + len(described)
+    pinned = len(WATCHED_KEY_DESCRIPTIONS)
+    watched_blocks = tuple(sorted(WATCHED_SPELLINGS.keys() & set(described)))
+    unblocked = tuple(sorted(WATCHED_SPELLINGS.keys() - set(described)))
+    dotted = tuple(key for key, _pointer, _required in WATCHED_KEY_DESCRIPTIONS if _pointer)
+    changelog = " ".join(CORE_CHANGELOG.read_text(encoding="utf-8").split())
+
+    assert len(unblocked) == 1, (
+        f"the changelog's sentence names one watched spelling with no key block "
+        f"and there are now {len(unblocked)}: {list(unblocked)}. The sentence's "
+        f"shape has to move with them, so rewrite it before repairing this pin."
+    )
+    reach = (
+        f"the schema publishes **{published}** descriptions — the root and "
+        f"{len(described)} key blocks — and **{pinned} of the {published}** carry a "
+        f"`WATCHED_KEY_DESCRIPTIONS` row in `tests/unit/test_config_key_call_sites.py`: "
+        f"{_english_list(('the root', *(f'`{key}`' for key in dotted)))}. "
+        f"The other {_number_word(published - pinned)} are unpinned."
+    )
+    spellings = (
+        f"A reader added for any of the {_number_word(len(WATCHED_SPELLINGS))} spellings "
+        f"in `WATCHED_SPELLINGS` — {_number_word(len(watched_blocks))} of them published "
+        f"key blocks, plus `{unblocked[0]}`, which has no block — reddens the "
+        f"call-site scan"
+    )
+
+    for sentence in (reach, spellings):
+        assert sentence in changelog, (
+            f"packages/theurian-core/CHANGELOG.md no longer states, in the words this "
+            f"module's own tables derive:\n\n  {sentence}\n\n"
+            f"Measured here: {published} published descriptions (the root and "
+            f"{len(described)} key blocks), {pinned} of them pinned "
+            f"({list(dotted)} plus the root), {len(WATCHED_SPELLINGS)} watched "
+            f"spellings of which {len(watched_blocks)} are described key blocks and "
+            f"{unblocked[0]} is not.\n\n"
+            f"This entry is a claim about how far these pins reach, and it has "
+            f"already been wrong once in the direction that matters -- it read as "
+            f"coverage when it was three of twelve (#455 round one). If a pin or a "
+            f"key moved, the entry moves in the same commit; do not relax this to "
+            f"a fragment match, because a fragment match is what let the first "
+            f"wording through."
         )
