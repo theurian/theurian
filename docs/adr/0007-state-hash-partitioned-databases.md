@@ -155,9 +155,37 @@ Still owed, with the milestone that will satisfy it:
   > and the pointer swap is a write-to-temp plus `os.replace`. So a query during
   > a build resolves the pointer to a file the build never opens — an argument
   > from pinned elements, which is not a measurement, and saying so is what this
-  > bullet has been for since it was written. The sweep behind "no test" is
-  > `Thread|ThreadPool|ProcessPool|fork()` over the test tree, whose index-side
-  > result is **zero**. **Milestone 6 has passed, and the missing test is owned
+  > bullet has been for since it was written.
+  >
+  > **The sweep behind "no test" is two-stage, because one key cannot answer
+  > it** — the first form of it, `Thread|ThreadPool|ProcessPool|fork()`, could
+  > not see `asyncio` at all and so could not see the one suite in the
+  > repository that really runs things concurrently. Widened and re-run
+  > 2026-09-02 over `packages/theurian-core/tests` and `tests`:
+  >
+  > ```sh
+  > # stage 1: any concurrency primitive -> 33 files
+  > \bThread\b|ThreadPool|ProcessPool|\bfork\(\)|\basyncio\b|run_in_executor
+  >   |create_task|\bgather\b|\bexecutor\b|multiprocessing|\bPopen\b
+  > # stage 2: of those, also driving an index build -> 15 files
+  > IndexBuilder|index_build\b|"build"|'build'|index build
+  > ```
+  >
+  > All fifteen were read. **Fourteen use `asyncio.run` or
+  > `@pytest.mark.asyncio` to await a single MCP call synchronously**, which
+  > interleaves nothing; the fifteenth,
+  > `tests/integration/test_search_concurrency_cap.py`, is the one suite with
+  > real concurrency and it caps concurrent *searches* against an already
+  > published build, running no build of its own. So the index-side result is
+  > still **zero**, now against a key that can see the asyncio forms.
+  >
+  > **The zero is a zero because the key works.** A synthetic test that starts
+  > `IndexBuilder.build` on a `threading.Thread` and searches while it runs was
+  > planted, swept, and found — stage 2 returned 16 with the plant present and 15
+  > without it — then deleted. A sweep for an absence that has never been shown
+  > to hit a known positive is not evidence.
+  >
+  > **Milestone 6 has passed, and the missing test is owned
   > by [#497](https://github.com/theurian/theurian/issues/497)** — whose
   > definition of done requires every record stating this gap to move in the same
   > pull request the test lands in, because each becomes false the moment it

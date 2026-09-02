@@ -1275,16 +1275,30 @@ class SqliteIndexStore:
         get one.** Its subject was deleted with the cache: "two calls through one
         store costing one pass" is not a state this method can be in, so the
         2026-09-01 re-measurement records it as **not re-runnable** rather than
-        replacing it with a new number
-        (``docs/work-logs/2026-09-01-472-purged-build-re-measurement.md``, F5).
-        What *is* re-runnable is the quantity the cache stood in front of -- what
-        one pass over the corpus costs -- taken at 50 visible and 5,950 withheld
-        rows over three builds: **85.10 ms** returning 6,000 rows on a build that
-        still held the withdrawn rows, **1.21 ms** returning 50 on its purged
-        twin, and **1.05 ms** on a build that never held them. The 6,000-row
-        corpus the pair above names is the same shape; the withdrawn rows were
-        being scanned, ranked and returned to Python on every request, and after
-        a purge they are not there to scan.
+        replacing it with a new number -- that verdict is the work log's F5 entry
+        (``docs/work-logs/2026-09-01-472-purged-build-re-measurement.md``,
+        against ``ec0dbcd``). What *is* re-runnable is the quantity the cache
+        stood in front of -- what one pass over the corpus costs -- and that is a
+        **different figure with its own section, F5'**: taken at 50 visible and
+        5,950 withheld rows over three builds, **85.10 ms** returning 6,000 rows
+        on a build that still held the withdrawn rows, **1.21 ms** returning 50
+        on its purged twin, and **1.05 ms** on a build that never held them.
+        F5' records neither a repeat count nor the statistic behind its column,
+        so read the two orders of magnitude and not the second decimal. The
+        6,000-row corpus the pair above names is the same shape; the withdrawn
+        rows were being scanned, ranked and returned to Python on every request,
+        and after a purge they are not there to scan.
+
+        **That is the scan below the trigram floor, and it is the reason this
+        paragraph does not generalise.** F5' drives ``search_substring`` with a
+        two-character query, which never reaches the trigram index. Above the
+        floor a purged build is *not* flat: FTS5 ``'delete'`` tombstones the
+        postings, nothing in the shipped purge merges them, and query duration
+        there stays monotone in the withdrawn count -- 16.8 ms against a
+        never-held build's 1.2 ms at 5,950 withdrawn, measured in PR #498's
+        round-one review and owned by
+        `#499 <https://github.com/theurian/theurian/issues/499>`_ as a face of
+        T-17a.
 
         The cache also imposed a rule on callers: *construct a fresh
         `SqliteIndexStore` per search*, because a pooled one would have leaked
