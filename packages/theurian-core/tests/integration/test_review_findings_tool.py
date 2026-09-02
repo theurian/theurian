@@ -1098,7 +1098,7 @@ def test_the_unservable_refusal_says_what_it_has_always_said() -> None:
         "refusal message is a constant: it carries nothing from your request or from "
         "any project's contents."
     ), (
-        "the constant `review.findings` refuses an unservable store with has been "
+        "the constant `review.findings` uses to refuse an unservable store has been "
         "reworded. "
         "That is a published sentence: correct this pin in the same change, and check "
         "that the new wording still carries the local rebuild remedy and still says "
@@ -1593,6 +1593,13 @@ async def test_an_over_long_filter_is_reported_by_length_and_never_echoed(
     That is why the assertions are the *length refusal's* own two numbers rather
     than "some refusal came back": ``family`` and ``specialist`` reach a refusal
     either way, and only the numbers tell the two refusals apart.
+
+    It is also why the mutation that measures this test is a *length-only* one.
+    ``_bounded`` gained the transportability guard in the same round (R1-2 face
+    iii), so dropping the whole call now reddens the NUL and surrogate tests
+    above whatever this one does; the mutation these assertions answer for keeps
+    ``_transportable`` and removes the length check alone (measured 2026-09-03:
+    ``c06b``/``c07b``/``c08b``/``b10b``, each KILLED by this test).
     """
     _land(project)
     oversized = "z" * (MAX_FILTER_CHARS + 500)

@@ -1403,8 +1403,9 @@ def test_the_substring_filter_matches_a_wildcard_as_a_literal_character(tmp_path
     ``q="\\"`` searching for a literal ``%`` instead. Over a corpus with no
     backslash in it, both the correct and the broken form answer nothing, so the
     old ``== ()`` line was satisfied for the wrong reason and the mutation
-    ``escape-not-doubled`` survived. The row below is what makes the empty answer
-    impossible to fake: the escape has to survive for it to be found at all.
+    ``b01-escape-not-doubled`` survived. The row below is what makes the empty
+    answer impossible to fake: the escape has to survive for it to be found at
+    all.
     """
     store = _store(tmp_path)
     store.replace_all(
