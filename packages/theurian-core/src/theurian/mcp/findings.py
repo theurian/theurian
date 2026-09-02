@@ -129,15 +129,28 @@ MAX_ECHOED_DIGITS: Final = 20
 #:
 #: The digit count is derived from ``int.bit_length()`` and then *corrected* by
 #: comparing against a power of ten -- exact, and cheap while the power is small.
-#: ``10 ** 6_000_000`` costs 3.9 seconds to compute (measured, 2026-09-02), which
-#: is a caller supplying work the daemon must do (T-6), so the correction stops
-#: at this ceiling and the estimate stands above it, within one digit. Nothing on
-#: the wire reaches it: ``json.loads`` refuses an integer literal past CPython's
-#: 4,300-digit limit outright (measured), so an argument that large arrives only
-#: from an in-process caller -- which is exactly how round 1 reproduced the crash.
+#: The correction's whole cost is the ``10 ** estimate`` it builds, so this
+#: ceiling is a price rather than a preference, and the price has two ends worth
+#: naming (both measured 2026-09-03, best of five on one machine):
+#:
+#: * **at** the ceiling, where a bit length of ``2**20`` gives an estimate of
+#:   315,653, ``10 ** 315_653`` costs about 49 ms;
+#: * an order of magnitude past it, ``10 ** 6_000_000`` costs 4.7 s.
+#:
+#: 49 ms is worth an exact answer inside a refusal; seconds is not, so the
+#: correction stops here and the estimate stands above it, within one digit.
+#: Neither end is reachable from the wire: ``json.loads`` refuses an integer
+#: literal past CPython's 4,300-digit limit outright (measured), which caps a wire
+#: argument near 14,000 bits, so an argument large enough to pay even the 49 ms
+#: arrives only from an in-process caller -- which is exactly how round 1
+#: reproduced the crash this function exists to have stopped.
 _EXACT_DIGIT_BITS: Final = 1 << 20
 
 #: ``log10(2)``, for turning a bit length into a decimal digit count.
+#:
+#: Rounded **up** from the true value -- by 2.8e-18 -- which is what makes
+#: :func:`_digits`'s error one-sided. See that function for why the margin is not
+#: self-evidently enough and what was measured instead.
 _LOG10_OF_2: Final = 0.30102999566398119521
 
 #: The one byte that cannot appear in any value this store holds, and that
@@ -214,21 +227,44 @@ def _digits(value: int) -> int:
     why the size of a number is measured rather than rendered.
 
     ``bit_length`` is exact and costs nothing. Turning it into a digit count is
-    the inexact step -- ``floor(bits * log10(2)) + 1`` is off by one near a power
-    of ten (521 such values in the first 400 exponents, measured) -- so the
-    estimate is corrected against a power of ten, which is exact. The correction
-    stops at :data:`_EXACT_DIGIT_BITS`, above which the answer is within one
-    digit; see that constant for why nothing on the wire gets there.
+    the inexact step, and **the error only ever goes one way**: ``magnitude <
+    2**bits`` bounds ``log10(magnitude)`` below ``bits * log10(2)``, and
+    :data:`_LOG10_OF_2` is rounded up from the true value, so
+    ``floor(bits * _LOG10_OF_2) + 1`` is never *smaller* than the real digit
+    count. One correction is therefore enough, and it only ever subtracts.
+
+    **That one-sidedness was measured, not assumed**, because the margin does not
+    settle it by inspection: the constant exceeds ``log10(2)`` by 2.8e-18 while
+    half an ulp of the product is 2.8e-17, ten times larger, so rounding *could*
+    in principle push the product under the true value. Over the whole domain this
+    correction runs on -- every bit length from 1 to :data:`_EXACT_DIGIT_BITS` --
+    ``floor(bits * log10(2))`` computed in exact rational arithmetic never once
+    exceeds ``int(bits * _LOG10_OF_2)``, and the closest ``bits * log10(2)`` comes
+    to an integer anywhere in that range is 1.6e-7, four orders of magnitude clear
+    of the float error (measured 2026-09-03). An up-correction arm was carried
+    here for that reason and is gone: it fired for no input in the domain it ran
+    on, which makes it a branch no test can distinguish from its own deletion.
+
+    The subtraction is the live one. It decides 29.1% of the twenty-digit band,
+    and 399 of the 1,199 distinct values ``10**k - 1``, ``10**k``, ``10**k + 1``
+    for ``k < 400`` -- every one of those an overshoot and none an undershoot,
+    the smallest being 9, which the estimate puts at two digits (measured
+    2026-09-03; both figures are re-derivable from those definitions alone).
+
+    The correction stops at :data:`_EXACT_DIGIT_BITS`, above which the answer is
+    within one digit; see that constant for what it costs and for why nothing on
+    the wire gets there.
     """
     magnitude = abs(value)
     if magnitude == 0:
         return 1
     estimate = int(magnitude.bit_length() * _LOG10_OF_2) + 1
-    if magnitude.bit_length() <= _EXACT_DIGIT_BITS:
-        if magnitude >= 10**estimate:
-            estimate += 1
-        elif estimate > 1 and magnitude < 10 ** (estimate - 1):
-            estimate -= 1
+    if (
+        magnitude.bit_length() <= _EXACT_DIGIT_BITS
+        and estimate > 1
+        and magnitude < 10 ** (estimate - 1)
+    ):
+        estimate -= 1
     return estimate
 
 
