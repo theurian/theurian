@@ -175,9 +175,34 @@ class Row:
     sentence: Sentence
 
 
+#: A markup delimiter **run**, not a single optional delimiter.
+#:
+#: **The house style is two backticks.** Measured at ``5d0b1d9``: 323 of this
+#: repository's 352 governed ``.py`` files write inline code in the RST form
+#: ``` ``like this`` ```, because Sphinx-flavoured docstrings are what the
+#: package is written in. A single optional delimiter therefore could not see a
+#: claim written the way most of the tree writes one -- round one planted
+#: ``Nothing in ``src/`` reads ``.theurian/config.yaml``.`` in a wheel-shipped
+#: module and every audit and every pin stayed green. The escape was in the
+#: *markup*, not in the phrasing, which is exactly what an object-keyed census
+#: is supposed to be immune to.
+#:
+#: ``{0,2}`` over one character class admits a mismatched pair (`` `" ``), which
+#: over-approximates in the direction that costs a read rather than a miss.
+_DELIMITER_RUN: Final = r"[`\"'“”]{0,2}"
+
+#: The same run where a delimiter is **required**, for the bare-leaf key surface.
+#:
+#: ``providers``, ``enabled`` and ``repositories`` are ordinary English words, so
+#: an optional delimiter there would make every sentence carrying one a sentence
+#: about a schema key. Widening that key from one character to a run must not
+#: quietly widen it to zero as well.
+_REQUIRED_DELIMITER_RUN: Final = r"[`\"'“”]{1,2}"
+
+
 def _quoted(path: str) -> str:
-    """A path as prose spells it: bare, backticked, or quoted."""
-    return r"[`\"'“]?" + re.escape(path).replace(r"\.theurian", r"\.?theurian") + r"[`\"'”]?"
+    """A path as prose spells it: bare, backticked, RST double-backticked, or quoted."""
+    return _DELIMITER_RUN + re.escape(path).replace(r"\.theurian", r"\.?theurian") + _DELIMITER_RUN
 
 
 #: How a file object is referred to when the sentence uses a pronoun instead of
@@ -214,7 +239,9 @@ def _schema_key_objects(root: Path) -> list[WatchedObject]:
                 # made every sentence carrying one refer to a schema key.
                 leaf = re.escape(dotted[-1])
                 reference = re.compile(
-                    rf"{re.escape('.'.join(dotted))}|[`\"']{leaf}[`\"']", re.IGNORECASE
+                    rf"{re.escape('.'.join(dotted))}"
+                    rf"|{_REQUIRED_DELIMITER_RUN}{leaf}{_REQUIRED_DELIMITER_RUN}",
+                    re.IGNORECASE,
                 )
             else:
                 # The root has no name to spell, so it is reached through its
@@ -461,6 +488,26 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
         "`it` is `providers.review.repositories`, named in the sentence before. A "
         "key-scoped claim, and the correct one.",
     ),
+    # The next two rows arrived with the delimiter run, and they are the evidence
+    # that the widening reaches the tree and not only the controls: both are
+    # written in the RST house style, so a single optional delimiter could not see
+    # either. Neither is a claim -- both quote the retracted universal in a
+    # docstring that exists to say it was retracted.
+    (
+        "packages/theurian-core/tests/unit/test_raptor_config_claims.py",
+        "Every one of them recorded that",
+        "transcription",
+        "The module docstring's opening: what the governed records used to say, quoted in "
+        "the sentence that says it stopped being true with ADR-0027.",
+    ),
+    (
+        "packages/theurian-core/tests/unit/test_raptor_config_claims.py",
+        "still says",
+        "transcription",
+        "The served corpus's snapshot, quoted in the paragraph that explains why the scan "
+        "is scoped to a named file set: the snapshot holds the retracted wording "
+        "byte-identically by design (#199 unit C), and only a governed re-seed moves it.",
+    ),
     (
         "packages/theurian-core/tests/unit/test_raptor_config_claims.py",
         'ADR-0008 decision 10\'s rationale, its "switch is the CLI flag" note',
@@ -589,6 +636,19 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "Per-repository configuration. `security.secretScan` is published here, and "
         "nothing reads it today.",
         True,
+    ),
+    (
+        "round one's H-F: the same claim in this repository's RST house style, in a "
+        "wheel-shipped module",
+        "packages/theurian-core/src/theurian/application/forest_builder.py",
+        "Nothing in ``src/`` reads ``.theurian/config.yaml``, so no default here is in force.",
+        True,
+    ),
+    (
+        "the RST form of the *narrowed* sentence, which must still NOT be a suspect",
+        "docs/architecture/raptor.md",
+        "Nothing in ``src/`` reads ``raptor.enabled``, nor any other key in the ``raptor`` block.",
+        False,
     ),
     (
         "the narrowed key-scoped sentence in a home, which the additive rule must still let past",

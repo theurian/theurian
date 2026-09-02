@@ -80,12 +80,15 @@ a wording pin over a named set of files:
 - **The escape space is a table now, not a sentence.** This paragraph used to
   list five phrasings the scan does not catch and assert nothing about them;
   #199 unit B turned the list into :data:`MEASURED_ESCAPE_CASES`, so each one is
-  a test result. Four are shapes a live reassertion could take and slip past —
+  a test result. Five are shapes a live reassertion could take and slip past —
   "nothing *opens* it", "no loader exists", "the file is not read", "no config
-  surface" — and the fifth is the past tense, which the corrected rationale uses
-  deliberately and which must keep passing. A row that stops escaping is RED, and
-  that is the good direction: the scan widened, and this paragraph has to move
-  with it.
+  surface", and a path wrapped in markup the delimiter run does not reach (a
+  Markdown link, or a run of three) — and the sixth is the past tense, which the
+  corrected rationale uses deliberately and which must keep passing. A row that
+  stops escaping is RED, and that is the good direction: the scan widened, and
+  this paragraph has to move with it. That is how round one's H-F was recorded:
+  the RST double-backtick form left this table for :data:`UNIVERSAL_CASES` when
+  the delimiter class became a run, and the link form is where the run now stops.
 - It says nothing at all about the source tree. Whether a reader exists is
   ``test_config_key_call_sites.py``'s question; this module would stay green
   against a build that shipped a raptor loader and left every scanned file
@@ -421,10 +424,22 @@ _QUOTED_RETRACTION: Final = re.compile(
 #: wording while the verb-scoped excision left the sentence in place for it. Both
 #: halves had to move for the probe to be seen, which is why they are recorded
 #: together.
+#:
+#: **And it is a run of up to two, not one, which is round one's H-F.** This
+#: repository's house style for inline code is the RST form — two backticks
+#: either side, which 323 of its 352 governed ``.py`` files carry at ``5d0b1d9``
+#: — so a single-character delimiter class could not see the claim written the way
+#: most of the tree writes one. A false universal planted in that markup in
+#: ``application/forest_builder.py`` shipped with this pin and every audit green.
+#: The escape was in the markup rather than in the phrasing, which is what a
+#: pattern keyed on a *path* is supposed to be immune to; :data:`UNIVERSAL_CASES`
+#: carries the RST form in both directions now, and
+#: ``tools/audit/config_object_claims.py``'s ``_DELIMITER_RUN`` is the same fix on
+#: the census side.
 _FILE_UNREAD: Final = re.compile(
     r"\b(?:nothing|nobody|none|no code|no module)\b[^\n]{0,40}?"
-    r"\breads\b\s+(?:the\s+)?[\"'`“]?\.?theurian/config\.yaml"
-    r"|[\"'`“]?\.?theurian/config\.yaml`?[^.]{0,20}\bis\s+(?:still\s+)?unread\b"
+    r"\breads\b\s+(?:the\s+)?[\"'`“]{0,2}\.?theurian/config\.yaml"
+    r"|[\"'`“]{0,2}\.?theurian/config\.yaml`{0,2}[^.]{0,20}\bis\s+(?:still\s+)?unread\b"
     r"|\bconfig(?:uration)?\s+file\s+is\s+(?:still\s+)?unread\b",
     re.IGNORECASE,
 )
@@ -568,6 +583,14 @@ UNIVERSAL_CASES: Final[tuple[tuple[str, bool], ...]] = (
     ("nothing reads `.theurian/config.yaml`, so an operator cannot yet move it", True),
     ("**The threshold is real now and the config file is still unread.**", True),
     ("No module reads the .theurian/config.yaml file", True),
+    # -- round one's H-F: the same universal in the RST house style -----------
+    # Not a shape any document took; a shape a *future* document would take,
+    # because two backticks is how 323 of this repository's 352 governed `.py`
+    # files spell inline code. The pattern was blind to it until the delimiter
+    # class became a run, and a false claim planted this way in the wheel-shipped
+    # `application/forest_builder.py` passed every test in this module.
+    ("Nothing in ``src/`` reads ``.theurian/config.yaml``, so no default is in force", True),
+    ("The ``.theurian/config.yaml`` file is still unread", True),
     # -- the narrowed wording, which must keep passing -----------------------
     (
         "That is not a decision anyone took: nothing in `src/` reads it, and when this "
@@ -582,6 +605,12 @@ UNIVERSAL_CASES: Final[tuple[tuple[str, bool], ...]] = (
     ("**The threshold is real now and no `raptor` key is read.**", False),
     (
         "Nothing in `src/` reads `raptor.enabled`, nor any other key in the `raptor` block",
+        False,
+    ),
+    # The negative half of the delimiter run: widening the markup must not be
+    # bought by flagging the narrowed sentence written in the same markup.
+    (
+        "Nothing in ``src/`` reads ``raptor.enabled``, nor any other key in the ``raptor`` block",
         False,
     ),
     ("What is unread is the `raptor` block", False),
@@ -711,6 +740,11 @@ MEASURED_ESCAPE_CASES: Final[tuple[tuple[str, str, bool], ...]] = (
     (
         "no config surface, which names neither a verb nor an object",
         "It has no config surface.",
+        True,
+    ),
+    (
+        "a delimiter run of three, or a path inside a Markdown link",
+        "Nothing in `src/` reads [`.theurian/config.yaml`](../config.md).",
         True,
     ),
     (
