@@ -231,6 +231,36 @@ def _run(*args: str) -> None:
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
 
 
+def _check_out(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Create, register and migrate one project checkout at ``root``.
+
+    The whole of what a victim does with a repository they cloned: a working
+    tree, ``theurian init``, a migration applied, and the project registered.
+    Everything ``_resolve`` needs is therefore real -- registry entry, active
+    state pointer, ADR-0004/SEC-7 provenance on the *canonical* state -- so a
+    call that is refused here is refused by the findings gate and not by an
+    unresolvable project.
+
+    A function rather than fixture-only code because the T-19 differential needs
+    a *second* checkout on the same installation, identical in every respect
+    except which files the repository shipped.
+    """
+    root.mkdir()
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    monkeypatch.chdir(root)
+    _run("init")
+    (root / ".theurian/knowledge/architecture/auth-policy.md").write_text(BODY)
+    (root / f".theurian/migrations/{MIGRATION_ID}-auth.yaml").write_text(MIGRATION)
+    _run("project", "register")
+    _run("migrate", "apply")
+
+
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ProjectRegistry]:
     """A registered, migrated project -- with no findings store yet.
@@ -240,23 +270,9 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Project
     state pointer, and the ADR-0004/SEC-7 provenance check all have to be real
     for this tool to be reached at all.
     """
-    root = tmp_path / "demo"
-    root.mkdir()
-    for args in (
-        ["git", "init", "-q", "-b", "main"],
-        ["git", "config", "user.email", "test@example.com"],
-        ["git", "config", "user.name", "Test"],
-    ):
-        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
-
     data_dir = tmp_path / "datadir"
     monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
-    monkeypatch.chdir(root)
-    _run("init")
-    (root / ".theurian/knowledge/architecture/auth-policy.md").write_text(BODY)
-    (root / f".theurian/migrations/{MIGRATION_ID}-auth.yaml").write_text(MIGRATION)
-    _run("project", "register")
-    _run("migrate", "apply")
+    _check_out(tmp_path / "demo", monkeypatch)
 
     yield ProjectRegistry.default(data_dir)
 
@@ -289,13 +305,15 @@ def _record_provenance(registry: ProjectRegistry, project_id: str = "demo") -> N
     BuildProvenance.for_registry(registry).record_findings(root, FINDINGS_STORE_ID)
 
 
-def _plant(registry: ProjectRegistry, load: FindingLoad = LANDED) -> SqliteReviewFindingStore:
+def _plant(
+    registry: ProjectRegistry, load: FindingLoad = LANDED, project_id: str = "demo"
+) -> SqliteReviewFindingStore:
     """Land a store on disk and record **nothing** -- the hostile-clone shape.
 
     What a repository contributor can produce with ``git add -f``: a well-formed,
     current, fully readable store that this installation never built.
     """
-    store = SqliteReviewFindingStore(_store_path(registry))
+    store = SqliteReviewFindingStore(_store_path(registry, project_id))
     store.replace_all(load)
     return store
 
@@ -1178,6 +1196,73 @@ async def test_a_planted_store_is_refused_in_the_same_words_as_a_missing_one(
 
     assert planted == missing, (
         f"a planted store and a missing one are distinguishable:\n{planted}\n{missing}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_checkout_that_ships_a_store_answers_as_one_that_ships_none(
+    project: ProjectRegistry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-19's closure, transposed: two checkouts, one query battery, one answer.
+
+    The sibling tests hold the two arms separately -- a planted store is refused
+    (:func:`test_a_store_this_installation_did_not_build_is_not_served`) and the
+    same file serves once the build is recorded
+    (:func:`test_recording_the_build_is_what_makes_the_same_store_servable`).
+    Neither states the property those two are *for*, which is the same shape
+    ADR-0029's rejected-trailer closure takes: **what the repository shipped must
+    not be observable at all.**
+
+    So this is the two-corpora differential with the corpora at checkout scale.
+    One installation, two registered projects, identical in every respect except
+    that one repository force-added a fabricated ``theurian-findings-local.sqlite``
+    past ADR-0004's ignore (R1-1's reproduction) and the other shipped no store at
+    all. Every response is compared as bytes, over a battery that includes the
+    filters that would match the plant -- the "one query against two corpora"
+    form, where an index holding the withheld rows and an index that never did
+    must answer the same.
+
+    The build is then recorded for the clone, and the same battery must answer
+    differently: without that control the equality above would also hold if the
+    tool refused every project unconditionally.
+    """
+    _check_out(tmp_path / "clone", monkeypatch)
+    planted = _plant(project, LANDED, "clone")
+    assert planted.dump().findings, "the premise: the shipped store really holds rows"
+    assert not _store_path(project, "demo").exists(), (
+        "the premise: the other checkout ships no findings store at all"
+    )
+
+    queries: tuple[dict[str, Any], ...] = (
+        {},
+        {"limit": 1},
+        {"limit": MAX_FINDINGS_LIMIT},
+        {"reviewer": "security"},
+        {"severity": "CRITICAL"},
+        {"commitSha": _sha("a")},
+        {"q": "bearer"},
+        {"q": "nothing matches this"},
+    )
+    shipping = [await _call_failing(project, projectId="clone", **q) for q in queries]
+    shipping_none = [await _call_failing(project, projectId="demo", **q) for q in queries]
+
+    assert shipping == shipping_none, (
+        f"the checkout that shipped a store answered differently from the one that "
+        f"shipped none, so what the repository put on disk is observable through "
+        f"`review.findings`:\n{shipping}\n{shipping_none}"
+    )
+    assert set(shipping) == {shipping[0]}, f"the refusal varied with the query: {set(shipping)}"
+    assert FINDINGS_UNAVAILABLE_REFUSAL in shipping[0]
+    for message in shipping:
+        assert "bearer" not in message, f"a refusal quoted the shipped store: {message}"
+
+    _record_provenance(project, "clone")
+    built_here = [await _call(project, projectId="clone", **q) for q in queries]
+
+    assert any(payload["count"] for payload in built_here), (
+        "recording the local build changed nothing, so the equality above holds "
+        "because this tool refuses everything rather than because the shipped "
+        "store is unobservable"
     )
 
 
