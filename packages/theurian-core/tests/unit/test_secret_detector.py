@@ -301,6 +301,9 @@ _TREE_CANDIDATES: Final = (
     "0013-ai-writes-produce-proposals",
     "test_upgrade_command_names_the_same_flags_as_lib_sh",
     "test_upgrade_command_placeholders_name_keys_the_schema_declares",
+    "test_the_ingest_command_states_the_config_bound_and_nothing_beside_it",
+    "test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it",
+    "test_the_secret_scan_description_is_exactly_what_this_file_records",
 )
 
 #: One planted token per suffix the plugin tree actually carries -- measured at
@@ -416,14 +419,21 @@ def test_the_entropy_floor_is_where_the_detector_says_it_is() -> None:
 def test_the_secret_detector_ignores_the_identifiers_it_actually_meets(candidate: str) -> None:
     """A false positive costs the same as a false negative, in trust.
 
-    These five are what the scan really passes to the detector on every run: three
-    ADR filenames quoted in documents and two test names quoted by
-    ``/theurian:upgrade``'s document. Any one of them reported as a secret makes the
-    whole scan noise, and a noisy scan gets switched off.
+    These eight are what the scan really passes to the detector on every run:
+    three ADR filenames quoted in documents, two test names quoted by
+    ``/theurian:upgrade``'s document, and three more quoted by the plugin
+    changelog, which names the tests that hold its measured claims. Any one of
+    them reported as a secret makes the whole scan noise, and a noisy scan gets
+    switched off.
 
     They are also the reason the detector's requirements are not interchangeable.
-    Two of the five clear the entropy floor -- 4.0389 and 4.0643 bits -- and are
-    refused only because they carry no upper-case letter.
+    Two of the eight clear the entropy floor -- 4.0389 and 4.0643 bits -- and are
+    refused only because they carry no upper-case letter. The three newest are
+    refused twice over -- 3.7119, 3.7777 and 3.9317 bits, and no upper-case
+    letter either -- so they exercise neither gate on its own. Across these
+    eight, every snake_case test name sits below the floor while two of the three
+    kebab-case filenames clear it; that is a measurement of the eight rather than
+    a rule about the two shapes.
     """
     detected = _looks_like_a_secret(candidate)
 
