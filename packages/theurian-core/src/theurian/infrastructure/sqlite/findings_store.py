@@ -311,7 +311,12 @@ class SqliteReviewFindingStore:
         """
         finding_rows = _finding_rows(load.accepted)
         rejected_rows = _rejected_rows(load.rejected)
-        stamped_at = datetime.now(UTC).isoformat()
+        # Fixed width (`timespec="microseconds"`), like `committed_at_text` (#404
+        # R1-9): bare `isoformat()` drops the fractional part when it is zero, so
+        # `built_at` would be 26 or 32 characters depending on the wall clock -- a
+        # needless width wobble in a stored TEXT column, even though `built_at` is
+        # metadata a reader never sorts on.
+        stamped_at = datetime.now(UTC).isoformat(timespec="microseconds")
         building = self.building_path
 
         try:

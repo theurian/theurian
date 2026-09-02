@@ -8,12 +8,13 @@ adapter's scoping and loss-free mapping are exercised against real repositories 
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import override
+from typing import Final, override
 
 import pytest
 
@@ -754,29 +755,45 @@ def test_a_base_class_matching_hook_escapes_the_surface_but_the_behaviour_sectio
     )
 
 
-def test_the_parser_stamp_is_byte_identical_across_two_fresh_interpreters() -> None:
+#: The exact seeds ``test_projection.py`` / ``test_extractive_summarizer.py``
+#: cross-check (ADR-0020), pinned rather than left to the default random seed:
+#: two runs under *unpinned* seeds can coincidentally agree, so pinning three
+#: known-different seeds is what turns "these two happened to match" into "the
+#: stamp is invariant under the iteration order the seed perturbs". ``0``/``1``
+#: were once found to tie-break the same way while ``999`` differed.
+_HASH_SEEDS: Final = ("0", "1", "999")
+
+
+def test_the_parser_stamp_is_byte_identical_across_pinned_hash_seeds() -> None:
     """The stamp is a function of the grammar, not of a process (ADR-0029 AC-6).
 
     A store records this value and a later process compares against it, so a stamp
-    that varied per run would mark every store stale at once. Two separate
-    interpreters, not two calls in this one: a same-process comparison cannot see a
-    ``PYTHONHASHSEED``-dependent iteration order, which is exactly the way a
-    derived constant most often stops being deterministic.
+    that varied per run would mark every store stale at once. Separate interpreters
+    under **pinned, different** ``PYTHONHASHSEED`` values, not two calls in this one:
+    a same-process comparison cannot see a ``PYTHONHASHSEED``-dependent iteration
+    order, and two *unpinned* processes can coincidentally draw seeds that agree --
+    which is exactly the way a derived constant most often stops being
+    deterministic. If the stamp iterated a ``set`` or ``dict`` whose order the seed
+    perturbs, at least one of the three seeds would disagree.
 
     This is also what the choice of a *behavioural* bind buys over a bytecode or
     ``ast.dump`` digest: the material is Python semantics, so nothing in it can
     drift when the interpreter changes underneath unchanged source.
     """
     read_stamp = "from theurian.domain.review_finding import PARSER_STAMP; print(PARSER_STAMP)"
-    runs = [
+    results = {
         subprocess.run(  # noqa: S603
             [sys.executable, "-c", read_stamp],
             check=True,
             capture_output=True,
             text=True,
+            env={"PYTHONHASHSEED": seed, "PATH": os.environ.get("PATH", "/usr/bin:/bin")},
         ).stdout.strip()
-        for _ in range(2)
-    ]
+        for seed in _HASH_SEEDS
+    }
 
-    assert runs[0] == runs[1]
-    assert runs[0] == PARSER_STAMP
+    assert results == {PARSER_STAMP}, (
+        f"PARSER_STAMP varies with PYTHONHASHSEED: {results} -- it iterates a set "
+        f"or dict whose order the seed perturbs, so a store would read as stale "
+        f"across machines that drew a different seed"
+    )

@@ -544,8 +544,10 @@ def _compute_parser_stamp() -> str:
     probes distinguish, and a widening that no probe separates would leave it
     still -- so a mechanics change owes a probe, and adding one is itself the
     recorded act. The other two sections carry no such residual: both are total
-    over their populations. See :data:`FINDINGS_SCHEMA_VERSION`'s own note for
-    what stays manual on the *storage* side, which this stamp does not reach.
+    over their populations. See
+    :data:`~theurian.infrastructure.sqlite.findings_schema.FINDINGS_SCHEMA_VERSION`'s
+    own note for what stays manual on the *storage* side, which this stamp does not
+    reach.
 
     Deterministic: the vocabularies, the alias map and the matching surfaces are
     all serialized in sorted order, and the probes are a fixed tuple -- so the

@@ -930,7 +930,7 @@ unchanged — nothing here serves a finding, and `pullRequest`, `family` and
   (`test_review_finding.py::test_the_parser_stamp_moves_when_a_parser_mechanic_widens`,
   `test_the_parser_stamp_moves_when_a_vocabulary_gains_a_matching_hook`,
   `test_the_matching_surface_is_empty_for_a_vocabulary_that_adds_nothing`,
-  `test_the_parser_stamp_is_byte_identical_across_two_fresh_interpreters`). **The
+  `test_the_parser_stamp_is_byte_identical_across_pinned_hash_seeds`). **The
   residual is stated rather than closed:** the behaviour section is exact only for
   the mechanics its probes distinguish, so a widening no probe separates leaves the
   stamp still and owes a probe. The other two sections are total over their

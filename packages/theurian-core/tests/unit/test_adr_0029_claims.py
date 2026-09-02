@@ -225,6 +225,11 @@ _COLLAPSED_KEYS: Final = {
     "CLOSURE_MARKER": CLOSURE_MARKER,
     "RESIDUALS_PARAGRAPH": RESIDUALS_PARAGRAPH,
     "LANDING_NOTE": LANDING_NOTE,
+    # `LANDING_PR` reads a record too (the landing note must name `pull/492`), so it
+    # belongs in the premise guard's population -- omitting it left one prose key a
+    # future capital could break while the guard reported the record clean (#404
+    # R1-9).
+    "LANDING_PR": LANDING_PR,
     "PROBE_RESIDUAL[0]": PROBE_RESIDUAL[0],
     "PROBE_RESIDUAL[1]": PROBE_RESIDUAL[1],
     "_SCHEMA_VERSION_MOVE": _SCHEMA_VERSION_MOVE.pattern,
