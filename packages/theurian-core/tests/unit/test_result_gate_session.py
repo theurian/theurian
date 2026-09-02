@@ -358,8 +358,13 @@ def test_the_canonical_read_count_is_the_ranking_length_and_so_the_withheld_coun
     the visible rows plus the withheld ones and a request pays for documents its
     caller may not read. Measured at about 15 us per distinct document, and on
     this pipeline at 6.047 ms with 400 documents retired after the build against
-    0.163 ms with none: linear, one row at a time, with no threshold in it. Finer
-    than the fifty-row staircase
+    0.163 ms with none: linear, one row at a time, with no threshold in it,
+    **for as long as the ranking handed to ``cleared`` still carries the
+    withdrawn rows.** That condition is the claim's scope rather than a caveat on
+    it, and this test supplies the condition by hand: the ranking above is
+    constructed with the withheld rows in it, so the linearity here is a property
+    of ``cleared`` given such a ranking and not a statement that a shipped
+    request produces one. Finer than the fifty-row staircase
     :data:`~theurian.application.retrieval_service.FIRST_PASS_DEPTH` leaves one
     layer up, which is where the pass-count face of the same residual lives.
 
@@ -384,6 +389,27 @@ def test_the_canonical_read_count_is_the_ranking_length_and_so_the_withheld_coun
     It closes when the index stops holding withdrawn rows: the Milestone 6 purge,
     issue #15, and nothing smaller. Whoever makes these numbers stop reproducing
     owes the T-17a acceptance a re-argument, in either direction.
+
+    **That purge shipped, and the closure was measured on 2026-09-01 rather than
+    argued** (``docs/work-logs/2026-09-01-472-purged-build-re-measurement.md``,
+    F2/F1', against ``ec0dbcd``). Driven end to end over a real index and its
+    purged twin instead of over a hand-built ranking, the stale build reproduces
+    the line -- 10 canonical reads at nothing withheld rising to 6,000 at 5,990,
+    0.2349 ms to 157.7126 ms -- while the purged build reads **10 at every
+    withheld count from 0 to 5,990** and spans 0.2339 ms to 0.2433 ms across the
+    whole sweep. The retriever no longer has the withdrawn rows to hand over, so
+    there is no line left to be linear; the term is removed rather than made
+    smaller. Pinned by
+    ``test_a_purged_build_reads_canonical_once_per_visible_row_however_many_were_withheld``
+    in ``tests/integration/test_purged_build_quantities.py``, whose stale control
+    asserts ``visible + withheld`` first.
+
+    **This test keeps its own scope, and that is why it is not retired by the
+    purge.** It measures ``cleared`` given a ranking that carries withheld rows,
+    which is still what happens in the window between a withdrawal and the purge
+    that follows it, and in the residual cases T-17a records -- a request in
+    flight at the pointer swap, and a purge that failed. The number it holds is
+    the price of that window, not of a healthy request.
     """
     measured = {
         (withheld, placement): _measure(withheld, placement).reads

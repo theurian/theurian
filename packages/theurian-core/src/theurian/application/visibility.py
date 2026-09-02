@@ -195,7 +195,29 @@ class CanonicalVisibility:
         Measured at 15 us per distinct document, so walking a whole 6,000-row
         ranking costs 0.09 s against the 0.5 s scan that produced it, and 400
         documents retired after the build cost 6.047 ms against 0.163 ms with
-        none — linear in the withheld *document* count, with no threshold in it.
+        none -- linear in the withheld *document* count, with no threshold in it,
+        **on a published build that still holds the withdrawn rows.** That scope
+        is the whole claim rather than a caveat on it: the line exists because
+        the withdrawn rows are in the file the retriever ranked, and the
+        withdrawal->purge trigger removes the term rather than reducing it.
+
+        **On a purged build there is no line left to be linear.** Re-measured
+        2026-09-01 against a real index and its purged twin (`ec0dbcd`;
+        ``docs/work-logs/2026-09-01-472-purged-build-re-measurement.md``,
+        F2/F1'): the stale build reproduces the shape -- 10 reads at nothing
+        withheld rising to 6,000 at 5,990 withheld, 0.2349 ms to 157.7126 ms,
+        and 24.3 us per withheld row over the record's own 0 -> 400 sweep --
+        while the purged build reads **10 at every withheld count from 0 to
+        5,990**, spanning 0.2339 ms to 0.2433 ms across that entire sweep. The
+        24.3 us is a different machine 27 days after the 15 us above, so read
+        the pair for shape and not for magnitude. What the purged column shows
+        is not a shallower slope but the absence of the term: ``ranked`` holds
+        the visible documents alone, so there is nothing left for a
+        per-withheld-row rate to multiply. Pinned by
+        ``test_a_purged_build_reads_canonical_once_per_visible_row_however_many_were_withheld``
+        in ``tests/integration/test_purged_build_quantities.py``, whose stale
+        control asserts ``visible + withheld`` first -- so a fixture that never
+        held the withdrawn rows fails there before it reaches the claim.
 
         Zero rows is the case worth naming: a query that matched nothing asks
         this store nothing, which is why

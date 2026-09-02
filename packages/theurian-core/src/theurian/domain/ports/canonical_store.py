@@ -188,6 +188,19 @@ class CanonicalStore(Protocol):
         corpus rather than by the caller's ask, because the statement carries no
         ``LIMIT``.
 
+        **The 14.7 us is the stale build's, and the comparison it anchors is
+        against a window rather than against a standing cost.** It was taken on a
+        published build that still held the withdrawn rows. Re-taken 2026-09-01
+        against a real index and its purged twin (`ec0dbcd`;
+        ``docs/work-logs/2026-09-01-472-purged-build-re-measurement.md``, F2/F1'),
+        the stale build reproduces the shape at 24.3 us per withheld row -- a
+        different machine 27 days later, so comparable in shape and not in
+        magnitude -- while a purged build has no per-withheld-row term at all,
+        because ``|ranking|`` is the visible count at every withheld level. The
+        0.20 us above is not like that: it is corpus-bounded and survives a purge,
+        which is why the seventy-times-smaller comparison holds only inside the
+        window between a withdrawal and the purge that follows it.
+
         Adding ``sensitivity`` as a third column of ``idx_items_status`` flattens
         it exactly -- 2,032 steps at 0 and at 1,000, measured the same way -- at
         the price of a ``SCHEMA_VERSION`` bump, which invalidates every existing

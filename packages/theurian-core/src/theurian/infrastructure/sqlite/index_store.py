@@ -1271,6 +1271,21 @@ class SqliteIndexStore:
         consequence of this method's contract instead of a memo standing in front
         of a wrong inference.
 
+        **That 29.17 / 14.04 ms pair has no purged-build counterpart, and cannot
+        get one.** Its subject was deleted with the cache: "two calls through one
+        store costing one pass" is not a state this method can be in, so the
+        2026-09-01 re-measurement records it as **not re-runnable** rather than
+        replacing it with a new number
+        (``docs/work-logs/2026-09-01-472-purged-build-re-measurement.md``, F5).
+        What *is* re-runnable is the quantity the cache stood in front of -- what
+        one pass over the corpus costs -- taken at 50 visible and 5,950 withheld
+        rows over three builds: **85.10 ms** returning 6,000 rows on a build that
+        still held the withdrawn rows, **1.21 ms** returning 50 on its purged
+        twin, and **1.05 ms** on a build that never held them. The 6,000-row
+        corpus the pair above names is the same shape; the withdrawn rows were
+        being scanned, ranked and returned to Python on every request, and after
+        a purge they are not there to scan.
+
         The cache also imposed a rule on callers: *construct a fresh
         `SqliteIndexStore` per search*, because a pooled one would have leaked
         one caller's withheld-row count into another caller's latency through the

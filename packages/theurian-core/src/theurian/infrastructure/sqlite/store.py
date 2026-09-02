@@ -509,6 +509,15 @@ class SqliteCanonicalStore:
         # **What it is worth is a per-row comparison and only a per-row one.** The
         # ranked path already accepts, and the threat model records, a canonical read
         # of 14.7 us per withheld row (T-17); this is about 70 times smaller per row.
+        # **That base is the stale build's**: it was taken on a published build
+        # that still held the withdrawn rows, and re-taken 2026-09-01 against a
+        # real index and its purged twin (`ec0dbcd`;
+        # `docs/work-logs/2026-09-01-472-purged-build-re-measurement.md`, F2/F1')
+        # the stale build reproduces the shape at 24.3 us per withheld row while a
+        # purged build carries no per-withheld-row term at all. So the comparison
+        # holds inside the window between a withdrawal and its purge; outside it
+        # there is no other side to be seventy times smaller than. This term is
+        # not like that -- it is corpus-bounded and a purge does not touch it.
         # Compared as totals the two say nothing to each other, because they are
         # bounded by different populations. Against the end-to-end noise floor the
         # threat model records for a real client -- 1.40 ms across the loopback hop
