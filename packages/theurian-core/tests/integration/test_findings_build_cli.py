@@ -348,8 +348,8 @@ def test_a_first_build_whose_lock_dir_is_unwritable_is_a_graded_refusal(
 ) -> None:
     """R1-2: the write lock's own mkdir/open OSError arrives graded, not as a traceback.
 
-    ``findings build`` composes ``WriteLock(paths.write_lock).held`` inside its
-    ``try``, but *entering* that lock runs ``mkdir`` + ``open("w")`` on
+    ``findings build`` composes the project write lock's ``held()`` context manager
+    inside its ``try``, but *entering* it runs ``mkdir`` + ``open("w")`` on
     ``.theurian/runtime/`` -- a directory findings build never touched before #404
     added the lock -- and both raise a bare ``OSError``, which the command's
     ``except TheurianError`` does not catch. The read-only-state sibling above runs

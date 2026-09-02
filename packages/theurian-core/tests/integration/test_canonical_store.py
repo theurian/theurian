@@ -413,6 +413,34 @@ def test_a_second_writer_waits_rather_than_corrupting(lock: Path) -> None:
         pass  # pragma: no cover - the acquisition above must fail
 
 
+def test_write_lock_timeout_error_carries_its_own_lock_specific_remedy() -> None:
+    """#404 R1-5: ``WriteLockTimeoutError`` sets ``self.remedy``, so no caller falls to doctor.
+
+    It never set one, so it inherited ``TheurianError``'s empty default, and every
+    caller that reads ``exc.remedy or <default>`` fell to a generic cure. ``findings
+    build``'s default is "Run `theurian doctor`", which does not clear a held lock,
+    while two of its own comments claimed the timeout carried a lock-specific
+    remedy. Now it does, and the text is byte-identical to what
+    ``cli/commands.py::_state_remedy`` already returns for this type through its
+    ``isinstance`` branch -- so ``migrate apply`` (which resolves that branch before
+    ever reading ``exc.remedy``) is unaffected, while every other acquirer inherits
+    the right cure.
+
+    Lives here rather than in ``test_findings_build_cli.py`` on purpose: this file
+    is ``test_connection_claims.py``'s recorded sole constructor of the write lock,
+    so pinning the timeout error's remedy beside the lock it belongs to keeps that
+    module's exact one-file population honest.
+    """
+    from theurian.infrastructure.sqlite.connection import WriteLockTimeoutError
+
+    error = WriteLockTimeoutError(Path(".theurian/runtime/write.lock"), 30.0)
+
+    assert error.remedy == "Wait for the other `theurian` process to finish, then retry.", (
+        "WriteLockTimeoutError inherited TheurianError's empty default remedy, so a "
+        "caller reading `exc.remedy or <default>` shipped the wrong cure"
+    )
+
+
 def test_already_locked_is_what_makes_an_ordinary_caller_take_the_lock(
     database: Path, lock: Path
 ) -> None:

@@ -107,8 +107,9 @@ def findings_build(as_json: JsonOption = False) -> None:
     ADR-0018). Two concurrent rebuilds serialise instead of assembling at one
     working name, and a rebuild racing ``migrate apply`` waits for it. A holder
     that keeps the lock past the timeout is a ``WriteLockTimeoutError`` -- a
-    ``TheurianError`` with its own remedy, handled below like any other refusal,
-    never a raw traceback.
+    ``TheurianError`` that sets its own lock-specific remedy in its ``__init__``
+    (#404 R1-5), so ``_fail`` below carries "wait for the other process", never the
+    generic doctor cure and never a raw traceback.
     """
     from theurian.cli.commands import _emit, _fail, _require_project  # noqa: PLC0415 - cycle
 
