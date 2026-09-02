@@ -14,6 +14,75 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Documentation
 
+- **T-17's round-5/6/7 residual figures are re-run against a real purged build,
+  and the ADR-0024 point-4 clauses #445 asks about are answered by measurement**
+  ([#472](https://github.com/theurian/theurian/issues/472),
+  [#445](https://github.com/theurian/theurian/issues/445),
+  [#486](https://github.com/theurian/theurian/pull/486)). The threat model's
+  T-17 discharge note records that every figure in those rounds was taken
+  against a build that still held withdrawn rows, and that none had been re-run.
+  [`docs/work-logs/2026-09-01-472-purged-build-re-measurement.md`](../../docs/work-logs/2026-09-01-472-purged-build-re-measurement.md)
+  is that re-run, on a real canonical store and a real index purged through
+  `SqliteIndexStore.derive_purged` — the call the withdrawal trigger makes —
+  with the stale build reported beside the purged one in every table, so a
+  harness that measures nothing cannot pass. #472 stays open for face A, and
+  #445 stays open for the ADR-0024 reconciliation these answers feed.
+
+  **The purge does not make these quantities smaller; it removes the term they
+  are functions of.** At 5,990 withheld rows the canonical-read count goes
+  6,000 → 10 and the gate 157.71 ms → 0.24 ms; at 5,950 the `tracemalloc` peak
+  goes 8,244.4 KB → 84.9 KB; the pass-count edge at `FIRST_PASS_DEPTH` is
+  crossed by the stale build from 51 withheld and never by the purged one; one
+  scan over the corpus goes 85.10 ms → 1.21 ms, against 1.05 ms for a build that
+  never held the rows; and T-17a's five BM25 collection statistics match the
+  never-held build on all five where the stale build differs on all five. The
+  4.3 KB step visible in the purged peak-memory column is isolated to the harness
+  rather than explained away — retriever and gate measured separately are flat to
+  0.1 KB across the whole sweep, nine repeats each. **F5's 29.17 ms has no
+  purged-build counterpart and is recorded as not re-runnable**: its subject,
+  `SqliteIndexStore._scan_cache`, was deleted in Milestone 6
+  ([#16](https://github.com/theurian/theurian/issues/16)), so what the cache
+  saved cannot be re-priced; what it stood in front of is measured instead.
+
+  **What a purged build still carries** is the byte residue
+  [#344](https://github.com/theurian/theurian/issues/344) already records, now
+  quantified: a purge page-copies the published build and deletes from the copy,
+  so the purged file's size and free-page count are a monotone function of the
+  pre-purge corpus — 9.7 MB and 587 free pages to serve fifty rows. No query
+  reads a free page and the retriever's peak is flat across a 34× change in file
+  size, so the residue stays a disk-forensics surface rather than a query-side
+  one; what is new is that it scales with what was withdrawn.
+
+  **ADR-0024 point 4 is one true clause and two false ones.** No index write path
+  takes a lock — the advisory lock guards the *state* databases, and the purge's
+  publish half creates no lock file at all. There are eleven writable opens of an
+  index file across `index_store.py` and `index_purge.py` with no common gate, so
+  "exactly one such interface" holds only if *interface* means the port plus the
+  module it delegates to, which is a layering statement and not the single-writer
+  contract ADR-0018 point 1 defines. Nothing outside those two modules opens an
+  index file for writing, and that is the clause that survives. The records
+  themselves are not edited here; that is the follow-up pull request's scope.
+
+  **The population of records to update is derived rather than guessed.** A key
+  built from the work log's own F1–F9 reconstruction table — every figure those
+  records publish in its Figure column, plus the roundings the records use —
+  returns 48 lines at `ec0dbcd`, classified exhaustively into four buckets that
+  sum to 48: 19 inside the T-17 entry, 15 lines over **ten** satellite sites that
+  cite a round-5/6/7 figure as current, one shipped changelog line, and 13 hits
+  on figures these records borrow rather than produce. Two of the ten —
+  `application/visibility.py` and `tests/unit/test_result_gate_session.py` —
+  carry a linearity claim as well as the figures, and the purged column's flat
+  ten reads leave no line to be linear, so those two need the claim rewritten in
+  addition to the numbers.
+
+  Every figure is a measurement at one anchor (`ec0dbcd`, Apple M1 Max, CPython
+  3.13.3, SQLite 3.47.1, 2026-09-01) and not an invariant. The work log grades
+  itself the way it grades the records it re-measures: the harness was scratch
+  and is not committed, so no table here is reproducible by a reader yet. The
+  durable producer is the pins work in flight on
+  `docs/472-purged-records-and-pins`, which turns the flat purged columns into
+  tests under `packages/theurian-core/tests/integration/`.
+
 - **Four more config-reader universals are narrowed, `store.py`'s retracted
   NFR-4 citation is corrected, and the dead `#15`/`#113` owner cites in the
   purge path and three ADRs are repointed or classified as history**
