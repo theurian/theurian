@@ -12,6 +12,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0.dev18] - 2026-09-03
+
 ### Added
 
 - **`review.findings`: a project's landed review findings are readable over MCP**
