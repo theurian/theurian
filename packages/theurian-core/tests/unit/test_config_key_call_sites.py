@@ -10,14 +10,14 @@ opposite states:
   ``default: "block"`` — the policy an absent key and an absent config file both
   select (#198).
 - ``providers.review.repositories`` — SEC-10's repository allowlist. **Still
-  reserved**, owed with review ingestion. Nothing reads it, its description says
-  so, and this module is what holds the source tree to that. The description's
-  ``#129`` cite is **stale**: #129 closed on the wording rather than on the
-  control, so the live owner is #429 (the T-7 fetch controls) and the repointing
-  belongs to #428's stale-owner sweep — with the same schema file's *root*
-  description, which still carries an unnarrowed "Nothing in src/ reads this
-  file" (#455). Both stay outside this PR because they land on
-  ``project-config.schema.json``, which #199 unit B owns.
+  reserved**, owed with the first external fetch path. Nothing reads it, its
+  description says so, and this module is what holds the source tree to that.
+  That description used to name ``#129`` as its owner, and the schema's *root*
+  description used to carry an unnarrowed "Nothing in src/ reads this file"
+  (#455); #199 unit B repointed the first to #429 — the live owner of the T-7
+  fetch controls — and narrowed the second to the one reader the file has. Both
+  are pinned below, the root for the first time: a wheel-shipped description with
+  no pin is how the false one survived four sweeps.
 - **Every key in the ``raptor`` block** — ADR-0008 decision 10's switch. **Still
   reserved.** ``docs/architecture/raptor.md`` and ADR-0008 decision 10 used to
   say nothing in ``src/`` read ``.theurian/config.yaml`` at all; ADR-0027
@@ -45,6 +45,33 @@ corrected the surfaces, published the default, and recorded the sites. What is
 left is the standing obligation, now pointing both ways: a reader added for
 ``repositories`` must redden this file, and so must a reader for ``secretScan``
 being *removed* while the prose still describes a shipped control.
+
+**The prose pins hold spelling, and only spelling — that is their whole reach.**
+:data:`SECRET_SCAN_PROSE_SURFACES` asserts that a named fragment is still present
+in a named document. It is blind to whether the fragment is *true*: every row
+would stay green against a build that shipped a reader for
+``providers.review.repositories`` tomorrow and left each document asserting the
+opposite. Truth is the other half's job, and it lives in this same module —
+:data:`WATCHED_SPELLINGS` and the scan
+:func:`test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_ones`
+runs over the imported package, which reddens when a module names a watched
+spelling and whose bound is the "What this cannot see" paragraph below. The two
+halves are separate tests because neither is sufficient: the scan cannot see a
+document, and these pins cannot see the source tree.
+
+**So a fragment here may be relaxed only when its claim has stopped being
+load-bearing, never because the sentence became inconvenient to keep.** The
+scan going RED is what says the claim moved; until it does, a fragment that no
+longer matches means the document drifted and the document is what gets fixed.
+
+``plugins/claude-code/commands/ingest.md`` is the row that shows why the
+positive direction had to be pinned at all. Its allowlist paragraph reached a
+warning that is still correct from the premise #426 retracted, so #199 unit B
+narrowed the premise instead of dropping the warning — and nothing then asserted
+the narrowed wording. The only thing watching it ran the other way:
+``tools/audit/config_object_claims.py`` reddens on a *reversion* to the
+file-wide universal, which a reword that never returns to that shape does not
+trip. #461's row below closes that direction.
 
 **The population key**, so a reader can attack the key rather than the number:
 the scan walks every ``*.py`` under the *imported* ``theurian`` package —
@@ -536,8 +563,553 @@ def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_one
     )
 
 
-#: The exact sentences each watched key's published description has to keep, and
-#: the issue that owns it.
+#: The schema root's ``description``, in full, as the wheel publishes it.
+#:
+#: **A fragment pin is subtraction-proof and not addition-proof, which is round
+#: one's adv-L1.** The root row used to list four fragments the description had to
+#: keep, so deleting any of them was RED. Adding a *fifth* sentence was not: a
+#: fabricated control asserted in the same description -- "the review allowlist
+#: below is consulted before Theurian contacts any repository" -- kept all four
+#: fragments, shipped in the built wheel, and left every audit in ``tools/audit/``
+#: and every pin in this file green. Two such mutations were run and both survived.
+#:
+#: The root is where that matters most: it is the first thing a reader of the
+#: published schema sees, it is outside every key-block count (#455), and it was
+#: false from ADR-0027 decision 3 until #199 unit B rewrote it. So it is pinned
+#: whole -- as, since round three, is every other published description
+#: (:data:`WATCHED_KEY_DESCRIPTIONS`). A wording change is a deliberate act here,
+#: and the diff that makes this RED is the diff that has to say what moved.
+SCHEMA_ROOT_DESCRIPTION: Final = (
+    "Per-repository configuration, Git-tracked. Contains no secrets: credentials live "
+    "in ~/.theurian and the OS secret store (ADR-0011). This file has one reader: "
+    "`security/project_config.py` takes `security.secretScan` from it and nothing else "
+    "(ADR-0027 decision 3), so that one key is in force and every other key published "
+    "here is reserved. Setting a reserved key changes nothing, and where a default "
+    "below is also honoured by the product the code carries its own copy rather than "
+    "reading this file. The review-ingestion allowlist is owed with the first external "
+    "fetch path "
+    "(https://github.com/theurian/theurian/issues/429)."
+)
+
+
+def test_the_schema_root_description_is_exactly_what_this_file_records() -> None:
+    """RED means the wheel's root description moved, in either direction.
+
+    **This row used to be four fragments, and that is round one's adv-L1.** A
+    fragment list catches a *deletion*: drop "This file has one reader" and the row
+    goes RED. It cannot catch an **addition**, and an addition is the shape that
+    ships a false control claim -- a sentence asserting that the review allowlist
+    is consulted before Theurian contacts a repository kept all four fragments, was
+    published in the built wheel, and left every audit and every pin green when it
+    was planted. Round three then gave every published description the same
+    treatment, so the four fragments this paragraph describes are history rather
+    than a sibling pin.
+
+    An exact match is affordable here because there is one root description and it
+    is the schema's most-read sentence. If this is RED because the wording
+    genuinely improved, copy the new text in -- and say in the same commit what
+    claim it now makes, because that is the review this pin exists to force. Round
+    four is why the sentence is worth reading rather than copying: the description
+    said "Each reserved key's own description says what it is owed with", and three
+    of the ten reserved keys carry such a clause.
+    """
+    schema = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
+
+    assert schema["description"] == SCHEMA_ROOT_DESCRIPTION, (
+        "the published schema's root description is not the recorded one.\n\n"
+        f"  published: {schema['description']!r}\n\n"
+        f"  recorded : {SCHEMA_ROOT_DESCRIPTION!r}\n\n"
+        "This description is wheel-shipped and is the first thing a reader of the "
+        "contract sees. It was false from ADR-0027 decision 3 until #199 unit B "
+        "rewrote it, and nothing but the four fragments in "
+        "`WATCHED_KEY_DESCRIPTIONS` watched it -- which let a fabricated control "
+        "claim be *added* beside them with every check green."
+    )
+
+
+def _described_node(pointer: tuple[str, ...]) -> str:
+    """The ``description`` the published schema carries at ``pointer``.
+
+    One reader for every pin over a published description, so "what the schema
+    says at this key" is answered in one place and a pointer typo fails loudly
+    rather than defaulting to an empty string that every fragment vacuously
+    matches.
+    """
+    node: object = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
+    for step in pointer:
+        assert isinstance(node, dict), f"the schema has no `{'/'.join(pointer)}`"
+        node = node[step]
+
+    assert isinstance(node, dict), f"`{'/'.join(pointer)}` is not a subschema"
+    description = node.get("description")
+    assert isinstance(description, str), f"`{'/'.join(pointer)}` publishes no description"
+    return description
+
+
+#: ``security.secretScan``'s ``description``, in full, as the wheel publishes it.
+#:
+#: **The root's treatment, applied to the one key that is in force**, and round
+#: two's R2-D is why. The fragment rows below hold five sentences of this
+#: description, and adversarial review confirmed that direction clean: reword or
+#: delete any of them and the row is RED. What no fragment pin can hold is
+#: **contradiction by addition** -- a sixth sentence saying content is screened at
+#: ingest keeps all five fragments, ships in the built wheel, and leaves every pin
+#: and every audit green. The branch recorded that fragment pins are not
+#: addition-proof one constant above (:data:`SCHEMA_ROOT_DESCRIPTION`) and then
+#: left the description that carries SEC-11's whole bound fragment-pinned.
+#:
+#: It is one of twelve pinned whole now, and the sentence that used to stand here
+#: -- "the other nine stay fragment-pinned on purpose: they describe reserved keys,
+#: so a sentence added to one asserts nothing a reader can act on" -- was false in
+#: two places, which round three planted. ``retrieval.includeStatuses`` describes
+#: the status gate ("Defaults to approved only, so an unreviewed draft is never
+#: returned as though it were a team decision"), and ``security.maxSourceFileBytes``
+#: describes a limit ``security/paths.py`` enforces. Contradicting either is a
+#: false claim about a shipped control, in the built wheel, and both plants were
+#: green.
+SECRET_SCAN_DESCRIPTION: Final = (
+    "In force. What `theurian propose accept` does when a body it would land appears to "  # noqa: S105 - a published schema description, not a credential
+    "contain a secret (SEC-11, ADR-0027 decision 3): `block` refuses the acceptance and "
+    "consumes nothing, `warn` accepts and reports every finding on the result, `off` "
+    "skips the scan. The default is the behaviour an absent key and an absent config "
+    "file both select, so it states what the product does rather than a policy nothing "
+    "applies. Write `off` **quoted** in YAML -- a bare `off` is the boolean false under "
+    "YAML 1.1 and is refused rather than guessed at. The detector is in-house and best "
+    "effort -- known credential shapes plus an entropy heuristic -- and is not a "
+    "replacement for a repository secret scanner. It covers the approval gate only: "
+    "`theurian ingest` and index building run no scan "
+    "(https://github.com/theurian/theurian/issues/198)."
+)
+
+#: The JSON pointer to that description, so the pin and the fragment row read one
+#: place rather than two spellings of it.
+SECRET_SCAN_POINTER: Final[tuple[str, ...]] = (
+    "properties",
+    "security",
+    "properties",
+    "secretScan",
+)
+
+#: The two anchors that bound the clause ``ingest.md`` says it takes from the
+#: schema, used to *derive* that clause from the schema rather than transcribe it.
+#:
+#: Both anchors sit inside the span the two surfaces share byte for byte, so the
+#: derived string is the schema's own wording of the bound and nothing else. A
+#: reword between them moves the derived string and reddens the surface that did
+#: not follow; a reword outside them is not part of the shared clause and is free.
+_SCAN_BOUND_OPENS: Final = "`theurian ingest`"
+_SCAN_BOUND_CLOSES: Final = "run no scan"
+
+#: The document that says it quotes the schema here.
+INGEST_COMMAND_DOC: Final = REPO_ROOT / "plugins" / "claude-code" / "commands" / "ingest.md"
+
+#: The one list item in that document whose subject is ``.theurian/config.yaml``,
+#: pinned whole -- the schema description's treatment, on the document side.
+#:
+#: **Measured, because the closure argument was one surface short.** Appending a
+#: contradicting sentence to the *schema* description is caught by the whole pin
+#: below. Appending the same sentence to this bullet was measured green at
+#: ``9517cb2``: every fragment in :data:`SECRET_SCAN_PROSE_SURFACES` still
+#: matched, the derived clause was still byte-identical, and the document then
+#: said both that ingest runs no scan and that it screens content. A pin that
+#: holds only what a document must *keep* cannot see what a document *adds*, and
+#: that is as true of the surface a user reads as of the contract.
+#:
+#: The unit is the list item rather than the file, because the file also carries
+#: prose nobody has to hold this hard. Rewording inside this bullet is therefore a
+#: deliberate act: the diff that makes it RED is the diff that has to say what
+#: moved.
+INGEST_CONFIG_BULLET: Final = (
+    "Review history from GitHub is **not ingested yet**: `system.capabilities` reports "
+    "`reviewIngestion: false`, and `theurian ingest` reads only local data: files under "
+    "`.theurian/`, plus three `git` reads — the repository root (`rev-parse "
+    "--show-toplevel`), HEAD (`rev-parse HEAD`), and the `origin` URL (`remote get-url "
+    "origin`). When it lands (Milestone 7) a repository will have to be on the allowlist "
+    "in `.theurian/config.yaml` before Theurian contacts it. That file is read today, but "
+    "for one key only: `security/project_config.py` takes `security.secretScan` from it "
+    "and nothing else (ADR-0027 decision 3). That key selects a control this command never "
+    "reaches: it covers the approval gate only — `theurian ingest` and index building run "
+    "no scan (SEC-11, [#198](https://github.com/theurian/theurian/issues/198) shipped that "
+    "half and is closed; the ingest-time and index-time control is a separate one and is "
+    "owed by [#329](https://github.com/theurian/theurian/issues/329)), the schema's own "
+    "wording. Nothing reads the `providers.review.repositories` allowlist, so "
+    "do not tell the user the allowlist is protecting them."
+)
+
+
+#: A line that opens a new block rather than continuing the one above it.
+#:
+#: CommonMark's rule for a *lazy continuation*: a paragraph goes on across a line
+#: break unless the next line starts something else. The shape
+#: ``tools/audit/claim_surfaces.py`` keys blocks on, transcribed rather than
+#: imported -- ``tools/audit/`` is a script directory, not an installed package --
+#: plus ``>``, which that module leaves out because it strips blockquote markers
+#: before the rule runs and nothing strips them here.
+#:
+#: **Two corrections, each measured against a renderer rather than argued.** Round
+#: four rendered twelve line shapes with ``markdown_it``'s CommonMark preset and
+#: asked, per shape, whether the added sentence lands inside the ``<li>`` the
+#: pinned bullet produces:
+#:
+#: * A bare ``|`` line renders **inside** it. CommonMark has no tables, so a
+#:   pipe opens nothing; the transcribed shape carried one because the module it
+#:   came from reads documents where a GFM table is a block. Keeping it here made
+#:   ``| Ingested content is screened before it is indexed. |`` a sentence the pin
+#:   could not see.
+#: * ``1) `` renders **outside** it, and the old ``\d+\.\s`` spelled the dot form
+#:   alone. That direction costs a false RED rather than a miss -- the pin folded a
+#:   line the reader sees as a new list into the bullet it holds -- which is
+#:   adversarial round four's L1.
+#:
+#: ``2. `` and ``10. `` were already correct and were re-measured as outside, so
+#: the ordered-marker widening is to the marker's *punctuation*, not to its
+#: number.
+_OPENS_A_BLOCK: Final = re.compile(r"[ \t]*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|```|---\s*$|>)")
+
+
+#: What CommonMark calls a blank line: **spaces and tabs only**.
+#:
+#: ``str.strip()`` strips every character Python calls whitespace, which is a much
+#: larger set -- a no-break space, an em space, a unit separator. CommonMark counts
+#: none of them as blank, so a line holding one of them is a paragraph
+#: continuation line to a renderer and was an end-of-item to this pin. Round four
+#: measured the escape with U+00A0 and U+2003: the sentence after such a line
+#: renders inside the ``<li>`` and the pin went blind to it.
+#:
+#: ``test_a_line_of_exotic_whitespace_does_not_end_the_pinned_item`` derives the
+#: characters this distinguishes rather than transcribing them, so the rule is
+#: held against the Unicode table Python ships rather than against a list.
+_BLANK_LINE_CHARACTERS: Final = " \t"
+
+
+def _markdown_list_item(document: pathlib.Path, anchor: str) -> str:
+    """The one top-level list item of ``document`` containing ``anchor``, collapsed.
+
+    A thin wrapper over :func:`_list_item_of` so the rule can be driven from
+    synthetic text without a temporary file: this module is ``unit``, and the pin
+    below is the only caller that needs a path.
+    """
+    return _list_item_of(document.read_text(encoding="utf-8"), anchor, document.name)
+
+
+def _list_item_of(text: str, anchor: str, name: str = "<text>") -> str:
+    """The one top-level list item of ``text`` containing ``anchor``, collapsed.
+
+    An item is a line opening ``- `` plus everything CommonMark keeps inside it,
+    which is more than the indented lines under it and is round three's adversarial
+    HIGH-3. The old rule took a continuation only where it was indented by **two**
+    spaces, so four ways of appending a sentence to the bullet a reader sees moved
+    nothing at all -- and this pin exists precisely to catch an addition:
+
+    * a **lazy continuation** at column 0, which CommonMark folds into the
+      paragraph it follows;
+    * a continuation indented by **one** space;
+    * a continuation indented by a **tab**;
+    * a second paragraph of the item, after a blank line and indented.
+
+    All four render inside the bullet. So the rule here is CommonMark's: after a
+    blank line the item continues where the next line is indented, and otherwise a
+    non-blank line that does not *open a block* belongs to the item. A sibling
+    bullet opens a block, so the item still ends where the next ``- `` begins --
+    which is what keeps a contradiction added as its **own bullet** out of reach,
+    recorded as not held in
+    :func:`test_the_ingest_command_states_the_config_bound_and_nothing_beside_it`.
+
+    **Round four moved two edges of that rule, both measured against a renderer.**
+    "Blank" is now CommonMark's blank -- spaces and tabs, :data:`_BLANK_LINE_CHARACTERS`
+    -- rather than ``str.strip()``'s, which counted a no-break space and an em space
+    as blank and so ended the item one line before a sentence a reader sees inside
+    it. And :data:`_OPENS_A_BLOCK` lost the bare ``|`` it had transcribed (a pipe
+    renders inside the item, because CommonMark has no tables) and gained the
+    ``1)`` ordered marker beside ``1.`` (which renders outside it, and whose
+    absence folded a new list into the pinned bullet and reddened this pin for a
+    document that had not moved).
+
+    The anchor has to select exactly one item; two would mean the claim moved and
+    the caller would be pinning whichever came first.
+    """
+    items: list[list[str]] = []
+    current: list[str] | None = None
+    after_blank = False
+    for line in text.splitlines():
+        if line.startswith("- "):
+            if current is not None:
+                items.append(current)
+            current = [line[2:]]
+            after_blank = False
+        elif current is None:
+            continue
+        elif not line.strip(_BLANK_LINE_CHARACTERS):
+            after_blank = True
+        elif line.startswith((" ", "\t")):
+            current.append(line.strip())
+            after_blank = False
+        elif not after_blank and not _OPENS_A_BLOCK.match(line):
+            current.append(line.strip())
+        else:
+            items.append(current)
+            current = None
+            after_blank = False
+    if current is not None:
+        items.append(current)
+
+    found = [" ".join(" ".join(item).split()) for item in items if anchor in " ".join(item)]
+    assert len(found) == 1, (
+        f"{name}: {len(found)} list items mention {anchor!r}, and this pin "
+        f"needs exactly one. If the claim was split across two bullets, the pin has "
+        f"to be split with it rather than silently holding whichever came first."
+    )
+    return found[0]
+
+
+#: Two characters ``str.isspace`` calls whitespace and CommonMark does not call
+#: blank, spelled by code point because a literal one is invisible in a diff.
+_NO_BREAK_SPACE: Final = "\u00a0"
+_EM_SPACE: Final = "\u2003"
+
+#: The contradiction round three and round four appended, in synthetic form.
+_ADDED_SENTENCE: Final = "Ingested content is screened before it is indexed."
+
+#: A two-bullet document shaped like the one the pin reads, so a sibling bullet is
+#: reachable and the item under test is not the last thing in the file.
+_ANCHOR_BULLET: Final = "- That file is read today, but for one key only: `security.secretScan`."
+_SIBLING_BULLET: Final = "- Nothing reads the `providers.review.repositories` allowlist."
+
+
+def _document_with(*appended: str) -> str:
+    """The two-bullet document with ``appended`` inserted after the anchor bullet."""
+    return "\n".join((_ANCHOR_BULLET, *appended, _SIBLING_BULLET, ""))
+
+
+#: Each appended line shape, and whether CommonMark renders it inside the anchor item.
+#:
+#: **The ``inside`` column is a measurement, not a reading of the spec.** Round
+#: three and round four each rendered these shapes with ``markdown_it``'s
+#: CommonMark preset and asked whether the added sentence lands in the same
+#: ``<li>`` as the bullet's own text. Two of the answers are the ones a reader of
+#: the spec gets wrong: ``2. `` renders *outside* the item even though CommonMark
+#: says an ordered list interrupts a paragraph at ``1`` alone, and a bare ``|``
+#: renders *inside* it because CommonMark has no tables.
+#:
+#: The renderer is not imported here -- it is not a dependency of this package,
+#: and a test that took one would be pinning a library rather than this rule. The
+#: external oracle is the round-four script that renders each shape and compares
+#: the two answers; this table is what makes the same twelve shapes fail in the
+#: suite when the rule moves.
+_CONTINUATION_SHAPES: Final[tuple[tuple[str, tuple[str, ...], bool], ...]] = (
+    ("R3-a lazy continuation at column 0", (_ADDED_SENTENCE,), True),
+    ("R3-b indented by one space", (f" {_ADDED_SENTENCE}",), True),
+    ("R3-c indented by a tab", (f"\t{_ADDED_SENTENCE}",), True),
+    ("R3-d second paragraph after a blank line", ("", f"  {_ADDED_SENTENCE}"), True),
+    ("R4 E-4 a no-break-space line, then column 0", (_NO_BREAK_SPACE, _ADDED_SENTENCE), True),
+    (
+        "R4 E-5 a no-break-space line, then an indent",
+        (_NO_BREAK_SPACE, f"  {_ADDED_SENTENCE}"),
+        True,
+    ),
+    ("R4 E-6 an em-space line, then column 0", (_EM_SPACE, _ADDED_SENTENCE), True),
+    ("R4 E-7 a pipe line", (f"| {_ADDED_SENTENCE} |",), True),
+    ("R4 E-1 an ordered marker, `2. `", (f"2. {_ADDED_SENTENCE}",), False),
+    ("R4 E-2 an ordered marker, `10. `", (f"10. {_ADDED_SENTENCE}",), False),
+    ("R4 E-3 a paren marker, `1) `", (f"1) {_ADDED_SENTENCE}",), False),
+    ("N2 its own `- ` bullet, the recorded gap", ("", f"- {_ADDED_SENTENCE}"), False),
+)
+
+
+@pytest.mark.parametrize(
+    ("appended", "inside"),
+    [(row[1], row[2]) for row in _CONTINUATION_SHAPES],
+    ids=[row[0] for row in _CONTINUATION_SHAPES],
+)
+def test_the_item_rule_agrees_with_the_renderer_on_each_measured_shape(
+    appended: tuple[str, ...], inside: bool
+) -> None:
+    """RED means :func:`_list_item_of` and CommonMark disagree about a measured shape.
+
+    The pin below exists to catch a sentence *added* to the bullet a user reads,
+    and it can miss in two directions. A shape that renders inside the item and
+    that the rule does not return is an addition shipping green -- round three
+    found four of those and round four found three more, two of them lines of
+    whitespace CommonMark does not call blank. A shape that renders outside the
+    item and that the rule *does* return is the other direction: the pin reddens
+    for a document that did not move, which is how a real correction gets read as
+    a false alarm and the pin gets relaxed.
+
+    Both directions are here because the second is what a fix for the first
+    produces if it is written as "take more lines".
+    """
+    item = _list_item_of(_document_with(*appended), "security.secretScan")
+
+    assert (_ADDED_SENTENCE in item) is inside, (
+        f"the rule returned {'' if _ADDED_SENTENCE in item else 'no '}sentence for a "
+        f"shape CommonMark renders {'inside' if inside else 'outside'} the item.\n\n"
+        f"  appended: {list(appended)!r}\n"
+        f"  item    : {item!r}\n\n"
+        "Inside-but-missing is an addition the pin below cannot see, which is the "
+        "escape it exists to close. Outside-but-returned reddens that pin against a "
+        "document nobody changed. Re-render the shape before changing this row."
+    )
+
+
+def test_a_line_of_exotic_whitespace_does_not_end_the_pinned_item() -> None:
+    """RED means ``str.strip()``'s idea of blank came back into the item rule.
+
+    CommonMark's blank line is spaces and tabs. Python's is every character
+    ``str.isspace`` admits, and the difference is not academic: a line holding one
+    no-break space is a paragraph continuation to a renderer and was an
+    end-of-item to this rule, so a sentence appended after it rendered inside the
+    bullet and left the pin below green. Round four measured that with U+00A0 and
+    U+2003.
+
+    The population is **derived** rather than transcribed -- every character
+    Python calls whitespace, minus the space and tab CommonMark counts, minus the
+    ones ``str.splitlines`` treats as a line break and which therefore cannot sit
+    inside a line at all. Transcribing it would hold this rule against a list
+    someone wrote once; deriving it holds the rule against the Unicode table the
+    interpreter ships.
+    """
+    exotic = [
+        character
+        for code in range(0x110000)
+        if (character := chr(code)).isspace()
+        and character not in _BLANK_LINE_CHARACTERS
+        and len(f"x{character}x".splitlines()) == 1
+    ]
+
+    blind = [
+        f"U+{ord(character):04X}"
+        for character in exotic
+        if _ADDED_SENTENCE
+        not in _list_item_of(_document_with(character, _ADDED_SENTENCE), "security.secretScan")
+    ]
+
+    assert exotic, (
+        "no character was derived as whitespace-but-not-blank, so this test asserts "
+        "nothing. Either the derivation stopped selecting anything or `str.isspace` "
+        "changed under it; a test whose population is empty passes by running "
+        "nothing."
+    )
+    assert not blind, (
+        f"a line holding one of {blind} ended the pinned item.\n\n"
+        "CommonMark counts spaces and tabs as blank and nothing else, so a line "
+        "made of one of these is a paragraph continuation and the sentence after "
+        "it renders inside the bullet a user reads. Ending the item there makes "
+        "`test_the_ingest_command_states_the_config_bound_and_nothing_beside_it` "
+        "blind to a contradiction added one line lower."
+    )
+
+
+def test_the_ingest_command_states_the_config_bound_and_nothing_beside_it() -> None:
+    """RED means ``ingest.md``'s config bullet moved, addition included (R2-D).
+
+    :data:`SECRET_SCAN_PROSE_SURFACES` holds what this bullet must keep, and
+    adversarial review confirmed that direction: reword or delete any pinned
+    fragment and the row is RED. This is the direction no fragment pin has -- a
+    sentence *added* beside them keeps every fragment matching. Measured at
+    ``9517cb2``: a contradicting "ingested content is screened before it is
+    indexed" appended to this bullet left all forty-six pins in this module green.
+
+    This is the document a user reads before running ``theurian ingest``, and the
+    bullet is where it states which key of ``.theurian/config.yaml`` is in force
+    and how far the control that key selects reaches. Both halves are the kind of
+    claim that misleads by addition rather than by omission.
+
+    **How much of "added to this bullet" it holds, and what it does not.** Round
+    three added the same contradicting sentence four ways that render inside the
+    bullet and were outside the two-space rule this pin read the document with -- a
+    lazy continuation at column 0, a one-space indent, a tab, and a second
+    paragraph after a blank line. All four are RED now; :func:`_markdown_list_item`
+    is where the rule lives.
+
+    What is still not held is a contradiction added as its **own** bullet: that is
+    a different list item, and this pin holds one. The whole-file fragment rows in
+    :data:`SECRET_SCAN_PROSE_SURFACES` do not see an addition anywhere, so nothing
+    in this module reddens on it. Recorded rather than closed -- pinning the whole
+    document is a different instrument, and #512 owns the question.
+    """
+    bullet = _markdown_list_item(INGEST_COMMAND_DOC, "security.secretScan")
+
+    assert bullet == INGEST_CONFIG_BULLET, (
+        "`plugins/claude-code/commands/ingest.md`'s config bullet is not the "
+        "recorded one.\n\n"
+        f"  document: {bullet!r}\n\n"
+        f"  recorded: {INGEST_CONFIG_BULLET!r}\n\n"
+        "This bullet tells a user which key of `.theurian/config.yaml` is in "
+        "force and that `theurian ingest` runs no scan. A sentence added here "
+        "that contradicts either half is a false security claim on the surface a "
+        "user actually reads, and every fragment pin stays green while it is "
+        "there. If the wording genuinely improved, copy the new text in and say "
+        "in the same commit what claim it now makes."
+    )
+
+
+def test_the_secret_scan_description_is_exactly_what_this_file_records() -> None:
+    """RED means the wheel's ``security.secretScan`` description moved, in either direction.
+
+    The fragment rows below catch a **deletion or a reword**: drop "`theurian
+    ingest` and index building run no scan" and the row goes RED, which
+    adversarial review reproduced. They cannot catch an **addition**, and an
+    addition is the shape that ships a false control claim here -- a sentence
+    asserting that ingested content is screened keeps all five fragments and is
+    published in the built wheel.
+
+    This description is the one that carries SEC-11's whole bound, and four
+    documents describe the control by pointing at it. An exact match is
+    affordable for the same reason it is for the root: there is one of it, and a
+    wording change is a deliberate act. If this is RED because the wording
+    genuinely improved, copy the new text in -- and say in the same commit what
+    claim it now makes.
+    """
+    description = _described_node(SECRET_SCAN_POINTER)
+
+    assert description == SECRET_SCAN_DESCRIPTION, (
+        "the published `security.secretScan` description is not the recorded one.\n\n"
+        f"  published: {description!r}\n\n"
+        f"  recorded : {SECRET_SCAN_DESCRIPTION!r}\n\n"
+        "This description is wheel-shipped and is where SEC-11's reach is stated. "
+        "`SECURITY.md`, the threat model's T-15 controls, "
+        "`docs/architecture/requirements-analysis.md` and "
+        "`plugins/claude-code/commands/ingest.md` all describe the control by "
+        "resting on it, so a sentence added here that contradicts the bound makes "
+        "four documents wrong at once -- and every fragment pin stays green while "
+        "it does."
+    )
+
+
+def test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it() -> None:
+    """``ingest.md`` says it quotes the schema; this is that claim, run.
+
+    The paragraph reads "it covers the approval gate only -- `theurian ingest`
+    and index building run no scan (SEC-11, [#198]), **the schema's own
+    wording**". Two surfaces carrying one clause is how a bound drifts into two
+    bounds: one of them gets tightened, a reader trusts whichever they opened,
+    and both look maintained.
+
+    The clause is **derived from the schema and matched byte for byte** in the
+    document, so neither side can move alone. It is not transcribed here twice --
+    a second transcription would be a third surface with the same problem.
+
+    What this does not hold: that the surrounding sentences agree. The schema's
+    side of that is :func:`test_the_secret_scan_description_is_exactly_what_this_file_records`;
+    the document's side is the fragment row in :data:`SECRET_SCAN_PROSE_SURFACES`.
+    """
+    description = _described_node(SECRET_SCAN_POINTER)
+    opens = description.index(_SCAN_BOUND_OPENS)
+    closes = description.index(_SCAN_BOUND_CLOSES, opens) + len(_SCAN_BOUND_CLOSES)
+    clause = description[opens:closes]
+
+    document = " ".join(INGEST_COMMAND_DOC.read_text(encoding="utf-8").split())
+
+    assert clause in document, (
+        f"`plugins/claude-code/commands/ingest.md` no longer carries the schema's "
+        f"own wording of SEC-11's bound.\n\n"
+        f"  the schema publishes: {clause!r}\n\n"
+        "The document says it quotes the schema here. If the schema's wording "
+        "moved, move the document's in the same change; if the document's moved, "
+        "it is now a second bound a reader can trust instead of the contract's."
+    )
+
+
 #:
 #: The scan above holds one direction — code must not overtake the claim — and
 #: leaves the other open: a description rewritten to say a key works would make
@@ -545,79 +1117,275 @@ def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_one
 #: Pinning the wording closes it, and pins the wording *deliberately*: these are
 #: not stylistic sentences.
 #:
+#: **Every published description, in full, and that is round three's finding.**
+#: The table used to hold three rows of *fragments*, on the argument that the
+#: other nine "describe reserved keys, so a sentence added to one asserts nothing
+#: a reader can act on". Two of the nine falsify that argument on their face:
+#: ``retrieval.includeStatuses`` describes the **status gate** — the reason an
+#: unreviewed draft is not returned as though it were a team decision — and
+#: ``security.maxSourceFileBytes`` describes the **limit ``security/paths.py``
+#: enforces** (SEC-8). A sentence added to either contradicts a shipped control in
+#: the built wheel, and both plants were green. A fragment pin cannot see an
+#: addition at all, so the fix is not more fragments: it is the whole text.
+#:
+#: So a row is ``(key, pointer, the description as the wheel publishes it)`` and
+#: the test below is an equality. The cost is real and is the point: rewording any
+#: published description is now a two-file diff that somebody reads. The two
+#: descriptions that already had a whole pin keep their own named tests —
+#: :func:`test_the_schema_root_description_is_exactly_what_this_file_records` and
+#: :func:`test_the_secret_scan_description_is_exactly_what_this_file_records`, the
+#: second of which the plugin changelog's mutation record cites by name — and they
+#: read their expected text from this table rather than carrying a second copy of
+#: it.
+#:
+#: **The root is a row here, and it is the row that was missing.** ``pointer`` is
+#: empty for it, so :func:`_published_description` reads the top-level
+#: ``description`` — the one every population key for this class counted past,
+#: because they counted *key blocks* and the root is not one (#455). It was
+#: wheel-shipped, false since ADR-0027 decision 3, contradicted by the
+#: ``secretScan`` row three lines down in the same artifact, and pinned by nothing
+#: at all.
+#:
 #: ``secretScan``'s row is the one that turned over with ADR-0027 decision 3. It
 #: used to require "No shipped code reads this key" and "no default is
-#: published"; it now requires the opposite claim and the reach that bounds it,
+#: published"; it now states the opposite claim and the reach that bounds it,
 #: because the sentence a reader has to be able to trust is no longer "this does
 #: nothing" but "this does exactly this much".
-WATCHED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+#:
+#: The eleven key rows are in the order :func:`_described_key_paths` derives, so
+#: the changelog sentence built from this table and the sentence built from the
+#: schema list the same names in the same order. That agreement is asserted by
+#: :func:`test_the_watched_descriptions_are_ordered_the_way_the_schema_derives_them`
+#: rather than left to a reader keeping two lists in step by eye.
+WATCHED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("(schema root)", (), SCHEMA_ROOT_DESCRIPTION),
     (
-        "security.secretScan",
-        ("properties", "security", "properties", "secretScan"),
+        "providers",
         (
-            "In force",
-            "theurian propose accept",
-            "best effort",
-            "`theurian ingest` and index building run no scan",
-            "https://github.com/theurian/theurian/issues/198",
+            "properties",
+            "providers",
         ),
+        "Adapter selection. Every provider defaults to a deterministic in-tree "
+        "implementation that needs no network and no API key (ADR-0009).",
+    ),
+    (
+        "providers.embedding.apiKeyEnv",
+        (
+            "properties",
+            "providers",
+            "properties",
+            "embedding",
+            "properties",
+            "apiKeyEnv",
+        ),
+        "Name of the environment variable holding the API key. Storing a key in this file "
+        "is a configuration error.",
+    ),
+    (
+        "providers.embedding.endpointEnv",
+        (
+            "properties",
+            "providers",
+            "properties",
+            "embedding",
+            "properties",
+            "endpointEnv",
+        ),
+        "Name of the environment variable holding the endpoint. The value itself is never "
+        "stored here.",
     ),
     (
         "providers.review.repositories",
-        ("properties", "providers", "properties", "review", "properties", "repositories"),
         (
-            "Not in force",
-            "Nothing reads it today",
-            "https://github.com/theurian/theurian/issues/129",
+            "properties",
+            "providers",
+            "properties",
+            "review",
+            "properties",
+            "repositories",
         ),
+        "Not in force. Allowlist of `owner/repo` values that review ingestion must "
+        "consult before contacting a repository (SEC-10). Nothing reads it today; owed "
+        "with the first external fetch path "
+        "(https://github.com/theurian/theurian/issues/429 owns the fetch controls; "
+        "https://github.com/theurian/theurian/issues/129 closed on the wording rather "
+        "than on the control).",
+    ),
+    (
+        "raptor.enabled",
+        (
+            "properties",
+            "raptor",
+            "properties",
+            "enabled",
+        ),
+        "Whether `theurian index build` derives a summary forest. Off by default "
+        "(ADR-0008 decision 10): a capability whose acceptance tests are owed and whose "
+        "build cost is unmeasured is turned on by a decision, not by an upgrade. "
+        "`theurian index build --raptor` is the same switch on one build.",
+    ),
+    (
+        "raptor.minChildrenPerSummary",
+        (
+            "properties",
+            "raptor",
+            "properties",
+            "minChildrenPerSummary",
+        ),
+        "Below this, a level is skipped. Summarising a single document adds cost and no "
+        "information.",
+    ),
+    (
+        "retrieval.includeStatuses",
+        (
+            "properties",
+            "retrieval",
+            "properties",
+            "includeStatuses",
+        ),
+        "Defaults to approved only, so an unreviewed draft is never returned as though it "
+        "were a team decision.",
+    ),
+    (
+        "retrieval.rrfK",
+        (
+            "properties",
+            "retrieval",
+            "properties",
+            "rrfK",
+        ),
+        "Reciprocal Rank Fusion smoothing constant.",
+    ),
+    (
+        "security.maxSourceFileBytes",
+        (
+            "properties",
+            "security",
+            "properties",
+            "maxSourceFileBytes",
+        ),
+        "The default documents the shipped limit rather than setting it: "
+        "`MAX_SOURCE_FILE_BYTES` in `security/paths.py` is 8388608 and is what ingestion "
+        "enforces (SEC-8). Nothing reads this key, so changing the value here has no "
+        "effect on that limit (https://github.com/theurian/theurian/issues/129).",
+    ),
+    (
+        "security.secretScan",
+        (
+            "properties",
+            "security",
+            "properties",
+            "secretScan",
+        ),
+        SECRET_SCAN_DESCRIPTION,
+    ),
+    (
+        "traceabilityPolicy",
+        (
+            "properties",
+            "traceabilityPolicy",
+        ),
+        "What each change type must be able to prove (§22). Unlisted change types default "
+        "to permissive, so adopting the policy never blocks unrelated work.",
     ),
 )
 
 
+def _published_description(pointer: tuple[str, ...]) -> str:
+    """The description the schema publishes at ``pointer``, the root included.
+
+    One reader for both shapes, because the root is a member of this population
+    and an empty pointer is how it is spelled (#455).
+    """
+    if not pointer:
+        published = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))["description"]
+        assert isinstance(published, str), "the schema publishes no root description"
+        return published
+    return _described_node(pointer)
+
+
 @pytest.mark.parametrize(
-    ("key", "pointer", "required"),
+    ("key", "pointer", "recorded"),
     WATCHED_KEY_DESCRIPTIONS,
     ids=[case[0] for case in WATCHED_KEY_DESCRIPTIONS],
 )
-def test_each_watched_key_still_publishes_the_reach_the_scan_enforces(
-    key: str, pointer: tuple[str, ...], required: tuple[str, ...]
+def test_each_watched_key_publishes_exactly_the_description_this_file_records(
+    key: str, pointer: tuple[str, ...], recorded: str
 ) -> None:
     """The other direction of the same claim, which the scan above cannot reach.
 
     The scan goes red when the source tree stops matching the published
-    description. It stays green if the *description* moves instead — a key
-    quietly re-described as working, with no reader anywhere, leaves the schema
-    asserting a control that does not exist and every document resting on it
-    unchanged. That is the #198 defect exactly, arriving from the other side, and
-    it has a mirror now that one of the two keys works: a description that stops
-    bounding ``secretScan``'s reach lets a reader believe ingest is covered.
+    description. It stays green if the *description* moves instead — a key quietly
+    re-described as working, with no reader anywhere, leaves the schema asserting a
+    control that does not exist and every document resting on it unchanged. That is
+    the #198 defect exactly, arriving from the other side, and it has a mirror now
+    that one of the keys works: a description that stops bounding ``secretScan``'s
+    reach lets a reader believe ingest is covered.
 
-    So the two halves are pinned in one file: the description states the reach,
-    and the source tree is held to it.
+    So the two halves are pinned in one file: the description states the reach, and
+    the source tree is held to it.
+
+    **An equality and not a fragment list**, because a fragment list is blind to
+    the shape that ships a false control claim -- a sentence *added* beside the
+    fragments, which keeps every one of them matching. Round three planted that in
+    ``retrieval.includeStatuses`` and ``security.maxSourceFileBytes``, whose
+    descriptions state the status gate and SEC-8's enforced limit, and both plants
+    shipped in the built wheel with every check green.
+
+    If this is RED because a wording genuinely improved, copy the new text in --
+    and say in the same commit what claim it now makes, because that review is what
+    the pin exists to force.
     """
-    node: object = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
-    for step in pointer:
-        assert isinstance(node, dict), f"{key}: the schema has no `{'/'.join(pointer)}`"
-        node = node[step]
+    published = _published_description(pointer)
 
-    assert isinstance(node, dict), f"{key}: `{'/'.join(pointer)}` is not a subschema"
-    description = node.get("description", "")
+    assert published == recorded, (
+        f"{key}: the published description is not the recorded one.\n\n"
+        f"  published: {published!r}\n\n"
+        f"  recorded : {recorded!r}\n\n"
+        f"These descriptions are wheel-shipped, and six documents rest on them -- "
+        f"SECURITY.md, docs/security/threat-model.md (T-15 and T-7), "
+        f"docs/architecture/requirements-analysis.md, "
+        f"docs/architecture/review-knowledge.md, "
+        f"plugins/claude-code/commands/ingest.md and the sample project's "
+        f"config.yaml all tell a reader how far to trust a control (#198, #129).\n\n"
+        f"If what the key does has changed, "
+        f"`test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_ones` "
+        f"is where the readers get recorded and those documents are where the claim "
+        f"gets corrected. If the wording improved, copy it in and say what claim it "
+        f"now makes -- an addition is the direction a fragment pin could not see."
+    )
 
-    for sentence in required:
-        assert sentence in description, (
-            f"{key}: the published description no longer says {sentence!r}.\n\n"
-            f"It reads:\n  {description!r}\n\n"
-            f"That sentence is what six documents rest on — SECURITY.md, "
-            f"docs/security/threat-model.md (T-15 and T-7), "
-            f"docs/architecture/requirements-analysis.md, "
-            f"docs/architecture/review-knowledge.md, "
-            f"plugins/claude-code/commands/ingest.md and the sample project's "
-            f"config.yaml all tell a reader how far to trust the control (#198, "
-            f"#129). If what the key does has changed, "
-            f"`test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_ones` "
-            f"is where the readers get recorded and those documents are where "
-            f"the claim gets corrected; if it has not, restore the sentence."
-        )
+
+def test_the_watched_descriptions_are_ordered_the_way_the_schema_derives_them() -> None:
+    """RED means the pinned table and the schema list the same keys in different orders.
+
+    :func:`test_the_changelog_states_the_pin_reach_this_module_actually_has`
+    rebuilds a changelog sentence that names the pinned keys, and it takes the
+    names from this table while it takes the *count* from the schema. Those two
+    sources agreeing on order is what makes the rebuilt sentence stable across a
+    schema edit that adds a key in the middle -- and until round four the agreement
+    was a sentence in :data:`WATCHED_KEY_DESCRIPTIONS`' own comment and nothing
+    else. A comment claiming an ordering is exactly the kind of claim that stays
+    green while it stops being true.
+
+    The root row is excluded because it has no dotted path: it is the member every
+    key-block derivation counts past (#455), and it is carried first here for the
+    same reason the changelog names it first.
+    """
+    tabled = tuple(key for key, pointer, _recorded in WATCHED_KEY_DESCRIPTIONS if pointer)
+
+    assert tabled == _described_key_paths(), (
+        f"`WATCHED_KEY_DESCRIPTIONS` lists {list(tabled)}\n"
+        f"and the schema derives  {list(_described_key_paths())}.\n\n"
+        "The changelog sentence rebuilt by "
+        "`test_the_changelog_states_the_pin_reach_this_module_actually_has` takes "
+        "its names from the table and its count from the schema. If the two "
+        "disagree on order, that sentence names the pinned keys in an order no "
+        "reader of the schema will see, and the disagreement is invisible from "
+        "either side alone.\n\n"
+        "A key published in the middle of the schema goes into the middle of the "
+        "table, not at the end."
+    )
 
 
 #: The prose surfaces that state how far SEC-11's control reaches, as
@@ -640,6 +1408,14 @@ def test_each_watched_key_still_publishes_the_reach_the_scan_enforces(
 #:   reading that content is now screened, which is the risk the ADR names
 #:   directly. Each row therefore pins a sentence asserting the control **and** a
 #:   sentence bounding it.
+#:
+#: **One row per document, and the ``ingest.md`` row carries a second claim.**
+#: SEC-11's reach is what four of the five fragment groups here are about; the
+#: ``ingest.md`` row also pins the #461 correction, which states from the config
+#: side which key of ``.theurian/config.yaml`` is in force and which is not. The
+#: two belong in one row because they are one paragraph's worth of bound on one
+#: document, and splitting them would put two rows for one file in a table whose
+#: rows have to be kept in step by hand.
 #:
 #: Matched after collapsing runs of whitespace to a single space, because these
 #: are line-wrapped Markdown: a sentence routinely breaks across two source
@@ -733,10 +1509,53 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "plugins/claude-code/commands/ingest.md",
         "plugins/claude-code/commands/ingest.md",
-        # Unchanged by ADR-0027 decision 3, and that is the claim: `ingest`
-        # stores no content and runs no scan, so the sentence that was true when
-        # nothing scanned anywhere is still exactly true.
-        ("stores no content",),
+        (
+            # Unchanged by ADR-0027 decision 3, and that is the claim: `ingest`
+            # stores no content and runs no scan, so the sentence that was true
+            # when nothing scanned anywhere is still exactly true.
+            "stores no content",
+            # -- the #461 correction, pinned here for the first time ----------
+            # This document's allowlist paragraph reached a warning that is
+            # still correct from the premise #426 retracted, and #199 unit B
+            # narrowed the premise rather than dropping the warning. Nothing
+            # asserted the narrowed wording afterwards: the object-keyed census
+            # reddens on a reversion to the file-wide universal, so a reword
+            # that never returns to that shape moved nothing.
+            #
+            # Five fragments, because the corrected argument has five moving
+            # parts and each can be dropped on its own: the narrowed premise,
+            # the reader that bounds it, where that reader's control runs, the
+            # key that still has none, and the conclusion the paragraph exists
+            # to deliver. The last is pinned for the reason
+            # `RAPTOR_MD_SENTENCES` in `test_raptor_config_claims.py` records
+            # -- a rewrite that keeps only the conclusion leaves a reader no
+            # way to check it, and one that keeps only the premises leaves the
+            # warning unsaid.
+            "That file is read today, but for one key only",
+            "`security/project_config.py` takes `security.secretScan` from it and nothing else",
+            # The bound, and the one fragment here pinned as a **whole
+            # sentence** rather than a phrase. Naming `security.secretScan` as
+            # in force announces a scanning control inside a document about
+            # `theurian ingest`, and a reader who stops at that sentence has
+            # been told a scanner covers this command. The clause is the only
+            # thing that says otherwise, so every clause of it is load-bearing:
+            # which gate it covers, and the two entry points that run no scan.
+            # Its fact side is
+            # `test_the_secret_scan_policy_is_read_at_one_call_site_only`, which
+            # goes RED the day a second call site makes "the approval gate only"
+            # false while this pin -- spelling, and only spelling -- stays green.
+            (
+                "That key selects a control this command never reaches: it covers the "
+                "approval gate only — `theurian ingest` and index building run no scan "
+                "(SEC-11, [#198](https://github.com/theurian/theurian/issues/198) shipped "
+                "that half and is closed; the ingest-time and index-time control is a "
+                "separate one and is owed by "
+                "[#329](https://github.com/theurian/theurian/issues/329)), the schema's "
+                "own wording."
+            ),
+            "Nothing reads the `providers.review.repositories` allowlist",
+            "do not tell the user the allowlist is protecting them",
+        ),
     ),
 )
 
@@ -778,4 +1597,764 @@ def test_each_secret_scan_prose_surface_states_the_control_and_its_bound(
             "changed, this document and the readers recorded in "
             "`test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_ones` "
             "belong in the same change; otherwise restore the sentence."
+        )
+
+
+# ---------------------------------------------------------------------------
+# The fact side of ``ingest.md``'s bounding clause, and the record of this
+# module's own reach.
+# ---------------------------------------------------------------------------
+
+#: Where the core changelog's account of this module's pins lives.
+CORE_CHANGELOG = REPO_ROOT / "packages" / "theurian-core" / "CHANGELOG.md"
+
+#: The reader whose *reach* four documents describe, and the one module that calls it.
+#:
+#: The function is defined in ``security/project_config.py`` and called from the
+#: accept path. A grep for the name therefore returns two hits and only one of
+#: them is a call, which is why this is an AST count and not a text count.
+SECRET_SCAN_POLICY_READER = "read_secret_scan_policy"  # noqa: S105 - a function name, not a secret
+
+#: The module that defines it, so the count below resolves a *binding* rather than
+#: trusting a spelling.
+SECRET_SCAN_POLICY_MODULE: Final = "theurian.security.project_config"  # noqa: S105 - a module path, not a credential
+
+#: How many times each module calls it, as paths under the imported ``theurian``
+#: package. A count and not a set: a second call inside a module already on the
+#: list is a second place the policy is consulted, and a membership test cannot
+#: see it.
+SECRET_SCAN_POLICY_CALL_SITES: dict[str, int] = {"application/proposal_service.py": 1}
+
+#: The detector itself, and the reason it is pinned beside the policy reader.
+#:
+#: **The reader is not the scanner, and round two's R2-C is the gap between
+#: them.** ``read_secret_scan_policy`` answers *what should happen when a secret
+#: is found*; ``scan_text`` is what finds one. A scan added on the ingest path
+#: that never consults the policy adds no call site to the reader at all -- the
+#: reviewer planted exactly that, a ``_planted_ingest_scan`` in
+#: ``application/ingestion_service.py`` calling ``scan_text`` directly -- and the
+#: reader's pin stayed green while four documents saying ``theurian ingest``
+#: runs no scan became false.
+SECRET_SCANNER = "scan_text"  # noqa: S105 - a function name, not a secret
+
+#: The module that defines the detector.
+#:
+#: Named because both halves of the pin below are keyed on it rather than on the
+#: word ``scan_text``: the call count resolves the *bindings* this module's name
+#: is imported under, and the import-graph pin asks who imports the module at all.
+SECRET_SCANNER_MODULE: Final = "theurian.security.content_secrets"  # noqa: S105 - a module path, not a credential
+
+#: Where the detector runs, on the same terms as the reader's count above.
+SECRET_SCANNER_CALL_SITES: dict[str, int] = {"application/proposal_service.py": 1}
+
+#: Each module of the shipped package that reaches :data:`SECRET_SCANNER_MODULE`
+#: by one of the import spellings :func:`_importers_of` counts.
+#:
+#: The second half of the pair, and the half that does not depend on knowing what
+#: a screening call looks like. The count above resolves the bindings a module
+#: introduces with ``from theurian.security.content_secrets import scan_text``,
+#: however it renames them; this one reddens on the routes that introduce no such
+#: binding at all -- ``import theurian.security.content_secrets``,
+#: ``from theurian.security import content_secrets``, and a call through the
+#: module object. One importer today, and a second is a module that has reached
+#: for the detector whatever it then does with it.
+SECRET_SCANNER_IMPORTERS: tuple[str, ...] = ("application/proposal_service.py",)
+
+#: Each module of the shipped package that reaches
+#: :data:`SECRET_SCAN_POLICY_MODULE` by one of the import spellings
+#: :func:`_importers_of` counts.
+#:
+#: The reader's half of the same pair, and round four is why it exists. The call
+#: count above resolves bindings of ``read_secret_scan_policy``, so a module that
+#: takes the *module object* and calls ``project_config.read_secret_scan_policy``
+#: introduces no such binding and moved nothing -- planted and measured green
+#: while ``ingest.md``, the schema description, ``SECURITY.md`` and T-15 all say
+#: the policy is consulted at the approval gate.
+#:
+#: **Two entries, and the second is not a defect.**
+#: ``application/project_service.py`` takes ``PROJECT_CONFIG_FILE`` from this
+#: module -- the file name, not the policy -- so it is an importer that reads no
+#: policy. The membership is what this pin holds; what each importer *does* with
+#: the module is held by the call count beside it, and the pair is what makes a
+#: third importer a change somebody has to explain.
+SECRET_SCAN_POLICY_IMPORTERS: tuple[str, ...] = (
+    "application/project_service.py",
+    "application/proposal_service.py",
+)
+
+#: Number words as the changelog spells them, index = value.
+#:
+#: The sentences rebuilt below mix digits and words: a quantity that is the subject
+#: of the claim is bolded as a numeral -- "**12** descriptions", "**12 of the
+#: 12**" -- and a quantity in passing is spelled out, as in "five spellings in
+#: `WATCHED_SPELLINGS` -- four of them published key blocks". A derived number
+#: therefore has to be rendered the way the prose renders it, and this table is the
+#: word half.
+#:
+#: Twelve is the ceiling because the largest quantity these sentences carry is the
+#: number of published descriptions. A thirteenth is a schema change, and
+#: :func:`_number_word` refuses rather than silently formatting a digit into a
+#: sentence that spells its neighbours out.
+_NUMBER_WORDS: Final[tuple[str, ...]] = (
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+)
+
+
+def _number_word(value: int) -> str:
+    """``value`` as the changelog spells it, or an explicit failure."""
+    assert 0 <= value < len(_NUMBER_WORDS), (
+        f"{value} is outside the range this pin can render as a word, so the "
+        f"changelog sentence it builds cannot be checked. Widen `_NUMBER_WORDS` "
+        f"and read the sentence again -- a count this far outside the recorded "
+        f"one is a schema change, not a rendering problem."
+    )
+    return _NUMBER_WORDS[value]
+
+
+def _english_list(items: tuple[str, ...]) -> str:
+    """``items`` joined the way the changelog's prose joins them."""
+    if len(items) < 2:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _described_key_paths() -> tuple[str, ...]:
+    """Every dotted key path the schema publishes *with* a ``description``, sorted.
+
+    A "key block" in the changelog's sense is a published key carrying its own
+    description, which is what a reader of the schema actually sees. The
+    distinction is load-bearing rather than pedantic: ``raptor.maxLevels`` is a
+    published key with no description, so it is watched by
+    :data:`WATCHED_SPELLINGS` and is not one of the blocks -- which is exactly
+    what the sentence pinned below has to say for its two numbers to agree.
+    """
+    schema = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
+
+    def walk(node: object, path: tuple[str, ...]) -> Iterator[str]:
+        if not isinstance(node, dict):
+            return
+        properties = node.get("properties")
+        if not isinstance(properties, dict):
+            return
+        for name, subschema in properties.items():
+            here = (*path, name)
+            if isinstance(subschema, dict) and "description" in subschema:
+                yield ".".join(here)
+            yield from walk(subschema, here)
+
+    return tuple(sorted(walk(schema, ())))
+
+
+def _shipped_modules() -> Iterator[tuple[str, ast.Module]]:
+    """Every ``.py`` of the imported package, parsed, in path order."""
+    for path in sorted(SRC.rglob("*.py")):
+        module = path.relative_to(SRC).as_posix()
+        yield module, ast.parse(path.read_text(encoding="utf-8"), filename=module)
+
+
+#: The parsed package as the two SEC-11 keys read it, or a planted variant of it.
+#:
+#: Both keys take this rather than calling :func:`_shipped_modules` themselves, so
+#: :data:`SEC11_REACH_CASES` can hand them the shipped tree with one module added
+#: or one module's source extended. That is what turns "this route escapes" from a
+#: sentence in a docstring into a row that runs.
+Parsed = tuple[tuple[str, ast.Module], ...]
+
+
+def _imported_module(node: ast.ImportFrom, module: str) -> str:
+    """The dotted module ``node`` imports from, with a relative form resolved.
+
+    ``from theurian.security.content_secrets import scan_text`` carries its target
+    in ``node.module``; ``from .content_secrets import scan_text`` carries the same
+    target in ``node.level`` plus the importing module's own package, and reading
+    only the first would leave the relative form outside every key here. The
+    package has no relative import today, which is exactly why the form is worth
+    resolving rather than assuming.
+    """
+    if not node.level:
+        return node.module or ""
+    package = ["theurian", *module.split("/")[:-1]]
+    base = package[: len(package) - (node.level - 1)]
+    return ".".join((*base, *([node.module] if node.module else [])))
+
+
+def _local_bindings(tree: ast.Module, module: str, defining_module: str, name: str) -> set[str]:
+    """Every local name ``module`` binds ``defining_module.name`` to.
+
+    ``from theurian.security.content_secrets import scan_text`` binds it to
+    ``scan_text``; ``... import scan_text as _screen`` binds it to ``_screen``, and
+    the two are the same function. A key that spells the imported name therefore
+    counts one of them and not the other -- which is the whole of round three's
+    security HIGH-1.
+    """
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and _imported_module(node, module) == defining_module
+        for alias in node.names
+        if alias.name == name
+    }
+
+
+def _binding_resolved_calls(defining_module: str, name: str, modules: Parsed) -> dict[str, int]:
+    """How many times each module calls ``defining_module.name``, whatever it calls it.
+
+    **Bindings first, calls second, and that order is the point.** The previous
+    key matched a call whose spelled name was ``name``, so it counted
+    ``scan_text(body)`` and missed ``_screen(body)`` after ``from
+    theurian.security.content_secrets import scan_text as _screen`` -- the same
+    function, screening the same content, invisible.
+
+    **A count per module rather than a set of modules**, because the set could not
+    see a second call inside a module already recorded: a screening call added
+    beside the accept path's one, in the accept path's own module, moved nothing.
+    Both faces are reproduced in this module's own RED checks.
+
+    Calls only. The definition, the import itself and a docstring naming the
+    function are all excluded, because the claim this serves is about where the
+    control runs.
+
+    What it does not resolve, stated rather than implied: a call reached through
+    the module object (``content_secrets.scan_text(...)``), through ``getattr``,
+    or through a name re-exported by a third module. The first is the import-graph
+    key's, and the routes that key reaches are the rows of
+    :data:`SEC11_REACH_CASES` marked caught; the routes neither reaches are the
+    rows marked as escaping, and they run rather than being described.
+    """
+    counts: dict[str, int] = {}
+    for module, tree in modules:
+        bindings = _local_bindings(tree, module, defining_module, name)
+        if not bindings:
+            continue
+        calls = sum(
+            1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in bindings
+        )
+        if calls:
+            counts[module] = calls
+    return counts
+
+
+def _ancestor_steps(defining_module: str) -> tuple[tuple[str, str], ...]:
+    """Each ancestor package of ``defining_module``, with the component under it.
+
+    ``theurian.security.content_secrets`` gives ``("theurian", "security")`` and
+    ``("theurian.security", "content_secrets")``. Those are the two pairs a
+    ``from <package> import <component>`` has to be checked against, and the two
+    dotted names a plain ``import`` reaches the defining module through.
+    """
+    parts = defining_module.split(".")
+    return tuple((".".join(parts[:index]), parts[index]) for index in range(1, len(parts)))
+
+
+def _importers_of(defining_module: str, modules: Parsed) -> tuple[str, ...]:
+    """Each module of the parsed package that imports ``defining_module``, sorted.
+
+    The point of this key is that it does not depend on recognising a call. Six
+    spellings reach the module and are counted here:
+
+    * ``import theurian.security.content_secrets``, and any deeper ``import`` of
+      something inside it;
+    * ``from theurian.security.content_secrets import scan_text``, in absolute or
+      relative form;
+    * ``from theurian.security import content_secrets``;
+    * ``import theurian.security`` and ``import theurian``, each of which binds a
+      name the defining module hangs off as an attribute;
+    * ``from theurian import security``, the same reach spelled the other way.
+
+    The last three are round four's: the reviewer planted a new module for each,
+    called ``theurian.security.content_secrets.scan_text`` down the attribute
+    chain, confirmed the call resolves at run time, and measured each one moving
+    nothing here. The package writes no plain ``import theurian...`` anywhere, and
+    what it takes through ``from theurian import ...`` is ``__version__`` and
+    ``__protocol_version__`` rather than a subpackage name -- so counting the
+    ancestor spellings adds no member to either recorded tuple, which is what the
+    two import-graph pins below assert rather than what this paragraph promises.
+
+    What it does not reach is written down as rows of :data:`SEC11_REACH_CASES`
+    that plant the route and assert it escapes: an ``import`` of some *other*
+    submodule, which binds the root package without naming an ancestor of this
+    one, and the two run-time import functions.
+    """
+    steps = _ancestor_steps(defining_module)
+    reached_by_import = {defining_module, *(package for package, _component in steps)}
+    found: set[str] = set()
+    for module, tree in modules:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import) and any(
+                alias.name in reached_by_import or alias.name.startswith(f"{defining_module}.")
+                for alias in node.names
+            ):
+                found.add(module)
+            elif isinstance(node, ast.ImportFrom):
+                target = _imported_module(node, module)
+                names = {alias.name for alias in node.names}
+                if target == defining_module or any(
+                    target == package and component in names for package, component in steps
+                ):
+                    found.add(module)
+    return tuple(sorted(found))
+
+
+def test_the_secret_scan_policy_is_read_at_one_call_site_only() -> None:
+    """SEC-11: where the *policy* is consulted, one of the two symbols held (#198, #461).
+
+    ``plugins/claude-code/commands/ingest.md`` names ``security.secretScan`` as
+    the one key ``.theurian/config.yaml`` has in force, which announces a
+    scanning control inside a document about ``theurian ingest``. The clause that
+    keeps that from misleading a reader -- *"it covers the approval gate only --
+    `theurian ingest` and index building run no scan"* -- is pinned in
+    :data:`SECRET_SCAN_PROSE_SURFACES`, and that pin holds **spelling**: it would
+    stay green word for word against a build that had started reading the policy
+    on the ingest path.
+
+    This is the fact side, and it holds **exactly two symbols and no more**:
+    ``read_secret_scan_policy`` here, and ``scan_text`` in
+    :func:`test_the_secret_scanner_runs_at_one_call_site_only`. Each is asserted
+    to be called exactly once, in the accept path. Round two's R2-C is why the
+    second exists: this test alone pinned the *reader* and read as though it
+    pinned the control, so a scan added on the ingest path that never consults the
+    policy left it green.
+
+    **The count is per module and the name is resolved through the import**, which
+    is round three's security HIGH-1 on both of these tests: a spelled-name key
+    counted ``read_secret_scan_policy(...)`` and missed the same function called
+    under an ``as`` alias, and a set of modules could not see a second call added
+    inside the module already on it.
+
+    What the pair does not hold, stated so a reader does not over-read it: that
+    the scan at that site is *gated* by the policy, and that no third symbol
+    screens content by some other route. Both are outside an AST call-site count.
+
+    The direction that matters is the *addition*: an ingest-time or index-time
+    call would make four documents over-claim by omission the moment it landed,
+    and this is what makes that change carry them. A removal reddens too, and
+    means the opposite -- the control the schema publishes ``default: "block"``
+    for has gone, and every surface describing a shipped control is now false.
+    """
+    calls = _binding_resolved_calls(
+        SECRET_SCAN_POLICY_MODULE, SECRET_SCAN_POLICY_READER, tuple(_shipped_modules())
+    )
+
+    assert calls == SECRET_SCAN_POLICY_CALL_SITES, (
+        f"`{SECRET_SCAN_POLICY_READER}` is called {calls}, and the "
+        f"recorded call sites are {SECRET_SCAN_POLICY_CALL_SITES}.\n\n"
+        "A NEW call site: SEC-11's scan now runs somewhere besides `theurian "
+        "propose accept`, so `plugins/claude-code/commands/ingest.md`'s \"it "
+        "covers the approval gate only -- `theurian ingest` and index building "
+        "run no scan\", the identical clause in the schema's `security.secretScan` "
+        "description, SECURITY.md and the threat model's T-15 controls are all "
+        "narrower than the product. Correct them in the same change, then record "
+        "the site here.\n\n"
+        "A MISSING call site: the control is gone while the schema still "
+        'publishes `default: "block"` and four documents still describe a '
+        "shipped gate. Do not simply drop the entry."
+    )
+
+
+def test_the_secret_scanner_runs_at_one_call_site_only() -> None:
+    """SEC-11: where the *detector* runs, the second of the two symbols held (R2-C).
+
+    The sibling above pins ``read_secret_scan_policy``, which answers what to do
+    when a secret is found. It cannot see a scan that never asks: an ingest-time
+    call to ``scan_text`` -- planted in round two as a ``_planted_ingest_scan``
+    in ``application/ingestion_service.py`` -- adds no call site to the reader,
+    so the reader's pin stayed green while ``ingest.md``'s "`theurian ingest` and
+    index building run no scan", the identical clause in the schema's
+    ``security.secretScan`` description, ``SECURITY.md`` and the threat model's
+    T-15 controls were all false.
+
+    So the claim those four documents make is about the *detector*, and the
+    detector is what this counts. One call, in the accept path.
+
+    **What this half holds, exactly.** Every local binding of
+    ``theurian.security.content_secrets.scan_text`` is resolved out of each
+    module's imports first, and every call through one of those bindings is
+    counted -- so ``import ... as _screen`` is counted under its alias, and a
+    second call inside ``application/proposal_service.py`` moves the number rather
+    than disappearing into a set. Round three planted both.
+
+    **What it does not hold is what the import-graph pin beside it does**:
+    a call reached through the module object rather than through an imported name.
+    :func:`test_the_detector_module_is_imported_by_one_module_only` is that half,
+    and neither is sufficient alone -- this one cannot see
+    ``content_secrets.scan_text(body)``, and that one cannot see a second call in
+    the module that is already allowed to import it.
+
+    The two tests fail in different directions on purpose: a scan moved behind a
+    new policy-reading wrapper reddens the sibling above, and a scan that skips the
+    policy entirely reddens here. Neither substitutes for the other.
+    """
+    calls = _binding_resolved_calls(
+        SECRET_SCANNER_MODULE, SECRET_SCANNER, tuple(_shipped_modules())
+    )
+
+    assert calls == SECRET_SCANNER_CALL_SITES, (
+        f"`{SECRET_SCANNER}` is called {calls}, and the recorded "
+        f"call sites are {SECRET_SCANNER_CALL_SITES}.\n\n"
+        "A NEW call site: content is screened for secrets somewhere besides "
+        "`theurian propose accept`. Four documents say it is not -- "
+        "`plugins/claude-code/commands/ingest.md`, the schema's "
+        "`security.secretScan` description, `SECURITY.md` and the threat model's "
+        "T-15 controls all state that `theurian ingest` and index building run no "
+        "scan. Correct them in the same change, then record the site here. Note "
+        "that this is true whether or not the new call consults "
+        f"`{SECRET_SCAN_POLICY_READER}`: a scan that ignores the policy still "
+        "screens content, and it is the screening those documents deny.\n\n"
+        "A MISSING call site: the detector is no longer reached from the accept "
+        "path, so SEC-11's gate is gone while every surface still describes it."
+    )
+
+
+def test_the_detector_module_is_imported_by_one_module_only() -> None:
+    """SEC-11: the other half of the pair, keyed on the import graph (round three).
+
+    The count beside this one resolves the *bindings* a module introduces for
+    ``scan_text`` and counts the calls through them. That key is exact for a module
+    that imports the name -- alias included -- and blind to a module that reaches
+    the detector through the module object instead::
+
+        from theurian.security import content_secrets
+        content_secrets.scan_text(body)
+
+    No binding of ``scan_text`` exists there, so nothing above counts it. What such
+    a route does have is an **import of the defining module**, and that is what
+    this counts: the six spellings :func:`_importers_of` enumerates, over the whole
+    shipped package.
+
+    **What the pair reaches, and what it does not, is a table that runs.**
+    :data:`SEC11_REACH_CASES` plants each route into a parsed copy of the package
+    and records whether the pair reddens on it, so a row marked as escaping fails
+    the moment it stops escaping and a row marked caught fails the moment it stops
+    being caught. Round four is why: it planted five new-module import routes, and
+    three of them -- ``from theurian import security``, ``import
+    theurian.security`` and ``import theurian`` -- were measured moving nothing,
+    each with its call confirmed to resolve at run time, under a sentence in this
+    docstring saying a module could not reach the detector at all without
+    reddening here.
+    """
+    importers = _importers_of(SECRET_SCANNER_MODULE, tuple(_shipped_modules()))
+
+    assert importers == SECRET_SCANNER_IMPORTERS, (
+        f"`{SECRET_SCANNER_MODULE}` is imported by {list(importers)}, and the "
+        f"recorded importers are {list(SECRET_SCANNER_IMPORTERS)}.\n\n"
+        "A NEW importer: a second module of the shipped package has reached for "
+        "SEC-11's detector. Four documents say the scan runs at `theurian propose "
+        "accept` and nowhere else -- `plugins/claude-code/commands/ingest.md`, the "
+        "schema's `security.secretScan` description, `SECURITY.md` and the threat "
+        "model's T-15 controls. Check what the new module does with it before "
+        "recording anything: an import with no call still needs saying, and a call "
+        "makes those four documents narrower than the product.\n\n"
+        "A MISSING importer: the accept path no longer imports the detector, so "
+        "SEC-11's gate is gone while every surface still describes it."
+    )
+
+
+def test_the_policy_module_is_imported_by_the_two_modules_this_file_records() -> None:
+    """SEC-11: the reader's import graph, the half the call count cannot see (round four).
+
+    ``read_secret_scan_policy`` has the shape ``scan_text`` had before round three
+    gave it an import-graph sibling: the count beside this one resolves *bindings*
+    of the function name, so a module that takes the module object instead
+    introduces no binding and moves nothing::
+
+        from theurian.security import project_config
+        project_config.read_secret_scan_policy(root, config)
+
+    That was planted in round four and measured green, while
+    ``plugins/claude-code/commands/ingest.md``, the schema's
+    ``security.secretScan`` description, ``SECURITY.md`` and the threat model's
+    T-15 controls each say where the policy is consulted. The reader half now has
+    the same two-key pair the detector half has had since round three.
+
+    **Two importers, and the difference between them is the point of having both
+    keys.** ``application/project_service.py`` takes ``PROJECT_CONFIG_FILE`` -- the
+    file name -- and reads no policy, which is why the call count beside this one
+    lists ``application/proposal_service.py`` alone. A third importer is a module
+    that has reached for the policy module, and what it then does with it is a
+    question somebody has to answer in the same change.
+
+    The direction that matters is again the *addition*. A removal reddens too, and
+    means the accept path no longer reaches the module the schema publishes
+    ``default: "block"`` for.
+    """
+    importers = _importers_of(SECRET_SCAN_POLICY_MODULE, tuple(_shipped_modules()))
+
+    assert importers == SECRET_SCAN_POLICY_IMPORTERS, (
+        f"`{SECRET_SCAN_POLICY_MODULE}` is imported by {list(importers)}, and the "
+        f"recorded importers are {list(SECRET_SCAN_POLICY_IMPORTERS)}.\n\n"
+        "A NEW importer: a module of the shipped package has reached for SEC-11's "
+        "policy module. It may only want `PROJECT_CONFIG_FILE`, as "
+        "`application/project_service.py` does -- or it may be reading the policy "
+        "through the module object, which the call count beside this one cannot "
+        "see. Say which in the same change, then record it here.\n\n"
+        "A MISSING importer: `theurian propose accept` no longer reaches the "
+        "module that reads `security.secretScan`, so the control the schema "
+        "publishes a default for is gone while four documents still describe it."
+    )
+
+
+#: Each route to SEC-11's two symbols, and whether the pins above redden on it.
+#:
+#: **This table is the bound, and it runs.** Round three wrote the pair's reach
+#: into three docstrings as prose -- "all three import forms", "cannot reach the
+#: detector at all without reddening here" -- and round four planted five import
+#: routes and three call routes and measured three of the five and two of the
+#: three escaping under those sentences. A sentence claiming reach stays true by
+#: nobody testing it; a row that plants the route and asserts the verdict fails the
+#: day the verdict changes, in either direction.
+#:
+#: Each row is ``(label, module path, source, caught)``. ``caught`` is what the
+#: *pair* does, because that is the claim: a route is caught when either key moves
+#: off its recorded value. Where the module path names a module the package already
+#: ships, the source is appended to it -- which is how a second call inside the
+#: already-recorded module is planted.
+#:
+#: The escaping rows belong to #512
+#: (https://github.com/theurian/theurian/issues/512) alongside the census's own
+#: escape table; the terminal form for both is to stop enumerating syntax.
+SEC11_REACH_CASES: Final[tuple[tuple[str, str, str, bool], ...]] = (
+    (
+        "C0 a new module, `from ... import scan_text`",
+        "application/planted.py",
+        "from theurian.security.content_secrets import scan_text\n"
+        "def screen(text: str) -> object:\n    return scan_text(text)\n",
+        True,
+    ),
+    (
+        "C1 a new module, `from theurian.security import content_secrets`",
+        "application/planted.py",
+        "from theurian.security import content_secrets\n"
+        "def screen(text: str) -> object:\n    return content_secrets.scan_text(text)\n",
+        True,
+    ),
+    (
+        "C2 round four: a new module, `from theurian import security`",
+        "application/planted.py",
+        "from theurian import security\n"
+        "def screen(text: str) -> object:\n"
+        "    return security.content_secrets.scan_text(text)\n",
+        True,
+    ),
+    (
+        "C3 round four: a new module, `import theurian.security`",
+        "application/planted.py",
+        "import theurian.security\n"
+        "def screen(text: str) -> object:\n"
+        "    return theurian.security.content_secrets.scan_text(text)\n",
+        True,
+    ),
+    (
+        "C4 round four: a new module, `import theurian`",
+        "application/planted.py",
+        "import theurian\n"
+        "def screen(text: str) -> object:\n"
+        "    return theurian.security.content_secrets.scan_text(text)\n",
+        True,
+    ),
+    (
+        "C5 a second call inside the module already recorded",
+        "application/proposal_service.py",
+        "\n\ndef _planted_second(text: str) -> object:\n    return scan_text(text)\n",
+        True,
+    ),
+    (
+        "R4b round four: the policy read through the module object, in a new module",
+        "application/planted.py",
+        "from theurian.security import project_config\n"
+        "def gate(root: object, config: object) -> object:\n"
+        "    return project_config.read_secret_scan_policy(root, config)\n",
+        True,
+    ),
+    (
+        "escape: an `import` of another submodule, then the attribute chain (#512)",
+        "application/planted.py",
+        "import theurian.domain.knowledge\n"
+        "def screen(text: str) -> object:\n"
+        "    return theurian.security.content_secrets.scan_text(text)\n",
+        False,
+    ),
+    (
+        "escape: `importlib.import_module`, a name assembled at run time (#512)",
+        "application/planted.py",
+        "import importlib\n"
+        "def screen(text: str) -> object:\n"
+        '    return importlib.import_module("theurian.security.content_secrets").scan_text(text)\n',
+        False,
+    ),
+    (
+        "escape: `__import__`, the same reach with no import statement (#512)",
+        "application/planted.py",
+        "def screen(text: str) -> object:\n"
+        '    module = __import__("theurian.security.content_secrets", fromlist=["scan_text"])\n'
+        "    return module.scan_text(text)\n",
+        False,
+    ),
+    (
+        "escape C6: a local rebinding, second call in the recorded module (#512)",
+        "application/proposal_service.py",
+        "\n\n_planted_alias = scan_text\n\n\n"
+        "def _planted_second(text: str) -> object:\n    return _planted_alias(text)\n",
+        False,
+    ),
+    (
+        "escape C7: a default-argument rebinding in the recorded module (#512)",
+        "application/proposal_service.py",
+        "\n\ndef _planted_second(text: str, _screen: object = scan_text) -> object:\n"
+        "    return _screen(text)\n",
+        False,
+    ),
+)
+
+
+def _package_with(module: str, source: str) -> Parsed:
+    """The parsed package with ``source`` planted at ``module``.
+
+    Appended where the package already ships that module, added where it does not.
+    Appending rather than replacing is what makes a *second* call inside an
+    already-recorded module a plant rather than a rewrite.
+    """
+    shipped = dict(_shipped_modules())
+    existing = SRC / module
+    text = (existing.read_text(encoding="utf-8") + source) if existing.exists() else source
+    shipped[module] = ast.parse(text, filename=module)
+    return tuple(sorted(shipped.items()))
+
+
+@pytest.mark.parametrize(
+    ("module", "source", "caught"),
+    [(row[1], row[2], row[3]) for row in SEC11_REACH_CASES],
+    ids=[row[0] for row in SEC11_REACH_CASES],
+)
+def test_each_recorded_sec11_route_is_reached_or_not_as_this_file_records(
+    module: str, source: str, caught: bool
+) -> None:
+    """RED means a SEC-11 route changed sides, which is news in either direction.
+
+    A route that stops being caught is an opened hole in the pair that four
+    documents' truth rests on. A route recorded as escaping that becomes caught is
+    the good direction and still fails here, because the record is what a reader is
+    told the pins reach -- that record moves in the commit that moves the key, or
+    it is a sentence nobody rechecked, which is what round four found in three
+    docstrings at once.
+
+    The verdict is the *pair's*: either the call count or the import graph moving
+    off its recorded value counts as caught, because either one failing is what a
+    change author sees.
+    """
+    planted = _package_with(module, source)
+
+    reddened = (
+        _binding_resolved_calls(SECRET_SCANNER_MODULE, SECRET_SCANNER, planted)
+        != SECRET_SCANNER_CALL_SITES
+        or _importers_of(SECRET_SCANNER_MODULE, planted) != SECRET_SCANNER_IMPORTERS
+        or _binding_resolved_calls(SECRET_SCAN_POLICY_MODULE, SECRET_SCAN_POLICY_READER, planted)
+        != SECRET_SCAN_POLICY_CALL_SITES
+        or _importers_of(SECRET_SCAN_POLICY_MODULE, planted) != SECRET_SCAN_POLICY_IMPORTERS
+    )
+
+    assert reddened is caught, (
+        f"the route planted at {module} is recorded as "
+        f"{'caught' if caught else 'escaping'} and the four SEC-11 keys "
+        f"{'caught' if reddened else 'did not catch'} it.\n\n"
+        f"  planted:\n{source}\n"
+        "Caught -> escaping is a hole opened in the pair `ingest.md`, the schema's "
+        "`security.secretScan` description, `SECURITY.md` and the threat model's "
+        "T-15 controls all rest on. Escaping -> caught is the good direction and "
+        "still belongs in the record: move the row and say so in the same commit, "
+        "because the rows marked escaping are what this module tells a reader it "
+        "does not see (#512)."
+    )
+
+
+def test_the_changelog_states_the_pin_reach_this_module_actually_has() -> None:
+    """#455: the changelog's account of these pins is derived, not narrated.
+
+    The entry first said this module "now watches the root description as well as
+    the eleven key blocks", which read as coverage and was not: three of the
+    twelve descriptions carry a row, and five spellings are watched of which one
+    is not a described block at all. Round one caught it by hand. This is the
+    contract that catches the next one -- every number in the two sentences is
+    recomputed here from :data:`WATCHED_KEY_DESCRIPTIONS`,
+    :data:`WATCHED_SPELLINGS` and the published schema, and the sentence is
+    rebuilt from the results rather than pattern-matched.
+
+    So the pin fails in both directions a coverage claim can drift. **Unpinning**
+    a key without touching the entry is RED, because the rebuilt sentence says "11
+    of the 12" where the file says twelve. Publishing a *thirteenth* key block is
+    RED for the same reason from the schema side. And a rewrite that quietly
+    restores "as well as the eleven key blocks" is RED because that sentence is not
+    the one this builds.
+
+    The names are derived too, not only the counts: swapping which key is pinned
+    keeps every number identical and still reddens.
+
+    **The closing clause has two shapes because the count reached its ceiling.**
+    Round three took the table from three rows to all twelve, so "The other zero
+    are unpinned" was what the old shape rendered. The clause is chosen by the
+    same derivation that produces the numbers, and either shape is RED against a
+    changelog carrying the other.
+    """
+    described = _described_key_paths()
+    published = 1 + len(described)
+    pinned = len(WATCHED_KEY_DESCRIPTIONS)
+    watched_blocks = tuple(sorted(WATCHED_SPELLINGS.keys() & set(described)))
+    unblocked = tuple(sorted(WATCHED_SPELLINGS.keys() - set(described)))
+    dotted = tuple(key for key, _pointer, _recorded in WATCHED_KEY_DESCRIPTIONS if _pointer)
+    changelog = " ".join(CORE_CHANGELOG.read_text(encoding="utf-8").split())
+
+    assert len(unblocked) == 1, (
+        f"the changelog's sentence names one watched spelling with no key block "
+        f"and there are now {len(unblocked)}: {list(unblocked)}. The sentence's "
+        f"shape has to move with them, so rewrite it before repairing this pin."
+    )
+    remainder = (
+        "Every published description is pinned."
+        if pinned == published
+        else f"The other {_number_word(published - pinned)} are unpinned."
+    )
+    reach = (
+        f"the schema publishes **{published}** descriptions — the root and "
+        f"{len(described)} key blocks — and **{pinned} of the {published}** carry a "
+        f"`WATCHED_KEY_DESCRIPTIONS` row in `tests/unit/test_config_key_call_sites.py`: "
+        f"{_english_list(('the root', *(f'`{key}`' for key in dotted)))}. "
+        f"{remainder}"
+    )
+    spellings = (
+        f"A reader added for any of the {_number_word(len(WATCHED_SPELLINGS))} spellings "
+        f"in `WATCHED_SPELLINGS` — {_number_word(len(watched_blocks))} of them published "
+        f"key blocks, plus `{unblocked[0]}`, which has no block — reddens the "
+        f"call-site scan"
+    )
+
+    for sentence in (reach, spellings):
+        assert sentence in changelog, (
+            f"packages/theurian-core/CHANGELOG.md no longer states, in the words this "
+            f"module's own tables derive:\n\n  {sentence}\n\n"
+            f"Measured here: {published} published descriptions (the root and "
+            f"{len(described)} key blocks), {pinned} of them pinned "
+            f"({list(dotted)} plus the root), {len(WATCHED_SPELLINGS)} watched "
+            f"spellings of which {len(watched_blocks)} are described key blocks and "
+            f"{unblocked[0]} is not.\n\n"
+            f"This entry is a claim about how far these pins reach, and it has "
+            f"already been wrong once in the direction that matters -- it read as "
+            f"coverage when it was three of twelve (#455 round one). If a pin or a "
+            f"key moved, the entry moves in the same commit; do not relax this to "
+            f"a fragment match, because a fragment match is what let the first "
+            f"wording through."
         )

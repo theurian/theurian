@@ -64,6 +64,36 @@ Only your report back to the caller uses the caller's language.
    block; a false statement about what the codebase *contains* is corrected in
    place and takes this rule's pin.
 
+7. **A work log's mechanisms and anchors are measured claims, not narration.**
+   (Burned in after PR #501 round one, two HIGHs from one family: **H-D** — a
+   closure argument naming `CONFIG_HOMES` as the mechanism covering a
+   regression, where the path-dropped variant escaped the census at exit 0 and
+   a different instrument was holding the direction; **H-E** — three anchors on
+   a page whose opening sentence promised every figure was re-runnable, all
+   three resolving on no ref after a rebase.) A work log is read as a record of
+   what was measured, so every sentence in it is read as measured. Before you
+   write one:
+   - **"because X reaches it" is demonstrated against the named instrument** —
+     plant the drift, run the instrument, paste RED and GREEN. Where two
+     instruments split a direction, say which holds which and what each cannot
+     see.
+   - **Every cited SHA is checked reachable from `origin/main`**
+     (`git merge-base --is-ancestor <sha> origin/main`); if it is not, it takes
+     the pull-request qualifier, which is the only form that stays true.
+     Reachability from `HEAD` is the wrong test and *approves the defect it is
+     meant to catch* — a squash-merge replaces the branch with one new commit,
+     so every sha `HEAD` vouches for today resolves on no ref the moment the
+     pull request lands. `origin/main` is the test `sha_anchors` itself runs. A
+     rebase unresolves your anchors the same way, and nothing warns you about
+     either.
+   - **Every count is a pasted derivation** — the command and its output — with
+     its scope beside it. A figure obtained by subtracting one instrument's
+     count from another's is not a derivation: state which unit each side
+     counts, or measure the quantity you mean directly.
+
+   A narrated mechanism is usually right, which is the problem: the one that is
+   wrong is consumed by the next reader as a settled premise.
+
 ## Style
 
 Plain, direct, and specific. No marketing register. Prefer the concrete failure
@@ -83,6 +113,10 @@ right to.
 - If you corrected a claim about what the codebase contains: your report
   requests the bidirectional pin (rule 6), or records why no fact-side
   contract exists
+- If you wrote or edited a work log: every mechanism claim carries a pasted
+  RED/GREEN, every SHA passed
+  `git merge-base --is-ancestor <sha> origin/main` or carries the pull-request
+  qualifier, and every count is a pasted derivation with its scope (rule 7)
 - Commit scope is `[a-z-]+` — lowercase letters and hyphens only. The CI
   Conventional-Commits gate rejects a digit or `#` in the scope, so an issue or
   ADR number goes in the subject text or body, never the scope

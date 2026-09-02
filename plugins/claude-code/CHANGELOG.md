@@ -35,6 +35,97 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`/theurian:ingest` told the agent nothing reads `.theurian/config.yaml`.**
+  The allowlist paragraph said a repository will have to be listed in that file
+  before Theurian contacts it, then "nothing reads that file today, so do not
+  tell the user the allowlist is protecting them". The file has been read since
+  ADR-0027 decision 3 shipped `security/project_config.py`, which takes
+  `security.secretScan` from it. The warning it supports is still correct, so it
+  is re-derived on the fact that is true rather than dropped: the paragraph now
+  names the one reader and the one key, then narrows the negation to
+  `providers.review.repositories`, which nothing reads — so the allowlist
+  protects nobody and the agent must still not say otherwise
+  ([#461](https://github.com/theurian/theurian/issues/461),
+  [#501](https://github.com/theurian/theurian/pull/501)).
+
+  Naming `security.secretScan` as in force left a second gap in the same
+  paragraph: a scanning control announced, in a document about `theurian
+  ingest`, with nothing saying where it runs. The paragraph now carries the
+  bound — the scan covers the approval gate only, and `theurian ingest` and
+  index building run no scan — worded verbatim from the schema's own
+  `security.secretScan` description (SEC-11,
+  [#198](https://github.com/theurian/theurian/issues/198)).
+
+  **What holds the two surfaces together is four pins, and the reach is the
+  bullet rather than the document.** Both surfaces are pinned *whole* — the
+  schema's `security.secretScan` description by an exact match, and this
+  paragraph's list item by another — so a reword, a deletion and a sentence
+  *added* beside the bound are each RED; a fragment pin catches the first two
+  and not the third. The shared clause is then derived from the published schema
+  and matched byte for byte in the document, so neither side can move alone. The
+  fourth arrived in round three, when every published description was pinned
+  whole instead of three by fragment, which puts `security.secretScan` in that
+  table's parametrised row as well — so the entry says four where it used to say
+  three. Re-measured on this entry's own tree (2026-09-03), each plant applied on
+  its own to a throwaway checkout and reverted before the next. The suite the
+  counts below are out of is one command, so the totals are derivable rather than
+  quoted:
+
+  ```console
+  $ uv run --frozen pytest -q packages/theurian-core/tests/unit/test_config_key_call_sites.py
+  57 passed
+  ```
+
+  | The plant | What goes RED |
+  | :-- | :-- |
+  | *"Ingested content is screened on the way in as well."* appended to the schema description | `test_the_secret_scan_description_is_exactly_what_this_file_records`, and `WATCHED_KEY_DESCRIPTIONS`' parametrised whole-description row for `security.secretScan` — 2 failed, 55 passed |
+  | the same sentence appended to this bullet | `test_the_ingest_command_states_the_config_bound_and_nothing_beside_it` — 1 failed, 56 passed |
+  | the shared clause reworded on the schema side alone | those two, and `test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it` with them — 3 failed, 54 passed |
+
+  **The bullet pin ends the item where CommonMark ends one, and rounds three and
+  four are why.** It had read a list item as "the `- ` line plus the lines
+  indented by two spaces", and four ways of appending a sentence render inside
+  the same bullet while sitting outside that rule — so the contradiction above
+  went in four times over with every pin green. Round four rendered twelve line
+  shapes with `markdown_it`'s CommonMark preset, asked per shape whether the
+  added sentence lands in the same `<li>` as the bullet's own text, and asked the
+  pin the same question. Each shape the renderer puts **inside** the item now
+  reddens `test_the_ingest_command_states_the_config_bound_and_nothing_beside_it`
+  alone:
+
+  | The contradiction appended to the pinned bullet | Renders | Held |
+  | :-- | :-- | :-- |
+  | at column 0, as a lazy continuation | inside | yes |
+  | indented by one space | inside | yes |
+  | indented by a tab | inside | yes |
+  | as a second paragraph after a blank line | inside | yes |
+  | after a line holding one no-break space, at column 0 | inside | yes |
+  | after a line holding one no-break space, indented | inside | yes |
+  | after a line holding one em space, at column 0 | inside | yes |
+  | as a `\| … \|` line | inside | yes |
+  | as an ordered item, `2. ` | outside | n/a |
+  | as an ordered item, `10. ` | outside | n/a |
+  | as a paren-marked item, `1) ` | outside | n/a |
+  | **as its own `- ` bullet of the same document** | **outside** | **no** |
+
+  Three of those eight were round four's, and two of the three are the same
+  defect: `str.strip()` calls a no-break space and an em space blank, CommonMark
+  calls neither blank, and the sentence one line below such a line rendered
+  inside the bullet while the pin had already ended the item. The third is the
+  pipe row — CommonMark has no tables, so `|` opens nothing and the transcribed
+  rule that said it did left a whole line shape unreachable. The `1) ` row failed
+  in the other direction before this pass: the rule folded it into the bullet and
+  reddened the pin for a document nobody had changed.
+
+  **What is not held is the last row.** A sibling bullet opens a block, so the
+  item ends there: the same contradiction written into a *different* bullet of
+  this document ships with the pins green and the five audits at exit 0, measured
+  the same way. The pins hold the paragraph that carries the claim, not the file
+  around it, and a whole-document pin is
+  [#512](https://github.com/theurian/theurian/issues/512)'s. The twelve shapes are
+  a table in `test_config_key_call_sites.py` that fails in both directions, and
+  the whitespace population it rests on is derived from `str.isspace` at run time
+  rather than transcribed.
 - **`/theurian:propose` told the agent the secret scan reads the body only.** It
   said to keep credentials out of `--title`, `--description`, `--label` and the
   `--source-*` anchors because "those are not scanned". Core now scans the
@@ -135,8 +226,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and `infrastructure/github/` holds no adapter, so an agent reading the old
   description would have offered a source Core cannot read. The Rules also told
   the user that "Theurian will not contact a repository that is not listed" in
-  `.theurian/config.yaml`, which reads as a control in force; nothing reads that
-  file, so the allowlist protects no one yet.
+  `.theurian/config.yaml`, which reads as a control in force. It is not one:
+  **nothing reads the `providers.review.repositories` allowlist**, so it protects
+  no one yet. That file itself *is* read, for one key — `security.secretScan`,
+  by `security/project_config.py` and nothing else (ADR-0027 decision 3) — and
+  this entry said the file was unread until this branch narrowed it to the key,
+  the same correction #461 made to `ingest.md` itself
+  ([#501](https://github.com/theurian/theurian/pull/501)).
 
   The document now says review ingestion is owed with Milestone 7, says the
   allowlist is not protecting the user, and enumerates what `theurian ingest`
@@ -159,8 +255,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   candidate generation fails (FR-V5). `theurian ingest` generates no candidates
   and runs no summarization stage, and its JSON has no field for a partial
   result, so the instruction described a run that cannot happen. It now states
-  FR-V5 as owed with review ingestion
-  ([#129](https://github.com/theurian/theurian/issues/129)).
+  FR-V5 as owed with review ingestion, which is owned by
+  [#479](https://github.com/theurian/theurian/issues/479) — this entry and the
+  document both named [#129](https://github.com/theurian/theurian/issues/129)
+  until it closed on the wording rather than on the adapter, and the document
+  was repointed in [#482](https://github.com/theurian/theurian/pull/482) while
+  this changelog was outside that pass's file set
+  ([#501](https://github.com/theurian/theurian/pull/501)).
 - **`/theurian:propose` ran a command that does not exist.** Its step 2 shelled
   out to a `propose` subcommand to generate the proposal, and its step 4 offered
   a `propose accept` to approve it. The CLI registers neither, so a user running

@@ -104,6 +104,76 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   [`schemas/mcp/review-findings-response.schema.json`](../../schemas/mcp/review-findings-response.schema.json)
   and [`docs/protocol/mcp-tools.md`](../../docs/protocol/mcp-tools.md).
 
+### Changed
+
+- **The wheel-shipped project-config schema no longer says nothing reads the
+  file; its root description names the one reader**
+  ([#455](https://github.com/theurian/theurian/issues/455),
+  [#501](https://github.com/theurian/theurian/pull/501)). The schemas are
+  force-included into the distribution by `hatch_build.py` and land at
+  `theurian/schemas/`, so a user who opened the published
+  `config/project-config.schema.json` read *"Nothing in src/ reads this file, so
+  no value in it takes effect today"*. That has been false since ADR-0027
+  decision 3 shipped `security/project_config.py`, which takes
+  `security.secretScan` from the file. **This is a claim correction, not a
+  contract change**: no key is added, removed, renamed or re-typed, and every
+  config file that validated before validates now.
+
+  Three faces, one sentence. It also cited
+  [#129](https://github.com/theurian/theurian/issues/129) as the owner of the
+  still-reserved review allowlist — closed on 2026-08-22 on the wording rather
+  than on the control, leaving the allowlist with no open owner — and anchored
+  the rest to "Milestone 7", a counter this project stopped planning against.
+  The description now names the one reader and the one key in force, says every
+  other published key is reserved, repoints the owner to
+  [#429](https://github.com/theurian/theurian/issues/429), and drops the
+  milestone anchor. `providers.review.repositories`' own description carries the
+  same repoint.
+
+  **A fourth face, found in review of the rewrite itself.** The replacement
+  sentence said *"Each reserved key's own description says what it is owed
+  with"*, and three of the ten reserved keys carry such a clause —
+  `providers.review.repositories`, `raptor.enabled` and
+  `security.maxSourceFileBytes`. It is a claim about the artifact a reader is
+  holding, on the artifact's most-read line, and it sent that reader to seven
+  descriptions to look for something not there. Deleted; the specific statement
+  it introduced — that the review-ingestion allowlist is owed with the first
+  external fetch path — stands on its own and keeps its
+  [#429](https://github.com/theurian/theurian/issues/429) pointer. The
+  whole-text pin moved in the same commit, and the built wheel was JSON-parsed
+  to confirm the shipped copy carries the corrected sentence.
+
+  **Pinned in both directions for the first time**, which is why the false
+  sentence survived four sweeps unnoticed. What is pinned is stated as a
+  derivation rather than as coverage, and the sentence below is *rebuilt* from
+  the table and the schema by
+  `test_the_changelog_states_the_pin_reach_this_module_actually_has` — so
+  unpinning a key reddens it here rather than leaving this paragraph to rot.
+  Re-derived after round three widened the table: the schema publishes **12**
+  descriptions — the root and 11 key blocks —
+  and **12 of the 12** carry a `WATCHED_KEY_DESCRIPTIONS` row in
+  `tests/unit/test_config_key_call_sites.py`: the root, `providers`,
+  `providers.embedding.apiKeyEnv`, `providers.embedding.endpointEnv`,
+  `providers.review.repositories`, `raptor.enabled`,
+  `raptor.minChildrenPerSummary`, `retrieval.includeStatuses`, `retrieval.rrfK`,
+  `security.maxSourceFileBytes`, `security.secretScan` and `traceabilityPolicy`.
+  Every published description is pinned. Reaching the root at all is what is new;
+  every earlier key enumerated *key blocks*, and the root is not one. **Each row
+  is the whole published text**, matched exactly, so a fabricated control claim
+  *added* beside a description's real sentences is RED — the direction no
+  fragment row has. Three rows carried fragments until round three, on the
+  argument that a reserved key's description "asserts nothing a reader can act
+  on". That is false of `retrieval.includeStatuses`, which describes the status
+  gate, and of `security.maxSourceFileBytes`, which describes the limit
+  `security/paths.py` enforces: a contradicting sentence added to either shipped
+  in the built wheel with every check green. The schema separately joined
+  `tests/unit/test_raptor_config_claims.py`'s scanned prose surfaces. A reader
+  added for any of the five spellings in `WATCHED_SPELLINGS` — four of them
+  published key blocks, plus `raptor.maxLevels`, which has no block — reddens
+  the call-site scan; a sentence drifting back to the universal reddens the
+  prose surface.
+
+
 ### Fixed
 
 - **Two `theurian findings build` runs at once no longer tear each other's
@@ -228,6 +298,263 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   spanning two lines and is unchanged.
 
 ### Documentation
+
+- **Claims about what reads a watched file are now swept by object rather than
+  by phrasing, and the sweep is runnable**
+  ([#199](https://github.com/theurian/theurian/issues/199),
+  [#501](https://github.com/theurian/theurian/pull/501)). Five sweeps in a row
+  keyed on how the claim was *worded* and each missed a live member: the
+  wheel-shipped schema root above was missed even by the corrected key written
+  to catch its siblings, and a plugin doc dropped `src/` from the sentence
+  entirely and named the file by pronoun. `tools/audit/` — a repository tool, not
+  part of the distribution — inverts the key: it enumerates the *objects* a claim
+  can be made about (the schema's key surface by JSON parse, `ProjectPaths`'
+  file surface by introspection, and the `.theurian/` paths governed prose
+  names), then asks of each what negated-liveness sentences refer to it.
+
+  **Object-keyed is not markup-free, and this round measured the difference.**
+  The object still has to be *spelled*, and both keys for this class admitted a
+  single optional delimiter character — so a false universal written in the RST
+  double-backtick form, the house style in **323 of this tree's 352** governed
+  `.py` files measured at `5d0b1d9`, a commit on the branch of
+  [#501](https://github.com/theurian/theurian/pull/501) and not on `main`,
+  passed the census, passed the prose pin, and shipped inside a
+  wheel when it was planted in `application/forest_builder.py`. That is a dated
+  figure, not a standing one, and the derivation is beside the key it justifies
+  in `tools/audit/config_object_claims.py`. The escape was in the
+  markup, which is the one thing an object-keyed sweep is supposed to be immune
+  to. Both delimiter classes are runs of `{0,2}` now, the schema's bare-leaf
+  reference keeping a required `{1,2}` so widening a key does not quietly widen
+  it to zero, and every plant was re-demonstrated against the widened key: single
+  backtick, bare path, double quote and the house style all reach exit 1.
+
+  **Widening the run was not the answer, and the review round is how that was
+  found out.** Any delimiter run that is spelled is a run some wrapper sits
+  outside of: the same claim with its path wrapped in bold — in a wheel-shipped
+  module, outside the prose pin's surfaces — passed the widened key, all five
+  audits and the whole suite. So the census stopped matching on emphasis.
+  `claim_surfaces.without_emphasis` is applied at one seam, `as_read`, which the
+  pre-filter, the three claim keys, the reference keys, the record markers and
+  the ledger fragments all run against, so a form that defeats one cannot defeat
+  only one. Measured by setting that seam to the identity — which is the census
+  as it stood before — five emphasis forms move `no match` → `SUSPECT`: the path
+  in bold, in italic, in underscores, and the verb in bold or italic. A sixth,
+  emphasis on the negation, was already caught, and ADR-0028's live house style
+  — a bold path in a sentence whose negation is about something else — stays
+  `no match`, so the five were not bought with a false positive on a true
+  sentence.
+
+  **"Emphasis" meant the CommonMark spellings only, and round three reopened the
+  escape by typing four characters.** `<b>` renders as `**` and was invisible to
+  the strip, so ``Nothing in `src/` reads <b>`.theurian/config.yaml`</b>``
+  planted in a wheel-shipped module left the census, the five audits and the
+  whole suite green — in the one markup this repository already writes by hand.
+  The criterion the strip already rested on settles which tags join it: a form
+  **invisible in the rendered sentence**, so that a reader cannot tell the two
+  apart. `<b>`, `<i>`, `<em>` and `<strong>` are stripped beside the asterisk
+  and underscore runs, case-insensitively; `<code>` and `<summary>` are not,
+  because a reader sees them and a key can be widened to spell them.
+
+  **Round four found that fix written as four literal strings, and a tag is
+  carried by its spelling.** `<b class="x">`, `<b >` and `<strong id="a">`
+  render exactly as the bare forms do, and each was measured escaping the
+  literal pattern. The tag name is now followed by a word boundary and then
+  whatever the tag carries up to its `>`, which admits the attribute and
+  whitespace spellings and keeps `<br>`, `<img>` and `<blockquote>` outside on
+  the boundary. Both directions are driven over a table of spellings in
+  `tests/unit/audit/test_emphasis_strip_spellings.py` rather than asserted in a
+  docstring.
+
+  **What the strip reaches is a list, and the list has a run table beside it.**
+  Six render-adjacent tags sit outside it — `<span>`, as invisible as `<b>` and
+  simply not one of the four, and `<ins>`, `<mark>`, `<u>`, `<s>` and `<small>`,
+  which a reader can see but which wrap a claim just as well. Each is now a row
+  in `MEASURED_ESCAPES` beside the four composition forms already there: a path
+  written as a Markdown link, a path in a three-backtick run, JSON's `\/` escape
+  (which every parser undoes and this module's JSON reader does not), and an
+  `e.g.` that puts a negation and its object in different sentences. Ten rows,
+  and the table **runs** — a row whose reach changes fails the audit rather than
+  rotting in a sentence. Adding six more tag names to the strip instead would
+  have been the move that produced bold, then `<b>`, then these; all ten rows
+  are [#512](https://github.com/theurian/theurian/issues/512)'s, whose north
+  star — normalise to rendered text, then match — is the terminal form that ends
+  the enumeration rather than extending it.
+
+  **The A/B this entry reported as "moves nothing" moves one row, and round four
+  measured it.** At `5074d08`, a commit on the branch of
+  [#501](https://github.com/theurian/theurian/pull/501) and not on `main`,
+  running the census twice with the emphasis class as its only difference gives
+  **57 rows with the four tags stripped and 56 without**, on both sides 19
+  suspects, (0, 0, 0) ledger drift and 124 watched objects. The
+  symmetric difference over the produced rows is **one row, not zero**: this
+  entry's own paragraph above, which quotes the round-three `<b>` plant and so
+  made the changelog entry describing the fix a member of the census it
+  describes. It classifies `record (past tense)`, which is why no suspect and no
+  ledger direction moves with it. The plant still flips `no match` → `SUSPECT`
+  and ADR-0028's house style stays `no match` either way.
+
+  **Widening the delimiter class reaches two of the four composition rows, and
+  that was measured rather than guessed** — as shipped against `{0,3}` plus `[`
+  and `]`, at the same commit, both sides give **57** rows, 19 suspects and
+  (0, 0, 0) ledger drift,
+  with the link and the three-backtick run moving to `SUSPECT` while the JSON and
+  `e.g.` rows do not move. The widening is not taken: a delimiter class widened
+  to reach two more spellings is the enumeration this module exists to stop
+  doing, it is a second mechanism in a round closed on the first, and it would
+  leave the rest of the recorded escape space open regardless.
+
+  Two further properties, both measured. The sweep reads **wrap-joined
+  sentences**, not lines: at `75c4c7a`, a commit on the branch of
+  [#501](https://github.com/theurian/theurian/pull/501) and not on `main`, the
+  same key over the same scope returns 19 lines and 31
+  sentences, and the 19 lines land inside 17 of those sentences — so **14** are
+  ones a line pass never returns at all. And every run demonstrates its key
+  against a **planted positive** before any zero is read, because a key that has
+  stopped matching
+  reports exactly what a clean tree reports.
+
+  Each of the four ledgers is exact in both directions — a suspect no row covers
+  and a row the sweep no longer produces are both exit 1 — and that is the
+  **minimum** every ledger here meets rather than the whole of what any of them
+  does. Three further directions were each added because a real member walked
+  past the two above it: **ambiguous**, one row covering two produced members,
+  which a substring fragment absorbs and only a cardinality check sees;
+  **verdict drift**, a row recorded as retracted that comes back a suspect; and
+  an **occurrence count**, a second anchor added to a place already judged. So
+  `owner_position_cites` reconciles in four directions and the other three in
+  three each — **4/3/3/3**. This paragraph said `controls_discharge` reconciled
+  in *two* until round three: it counted the arity of `ledger_drift`, which
+  returns the two ledger-keyed directions, and `controls_discharge`'s first
+  direction is spelled **undischarged** — a member naming no `src/` symbol, no
+  test, no open owner and no `PROSE_ONLY` row — and is computed in `_report`
+  instead, where an arity key cannot see it. It is the same direction its
+  siblings spell *unrecorded*, with the same exit status: `_report` returns 1 on
+  `undischarged or dead or unknown or stale or ambiguous`. Each *direction* is
+  driven by a control rather than asserted, which is what makes a correction and
+  its record land in one commit instead of the record rotting behind the fix.
+
+  **And the suite runs the audits now, which it did not.** Committing five
+  instruments that nothing invokes leaves them free to rot: mutations reverting
+  the round-one fixes survived the full suite, and emptying a control table was
+  green. A wrapper in `tests/integration/audit/` subprocess-runs all five plus
+  `--positive-control` and asserts each exits 0. Running the control mode is not
+  sufficient on its own — a table emptied to `()` reports zero failures among
+  the rows it has, so its own audit exits 0 — and the same module therefore
+  reads the tables structurally out of the source: every module-level
+  `*_CONTROLS` name must bind a non-empty tuple, `POSITIVE_CONTROLS` is required
+  of every audit, and `LEDGER_CONTROLS` of every audit that defines a ledger
+  runner, derived from the source rather than from a list of four names kept in
+  step by hand.
+
+  **A structural read is not a bound on how much runs, and round three priced
+  the difference at five one-line edits.** Reading a table as *bound and
+  non-empty* says nothing about the rows a loop reaches, so each audit now
+  counts the rows its loops **execute** — never `len(TABLE)`, which none of
+  those edits moves — and prints one `CONTROL-TALLY` line per table through a
+  single seam in `claim_surfaces`. The guard pins those counts per audit in
+  `CONTROL_TALLIES`, reads the control call graph transitively from
+  `_run_positive_controls` so a runner nobody reaches is RED rather than silent,
+  and holds its own keys to the rule it imposes. Measured against the guard as
+  it stood before those changes and as it stands now, each edit applied on its
+  own to `config_object_claims.py` in a throwaway checkout:
+
+  | The one-line edit | Guard before | Guard now | What fails now |
+  | :-- | :-- | :-- | :-- |
+  | a control runner opens with `return 0` | green | **RED** | pinned tally |
+  | the `LEDGER_CONTROLS` loop iterates `()` | green | **RED** | pinned tally |
+  | the `MEASURED_ESCAPES` loop iterates `()` | green | **RED** | pinned tally |
+  | `POSITIVE_CONTROLS` sliced to `[:1]` | green | **RED** | pinned tally |
+  | the guard's own required-table set emptied to `frozenset()` | green | **RED** | the guard's own keys |
+  | the call to a runner removed, table and runner kept | green | **RED** | reachability, and the tally |
+  | the table, its runner *and* the call deleted together | green | **RED** | the tally line stops being printed |
+  | *control:* `POSITIVE_CONTROLS` emptied to `()` | **RED** | **RED** | structural (the check that already held) |
+
+  **So the reach this entry previously claimed is now wrong in the good
+  direction.** It said deleting a table *and* its runner *and* the call to it
+  was not caught, "because nothing is left to be inconsistent with"; a pinned
+  figure fails on that too, since the tally line simply stops being printed —
+  the last row above. The audit's own `--positive-control` still exits 0 under
+  both deletion edits, so the guard is what catches them.
+
+  **Round four then found the guard reading one of the three signals a failing
+  control row produces.** A row that disagrees with its key is printed as
+  `FAIL <label>`, counted into the `failed=` half of its table's `CONTROL-TALLY`
+  line, and folded into the exit code — and the guard read the exit code. One
+  token separates it from the truth, and the two edits launder different halves:
+
+  | The edit, applied with a control row genuinely failing | Audit `--pc` | Guard before | Guard now |
+  | :-- | :-- | :-- | :-- |
+  | `return 1 if failures else 0` → `return 0` in the escape runner | exit 0, `failed=1`, one `FAIL` row printed | green | **RED** |
+  | `failures += status == "FAIL"` → `failures += 0` in the escape runner | exit 0, `failed=0`, one `FAIL` row printed | green | **RED** |
+  | `(1 if failures else 0) \|` → `0 \|` in `_run_positive_controls` | exit 0, `failed=21`, 21 `FAIL` rows printed | green | **RED** |
+
+  The guard now asserts both printed signals, and neither is derived from the
+  other: the first edit is caught by the `failed=` figure and the second is not,
+  and the `FAIL` row line is what catches the second. Getting past both takes
+  two edits rather than one.
+
+  **What the guard still does not reach, named rather than left implicit.** Two
+  edits pass every check here, and both were run against the guard as it now
+  stands. A control row that keeps its place in the count while it stops
+  asserting anything — a row duplicated, or its expected value edited to match
+  what the code does — is what review is for. And a loop that sets
+  `ran = len(TABLE)` and then iterates a slice of it prints `ran=21` from a loop
+  that executed none: the point of the tally is that the number comes from the
+  loop, this edit produces it elsewhere, and comparing it back to the table's own
+  length cannot separate the two. Measured green under the guard before and
+  after; catching it wants a line per executed row, which is
+  [#512](https://github.com/theurian/theurian/issues/512)'s. Full populations,
+  keys and mutation controls:
+  [`docs/work-logs/2026-09-02-199-unit-b-census.md`](../../docs/work-logs/2026-09-02-199-unit-b-census.md).
+
+- **ADR-0008's two dated measurement anchors say which pull requests they belong
+  to** ([#463](https://github.com/theurian/theurian/issues/463),
+  [#501](https://github.com/theurian/theurian/pull/501)). Two amendment blocks
+  anchored a measured line count to `4bfec1d` and `1cc2fa8`. Both are real
+  commits on branches that were squash-merged, so each anchor resolved for
+  whoever wrote it and for nobody who cloned the repository. Repointing was
+  tested before re-tensing and is not available: each names a mid-branch working
+  tree, and no commit reachable from `main` carries either tree. So each sentence
+  now names the pull request the work landed as — `56582b2`
+  ([#142](https://github.com/theurian/theurian/pull/142)) and `d1e79b1`
+  ([#145](https://github.com/theurian/theurian/pull/145)) — and says the measured
+  tree is not preserved, which is the honest form and the one the anchor audit
+  above accepts. **Ten further unreachable anchors remain inside the audit's own
+  scope** — its `GOVERNED_ROOTS` is `("docs/",)` — in ADR-0007, ADR-0024,
+  ADR-0027 and the threat model. Ten is what this instrument can see and not
+  #463's whole population: the members outside `docs/` were measured and filed on
+  the issue rather than absorbed here, and they put the cross-scope remainder at
+  ≥14 distinct tokens beyond the ten — the
+  [`packages/` extension](https://github.com/theurian/theurian/issues/463#issuecomment-5507928206)
+  and the
+  [two CHANGELOG members](https://github.com/theurian/theurian/issues/463#issuecomment-5509455089),
+  each hand-classified there. It is a **lower** bound and stays one on purpose.
+  Run the same key unclassified over `packages/` and it returns **77** unqualified
+  unreachable tokens on this entry's own tree, against **71** at `141cf6f` — the
+  branch point on `main` — so the figure moves with the tree and is derived here
+  rather than quoted (measured 2026-09-03):
+
+  ```sh
+  uv run --frozen python - <<'PY'
+  import sys; sys.path.insert(0, "tools/audit")
+  import sha_anchors as s
+  root = s.repo_root()
+  reference = s.main_reference(root)
+  s.GOVERNED_ROOTS = ("packages/",)   # the widening #463 owns
+  unqualified = {a.token for a in s.anchors(root) if not s._qualified(a)}
+  loose = sorted(t for t in unqualified if not s._is_ancestor(root, t, reference))
+  print(len(loose), sum(1 for t in loose if s._resolves(root, t)))
+  PY
+  # 77 55
+  ```
+
+  **55 of the 77 resolve to a commit object in a full clone and 22 do not**, so
+  the population is not mostly fixture literals — the sentence this replaces said
+  it was, on a count that reproduced at neither tree. `deadbeef`, `abcdef1` and a
+  22-character run of `b`s are three of the 22; the 55 are branch and
+  squashed-away commits that a reader still cannot reach. Telling a cited anchor
+  from a fixture literal is the hand work `GOVERNED_ROOTS` being `("docs/",)`
+  defers. #463 owns both halves; widening `GOVERNED_ROOTS` is its ratchet.
 
 - **ADR-0029 no longer records the four findings-pipeline residuals as open, and
   its trailer census is keyed on `%B`**
