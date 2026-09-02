@@ -28,16 +28,21 @@ import sys
 import threading
 import time
 from contextlib import closing
+from dataclasses import astuple
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, Final
 
 import pytest
 
+from theurian.domain.errors import DomainError
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.ports.review_finding_store import (
+    FindingQuery,
     FindingsDump,
     FindingsStamp,
     ReviewFindingStore,
+    StoredFinding,
 )
 from theurian.domain.review_finding import (
     PARSER_STAMP,
@@ -51,6 +56,7 @@ from theurian.domain.review_finding import (
 )
 from theurian.infrastructure.sqlite.findings_schema import FINDINGS_DDL, FINDINGS_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.findings_store import (
+    _REBUILD_REMEDY,
     FindingsStoreError,
     SqliteReviewFindingStore,
     committed_at_text,
@@ -63,27 +69,51 @@ _NEEDS_SYMLINKS = pytest.mark.skipif(
     sys.platform == "win32", reason="symlinks need privileges on Windows"
 )
 
+#: The ``text_chars`` bound the serves below run under, unless the test *is* about
+#: that bound. Larger than every fixture finding in this file, so a served row
+#: reads as the whole stored one and an equality against the load stays honest.
+#:
+#: Stated at every call because the port gives it no default: a serving surface
+#: has to name its own text bound, for the reason ``FindingQuery.limit`` has no
+#: default either. The tests that exercise the bound itself pass their own value
+#: and say so.
+_SERVE_TEXT_CHARS: Final = 10_000
+
 
 def _sha(seed: str) -> str:
     """A 40-hex commit sha built from one character, so tests read declaratively."""
     return seed * 40
 
 
-def _finding(
+def _finding(  # noqa: PLR0913 - one keyword per filterable column
     sha: str,
     *,
     reviewer: ReviewerToken = ReviewerToken.CODE_REVIEW,
     severity: FindingSeverity = FindingSeverity.HIGH,
     text: str = "a finding",
     when: str = "2026-08-27T12:00:00+00:00",
+    pull_request: int | None = None,
+    family: str | None = None,
+    specialist: str | None = None,
 ) -> ReviewFinding:
+    """One finding, with every field a serving filter can key on settable.
+
+    ``pull_request``, ``family`` and ``specialist`` are ``None`` on every row the
+    shipped git source produces (ADR-0029 D5: derived in a later slice), so a
+    filter on them has no live input to be driven by. They are constructible here
+    -- the record admits them -- and that is deliberately how the serving tests
+    reach those three predicates: a guard no data reaches survives its own
+    deletion.
+    """
     return ReviewFinding(
         reviewer=reviewer,
         severity=severity,
         finding_text=text,
         anchor=SourceAnchor(provider="git", source_uri=sha, commit_sha=sha),
-        pull_request=None,
+        pull_request=pull_request,
         date=datetime.fromisoformat(when),
+        family=family,
+        specialist=specialist,
     )
 
 
@@ -1117,4 +1147,746 @@ def test_the_rejected_reason_carries_a_crafted_reviewer_token_verbatim(tmp_path:
     assert dump.rejected[0].reason == reason
     assert repr(crafted_token) in dump.rejected[0].reason, (
         "the crafted token did not survive the store byte-for-byte, repr-escaped"
+    )
+
+
+# -- The one sanctioned serving read (ADR-0029 phase-2 slice-3) --------------
+
+
+def _served_load() -> FindingLoad:
+    """Three accepted findings across two commits, plus one rejected trailer.
+
+    The rejected member is not decoration: every test below that asserts what a
+    serve returns is also asserting that this row was not part of it, and a load
+    without one would make each of them pass over a store that had nothing to
+    withhold.
+    """
+    return FindingLoad(
+        accepted=(
+            _finding(
+                _sha("a"),
+                reviewer=ReviewerToken.SECURITY,
+                severity=FindingSeverity.CRITICAL,
+                text="a token reached the log",
+                when="2026-08-25T09:00:00+00:00",
+                pull_request=11,
+                family="a published field",
+                specialist="theurian-python",
+            ),
+            _finding(
+                _sha("a"),
+                reviewer=ReviewerToken.CODE_REVIEW,
+                severity=FindingSeverity.LOW,
+                text="a name reads as its opposite",
+                when="2026-08-25T09:00:00+00:00",
+                pull_request=11,
+                family="a duration",
+                specialist="theurian-tests",
+            ),
+            _finding(
+                _sha("b"),
+                reviewer=ReviewerToken.ADVERSARIAL,
+                severity=FindingSeverity.HIGH,
+                text="the test stays green with the code deleted",
+                when="2026-08-26T09:00:00+00:00",
+                pull_request=12,
+                family="a published field",
+                specialist="theurian-tests",
+            ),
+        ),
+        rejected=(
+            RejectedTrailer(
+                _sha("c"),
+                "Review-Finding: nonsense CRITICAL — a token reached the log",
+                "unknown reviewer 'nonsense'",
+            ),
+        ),
+    )
+
+
+def _served(store: SqliteReviewFindingStore, **filters: object) -> tuple[str, ...]:
+    """The finding texts one serve returns, in the order it returned them."""
+    query = FindingQuery(**{"limit": 50, **filters})  # type: ignore[arg-type]
+    return tuple(
+        finding.finding_text
+        for finding in store.serve_findings(query, text_chars=_SERVE_TEXT_CHARS)
+    )
+
+
+def test_a_serve_returns_every_accepted_finding_newest_first(tmp_path: Path) -> None:
+    """The unfiltered read: all three accepted rows, in the published order.
+
+    Newest-committed first, ties broken by ``(commit_sha, position)`` -- so the
+    two rows sharing one commit and one instant come back in the order the source
+    gave them rather than in whatever order SQLite finds convenient. Asserted as a
+    sequence, not a set: ``limit`` truncates this order, so an order that is not
+    total makes a truncated response arbitrary.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+
+    assert _served(store) == (
+        "the test stays green with the code deleted",
+        "a token reached the log",
+        "a name reads as its opposite",
+    )
+
+
+def test_a_serve_carries_every_stored_column_of_the_row_it_returns(tmp_path: Path) -> None:
+    """The row is the store's, whole: the serving read projects nothing away."""
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+
+    served = store.serve_findings(
+        FindingQuery(limit=1, commit_sha=_sha("b")), text_chars=_SERVE_TEXT_CHARS
+    )
+
+    assert served == (
+        StoredFinding(
+            commit_sha=_sha("b"),
+            position=0,
+            reviewer="adversarial",
+            severity="HIGH",
+            finding_text="the test stays green with the code deleted",
+            provider="git",
+            source_uri=_sha("b"),
+            committed_at=committed_at_text(datetime.fromisoformat("2026-08-26T09:00:00+00:00")),
+            pull_request=12,
+            family="a published field",
+            specialist="theurian-tests",
+        ),
+    )
+
+
+def test_a_serve_never_returns_a_rejected_trailer(tmp_path: Path) -> None:
+    """AC-5 at the store: no query reaches ``rejected_trailers``, so none can.
+
+    The load's rejected line is byte-identical to an accepted finding's text
+    except for its reviewer token, so a serve that leaked it would look like an
+    ordinary extra row rather than an obvious break. Both its fields are searched
+    for across every value of every served row, not merely counted: a leak that
+    arrived through ``finding_text`` and a leak that arrived through
+    ``source_uri`` are the same disclosure.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+    rejected = store.dump().rejected
+    assert len(rejected) == 1, "the fixture's premise: the store really holds a rejected row"
+
+    every_value = [
+        str(value)
+        for finding in store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS)
+        for value in astuple(finding)
+    ]
+
+    assert rejected[0].raw_line not in every_value
+    assert rejected[0].reason not in every_value
+    assert not any(rejected[0].reason in value for value in every_value)
+    assert len(store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS)) == 3
+
+
+def test_a_rejected_row_does_not_move_what_a_serve_returns(tmp_path: Path) -> None:
+    """The two-corpora differential, at the store: one corpus held it, one never did.
+
+    ADR-0029's closure is stated as one query against two corpora -- a store that
+    holds a withheld row and a store that never did must answer identically. This
+    is that comparison for the rejected-trailer dimension, over the whole returned
+    value rather than over a field list: equal tuples of frozen dataclasses is
+    equality of every field of every row, in order.
+    """
+    with_rejected = _store(tmp_path / "with")
+    without_rejected = _store(tmp_path / "without")
+    load = _served_load()
+    with_rejected.replace_all(load)
+    without_rejected.replace_all(FindingLoad(accepted=load.accepted, rejected=()))
+
+    assert with_rejected.dump().rejected and not without_rejected.dump().rejected
+
+    for query in (
+        FindingQuery(limit=50),
+        FindingQuery(limit=1),
+        FindingQuery(limit=50, text_contains="a token reached the log"),
+        FindingQuery(limit=50, severity=FindingSeverity.CRITICAL),
+        FindingQuery(limit=50, commit_sha=_sha("c")),
+    ):
+        assert with_rejected.serve_findings(
+            query, text_chars=_SERVE_TEXT_CHARS
+        ) == without_rejected.serve_findings(query, text_chars=_SERVE_TEXT_CHARS)
+
+
+def test_a_query_cannot_be_built_without_a_positive_limit() -> None:
+    """The bound is on the type, so no caller can issue an unbounded read (T-6)."""
+    for limit in (0, -1):
+        with pytest.raises(DomainError) as raised:
+            FindingQuery(limit=limit)
+        assert "at least 1" in str(raised.value)
+
+    assert FindingQuery(limit=1).limit == 1
+
+
+# --- The text bound: applied by the read, not to what the read returned ------
+#
+# The row count was the only bounded dimension of a serve, and `finding_text` is
+# byte-preserved from a commit message whose line length nothing limits. A surface
+# that clamped the value after `serve_findings` returned had already materialised
+# every planted byte -- `limit` of them per call, once per concurrent call. These
+# three pin the bound where it now is: in the SELECT.
+
+#: A planted trailer, two orders of magnitude past any bound a surface publishes.
+#: Not a round number of the bound's own size, so a cut *at* the bound is visible
+#: as a cut rather than as an alignment.
+_PLANTED_TEXT_CHARS: Final = 200_000
+
+
+def test_a_serve_hands_python_no_more_text_than_the_bound_it_was_given(
+    tmp_path: Path,
+) -> None:
+    """The read is bounded in text, and the store still holds the whole value.
+
+    Both halves matter. The first is the bound: whatever the row holds, a serve
+    returns at most ``text_chars`` characters of it, so the cost of one call is
+    ``limit * text_chars`` and not ``limit * (whatever a contributor committed)``.
+    The second is that the cut is a *projection*, not a loss -- ``dump`` still
+    reads the whole stored value, which is what keeps the store a faithful
+    projection of git history (ADR-0004) and keeps AC-1/AC-6's equality against
+    the source available to a verification read.
+
+    Written so that moving the cut back out of the SELECT goes RED on the first
+    assertion: a store that fetched the column whole would return all
+    200,000 characters here, and a surface-level clamp cannot un-fetch them.
+    """
+    store = _store(tmp_path)
+    planted = "x" * _PLANTED_TEXT_CHARS
+    store.replace_all(FindingLoad(accepted=(_finding(_sha("a"), text=planted),), rejected=()))
+
+    served = store.serve_findings(FindingQuery(limit=1), text_chars=2_001)
+
+    assert len(served[0].finding_text) == 2_001, (
+        "the serving read handed back more (or less) than the text bound it was "
+        "given, so the daemon's per-call cost is decided by the corpus rather "
+        "than by the bound"
+    )
+    assert served[0].finding_text == planted[:2_001]
+    assert store.dump().findings[0].finding_text == planted, (
+        "the cut reached the stored value: the bound belongs to the serving "
+        "projection, and a dump is the verification read that must still see "
+        "what git history holds"
+    )
+
+
+def test_a_match_living_past_the_text_bound_still_selects_its_row(tmp_path: Path) -> None:
+    """``text_chars`` cuts the projection and never the predicate.
+
+    ``text_contains`` is matched against the whole stored column -- the ``WHERE``
+    clause names the column, only the ``SELECT`` list cuts it -- so a substring
+    that lives past the bound still finds its row. The row then comes back cut,
+    without the matched text in it, which is the honest answer: a serve that
+    matched the *cut* value would report ``count: 0`` for a phrase that is really
+    there, and a false absence is the failure every refusal on the surface above
+    exists to prevent. What the cut hides is public git history, not withheld
+    content.
+    """
+    store = _store(tmp_path)
+    needle = "the needle past the bound"
+    store.replace_all(
+        FindingLoad(
+            accepted=(_finding(_sha("a"), text="x" * _PLANTED_TEXT_CHARS + needle),), rejected=()
+        )
+    )
+
+    served = store.serve_findings(FindingQuery(limit=1, text_contains=needle), text_chars=100)
+
+    assert len(served) == 1, (
+        "a substring past the served-text bound was not found, so the predicate "
+        "is running against the cut projection and the tool reports a false absence"
+    )
+    assert served[0].finding_text == "x" * 100
+    assert needle not in served[0].finding_text
+
+
+@pytest.mark.parametrize("text_chars", [0, -1, -2_000])
+def test_a_serve_refuses_a_non_positive_text_bound(tmp_path: Path, text_chars: int) -> None:
+    """A bound that is not a bound is a wrong answer, so the read refuses it.
+
+    ``substr(x, 1, 0)`` is the empty string and ``substr(x, 1, -n)`` reads the
+    characters *before* the start, so a non-positive value would serve every
+    finding as ``""`` -- and a surface above, seeing a value comfortably inside
+    its own bound, would publish that emptiness unmarked as the whole text. The
+    same shape ``FindingQuery`` refuses a non-positive ``limit`` with, and the same
+    reason: the failure is silent, so the type refuses instead of trusting.
+
+    Driven with a synthetic value because no shipped caller can produce one --
+    ``mcp/tools.py`` passes a constant -- and an unreachable guard is the shape
+    that survives its own deletion.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+
+    with pytest.raises(DomainError) as raised:
+        store.serve_findings(FindingQuery(limit=1), text_chars=text_chars)
+
+    assert "at least 1" in str(raised.value)
+    assert store.serve_findings(FindingQuery(limit=1), text_chars=1)[0].finding_text != ""
+
+
+def test_a_serve_returns_no_more_than_the_limit(tmp_path: Path) -> None:
+    """``limit`` truncates the published order -- the newest rows, not any rows."""
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+
+    assert _served(store, limit=2) == (
+        "the test stays green with the code deleted",
+        "a token reached the log",
+    )
+
+
+@pytest.mark.parametrize(
+    "filters, expected",
+    [
+        ({"reviewer": ReviewerToken.SECURITY}, ("a token reached the log",)),
+        (
+            {"reviewer": ReviewerToken.CODE_REVIEW},
+            ("a name reads as its opposite",),
+        ),
+        ({"severity": FindingSeverity.HIGH}, ("the test stays green with the code deleted",)),
+        ({"severity": FindingSeverity.MEDIUM}, ()),
+        (
+            {"family": "a published field"},
+            ("the test stays green with the code deleted", "a token reached the log"),
+        ),
+        (
+            {"specialist": "theurian-tests"},
+            ("the test stays green with the code deleted", "a name reads as its opposite"),
+        ),
+        (
+            {"commit_sha": _sha("a")},
+            ("a token reached the log", "a name reads as its opposite"),
+        ),
+        (
+            {"pull_request": 11},
+            ("a token reached the log", "a name reads as its opposite"),
+        ),
+        ({"text_contains": "token"}, ("a token reached the log",)),
+        (
+            {"reviewer": ReviewerToken.ADVERSARIAL, "severity": FindingSeverity.HIGH},
+            ("the test stays green with the code deleted",),
+        ),
+        ({"reviewer": ReviewerToken.ADVERSARIAL, "severity": FindingSeverity.LOW}, ()),
+    ],
+    ids=[
+        "reviewer-security",
+        "reviewer-code-review",
+        "severity-high",
+        "severity-matching-nothing",
+        "family",
+        "specialist",
+        "commit-sha",
+        "pull-request",
+        "text-contains",
+        "two-filters-conjoined",
+        "two-filters-conjoined-empty",
+    ],
+)
+def test_each_filter_selects_exactly_the_rows_that_match(
+    tmp_path: Path, filters: dict[str, object], expected: tuple[str, ...]
+) -> None:
+    """Every predicate the query type carries, driven -- including the empty answer.
+
+    The two-filter cases are why the clause is a conjunction rather than a
+    disjunction someone would have to read the SQL to discover: an adversarial
+    row matches one filter and not the other, and an ``OR`` would return it.
+
+    **The ``pull_request``, ``family`` and ``specialist`` cases stay here on
+    purpose, even though the MCP surface now refuses those three filters** (PR
+    #504 round 1, R1-5). What is refused there is a *filter on an axis this
+    build's source derives no value for*; the store's predicates are correct and
+    are what a future source lifts the refusal onto, so deleting them would leave
+    that source's first commit implementing three untested predicates. Deleted
+    here, the ordinary way back is somebody re-writing them under load -- which is
+    when they are least likely to be written with an adversarial conjunction case.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+
+    assert _served(store, **filters) == expected
+
+
+def test_the_substring_filter_matches_a_wildcard_as_a_literal_character(tmp_path: Path) -> None:
+    """``q`` is a substring, not a pattern: ``%``, ``_`` and ``\\`` are ordinary.
+
+    Unescaped, ``%`` is LIKE's "anything" and would return every row for a caller
+    who typed a percent sign -- a wrong answer dressed as a broad one. Each
+    metacharacter gets both directions: it finds the row that really contains it,
+    and it does not find the row that does not.
+
+    **The backslash needs a row that carries one**, which is the half this test
+    was missing (PR #504 round 1, M1). ``\\`` is the ``ESCAPE`` character, so
+    ``_contains_pattern`` doubles it *first*; dropping that doubling leaves
+    ``q="\\"`` searching for a literal ``%`` instead. Over a corpus with no
+    backslash in it, both the correct and the broken form answer nothing, so the
+    old ``== ()`` line was satisfied for the wrong reason and the mutation
+    ``b01-escape-not-doubled`` survived. The row below is what makes the empty
+    answer impossible to fake: the escape has to survive for it to be found at
+    all.
+    """
+    store = _store(tmp_path)
+    store.replace_all(
+        FindingLoad(
+            accepted=(
+                _finding(_sha("a"), text="a 100% regression", when="2026-08-25T09:00:00+00:00"),
+                _finding(_sha("b"), text="an under_scored name", when="2026-08-24T09:00:00+00:00"),
+                _finding(_sha("d"), text="plain text", when="2026-08-23T09:00:00+00:00"),
+                _finding(
+                    _sha("e"),
+                    text="a path C:\\Users\\ci in a finding",
+                    when="2026-08-22T09:00:00+00:00",
+                ),
+            ),
+            rejected=(),
+        )
+    )
+
+    assert _served(store, text_contains="%") == ("a 100% regression",)
+    assert _served(store, text_contains="100% reg") == ("a 100% regression",)
+    assert _served(store, text_contains="_") == ("an under_scored name",)
+    assert _served(store, text_contains="under_scored") == ("an under_scored name",)
+    assert _served(store, text_contains="under scored") == ()
+    assert _served(store, text_contains="\\") == ("a path C:\\Users\\ci in a finding",)
+    assert _served(store, text_contains="C:\\Users") == ("a path C:\\Users\\ci in a finding",)
+    assert _served(store, text_contains="C:\\\\Users") == ()
+
+
+def test_the_substring_filter_folds_ascii_case_and_nothing_else(tmp_path: Path) -> None:
+    """The recorded bound on "case-insensitive", asserted in both directions.
+
+    SQLite's ``LIKE`` folds the 26 ASCII letters and leaves every other codepoint
+    exact. That is what the store's docstring claims, and a claim about case
+    folding is exactly the kind that drifts silently -- so the ASCII case is
+    pinned as working and the non-ASCII case is pinned as *not* working, which is
+    what stops the bound being quietly widened in prose without a build that
+    carries ICU.
+
+    The CJK row is data, not decoration: a script with no case is matched exactly
+    either way, and it is the shape a Japanese-language corpus actually sends.
+    """
+    store = _store(tmp_path)
+    store.replace_all(
+        FindingLoad(
+            accepted=(
+                _finding(_sha("a"), text="a CRITICAL regression", when="2026-08-25T09:00:00+00:00"),
+                _finding(_sha("b"), text="ÉCLAIR in the log", when="2026-08-24T09:00:00+00:00"),
+                _finding(
+                    _sha("d"),
+                    text="署名付きトークンを持つ",
+                    when="2026-08-23T09:00:00+00:00",
+                ),
+            ),
+            rejected=(),
+        )
+    )
+
+    assert _served(store, text_contains="critical") == ("a CRITICAL regression",)
+    assert _served(store, text_contains="CRITICAL") == ("a CRITICAL regression",)
+    assert _served(store, text_contains="éclair") == (), (
+        "SQLite's LIKE folds ASCII only; if this now matches, the store folds more "
+        "than its docstring says and the claim there is the thing to fix"
+    )
+    assert _served(store, text_contains="ÉCLAIR") == ("ÉCLAIR in the log",)
+    assert _served(store, text_contains="トークン") == ("署名付きトークンを持つ",)
+
+
+def test_serving_a_missing_store_raises_rather_than_answering_empty(tmp_path: Path) -> None:
+    """ "Nothing was built" is not "the build found nothing" (ADR-0029 AC-3).
+
+    An empty tuple here would let a caller read "this project has no findings"
+    off a project whose store was never built -- the same false-absence class the
+    canonical store's own missing-database refusal exists for.
+    """
+    store = _store(tmp_path)
+
+    with pytest.raises(FindingsStoreError) as raised:
+        store.serve_findings(FindingQuery(limit=10), text_chars=_SERVE_TEXT_CHARS)
+
+    assert raised.value.remedy == _REBUILD_REMEDY
+
+
+def test_serving_a_missing_store_does_not_conjure_one(tmp_path: Path) -> None:
+    """The read connection is ``mode=ro``, and this is what that buys observably.
+
+    ``serve_findings`` refuses a missing store either way -- opened read-write, an
+    absent file becomes an *empty* database, whose first ``SELECT`` then fails on
+    the missing table and raises the same graded error. So the refusal alone
+    cannot tell the two apart, and dropping ``read_only_uri`` from the read
+    connection passed the whole suite (measured 2026-09-02 against ``e808c82``;
+    mutation ``read-connection-not-read-only``, 4801 tests green).
+
+    What separates them is the file: a read that creates one has written to the
+    project's state directory in order to answer a question, leaving a stamped-as-
+    nothing store where ``findings build`` expects either its own file or none.
+    That is the defect ``index_store._open_read`` already records, asserted here
+    for this store.
+
+    **The state directory has to exist for this test to be able to fail**, which
+    is why it is created here rather than left as :func:`_store` leaves it.
+    ``sqlite3.connect`` cannot create a database inside a directory that is not
+    there, so an assertion written over the bare fixture path is satisfied by the
+    missing *directory* and says nothing about the connection -- measured: the
+    first cut of this test re-ran the same mutation and it survived again. A
+    project that has ever run ``migrate apply`` has this directory, so this is
+    also the shape a real missing store arrives in.
+    """
+    store = _store(tmp_path)
+    store.path.parent.mkdir(parents=True)
+    assert not store.path.exists(), "the premise: the directory exists and the store does not"
+
+    with pytest.raises(FindingsStoreError):
+        store.serve_findings(FindingQuery(limit=10), text_chars=_SERVE_TEXT_CHARS)
+
+    assert not store.path.exists(), (
+        f"serving a missing store created {store.path}. The read connection must be "
+        f"`mode=ro`: a query that conjures an empty database leaves a file behind "
+        f"that nothing built, and the next reader finds a store with no metadata row "
+        f"rather than no store at all."
+    )
+
+
+def test_two_findings_committed_at_one_instant_come_back_in_the_published_order(
+    tmp_path: Path,
+) -> None:
+    """The tiebreak is the whole reason ``limit`` truncates a defined sequence.
+
+    ``committed_at DESC`` alone leaves rows sharing an instant in whatever order
+    the scan produces -- insertion order, here, since the table's only index is
+    its primary key -- and SQLite is free to vary that between plans. So the load
+    is built with its insertion order *deliberately opposite* to the published
+    one: commit ``b`` is written first and commit ``a`` second, both at the same
+    instant, so a read without the ``(commit_sha, position)`` tiebreak returns
+    them the other way round.
+
+    Dropping the tiebreak passed the whole suite before this (measured 2026-09-02
+    against ``e808c82``; mutation ``serve-order-no-tiebreak``): every other order
+    test either uses distinct instants or writes its tied rows already in the
+    published order, so none of them could tell a total order from a lucky one.
+    """
+    store = _store(tmp_path)
+    one_instant = "2026-08-25T09:00:00+00:00"
+    store.replace_all(
+        FindingLoad(
+            accepted=(
+                _finding(_sha("b"), text="written first", when=one_instant),
+                _finding(_sha("a"), text="written second", when=one_instant),
+            ),
+            rejected=(),
+        )
+    )
+
+    assert _served(store) == ("written second", "written first"), (
+        "two findings sharing an instant came back in insertion order rather than "
+        "in `(commit_sha, position)` order; without that tiebreak a `limit` "
+        "truncates a sequence SQLite is free to vary, so the same store can answer "
+        "one query two ways"
+    )
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "UPDATE findings_metadata SET parser_stamp = 'superseded' WHERE id = 1",
+        "UPDATE findings_metadata SET findings_schema_version = -1 WHERE id = 1",
+        "DELETE FROM findings_metadata WHERE id = 1",
+    ],
+    ids=["stale-parser-stamp", "stale-schema-version", "no-stamp-at-all"],
+)
+def test_serving_a_stale_or_unstamped_store_raises_rather_than_answering(
+    tmp_path: Path, damage: str
+) -> None:
+    """The staleness *reaction* (ADR-0029: detection landed, this is the response).
+
+    Each arm leaves the rows intact and only the stamp wrong, so a read that
+    ignored the stamp would answer happily with rows a superseded grammar
+    produced. The no-stamp arm is the half-built file ``dump`` already refuses:
+    schema committed, data transaction never did.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+    assert store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS), (
+        "the premise: it serves before the damage"
+    )
+
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute(damage)
+        connection.commit()
+
+    with pytest.raises(FindingsStoreError) as raised:
+        store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS)
+
+    assert raised.value.remedy == _REBUILD_REMEDY
+
+
+def test_serving_an_unreadable_store_raises_with_the_rebuild_remedy(tmp_path: Path) -> None:
+    """A damaged file is a rebuild, not a partial answer.
+
+    The store is a projection of git history (ADR-0004), so there is no repair to
+    attempt and no subset worth returning: bytes that are not a database cannot be
+    read as a smaller-but-valid corpus.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+    store.path.write_bytes(b"not a database at all")
+
+    with pytest.raises(FindingsStoreError) as raised:
+        store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS)
+
+    assert raised.value.remedy == _REBUILD_REMEDY
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "UPDATE findings SET position = 'not a number' WHERE position = 0",
+        "UPDATE findings SET pull_request = 'eleven' WHERE pull_request = 11",
+    ],
+    ids=["position-holds-text", "pull-request-holds-text"],
+)
+def test_a_value_damaged_column_is_the_graded_error_and_not_a_crash(
+    tmp_path: Path, damage: str
+) -> None:
+    """Damage to a column's *value*, not to the file (PR #504 round 1, R1-2 face iv).
+
+    SQLite types columns by affinity, so nothing stops a store -- damaged, or
+    written by something that is not this adapter -- from holding text in
+    ``position`` or invalid UTF-8 in a TEXT column. The stamp is untouched and the
+    file opens cleanly, so every earlier guard passes; the failure happens where
+    the row is *converted*, which used to be outside the method's own boundary and
+    escaped as ``ValueError``/``UnicodeDecodeError``.
+
+    Why that matters above this layer: the tool turns this class into one constant
+    refusal, so an escape of any other type is a second refusal shape for a second
+    kind of damage -- exactly the distinguishability (SEC-13) the constant exists
+    to close.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+    assert store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS), (
+        "the premise: it serves before the damage"
+    )
+
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute(damage)
+        connection.commit()
+
+    with pytest.raises(FindingsStoreError) as raised:
+        store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS)
+    assert raised.value.remedy == _REBUILD_REMEDY
+
+    with pytest.raises(FindingsStoreError):
+        store.dump()
+
+
+def test_a_filter_wider_than_the_column_is_the_graded_error_and_not_an_overflow(
+    tmp_path: Path,
+) -> None:
+    """The residual behind the boundary's ``pullRequest`` ceiling (R1-2 face i).
+
+    ``mcp/findings.py`` refuses a ``pullRequest`` past 2**63-1 before it is ever
+    built into a query, which is where a caller's mistake belongs -- but
+    :class:`FindingQuery` is a public port type and admits the value, so a second
+    surface constructing one directly would reach the bind. ``sqlite3`` raises
+    ``OverflowError`` there, which is neither a ``sqlite3.Error`` nor an
+    ``OSError``, so it escaped the read's boundary entirely.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+
+    with pytest.raises(FindingsStoreError) as raised:
+        store.serve_findings(
+            FindingQuery(limit=50, pull_request=2**63), text_chars=_SERVE_TEXT_CHARS
+        )
+
+    assert raised.value.remedy == _REBUILD_REMEDY
+
+
+def test_a_nul_truncates_the_like_pattern_while_its_neighbour_bytes_do_not(
+    tmp_path: Path,
+) -> None:
+    """The mechanism the tool's NUL refusal exists for (R1-6), pinned at its source.
+
+    SQLite's ``patternCompare`` walks a NUL-terminated string, so a pattern's
+    bytes after a NUL are never read. ``_contains_pattern`` wraps the caller's text
+    in ``%...%``, so ``"log\\x00zzz"`` becomes ``%log`` -- a **suffix** match, which
+    finds a row ending in ``log`` and misses a row containing it -- and ``"\\x00"``
+    becomes ``%``, which matches every row. Neither is what "matched literally"
+    promises, and this store cannot fix it: ``LIKE`` is SQLite's.
+
+    So the fix is a refusal at the boundary (``mcp/findings.py``), and this test is
+    the record of *why* it is there: if SQLite ever stops truncating, this goes RED
+    and the refusal's justification is the thing to re-examine.
+
+    Both halves of the corpus are load-bearing. One row ends with ``log`` and one
+    merely contains it, so the truncated pattern separates them -- an assertion
+    over a corpus where every match is the same row could not tell "suffix match"
+    from "substring match". The neighbour byte is the other control: ``\\x01`` is
+    not special to ``LIKE``, so it is matched literally and finds nothing, which
+    is what makes these assertions a statement about NUL rather than about control
+    characters generally.
+    """
+    store = _store(tmp_path)
+    store.replace_all(
+        FindingLoad(
+            accepted=(
+                _finding(
+                    _sha("a"), text="a token reached the log", when="2026-08-25T09:00:00+00:00"
+                ),
+                _finding(_sha("b"), text="logged a token", when="2026-08-24T09:00:00+00:00"),
+            ),
+            rejected=(),
+        )
+    )
+
+    assert _served(store, text_contains="log") == ("a token reached the log", "logged a token")
+    assert _served(store, text_contains="log\x00zzz") == ("a token reached the log",), (
+        "SQLite stopped truncating a LIKE pattern at a NUL; the boundary refusal "
+        "that cites this behaviour now cites something untrue"
+    )
+    assert _served(store, text_contains="\x00") == ("a token reached the log", "logged a token")
+    assert _served(store, text_contains="log\x01zzz") == (), (
+        "a byte next to NUL was treated as special too, so the pins above are not "
+        "about NUL in particular"
+    )
+
+
+def test_a_serve_reads_one_store_through_one_connection(tmp_path: Path) -> None:
+    """The lifecycle argument, pinned where it is decidable: one open, not two.
+
+    A serve racing a rebuild must not have its stamp check answer for one file
+    and its rows come from another. What makes that impossible is that both
+    statements run on one ``mode=ro`` connection, which holds the inode it opened
+    while ``os.replace`` swaps the directory entry (:meth:`replace_all`). The
+    *race* itself is recorded rather than driven -- a timing loop over a rename
+    proves whichever interleaving it happened to hit -- but the property the
+    argument rests on is structural and is asserted here: the read opens the file
+    exactly once.
+
+    A reader that re-acquired the file per statement -- ``is_current()`` followed
+    by a query, the shape this method deliberately does not use -- opens it twice
+    and reddens this.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+    opens: list[str] = []
+    real_connect = sqlite3.connect
+
+    def counting_connect(*args: Any, **kwargs: Any) -> Any:
+        opens.append(str(args[0] if args else kwargs.get("database", "")))
+        return real_connect(*args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sqlite3, "connect", counting_connect)
+        served = store.serve_findings(FindingQuery(limit=50), text_chars=_SERVE_TEXT_CHARS)
+
+    assert len(served) == 3, "the premise: the serve really answered from the store"
+    assert len(opens) == 1, (
+        f"the serving read opened the store {len(opens)} times ({opens}); the "
+        f"one-connection property is what keeps a concurrent rebuild from splitting "
+        f"the stamp check away from the rows it vouches for"
     )

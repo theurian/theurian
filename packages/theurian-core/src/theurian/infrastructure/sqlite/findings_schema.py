@@ -26,23 +26,32 @@ by an earlier trailer grammar (its recorded ``parser_stamp`` no longer equal to
 :data:`~theurian.domain.review_finding.PARSER_STAMP`), is *detectable* as stale
 via :meth:`~theurian.domain.ports.review_finding_store.ReviewFindingStore.is_current`.
 There is no in-place migration for a file that costs one ``git log`` to
-recreate (ADR-0004) -- but this phase-2 slice ships no consumer that reads that
-signal: its one writer, ``findings build``, rebuilds wholesale on every run
-regardless of staleness, so nothing here is served stale today because nothing
-here is served at all. The detection is real; the rebuild-on-detection path is
-owed to the serving slice that arrives later.
+recreate (ADR-0004), and the consumer that acts on the signal now ships:
+:meth:`~theurian.domain.ports.review_finding_store.ReviewFindingStore.serve_findings`
+refuses a store whose stamp is not this build's rather than serving rows a
+superseded grammar produced (slice-3). It makes that comparison inside its own
+read rather than by calling ``is_current`` -- see that method for why two opens
+would be worse than one. The writer is unchanged: ``findings build`` rebuilds
+wholesale on every run regardless of staleness, which is strictly stronger than
+rebuilding on a detected mismatch.
 
-**No FTS, no triggers, no serving apparatus.** Three plain tables and nothing that
-scores or ranks. A findings *search* is a later slice with its own disclosure
-round; this schema deliberately carries none of the retrieval machinery
-``index_schema.py`` does. That absence of machinery is not, by itself, what stands
-between a caller and a finding -- the schema cannot refuse a query issued against
-it. The guarantee that nothing *reaches* this schema at all is enforced by
-``tests/unit/test_findings_store_is_unreachable.py`` (AC-7), not by this file --
-and that guarantee is scoped to AC-7's own declared population (``SERVING_MODULES``:
-``mcp/`` and ``daemon/`` walked wholesale, plus a hand-picked list covering
-``application/``, ``cli/``, the index read-side, and the canonical-store adapter),
-not a scan of the whole package.
+**No FTS, no triggers, no ranking.** Three plain tables and nothing that scores.
+The serving read slice-3 landed is a filtered, ordered ``SELECT`` over the
+``findings`` table -- an exact-match query, not retrieval -- so this schema still
+carries none of the machinery ``index_schema.py`` does, and a *ranked* findings
+surface (with the T-17a collection-statistics problem that comes with it) remains
+a later slice with its own round.
+
+What stands between a caller and a finding is therefore no longer an absence, and
+this file is not where it lives: it is the port's one sanctioned serving read
+(accepted rows only, bounded, stale-refusing) and the structural pins in
+``tests/unit/test_findings_store_is_unreachable.py`` and
+``tests/integration/test_findings_tool_registry.py`` (AC-7), which now assert that
+exactly one serving path reaches this schema rather than that none does. That
+guarantee is scoped to AC-7's own declared population (``SERVING_MODULES``:
+``mcp/``, ``daemon/`` and ``review/`` walked wholesale, plus a hand-picked list
+covering ``application/``, ``cli/``, the index read-side, and the canonical-store
+adapter), not a scan of the whole package.
 """
 
 from __future__ import annotations

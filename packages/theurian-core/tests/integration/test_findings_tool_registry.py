@@ -1,4 +1,4 @@
-"""AC-7 runtime companion: the *built* daemon serves no finding (ADR-0029).
+"""AC-7 runtime companion: exactly one *built* tool serves a finding (ADR-0029).
 
 The unit prongs in ``tests/unit/test_findings_store_is_unreachable.py`` read the
 shipped source. This is the arm that reads the running registry: it constructs the
@@ -15,10 +15,21 @@ exist. Two things the source scan cannot see are visible here:
   wrapper, and a walk that stopped there saw three names belonging to the
   wrapper while a planted store symbol in the tool body passed unnoticed.
 
-Together with the unit prongs, the boundary is held from both ends: the serving
-layer cannot *import* the store (prong a), no serving module names its *tables*
-(prong b, grep), and the surface a caller actually speaks to registers exactly the
-known read tools and reaches no store symbol (prong b, runtime -- here).
+**Slice-3 inverts this rather than relaxing it, and the inversion makes the walk
+self-checking.** ``review.findings`` serves findings, so the claim is no longer
+"no tool reaches a store symbol" but "exactly ``review.findings`` does". That
+turns the sanctioned tool into a **positive control**: the walk must *find* the
+adapter in its bytecode, so a walk that reaches nothing now fails outright
+instead of reporting a clean search. The store is constructed in the tool's own
+body precisely so this arm has something to require -- a tool that delegated the
+construction to a helper would leave the walk with only the helper's name, which
+is the one-hop gap the unit file records.
+
+Together with the unit prongs, the boundary is held from both ends: only the
+sanctioned serving modules *import* the store (prong a), no serving module names
+its *tables* (prong b, grep), and the surface a caller actually speaks to
+registers exactly the known tools, of which exactly one names a finding and
+exactly that one reaches a store symbol (prong b, runtime -- here).
 
 Hermetic: the server is built against an empty registry under a redirected
 ``THEURIAN_DATA_DIR``, so the tool *set* -- which is registered independently of
@@ -50,14 +61,20 @@ KNOWN_TOOL_NAMES = frozenset(
         "knowledge.get",
         "knowledge.status",
         "project.list",
+        "review.findings",
         "system.capabilities",
     }
 )
 
-#: Store symbols no serving tool may reach in its own bytecode. Names, because
-#: ``_referenced_names`` walks a function's code object -- a tool that constructed
-#: ``SqliteReviewFindingStore`` or called into ``FindingsBuilder`` would carry the
-#: name whether or not it also imported it at module scope.
+#: The one tool sanctioned to reach the store, restated here for the same reason
+#: the set above is: the two arms check one claim through different mechanisms,
+#: and a shared constant would let one arm's break hide the other's.
+FINDINGS_TOOL_NAME = "review.findings"
+
+#: Store symbols only the sanctioned tool may reach in its own bytecode. Names,
+#: because ``_referenced_names`` walks a function's code object -- a tool that
+#: constructed ``SqliteReviewFindingStore`` or called into ``FindingsBuilder``
+#: would carry the name whether or not it also imported it at module scope.
 STORE_SYMBOLS = frozenset(
     {
         "SqliteReviewFindingStore",
@@ -66,6 +83,13 @@ STORE_SYMBOLS = frozenset(
         "FindingsBuildRequest",
     }
 )
+
+#: What the sanctioned tool is permitted to reach, which is the adapter and
+#: nothing else. ``FindingsBuilder``/``FindingsBuildRequest`` are the rebuild
+#: path: a read tool reaching one would be the serving surface acquiring a write
+#: (ADR-0013's shape, at a different store), and it fails below even though the
+#: tool is otherwise sanctioned.
+SANCTIONED_TOOL_SYMBOLS = frozenset({"SqliteReviewFindingStore"})
 
 
 @pytest.fixture
@@ -130,44 +154,74 @@ def test_the_built_server_registers_exactly_the_known_read_tools(
     assert registered == set(KNOWN_TOOL_NAMES), (
         f"the built server registers {sorted(registered)}, pinned set is "
         f"{sorted(KNOWN_TOOL_NAMES)}. A tool was added or removed at the registry "
-        f"level. If it serves finding content it belongs to the deferred findings "
-        f"lane and its disclosure round, not to this read-only surface."
+        f"level. If it serves finding content it needs its own disclosure round -- "
+        f"`{FINDINGS_TOOL_NAME}` had one (ADR-0029 phase-2 slice-3), and a second "
+        f"surface does not inherit it."
     )
 
 
-def test_no_registered_tool_serves_or_reaches_a_finding(empty_registry: ProjectRegistry) -> None:
-    """No tool on the built server names a finding or reaches a store symbol (AC-7).
+def test_exactly_one_registered_tool_serves_and_reaches_a_finding(
+    empty_registry: ProjectRegistry,
+) -> None:
+    """One tool names a finding, one tool reaches the store, and they are the same one.
 
-    Two checks over the *actual* registered tools, not the source. First, no tool
-    name serves a finding. Second, and stronger for the direct case, no tool's
-    bytecode references a store symbol -- a tool that constructed the store or
-    called its builder would carry the name in its code object even if it imported
-    it lazily inside the function body, where the module-level import scan of prong
-    (a) does not look.
+    Three checks over the *actual* registered tools, not the source, and each
+    fails in both directions since slice-3:
+
+    1. exactly one registered name says "finding". Two is a serving surface with
+       no disclosure round; zero is the sanctioned tool renamed out from under
+       this file;
+    2. exactly one tool's bytecode reaches a store symbol, and it is that same
+       tool. A tool that constructed the store or called its builder would carry
+       the name in its code object even if it imported it lazily inside the
+       function body, where the module-level import scan of prong (a) does not
+       look;
+    3. what the sanctioned tool reaches is the *adapter*, not the builder -- the
+       read surface must not be holding the rebuild path.
+
+    Check 2's positive half is what makes this arm self-checking: the walk has to
+    *find* something, so a walk that reached nothing -- the #491 failure, where
+    ``tool.fn`` became a wrapper and the walk collapsed to its three names --
+    fails here rather than reporting every tool clean.
     """
     server = build_server(empty_registry)
     tools = server._tool_manager.list_tools()
     assert tools, "an empty tool list would pass this test vacuously"
 
     naming_a_finding = sorted(tool.name for tool in tools if "finding" in tool.name.lower())
-    assert not naming_a_finding, (
-        f"the built server registers finding-serving tool(s): {naming_a_finding}. "
-        f"A findings search is the deferred disclosure lane, not a read tool here."
+    assert naming_a_finding == [FINDINGS_TOOL_NAME], (
+        f"the built server registers finding-serving tool(s) {naming_a_finding}, "
+        f"and the sanctioned set is ['{FINDINGS_TOOL_NAME}']. A second findings "
+        f"surface does not inherit the first one's disclosure round; an empty list "
+        f"means the tool was renamed and this arm is checking nothing."
     )
 
     reaching_the_store = {
-        tool.name: sorted(hit)
+        tool.name: _referenced_names(tool.fn) & STORE_SYMBOLS
         for tool in tools
-        if (hit := _referenced_names(tool.fn) & STORE_SYMBOLS)
+        if _referenced_names(tool.fn) & STORE_SYMBOLS
     }
-    assert not reaching_the_store, (
-        "a registered tool reaches the review-finding store in its bytecode:\n"
-        + "\n".join(f"  {name} :: {hits}" for name, hits in sorted(reaching_the_store.items()))
-        + "\n\nA read-only tool that constructs the store or its builder is a "
-        "serving path to a finding -- and one added lazily inside the tool body "
-        "hides from the module-level import scan. The findings serving lane lands "
-        "with its own disclosure round (ADR-0029), not as a reach from a Milestone "
-        "3 read tool."
+    assert sorted(reaching_the_store) == [FINDINGS_TOOL_NAME], (
+        "the set of registered tools reaching the review-finding store in their "
+        f"bytecode is {sorted(reaching_the_store)}, and it must be exactly "
+        f"['{FINDINGS_TOOL_NAME}']:\n"
+        + "\n".join(
+            f"  {name} :: {sorted(hits)}" for name, hits in sorted(reaching_the_store.items())
+        )
+        + "\n\nToo many: a read tool that constructs the store or its builder is a "
+        "serving path to a finding, and one added lazily inside the tool body hides "
+        "from the module-level import scan. Too few (an empty set): the walk is not "
+        "reaching tool bodies -- the #491 shape, where `Tool.fn` became a wrapper "
+        "and the walk collapsed onto its own three names while a planted store "
+        "symbol passed unnoticed."
+    )
+
+    assert reaching_the_store[FINDINGS_TOOL_NAME] <= SANCTIONED_TOOL_SYMBOLS, (
+        f"`{FINDINGS_TOOL_NAME}` reaches "
+        f"{sorted(reaching_the_store[FINDINGS_TOOL_NAME])}, which is more of the "
+        f"store than the read surface may hold: {sorted(SANCTIONED_TOOL_SYMBOLS)}. "
+        f"The builder rebuilds the store from git -- a read tool reaching it is the "
+        f"serving surface acquiring a write."
     )
 
 

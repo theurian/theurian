@@ -94,6 +94,7 @@ worth nothing if the reader has to guess where it has been applied:
 | `mcp/knowledge-status-response.schema.json` | `test_wire_contract.py`, against two projects the real CLI built: one holding an `approved`, a `draft` and a `proposed` item, and one holding only retired ones |
 | `cli/version.schema.json` | `test_schemas.py::test_version_output_matches_its_published_schema`, against the payload `theurian version` emits |
 | `mcp/project-list-response.schema.json` | `test_wire_contract.py`, against a registry that reads cleanly and one holding two unreadable entries |
+| `mcp/review-findings-response.schema.json` | `test_wire_contract.py`, against three real `review.findings` responses over a store that also holds a rejected trailer: a full read carrying rows with the derived fields both set and null, a filtered read, and the empty one — `count: 0` is the case a `minItems` would have rejected |
 | `mcp/tool-context.schema.json` | nothing, and nothing should: it describes tool *input*, so there is no response to compare. `test_project_id_is_required_on_every_tool_call` holds what it is for |
 
 `project-list-response.schema.json` was the gap this section was written to name,

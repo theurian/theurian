@@ -134,13 +134,25 @@ through a migration — not rescued from a git-ignored directory.
   derived state *out* of Git in the ordinary case, but a contributor can
   force-add it past the ignore (`git add -f`) and ship it, and a ZIP or tarball
   carries it with no tracking metadata at all. So the "never Git-tracked"
-  corollary is enforced at the point it protects: `theurian migrate apply` and
-  `theurian index build` record what this install built in
-  `THEURIAN_DATA_DIR/provenance.json` — out of the repository tree — and every MCP
-  read path refuses a `.theurian/state/` artifact whose hash is not in that record
-  (`BuildProvenance`, `verify_state_provenance`; `tests/integration/`
-  `test_state_provenance.py`). Delivery-independent by construction: it does not
-  ask Git what is tracked, so it holds for a clone and a repackaged tarball alike.
+  corollary is enforced at the point it protects: `theurian migrate apply`,
+  `theurian index build` and `theurian findings build` each record what this
+  install built in `THEURIAN_DATA_DIR/provenance.json` — out of the repository
+  tree — and every MCP read path refuses a `.theurian/state/` artifact that record
+  does not name (`BuildProvenance`, `verify_state_provenance`;
+  `packages/theurian-core/tests/integration/test_state_provenance.py`).
+  Delivery-independent by construction: it does not ask Git what is tracked, so it
+  holds for a clone and a repackaged tarball alike.
+
+  **"Does not name" rather than "whose hash is not in it", because the three
+  families are keyed two different ways.** The canonical state is recorded under
+  its state hash and the retrieval index under its build id — both per-build
+  values, so a record vouches for one particular artifact. The review-finding
+  store is recorded under the constant `FINDINGS_STORE_ID`, because `findings
+  build` rebuilds wholesale under one filename and there is no per-build id to
+  record; what the record answers there is "has this installation ever built this
+  project's findings store", which is the whole question for an artifact that is
+  replaced rather than accumulated. A sentence that said "hash" covered two of the
+  three and read as an exemption for the one it did not name.
 
 Still owed, with the milestone that will satisfy it:
 

@@ -6,6 +6,15 @@ lives in :mod:`theurian.domain.review`; the three stages named above are owed
 with Milestone 7, and ``system.capabilities`` reports ``reviewIngestion: false``
 until they land.
 
+**The shipped ``review.findings`` tool is not this package, and does not make
+the sentence above stale.** It serves ``Review-Finding:`` commit trailers read
+out of *local* git history (ADR-0029) and is announced separately, as
+``reviewFindings: true``; none of its code is here -- it lives in the domain
+type, the git source, the SQLite findings store and the MCP tool. It reaches no
+network, reads no thread, and generates no candidate, which is exactly why it
+moved a different flag: the three stages above are still owed, and
+``reviewIngestion`` is still ``false``.
+
 **Owned by `#479 <https://github.com/theurian/theurian/issues/479>`_**, filed
 from #428's measurement after four nearer candidates were each read and verified
 not to cover the work -- `#429 <https://github.com/theurian/theurian/issues/429>`_
