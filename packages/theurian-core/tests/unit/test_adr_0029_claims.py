@@ -856,6 +856,11 @@ def test_the_shipped_findings_build_hands_the_builder_the_projects_write_lock() 
     That the hold is *continuous*, entered once around ``replace_all`` with the git
     read outside it, is
     ``test_findings_builder.py::test_the_build_publishes_inside_one_continuous_write_section``.
+    That the lock is a *real* one that actually excludes a second writer -- the
+    behavioural half this AST pin cannot reach, and where a "different lock file"
+    mutation goes RED rather than passing a substring check -- is
+    ``test_findings_build_cli.py::test_findings_build_blocks_on_the_projects_write_lock_held_by_another_writer``
+    (#404 R1-6).
     """
     parameter = inspect.signature(FindingsBuilder.__init__).parameters.get("write_section")
     tree = ast.parse(FINDINGS_COMMANDS_MODULE.read_text(encoding="utf-8"))

@@ -343,6 +343,56 @@ def test_a_write_side_permission_error_is_converted_to_the_graded_contract_under
     assert "writable" in payload["remedy"], payload["remedy"]
 
 
+def test_findings_build_blocks_on_the_projects_write_lock_held_by_another_writer(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#404 R1-6 behavioural: findings build contends the project's *own* write lock.
+
+    The AST pin in ``test_adr_0029_claims.py`` proves the command *passes* a
+    ``paths.write_lock`` expression as ``write_section``; it cannot prove the lock
+    actually excludes a second writer. Here the project's real write lock is held
+    by an independent handle (a second open file description -- ``flock`` contends
+    per description, so no second OS process is needed), and ``findings build`` is
+    driven with its acquisition timeout shortened so the block is a fast, graded
+    refusal rather than the shipped 30 s wait (the reviewer measured ~25 s on the
+    real timeout).
+
+    The build must be refused with the lock-timeout remedy, proving it tried to
+    take *that* file. A mutation pointing the command at any other lock path would
+    not contend the held one, so the build would succeed -- which is exactly the
+    "different lock file" regression this pins RED, where the substring AST pin
+    cannot.
+    """
+    from theurian.cli import findings_commands
+    from theurian.infrastructure.sqlite.connection import WriteLock
+
+    _commit(project, "fix: a change (#1)", "Review-Finding: security HIGH — a finding")
+    _publish(project)
+
+    lock_path = ProjectPaths.of(project).write_lock
+    # Shorten only the command's own acquisition, so a real contention resolves in
+    # a fraction of a second instead of the shipped 30 s.
+    monkeypatch.setattr(
+        findings_commands,
+        "WriteLock",
+        lambda path: WriteLock(path, timeout=0.5),
+    )
+
+    # An independent handle on the same lock file -- the "other writer".
+    other_writer = WriteLock(lock_path, timeout=0.5)
+    with other_writer.held():
+        code, payload = _invoke("findings", "build")
+
+    assert code == 1, payload
+    assert set(payload) == {"error", "remedy"}, payload
+    assert "Wait for the other `theurian` process to finish" in payload["remedy"], payload["remedy"]
+    # And once the other writer releases, the build succeeds -- so the block was the
+    # lock, not a broken build.
+    code, payload = _invoke("findings", "build")
+    assert code == 0, payload
+    assert payload["built"] is True
+
+
 def test_a_first_build_whose_lock_dir_is_unwritable_is_a_graded_refusal(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

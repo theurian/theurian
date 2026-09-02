@@ -166,59 +166,72 @@ great deal of ordinary port surface, and a pin that fires on it gets deleted.
     advisory lock **directly** rather than through ``write_transaction``. Measured
     2026-09-02 by instrumenting the acquire loop in a scratch copy: 9 acquisitions
     and 9 blocked attempts across 3 rounds of 3, so every round had two children
-    waiting on a third.
+    waiting on a third. Its behavioural block test also constructs a ``WriteLock``
+    in-process to prove the command contends its own lock file (#404 R1-6), so this
+    file **names the lock class** and is no longer invisible to the keys.
 
-  Both are invisible here for the same recorded reason: their acquisition happens
-  inside a spawned CLI, so neither names either symbol the keys search for. The
-  first is *in* the wider population -- its own prose spells ``write_transaction``
-  -- and the rule still admits it, because it starts its children with
-  ``subprocess.run`` on threads, a shape the concurrency rule cannot read (see the
-  thread residue below). **So the wider tier's rule now passes over a member that
-  does exactly what it exists to detect.** Recorded here rather than fixed in
-  passing: widening the rule to catch it is a change to what this module measures,
-  owed its own read.
+  ``test_migrate_apply_concurrency.py`` is invisible to both keys: its acquisition
+  happens inside a spawned CLI, so it names neither symbol as a lock construct --
+  it is *in* the wider population only because its prose spells
+  ``write_transaction``, and the rule still admits it because it starts its
+  children with ``subprocess.run`` on threads, a shape the concurrency rule cannot
+  read (see the thread residue below). **So the wider tier's rule passes over that
+  member, which does exactly what it exists to detect.** Recorded rather than fixed
+  in passing: widening the rule to catch a thread-driven ``subprocess.run`` is a
+  change to what this module measures, owed its own read.
+
+  ``test_findings_build_cli.py`` *does* name the lock and *does* spawn, so it would
+  trip both tiers -- and it is excluded from each by name
+  (:data:`CROSS_PROCESS_CONTENTION_EXERCISE`), because it is the acknowledged file
+  that measures cross-process contention on purpose. The exclusion is a named
+  allowlist entry, not a blanket loosening: every *other* file that names the lock
+  and spawns still fails and gets read by a person.
 
   What the two population tests below hold is therefore narrower than the sentence
-  they used to serve: over *their* populations, no member holds the lock from two
-  processes at once by a construct they can see.
+  they used to serve: over *their* populations, minus the one acknowledged
+  exercise, no member holds the lock from two processes at once by a construct they
+  can see.
 
   They hold it in two tiers, because one key cannot do both jobs:
 
   - ``test_the_only_test_that_constructs_the_write_lock_runs_in_one_process``
-    keys on ``WriteLock`` -- an exact population of one file,
-    ``test_canonical_store.py``, which names no process-spawning API at all. Its
-    ``test_a_second_writer_waits_rather_than_corrupting`` uses two ``WriteLock``
-    objects **inside one interpreter**, which does exercise the real ``flock``
-    path, since contention is per open file description rather than per process.
+    keys on ``WriteLock`` -- an exact population of one file *after the acknowledged
+    exercise is excluded*, ``test_canonical_store.py``, which names no
+    process-spawning API at all. Its ``test_a_second_writer_waits_rather_than_corrupting``
+    uses two ``WriteLock`` objects **inside one interpreter**, which does exercise
+    the real ``flock`` path, since contention is per open file description rather
+    than per process.
   - ``test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself``
     keys on ``WriteLock|write_transaction`` and refuses only a construct by which
-    a second OS process can be **running while the test is**. **Eleven files**, and
+    a second OS process can be **running while the test is**. **Twelve files**, and
     the number is a dated measurement rather than a property -- taken 2026-09-02 at
     #404 by the self-excluding key
     ``git grep -lP '\\bWriteLock\\b|\\bwrite_transaction\\b' --
     packages/theurian-core/tests tests ':!*test_connection_claims.py'``, which is
     the population the tier actually scans: the rule drops this module before it
     looks at anything, so the same key without the pathspec -- the *raw* grep,
-    which answers twelve -- describes a set the tier never reads. It read *ten* at
-    2026-08-31 (#446); the one member since is
-    ``tests/e2e/test_migrate_apply_concurrency.py`` (#468). Earlier the figure said
-    *nine* while the tree held ten, and *eleven* off the raw grep; a count in prose
-    churns on every new member **and** on whichever key its author reached for,
-    which is why the test asserts a property and not this list.
+    which answers thirteen -- describes a set the tier never reads. It read *ten* at
+    2026-08-31 (#446); the two members since are
+    ``tests/e2e/test_migrate_apply_concurrency.py`` (#468) and
+    ``tests/integration/test_findings_build_cli.py`` (#404, the acknowledged
+    cross-process exercise, excluded from the assertion by name). Earlier the figure
+    said *nine* while the tree held ten, and *eleven* off the raw grep; a count in
+    prose churns on every new member **and** on whichever key its author reached
+    for, which is why the test asserts a property and not this list.
 
-    Five of the eleven name ``subprocess``, and four of those are not a finding:
+    Six of the twelve name ``subprocess``, and four of those are not a finding:
     each uses ``subprocess.run``, which blocks until the child exits, so the child
-    cannot be holding the lock while the parent is. The fifth,
-    ``tests/e2e/test_migrate_apply_concurrency.py``, runs two of them on threads
-    and therefore *does* contend -- the residue the module docstring records above,
-    and the reason that paragraph no longer claims this tier's population is clean
-    in fact rather than clean to its key. The twelfth file the raw grep returns is
-    this module, which names the words only in the prose you are reading, and the
-    tier excludes it before the rule runs. A rule that refused ``subprocess``
-    outright would report four false positives and teach the next author to delete
-    it. This tier asserts a property rather than an exact file list, because
-    ``write_transaction`` is how an ordinary integration test seeds a database and
-    pinning that list would churn on every new one.
+    cannot be holding the lock while the parent is. The other two genuinely
+    contend: ``test_migrate_apply_concurrency.py`` runs two of them on threads (the
+    residue this module records above, invisible to the rule), and
+    ``test_findings_build_cli.py`` starts real ``findings build`` children with
+    ``Popen`` (the acknowledged exercise, excluded by name). The thirteenth file the
+    raw grep returns is this module, which names the words only in the prose you are
+    reading, and the tier excludes it before the rule runs. A rule that refused
+    ``subprocess`` outright would report four false positives and teach the next
+    author to delete it. This tier asserts a property rather than an exact file
+    list, because ``write_transaction`` is how an ordinary integration test seeds a
+    database and pinning that list would churn on every new one.
 
   So the cross-process wording these docstrings carry ("two processes that both
   enter here serialise") is no longer only a property of ``fcntl.flock``: the two
@@ -395,6 +408,21 @@ _THIS_MODULE: Final = pathlib.Path(__file__).resolve().relative_to(REPO_ROOT).as
 #: narrow population below may have. Written as a path rather than as a count: a
 #: count goes stale silently, while a path that moves fails naming what moved.
 WRITE_LOCK_EXERCISE: Final = "packages/theurian-core/tests/integration/test_canonical_store.py"
+
+#: The one file that **deliberately** contends the write lock across OS processes,
+#: and therefore names the lock class *and* spawns (#404 R1-6). ``findings build``'s
+#: concurrency test starts real CLI children that each take ``paths.write_lock``,
+#: and its behavioural block test constructs a ``WriteLock`` in-process to prove the
+#: command contends its own lock file. Both are recorded in this module's docstring
+#: as the measurement that made the cross-process wording no longer purely an
+#: inherited ``fcntl.flock`` claim. It is excluded by name from the population
+#: checks below -- not to weaken them (every *other* file that names the lock and
+#: spawns still fails and gets read by a person), but because the disclaimer this
+#: file would otherwise trip has already been updated to record exactly what it
+#: measures.
+CROSS_PROCESS_CONTENTION_EXERCISE: Final = (
+    "packages/theurian-core/tests/integration/test_findings_build_cli.py"
+)
 
 #: The wider key: every test that enters the write path **in this process**,
 #: either by building the lock itself or by opening the transaction that builds
@@ -1460,15 +1488,23 @@ def test_the_only_test_that_constructs_the_write_lock_runs_in_one_process() -> N
         f"not reading the population it claims to read: {len(sources)} files found"
     )
 
+    # `test_findings_build_cli.py` is excluded by name: it is the acknowledged
+    # cross-process-contention exercise (#404 R1-6), recorded as such in this
+    # module's docstring, so its naming the lock and its spawning are expected
+    # rather than a moved population.
+    _excluded_from_the_narrow_key = {_THIS_MODULE, CROSS_PROCESS_CONTENTION_EXERCISE}
     holders = sorted(
-        path for path, text in sources.items() if "WriteLock" in text and path != _THIS_MODULE
+        path
+        for path, text in sources.items()
+        if "WriteLock" in text and path not in _excluded_from_the_narrow_key
     )
 
     assert holders == [WRITE_LOCK_EXERCISE], (
         f"the suite's `WriteLock` population has moved: {holders}. This module's "
-        f"docstring says the one test that builds the lock directly runs in a "
-        f"single interpreter, and that claim now has to be re-read against "
-        f"whatever is here"
+        f"docstring says the one test that builds the lock directly *in a single "
+        f"interpreter* runs there (the cross-process contention exercise is the "
+        f"separately-acknowledged {CROSS_PROCESS_CONTENTION_EXERCISE}), and that "
+        f"claim now has to be re-read against whatever is here"
     )
 
     spawners = {
@@ -1478,9 +1514,11 @@ def test_the_only_test_that_constructs_the_write_lock_runs_in_one_process() -> N
     }
 
     assert not spawners, (
-        f"a test that builds a `WriteLock` also starts a process: {spawners}. If it "
-        f"takes the lock from that process, this module and connection.py's "
-        f"docstrings can stop calling the cross-process wording an inherited claim"
+        f"a test that builds a `WriteLock` in-process also starts a process: "
+        f"{spawners}. If it takes the lock from that process, this module and "
+        f"connection.py's docstrings can stop calling the cross-process wording an "
+        f"inherited claim -- as they already do for the acknowledged "
+        f"{CROSS_PROCESS_CONTENTION_EXERCISE}"
     )
 
 
@@ -1560,9 +1598,14 @@ def test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself() ->
         f"and every `write_transaction` acquisition is unwatched again: {population}"
     )
 
+    # The acknowledged cross-process-contention exercise is excluded: it runs
+    # processes alongside itself *on purpose* to contend the lock, and the
+    # docstrings already record that it does (#404 R1-6). Every other write-path
+    # file that spawns still fails here and gets read by a person.
     concurrent = {
         path: sorted(set(found))
         for path in population
+        if path != CROSS_PROCESS_CONTENTION_EXERCISE
         if (found := _RUNS_A_PROCESS_ALONGSIDE_ITSELF.findall(sources[path]))
     }
 
@@ -1570,7 +1613,9 @@ def test_no_test_that_enters_the_write_path_runs_a_process_alongside_itself() ->
         f"a test that enters the write path also runs a process alongside itself: "
         f"{concurrent}. If both take the lock, this module and connection.py's "
         f"docstrings can stop calling the cross-process wording an inherited claim "
-        f"-- and if they do not, this rule needs the reason written down"
+        f"-- as they already do for the acknowledged "
+        f"{CROSS_PROCESS_CONTENTION_EXERCISE} -- and if they do not, this rule "
+        f"needs the reason written down"
     )
 
 
