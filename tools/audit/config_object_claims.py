@@ -67,6 +67,23 @@ from claim_surfaces import Sentence, governed_paths, load_json, repo_root, sente
 #: The published schema whose key surface is enumeration source 1.
 PROJECT_CONFIG_SCHEMA: Final = "schemas/config/project-config.schema.json"
 
+#: This directory, excluded from the sweep's own population.
+#:
+#: **The recursion boundary, and it is not a convenience.** A census's ledger has
+#: to quote the sentences it classifies and its positive controls have to plant
+#: them; both live in tracked files here. Without this the sweep reports its own
+#: ledger rows as unrecorded suspects, and recording them would add fresh copies
+#: of the same sentences for the next run to report. Measured: the commit that
+#: first *tracked* these modules took this audit from exit 0 to exit 1 with seven
+#: new rows, every one a quotation inside this file -- an untracked file is
+#: invisible to ``git ls-files``, so the population moved when the commit landed
+#: and not when the text was written.
+#:
+#: **Scoped to this directory, never to ``tools/``.** A liveness claim written
+#: into ``tools/corpus_drift.py`` or ``tools/mutate.py`` is a claim this
+#: repository ships, and it stays in the population.
+SELF: Final = "tools/audit/"
+
 #: Files whose *subject* is the project config, so a pronoun inside them resolves
 #: to it. Derived from nothing -- this is a judgement, and it is stated here
 #: rather than buried: the schema describes the file, and the sample project *is*
@@ -257,6 +274,8 @@ def _document_named_objects(root: Path) -> list[WatchedObject]:
     """Enumeration source 3: every ``.theurian/`` path governed prose names."""
     named: set[str] = set()
     for path in governed_paths(root):
+        if path.startswith(SELF):
+            continue
         text = (root / path).read_text(encoding="utf-8", errors="surrogateescape")
         named.update(match.group(0) for match in _NAMED_PATH.finditer(text))
     return [
@@ -360,6 +379,8 @@ def sweep(root: Path) -> list[Row]:
     keys = {member.name: _keys_for(member) for member in members}
     rows: list[Row] = []
     for path in governed_paths(root):
+        if path.startswith(SELF):
+            continue
         for sentence in sentences(root, path):
             if not _ANY_CLAIM.search(sentence.text):
                 continue
