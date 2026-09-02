@@ -566,7 +566,7 @@ def test_a_plain_def_returning_a_coroutine_is_refused_at_call_time() -> None:
 
     Chosen over recording it as a residual because the information exists at the
     one moment it is needed, in the wrapper, at no cost to any real tool: the
-    five registered tools return ``dict``, and an awaitable return is never a
+    registered tools all return ``dict``, and an awaitable return is never a
     legitimate result on this surface.
     """
     coroutine_returned: Any = None
@@ -655,8 +655,8 @@ def test_every_tool_is_registered_through_the_one_seam() -> None:
         f"these tools bypass `_forwarding`, so a refusal raised below the surface "
         f"is withheld from their callers under mcp >= 2.1: {bypassing}"
     )
-    assert len(through_the_seam) == 5, (
-        f"expected the five registered tools to go through `_tool`; found "
+    assert len(through_the_seam) == 6, (
+        f"expected the six registered tools to go through `_tool`; found "
         f"{len(through_the_seam)}. If a tool was added or removed, update this "
         f"count deliberately -- it is what makes the assertion above meaningful."
     )

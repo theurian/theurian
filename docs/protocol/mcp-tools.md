@@ -3,19 +3,20 @@
 Protocol version: `theurian/v1`. Transport: Streamable HTTP at
 `http://127.0.0.1:7419/mcp`.
 
-Today, Core registers five callable MCP tools:
+Today, Core registers six callable MCP tools:
 
 - `knowledge.search`
 - `knowledge.get`
 - `knowledge.status`
 - `project.list`
+- `review.findings`
 - `system.capabilities`
 
 `system.capabilities` is the runtime boundary for clients. In this build it
-reports `writeTools: false`, `reviewIngestion: false`, and
-`traceability: false`; those values mean the write-intent, review, and
-traceability tools described below are designed protocol shape, not callable
-tools in the current server.
+reports `reviewFindings: true` — `review.findings` is callable — beside
+`writeTools: false`, `reviewIngestion: false`, and `traceability: false`; those
+three mean the write-intent, review-*history*, and traceability tools described
+below are designed protocol shape, not callable tools in the current server.
 
 ## Every project-scoped call names its project
 
@@ -334,11 +335,21 @@ The reasoning, the measurements and what remains uncovered are in
 
 ## Review
 
-Review ingestion is planned, not shipped. The current server reports
-`reviewIngestion: false`, and none of these tools are callable today.
+One review tool is shipped. `review.findings` serves the `Review-Finding:`
+trailers a project's own git history carries, landed by `theurian findings
+build` and announced as `reviewFindings: true`
+([ADR-0029](../adr/0029-review-findings-are-governed-knowledge.md)).
+
+Review *history* ingestion — GitHub threads, inline comments, resolution state —
+is still planned, not shipped: the server reports `reviewIngestion: false`, and
+none of the planned tools below is callable. The two flags are separate on
+purpose. `reviewFindings` promises an offline read of local git trailers;
+`reviewIngestion` is the one that reaches GitHub, and it is the change that owes
+the repository allowlist SEC-10 records.
 
 | Tool | Status | Purpose |
 | :-- | :-- | :-- |
+| `review.findings` | Shipped | Landed `Review-Finding:` trailers, filtered by reviewer, severity, family, specialist, commit, PR or text |
 | `review.search` | Planned | Search review history |
 | `review.getThread` | Planned | One thread with comments and resolution |
 | `review.findSimilar` | Planned | Threads resembling a described situation |
@@ -349,6 +360,65 @@ Review ingestion is planned, not shipped. The current server reports
 The designed `review.findSimilar` tool is the one expected to change outcomes:
 it would answer "has this come up before?" before an agent reimplements something
 the team already rejected.
+
+### `review.findings`
+
+Two keys, both always present. The contract is
+[`schemas/mcp/review-findings-response.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/review-findings-response.schema.json).
+
+```json
+{
+  "count": 1,
+  "findings": [
+    {
+      "commitSha": "3e45c7b…",
+      "position": 0,
+      "reviewer": "adversarial",
+      "severity": "HIGH",
+      "findingText": "byte-identical body accepted under a second item id",
+      "provider": "git",
+      "sourceUri": "3e45c7b…",
+      "committedAt": "2026-08-28T09:14:22.000000+00:00",
+      "pullRequest": null,
+      "family": null,
+      "specialist": null,
+      "contentClassification": "untrusted-knowledge",
+      "mayContainInstructions": true,
+      "executable": false
+    }
+  ]
+}
+```
+
+`findingText` is **authored commit text, and untrusted**. A finding usually
+reads as an imperative, because it describes what should change — which is
+exactly the shape a client must not let an agent act on. Every row carries the
+safety triple for that reason, and a client renders findings under it the same
+way it renders a knowledge body.
+
+Every optional argument is a filter, and each is exact:
+
+| Argument | Selects |
+| :-- | :-- |
+| `reviewer` | one of `code-review`, `security`, `adversarial` |
+| `severity` | one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` |
+| `family`, `specialist` | the derived labels, `null` on every row this build produces |
+| `commitSha` | a full 40- or 64-character sha, never a short one |
+| `pullRequest` | a PR number |
+| `q` | a literal substring of `findingText`, ASCII case folded |
+| `limit` | at most 100, default 20 |
+
+A value outside a bound or a vocabulary is **refused naming the bound**, not
+clamped and not treated as "no filter": a truncated page reads as the whole
+answer, a short sha would match nothing and read as "no findings on that
+commit", and an unrecognised reviewer treated as no filter would return
+everything. `count` sizes the returned array and is never a total before
+`limit`.
+
+`count: 0` means the filter matched nothing. A project whose store has not been
+built — or whose store is stale or damaged — is **refused**, with one constant
+message naming `theurian findings build`, so "never built" can never be read as
+"no findings".
 
 ## Specification
 

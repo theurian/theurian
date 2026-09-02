@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/review-findings-response.schema.json",
+  "title": "Output of the `review.findings` MCP tool",
+  "description": "The whole response. `review.findings` serves the `Review-Finding:` trailers a project's review history carries, landed by `theurian findings build` and read back under the SEC-15 safety triple (ADR-0029 phase-2 slice-3).\n\n**Two keys, and the shortness is the contract.** Every value here is a function of the rows this call served: `count` sizes `findings`, and `findings` is those rows. Three members were considered and deliberately left out, each because it would vary with content the tool does not serve — a count of rejected trailers (a statistic over rows the caller never receives), the store's schema/parser stamp (build metadata about a staleness decision the tool has already made by refusing), and an echo of the caller's own filters. A future member has to argue that it is a function of the served rows alone.\n\n**Rejected trailers appear nowhere in this schema, and that is not an omission.** A malformed keyed line is captured in the store's own separate table so the corpus stays loss-free; its raw line and the parser's reason are author-controlled untrusted text with no reviewed serving surface, and the store's one serving read never selects that table. A store holding one and a store that never held one produce byte-identical responses to the same query.\n\n**A store that cannot be served from is a refusal, never an empty response.** An absent, stale, or unreadable store produces a tool error naming `theurian findings build` — one constant message for all three, so the refusal carries nothing about the file. `count: 0` therefore means \"the filter matched nothing\", never \"nothing has been built here\".",
+  "type": "object",
+  "required": ["count", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The number of entries in `findings`, and nothing else. Not a total before `limit`: a count over rows the caller did not receive is a different promise, and one this tool does not make. A caller that wants to know whether more exist narrows the filter."
+    },
+    "findings": {
+      "type": "array",
+      "description": "The matching findings, most recently committed first, ties broken by `(commitSha, position)` — a total order, so `limit` truncates a defined sequence rather than an arbitrary one. At most the `limit` the call asked for, which is refused outright above the server's cap rather than silently clamped.",
+      "items": {
+        "type": "object",
+        "required": [
+          "commitSha",
+          "position",
+          "reviewer",
+          "severity",
+          "findingText",
+          "provider",
+          "sourceUri",
+          "committedAt",
+          "pullRequest",
+          "family",
+          "specialist",
+          "contentClassification",
+          "mayContainInstructions",
+          "executable"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "commitSha": {
+            "type": "string",
+            "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+            "description": "The commit whose message carried this trailer, as git's own `%H` — never author-forgeable, and the anchor that makes the finding checkable (FR-S3). Forty hex characters in a SHA-1 repository, sixty-four in a SHA-256 one. The `commitSha` *filter* accepts exactly these two forms and refuses a short sha rather than matching nothing, because an empty answer to a short sha reads as \"no findings on that commit\"."
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "This finding's ordinal within its commit, in the source's order. A commit routinely carries several findings — seventeen on one commit, measured — so the pair `(commitSha, position)` is what identifies a finding, not the sha alone."
+          },
+          "reviewer": {
+            "enum": ["code-review", "security", "adversarial"],
+            "description": "Which review authority authored the finding. A closed vocabulary the parser validates (ADR-0029 decision 2): a trailer whose first token is outside it is a malformed trailer, not a new value, so no other spelling can reach this field. The historical alias `code` is normalised to `code-review` at parse time and never stored, so it cannot appear here — and the `reviewer` filter refuses it for the same reason."
+          },
+          "severity": {
+            "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+            "description": "The four-value scale, upper-case as the trailer writes it. Closed like `reviewer`, and validated at the same place."
+          },
+          "findingText": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The reviewer's one-line finding, byte-preserved from the trailer.\n\n**Untrusted content** (ADR-0029 decision 3, SEC-15). It is authored commit free text, and the ingestion path cannot tell a reviewer's summary from any other text a commit body carries. It frequently reads as an imperative, because a finding *describes* what should change — which is exactly the shape T-3 grades High when an agent takes it as an instruction addressed to it. The three labels below are what say otherwise.\n\nSemi-structured references a reviewer wrote into the line — `(recorded, #64)`, a bare `#378` — are preserved verbatim rather than extracted: typing them as relations is a later surface, and inventing them here would be structure nobody authored."
+          },
+          "provider": {
+            "const": "git",
+            "description": "Always `git`. The record's own invariant, not a field with alternatives: `ReviewFinding` refuses construction with any other provider, because a finding is a read of git commit metadata and nothing else produces one."
+          },
+          "sourceUri": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Where the finding was read from, which for this source is the commit sha again — the anchor's URI half. It is a separate field because `SourceAnchor` carries both, and a later source with a different URI shape would fill it differently."
+          },
+          "committedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The commit date, **normalised to UTC at a fixed width** rather than kept in the committer's own offset. It round-trips the *instant*, not its spelling: parsing this value gives the commit's moment, while the string differs from `%cI` whenever the committer was not on UTC. The normalisation is what makes the column a sort key at all — a byte-wise comparison over mixed offsets is not chronological — and it is the key this response is ordered by. A caller that needs the committer's local offset reads it from git; the store does not keep it."
+          },
+          "pullRequest": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "description": "The pull request the finding was recorded on, or `null`.\n\n**`null` on every row this build produces**, and the key is still always present. Deriving it needs the GitHub merge API: a squash-merge subject's trailing `(#N)` is *not* reliably the PR — measured against the API, 27 of 55 live findings (49.1%) would publish an issue number instead — so the heuristic was deleted rather than left dormant (ADR-0029 D5)."
+          },
+          "family": {
+            "type": ["string", "null"],
+            "description": "The observable family the finding belongs to, or `null`.\n\n**`null` on every row this build produces**, for a different reason than `pullRequest`: it is derived by classification, never parsed out of `findingText` — a reviewer writes a finding, not a classification, so a parser reading it from the text would be fabricating structure nobody authored. A text literally containing `family=X` still leaves this unset."
+          },
+          "specialist": {
+            "type": ["string", "null"],
+            "description": "The implementing specialist the finding was recorded against, or `null`. **`null` on every row this build produces**: it is derived from the fix commit's changed-file set, which this slice does not compute, and a fix touching more than one owner's files has more than one candidate — resolving which is deferred rather than guessed."
+          },
+          "contentClassification": {
+            "const": "untrusted-knowledge",
+            "description": "Always `untrusted-knowledge` (SEC-15). Theurian labels; the calling agent enforces. That split is stated in SECURITY.md rather than left to a reader to infer."
+          },
+          "mayContainInstructions": {
+            "const": true,
+            "description": "Always true. A finding's text may read as an instruction; it is a description of a rule, and this label is what a client renders it under so an agent does not follow it."
+          },
+          "executable": {
+            "const": false,
+            "description": "Always false. Theurian returns documents, never runnable content."
+          }
+        }
+      }
+    }
+  }
+}

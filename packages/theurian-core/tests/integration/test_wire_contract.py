@@ -1162,3 +1162,231 @@ def test_the_integrity_conformance_check_can_fail(
         for payload in rejected:
             with pytest.raises(ValidationError):
                 validator.validate(payload)
+
+
+# -- review.findings (ADR-0029 phase-2 slice-3) -----------------------------
+
+FINDINGS_RESPONSE = "mcp/review-findings-response.schema.json"
+
+
+#: A findings corpus with a *deliberately awkward* row, because a conformance
+#: check is only as total as the documents it contains. The first finding carries
+#: the three derived fields (``pullRequest``, ``family``, ``specialist``) set,
+#: which no row the shipped git source produces does today -- so a schema that
+#: declared them integer-or-string-only rather than nullable-and-typed would pass
+#: over a corpus of live rows and fail here. The second carries all three ``null``,
+#: which is what every live row looks like. One document on each side of the
+#: ``["integer", "null"]`` disjunction, the rule ``schemas/README.md`` states.
+class FindingFixture(NamedTuple):
+    """One finding in the conformance corpus, with every published field set."""
+
+    commit_sha: str
+    reviewer: str
+    severity: str
+    text: str
+    when: str
+    pull_request: int | None
+    family: str | None
+    specialist: str | None
+
+
+FINDINGS_LOAD_FIXTURE: Final = (
+    FindingFixture(
+        "a" * 40,
+        "security",
+        "CRITICAL",
+        "a bearer token reached the log",
+        "2026-08-25T09:00:00+00:00",
+        11,
+        "a published field",
+        "theurian-python",
+    ),
+    FindingFixture(
+        "b" * 40,
+        "adversarial",
+        "LOW",
+        "the test stays green with the code deleted",
+        "2026-08-26T09:00:00+00:00",
+        None,
+        None,
+        None,
+    ),
+)
+
+
+def _land_findings(root: pathlib.Path) -> None:
+    """Land the fixture corpus in ``root``'s findings store, via the real adapter.
+
+    Through ``ProjectPaths.findings_for(FINDINGS_STORE_ID)`` -- the call
+    ``theurian findings build`` itself makes -- rather than a path spelled here,
+    so this cannot keep passing if the reader and the builder ever stop agreeing
+    on where the store lives.
+    """
+    from datetime import datetime
+
+    from theurian.application.project_service import FINDINGS_STORE_ID, ProjectPaths
+    from theurian.domain.knowledge import SourceAnchor
+    from theurian.domain.review_finding import (
+        FindingLoad,
+        FindingSeverity,
+        RejectedTrailer,
+        ReviewerToken,
+        ReviewFinding,
+    )
+    from theurian.infrastructure.sqlite.findings_store import SqliteReviewFindingStore
+
+    accepted = tuple(
+        ReviewFinding(
+            reviewer=ReviewerToken(row.reviewer),
+            severity=FindingSeverity(row.severity),
+            finding_text=row.text,
+            anchor=SourceAnchor(
+                provider="git", source_uri=row.commit_sha, commit_sha=row.commit_sha
+            ),
+            pull_request=row.pull_request,
+            date=datetime.fromisoformat(row.when),
+            family=row.family,
+            specialist=row.specialist,
+        )
+        for row in FINDINGS_LOAD_FIXTURE
+    )
+    # A rejected trailer is in the corpus on purpose: the response validated below
+    # must be the same one a store without it produces, and a fixture with nothing
+    # to withhold cannot show that.
+    load = FindingLoad(
+        accepted=accepted,
+        rejected=(
+            RejectedTrailer("c" * 40, "Review-Finding: nonsense HIGH — junk", "unknown reviewer"),
+        ),
+    )
+    SqliteReviewFindingStore(ProjectPaths.of(root).findings_for(FINDINGS_STORE_ID)).replace_all(
+        load
+    )
+
+
+async def _call_findings(registry: Any, **arguments: Any) -> dict[str, Any]:
+    from theurian.daemon.runner import build_server
+
+    result = await build_server(registry).call_tool(
+        "review.findings", {"projectId": "demo", **arguments}
+    )
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        payload: dict[str, Any] = structured
+        return payload
+    content: Any = result.content  # type: ignore[union-attr]
+    loaded: dict[str, Any] = json.loads(content[0].text)
+    return loaded
+
+
+@pytest.fixture(scope="module")
+def findings_responses(tmp_path_factory: pytest.TempPathFactory) -> dict[str, dict[str, Any]]:
+    """Real ``review.findings`` responses: a full read, a filtered one, an empty one.
+
+    Three captures because the schema makes three different promises and one
+    response cannot exercise them: rows with the derived fields set and rows with
+    them null (the full read), the same shape under a filter, and ``count: 0``
+    with an empty array -- which is the one a schema requiring ``minItems`` would
+    reject, the mirror of the ``minItems: 1`` defect that made every
+    Theurian-authored document violate the retrieval-result contract.
+    """
+    from theurian.application.project_service import ProjectRegistry
+
+    tmp = tmp_path_factory.mktemp("findings-conformance")
+    root = tmp / "demo"
+    root.mkdir()
+    data_dir = tmp / "datadir"
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    monkey.chdir(root)
+    try:
+        # The same project the other captures use: `review.findings` resolves
+        # through `_resolve`, so a registered, migrated project has to exist
+        # before the findings store is reachable at all.
+        _build_conformance_project(root)
+        _land_findings(root)
+        registry = ProjectRegistry.default(data_dir)
+        return {
+            "all": asyncio.run(_call_findings(registry)),
+            "filtered": asyncio.run(_call_findings(registry, reviewer="security")),
+            "empty": asyncio.run(_call_findings(registry, severity="MEDIUM")),
+        }
+    finally:
+        monkey.undo()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("name", ["all", "filtered", "empty"])
+def test_a_real_findings_response_validates_against_its_published_schema(
+    findings_responses: dict[str, dict[str, Any]], name: str
+) -> None:
+    """The half a schema-shape test cannot do: compare the schema to real output.
+
+    ``additionalProperties: false`` fails a field nobody declared and ``required``
+    fails a declared field nothing emits, so this catches drift in either
+    direction on the newest surface -- the one with no installed base to notice
+    for us.
+    """
+    _validator(FINDINGS_RESPONSE).validate(findings_responses[name])
+
+
+@pytest.mark.integration
+def test_the_findings_captures_reach_both_sides_of_the_nullable_fields(
+    findings_responses: dict[str, dict[str, Any]],
+) -> None:
+    """Guards the validation above, which three identical responses would satisfy.
+
+    An invariant with an ``or`` in it needs one document on each side, or the
+    constraint and the corpus share a blind spot and validate each other
+    (``schemas/README.md``). Here that is the three derived fields: every row the
+    shipped source produces has them ``null``, so a corpus of only those would
+    never test the typed half of ``["integer", "null"]``.
+    """
+    rows = findings_responses["all"]["findings"]
+
+    assert len(rows) == 2
+    assert {row["pullRequest"] for row in rows} == {11, None}
+    assert {row["family"] for row in rows} == {"a published field", None}
+    assert {row["specialist"] for row in rows} == {"theurian-python", None}
+    assert findings_responses["filtered"]["count"] == 1
+    assert findings_responses["empty"] == {"count": 0, "findings": []}
+
+
+@pytest.mark.integration
+def test_the_findings_conformance_check_can_fail(
+    findings_responses: dict[str, dict[str, Any]],
+) -> None:
+    """Guards both validations above: a schema loaded and never applied accepts all.
+
+    Each rejection is a different clause, and the three safety labels are checked
+    one at a time rather than as a group -- a schema that had quietly made
+    ``executable`` optional would still reject a response missing
+    ``contentClassification``, and the group check would not notice.
+    """
+    validator = _validator(FINDINGS_RESPONSE)
+    response = findings_responses["all"]
+    validator.validate(response)
+    row = response["findings"][0]
+
+    rejected: tuple[dict[str, Any], ...] = (
+        {**response, "surprise": 1},
+        {key: value for key, value in response.items() if key != "count"},
+        {key: value for key, value in response.items() if key != "findings"},
+        {**response, "findings": [{**row, "rawLine": "Review-Finding: junk"}]},
+        {**response, "findings": [{**row, "reason": "unknown reviewer"}]},
+        {**response, "findings": [{**row, "reviewer": "code"}]},
+        {**response, "findings": [{**row, "severity": "high"}]},
+        {**response, "findings": [{**row, "provider": "github"}]},
+        {**response, "findings": [{**row, "commitSha": "141cf6f"}]},
+        {**response, "findings": [{**row, "executable": True}]},
+        {**response, "findings": [{**row, "mayContainInstructions": False}]},
+        {**response, "findings": [{**row, "contentClassification": "trusted"}]},
+        *(
+            {**response, "findings": [{k: v for k, v in row.items() if k != label}]}
+            for label in ("contentClassification", "mayContainInstructions", "executable")
+        ),
+    )
+    for payload in rejected:
+        with pytest.raises(ValidationError):
+            validator.validate(payload)
