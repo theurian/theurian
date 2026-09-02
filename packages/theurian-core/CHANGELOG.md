@@ -436,9 +436,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   daemon's single-instance lock and none in an index write path. That count is
   the anchor's, not today's — `266e6b6` (#478, merged during this release
   window) took the same lock across `migrate apply`'s critical section and the
-  command returns 18 lines at this branch's head. The conclusion is unchanged,
-  because every added line is that same state-database lock or prose about
-  `flock` semantics, and none is an index write path. ADR-0008's
+  command returned 18 lines at `266e6b6`. The count is anchored to a commit, not
+  to "this branch's head", because this branch is itself what would falsify a
+  head-relative form: its findings write path adds four more
+  `ProjectPaths.write_lock` matches. The conclusion is unchanged whether the
+  count is the 18 at `266e6b6` or those four additions, because every added line
+  is that same state-database lock or prose about `flock` semantics, and none is
+  an index write path. ADR-0008's
   "#15 removes those rows" is history: the actor is
   `application/withdrawal_purge.py`, and the sentence never named a live tracker
   — #15 closed at 19:45 +0900 and the sentence entered the file at 22:27 +0900
