@@ -1802,6 +1802,33 @@ def _lock_apis(text: str) -> list[str]:
     return _LOCK_API.findall(text)
 
 
+def _character_column(lines: list[str], row: int, byte_column: int) -> int:
+    """An ``ast`` column as an index into a ``str`` line.
+
+    **The two sources of a column in :func:`_code_only_lines` do not agree on what
+    a column is, and mixing them silently corrupted the blank.** ``tokenize``
+    reports character offsets into the decoded line; ``ast`` reports **UTF-8 byte**
+    offsets (`ast.Constant.col_offset` is documented as a UTF-8 byte offset). On an
+    ASCII line the two coincide, which is why this survived a review round and two
+    reviewers found it in the next one.
+
+    Where they diverge the blank runs *past* the string it was told to erase, into
+    the code beside it -- two characters per em-dash, two per CJK character, and
+    this repository's docstrings are em-dash-heavy. Measured on the branch before
+    this fix: ``\"\"\"ロックはProjectPaths.write_lockが持つ。\"\"\"; fcntl.lockf(handle)``
+    blanked through ``fcntl.lockf(ha``, so a **real lock inside the pin's own
+    recorded coverage** was reported as absent. That is the failure direction that
+    matters -- an absence sweep erasing its own evidence.
+
+    A byte offset that lands mid-character cannot come from a parsed span, and if
+    one ever did the ``UnicodeDecodeError`` is a ``ValueError``, which the caller
+    catches into its raw-lines fallback: loud and fail-closed, not silent.
+    """
+    if not 1 <= row <= len(lines):
+        return byte_column
+    return len(lines[row - 1].encode()[:byte_column].decode())
+
+
 def _code_only_lines(source: str) -> list[str]:
     """*source*'s lines with every comment and every prose string blanked out.
 
@@ -1838,6 +1865,10 @@ def _code_only_lines(source: str) -> list[str]:
     spans: list[tuple[int, int, int, int]] = []
 
     try:
+        # `tokenize` columns are already character offsets into the decoded line;
+        # `ast` columns are UTF-8 byte offsets, so they are converted on the way
+        # in and everything below this point is characters. See
+        # `_character_column` for what mixing them erased.
         for token in tokenize.generate_tokens(io.StringIO(source).readline):
             if token.type == tokenize.COMMENT:
                 spans.append((*token.start, *token.end))
@@ -1849,9 +1880,9 @@ def _code_only_lines(source: str) -> list[str]:
                 spans.append(
                     (
                         constant.lineno,
-                        constant.col_offset,
+                        _character_column(lines, constant.lineno, constant.col_offset),
                         constant.end_lineno,
-                        constant.end_col_offset or 0,
+                        _character_column(lines, constant.end_lineno, constant.end_col_offset or 0),
                     )
                 )
     except (SyntaxError, tokenize.TokenError, ValueError):
@@ -3128,7 +3159,7 @@ def test_the_lock_population_key_ignores_names_that_merely_contain_a_token() -> 
     )
 
 
-def test_a_lock_named_only_in_prose_is_not_counted_as_a_lock_that_was_taken() -> None:
+def test_prose_naming_a_lock_is_not_counted_and_the_code_beside_it_still_is() -> None:
     """RED means the sweep is back to reporting sentences about locks as locks.
 
     PR #498's first review round planted this comment in ``index_store.py`` -- ``#
@@ -3147,10 +3178,20 @@ def test_a_lock_named_only_in_prose_is_not_counted_as_a_lock_that_was_taken() ->
     reachable by the key, so "nothing fired" cannot be satisfied by samples the key
     was never going to match.
 
-    The live ``fcntl.flock`` call carries a *trailing* comment that also names a
-    lock, which is the case that decides the implementation: a filter that dropped
-    any line containing ``#`` would take the call with it, and the last assertion
-    is what says the surviving match is the call rather than the comment.
+    **Two live calls sit next to prose, and each rules out one way of blanking it
+    wrong.** The ``fcntl.flock`` carries a *trailing comment* that also names a
+    lock: a filter dropping any line containing ``#`` would take the call with it.
+    The ``fcntl.lockf`` follows a **non-ASCII** string statement on one physical
+    line, which is the case PR #498's second round found -- ``ast`` columns are
+    UTF-8 byte offsets and the lines are ``str``, so blanking with the raw column
+    ran two characters past the string per CJK character and erased the call
+    itself. Measured on the branch before that fix: this exact line blanked
+    through ``fcntl.lockf(ha`` and the sweep reported **no lock**. The last two
+    assertions are what say each surviving match is its call and not its prose.
+
+    The Japanese is the input, not decoration: an em-dash overruns by two
+    characters and leaves the call standing, so an ASCII-plus-punctuation sample
+    would have stayed green through the defect.
     """
     source = "\n".join(
         (
@@ -3170,43 +3211,49 @@ def test_a_lock_named_only_in_prose_is_not_counted_as_a_lock_that_was_taken() ->
             "    # The state database is guarded by ProjectPaths.write_lock; no index lock.",
             "    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # the write_lock, taken here",
             "    return handle",
+            '    """ロックはProjectPaths.write_lockが持つ。"""; fcntl.lockf(handle)',
         )
     )
     prose_lines = (1, 5, 10, 12, 14)
-    code_line = 15
+    commented_call, non_ascii_call = 15, 17
 
     raw = [
         number
         for number, line in enumerate(source.splitlines(), start=1)
         if _LOCK_POPULATION_KEY.search(line)
     ]
+    blanked = _code_only_lines(source)
     firing = [
-        number
-        for number, line in enumerate(_code_only_lines(source), start=1)
-        if _LOCK_POPULATION_KEY.search(line)
+        number for number, line in enumerate(blanked, start=1) if _LOCK_POPULATION_KEY.search(line)
     ]
 
-    assert raw == [*prose_lines, code_line], (
+    assert raw == [*prose_lines, commented_call, non_ascii_call], (
         f"the positive control failed: read raw, this sample must fire on every "
-        f"prose line {prose_lines} and on the call at {code_line}, which is what "
-        f"makes the assertion below a measurement rather than a sample the key was "
-        f"never going to match. Fired on {raw}"
+        f"prose line {prose_lines} and on both calls, which is what makes the "
+        f"assertions below a measurement rather than samples the key was never "
+        f"going to match. Fired on {raw}"
     )
 
-    assert firing == [code_line], (
-        f"a lock named in a comment or a docstring is being counted as a lock that "
-        f"was taken. That reports a correct sentence as an unclassified family, and "
-        f"the remedy a reader reaches for -- an entry in `KNOWN_LOCK_FAMILIES` -- "
-        f"exempts the whole file from the sweep. Fired on {firing}"
+    assert firing == [commented_call, non_ascii_call], (
+        f"prose and code are no longer being separated. Either a lock named in a "
+        f"comment or a docstring is counted as one taken -- which reports a correct "
+        f"sentence as an unclassified family, and whose tempting remedy exempts the "
+        f"whole file -- or the blank has run past a string into a real call and lost "
+        f"it. Fired on {firing}, expected {[commented_call, non_ascii_call]}"
     )
 
-    assert _LOCK_POPULATION_KEY.findall(_code_only_lines(source)[code_line - 1]) == [
-        "flock",
-        "LOCK_EX",
-    ], (
-        "the surviving match on the call line is its trailing comment rather than "
-        "the call: blanking must remove the comment and leave the code, or a real "
-        "lock taken on a commented line is reported for the wrong reason"
+    assert _LOCK_POPULATION_KEY.findall(blanked[commented_call - 1]) == ["flock", "LOCK_EX"], (
+        "the surviving match on the commented line is its trailing comment rather "
+        "than the call: blanking must remove the comment and leave the code, or a "
+        "real lock taken on a commented line is reported for the wrong reason"
+    )
+
+    assert _LOCK_POPULATION_KEY.findall(blanked[non_ascii_call - 1]) == ["lockf"], (
+        f"blanking a non-ASCII string statement did not land where the string ends. "
+        f"`ast` columns are UTF-8 byte offsets and these lines are characters, so an "
+        f"unconverted column runs past the string and erases the call beside it -- "
+        f"the direction that hides a real lock. Line reads: "
+        f"{blanked[non_ascii_call - 1]!r}"
     )
 
 
