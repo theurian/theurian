@@ -137,6 +137,30 @@ _LOG10_OF_2: Final = 0.30102999566398119521
 #: silently changes what a filter means. See :func:`_transportable`.
 _NUL: Final = "\x00"
 
+#: What a caller sees for a filter on an axis this build derives no value for.
+#:
+#: Published as a working filter, ``pullRequest`` returned ``count: 0`` for every
+#: number, because ``theurian findings build`` sets it ``NULL`` on every row --
+#: an absence a caller reads as "no findings were recorded on that PR" (PR #504
+#: round 1, R1-5). ``family`` and ``specialist`` are the same shape for their own
+#: reasons (ADR-0029 D5), so all three are refused together and with one message.
+#:
+#: **A constant of the build, not of the request or the store.** It interpolates
+#: nothing -- not which of the three was sent, not the value, not the project --
+#: so it cannot vary with anything a caller could use to learn about content
+#: (SEC-13). It changes only when a future source derives one of these axes, at
+#: which point the refusal is lifted for that axis in the same change that starts
+#: producing values for it.
+INERT_FILTER_REFUSAL: Final = (
+    "`pullRequest`, `family` and `specialist` cannot be filtered on in this build. "
+    "`theurian findings build` derives none of the three from git history, so every "
+    "stored row carries null for them (ADR-0029 D5) and any value here would match "
+    "no finding at all -- an empty answer that reads as 'nothing was recorded' "
+    "rather than 'this filter does not work yet'. Nothing was searched. Narrow with "
+    "`reviewer`, `severity`, `commitSha` or `q` instead. This refusal message is a "
+    "constant: it carries nothing from your request or from any project's contents."
+)
+
 #: A commit sha as git's ``%H`` writes it, which is what the store keys on:
 #: lowercase hex, 40 characters for a SHA-1 repository and 64 for a SHA-256 one.
 #:
@@ -369,6 +393,35 @@ def _limit(value: int) -> int:
     return value
 
 
+def _refuse_inert_axes(
+    *, pull_request: int | None, family: str | None, specialist: str | None
+) -> None:
+    """Refuse a filter on an axis this build derives no value for.
+
+    ``pullRequest``, ``family`` and ``specialist`` are ``NULL`` on every row
+    ``theurian findings build`` produces (ADR-0029 D5), so a filter on any of them
+    matched nothing and answered ``count: 0`` -- the exact misreadable absence
+    ``_commit_sha``'s refusal already exists to prevent, and worse here, because
+    there is no value a caller could send that would work. A caller reads "no
+    findings were recorded on PR 504" off an axis that has never held a value.
+
+    **One refusal for all three, and it is a constant of the build**
+    (:data:`INERT_FILTER_REFUSAL`). It does not vary with the store, the project,
+    or which of the three was sent, so refusal-uniformity (SEC-13) is untouched:
+    the same three arguments produce the same string on every corpus, including
+    an empty one.
+
+    **The bounds still run first**, in :func:`build_query`, and that ordering is
+    deliberate. A ``pullRequest`` past the column's range has a *different* thing
+    wrong with it than an inert axis, and it is the one whose refusal the caller
+    can act on if the axis is ever derived; folding it away would also make
+    :func:`_pull_request` unreachable through the only surface that calls it --
+    a guard no input reaches, which is the shape that survives its own deletion.
+    """
+    if pull_request is not None or family is not None or specialist is not None:
+        raise FindingsQueryError(INERT_FILTER_REFUSAL)
+
+
 def build_query(  # noqa: PLR0913 - one parameter per published filter
     *,
     reviewer: str | None,
@@ -388,9 +441,11 @@ def build_query(  # noqa: PLR0913 - one parameter per published filter
 
     The order within a single filter is length first, then vocabulary: an
     over-long token is reported by its length, and only a token already inside
-    the bound is quoted back.
+    the bound is quoted back. Across filters, every value is bounded before the
+    inert-axis refusal fires -- see :func:`_refuse_inert_axes` for why that
+    ordering is the one that keeps both refusals meaningful.
     """
-    return FindingQuery(
+    bounded = FindingQuery(
         limit=_limit(limit),
         reviewer=_reviewer(reviewer),
         severity=_severity(severity),
@@ -400,6 +455,12 @@ def build_query(  # noqa: PLR0913 - one parameter per published filter
         pull_request=_pull_request(pull_request),
         text_contains=None if text_contains is None else _bounded("q", text_contains),
     )
+    _refuse_inert_axes(
+        pull_request=bounded.pull_request,
+        family=bounded.family,
+        specialist=bounded.specialist,
+    )
+    return bounded
 
 
 def max_finding_text_chars() -> int:

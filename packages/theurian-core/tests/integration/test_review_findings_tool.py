@@ -64,6 +64,7 @@ from theurian.domain.review_finding import (
 from theurian.infrastructure.sqlite.findings_store import SqliteReviewFindingStore
 from theurian.mcp.findings import (
     DEFAULT_FINDINGS_LIMIT,
+    INERT_FILTER_REFUSAL,
     MAX_ECHOED_DIGITS,
     MAX_FILTER_CHARS,
     MAX_FINDINGS_LIMIT,
@@ -605,19 +606,7 @@ async def test_findings_are_served_newest_first_and_truncated_in_that_order(
         ({"severity": "CRITICAL"}, ["a bearer token reached the log"]),
         ({"severity": "MEDIUM"}, []),
         (
-            {"family": "a published field"},
-            ["the test stays green with the code deleted", "a bearer token reached the log"],
-        ),
-        (
-            {"specialist": "theurian-tests"},
-            ["the test stays green with the code deleted", "a name reads as its opposite"],
-        ),
-        (
             {"commitSha": _sha("a")},
-            ["a bearer token reached the log", "a name reads as its opposite"],
-        ),
-        (
-            {"pullRequest": 11},
             ["a bearer token reached the log", "a name reads as its opposite"],
         ),
         ({"q": "bearer"}, ["a bearer token reached the log"]),
@@ -635,10 +624,7 @@ async def test_findings_are_served_newest_first_and_truncated_in_that_order(
         "reviewer-adversarial",
         "severity-critical",
         "severity-matching-nothing",
-        "family",
-        "specialist",
         "commit-sha",
-        "pull-request",
         "q-substring",
         "q-substring-other-case",
         "q-matching-nothing",
@@ -649,12 +635,14 @@ async def test_findings_are_served_newest_first_and_truncated_in_that_order(
 async def test_each_filter_returns_exactly_the_matching_findings(
     project: ProjectRegistry, arguments: dict[str, Any], expected: list[str]
 ) -> None:
-    """Every published filter, driven through the wire surface.
+    """Every filter this build can serve, driven through the wire surface.
 
-    ``family`` and ``specialist`` are ``None`` on every row the shipped source
-    produces today, so their predicates have no live input; the fixture
-    constructs rows that carry them, because a guard no data reaches survives its
-    own deletion.
+    The three the build cannot serve -- ``pullRequest``, ``family``,
+    ``specialist`` -- are refused rather than matched, and are driven by
+    :func:`test_an_inert_axis_is_refused_rather_than_answered_empty` below. Their
+    *store-level* predicates keep their own tests in ``test_findings_store.py``:
+    the store can filter on them, and it is this build's source that derives no
+    value, so the predicate is what a future source lifts the refusal onto.
 
     The two conjunction cases are why an ``OR`` would not pass: one row matches
     each filter alone, and only one matches both.
@@ -665,6 +653,85 @@ async def test_each_filter_returns_exactly_the_matching_findings(
 
     assert _texts(payload) == expected
     assert payload["count"] == len(expected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"pullRequest": 11},
+        {"pullRequest": MAX_PULL_REQUEST},
+        {"family": "a published field"},
+        {"specialist": "theurian-tests"},
+        {"family": "a published field", "specialist": "theurian-tests"},
+        {"reviewer": "security", "pullRequest": 11},
+    ],
+    ids=[
+        "pull-request-that-a-fixture-row-carries",
+        "pull-request-at-the-column-ceiling",
+        "family",
+        "specialist",
+        "two-inert-axes",
+        "an-inert-axis-beside-a-working-one",
+    ],
+)
+async def test_an_inert_axis_is_refused_rather_than_answered_empty(
+    project: ProjectRegistry, arguments: dict[str, Any]
+) -> None:
+    """R1-5: a filter published as working while no row can ever carry a value.
+
+    ``theurian findings build`` sets all three ``NULL`` (ADR-0029 D5), so
+    ``review.findings(pullRequest=N)`` answered ``count: 0`` for every N -- which
+    a caller reads as "no findings were recorded on that PR", the exact
+    misreadable absence ``commitSha``'s short-sha refusal exists to prevent, and
+    worse, because no value would have worked.
+
+    The fixture rows *do* carry values for all three, written directly through the
+    adapter: the refusal is a statement about what the shipped **source** derives,
+    not about what the store can hold, so a corpus where a match was available is
+    the corpus that makes this test mean something.
+
+    The last case is the one an "only when it is the only filter" fix would miss:
+    an inert axis conjoined with a working one still narrows to nothing.
+    """
+    _land(project)
+
+    message = await _call_failing(project, projectId="demo", **arguments)
+
+    assert INERT_FILTER_REFUSAL in message
+    assert "ADR-0029 D5" in message
+    assert "theurian findings build" in message
+
+
+@pytest.mark.asyncio
+async def test_the_inert_axis_refusal_is_one_constant_whatever_was_sent(
+    project: ProjectRegistry,
+) -> None:
+    """One message for three axes and every value, over two disjoint corpora.
+
+    A refusal that named which axis fired, or quoted the value, would be a second
+    input to an error channel SEC-13 keeps at one message -- and a refusal that
+    varied with the store would be a channel back into the corpus it declines to
+    search. Both are checked here: same messages across values and axes, and
+    across two corpora with nothing in common.
+    """
+    sent: tuple[dict[str, Any], ...] = (
+        {"pullRequest": 1},
+        {"pullRequest": 999_999},
+        {"family": "a published field"},
+        {"family": "something else entirely"},
+        {"specialist": "theurian-python"},
+    )
+
+    _land(project)
+    first = {await _call_failing(project, projectId="demo", **q) for q in sent}
+    _land(
+        project, FindingLoad(accepted=(_finding(_sha("f"), text="a disjoint corpus"),), rejected=())
+    )
+    second = {await _call_failing(project, projectId="demo", **q) for q in sent}
+
+    assert len(first) == 1, f"the refusal varied with the argument: {first}"
+    assert first == second, f"the refusal varied with the corpus: {first} vs {second}"
 
 
 @pytest.mark.asyncio
@@ -1213,21 +1280,31 @@ async def test_an_integer_wider_than_the_column_is_refused_rather_than_crashing(
 
 
 @pytest.mark.asyncio
-async def test_the_largest_storable_pull_request_is_searched_rather_than_refused(
+async def test_the_largest_storable_pull_request_passes_the_bound_and_meets_the_axis(
     project: ProjectRegistry,
 ) -> None:
     """The other side of the ceiling, which a refusal test alone cannot hold.
 
     A bound is two claims, and the one that goes silently wrong is "everything
-    inside it still works": an off-by-one here would refuse a value the store can
-    hold, and the refusal would read as "no such PR" to a caller who had one.
-    ``count: 0`` is the right answer for a PR number nothing was recorded against.
+    inside it still works". Since ``pullRequest`` is an inert axis in this build,
+    "works" means *reaching the axis refusal rather than the bound's*: an
+    off-by-one in the ceiling would answer the wrong refusal for a value the store
+    can hold, and would keep answering it after a future source makes the axis
+    live.
+
+    This is also what keeps :func:`_pull_request` from becoming a guard no input
+    reaches. The bounds run before the inert-axis refusal precisely so that both
+    stay reachable and separately observable through the one public surface.
     """
     _land(project)
 
-    payload = await _call(project, projectId="demo", pullRequest=MAX_PULL_REQUEST)
+    message = await _call_failing(project, projectId="demo", pullRequest=MAX_PULL_REQUEST)
 
-    assert payload["count"] == 0
+    assert INERT_FILTER_REFUSAL in message
+    assert "no larger than" not in message, (
+        "the largest storable pull request was refused by the column bound, so the "
+        "ceiling is one too low"
+    )
 
 
 @pytest.mark.asyncio

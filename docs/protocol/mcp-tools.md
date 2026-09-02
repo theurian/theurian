@@ -349,7 +349,7 @@ the repository allowlist SEC-10 records.
 
 | Tool | Status | Purpose |
 | :-- | :-- | :-- |
-| `review.findings` | Shipped | Landed `Review-Finding:` trailers, filtered by reviewer, severity, family, specialist, commit, PR or text |
+| `review.findings` | Shipped | Landed `Review-Finding:` trailers, filtered by reviewer, severity, commit or text |
 | `review.search` | Planned | Search review history |
 | `review.getThread` | Planned | One thread with comments and resolution |
 | `review.findSimilar` | Planned | Threads resembling a described situation |
@@ -403,16 +403,28 @@ Every optional argument is a filter, and each is exact:
 | :-- | :-- |
 | `reviewer` | one of `code-review`, `security`, `adversarial` |
 | `severity` | one of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` |
-| `family`, `specialist` | the derived labels, `null` on every row this build produces |
 | `commitSha` | a full 40- or 64-character sha, never a short one |
-| `pullRequest` | a PR number |
 | `q` | a literal substring of `findingText`, ASCII case folded |
 | `limit` | at most 100, default 20 |
+| `pullRequest`, `family`, `specialist` | **refused in this build** — see below |
+
+`pullRequest`, `family` and `specialist` are accepted by the schema and refused
+by the server with one constant message. `theurian findings build` derives none
+of the three, so every stored row carries `null` for them and a filter on one
+would match nothing at all — an empty answer that reads as "nothing was
+recorded" rather than "this filter does not work yet". They remain published
+*fields* on every row, because a key that appears only when it has a value
+cannot be told apart from a server that predates the key.
 
 Every string filter — `reviewer`, `severity`, `family`, `specialist`,
 `commitSha` and `q` — is bounded at 200 characters. A value inside that bound is
 quoted back in a refusal, because a typo is what the refusal exists to make
-visible; a value past it is reported by its length and never echoed.
+visible; a value past it is reported by its length and never echoed. A number
+past the range its column can hold is refused too, and an over-large one is
+described by its digit count rather than quoted. Every string filter also
+refuses a NUL byte and text that is not valid Unicode: neither can appear in a
+stored value, and a NUL silently shortens a pattern rather than matching what
+was sent.
 
 A value outside a bound or a vocabulary is **refused naming the bound**, not
 clamped and not treated as "no filter": a truncated page reads as the whole

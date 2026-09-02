@@ -1373,6 +1373,15 @@ def test_each_filter_selects_exactly_the_rows_that_match(
     The two-filter cases are why the clause is a conjunction rather than a
     disjunction someone would have to read the SQL to discover: an adversarial
     row matches one filter and not the other, and an ``OR`` would return it.
+
+    **The ``pull_request``, ``family`` and ``specialist`` cases stay here on
+    purpose, even though the MCP surface now refuses those three filters** (PR
+    #504 round 1, R1-5). What is refused there is a *filter on an axis this
+    build's source derives no value for*; the store's predicates are correct and
+    are what a future source lifts the refusal onto, so deleting them would leave
+    that source's first commit implementing three untested predicates. Deleted
+    here, the ordinary way back is somebody re-writing them under load -- which is
+    when they are least likely to be written with an adversarial conjunction case.
     """
     store = _store(tmp_path)
     store.replace_all(_served_load())
