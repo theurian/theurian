@@ -12,7 +12,202 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two `theurian findings build` runs at once no longer tear each other's
+  store, and a reader never observes a half-built one**
+  ([#404](https://github.com/theurian/theurian/issues/404),
+  [#492](https://github.com/theurian/theurian/pull/492)). The rebuild took no
+  lock and wrote in place under the published name — it unlinked the live file
+  and recreated it there — so a concurrent reader could observe a missing store
+  (which `dump` answers *empty*, indistinguishable from a genuinely empty
+  corpus) or one whose schema had committed and whose rows had not, and an
+  interrupted rebuild destroyed the previously good store outright. Measured
+  2026-09-02 on a 12×4 scratch twin (48 real CLI children): on the pre-fix shape
+  12 of 48 workers failed with `disk I/O error` or
+  `table findings_metadata already exists`; on the fixed shape 48 of 48 exited 0.
+  The suite-runnable regression guard runs a smaller 3×3 = 9 children, enough to
+  detect the tearing at high probability in ~3 s. PR #396 had already recorded
+  the same class from the other side — workers reporting `FindingsStoreError` in
+  17–21 of 25 rounds, one iteration leaving a file with **no tables at all**
+  under the publish name.
+
+  The rebuild now assembles at a `.building` sibling and publishes with
+  `os.replace`, the discipline `index build` already used, and `findings build`
+  holds the project's advisory write lock across the whole store write in **one
+  continuous hold** — not the two sequential holds
+  [#468](https://github.com/theurian/theurian/issues/468) measured leaving a
+  window worse than the race they closed. The git read stays outside the hold:
+  it touches nothing the lock protects, and holding a project's single writer
+  across a 30-second subprocess would block `migrate apply` for no guarantee.
+  Atomicity is a clause of the `ReviewFindingStore` **port** now rather than a
+  property of one adapter, because an implementation that wrote in place would
+  satisfy every other clause while handing the serving slice a window in which
+  the corpus reads as empty. A failed rebuild leaves the previous store whole
+  and strands no working file, and SQLite's `-wal`/`-shm` companions are reaped
+  with the file they belong to — a rename cannot reconcile a stale write-ahead
+  log the way an in-place `connect` could. One ordering the lock deliberately
+  does not fix: two rebuilds can read git at different instants and the earlier
+  reader may publish later, so the survivor can be one commit behind. It is a
+  whole, self-consistent, correctly stamped store either way, and the next
+  rebuild converges.
+
+- **A finding's `committed_at` is stored as a UTC instant, so ordering by it is
+  chronological** ([#405](https://github.com/theurian/theurian/issues/405),
+  [#492](https://github.com/theurian/theurian/pull/492)). The column kept git's
+  `%cI` with the committer's own offset. SQLite compares TEXT byte-wise, so the
+  column was not a sort key at all: a `+14:00` commit earlier in real time
+  sorted after a `-11:00` commit that was later, and one instant written
+  through two offsets was two unequal strings that unrelated rows could fall
+  between — the same bug class PR #112 recorded for the canonical store. The
+  value is now normalised (`astimezone(UTC)`) and fixed width
+  (`timespec="microseconds"`, always 32 characters), so equal instants compare
+  equal and a sub-second value cannot sort against a whole-second one on the
+  byte at offset 19. The git source normalises at parse and refuses an
+  offsetless date as unrepresentable rather than letting `astimezone` read the
+  *machine's* own timezone into a stored value — that would make the store a
+  function of where it was built — accounting the record as one rejected entry
+  instead of aborting the load.
+
+  **`FINDINGS_SCHEMA_VERSION` moves 1 → 2**, and the constant's rule is widened
+  to say why: a bump is owed for a change to the *encoding* of a column's value
+  and not only to the DDL text, because a reader that mis-decodes a column is as
+  wrong as one that misses a table. **No migration, and no client-visible
+  break** — the store is a wholesale projection of git history (ADR-0004),
+  `theurian findings build` rebuilds it unconditionally on every run, and it is
+  still the only shipped consumer, so a version-1 file is replaced rather than
+  upgraded. `StoredFinding.committed_at` round-trips the *instant* of
+  `ReviewFinding.date`, not its spelling; a reader wanting the committer's own
+  offset has to get it from git, because the store no longer keeps it.
+
+- **`parserStamp` moves when the parser's mechanics or its matching behaviour
+  change, not only when a vocabulary literal does**
+  ([#406](https://github.com/theurian/theurian/issues/406),
+  [#492](https://github.com/theurian/theurian/pull/492)). The stamp hashed the
+  five closed-vocabulary literals ADR-0029 decision 2 names, so a change that
+  widened what the parser *accepts* while leaving every literal byte-identical
+  left it still — tolerating a TAB after the key, accepting an indented trailer
+  line, or an `Enum._missing_` hook that made `CODE-REVIEW` or `Security`
+  parse — and a store built under the old grammar then read as current under the
+  new one. Three sections are hashed now: the vocabulary literals as before; a
+  **matching surface** per governed vocabulary, computed as everything this
+  codebase's source added to the class body once a plain `StrEnum` baseline is
+  subtracted, which is where a `_missing_` or `__new__` widening lives; and the
+  **behaviour** the grammar gives to a fixed probe matrix, run through the whole
+  path — the column-0 extraction rule and then the parse mechanics. That
+  extraction rule moved into the domain as `keyed_lines`, since it was grammar
+  the git adapter owned privately and therefore out of the stamp's reach.
+
+  **The residual is stated rather than closed:** the behaviour section separates
+  only the mechanics its probes distinguish, so a widening no probe separates
+  leaves the stamp still and owes a probe; the other two sections are total over
+  their populations. The stamp is a function of Python *semantics* rather than
+  of source text — verified byte-identical across two fresh interpreters — so a
+  behaviour-preserving refactor does not mark every store stale, and no
+  interpreter upgrade can drift it. The published `parserStamp` value changes
+  with this release; it is opaque, nothing reads it back yet, and the one writer
+  rebuilds unconditionally.
+
+- **A `Review-Finding:` trailer folded into a commit's subject paragraph is no
+  longer dropped unaccounted**
+  ([#410](https://github.com/theurian/theurian/issues/410),
+  [#492](https://github.com/theurian/theurian/pull/492)). The git source read
+  `%b`, and git's `%b` excludes the first *paragraph* rather than the first
+  line: in a message whose subject is not followed by a blank line every
+  following line folds into the subject and `%b` is empty, so a column-0 trailer
+  sitting there reached neither the accepted nor the rejected tuple — falsifying
+  the loss-free mapping ADR-0029 decision 1 requires, and the live loss-free
+  test's own baseline. The source reads `%B`, the whole message, and the
+  candidate lines come from `keyed_lines` over it, so no paragraph rule sits
+  between an author's bytes and the parse.
+
+  **The live corpus was unaffected, measured rather than assumed:** `%b` and
+  `%B` return the same trailer-line count under every key ADR-0029 uses — 28 at
+  `e39572c`, 55 and 9 at `4c4a784`, 386 at `266e6b6` (all measured 2026-09-02).
+  The lines `%B` has and `%b` lacks are exactly the first paragraph's, so equal
+  counts are what says no commit in that range carries a keyed line inside its
+  subject paragraph. Two bounds on the population are stated rather than hidden: a
+  message whose separators are lone `CR` bytes is a single line, so at most its
+  first line is a candidate — an unkeyed first line means no finding, a keyed
+  first line makes the CR-joined remainder (further trailers, a sign-off) that one
+  finding's opaque text, never further findings (#404 R1-4) — and a subject that
+  is itself a keyed line is a finding like any other. This is a different
+  mechanism from ADR-0029 Amendment 1's D2, which refuses a trailer *value*
+  spanning two lines and is unchanged.
+
 ### Documentation
+
+- **ADR-0029 no longer records the four findings-pipeline residuals as open, and
+  its trailer census is keyed on `%B`**
+  ([#404](https://github.com/theurian/theurian/issues/404),
+  [#405](https://github.com/theurian/theurian/issues/405),
+  [#406](https://github.com/theurian/theurian/issues/406),
+  [#410](https://github.com/theurian/theurian/issues/410),
+  [#492](https://github.com/theurian/theurian/pull/492)). The slice-2 note's
+  residuals paragraph said in the present tense that the write is not atomic,
+  that `committed_at` is not chronological, that `PARSER_STAMP` reaches no
+  mechanic, and that `%b` can drop a folded trailer. All four are false as of
+  this release.
+
+  The paragraph is **kept as written and marked**, not edited: it records what
+  slice-2 shipped and what each fix had to answer, and a landing note beneath it
+  states per residual what closed, the test that holds it, and what each
+  measured — including that `FINDINGS_SCHEMA_VERSION` moved 1 → 2 for the
+  `committed_at` encoding, and that #406's behaviour section carries a stated
+  residual (a widening no probe distinguishes leaves the stamp still). No
+  decision changes, so this is a landing note rather than an amendment: each
+  residual was a gap between a decision and its implementation.
+
+  **The seven `%b` census cites are re-anchored to `%B`** — the population is
+  the whole message since #410 — **with no figure restated.** The two keys were
+  compared at every commit the ADR names and agree everywhere (28 at `e39572c`,
+  55 at `4c4a784`, 9 for the `code` alias at `4c4a784`, 386 at `266e6b6`;
+  measured 2026-09-02), and that table is now in the ADR's *Re-anchored census*
+  beside the figures it protects. What equal counts mean is stated rather than
+  left as a coincidence: the lines `%B` has and `%b` lacks are exactly the first
+  paragraph's, so agreement says no commit in the measured range carries a keyed
+  line inside its subject paragraph.
+
+  **A second stale claim in the same section is corrected while it was open.**
+  The *Re-anchored census* said the `SEPARATOR` docstring in
+  `domain/review_finding.py` "carries a third, intermediate figure — 38 lines"
+  and that correcting it to a commit-anchored form was the parser lane's owed
+  work. The parser lane had already taken it: the comment reads "55 lines across
+  7 commits ... measured 2026-08-26 on `origin/main` @ `4c4a784`". Measured
+  2026-09-02, `git grep -n '38 lines' -- packages/theurian-core/src tools tests`
+  returns nothing, against a `55 lines` positive control that hits that same
+  docstring. The key is source-only on purpose: a `packages/ tools/ tests/` sweep
+  scans this changelog too, where "38 lines" is named to explain the correction,
+  so that key reports its own explanatory prose as a live occurrence — the record
+  falsifying itself, which is exactly why the operative key is scoped to source
+  (#404 R1-7). No count of the broad key is stated here, because any number would
+  count the sentence that states it. The owed item is now recorded as discharged
+  rather than left open.
+
+  **Both halves are pinned, in the same pull request that made the correction.**
+  `test_adr_0029_claims.py` is the record — the ADR-0018 and ADR-0027 shape,
+  which this ADR had no equivalent of until now. The prose half reads the two
+  records this bullet and the landing note live in, and holds the closure
+  structurally rather than by wording, because the residuals paragraph is kept as
+  written: the marker must be the paragraph *directly* above it, and the landing
+  note must sit below, each matching exactly one paragraph so a rewritten anchor
+  fails as a count instead of silently scanning nothing. The fact half derives
+  from the live contracts the correction leaned on
+  (`FINDINGS_SCHEMA_VERSION`, `trailer_source._FORMAT`, `_STAMP_PROBES`,
+  `SqliteReviewFindingStore.building_path`, `FindingsBuilder`'s `write_section`),
+  so a mechanism that moves and leaves these records behind goes RED — a bump to
+  schema 3 reddens both spellings of "1 → 2", and the two REDs are separate tests
+  with separate messages, because the CHANGELOG's would be a false release note
+  while the ADR's is a decision to append the next move.
+
+  **What the pin does not reach, stated because a pin that catches less than the
+  sentence claims is the same defect one level up.** Its scope is those two
+  records and no third, so the *Re-anchored census* is outside it: neither the
+  `%b`/`%B` equivalence table nor the superseded "38 lines" claim above has a
+  fact-side pin. The recorded reason is that both are measurements against named
+  commits and a named command, which is the one form of a written number this
+  file set accepts without one — the ADR carries each with its command and, for
+  "38 lines", its positive control. The module's own docstring states this reach.
 
 - **The records now carry the purged-build ground truth: T-17 and T-17a are
   updated, ADR-0024 point 4 is corrected against measurement, the NFR-4 record is
@@ -159,7 +354,6 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   entry does not — it states NFR-4's status in its own words as release prose
   rather than correcting an ADR. This also answers what the `store.py` NFR-4
   correction in the `0.1.0.dev17` section below left open.
-
 
 ## [0.1.0.dev17] - 2026-09-02
 

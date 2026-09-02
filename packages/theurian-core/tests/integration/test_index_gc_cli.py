@@ -27,6 +27,7 @@ from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectPaths
+from theurian.cli.index_commands import _reclaimable
 from theurian.cli.main import app
 
 pytestmark = pytest.mark.integration
@@ -171,6 +172,89 @@ def test_gc_never_matches_a_file_without_the_index_prefix(project: Path) -> None
     )
     assert sorted(p.name for p in state.glob("theurian-state-*.sqlite")) == canonical, (
         "the canonical state database was reclaimed; it is not derived and not disposable"
+    )
+
+
+def test_gc_neither_reclaims_nor_reports_the_findings_store_or_its_working_file(
+    project: Path,
+) -> None:
+    """The findings artifact shares this directory, and `gc` does not know it exists (#404).
+
+    Adopting the `.building` discipline for the findings rebuild put a second kind
+    of `*.building` file in `.theurian/state/`, so the question is whether `gc`'s
+    two directory walks reach it. Measured over every walk in the shipped package
+    (`paths.state.glob` at `cli/commands.py`, and the two here): each is scoped
+    with `INDEX_FILENAME_PREFIX` or `theurian-state-`, and the reclaimable walk's
+    `*.sqlite` also excludes a `.building` suffix. So nothing needed an exemption,
+    and this is what keeps that true -- a widened glob would reclaim a live
+    findings build's working file, or report it stranded and send an operator to
+    delete it.
+
+    **What this test's fixture can and cannot distinguish.** The stranded prong is
+    exact: widening that glob to `*.building` reddens here (measured). The
+    reclaimable prong is *not* -- widening it to `*.sqlite` leaves this green,
+    because `_reclaimable` then slices a findings name against the index prefix and
+    gets `'gs-local'`, which sorts above every ULID (Crockford base32 is digits and
+    uppercase, all below lowercase `g`), so the `build_id >= published` guard
+    excludes it instead. Two independent protections is the correct state of the
+    world and a poor test oracle, so the glob has its own driver below rather than
+    an assertion here that would pass for the other reason.
+    """
+    assert _invoke("index", "build")[0] == 0
+    assert _invoke("index", "build")[0] == 0
+    state = project / ".theurian/state"
+    published = state / "theurian-findings-local.sqlite"
+    building = state / "theurian-findings-local.sqlite.building"
+    published.write_bytes(b"a published findings store")
+    building.write_bytes(b"a findings rebuild in flight")
+
+    code, payload = _invoke("index", "gc")
+
+    assert code == 0
+    assert not any("findings" in name for name in payload["reclaimed"]), (
+        f"`gc` reclaimed a findings artifact: {payload['reclaimed']}"
+    )
+    assert payload["strandedBuilding"] == [], (
+        f"`gc` reported a findings working file as a stranded index build: "
+        f"{payload['strandedBuilding']}"
+    )
+    assert published.is_file()
+    assert building.is_file()
+
+
+def test_the_reclaimable_walk_is_scoped_by_the_index_prefix_not_only_by_ulid_order(
+    tmp_path: Path,
+) -> None:
+    """`_reclaimable`'s glob is a real guard, driven where the ULID rule cannot help.
+
+    The sibling test above cannot pin this: a findings name sliced against the
+    index prefix yields `'gs-local'`, which sorts above every ULID, so the
+    `build_id >= published` guard excludes it whatever the glob says. Here
+    `published` is chosen to sort *above* that derived string, which switches the
+    ULID rule off and leaves the glob as the only thing between `gc` and a
+    findings artifact.
+
+    Driven at the function rather than through the CLI because the CLI can only
+    ever publish a ULID; the point is to isolate one of two protections, not to
+    claim this configuration occurs.
+    """
+    state = tmp_path / ".theurian" / "state"
+    state.mkdir(parents=True)
+    for name in (
+        "theurian-index-01K1AAA.sqlite",
+        "theurian-findings-local.sqlite",
+        "theurian-findings-local.sqlite.building",
+        "theurian-state-abcdef.sqlite",
+    ):
+        (state / name).write_bytes(b"x")
+
+    # Above 'gs-local', so every candidate is younger than the published build and
+    # only the prefix glob can exclude one.
+    reclaimable = _reclaimable(ProjectPaths.of(tmp_path), published="zzzzzzzz")
+
+    assert sorted(path.name for path in reclaimable) == ["theurian-index-01K1AAA.sqlite"], (
+        f"the reclaimable walk reached beyond `theurian-index-*.sqlite`: "
+        f"{sorted(path.name for path in reclaimable)}"
     )
 
 

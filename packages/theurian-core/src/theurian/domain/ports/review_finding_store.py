@@ -68,8 +68,17 @@ class StoredFinding:
     finding_text: str
     provider: str
     source_uri: str
-    #: The committer date as a stored ISO-8601 string (round-trips
-    #: ``ReviewFinding.date.isoformat()``).
+    #: The committer date as a stored ISO-8601 string, **normalised to UTC at a
+    #: fixed width** (``2026-02-01T00:00:00.000000+00:00``) rather than kept in the
+    #: committer's own offset (#405). It round-trips the *instant* of
+    #: ``ReviewFinding.date``, not its spelling: ``datetime.fromisoformat`` of this
+    #: value equals that field, while the two strings differ whenever the committer
+    #: was not on UTC. The encoding is what makes the column a sort key at all --
+    #: SQLite compares TEXT byte-wise, and byte order over mixed offsets is not
+    #: chronological, so a ``+14:00`` commit earlier in real time sorted after a
+    #: ``-11:00`` commit that was later. A reader may therefore ``ORDER BY
+    #: committed_at``; a reader that wants the committer's local offset back has to
+    #: get it from git, because the store does not keep it.
     committed_at: str
     pull_request: int | None
     family: str | None
@@ -152,6 +161,19 @@ class ReviewFindingStore(Protocol):
         with the current schema version and parser stamp -- so two calls over the
         same load leave a logically identical store (AC-2), and a rebuild from git
         is a pure function of the source (AC-1/AC-6).
+
+        **Atomic against a concurrent reader, and that is a promise of this port,
+        not an implementation detail of one adapter** (#404). A caller reading the
+        store while this runs observes the whole previous content or the whole new
+        content -- never a missing store, never a partial one -- and a rebuild that
+        fails leaves the previous content intact rather than destroying it. An
+        implementation assembles elsewhere and publishes in one indivisible step;
+        one that wrote in place would satisfy every other clause here while giving
+        the serving slice a window in which the corpus reads as empty.
+
+        Serialising two *writers* is the caller's, though: this method is handed a
+        destination, not a project, so a shipped writer takes the project's write
+        lock across the call (``application/findings_builder.py``).
 
         ``load`` is expected to be one a git :class:`ReviewFindingSource` resolved --
         but that is a fact about the one shipped caller, not a guarantee this port

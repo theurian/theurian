@@ -22,9 +22,13 @@ ADR-0029 D3).
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import sys
+import threading
+import time
 from contextlib import closing
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -46,9 +50,18 @@ from theurian.domain.review_finding import (
     parse_trailer_line,
 )
 from theurian.infrastructure.sqlite.findings_schema import FINDINGS_DDL, FINDINGS_SCHEMA_VERSION
-from theurian.infrastructure.sqlite.findings_store import SqliteReviewFindingStore
+from theurian.infrastructure.sqlite.findings_store import (
+    FindingsStoreError,
+    SqliteReviewFindingStore,
+    committed_at_text,
+)
+from theurian.infrastructure.sqlite.schema import read_only_uri
 
 pytestmark = pytest.mark.integration
+
+_NEEDS_SYMLINKS = pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks need privileges on Windows"
+)
 
 
 def _sha(seed: str) -> str:
@@ -342,6 +355,516 @@ def test_dump_orders_by_commit_then_position(tmp_path: Path) -> None:
     # The text rides with its key, so a mis-order would carry the wrong content too.
     assert [f.finding_text for f in dump.findings] == ["a0", "a1", "b0", "b1"]
     assert [r.commit_sha for r in dump.rejected] == [_sha("a"), _sha("b")]
+
+
+# --- #404: the publish name only ever holds a whole store -------------------
+
+
+def _bulk_load(marker: str, *, rows: int = 4000) -> FindingLoad:
+    """A load big enough that a rebuild takes long enough to be sampled mid-write.
+
+    Every finding carries ``marker`` in its text, so a reader can say *which*
+    rebuild it is looking at rather than merely that the store parses.
+    """
+    return FindingLoad(
+        accepted=tuple(
+            _finding(_sha(chr(ord("a") + index % 20)), text=f"{marker}-{index}")
+            for index in range(rows)
+        ),
+        rejected=(),
+    )
+
+
+def _sample_the_publish_path(store: SqliteReviewFindingStore) -> str:
+    """What a reader finds at the published name right now, in constant time.
+
+    **Not ``dump``, and the reason is a measurement.** ``dump`` reads every row and
+    builds a dataclass per row, so on a store big enough for its rebuild to be
+    worth sampling, one sample costs about what one rebuild costs. Measured on CI
+    (ubuntu-latest, 2026-09-01): a polling thread using ``dump`` completed **one**
+    sample in a 0.140-second rebuild and took none inside the window, so the run
+    proved nothing -- the non-vacuity guard below caught it rather than letting it
+    pass. This probe is two indexed lookups and does not grow with the corpus.
+
+    It reproduces exactly the states ``dump`` distinguishes, which is what makes it
+    a faithful stand-in: a missing file cannot be opened ``mode=ro`` at all
+    (``dump`` answers that one empty, indistinguishable from a genuinely empty
+    corpus -- the worse failure); a file whose schema committed and whose data
+    transaction did not has no metadata row, which is exactly what ``dump`` raises
+    on; and a whole store yields its marker.
+    """
+    try:
+        with closing(sqlite3.connect(read_only_uri(store.path), uri=True)) as connection:
+            if (
+                connection.execute("SELECT 1 FROM findings_metadata WHERE id = 1").fetchone()
+                is None
+            ):
+                return "half-built: no metadata row"
+            row = connection.execute("SELECT finding_text FROM findings LIMIT 1").fetchone()
+            return "<empty>" if row is None else str(row[0]).split("-")[0]
+    except sqlite3.Error as exc:
+        return f"unreadable: {exc}"
+
+
+def test_a_reader_polling_through_a_rebuild_sees_only_whole_stores(tmp_path: Path) -> None:
+    """#404: mid-rebuild, the publish name holds the old store or the new one, never neither.
+
+    The shape this replaced unlinked the live path and wrote the replacement under
+    it, so a reader that opened the file mid-``replace_all`` observed a missing
+    file -- which ``dump`` answers *empty*, indistinguishable from a genuinely
+    empty corpus -- or a file whose schema had committed and whose rows had not,
+    which ``dump`` raises on. Building at a ``.building`` sibling and publishing by
+    ``os.replace`` removes the window: the name is never opened for writing at all.
+
+    A background thread samples the publish path as tightly as it can (see
+    :func:`_sample_the_publish_path` for why the sample is a constant-time probe
+    and not ``dump`` itself) while the main thread rebuilds twice, so the window is
+    two transitions rather than one. Every observation must be one of the two whole
+    states.
+
+    **The non-vacuity check is the point of failure that matters.** It counts
+    observations taken strictly *between* the rebuilds' start and end: a run that
+    sampled only either side would prove nothing about the window, and this fails
+    naming that rather than passing. It has already earned its place once -- it is
+    what turned the ``dump``-based probe's starvation on CI into a RED with a
+    diagnosis instead of a green run that measured nothing.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_bulk_load("old"))
+    # The premise the whole test rests on: before any rebuild, the probe reads the
+    # published store as whole. A probe that answered "unreadable" for every input
+    # would satisfy nothing below while looking like coverage.
+    assert _sample_the_publish_path(store) == "old"
+
+    observations: list[tuple[float, str]] = []
+    stop = threading.Event()
+
+    def poll() -> None:
+        while not stop.is_set():
+            observations.append((time.monotonic(), _sample_the_publish_path(store)))
+
+    reader = threading.Thread(target=poll, daemon=True)
+    reader.start()
+    try:
+        started = time.monotonic()
+        store.replace_all(_bulk_load("new"))
+        store.replace_all(_bulk_load("old"))
+        finished = time.monotonic()
+    finally:
+        stop.set()
+        reader.join(timeout=10)
+
+    during = [state for when, state in observations if started < when < finished]
+    assert during, (
+        f"the reader took no sample during the rebuilds ({finished - started:.3f}s, "
+        f"{len(observations)} samples overall), so this run proves nothing about "
+        f"the window -- the probe is starved, or the rebuild is too fast to sample"
+    )
+    assert set(during) <= {"old", "new"}, (
+        f"a reader observed the publish name in a state that is neither the whole "
+        f"previous store nor the whole new one: {sorted(set(during) - {'old', 'new'})}"
+    )
+
+
+def test_a_failed_rebuild_leaves_the_previous_store_and_no_residue(tmp_path: Path) -> None:
+    """#404 (unwanted behaviour): a build that fails mid-write publishes nothing.
+
+    Forced by making the publish name's directory hold a *directory* under the
+    ``.building`` name, so ``sqlite3.connect`` fails after ``mkdir`` and before any
+    row is written -- a real ``OSError`` from the same call the write path makes,
+    not a patched-in exception.
+
+    Three things must hold, and the old shape held none of them: the previously
+    good store is still there and still complete; nothing partial sits at the
+    publish name; and the failure is a :class:`FindingsStoreError` with the
+    write-path remedy rather than a raw traceback.
+    """
+    store = _store(tmp_path)
+    store.replace_all(
+        FindingLoad(accepted=(_finding(_sha("a"), text="the good store"),), rejected=())
+    )
+    before = store.dump()
+
+    # A directory where the build wants a file: `connect` raises, mid-operation.
+    store.building_path.mkdir(parents=True)
+
+    with pytest.raises(FindingsStoreError) as caught:
+        store.replace_all(
+            FindingLoad(accepted=(_finding(_sha("b"), text="never lands"),), rejected=())
+        )
+
+    assert "writable" in (caught.value.remedy or "")
+    assert store.dump() == before  # the previous store is untouched and whole
+    assert store.is_current()
+    assert [f.finding_text for f in store.dump().findings] == ["the good store"]
+
+
+def test_a_killed_builds_leftover_working_file_never_becomes_rows(tmp_path: Path) -> None:
+    """#404: a leftover ``.building`` file from a killed prior build is cleared, not extended.
+
+    This drives the **success** path and the *pre-write* cleanup, not the ``except``
+    -- a residue that survived an earlier kill (a whole ``.building`` file with rows)
+    must not become rows in the next store, because ``replace_all`` unlinks the
+    working name on the way *in*, before it writes. The build here succeeds, so the
+    working file is gone by rename, and the new store holds only its own rows -- the
+    leftover's ``a killed build's leftover`` row never appears.
+
+    The ``except``-path cleanup (a mid-write *failure* removing the working file it
+    already wrote) is a different driver:
+    :func:`test_a_sidecar_reap_failure_before_the_rename_publishes_nothing` forces an
+    ``OSError`` after the working file exists and asserts the ``except`` unlinks it
+    -- verified by mutation (dropping that unlink reddens there), which this
+    success-path test cannot do.
+    """
+    store = _store(tmp_path)
+    store.replace_all(FindingLoad(accepted=(_finding(_sha("a")),), rejected=()))
+
+    # A leftover from a build that was killed rather than raised: rows that must
+    # not reach the next store.
+    store.building_path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(store.building_path)) as connection:
+        connection.executescript(FINDINGS_DDL)
+        connection.executemany(
+            "INSERT INTO findings (commit_sha, position, reviewer, severity, finding_text, "
+            "provider, source_uri, committed_at, pull_request, family, specialist) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [_raw_finding_row(_sha("z"), 0, "a killed build's leftover")],
+        )
+        connection.commit()
+
+    store.replace_all(
+        FindingLoad(accepted=(_finding(_sha("b"), text="the new store"),), rejected=())
+    )
+
+    assert [f.finding_text for f in store.dump().findings] == ["the new store"]
+    assert not store.building_path.exists()  # published by rename, so it is gone
+    for suffix in ("-wal", "-shm"):
+        sibling = store.building_path.with_name(store.building_path.name + suffix)
+        assert not sibling.exists()
+
+
+def test_the_published_store_carries_no_sidecar_from_the_file_it_replaced(tmp_path: Path) -> None:
+    """#404: a stale ``-wal`` beside the publish name is removed with the rename.
+
+    The in-place shape could argue that ``sqlite3.connect`` reconciles whatever a
+    killed prior connection left beside the live name. A rename cannot: the file
+    arriving under the name is a *different database*, and a write-ahead log left
+    by the one it displaced belongs to no database at all. So the publish path's
+    companions are unlinked with the rename, and a rebuild is proved to leave a
+    self-contained file.
+    """
+    store = _store(tmp_path)
+    store.replace_all(FindingLoad(accepted=(_finding(_sha("a")),), rejected=()))
+    stale = store.path.with_name(store.path.name + "-wal")
+    stale.write_bytes(b"a killed connection's write-ahead log")
+
+    store.replace_all(FindingLoad(accepted=(_finding(_sha("b"), text="rebuilt"),), rejected=()))
+
+    assert not stale.exists()
+    assert not store.path.with_name(store.path.name + "-shm").exists()
+    assert [f.finding_text for f in store.dump().findings] == ["rebuilt"]
+
+
+def test_the_stale_sidecars_are_gone_before_the_new_db_is_renamed_into_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#404 R1-3: the new db never lands beside the previous db's sidecar.
+
+    The reap ran *after* ``os.replace``, so between the rename and the unlink the
+    publish name held the **new** main file beside the **old** ``-wal``/``-shm`` --
+    a reader opening in that window saw a mixture SQLite reads as neither store
+    (measured by the round-one reviewer). Reordering the reap to run immediately
+    *before* the rename makes the only intermediate state old-main *without* its
+    sidecar -- a valid earlier checkpoint of one database -- and then an atomic swap
+    to the whole new db. No moment mixes a db with a foreign log.
+
+    Pinned at the rename itself: ``os.replace`` is wrapped to record, at the instant
+    it fires, whether the publish path's planted sidecars still exist. They must
+    already be gone. Before the reorder they were still present at that instant, so
+    this is RED against the old order.
+    """
+    store = _store(tmp_path)
+    store.replace_all(FindingLoad(accepted=(_finding(_sha("a"), text="old"),), rejected=()))
+    wal = store.path.with_name(store.path.name + "-wal")
+    shm = store.path.with_name(store.path.name + "-shm")
+    wal.write_bytes(b"a reader's write-ahead log for the OLD db")
+    shm.write_bytes(b"a reader's shared-memory index for the OLD db")
+
+    sidecars_present_at_rename: list[str] = []
+    real_replace = os.replace
+
+    def _record_then_replace(src: object, dst: object, *args: object, **kwargs: object) -> None:
+        # The rename is the exact boundary: at this instant the publish name is
+        # about to become the NEW db. Any sidecar still here belongs to the OLD db.
+        sidecars_present_at_rename.extend(p.name for p in (wal, shm) if p.exists())
+        real_replace(src, dst, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "replace", _record_then_replace)
+
+    store.replace_all(FindingLoad(accepted=(_finding(_sha("b"), text="new"),), rejected=()))
+
+    assert sidecars_present_at_rename == [], (
+        f"the new db was renamed into place while the previous db's sidecars were "
+        f"still beside the publish name: {sidecars_present_at_rename} -- a reader "
+        f"opening in that window sees a mixture"
+    )
+    # The planted sidecars are gone the instant the rebuild returns, before any
+    # reader opens the file (`dump` below would create a fresh `-wal` of its own).
+    assert not wal.exists()
+    assert not shm.exists()
+    # And the final state is still the whole new store.
+    assert [f.finding_text for f in store.dump().findings] == ["new"]
+
+
+def test_a_sidecar_reap_failure_before_the_rename_publishes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#404 R1-3 / code M2: an OSError reaping the old sidecars is a genuine failed build.
+
+    With the reap after the rename, an ``OSError`` unlinking a sidecar was reported
+    as a failed build even though ``os.replace`` had already published the new store
+    -- a false failure. With the reap *before* the rename, the same ``OSError`` means
+    the rename never ran, so the previous store is still published and reporting a
+    failure is now correct.
+
+    Forced by refusing to unlink the publish path's ``-wal``. The build must raise
+    :class:`FindingsStoreError`, the previous store must be intact, and no working
+    file may be stranded.
+    """
+    store = _store(tmp_path)
+    store.replace_all(
+        FindingLoad(accepted=(_finding(_sha("a"), text="the good store"),), rejected=())
+    )
+    before = store.dump()
+    wal = store.path.with_name(store.path.name + "-wal")
+    wal.write_bytes(b"a sidecar whose unlink will be refused")
+
+    real_unlink = Path.unlink
+
+    def _refuse_the_publish_wal(self: Path, *args: object, **kwargs: object) -> None:
+        if self.name == wal.name:
+            raise PermissionError(13, "Permission denied")
+        real_unlink(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "unlink", _refuse_the_publish_wal)
+
+    with pytest.raises(FindingsStoreError):
+        store.replace_all(
+            FindingLoad(accepted=(_finding(_sha("b"), text="never lands"),), rejected=())
+        )
+
+    monkeypatch.undo()
+    assert store.dump() == before, "the previous store must remain published"
+    assert [f.finding_text for f in store.dump().findings] == ["the good store"]
+    assert not store.building_path.exists()
+
+
+def test_the_building_sibling_stays_inside_the_state_directory(tmp_path: Path) -> None:
+    """#404 / SEC-7: the working name is derived from the publish name, not composed.
+
+    ``ProjectPaths.findings_for`` proves the publish path is contained; a working
+    path built by appending to its *name* inherits that proof, while one composed
+    separately would need its own. Pinned so a later refactor cannot quietly move
+    the build into a temporary directory -- which would also make ``os.replace``
+    a cross-device copy and lose the atomicity the whole fix rests on.
+    """
+    store = _store(tmp_path)
+
+    assert store.building_path.parent == store.path.parent
+    assert store.building_path.name == store.path.name + ".building"
+
+
+@_NEEDS_SYMLINKS
+def test_a_symlink_at_the_building_path_is_unlinked_never_written_through(tmp_path: Path) -> None:
+    """#404 R1-8: the unlink is the containment control, so a planted symlink escapes nothing.
+
+    ``building_path`` is derived *lexically* -- ``self._path.with_name(name +
+    ".building")`` -- so it is contained only as far as the publish path is
+    (``findings_for`` proves that). What actually stops a rebuild writing *through*
+    a symlink planted at that name, out to a target beyond the tree, is the
+    pre-write ``_unlink_with_sidecars(building)``: it removes the symlink before
+    ``sqlite3.connect`` opens the name, so the connection creates a fresh regular
+    file inside the tree rather than following the link.
+
+    Planted here at ``building_path`` pointing to an empty, writable file outside
+    the project. After ``replace_all`` the outside target must be byte-unchanged
+    (empty), and the store must publish correctly. Dropping the pre-write unlink
+    makes the write land on the target instead (measured: 24 KB written through the
+    link), so this is RED against that mutation.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "empty.sqlite"
+    target.write_bytes(b"")  # empty and writable, so a leaked write WOULD land here
+    store = _store(tmp_path)
+    store.building_path.parent.mkdir(parents=True, exist_ok=True)
+    store.building_path.symlink_to(target)
+    assert store.building_path.is_symlink()
+
+    store.replace_all(FindingLoad(accepted=(_finding(_sha("a"), text="contained"),), rejected=()))
+
+    assert target.read_bytes() == b"", "the rebuild wrote through the symlink to a target outside"
+    assert [f.finding_text for f in store.dump().findings] == ["contained"]
+    # The symlink is gone (unlinked), replaced by a real published file in the tree.
+    assert not store.path.is_symlink()
+    assert list(outside.iterdir()) == [target]
+
+
+# --- #405 R1-1: an un-normalisable date is a graded refusal at the store too ---
+
+
+@pytest.mark.parametrize(
+    "when, why",
+    [
+        ("9999-12-31T23:00:00-01:00", "max year, negative offset -> shifts past year 9999"),
+        ("0001-01-01T00:00:00+05:00", "min year, positive offset -> shifts below year 1"),
+    ],
+)
+def test_committed_at_text_raises_a_graded_error_rather_than_overflowing(
+    when: str, why: str
+) -> None:
+    """R1-1 store side: a date whose UTC instant is out of range is a graded error.
+
+    The shipped git path rejects such a date upstream (``_parse_committer_date``
+    returns ``None``), but the port lets a caller build a ``FindingLoad`` directly,
+    and ``ReviewFinding.__post_init__`` admits any *aware* datetime -- including a
+    max-year negative-offset or min-year positive-offset one whose ``astimezone(UTC)``
+    overflows. That must surface as a :class:`FindingsStoreError` a ``TheurianError``
+    handler catches, never a bare ``OverflowError``.
+
+    The fixture's premise is asserted first: the datetime is aware (so it passes
+    ``__post_init__``) and its UTC conversion really does raise.
+    """
+    moment = datetime.fromisoformat(when)
+    assert moment.tzinfo is not None  # passes ReviewFinding.__post_init__
+    with pytest.raises(OverflowError):  # the premise: the raw conversion overflows
+        moment.astimezone(UTC)
+
+    with pytest.raises(FindingsStoreError):
+        committed_at_text(moment)
+
+
+def test_replace_all_refuses_an_overflowing_date_without_a_bare_crash(tmp_path: Path) -> None:
+    """R1-1 store side, end-to-end: a directly-built overflowing finding is a graded refusal.
+
+    Through ``replace_all`` -- the one write -- a finding whose committer date cannot
+    become a UTC instant raises :class:`FindingsStoreError`, not ``OverflowError``,
+    so the composition root's ``except TheurianError`` catches it. No partial file is
+    left at either the publish name or the working name.
+    """
+    store = _store(tmp_path)
+    overflowing = _finding(_sha("a"), text="unwritable date", when="9999-12-31T23:00:00-01:00")
+
+    with pytest.raises(FindingsStoreError):
+        store.replace_all(FindingLoad(accepted=(overflowing,), rejected=()))
+
+    assert not store.path.exists()
+    assert not store.building_path.exists()
+
+
+# --- #405: committed_at TEXT is a chronological sort key --------------------
+
+
+#: Four findings whose committer dates are deliberately spread across UTC offsets,
+#: paired with the instant each one names. Two of them (``+14:00`` and ``-11:00``)
+#: are the inversion the issue measured: the ``+14:00`` commit is EARLIER in real
+#: time yet its offset-preserving TEXT sorts AFTER the ``-11:00`` one, because
+#: ``2026-01-02T…`` > ``2026-01-01T…`` byte-wise. Two more name the *same* instant
+#: through different offsets, so a correct encoding must make them TEXT-equal
+#: rather than merely adjacent. The fifth carries sub-second precision, which git's
+#: second-resolution ``%cI`` never emits but a derived writer could: it is what
+#: makes the fixed-width encoding load-bearing rather than incidental.
+_MIXED_OFFSET_DATES: tuple[tuple[str, str], ...] = (
+    ("2026-01-02T01:00:00+14:00", "b"),  # instant 2026-01-01T11:00:00Z -- earliest
+    ("2026-01-01T12:00:00-11:00", "c"),  # instant 2026-01-01T23:00:00Z
+    ("2026-02-01T00:00:00+00:00", "d"),  # instant 2026-02-01T00:00:00Z
+    ("2026-02-01T09:00:00+09:00", "e"),  # the SAME instant, written another way
+    ("2026-03-01T00:00:00.500000+05:30", "f"),  # instant 2026-02-28T18:30:00.5Z
+)
+
+
+def test_committed_at_text_sorts_chronologically_across_utc_offsets(tmp_path: Path) -> None:
+    """#405: ``ORDER BY committed_at`` is chronological, not lexicographic-by-offset.
+
+    The store keeps ``committed_at`` as TEXT, and TEXT ordering over
+    offset-preserving ISO-8601 is not chronological: a ``+14:00`` timestamp that is
+    *earlier* in real time sorts *after* a ``-11:00`` one that is later. The store
+    is the only artifact that carries an order for these rows, so it is the store --
+    not its one shipped caller -- that must encode an instant: every value is
+    normalised to UTC at a fixed width, which makes byte order and instant order the
+    same relation.
+
+    The oracle is this test's own chronological sort of the *instants*, computed
+    from the fixture literals, never a re-derivation of the store's encoding. It
+    ranges over a hand-authored ``FindingLoad`` rather than a git read, because a
+    caller can build one directly (the port says so) and the property must hold for
+    every row the store admits, not only for rows a git source produced.
+    """
+    store = _store(tmp_path)
+    load = FindingLoad(
+        accepted=tuple(
+            _finding(_sha(seed), text=f"at {when}", when=when) for when, seed in _MIXED_OFFSET_DATES
+        ),
+        rejected=(),
+    )
+
+    store.replace_all(load)
+    with closing(sqlite3.connect(store.path)) as connection:
+        by_text = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT finding_text FROM findings ORDER BY committed_at, commit_sha"
+            ).fetchall()
+        ]
+        stored_dates = [
+            str(row[0])
+            for row in connection.execute("SELECT committed_at FROM findings").fetchall()
+        ]
+
+    chronological = [
+        f"at {when}"
+        for when, _seed in sorted(
+            _MIXED_OFFSET_DATES, key=lambda pair: datetime.fromisoformat(pair[0])
+        )
+    ]
+    assert by_text == chronological
+    # The fixture's own premise: raw offset-preserving TEXT really does invert this
+    # order, so the assertion above is not vacuously satisfied by the input order.
+    raw_text_order = [
+        f"at {when}" for when, _seed in sorted(_MIXED_OFFSET_DATES, key=lambda pair: pair[0])
+    ]
+    assert raw_text_order != chronological
+
+    # Every stored value is a UTC instant at one fixed width -- which is what makes
+    # byte order and instant order the same relation for any two rows, not only for
+    # the second-resolution values git's `%cI` happens to emit.
+    assert all(text.endswith("+00:00") for text in stored_dates)
+    assert len({len(text) for text in stored_dates}) == 1
+
+
+def test_the_same_instant_written_in_two_offsets_stores_one_text(tmp_path: Path) -> None:
+    """#405: two spellings of one instant are TEXT-equal, so a tie is a real tie.
+
+    ``ORDER BY committed_at`` alone cannot be chronological unless equal instants
+    compare equal. ``2026-02-01T00:00:00+00:00`` and ``2026-02-01T09:00:00+09:00``
+    name the same moment; stored verbatim they are two distinct strings that sort
+    apart with unrelated rows able to fall between them.
+    """
+    store = _store(tmp_path)
+    store.replace_all(
+        FindingLoad(
+            accepted=(
+                _finding(_sha("a"), text="utc", when="2026-02-01T00:00:00+00:00"),
+                _finding(_sha("b"), text="jst", when="2026-02-01T09:00:00+09:00"),
+            ),
+            rejected=(),
+        )
+    )
+
+    stored = {f.finding_text: f.committed_at for f in store.dump().findings}
+
+    assert stored["utc"] == stored["jst"]
+    assert stored["utc"] == "2026-02-01T00:00:00.000000+00:00"
 
 
 def _raw_finding_row(

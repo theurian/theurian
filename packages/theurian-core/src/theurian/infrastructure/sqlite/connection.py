@@ -72,9 +72,21 @@ class SchemaVersionMismatchError(TheurianError):
 
 
 class WriteLockTimeoutError(TheurianError):
-    """Another process held the write lock for too long."""
+    """Another process held the write lock for too long.
+
+    **Sets its own remedy** (#404 R1-5). It never did, so it inherited
+    ``TheurianError``'s empty default, and every caller that reads
+    ``exc.remedy or <default>`` -- ``findings build`` among them -- fell to a
+    generic cure ("Run `theurian doctor`") that does not clear a held lock. The
+    remedy names the actual cure and is byte-identical to the text
+    ``cli/commands.py::_state_remedy`` already returns for this type through its
+    own ``isinstance`` branch, so ``migrate apply`` (which resolves the remedy
+    *before* reading ``exc.remedy``) is unaffected while every other acquirer now
+    inherits the right one.
+    """
 
     def __init__(self, path: Path, seconds: float) -> None:
+        self.remedy = "Wait for the other `theurian` process to finish, then retry."
         super().__init__(
             f"Could not acquire the write lock on {path.name} within {seconds:.0f}s. "
             f"Another Theurian process is writing. If none is running, remove {path}."

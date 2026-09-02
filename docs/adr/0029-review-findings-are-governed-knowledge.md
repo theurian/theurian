@@ -201,8 +201,12 @@ a disclosure box, and `specialist` is not guessed from a file the map does not
 cover. (That the ownership map does not yet cover orchestration files and reviewer
 definitions is a fair observation; extending it is an implementation question, not
 designed here.) The input population the parser must handle is
-`git log origin/main --format=%b | grep 'Review-Finding:'` → **28 lines**
-(measured 2026-08-26).
+`git log origin/main --format='%B' | grep 'Review-Finding:'` → **28 lines**
+(measured 2026-08-26). The key is `%B`, the **whole message**, since #410: `%b`
+excludes the first *paragraph* rather than the first line, so it cannot see a
+trailer folded into an unseparated subject. Every figure in this ADR was first
+taken with `%b` and none of them moves under the re-keying — the equivalence is
+measured under *Re-anchored census*.
 
 ### 2. The trailer is a wire contract, and it is already in use
 
@@ -226,7 +230,7 @@ is opaque free text (decision 3 says how it is trusted).
 
 | Measurement | Command | Result |
 | :-- | :-- | :-- |
-| Trailer lines already emitted | `git log origin/main --format=%b \| grep -c 'Review-Finding:'` | **28** |
+| Trailer lines already emitted | `git log origin/main --format='%B' \| grep -c 'Review-Finding:'` | **28** |
 | Commits carrying at least one | `git log origin/main --grep 'Review-Finding:' --oneline \| wc -l` | **5** (`e39572c` #377, `dd4b991` #364, `fa7fef6` #374, `f318b24` #370, `6c3019c` #369) |
 
 An incompatible grammar change — renaming the key, changing the separator,
@@ -523,7 +527,7 @@ The surfaces the design defines today are instances of this, not the extent of i
   is the *standard* shape of this data, not an edge case: measured 2026-08-26,
   `dd4b991` (#364) carries **17** `Review-Finding:` trailers on one commit/PR node,
   `e39572c` **5**, `6c3019c` **3**
-  (`git log -1 --format=%b <sha> | grep -c 'Review-Finding:'`). A withheld finding
+  (`git log -1 --format='%B' <sha> | grep -c 'Review-Finding:'`). A withheld finding
   sharing a node with a served one must appear in neither that node's edge set nor
   its cardinality;
 - **The FR-V6 review-unit (PR-level) Markdown view** (decision 4): its **members**
@@ -676,7 +680,7 @@ are the properties an implementation must pin, not files that exist today.
 Measured now, and reproducible from this ADR:
 
 - The trailer population the parser must handle: **28 lines**, **5 commits**
-  (`git log origin/main --format=%b | grep -c 'Review-Finding:'` and
+  (`git log origin/main --format='%B' | grep -c 'Review-Finding:'` and
   `git log origin/main --grep 'Review-Finding:' --oneline | wc -l`, 2026-08-26,
   `main` @ `e39572c`).
 - The advisory census the embargo appendix rests on: **5 published, embargo over
@@ -836,6 +840,10 @@ ranked-search T-17a population. The derived `pullRequest`, `family` and
 `specialist` fields stay `None` in the store too — the schema carries the
 columns (D5's pattern), NULL until the derivations land.
 
+**All four residuals in the next paragraph are closed — see *Landed in #492*
+below it.** The paragraph is kept as written rather than edited: it records what
+slice-2 shipped and what each fix then had to answer.
+
 Three residuals from review are recorded, not blocking, each its own issue
 rather than folded into this slice: the write is not yet atomic against a
 concurrent reader, unlike `index build`'s working-name-then-`os.replace`
@@ -854,6 +862,100 @@ live loss-free test's own baseline
 ([#410](https://github.com/theurian/theurian/issues/410)) — the live corpus is
 unaffected (measured: the `%b` and `%B` grep counts agree), and the fix belongs
 to slice-1, not this one.
+
+**Landed in [#492](https://github.com/theurian/theurian/pull/492) — the four
+residuals above are closed, still with no serving.** No decision in this ADR
+changes: each residual was a gap between a decision and its implementation, not a
+decision implementation proved wrong. The *What stays owed* paragraph above is
+unchanged — nothing here serves a finding, and `pullRequest`, `family` and
+`specialist` are still `None`.
+
+- **#404 — the publish name only ever holds a whole store, and two writers
+  serialise.** `replace_all` assembles at a `.building` sibling and publishes with
+  `os.replace`, the discipline `index build` already records, and
+  `theurian findings build` holds the project's `write_lock` across the whole
+  store write (`application/findings_builder.py`) — one continuous hold, not the
+  two sequential ones [#468](https://github.com/theurian/theurian/issues/468)
+  measured leaving a worse window; the git read stays outside it because it
+  touches nothing the lock protects. Atomicity is now a clause of the
+  `ReviewFindingStore` **port**, not a property of one adapter. Measured on a
+  12×4 scratch twin (48 real CLI children): on the pre-fix shape 12 of 48 failed
+  with `disk I/O error` or `table findings_metadata already exists`, against 48 of
+  48 succeeding on the fixed one (2026-09-02). The suite-runnable regression guard
+  `test_findings_build_cli.py::test_concurrent_builds_all_succeed_and_leave_one_complete_store`
+  runs a smaller 3×3 = 9 children — enough to detect the pre-fix tearing at high
+  probability in ~3 s — not the 48 the scratch twin used. A reader polling the
+  publish name through two rebuilds observes only whole stores
+  (`test_findings_store.py::test_a_reader_polling_through_a_rebuild_sees_only_whole_stores`,
+  which fails loudly rather than passing when its sampler is starved); the same
+  poller against the pre-fix shape saw a not-whole publish name in all five runs
+  it was given (measured 2026-09-02 on the reverted store, reported by this PR's
+  implementation lane and not re-run for this note). A failed
+  rebuild leaves the previous store whole and strands nothing
+  (`test_a_failed_rebuild_leaves_the_previous_store_and_no_residue`,
+  `test_a_sidecar_reap_failure_before_the_rename_publishes_nothing`,
+  `test_a_killed_builds_leftover_working_file_never_becomes_rows`,
+  `test_the_published_store_carries_no_sidecar_from_the_file_it_replaced`), and
+  the working name is a contained sibling so the rename cannot cross a filesystem
+  (`test_the_building_sibling_stays_inside_the_state_directory`).
+- **#405 — `committed_at` is stored as a UTC instant, so byte order is instant
+  order.** `%cI` carries the committer's own offset; SQLite compares TEXT
+  byte-wise, so the column was not a sort key at all — a `+14:00` commit earlier
+  in real time sorted after a `-11:00` commit that was later, and one instant
+  written through two offsets was two unequal strings. `committed_at_text`
+  normalises to UTC at a fixed width (`timespec="microseconds"`, 32 characters),
+  and the git source refuses an offsetless date as unrepresentable rather than
+  reading the machine's own timezone into a stored value
+  (`test_findings_store.py::test_committed_at_text_sorts_chronologically_across_utc_offsets`,
+  `test_the_same_instant_written_in_two_offsets_stores_one_text`;
+  `test_git_trailer_source.py::test_mixed_offset_committer_dates_normalise_to_utc_in_chronological_order`,
+  `test_an_offsetless_date_is_accounted_as_a_rejection_not_a_fatal_abort`).
+  **`FINDINGS_SCHEMA_VERSION` moved 1 → 2 for this**, and the constant's rule is
+  widened to say so: the DDL text did not change, the *encoding* of a column's
+  bytes did, and a reader that mis-decodes a column is as wrong as one that misses
+  a table. No migration — the store is a wholesale projection of git history
+  (ADR-0004), `findings build` rebuilds it unconditionally, and it is still the
+  only shipped consumer, so a version-1 file is replaced rather than upgraded.
+- **#406 — `PARSER_STAMP` is bound to the parser's mechanics and its matching
+  behaviour, not only to the five literals.** The stamp now hashes three sections:
+  the vocabulary literals as before; a **matching surface** per governed
+  vocabulary, computed as everything this codebase's source added to the class body
+  after a plain `StrEnum` baseline is subtracted, which is where an
+  `Enum._missing_` or `__new__` widening lives; and the **behaviour** the grammar
+  gives to a fixed probe matrix, run through the whole path — the column-0
+  extraction rule and then `parse_trailer_line`'s mechanics. The extraction rule
+  moved into the domain as `keyed_lines` to make that possible: it was grammar the
+  git adapter owned privately, and therefore unreachable to the stamp. Verified by
+  mutation-shaped tests that widen one mechanic at a time
+  (`test_review_finding.py::test_the_parser_stamp_moves_when_a_parser_mechanic_widens`,
+  `test_the_parser_stamp_moves_when_a_vocabulary_gains_a_matching_hook`,
+  `test_the_matching_surface_is_empty_for_a_vocabulary_that_adds_nothing`,
+  `test_the_parser_stamp_is_byte_identical_across_pinned_hash_seeds`). **The
+  residual is stated rather than closed:** the behaviour section is exact only for
+  the mechanics its probes distinguish, so a widening no probe separates leaves the
+  stamp still and owes a probe. The other two sections are total over their
+  populations. The stamp's *value* changes with this landing; nothing needs a
+  migration, because the one writer rebuilds unconditionally.
+- **#410 — the population is the whole commit message (`%B`), not `%b`'s body.**
+  git's `%b` excludes the first *paragraph* rather than the first line, so a
+  column-0 trailer folded into an unseparated subject reached neither tuple of the
+  load. The source reads `%B`, and `FindingLoad`'s loss-free invariant now states
+  the population it ranges over, with its two bounds: a message whose separators
+  are lone `CR` bytes is one line, so at most its first line is a candidate — an
+  unkeyed first line means no finding, a keyed first line makes the CR-joined
+  remainder (further trailers, a sign-off) that one finding's opaque text (D2),
+  never further findings (#404 R1-4) — and a keyed subject is a finding like any
+  other
+  (`test_git_trailer_source.py::test_a_trailer_folded_into_the_subject_paragraph_is_accounted`,
+  `test_a_subject_that_is_itself_a_keyed_line_is_a_finding`,
+  `test_a_lone_cr_message_with_an_unkeyed_first_line_holds_no_trailer`,
+  `test_a_keyed_first_line_after_a_lone_cr_swallows_the_remainder`). **D2 is
+  untouched and was never wrong here:** D2 refuses a trailer *value* spanning two
+  lines, while #410 was about a trailer *line* a format never emitted — the shared
+  word "folded" names two different mechanisms. The live corpus was and is
+  unaffected: the `%b` and `%B` counts agree at every commit this ADR names, which
+  is measured in *Re-anchored census* rather than asserted, and every `%b` cite in
+  this file is re-anchored to `%B` with its figure unchanged.
 
 ## Amendment 1 — the parser contract (2026-08-26, PR #387, #368 phase-2 slice-1)
 
@@ -895,7 +997,7 @@ trailer block.
 
 **Measured justification.** On `origin/main` @ `4c4a784` (measured 2026-08-26),
 `startswith('Review-Finding:')` sees **55 lines across 7 commits**
-(`git log origin/main --format=%b | grep -c '^Review-Finding:'` → 55;
+(`git log origin/main --format='%B' | grep -c '^Review-Finding:'` → 55;
 `git log origin/main --format='%H' | while read h; do … grep -c '^Review-Finding:'; done`
 → 7 commits), while git's own trailer parser
 (`git log origin/main --format='%(trailers:key=Review-Finding,valueonly=true)'`)
@@ -1043,7 +1145,7 @@ Decision 2's normative grammar (:214) lists
 `<reviewer> ::= "code-review" | "security" | "adversarial"` — **three canonical
 tokens, and that grammar stands.** The installed base additionally carries a fourth
 spelling, `code`, on frozen history: **9 lines, all on commit `4c4a784`** (measured
-2026-08-26, `git log origin/main --format=%b | grep -c '^Review-Finding: code '`
+2026-08-26, `git log origin/main --format='%B' | grep -c '^Review-Finding: code '`
 → 9). `code` is recorded as a **historical, non-normative alias** of `code-review`:
 
 - **Producers MUST write `code-review`.** `code` is not a value new trailers may
@@ -1065,18 +1167,52 @@ figures were **correct at their own, earlier commit** and are **not** deleted:
 
 | Population | Command | Result | Commit / date |
 | :-- | :-- | :-- | :-- |
-| Trailer lines (body-wide, column 0) | `git log origin/main --format=%b \| grep -c 'Review-Finding:'` | **28** | `main` @ `e39572c`, 2026-08-26 (body figure, :204/:229) |
-| Trailer lines (body-wide, column 0) | `git log origin/main --format=%b \| grep -c '^Review-Finding:'` | **55** | `origin/main` @ `4c4a784`, 2026-08-26 (this slice's base) |
+| Trailer lines (message-wide, column 0) | `git log origin/main --format='%B' \| grep -c 'Review-Finding:'` | **28** | `main` @ `e39572c`, 2026-08-26 (body figure, :204/:229) |
+| Trailer lines (message-wide, column 0) | `git log origin/main --format='%B' \| grep -c '^Review-Finding:'` | **55** | `origin/main` @ `4c4a784`, 2026-08-26 (this slice's base) |
 | Commits carrying ≥ 1 trailer | `git log origin/main --grep 'Review-Finding:' --oneline \| wc -l` | **5** | `main` @ `e39572c`, 2026-08-26 (body figure, :230) |
 | Commits carrying ≥ 1 trailer | column-0 count over `git log origin/main --format='%H'` | **7** | `origin/main` @ `4c4a784`, 2026-08-26 |
+
+**Every key above reads `%B`, and the re-keying moved no figure.** The commands
+were run with `%b` when they were first taken; #410 changed the population
+definition from git's `%b` *body* to the whole `%B` message, because `%b` excludes
+the first paragraph rather than the first line and so cannot see a trailer folded
+into an unseparated subject. The two keys were then compared at every commit this
+ADR names, and they agree everywhere (measured 2026-09-02):
+
+| Commit | `%b` | `%B` |
+| :-- | :-- | :-- |
+| `e39572c` — `grep -c 'Review-Finding:'` | 28 | 28 |
+| `4c4a784` — `grep -c '^Review-Finding:'` | 55 | 55 |
+| `4c4a784` — `grep -c '^Review-Finding: code '` | 9 | 9 |
+| `266e6b6` — `grep -c '^Review-Finding:'` | 386 | 386 |
+
+So no count in this ADR is restated: what changed is the key each count is anchored
+to, and `266e6b6` is named only as the commit the equivalence was measured at, not
+as a new base for the parser. The agreement is a fact about this repository's
+history, not a property of the two formats: the lines `%B` has and `%b` lacks are
+exactly the first paragraph's, so equal counts say **no commit in the measured
+range carries a keyed line inside its subject paragraph**. A single future commit
+that does would separate them, which is why #410 was a defect rather than a
+cosmetic difference.
 
 The `28`/`5` figures in the Decision and Consequences sections were measured on
 `e39572c`, an ancestor of `4c4a784`, and hold at that commit; the live count at the
 parser's base is `55`/`7`. The code comment
 `packages/theurian-core/src/theurian/domain/review_finding.py` (the `SEPARATOR`
-docstring) carries a third, intermediate figure — "38 lines" — which is likewise an
-earlier measurement now superseded by `55`; correcting that comment to a
-commit-anchored figure is the parser lane's, this amendment being docs-only.
+docstring) carried a third, intermediate figure — "38 lines" — which was likewise
+an earlier measurement superseded by `55`. **The parser lane took that correction,
+so this paragraph's owed item is discharged:** the comment now reads "55 lines
+across 7 commits are already frozen in signed history (measured 2026-08-26 on
+`origin/main` @ `4c4a784`)", which is the commit-anchored form this paragraph
+asked for. Measured 2026-09-02 with
+`git grep -n '38 lines' -- packages/theurian-core/src tools tests`: no source
+file carries the superseded figure, against a `55 lines` positive control that
+hits that same docstring. The key is source-only on purpose (#404 R1-7): a
+`packages/ tools/ tests/` sweep also scans the core CHANGELOG, where "38 lines"
+is named to explain the correction, so the broad key matches this explanatory
+prose itself — which is exactly why the operative key is scoped to source. No
+count of the broad key is stated here, because any number would include the
+records that state it and drift as they are edited.
 
 ## Appendix — advisory census (non-normative, dated)
 

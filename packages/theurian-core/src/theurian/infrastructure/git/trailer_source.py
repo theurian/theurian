@@ -43,18 +43,18 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, final
 
 from theurian.domain.errors import TheurianError
 from theurian.domain.review_finding import (
-    TRAILER_KEY,
     FindingLoad,
     MalformedTrailerError,
     RejectedTrailer,
     ReviewFinding,
     finding_from_trailer,
+    keyed_lines,
 )
 
 #: The one ref this source reads, fully qualified (ADR-0029 Amendment 1, D7). Not
@@ -123,12 +123,23 @@ GIT_TIMEOUT_SECONDS: Final = 30.0
 #: be rejected by ``subprocess`` ("embedded null byte"), so the format carries the
 #: escape and only the output carries the byte.
 _NUL: Final = "\x00"
-_FORMAT: Final = "format:%H%x00%cI%x00%b"
+#: ``%B`` -- the **raw whole message**, subject included -- and deliberately not
+#: ``%b`` (#410). git's ``%b`` excludes the first *paragraph*, not the first line:
+#: in a message whose subject is not followed by a blank line, every following line
+#: folds into the subject and ``%b`` is empty, so a column-0 ``Review-Finding:``
+#: line sitting there reached neither tuple of the load -- silently unaccounted,
+#: which is exactly what :class:`FindingLoad`'s loss-free invariant forbids.
+#: Reading the whole message makes the population "every column-0 keyed line of the
+#: commit message", with no paragraph rule between an author's bytes and the parse.
+_FORMAT: Final = "format:%H%x00%cI%x00%B"
 
-#: sha, committer-date, body. Exactly three -- not "at least three" -- because no
-#: field can contain the NUL separator, so the stream splits into an exact multiple
-#: of this width. The subject is deliberately not read: it was only the source of
-#: the deleted ``pull_request`` heuristic (D5), and nothing else needs it.
+#: sha, committer-date, whole message. Exactly three -- not "at least three" --
+#: because no field can contain the NUL separator, so the stream splits into an
+#: exact multiple of this width. The subject is not read as its *own* field: it was
+#: only the source of the deleted ``pull_request`` heuristic (D5), and nothing needs
+#: it separately. It arrives inside ``%B`` as ordinary message text, where it is a
+#: candidate keyed line like any other and nothing can re-derive a PR from it,
+#: because no field tells the parser which line the subject was.
 _FIELDS_PER_RECORD: Final = 3
 
 
@@ -189,12 +200,26 @@ class GitTrailerFindingSource:
 
         **Extraction is a column-0 block, not git's own trailer parser** (D1): a
         genuine trailer is a line beginning at column 0 with the exact key,
-        appearing anywhere in the commit body -- git's ``%(trailers)`` reads only
+        appearing anywhere in the commit message -- git's ``%(trailers)`` reads only
         the last paragraph and would drop the ~82% of this repo's trailers that sit
         ahead of the ``Signed-off-by:`` paragraph. **A trailer value is a single
         physical line** (D2): each ``split("\\n")`` line is one value, and an
-        indented or wrapped continuation line is ordinary body text that does not
+        indented or wrapped continuation line is ordinary message text that does not
         begin with the key, so it is ignored rather than folded in.
+
+        **The population is the whole message, subject included** (:data:`_FORMAT`,
+        #410). The candidate lines are every ``\\n``-delimited line of ``%B``, so a
+        trailer folded into the subject paragraph -- which ``%b`` dropped, since
+        ``%b`` excludes the first *paragraph* rather than the first line -- is a
+        keyed line like any other, and a subject that is itself a keyed line is a
+        finding rather than an excluded special case. Two bounds this states rather
+        than hides: "line" means ``\\n``-delimited, so a message whose separators are
+        lone ``CR`` bytes is one line -- at most its first line is a candidate, and
+        when that line is keyed the CR-joined remainder (further trailers, a
+        sign-off) becomes that one finding's opaque text (D2), not further findings
+        (#404 R1-4); and the subject arrives with no marker saying it *is* the
+        subject, which is what keeps the deleted ``pull_request``-from-subject
+        heuristic (D5) unreachable.
 
         **The load is loss-free by accounting, not by aborting** (AC-1, D3): every
         column-0 keyed line whose record has a valid committer date is either an
@@ -227,23 +252,26 @@ class GitTrailerFindingSource:
         for record in records:
             committed_at = record.committed_at
             if committed_at is None:
-                # A committer date git emitted outside datetime's range (year >=
-                # 10000) cannot become a valid ReviewFinding, and its parse runs
-                # before any trailer -- so letting the ValueError escape would abort
-                # the whole load, even for a trailer-less commit (D3). Account the
-                # record as one rejected entry and keep loading its siblings; its
-                # sha is git's own %H (D4), never author-forgeable.
+                # A committer date this runtime cannot hold as a UTC instant -- a
+                # year >= 10000, or (unreachable from `%cI`) a value with no offset
+                # at all -- cannot become a valid ReviewFinding, and its parse runs
+                # before any trailer, so letting it escape would abort the whole
+                # load, even for a trailer-less commit (D3). Account the record as
+                # one rejected entry and keep loading its siblings; its sha is git's
+                # own %H (D4), never author-forgeable.
                 reason = (
-                    f"unparseable committer date {record.date_iso!r} "
-                    "(year exceeds datetime.max, so the record cannot be a finding)"
+                    f"unusable committer date {record.date_iso!r} "
+                    "(not an offset-bearing instant datetime can hold, so the record "
+                    "cannot be a finding)"
                 )
                 rejected.append(
                     ((record.sha, 0), RejectedTrailer(record.sha, record.date_iso, reason))
                 )
                 continue
-            for position, line in enumerate(record.body.split("\n")):
-                if not line.startswith(TRAILER_KEY):
-                    continue
+            # The extraction rule is `keyed_lines` in the domain, not a `startswith`
+            # written out here: which lines are candidates is grammar, and grammar
+            # the adapter owned privately was unreachable to PARSER_STAMP (#406).
+            for position, line in keyed_lines(record.message):
                 try:
                     finding = finding_from_trailer(
                         line, commit_sha=record.sha, committed_at=committed_at
@@ -336,40 +364,79 @@ def _decode_git_output(raw: bytes, repo_root: Path) -> str:
 
 @dataclass(frozen=True, slots=True)
 class _Record:
-    """One framed ``git log -z`` record: its sha, body, and committer date.
+    """One framed ``git log -z`` record: its sha, whole message, and committer date.
 
-    ``committed_at`` is ``None`` exactly when git emitted a committer date this
-    runtime cannot represent -- a year >= 10000, which a crafted
-    ``GIT_COMMITTER_DATE`` (``@253402387200`` -> ``10000-01-02T00:00:00Z``)
-    produces but ``datetime.max`` (year 9999) cannot hold. The parse runs for every
-    record *before* any trailer is read, so a raised ``ValueError`` there would
-    abort the whole load -- even for a trailer-less commit -- defeating the D3
+    ``message`` is git's ``%B`` -- subject and body together, not the ``%b`` body
+    alone -- because a paragraph rule between the author's bytes and the parse is
+    what let a subject-folded trailer go unaccounted (#410, and :data:`_FORMAT`).
+    Named for what it holds so no reader infers a subject was stripped on the way in.
+
+    ``committed_at`` is a **UTC instant** (#405) and is ``None`` exactly when git
+    emitted a committer date this runtime cannot hold as one -- a year >= 10000,
+    which a crafted ``GIT_COMMITTER_DATE`` (``@253402387200`` ->
+    ``10000-01-02T00:00:00Z``) produces but ``datetime.max`` (year 9999) cannot
+    hold, or a value carrying no offset, which ``%cI`` never emits and which cannot
+    be converted without reading the machine's own timezone. The parse runs for
+    every record *before* any trailer is read, so a raised ``ValueError`` there
+    would abort the whole load -- even for a trailer-less commit -- defeating the D3
     "never a fatal abort" invariant. Marking the date unrepresentable instead lets
     the caller account the record as rejected and keep going. ``date_iso`` keeps
-    git's raw ``%cI`` verbatim so the rejection can name the value that failed; the
-    date is never fabricated to fill the gap, because it is a published field and
-    the finding's total-order sort key -- a record without a valid one cannot be a
+    git's raw ``%cI`` verbatim -- offset and all -- so the rejection can name the
+    value that failed and no provenance is lost by the normalisation; the date is
+    never fabricated to fill the gap, because it is a published field and the
+    finding's total-order sort key, and a record without a valid one cannot be a
     valid finding.
     """
 
     sha: str
-    body: str
+    message: str
     date_iso: str
     committed_at: datetime | None
 
 
 def _parse_committer_date(date_iso: str) -> datetime | None:
-    """git's ``%cI`` as an aware datetime, or ``None`` when it is unrepresentable.
+    """git's ``%cI`` as a UTC instant, or ``None`` when it is unrepresentable.
 
     ``datetime.fromisoformat`` raises ``ValueError`` on a year >= 10000, which git
     will emit for a crafted ``GIT_COMMITTER_DATE``. Returning ``None`` rather than
     raising lets the caller account that record as rejected and keep loading the
     rest (D3); a ``None`` is never replaced by a sentinel date, because the
     committer date is the finding's total-order sort key and a published field.
+
+    **Normalised to UTC (#405).** ``%cI`` carries the committer's own offset, and
+    an offset-preserving value is not a sort key once it is written down: the store
+    keeps it as TEXT, and TEXT order over mixed offsets is not chronological. The
+    conversion is an identity on the *instant*, so the in-memory total order below
+    is byte-for-byte what it was -- aware datetimes already compared as instants --
+    and only the recorded representation changes.
+
+    **A date without an offset is unrepresentable, not local time.** ``%cI`` always
+    carries one, so this is unreachable from git; it is refused rather than passed
+    through because ``astimezone`` on a naive value silently reads the *machine's*
+    own offset, which would make the load a function of where it ran. Without this
+    branch such a value also reached ``ReviewFinding.__post_init__``'s
+    timezone-aware check and raised a ``DomainError`` no caller catches -- a fatal
+    abort of the whole load, which is precisely what D3 forbids.
+
+    **Two operations can raise, and they raise *different* exception types, which is
+    why the guard names both** (#405 R1-1). ``fromisoformat`` raises ``ValueError``
+    on a year >= 10000. ``astimezone(UTC)`` raises ``OverflowError`` -- an
+    ``ArithmeticError``, not a ``ValueError`` -- when it shifts a *representable*
+    local datetime across ``datetime``'s range: a max-year value with a negative
+    offset (``9999-12-31T23:00:00-01:00`` lands in year 10000), or a min-year value
+    with a positive one (``0001-01-01T00:00:00+05:00`` lands before year 1). The
+    opposite-sign offset at each boundary shifts *inward* and is representable.
+    Catching only ``ValueError`` here let the ``OverflowError`` escape past every
+    ``TheurianError`` handler as a raw traceback, bricking the whole corpus on one
+    crafted trailer-less commit -- the exact D3 abort this function exists to
+    prevent, reintroduced on an axis its first cut did not cover.
     """
     try:
-        return datetime.fromisoformat(date_iso)
-    except ValueError:
+        parsed = datetime.fromisoformat(date_iso)
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(UTC)
+    except (ValueError, OverflowError):
         return None
 
 
@@ -381,8 +448,8 @@ def _split_records(stdout: str, repo_root: Path) -> list[_Record]:
     semantics of ``tformat:`` or a bare format string, so there is no trailing NUL
     after the last record and a well-formed stream is exactly
     :data:`_FIELDS_PER_RECORD` * n tokens. Because NUL cannot occur in a commit
-    message, no field -- the multi-line body included -- can hold the separator, so
-    the split is exact and needs no rejoining.
+    message, no field -- the multi-line ``%B`` message included -- can hold the
+    separator, so the split is exact and needs no rejoining.
 
     Each record's committer date is parsed here; a date git emitted outside
     ``datetime``'s range is carried as ``committed_at=None`` (see :class:`_Record`)
@@ -400,8 +467,8 @@ def _split_records(stdout: str, repo_root: Path) -> list[_Record]:
     # and this branch does not fire. It is here only to tolerate a `-z` that
     # *terminates* records instead (`tformat:`, or a future git default), which
     # would leave one trailing empty token. Drop exactly that one, and only when the
-    # count says it is the terminator (`% width == 1`), so an empty final body -- a
-    # legitimate last field under separator semantics -- is never mistaken for it.
+    # count says it is the terminator (`% width == 1`), so an empty final message --
+    # a legitimate last field under separator semantics -- is never mistaken for it.
     if len(tokens) % _FIELDS_PER_RECORD == 1 and tokens[-1] == "":
         tokens.pop()
     # Also defensive: separator output is always `3n`, so this refuses only a
@@ -416,11 +483,11 @@ def _split_records(stdout: str, repo_root: Path) -> list[_Record]:
         )
     records: list[_Record] = []
     for start in range(0, len(tokens), _FIELDS_PER_RECORD):
-        sha, date_iso, body = tokens[start : start + _FIELDS_PER_RECORD]
+        sha, date_iso, message = tokens[start : start + _FIELDS_PER_RECORD]
         records.append(
             _Record(
                 sha=sha,
-                body=body,
+                message=message,
                 date_iso=date_iso,
                 committed_at=_parse_committer_date(date_iso),
             )

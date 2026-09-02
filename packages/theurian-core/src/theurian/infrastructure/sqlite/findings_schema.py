@@ -49,10 +49,23 @@ from __future__ import annotations
 
 from typing import Final
 
-#: Bump for ANY change to the DDL below. Independent of ``SCHEMA_VERSION`` and
+#: Bump for ANY change to how this file is written -- the DDL below, and equally
+#: the *encoding* of a column's value, because a reader that mis-decodes a column
+#: is as wrong as one that misses a table. Independent of ``SCHEMA_VERSION`` and
 #: ``INDEX_SCHEMA_VERSION``: the three artifacts version separately because they
-#: are rebuilt separately. **1** is the first landing (ADR-0029 phase-2 slice-2).
-FINDINGS_SCHEMA_VERSION: Final = 1
+#: are rebuilt separately.
+#:
+#: - **1** -- the first landing (ADR-0029 phase-2 slice-2).
+#: - **2** -- ``committed_at`` became a UTC-normalised, fixed-width instant rather
+#:   than the committer's own offset-preserving ISO-8601 (#405,
+#:   :func:`~theurian.infrastructure.sqlite.findings_store.committed_at_text`).
+#:   The DDL text did not change; the meaning of the bytes in that column did,
+#:   which is exactly the case the widened rule above exists to catch. No
+#:   migration: the store is a wholesale projection of git history (ADR-0004) and
+#:   ``findings build`` rebuilds it unconditionally, so a version-1 file is
+#:   replaced rather than upgraded -- and no reader exists to be handed one in the
+#:   meantime (``theurian findings build`` is the only shipped consumer).
+FINDINGS_SCHEMA_VERSION: Final = 2
 
 FINDINGS_DDL: Final = """
 -- Store identity -------------------------------------------------------------
@@ -80,6 +93,13 @@ CREATE TABLE findings_metadata (
 -- `pull_request`, `family` and `specialist` are the three derived fields the
 -- trailer does not carry (ADR-0029 decision 1): NULL in this slice, columns now so
 -- the derivation lands as an UPDATE-shaped change rather than a schema break.
+-- `committed_at` is a UTC-normalised, fixed-width ISO-8601 instant, NOT the
+-- committer's own offset-preserving `%cI` (#405, `findings_store.committed_at_text`).
+-- SQLite compares TEXT byte-wise, so an offset-preserving value is not a sort key:
+-- a `+14:00` commit earlier in real time sorted after a `-11:00` commit that was
+-- later. Normalising makes byte order and instant order the same relation, which
+-- is what lets a reader `ORDER BY committed_at` at all. The same bug class PR #112
+-- recorded for the canonical store (`schema.py`).
 CREATE TABLE findings (
     commit_sha    TEXT    NOT NULL,
     position      INTEGER NOT NULL,

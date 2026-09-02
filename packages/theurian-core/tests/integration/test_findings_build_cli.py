@@ -38,7 +38,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from typer.testing import CliRunner
@@ -107,6 +107,27 @@ def _identity_env(when: str) -> dict[str, str]:
 def _commit(root: Path, subject: str, *trailers: str, when: str = "2026-03-01T12:00:00") -> None:
     message = subject if not trailers else subject + "\n\n" + "\n".join(trailers)
     _git(root, "commit", "--allow-empty", "-m", message, env=_identity_env(when))
+
+
+def _commit_at_raw_date(root: Path, subject: str, raw_committer_date: str) -> None:
+    """Commit with a ``GIT_COMMITTER_DATE`` git echoes verbatim into ``%cI``.
+
+    ``raw_committer_date`` is git's ``@<epoch> <±hhmm>`` form, which lets a test
+    author a committer date the ISO ``when`` helper cannot -- in particular the
+    max-year value ``9999-12-31T23:00:00-01:00`` whose UTC shift overflows
+    ``datetime`` (R1-1). The author date is set to the same value so the commit is
+    reproducible.
+    """
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Tester",
+        "GIT_AUTHOR_EMAIL": "tester@example.com",
+        "GIT_COMMITTER_NAME": "Tester",
+        "GIT_COMMITTER_EMAIL": "tester@example.com",
+        "GIT_AUTHOR_DATE": raw_committer_date,
+        "GIT_COMMITTER_DATE": raw_committer_date,
+    }
+    _git(root, "commit", "--allow-empty", "-m", subject, env=env)
 
 
 def _publish(root: Path) -> None:
@@ -322,6 +343,97 @@ def test_a_write_side_permission_error_is_converted_to_the_graded_contract_under
     assert "writable" in payload["remedy"], payload["remedy"]
 
 
+def test_findings_build_blocks_on_the_projects_write_lock_held_by_another_writer(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#404 R1-6 behavioural: findings build contends the project's *own* write lock.
+
+    The AST pin in ``test_adr_0029_claims.py`` proves the command *passes* a
+    ``paths.write_lock`` expression as ``write_section``; it cannot prove the lock
+    actually excludes a second writer. Here the project's real write lock is held
+    by an independent handle (a second open file description -- ``flock`` contends
+    per description, so no second OS process is needed), and ``findings build`` is
+    driven with its acquisition timeout shortened so the block is a fast, graded
+    refusal rather than the shipped 30 s wait (the reviewer measured ~25 s on the
+    real timeout).
+
+    The build must be refused with the lock-timeout remedy, proving it tried to
+    take *that* file. A mutation pointing the command at any other lock path would
+    not contend the held one, so the build would succeed -- which is exactly the
+    "different lock file" regression this pins RED, where the substring AST pin
+    cannot.
+    """
+    from theurian.cli import findings_commands
+    from theurian.infrastructure.sqlite.connection import WriteLock
+
+    _commit(project, "fix: a change (#1)", "Review-Finding: security HIGH — a finding")
+    _publish(project)
+
+    lock_path = ProjectPaths.of(project).write_lock
+    # Shorten only the command's own acquisition, so a real contention resolves in
+    # a fraction of a second instead of the shipped 30 s.
+    monkeypatch.setattr(
+        findings_commands,
+        "WriteLock",
+        lambda path: WriteLock(path, timeout=0.5),
+    )
+
+    # An independent handle on the same lock file -- the "other writer".
+    other_writer = WriteLock(lock_path, timeout=0.5)
+    with other_writer.held():
+        code, payload = _invoke("findings", "build")
+
+    assert code == 1, payload
+    assert set(payload) == {"error", "remedy"}, payload
+    assert "Wait for the other `theurian` process to finish" in payload["remedy"], payload["remedy"]
+    # And once the other writer releases, the build succeeds -- so the block was the
+    # lock, not a broken build.
+    code, payload = _invoke("findings", "build")
+    assert code == 0, payload
+    assert payload["built"] is True
+
+
+def test_a_first_build_whose_lock_dir_is_unwritable_is_a_graded_refusal(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R1-2: the write lock's own mkdir/open OSError arrives graded, not as a traceback.
+
+    ``findings build`` composes the project write lock's ``held()`` context manager
+    inside its ``try``, but *entering* it runs ``mkdir`` + ``open("w")`` on
+    ``.theurian/runtime/`` -- a directory findings build never touched before #404
+    added the lock -- and both raise a bare ``OSError``, which the command's
+    ``except TheurianError`` does not catch. The read-only-state sibling above runs
+    a successful build **first**, which creates ``.theurian/runtime``, so the lock's
+    ``mkdir`` is a no-op there and the gap is invisible to it. Here no build has run:
+    the lock's own filesystem call is the first write attempted, and it is refused.
+
+    Fault-injected on the lock's ``mkdir`` rather than a ``chmod``, so it drives the
+    arm on every runner including the offline root job -- the same portability shape
+    the root sibling above uses for ``unlink``.
+    """
+    _commit(project, "fix: a change (#1)", "Review-Finding: security HIGH — a finding")
+    _publish(project)
+    real_mkdir = Path.mkdir
+
+    def _refuse_the_runtime_dir(self: Path, *args: object, **kwargs: object) -> None:
+        # The lock lives at `.theurian/runtime/write.lock`; its parent is the first
+        # directory `held()` creates. Refuse exactly that, nothing else.
+        if self.name == "runtime" and self.parent.name == ".theurian":
+            raise PermissionError(13, "Permission denied")
+        real_mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "mkdir", _refuse_the_runtime_dir)
+
+    code, payload = _invoke("findings", "build")
+
+    assert code == 1, payload
+    assert set(payload) == {"error", "remedy"}, (
+        f"the write lock's OS refusal must arrive as the graded {{error, remedy}} contract, "
+        f"not a raw traceback; got {sorted(payload)}"
+    )
+    assert "writable" in payload["remedy"], payload["remedy"]
+
+
 @_NEEDS_SYMLINKS
 def test_a_symlinked_store_leaf_escaping_the_tree_is_refused_and_writes_nothing_outside(
     project: Path, tmp_path: Path
@@ -352,6 +464,128 @@ def test_a_symlinked_store_leaf_escaping_the_tree_is_refused_and_writes_nothing_
     )
     assert "outside" in payload["error"], payload["error"]
     assert list(outside.iterdir()) == [], "the escape wrote something outside the project tree"
+
+
+#: How a child process starts this CLI. Not the ``theurian`` console script: it is
+#: on ``PATH`` only when the suite runs through ``uv run``, and a test that
+#: silently skips on a bare-venv invocation is a test that stops guarding.
+_CLI_ENTRY: Final = "from theurian.cli.main import app; app()"
+
+#: Concurrency for the race below: rounds x workers. The pre-#404 shape failed
+#: 12 of 48 workers over 12x4 (measured 2026-09-02, this harness's scratch twin),
+#: so 3x3 detects it with high probability while costing ~3 seconds. It is not the
+#: deterministic pin -- ``test_findings_store.py``'s poller and residue tests are --
+#: it is the one check that runs real OS processes against the project's real
+#: advisory lock, which no in-process test can do: ``flock`` contends per open
+#: file description, so a second acquisition inside one process blocks on itself.
+_RACE_ROUNDS: Final = 3
+_RACE_WORKERS: Final = 3
+
+
+def test_concurrent_builds_all_succeed_and_leave_one_complete_store(project: Path) -> None:
+    """AC-404-1: real concurrent rebuilds serialise; none crashes, and the store is whole.
+
+    Before #404 the rebuild took no lock and wrote in place under the published
+    name, so concurrent invocations tore each other's file: measured on PR #396,
+    workers reported ``FindingsStoreError`` in 17-21 of 25 rounds and one iteration
+    left a file with **no tables at all** under the publish name. The 12-of-48 /
+    48-of-48 comparison in this file's history is the *scratch twin*'s number
+    (``4 * 12`` real CLI children, the constant comment above names it), not this
+    test's: **this** test runs ``_RACE_ROUNDS * _RACE_WORKERS`` = 3 * 3 = 9
+    children, chosen to detect the pre-fix tearing at high probability in ~3 s
+    while staying a suite-runnable regression guard. On the pre-fix shape a worker
+    here fails the same way (``disk I/O error`` / ``table findings_metadata already
+    exists``); on the fixed shape all 9 succeed.
+
+    Every worker must reach a *defined* outcome -- a successful build, or a refusal
+    that carries a remedy -- and the survivor must be complete and stamp-current,
+    with no working file stranded beside it.
+
+    **The children really do contend the project's advisory write lock**, which
+    ``tests/unit/test_connection_claims.py``'s disclaimer now records. Measured
+    2026-09-02 by instrumenting the lock's acquire loop in a scratch copy: 9
+    acquisitions and 9 blocked attempts across these 3 rounds of 3, so in every
+    round two children were waiting while a third held it. What they take is the
+    lock object directly rather than the transactional write path, so that path's
+    own cross-process wording is untouched by this file.
+
+    This file names neither lock symbol on purpose. Both of
+    ``test_connection_claims.py``'s populations are text keys over those two
+    tokens, and a file that only *writes* about the lock is a false member of
+    either -- the acquisition here happens inside a spawned CLI, which is the
+    blindness that module records rather than a population it can read.
+    """
+    for index in range(6):
+        _commit(
+            project,
+            f"fix: change {index} (#{index})",
+            f"Review-Finding: security HIGH — finding {index}",
+            f"Review-Finding: bogus-x LOW — a rejected line {index}",
+        )
+    _publish(project)
+
+    child_env = {**os.environ, "THEURIAN_DATA_DIR": os.environ["THEURIAN_DATA_DIR"]}
+    for _round in range(_RACE_ROUNDS):
+        workers = [
+            subprocess.Popen(  # noqa: S603
+                [sys.executable, "-c", _CLI_ENTRY, "findings", "build", "--json"],
+                cwd=project,
+                env=child_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for _ in range(_RACE_WORKERS)
+        ]
+        for worker in workers:
+            out, err = worker.communicate(timeout=120)
+            payload = json.loads(out or err or "{}")
+            assert worker.returncode == 0, (
+                f"a concurrent `findings build` failed rather than serialising: {payload}"
+            )
+            assert payload["built"] is True
+            assert payload["findings"] == 6
+            assert payload["rejected"] == 6
+
+    store = SqliteReviewFindingStore(ProjectPaths.of(project).findings_for("local"))
+    dump = store.dump()
+    assert len(dump.findings) == 6
+    assert len(dump.rejected) == 6
+    assert store.is_current()
+    assert not store.building_path.exists(), "a working file was stranded beside the published one"
+
+
+def test_a_max_year_negative_offset_committer_date_is_a_graded_refusal_not_a_crash(
+    project: Path,
+) -> None:
+    """R1-1 (real CLI): a UTC-overflowing committer date must not brick the corpus.
+
+    git emits ``9999-12-31T23:00:00-01:00`` for a crafted committer date, and
+    ``astimezone(UTC)`` shifts it into year 10000 and raises ``OverflowError`` -- an
+    ``ArithmeticError`` the ``except ValueError`` in ``_parse_committer_date`` did
+    not catch. Before the fix, through ``findings build --json``, this reached the
+    process boundary as a Rich traceback with an empty ``--json`` stdout and exit 1
+    -- the D3-forbidden "one crafted commit bricks the whole corpus" shape, and the
+    crafted commit carries no trailer of its own.
+
+    The record must instead be accounted as a rejection while every valid finding
+    still loads: the build succeeds, and its report counts the crafted commit
+    among the rejected, not among a load that never happened. The min-year
+    positive-offset mirror edge git cannot emit (a pre-year-1 epoch is refused), so
+    it is driven at the seam in ``test_git_trailer_source.py``.
+    """
+    _commit(project, "fix: a valid one (#1)", "Review-Finding: security HIGH — a valid finding")
+    # A trailer-less crafted commit whose %cI is year 9999 with a -01:00 offset.
+    _commit_at_raw_date(project, "chore: far-future negative offset", "@253402300800 -0100")
+    _publish(project)
+
+    code, payload = _invoke("findings", "build")
+
+    assert code == 0, payload
+    assert payload["built"] is True
+    assert payload["findings"] == 1
+    # The crafted date-only commit is accounted, not lost, and did not abort.
+    assert payload["rejected"] == 1
 
 
 def test_dump_raises_on_a_half_built_store_instead_of_reading_it_empty(tmp_path: Path) -> None:

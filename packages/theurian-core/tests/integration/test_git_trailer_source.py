@@ -22,7 +22,7 @@ import os
 import re
 import subprocess
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -38,6 +38,7 @@ from theurian.infrastructure.git.trailer_source import (
     GitOutputFramingError,
     GitTrailerFindingSource,
     _decode_git_output,
+    _parse_committer_date,
     _split_records,
 )
 
@@ -594,6 +595,172 @@ def test_a_quoted_grammar_example_is_rejected_and_siblings_still_load(tmp_path: 
     assert valid_one != example_sha  # the valid commit is a distinct object
 
 
+# --- AC-1: the read is the whole message, so a folded trailer is accounted ---
+
+
+def test_a_trailer_folded_into_the_subject_paragraph_is_accounted(tmp_path: Path) -> None:
+    """A column-0 keyed line in the subject *paragraph* is read, not silently dropped (#410).
+
+    git's ``%b`` excludes the first *paragraph*, not the first line: in a message
+    whose subject is not followed by a blank line, every following line folds into
+    the subject and ``%b`` is empty. A trailer there appeared in neither tuple --
+    unaccounted, falsifying the loss-free invariant :class:`FindingLoad` publishes.
+    The adapter reads ``%B`` (the whole message), so the folded trailer is a
+    column-0 keyed line like any other.
+
+    The ``%b``/``%B`` contrast is asserted first, so the fixture cannot quietly stop
+    exercising the fold: without that control this test would still pass against a
+    message git happened to split into subject and body normally.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    folded = _commit_body_file(
+        clone,
+        # No blank line after the subject: the trailer folds into the subject
+        # paragraph, which is exactly what `%b` drops.
+        "fix: a subject with no blank line after it\n"
+        "Review-Finding: security HIGH — folded into the subject paragraph\n".encode(),
+        when="2026-01-01T00:00:00",
+    )
+    _commit(
+        clone,
+        "fix: an ordinary commit (#2)",
+        "Review-Finding: security LOW — an ordinary body",
+        # Dated after the folded commit, so the expected sequence below is the
+        # chronological total order rather than a sha tie-break.
+        when="2026-02-01T00:00:00",
+    )
+    _publish(clone)
+
+    # The fixture's own premise: `%b` really does lose this line, and `%B` keeps it.
+    body_only = _git(clone, "log", "refs/remotes/origin/main", "--format=%b")
+    whole = _git(clone, "log", "refs/remotes/origin/main", "--format=%B")
+    assert "folded into the subject paragraph" not in body_only
+    assert "folded into the subject paragraph" in whole
+
+    load = GitTrailerFindingSource(clone).load_findings()
+
+    assert [f.finding_text for f in load.accepted] == [
+        "folded into the subject paragraph",
+        "an ordinary body",
+    ]
+    assert load.rejected == ()
+    assert load.accepted[0].commit_sha == folded
+
+
+def test_a_subject_that_is_itself_a_keyed_line_is_a_finding(tmp_path: Path) -> None:
+    """The population is every column-0 keyed line in the *message*, subject included (#410).
+
+    Reading ``%B`` makes the subject reachable, and a subject that is itself a
+    column-0 keyed line is therefore a finding rather than an excluded special
+    case. Pinned rather than left implicit: an "exclude the first line" refinement
+    would re-open the accounting gap at a different offset -- the folded shape above
+    is exactly a keyed line that a first-line rule would have to keep, and no rule
+    that counts lines can tell the two apart.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit_body_file(
+        clone, b"Review-Finding: adversarial LOW \xe2\x80\x94 the subject line itself\n"
+    )
+    _publish(clone)
+
+    load = GitTrailerFindingSource(clone).load_findings()
+
+    assert [f.finding_text for f in load.accepted] == ["the subject line itself"]
+    assert load.rejected == ()
+
+
+def test_a_lone_cr_message_with_an_unkeyed_first_line_holds_no_trailer(tmp_path: Path) -> None:
+    """A CR-separated message is one line; an UNKEYED first line holds no trailer (#410).
+
+    The second input shape #410 names, and the *unkeyed-first-line* half of the CR
+    bound. A body whose separators are lone ``CR`` bytes is a *single* LF-delimited
+    line whose column 0 here is the subject, so under the population the load
+    publishes -- column-0 keyed lines of the whole message, split on ``\\n`` --
+    there is no trailer to lose. This is a bound on the claim, not a hole in it: the
+    same rule is what the loss-free canary's own baseline greps, so both sides agree
+    the count is zero, and no line is silently dropped from a population that ever
+    contained it.
+
+    This test **cannot** exhibit the keyed-first-line counterexample -- its fixture
+    opens with a subject, so its first line is never a candidate. The sibling below
+    covers the case where the first line *is* keyed (#404 R1-4), which is why the
+    old blanket "a CR message carries no keyed line at all" was false.
+
+    Asserted here so a later "helpfully" CR-aware split cannot land without a
+    recorded decision -- it would widen the accepted set while the population the
+    invariant is stated over stayed LF-delimited.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit_body_file(
+        clone,
+        "fix: lone carriage returns\r\rReview-Finding: security HIGH — behind lone CRs\r".encode(),
+        when="2026-01-01T00:00:00",
+    )
+    _commit(
+        clone,
+        "fix: a normal one (#2)",
+        "Review-Finding: security LOW — a normal body",
+        when="2026-02-01T00:00:00",
+    )
+    _publish(clone)
+
+    whole = _git(clone, "log", "refs/remotes/origin/main", "--format=%B")
+    keyed = [line for line in whole.split("\n") if line.startswith(TRAILER_KEY)]
+    assert [text for text in keyed if "behind lone CRs" in text] == []  # not a column-0 line
+
+    load = GitTrailerFindingSource(clone).load_findings()
+
+    assert [f.finding_text for f in load.accepted] == ["a normal body"]
+    assert load.rejected == ()
+    assert len(load.accepted) + len(load.rejected) == len(keyed)
+
+
+def test_a_keyed_first_line_after_a_lone_cr_swallows_the_remainder(tmp_path: Path) -> None:
+    """#404 R1-4: a keyed FIRST line in a CR-separated message is one finding, not none.
+
+    The counterexample the old bound denied. A CR-separated message is one
+    ``\\n``-delimited line, so *at most its first line* is a candidate -- but when
+    that first line is keyed it IS a candidate, and a trailer value is exactly one
+    physical line (D2), so the CR-joined remainder (a second trailer, a sign-off)
+    becomes that one finding's opaque, byte-preserved text rather than further
+    findings. The blanket claim "a CR message carries no column-0 keyed line at
+    all" was therefore false: it holds only when the first line is unkeyed.
+
+    Pinned as the true behaviour, not a defect to change: the finding is
+    well-formed, its text is byte-preserved (the ``\\r`` bytes survive), and the
+    accounting still balances -- exactly one keyed line, one accepted finding.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit_body_file(
+        clone,
+        (
+            "Review-Finding: security HIGH — the first finding\r"
+            "Review-Finding: adversarial LOW — swallowed, not its own finding\r"
+            "Signed-off-by: Tester <tester@example.com>"
+        ).encode(),
+        when="2026-01-01T00:00:00",
+    )
+    _publish(clone)
+
+    whole = _git(clone, "log", "refs/remotes/origin/main", "--format=%B")
+    keyed = [line for line in whole.split("\n") if line.startswith(TRAILER_KEY)]
+    assert len(keyed) == 1, "the CR-separated message must be exactly one column-0 keyed line"
+
+    load = GitTrailerFindingSource(clone).load_findings()
+
+    # Exactly one finding: the second trailer is swallowed into the first's text.
+    assert [(f.reviewer, f.severity) for f in load.accepted] == [
+        (ReviewerToken.SECURITY, FindingSeverity.HIGH)
+    ]
+    assert load.rejected == ()
+    swallowed = load.accepted[0].finding_text
+    assert swallowed.startswith("the first finding\r")  # the CR bytes are byte-preserved (D2)
+    assert "Review-Finding: adversarial LOW — swallowed, not its own finding" in swallowed
+    assert "Signed-off-by: Tester" in swallowed
+    # The accounting balances: one keyed line in, one finding out, none lost.
+    assert len(load.accepted) + len(load.rejected) == len(keyed)
+
+
 # --- D2: a trailer value is exactly one physical line -----------------------
 
 
@@ -722,10 +889,10 @@ def test_multiple_trailers_on_one_commit_all_map_in_body_order(tmp_path: Path) -
 def test_a_trailer_below_many_body_lines_is_fully_read(tmp_path: Path) -> None:
     """A multi-line body's trailers are all read, wherever they sit in the body.
 
-    ``git log %b`` returns the whole body as one NUL-framed field, so a trailer
+    ``git log %B`` returns the whole message as one NUL-framed field, so a trailer
     after several paragraphs -- and a second one before them -- are both column-0
-    keyed lines. A mutation that truncated the body (an earlier ``fields[3:]``
-    join, or reading only the first body line) would drop the later trailer; this
+    keyed lines. A mutation that truncated the message (an earlier ``fields[3:]``
+    join, or reading only the first line) would drop the later trailer; this
     asserts both survive with their exact text.
     """
     _origin, clone = _origin_and_clone(tmp_path)
@@ -747,6 +914,57 @@ def test_a_trailer_below_many_body_lines_is_fully_read(tmp_path: Path) -> None:
         "near the top of the body",
         "far below many body lines",
     ]
+
+
+def test_mixed_offset_committer_dates_normalise_to_utc_in_chronological_order(
+    tmp_path: Path,
+) -> None:
+    """#405: the parsed date is a UTC instant, and the accepted order is unchanged.
+
+    Two halves, and only the first is new behaviour. **The date is normalised**:
+    ``%cI`` carries the committer's own offset, and the store writes what it is
+    handed as TEXT, where mixed offsets do not sort chronologically -- so the source
+    hands over an instant, not a spelling. **The order is not touched**: aware
+    datetimes already compared as instants, so the accepted sequence here is exactly
+    what the offset-preserving parse produced, which is what this asserts against a
+    hand-written expectation rather than against a re-run of the old code.
+
+    The fixture is the inversion #405 measured: the ``+14:00`` commit is EARLIER in
+    real time than the ``-11:00`` one, while its raw ISO text sorts after it. The
+    raw-text control below is what keeps that premise honest.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(
+        clone,
+        "fix: far east (#1)",
+        "Review-Finding: security HIGH — earlier, written +14:00",
+        when="2026-01-02T01:00:00+14:00",  # instant 2026-01-01T11:00:00Z
+    )
+    _commit(
+        clone,
+        "fix: far west (#2)",
+        "Review-Finding: security LOW — later, written -11:00",
+        when="2026-01-01T12:00:00-11:00",  # instant 2026-01-01T23:00:00Z
+    )
+    _publish(clone)
+
+    # The fixture's premise: raw `%cI` text really does invert these two.
+    raw_dates = _git(clone, "log", "refs/remotes/origin/main", "--format=%cI").split()
+    assert sorted(raw_dates) == ["2026-01-01T12:00:00-11:00", "2026-01-02T01:00:00+14:00"]
+
+    load = GitTrailerFindingSource(clone).load_findings()
+
+    assert [f.finding_text for f in load.accepted] == [
+        "earlier, written +14:00",
+        "later, written -11:00",
+    ]
+    assert [f.date for f in load.accepted] == [
+        datetime(2026, 1, 1, 11, 0, tzinfo=UTC),
+        datetime(2026, 1, 1, 23, 0, tzinfo=UTC),
+    ]
+    # Normalised, not merely equal as instants: the offset the committer wrote is
+    # gone from the value the store will record.
+    assert all(f.date.utcoffset() == timedelta(0) for f in load.accepted)
 
 
 def test_the_finding_date_is_the_committer_date_not_the_author_date(tmp_path: Path) -> None:
@@ -888,6 +1106,15 @@ def test_live_origin_main_accounts_for_every_trailer_loss_free() -> None:
     is the recorded grammar-change signal (the fix is to widen the parser, not to
     loosen this test). Skips where the checkout or its remote-tracking ref is
     unresolvable, keeping the mutation control GREEN.
+
+    **The baseline greps ``%B``, not ``%b`` (#410).** While the adapter read ``%b``
+    this baseline read it too, so the equation compared the defect with itself: a
+    trailer folded into the subject paragraph was missing from both sides and the
+    balance held while the line was lost. ``%B`` is the whole message, which is the
+    population the invariant is actually stated over. Measured on ``origin/main`` @
+    ``266e6b6`` (2026-09-02) the two counts agree at 386, so this repointing changed
+    no live number -- it removed the shared blind spot ahead of the first folded
+    trailer, not a present miscount.
     """
     repo = _live_repo_root()
     if repo is None or not _origin_main_present(repo):
@@ -899,7 +1126,7 @@ def test_live_origin_main_accounts_for_every_trailer_loss_free() -> None:
 
     assert load == again  # deterministic across two calls
 
-    raw = _git(repo, "log", "refs/remotes/origin/main", "--format=%b")
+    raw = _git(repo, "log", "refs/remotes/origin/main", "--format=%B")
     keyed = [line for line in raw.split("\n") if line.startswith(TRAILER_KEY)]
     # Loss-free population accounting: every column-0 keyed line is accounted for
     # in exactly one tuple, none silently dropped, and there really are some.
@@ -951,7 +1178,7 @@ def test_split_records_normal_separator_stream_yields_whole_records(tmp_path: Pa
     assert [r.sha for r in records] == ["a" * 40, "b" * 40]
     assert records[0].committed_at == datetime(2026, 1, 1, tzinfo=UTC)
     assert records[1].committed_at == datetime(2026, 2, 1, tzinfo=UTC)
-    assert records[1].body == ""  # a legitimate empty final field, not a terminator artefact
+    assert records[1].message == ""  # a legitimate empty final field, not a terminator artefact
 
 
 def test_split_records_tolerates_a_terminator_variant_trailing_empty_token(tmp_path: Path) -> None:
@@ -972,7 +1199,7 @@ def test_split_records_tolerates_a_terminator_variant_trailing_empty_token(tmp_p
     )
     records = _split_records(normal + _NUL, tmp_path)  # the terminator variant's trailing NUL
     assert [r.sha for r in records] == ["a" * 40, "b" * 40]
-    assert [r.body for r in records] == ["one", "two"]
+    assert [r.message for r in records] == ["one", "two"]
 
 
 def test_split_records_rejects_a_misframed_3n_plus_1_stream(tmp_path: Path) -> None:
@@ -1017,6 +1244,148 @@ def test_split_records_marks_a_year_10000_date_unrepresentable(tmp_path: Path) -
     assert record.committed_at is None
     assert record.date_iso == "10000-01-02T00:00:00Z"
     assert record.sha == "a" * 40
+
+
+def test_split_records_marks_an_offsetless_date_unrepresentable(tmp_path: Path) -> None:
+    """A committer date with no offset is unrepresentable, never read as local time (#405).
+
+    ``%cI`` always carries an offset, so this is unreachable from git -- which is
+    exactly why it needs driving here. Two things would go wrong without the guard.
+    ``astimezone`` on a naive value reads the *machine's* own offset, so the stored
+    instant would depend on where the build ran; and before the normalisation the
+    naive value flowed on to ``ReviewFinding.__post_init__``'s timezone-aware check
+    and raised a ``DomainError`` that ``load_findings`` does not catch, aborting the
+    whole load on one record -- the fatal abort D3 forbids.
+
+    Pinned at the split boundary where the mark is set, beside the year-10000
+    sibling, and end-to-end by the ``load_findings`` accounting below.
+    """
+    stream = _record_stream(
+        "a" * 40, "2026-01-01T00:00:00", "Review-Finding: security HIGH — no offset"
+    )
+    (record,) = _split_records(stream, tmp_path)
+    assert record.committed_at is None
+    assert record.date_iso == "2026-01-01T00:00:00"  # kept verbatim for the rejection
+
+
+def test_an_offsetless_date_is_accounted_as_a_rejection_not_a_fatal_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The offsetless record becomes one rejection and its siblings still load (#405, D3).
+
+    ``git log`` cannot be made to emit an offsetless ``%cI``, so the stream is
+    injected at the one seam between the subprocess and the parse. That keeps the
+    whole of ``load_findings`` -- the accounting, the sort keys, the rejection
+    reason -- under test, which a direct ``_split_records`` call does not reach.
+    """
+    stream = _record_stream(
+        "a" * 40,
+        "2026-01-01T00:00:00",  # no offset
+        "Review-Finding: security HIGH — on the offsetless record",
+        "b" * 40,
+        "2026-02-01T00:00:00+00:00",
+        "Review-Finding: security LOW — on a well-formed sibling",
+    )
+    source = GitTrailerFindingSource(tmp_path)
+    monkeypatch.setattr(GitTrailerFindingSource, "_git_log", lambda _self: stream)
+
+    load = source.load_findings()  # must not raise
+
+    assert [f.finding_text for f in load.accepted] == ["on a well-formed sibling"]
+    assert len(load.rejected) == 1
+    assert load.rejected[0].commit_sha == "a" * 40
+
+
+# --- #405 R1-1: a UTC conversion that overflows is a rejection, not a crash ---
+#
+# `fromisoformat` guards year >= 10000, but `astimezone(UTC)` shifts a
+# representable local datetime *across* datetime's range and raises OverflowError
+# -- an ArithmeticError, not a ValueError -- at TWO boundaries: a max-year value
+# with a NEGATIVE offset (23:59 -01:00 lands in year 10000), and a min-year value
+# with a POSITIVE offset (00:00 +05:00 lands before year 1). Both are inward-safe
+# with the opposite-sign offset. git can emit the first (verified) but refuses the
+# second (a pre-year-1 epoch is rejected), so the second is driven at the seam.
+
+_OVERFLOWING_COMMITTER_DATES: tuple[tuple[str, str], ...] = (
+    ("9999-12-31T23:00:00-01:00", "max year, negative offset -> shifts past year 9999"),
+    ("9999-12-31T23:00:00-14:00", "max year, extreme negative offset"),
+    ("0001-01-01T00:00:00+05:00", "min year, positive offset -> shifts below year 1"),
+    ("0001-01-01T00:00:00+14:00", "min year, extreme positive offset"),
+)
+
+_SAFE_EDGE_COMMITTER_DATES: tuple[tuple[str, str], ...] = (
+    ("9999-01-01T00:00:00-11:00", "max year, negative offset shifts INWARD -> holds"),
+    ("0001-12-31T00:00:00+05:00", "min year, positive offset shifts INWARD -> holds"),
+)
+
+
+@pytest.mark.parametrize("date_iso, why", _OVERFLOWING_COMMITTER_DATES)
+def test_parse_committer_date_returns_none_when_utc_conversion_overflows(
+    date_iso: str, why: str
+) -> None:
+    """R1-1: a date whose UTC instant is out of range is unrepresentable, never a raise.
+
+    ``astimezone(UTC)`` raises ``OverflowError`` -- an ``ArithmeticError``, which the
+    ``except ValueError`` above it does not catch -- when a representable local
+    datetime shifts across ``datetime``'s range. Both boundaries are covered: a
+    max-year value with a negative offset, and a min-year value with a positive one.
+    The fixture's premise is asserted first (``astimezone`` really does raise for
+    each), so a change that stopped raising would not leave this passing vacuously.
+    """
+    parsed = datetime.fromisoformat(date_iso)  # representable as a local datetime ...
+    with pytest.raises(OverflowError):  # ... but not once shifted to UTC (the premise)
+        parsed.astimezone(UTC)
+
+    # The parse must return None rather than let the OverflowError escape.
+    assert _parse_committer_date(date_iso) is None, why
+
+
+@pytest.mark.parametrize("date_iso, why", _SAFE_EDGE_COMMITTER_DATES)
+def test_parse_committer_date_holds_an_inward_shifting_edge(date_iso: str, why: str) -> None:
+    """R1-1 control: an offset that shifts a boundary year INWARD is representable.
+
+    Without this, the test above could pass for a parse that returned ``None`` for
+    every extreme year regardless of the shift direction -- discarding a valid
+    committer date. Here the offset moves the instant away from the boundary, so the
+    conversion holds and the parse returns an aware UTC datetime.
+    """
+    result = _parse_committer_date(date_iso)
+    assert result is not None, why
+    assert result.tzinfo is UTC
+    assert result == datetime.fromisoformat(date_iso).astimezone(UTC)
+
+
+def test_an_overflowing_committer_date_is_a_rejection_and_siblings_still_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R1-1 end-to-end (min-year edge): one overflow rejects its record, others load.
+
+    Drives the min-year positive-offset edge git cannot emit, through the whole of
+    ``load_findings`` at the subprocess seam -- the accounting, the sort keys and
+    the rejection reason -- so a crafted date that bricks the corpus at the parse is
+    accounted as exactly one rejection (D3), never a fatal abort. The max-year edge,
+    which git *can* emit, is driven end-to-end through the real CLI in
+    ``test_findings_build_cli.py``.
+    """
+    stream = _record_stream(
+        "a" * 40,
+        "0001-01-01T00:00:00+05:00",  # overflows to before year 1 on the UTC shift
+        "Review-Finding: security HIGH — on the overflowing record",
+        "b" * 40,
+        "2026-02-01T00:00:00+00:00",
+        "Review-Finding: security LOW — on a well-formed sibling",
+    )
+    source = GitTrailerFindingSource(tmp_path)
+    monkeypatch.setattr(GitTrailerFindingSource, "_git_log", lambda _self: stream)
+
+    load = source.load_findings()  # must not raise
+
+    assert [f.finding_text for f in load.accepted] == ["on a well-formed sibling"]
+    assert len(load.rejected) == 1
+    assert load.rejected[0].commit_sha == "a" * 40
+    assert "0001-01-01T00:00:00+05:00" in load.rejected[0].raw_line
+    assert "0001-01-01T00:00:00+05:00" in load.rejected[0].reason
+    assert "committer date" in load.rejected[0].reason
 
 
 def test_split_records_empty_stream_yields_no_records(tmp_path: Path) -> None:

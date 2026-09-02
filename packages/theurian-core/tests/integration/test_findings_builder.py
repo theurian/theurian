@@ -35,6 +35,9 @@ from __future__ import annotations
 import os
 import subprocess
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -54,7 +57,16 @@ pytestmark = pytest.mark.integration
 #: The content of a finding excluding the store-assigned position: everything the
 #: source hands out. Set-equality is taken over this, since the source has no
 #: position to compare against.
-_FindingContent = tuple[str | int | None, ...]
+#:
+#: The committer date enters as a ``datetime`` on **both** sides -- the source's
+#: field, and the stored TEXT parsed back -- so the comparison is over the instant
+#: rather than its spelling (#405). The store deliberately does not keep the
+#: committer's own offset: it writes a UTC-normalised, fixed-width instant so the
+#: column is a chronological sort key. Comparing the strings would therefore fail
+#: for a reason that is not a loss, and re-deriving the store's encoding here would
+#: make this oracle agree with the store's algorithm by construction, which is the
+#: shape this file's own header rules out.
+_FindingContent = tuple[str | int | datetime | None, ...]
 _RejectedContent = tuple[str, str, str]
 
 
@@ -125,7 +137,7 @@ def _finding_content(finding: ReviewFinding) -> _FindingContent:
         finding.finding_text,
         finding.provider,
         finding.anchor.source_uri,
-        finding.date.isoformat(),
+        finding.date,
         finding.pull_request,
         finding.family,
         finding.specialist,
@@ -140,7 +152,7 @@ def _stored_finding_content(stored: StoredFinding) -> _FindingContent:
         stored.finding_text,
         stored.provider,
         stored.source_uri,
-        stored.committed_at,
+        datetime.fromisoformat(stored.committed_at),
         stored.pull_request,
         stored.family,
         stored.specialist,
@@ -180,6 +192,109 @@ def _build(clone: Path, store_path: Path) -> SqliteReviewFindingStore:
     )
     builder.build(FindingsBuildRequest(store_path=store_path))
     return SqliteReviewFindingStore(store_path)
+
+
+# --- #404: one continuous hold, and the git read outside it -----------------
+
+
+def test_the_build_publishes_inside_one_continuous_write_section(tmp_path: Path) -> None:
+    """#404: exactly one hold, ``replace_all`` inside it, the git read before it.
+
+    The sequence is the assertion, not merely that a lock was taken. Three
+    distinguishable defects fail here and each has a shipped precedent:
+
+    - **no hold at all** -- the shape this replaced -- yields ``["load", "write"]``,
+      and two rebuilds then assemble at one working name;
+    - **two sequential holds**, one around the assembly and one around the publish,
+      yields ``[..., "enter", "exit", "enter", ...]``. That is #468's measured
+      defect exactly: the window *between* two holds let a racing process act on
+      state the first hold had half-built;
+    - **the git read moved inside** yields ``["enter", "load", ...]``, which holds
+      the project's single writer lock across a 30-second-bounded subprocess and
+      blocks ``migrate apply`` for the length of a ``git log`` -- the reason
+      ``migrate apply`` builds its own ``Project`` outside its hold.
+
+    Driven with a recording section and a recording store rather than the real
+    advisory lock, because a lock file cannot report *when* it was entered relative
+    to the calls around it; the real lock's cross-process behaviour is
+    ``test_findings_build_cli.py``'s concurrent-process race. This file names no
+    lock class for that reason, which also keeps it out of
+    ``test_connection_claims.py``'s exact one-file population -- that key admits a
+    prose mention, and a member that only writes about the lock would make the
+    population say something it does not mean.
+    """
+    events: list[str] = []
+
+    @contextmanager
+    def recording_section() -> Iterator[None]:
+        events.append("enter")
+        try:
+            yield
+        finally:
+            events.append("exit")
+
+    class RecordingSource:
+        def load_findings(self) -> FindingLoad:
+            events.append("load")
+            return FindingLoad(accepted=(), rejected=())
+
+    class RecordingStore:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def replace_all(self, load: FindingLoad) -> None:  # noqa: ARG002 - the port's signature
+            events.append("write")
+
+        def stamp(self) -> None:
+            return None
+
+        def is_current(self) -> bool:
+            return False
+
+        def dump(self) -> FindingsDump:
+            return FindingsDump(findings=(), rejected=())
+
+    builder = FindingsBuilder(
+        source=RecordingSource(),
+        store_factory=RecordingStore,
+        write_section=recording_section,
+    )
+    builder.build(FindingsBuildRequest(store_path=tmp_path / "unused.sqlite"))
+
+    assert events == ["load", "enter", "write", "exit"]
+
+
+def test_a_builder_can_run_twice_because_the_section_is_a_factory(tmp_path: Path) -> None:
+    """#404: ``write_section`` is a factory, so a reused builder takes the hold twice.
+
+    The real section is a generator-based context manager (the advisory lock's
+    ``held``): entering the *same* instance twice raises, so passing a context
+    manager rather than a factory would work once and fail on a builder's second
+    build. Nothing in the shipped CLI reuses a builder today, which is exactly why
+    this needs pinning rather than assuming.
+    """
+    entries: list[int] = []
+
+    @contextmanager
+    def counting_section() -> Iterator[None]:
+        entries.append(len(entries))
+        yield
+
+    clone = _origin_and_clone(tmp_path)
+    _commit(clone, "fix: a change (#1)", "Review-Finding: security HIGH — a finding")
+    _publish(clone)
+
+    builder = FindingsBuilder(
+        source=GitTrailerFindingSource(clone),
+        store_factory=SqliteReviewFindingStore,
+        write_section=counting_section,
+    )
+    store_path = tmp_path / "state" / "theurian-findings-twice.sqlite"
+    builder.build(FindingsBuildRequest(store_path=store_path))
+    builder.build(FindingsBuildRequest(store_path=store_path))
+
+    assert entries == [0, 1]
+    assert len(SqliteReviewFindingStore(store_path).dump().findings) == 1
 
 
 def test_store_holds_exactly_the_source_findings(tmp_path: Path) -> None:
