@@ -116,8 +116,8 @@ MAX_CONCURRENT_SEARCHES: Final = 4
 #: on this server is a synchronous `def` and the SDK dispatches each through
 #: `anyio.to_thread.run_sync` (the anyio worker pool: 40 tokens, anyio 4.14.2,
 #: re-measured 2026-08-30; T-6 records it). The list is stated as the whole
-#: registered set rather than as three names, because a tool added later is a
-#: sixth queue behind this wait whether or not anybody updates a comment.
+#: registered set rather than as three names, because a tool added later queues
+#: behind this wait whether or not anybody updates a comment.
 #:
 #: A parked waiter holds one pool token for at most `ADMISSION_WAIT_SECONDS`,
 #: but the queue behind it is not bounded by that constant: a freed token goes
