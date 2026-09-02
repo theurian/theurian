@@ -164,6 +164,17 @@ same store-level universal invariant the string-concatenation residual above is
 owed to, not a deeper walk here; recorded with the same slice-3 disposition as
 its runtime counterpart.
 
+**One further claim of the same shape, pinned here for the same reason.** The
+port records that :meth:`ReviewFindingStore.is_current` is *deliberately* not
+what the serving read calls -- the staleness comparison happens inside the
+connection the rows come back on, so asking this method first would be a second
+open with a rebuild able to land between them. That makes "nothing shipped calls
+it" a load-bearing statement rather than an observation about dead code, and
+:func:`test_no_shipped_module_asks_the_store_whether_it_is_current` is what
+keeps it true: a caller appearing anywhere in the shipped package fails until
+either the call is removed or the three docstrings asserting its absence are
+re-tensed.
+
 Pure in the sense the T-7 structural arms are, with one named exception: every
 *assertion* here parses ``.py`` files as text or as an AST and opens no database,
 socket, or long-lived resource. The one guard test that is not pure this way is
@@ -1078,6 +1089,117 @@ def test_the_sql_table_pattern_does_not_false_positive_on_prose_or_other_tables(
     """
     assert not _FINDINGS_TABLE_SQL.search(snippet), (
         f"the SQL table pattern false-positived on {snippet!r}"
+    )
+
+
+# -- The staleness question is asked inside the read, never before it --------
+
+#: One case per form the reference scan must count, and per form it must not.
+#: The prose case is the load-bearing negative: three shipped docstrings explain
+#: why nothing calls ``is_current``, and a scan that counted a mention would
+#: report those explanations as the very callers they deny.
+_REFERENCE_CASES: tuple[tuple[str, str, int], ...] = (
+    ("store.is_current()", "is_current", 1),
+    ("if not store.is_current():\n    rebuild()", "is_current", 1),
+    ("current = store.is_current", "is_current", 1),
+    ('"""Nothing shipped calls is_current, and that is deliberate."""', "is_current", 0),
+    ("def is_current(self) -> bool:\n    return True", "is_current", 0),
+    ("store.is_current_at(moment)", "is_current", 0),
+    ("# is_current is the standalone question", "is_current", 0),
+)
+
+
+def _named_references(source: str, module: str, name: str) -> int:
+    """How often ``source`` references ``name`` as an attribute or a bare name.
+
+    Definitions and prose are not references: an ``ast.FunctionDef``'s own name
+    is neither an ``Attribute`` nor a ``Name`` node, and a docstring is an
+    ``ast.Constant``. That distinction is the whole reason this parses rather
+    than greps -- the shipped package mentions ``is_current`` in three
+    docstrings precisely to say that nothing calls it.
+    """
+    tree = ast.parse(source, filename=module)
+    return sum(
+        1
+        for node in ast.walk(tree)
+        if (isinstance(node, ast.Attribute) and node.attr == name)
+        or (isinstance(node, ast.Name) and node.id == name)
+    )
+
+
+@pytest.mark.parametrize(
+    "source, name, expected",
+    _REFERENCE_CASES,
+    ids=[case[0].splitlines()[0][:48] for case in _REFERENCE_CASES],
+)
+def test_the_reference_scan_counts_a_call_and_not_a_mention(
+    source: str, name: str, expected: int
+) -> None:
+    """Guards the claim below, which a scan that resolved nothing would satisfy.
+
+    ``test_no_shipped_module_asks_the_store_whether_it_is_current`` reports
+    *zero* as clean, and zero is also what a broken scan reports over every file
+    forever. Each form it must see is asserted against a snippet, and each form
+    it must let past -- a docstring, a comment, the method's own definition, a
+    differently-named method -- is asserted to count nothing.
+    """
+    assert _named_references(source, "snippet.py", name) == expected
+
+
+def test_the_reference_scan_finds_a_real_call_in_the_shipped_source() -> None:
+    """The positive control on a real file: the scan sees a method call that exists.
+
+    The snippets above prove the scan reads snippets. This proves it reads the
+    shipped package, which is what the claim below is asserted over:
+    ``mcp/tools.py`` really does call ``serve_findings``, so a scan that found
+    nothing there has stopped resolving files and its zero for ``is_current``
+    means nothing.
+    """
+    tools_source = _serving_source("mcp/tools.py")
+
+    assert _named_references(tools_source, "mcp/tools.py", "serve_findings") >= 1, (
+        "the reference scan found no `serve_findings` call in mcp/tools.py, which "
+        "is the one sanctioned serving read's only caller. The scan is broken, not "
+        "the product -- fix it before trusting the zero the next test reports."
+    )
+
+
+def test_no_shipped_module_asks_the_store_whether_it_is_current() -> None:
+    """The recorded reason for a dead method, held to being true.
+
+    ``is_current`` is not dead code somebody forgot: the port, the adapter and
+    ``findings_schema.py`` all record that the serving read deliberately does
+    *not* call it, because the staleness comparison has to happen inside the
+    connection the rows come back on. A second open would let a rebuild land
+    between the check and the read, leaving the check answering for a file the
+    rows did not come from.
+
+    So a caller appearing anywhere in the shipped package is not a small style
+    matter -- it is either that split-open shape arriving, or three docstrings
+    becoming false. Both need a human, which is what this failure asks for.
+    """
+    callers = {
+        module: hits
+        for module in sorted(_all_shipped_modules(SRC))
+        if (
+            hits := _named_references(
+                (SRC / module).read_text(encoding="utf-8"), module, "is_current"
+            )
+        )
+    }
+
+    assert not callers, (
+        "a shipped module references the review-finding store's `is_current`:\n"
+        + "\n".join(
+            f"  {module} :: {hits} reference(s)" for module, hits in sorted(callers.items())
+        )
+        + "\n\nThe serving read makes the staleness comparison inside the connection "
+        "it reads the rows through, on purpose: `is_current()` followed by a query is "
+        "two opens, and a rebuild landing between them leaves the check vouching for a "
+        "file the rows did not come from. If a diagnostic surface genuinely needs the "
+        "standalone question, say so here -- and re-tense the three docstrings "
+        "(`ReviewFindingStore.is_current`, `SqliteReviewFindingStore.is_current`, "
+        "`findings_schema`) that currently state it has no shipped caller."
     )
 
 
