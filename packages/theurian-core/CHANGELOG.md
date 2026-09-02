@@ -160,7 +160,9 @@ Nothing yet.
   and pinned — and is false for query duration on the trigram path, where the
   purge only shrinks the term. The two results do not conflict; they are
   different instruments, this re-measurement's below the trigram floor and
-  #499's above it.
+  #499's above it. **Read the entry below under that scope**: it states the same
+  sentence unqualified, and it is left standing as what the re-measurement
+  reported at the time rather than edited after the fact.
 
   **The flat columns are pinned** in
   `packages/theurian-core/tests/integration/test_purged_build_quantities.py`,
