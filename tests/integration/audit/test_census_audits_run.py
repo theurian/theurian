@@ -45,6 +45,7 @@ tree, which is what this repository's ``integration`` marker is defined as.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import subprocess
 import sys
@@ -70,6 +71,17 @@ CONTROL_FLAG: Final = "--positive-control"
 
 #: Offline, always: see the module docstring.
 OFFLINE: Final = "--offline"
+
+#: The control table every census audit has to bind, whatever else it carries:
+#: the one that shows its keys hitting a planted sentence.
+REQUIRED_CONTROL_TABLES: Final[frozenset[str]] = frozenset({"POSITIVE_CONTROLS"})
+
+#: The function whose presence means "this audit carries a ledger", so the
+#: ``LEDGER_CONTROLS`` requirement is derived from the module rather than from a
+#: list of four module names kept in step by hand. ``ref_field_pair.py`` has no
+#: ledger -- each site discharges against its own text -- and so is not asked for
+#: one.
+LEDGER_CONTROL_RUNNERS: Final[frozenset[str]] = frozenset({"_run_ledger_controls"})
 
 #: Generous, because these read every tracked file. The slowest of the five runs
 #: in a few seconds on this machine; this is a hang guard, not a budget.
@@ -148,6 +160,70 @@ def test_every_module_offering_a_control_is_run() -> None:
         f"The derived set is {sorted(derived)}. An audit that loses its control "
         f"mode drops out of the runs below without failing them, which is the "
         f"silence this whole module exists to prevent."
+    )
+
+
+@pytest.mark.parametrize("script", CENSUS_AUDITS, ids=_IDS)
+def test_each_census_audit_carries_control_rows_to_run(script: pathlib.Path) -> None:
+    """RED means a control table was emptied, which its own audit reports as passing.
+
+    ``--positive-control`` counts failures among the rows it has. Emptying a
+    table therefore *passes* -- zero rows, zero failures, exit 0 -- and the run
+    above cannot tell that from an instrument that checked something. Round two
+    reported exactly this: "``LEDGER_CONTROLS`` itself deletes green".
+
+    So the tables are read structurally, out of the source rather than by
+    importing it, and every module-level name ending ``_CONTROLS`` has to bind a
+    non-empty tuple.
+
+    Two names are required rather than merely checked-if-present, because a
+    module could otherwise *drop* a table and satisfy a rule about the ones it
+    still has. ``POSITIVE_CONTROLS`` is required of every audit. ``LEDGER_CONTROLS``
+    is required of every audit that **has a ledger**, which is derived from the
+    module: four of the five define ``_run_ledger_controls``, and
+    ``ref_field_pair.py`` carries no ledger at all -- its population discharges
+    against the text of each site rather than against a recorded judgement.
+
+    **The bound.** Deleting a table is caught; deleting a table *and* its runner
+    *and* the call to it is not, because nothing is left to be inconsistent with.
+    That is a much larger edit than the one round two measured, and it is what
+    the run beside this one, over a tree that still has claims in it, is for.
+    """
+    module = ast.parse(script.read_text(encoding="utf-8"), filename=script.name)
+    tables: dict[str, ast.expr | None] = {}
+    for node in module.body:
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            tables[node.target.id] = node.value
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    tables[target.id] = node.value
+
+    runners = {
+        node.name for node in module.body if isinstance(node, ast.FunctionDef)
+    } & LEDGER_CONTROL_RUNNERS
+    required = REQUIRED_CONTROL_TABLES | ({"LEDGER_CONTROLS"} if runners else set())
+    control_tables = {name: value for name, value in tables.items() if name.endswith("_CONTROLS")}
+
+    assert required <= control_tables.keys(), (
+        f"{script.name} no longer binds {sorted(required - control_tables.keys())}. "
+        f"Every census audit shows its keys hitting a planted sentence "
+        f"(POSITIVE_CONTROLS), and every audit carrying a ledger drives its "
+        f"reconciliation from planted rows (LEDGER_CONTROLS); a module missing one "
+        f"has stopped checking that half and still exits 0."
+    )
+
+    empty = sorted(
+        name
+        for name, value in control_tables.items()
+        if not (isinstance(value, ast.Tuple) and value.elts)
+    )
+    assert not empty, (
+        f"{script.name}: {empty} bind no control rows.\n\n"
+        "A control loop over an empty table reports zero failures, so the audit "
+        "exits 0 and the run beside this one reads it as a working instrument. "
+        "Emptying a table is how a control stops checking without anything "
+        "going red."
     )
 
 
