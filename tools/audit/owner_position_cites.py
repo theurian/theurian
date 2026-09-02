@@ -142,8 +142,8 @@ _SUPERSEDED: Final = re.compile(
 #: The **bold run a block opens with**, and the reason the marker is looked for
 #: only there.
 #:
-#: Measured, not assumed: all four in-place amendments in this repository are
-#: written as an emphasised opener -- ``**Closed on 2026-09-01 ([#468]).**``,
+#: Measured, not assumed, over the four members round one found: each is written
+#: as an emphasised opener -- ``**Closed on 2026-09-01 ([#468]).**``,
 #: ``**Amended in Milestone 6: ...**``, ``**Amended in Milestone 6. Everything
 #: from ... is left standing ...**``, ``**Further amended in Milestone 7 ...**``.
 #: Searching the *whole* following block instead was tried first and cleared a

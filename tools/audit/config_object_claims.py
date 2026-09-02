@@ -37,8 +37,9 @@ block opens with exactly those words. :data:`_PRONOUN_TEMPLATE` is *"nothing
 reads it"*, the bare pronoun, which no path-bearing key can see at all.
 
 **Every row is classified, and the classification is exact in both directions.**
-The machine clears the rows it can defend -- a CHANGELOG entry, a past-tense
-sentence, a key-scoped claim -- and everything left is a *suspect* that a person
+The machine clears the rows it can defend -- a *dated* CHANGELOG entry, a
+past-tense sentence, a key-scoped claim -- and everything left is a *suspect*
+that a person
 verified and recorded in :data:`SUSPECTS` with a verdict. A suspect the ledger
 does not carry is a finding; a ledger row the sweep no longer produces means
 somebody fixed or moved a sentence and the ledger has to be discharged in the
