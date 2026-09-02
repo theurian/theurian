@@ -451,15 +451,23 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, bool, bool], ...]] = (
 def ledger_drift(
     verdicts: list[Verdict], ledger: tuple[tuple[str, str, str], ...]
 ) -> tuple[list[tuple[str, str, str]], list[tuple[tuple[str, str, str], list[str]]]]:
-    """``(stale rows, ambiguous rows)`` for one verdict set against one ledger.
+    """``(stale rows, ambiguous rows)`` -- two of this audit's three directions.
 
     *Stale* is a row whose member now names a symbol or a test, so the debt it
     records has been paid and the row has to go. *Ambiguous* is the direction the
     fragment key opened and the line key did not have: one row covering two
     members reads as coverage of both while a person judged one.
 
-    The ledger is a parameter so both can be **driven** from planted input --
-    :data:`LEDGER_CONTROLS`, and round one's code-M6 across the five audits here.
+    **The third is not missing, it is computed elsewhere.** *Undischarged* -- a
+    member that names no ``src/`` symbol, no test, no open owner and no
+    :data:`PROSE_ONLY` row -- is derived from the verdicts in :func:`_report`, and
+    it is the same direction the sibling ledgers spell *unrecorded*. Reading this
+    function's arity as the audit's direction count is what put "in two" in the
+    README beside this file; the count is three, and the last
+    :data:`POSITIVE_CONTROLS` row is what drives the third.
+
+    The ledger is a parameter so both of these can be **driven** from planted input
+    -- :data:`LEDGER_CONTROLS`, and round one's code-M6 across the five audits here.
     """
     owing = [v.member for v in verdicts if not (v.names_symbol or v.names_test)]
     every = [v.member for v in verdicts]
@@ -556,7 +564,11 @@ LEDGER_CONTROLS: Final[
 
 
 def _run_ledger_controls(table: dict[str, str]) -> int:
-    """Drive both reconciliation directions from planted members and planted ledgers."""
+    """Drive the two ledger-keyed directions from planted members and planted ledgers.
+
+    The third, *undischarged*, needs no ledger and is driven by the last
+    :data:`POSITIVE_CONTROLS` row -- prose with no symbol, no test and no cite.
+    """
     failures = 0
     ran = 0
     print("\n=== LEDGER CONTROLS (the reconciliation, driven) ===")

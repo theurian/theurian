@@ -71,17 +71,38 @@ slipped through the ones above it.
 | verdict drift | a row recorded as retracted that comes back a suspect, which means the amendment block moved or was deleted | `owner_position_cites.py` |
 | occurrence count | a second anchor added to a `(token, path)` already judged | `sha_anchors.py` |
 
-So `owner_position_cites.py` reconciles in four directions, `config_object_claims.py`
-and `sha_anchors.py` in three, and `controls_discharge.py` in two — it has no
-"unrecorded" direction, because its population is discharged by naming a symbol
-or a test rather than by a hand verdict.
+So `owner_position_cites.py` reconciles in four directions and the other three
+in three each. `controls_discharge.py`'s first direction is spelled
+**undischarged** rather than *unrecorded* — a member that names no `src/` symbol,
+no test, no open owner and no `PROSE_ONLY` row — but it is the same direction with
+the same exit status, and it is what the last `POSITIVE_CONTROLS` row drives.
+This paragraph said "in two" until #501's round three, which is what a count
+written beside a derivation rather than from it does.
 
-They read the whole tracked tree rather than one file, minus two exclusions that
-[`claim_surfaces.py`](claim_surfaces.py) states as a constant: `.theurian/` (the
-served corpus, moved by a re-seed, never an edit) and `docs/work-logs/` (dated
-records). Matching happens on **wrap-joined, whitespace-collapsed blocks**, not
-on lines: every Markdown document here is hard-wrapped, and a line-oriented pass
-undercounts by an amount nobody can state.
+**What each one reads is not the same, and neither is how it matches.** Only
+`config_object_claims.py` reads the whole tracked tree; every other audit narrows
+it, and `controls_discharge.py` reads two named files:
+
+| Script | Reads | Matched on |
+| :-- | :-- | :-- |
+| `config_object_claims.py` | every tracked file | `claim_surfaces` sentences |
+| `owner_position_cites.py` | tracked files under `docs/`, `schemas/`, `plugins/`, plus seven named files (`GOVERNED_FILES`) | `claim_surfaces` sentences |
+| `ref_field_pair.py` | tracked files under `docs/`, `schemas/`, `plugins/` | its own section-and-block reader, which joins a block before matching |
+| `sha_anchors.py` | tracked files under `docs/` | raw text — an anchor is a token, not a sentence |
+| `controls_discharge.py` | `docs/security/threat-model.md` and `schemas/config/project-config.schema.json` | the threat model's bold-opened blocks, joined to the next blank line; the schema, parsed |
+
+Wherever a population comes from `governed_paths`, two exclusions apply, and
+[`claim_surfaces.py`](claim_surfaces.py) states them as a constant: `.theurian/`
+(the served corpus, moved by a re-seed, never an edit) and `docs/work-logs/`
+(dated records).
+
+The `claim_surfaces` reader matches on **wrap-joined, whitespace-collapsed
+blocks**, not on lines: every Markdown document here is hard-wrapped, and a
+line-oriented pass undercounts by an amount nobody can state. It also strips
+**emphasis** — `*`, `_`, and the `<b>`/`<i>`/`<em>`/`<strong>` tags that render as
+them — because a wrapper a reader cannot see must not move a claim out of reach
+of a key. What it does not normalise is recorded and run: `MEASURED_ESCAPES` in
+`config_object_claims.py`.
 
 | Script | Population | Discharge |
 | :-- | :-- | :-- |

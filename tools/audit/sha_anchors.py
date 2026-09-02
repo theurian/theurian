@@ -339,10 +339,13 @@ def _landed_verdict(root: Path, token: str, reference: str) -> str:
 #:
 #: **Exact in both directions**, which every ledger in this directory is at
 #: minimum: a row the sweep stops producing means the sentence moved and the row
-#: has to go with it. The third direction here is the occurrence count; two of the
+#: has to go with it. The third direction here is the occurrence count; the three
 #: siblings carry a *fragment* key instead and need cardinality rather than a
-#: count, which is what their ``ambiguous`` direction is. The README beside this
-#: file tabulates which audit has which.
+#: count, which is what their ``ambiguous`` direction is -- ``config_object_claims``,
+#: ``controls_discharge`` and ``owner_position_cites``, which is three and not two:
+#: ``controls_discharge`` reconciles in three directions like this one, its first
+#: spelled *undischarged*. The README beside this file tabulates which audit has
+#: which.
 #: A hex-looking English word stays here rather than being filtered out of the
 #: key, so the filter cannot quietly widen.
 CLASSIFIED: Final[tuple[tuple[str, str, int, str, str], ...]] = (

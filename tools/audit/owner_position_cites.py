@@ -485,7 +485,16 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
 
 #: What the key must do before any count is read, as
 #: ``(what it demonstrates, sentence, the blocks that follow it, number, state,
-#: expected verdict)``.
+#: the document it is planted in, which section of it, expected verdict)``.
+#:
+#: **The path is a field and not a guess, which is round three's code-M2.** It was
+#: derived from the other fields -- a changelog path when the section was not
+#: ``none``, ``control.md`` otherwise -- and the one row that most needs a changelog
+#: path is a ``none`` row: R2-j, the sentence in a changelog with *no dated
+#: sections*, which is the root ``CHANGELOG.md``. It was classified as
+#: ``control.md``, where the release-record rule never applies, so the row reported
+#: the right verdict for the wrong reason and would have kept reporting it with
+#: that rule deleted.
 #:
 #: The first row is #427's own confirmed member, transcribed. The next three are
 #: the verdicts the classifier has to keep apart -- a live owner, a provenance
@@ -501,7 +510,7 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
 #: outranks the owner phrasing, and the expected verdict here records that
 #: behaviour rather than wishing it away. :func:`main` prints how many real rows
 #: it reaches.
-POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, str], ...]] = (
+POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, str, str], ...]] = (
     (
         "#427's confirmed member: a closed issue named as what removes a residual",
         "The index purge in [#15](https://github.com/theurian/theurian/issues/15) "
@@ -509,6 +518,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, s
         (),
         "15",
         "issue:closed",
+        "control.md",
         "none",
         "SUSPECT",
     ),
@@ -519,6 +529,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, s
         (),
         "129",
         "issue:closed",
+        "control.md",
         "none",
         "history",
     ),
@@ -528,6 +539,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, s
         (),
         "429",
         "issue:open",
+        "control.md",
         "none",
         "open owner",
     ),
@@ -537,6 +549,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, s
         (),
         "113",
         "pr:merged",
+        "control.md",
         "none",
         "SUSPECT",
     ),
@@ -546,6 +559,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, s
         (),
         "468",
         "issue:closed",
+        "control.md",
         "none",
         "SUSPECT",
     ),
@@ -558,6 +572,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, s
         ),
         "468",
         "issue:closed",
+        "control.md",
         "none",
         SUPERSEDED_IN_PLACE,
     ),
@@ -570,6 +585,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, s
         ),
         "468",
         "issue:closed",
+        "control.md",
         "none",
         "SUSPECT",
     ),
@@ -582,6 +598,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, s
         ),
         "468",
         "issue:closed",
+        "control.md",
         "none",
         "SUSPECT",
     ),
@@ -592,6 +609,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, s
         (),
         "15",
         "issue:closed",
+        "control.md",
         "none",
         "history",
     ),
@@ -602,6 +620,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, s
         (),
         "129",
         "issue:closed",
+        "plugins/claude-code/CHANGELOG.md",
         "unreleased",
         "SUSPECT",
     ),
@@ -612,6 +631,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, s
         (),
         "129",
         "issue:closed",
+        "plugins/claude-code/CHANGELOG.md",
         "dated",
         "record (release note)",
     ),
@@ -624,6 +644,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, s
         (),
         "129",
         "issue:closed",
+        "CHANGELOG.md",
         "none",
         "SUSPECT",
     ),
@@ -818,22 +839,20 @@ def _run_positive_controls(*, offline: bool) -> int:
     failures = 0
     ran = 0
     print("=== POSITIVE CONTROLS ===")
-    for label, text, succeeding, number, state, section, expected in POSITIVE_CONTROLS:
+    for label, text, succeeding, number, state, path, section, expected in POSITIVE_CONTROLS:
         ran += 1
         # The section membership is *computed* by the rule under test over a
         # synthetic document, never asserted here -- round two's R2-g. The old
         # control handed `classify` a hardcoded `frozenset({0})` and asserted the
         # verdict that premise implies, so gutting `unreleased_lines` survived it.
+        #
+        # The path is the row's own, for the reason POSITIVE_CONTROLS records: it
+        # used to be derived from `section`, which gave the R2-j row -- a changelog
+        # with no dated sections -- a path the release-record rule does not even
+        # look at.
         lines, line = planted_changelog(text, section=section)
         verdict = classify(
-            Sentence(
-                path="plugins/claude-code/CHANGELOG.md"
-                if section != "none" or "record" in expected
-                else "control.md",
-                line=line,
-                text=text,
-                block=text,
-            ),
+            Sentence(path=path, line=line, text=text, block=text),
             number,
             state,
             succeeding,
