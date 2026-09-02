@@ -1,4 +1,14 @@
-# Threat-model audit keys (#199 unit A, and the sweeps that followed it)
+# Audit keys (#199)
+
+Two families live here, and they answer different questions. Mixing them up is
+how a population key gets read as a gate.
+
+| Family | Question | Exit status |
+| :-- | :-- | :-- |
+| **Population keys** (`threat_model_*.py`) | *What is the population?* | always `0`; they report |
+| **Census audits** (unit B, below) | *Does every member of the population discharge?* | `1` on a violation |
+
+## Population keys (#199 unit A, and the sweeps that followed it)
 
 The population keys the #199 unit-A audit ran, committed so that every count in
 [the work log](../../docs/work-logs/2026-08-30-199-unit-a-audit.md) is
@@ -38,3 +48,43 @@ are anchored:
 mkdir -p /tmp/tm && git show 06de58a:docs/security/threat-model.md > /tmp/tm/threat-model.md
 uv run --frozen python tools/audit/threat_model_1e.py /tmp/tm/threat-model.md
 ```
+
+## Census audits (#199 unit B)
+
+The object-keyed census. Where the keys above answer *what is the population*,
+these answer *does every member of it discharge* — so each exits `1` on a
+violation and prints its classification, and each carries a **ledger** that is
+exact in both directions: an unclassified member is a finding, and a ledger row
+the sweep no longer produces means somebody fixed a sentence and left the record
+behind.
+
+They read the whole tracked tree rather than one file, minus two exclusions that
+[`claim_surfaces.py`](claim_surfaces.py) states as a constant: `.theurian/` (the
+served corpus, moved by a re-seed, never an edit) and `docs/work-logs/` (dated
+records). Matching happens on **wrap-joined, whitespace-collapsed blocks**, not
+on lines: every Markdown document here is hard-wrapped, and a line-oriented pass
+undercounts by an amount nobody can state.
+
+| Script | Population | Discharge |
+| :-- | :-- | :-- |
+| `config_object_claims.py` | liveness claims about a watched object; the inventory is the schema key surface (json-parsed) ∪ the `ProjectPaths` file surface (introspected) ∪ the `.theurian/` paths governed prose names | a classified verdict per suspect in `SUSPECTS` |
+| `controls_discharge.py` | the threat model's `**Controls` blocks ∪ the project-config schema's descriptions | names a `src/` symbol, or a pinning test, or is owed by an **open** issue, or has a row in `PROSE_ONLY` |
+| `owner_position_cites.py` | every tracker cite in governed prose | the cite is historical, or its number is open |
+| `sha_anchors.py` | every sha-like token in governed prose | the commit is an ancestor of `main`, or the cite carries the pull-request qualifier |
+| `ref_field_pair.py` | every `unresolvedRefCount` / `refWalkTruncated` site | the site states the narrowed contract |
+
+**Run the positive control before reading a zero.** A key that has stopped
+matching reports exactly what a clean tree reports, and this repository has
+shipped that failure before:
+
+```sh
+uv run --frozen python tools/audit/config_object_claims.py --positive-control
+uv run --frozen python tools/audit/owner_position_cites.py --positive-control
+uv run --frozen python tools/audit/sha_anchors.py --positive-control
+uv run --frozen python tools/audit/ref_field_pair.py --positive-control
+```
+
+Tracker states come from [`tracker_state.py`](tracker_state.py): a live `gh`
+query by default, falling back to the committed `tracker-state.json` with its
+measurement date printed. `--offline` forces the snapshot, which is what makes a
+committed census run reproducible.
