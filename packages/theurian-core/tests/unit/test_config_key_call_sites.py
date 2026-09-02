@@ -729,26 +729,65 @@ INGEST_CONFIG_BULLET: Final = (
 )
 
 
+#: A line that opens a new block rather than continuing the one above it.
+#:
+#: CommonMark's rule for a *lazy continuation*: a paragraph goes on across a line
+#: break unless the next line starts something else. The shape
+#: ``tools/audit/claim_surfaces.py`` keys blocks on, transcribed rather than
+#: imported -- ``tools/audit/`` is a script directory, not an installed package --
+#: plus ``>``, which that module leaves out because it strips blockquote markers
+#: before the rule runs and nothing strips them here.
+_OPENS_A_BLOCK: Final = re.compile(r"[ \t]*(?:#{1,6}\s|[-*+]\s|\d+\.\s|\||```|---\s*$|>)")
+
+
 def _markdown_list_item(document: pathlib.Path, anchor: str) -> str:
     """The one top-level list item of ``document`` containing ``anchor``, collapsed.
 
-    An item is a line opening ``- `` plus the indented, non-blank lines under it,
-    which is how every bullet in these command documents is hard-wrapped. The
-    anchor has to select exactly one item; two would mean the claim moved and the
-    caller would be pinning whichever came first.
+    An item is a line opening ``- `` plus everything CommonMark keeps inside it,
+    which is more than the indented lines under it and is round three's adversarial
+    HIGH-3. The old rule took a continuation only where it was indented by **two**
+    spaces, so four ways of appending a sentence to the bullet a reader sees moved
+    nothing at all -- and this pin exists precisely to catch an addition:
+
+    * a **lazy continuation** at column 0, which CommonMark folds into the
+      paragraph it follows;
+    * a continuation indented by **one** space;
+    * a continuation indented by a **tab**;
+    * a second paragraph of the item, after a blank line and indented.
+
+    All four render inside the bullet. So the rule here is CommonMark's: after a
+    blank line the item continues only where the next line is indented, and
+    otherwise any non-blank line that does not *open a block* belongs to the item.
+    A sibling bullet opens a block, so the item still ends where the next ``- ``
+    begins -- which is what keeps a contradiction added as its **own bullet** out
+    of reach, recorded as not held in
+    :func:`test_the_ingest_command_states_the_config_bound_and_nothing_beside_it`.
+
+    The anchor has to select exactly one item; two would mean the claim moved and
+    the caller would be pinning whichever came first.
     """
     items: list[list[str]] = []
     current: list[str] | None = None
+    after_blank = False
     for line in document.read_text(encoding="utf-8").splitlines():
         if line.startswith("- "):
             if current is not None:
                 items.append(current)
             current = [line[2:]]
-        elif current is not None and line.startswith("  ") and line.strip():
+            after_blank = False
+        elif current is None:
+            continue
+        elif not line.strip():
+            after_blank = True
+        elif line.startswith((" ", "\t")):
             current.append(line.strip())
-        elif current is not None:
+            after_blank = False
+        elif not after_blank and not _OPENS_A_BLOCK.match(line):
+            current.append(line.strip())
+        else:
             items.append(current)
             current = None
+            after_blank = False
     if current is not None:
         items.append(current)
 
@@ -775,6 +814,19 @@ def test_the_ingest_command_states_the_config_bound_and_nothing_beside_it() -> N
     bullet is where it states which key of ``.theurian/config.yaml`` is in force
     and how far the control that key selects reaches. Both halves are the kind of
     claim that misleads by addition rather than by omission.
+
+    **How much of "added to this bullet" it holds, and what it does not.** Round
+    three added the same contradicting sentence four ways that render inside the
+    bullet and were outside the two-space rule this pin read the document with -- a
+    lazy continuation at column 0, a one-space indent, a tab, and a second
+    paragraph after a blank line. All four are RED now; :func:`_markdown_list_item`
+    is where the rule lives.
+
+    What is still not held is a contradiction added as its **own** bullet: that is
+    a different list item, and this pin holds one. The whole-file fragment rows in
+    :data:`SECRET_SCAN_PROSE_SURFACES` do not see an addition anywhere, so nothing
+    in this module reddens on it. Recorded rather than closed -- pinning the whole
+    document is a different instrument, and #512 owns the question.
     """
     bullet = _markdown_list_item(INGEST_COMMAND_DOC, "security.secretScan")
 
