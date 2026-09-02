@@ -580,8 +580,10 @@ class SqliteReviewFindingStore:
 
         **Bounded.** ``LIMIT`` is bound as a parameter from
         :class:`FindingQuery`'s already-positive value. The scan behind it is a
-        full pass over ``findings`` (the table's only index is its primary key,
-        and the sort is on ``committed_at``), so the work is
+        full pass over ``findings`` for every filter except ``commit_sha``,
+        which ``EXPLAIN QUERY PLAN`` shows as a ``SEARCH`` on the table's one
+        index, the primary-key autoindex (measured 2026-09-03; the sort is on
+        ``committed_at`` either way). The work is
         **corpus-bounded, not caller-bounded**: no filter a caller sends makes it
         larger, and the corpus is this repository's own history -- 502 accepted
         findings measured on ``origin/main`` @ ``141cf6f``, 2026-09-02 (T-6).
