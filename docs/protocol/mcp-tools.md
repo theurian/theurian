@@ -408,6 +408,11 @@ Every optional argument is a filter, and each is exact:
 | `q` | a literal substring of `findingText`, ASCII case folded |
 | `limit` | at most 100, default 20 |
 
+Every string filter — `reviewer`, `severity`, `family`, `specialist`,
+`commitSha` and `q` — is bounded at 200 characters. A value inside that bound is
+quoted back in a refusal, because a typo is what the refusal exists to make
+visible; a value past it is reported by its length and never echoed.
+
 A value outside a bound or a vocabulary is **refused naming the bound**, not
 clamped and not treated as "no filter": a truncated page reads as the whole
 answer, a short sha would match nothing and read as "no findings on that

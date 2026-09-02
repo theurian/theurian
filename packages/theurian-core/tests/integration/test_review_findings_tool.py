@@ -827,21 +827,25 @@ async def test_a_bad_filter_is_refused_before_the_project_is_resolved(
 # -- The numbers themselves, which a symbolic assertion cannot hold ---------
 
 
-def test_the_published_limit_row_states_the_bounds_this_build_enforces() -> None:
-    """The one independent statement of two numbers nothing else held.
+def test_the_published_bounds_are_the_bounds_this_build_enforces() -> None:
+    """The one independent statement of three numbers nothing else held.
 
-    Every bound test above names ``MAX_FINDINGS_LIMIT`` and
-    ``DEFAULT_FINDINGS_LIMIT`` symbolically, which is what a bound test should
-    do -- and is also why the *numbers* went unheld: raising the cap tenfold and
-    dropping the default to three each passed the whole suite (measured
-    2026-09-02 against ``e808c82``; mutations ``findings-cap-1000`` and
-    ``findings-default-3``, 4801 tests green under both).
+    Every bound test above names ``MAX_FINDINGS_LIMIT``,
+    ``DEFAULT_FINDINGS_LIMIT`` and ``MAX_FILTER_CHARS`` symbolically, which is
+    what a bound test should do -- and is also why the *numbers* went unheld:
+    raising the cap tenfold, dropping the default to three, and widening the
+    filter bound from 200 to 5,000 each passed the whole suite (measured
+    2026-09-02 against ``e808c82``; mutations ``findings-cap-1000``,
+    ``findings-default-3`` and ``filter-chars-5000``, 4801 tests green under
+    each). Those three measurements stand as records of that commit; what
+    changed since is this pin, not the mutations' behaviour then.
 
-    ``docs/protocol/mcp-tools.md`` is where they are published, so it is the
-    pin: the row is recomputed here from the live constants rather than
-    restated. A client reads that table to size its own paging, and a build
+    ``docs/protocol/mcp-tools.md`` is where all three are published, so it is
+    the pin: each is recomputed here from the live constant rather than
+    restated. A client reads the limit row to size its own paging, and a build
     whose cap is not the published cap has told it something false about how
-    much of an answer it is getting.
+    much of an answer it is getting; the filter bound is published because a
+    caller writing a ``q`` has no other way to learn where the refusal starts.
     """
     published = (REPO_ROOT / "docs/protocol/mcp-tools.md").read_text(encoding="utf-8")
 
@@ -854,6 +858,14 @@ def test_the_published_limit_row_states_the_bounds_this_build_enforces() -> None
         f"hold them the way `maxLength: 2000` holds `knowledge.search`'s `query`, so "
         f"this row is the only thing standing between a caller and a false statement "
         f"about how much of an answer they received."
+    )
+    bound = f"is bounded at {MAX_FILTER_CHARS} characters"
+    assert bound in published, (
+        f"docs/protocol/mcp-tools.md does not carry {bound!r}. `MAX_FILTER_CHARS` is "
+        f"an amplification control (#17) as well as a filter bound: it decides how "
+        f"long a caller-controlled string this surface will quote back in a refusal. "
+        f"Widening it silently was green against the whole suite until this sentence "
+        f"was published, which is why the number and not only the property is held."
     )
 
 
@@ -895,13 +907,18 @@ async def test_a_call_with_no_limit_returns_the_default_page_not_the_whole_store
 async def test_a_refusal_is_never_a_bigger_reflector_than_the_published_echo(
     project: ProjectRegistry, filter_name: str
 ) -> None:
-    """What ``MAX_FILTER_CHARS`` buys, asserted -- because the number itself is unpublished.
+    """What ``MAX_FILTER_CHARS`` buys, asserted as a property and not as a number.
 
     A value *inside* the length bound is quoted back, deliberately: a typo is
     what the refusal exists to make visible. That makes the bound an
-    amplification control (#17), and nothing published states it -- widening it
+    amplification control (#17), and nothing published stated it -- widening it
     from 200 to 5,000 passed the whole suite (measured 2026-09-02 against
-    ``e808c82``; mutation ``filter-chars-5000``).
+    ``e808c82``; mutation ``filter-chars-5000``). The number is published now,
+    and ``test_the_published_bounds_are_the_bounds_this_build_enforces`` holds
+    the record against the constant; this test is the other half, and it is the
+    half that survives the number changing: what it asserts is that whatever the
+    bound *is*, it admits every legitimate value and refuses to become a
+    reflector.
 
     So the property is pinned against two live values instead of the number:
 

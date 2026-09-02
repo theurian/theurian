@@ -37,6 +37,19 @@ build enforces the disclosure axis, so an empty result may mean "withheld by the
 deployment's declared ceiling" rather than "nothing matched" — and it reports
 only that, never the ceiling itself.
 
+A ninth joined on the same terms, and stays out of the same table:
+`reviewFindings: true`, from
+[#368](https://github.com/theurian/theurian/issues/368)
+([ADR-0029](adr/0029-review-findings-are-governed-knowledge.md)). It reports that
+`review.findings` is callable — an offline read of the `Review-Finding:` trailers
+`theurian findings build` landed in that project's own store, served under the
+untrusted-content safety triple. **It is not `reviewIngestion` moving.** That
+flag, in the table above, is still `false`: nothing reaches GitHub, and no
+review thread, inline comment or resolution state is read. The two are separate
+on purpose, because the change that reaches GitHub is the one that owes SEC-10's
+repository allowlist ([#429](https://github.com/theurian/theurian/issues/429)),
+and an offline trailer read owes none.
+
 ## Contents
 
 0. [Premise — the stated principles against the implementation](#0-premise)
