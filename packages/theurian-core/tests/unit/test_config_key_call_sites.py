@@ -1620,6 +1620,26 @@ SECRET_SCANNER_CALL_SITES: dict[str, int] = {"application/proposal_service.py": 
 #: for the detector whatever it then does with it.
 SECRET_SCANNER_IMPORTERS: tuple[str, ...] = ("application/proposal_service.py",)
 
+#: Every module of the shipped package that imports :data:`SECRET_SCAN_POLICY_MODULE`.
+#:
+#: The reader's half of the same pair, and round four is why it exists. The call
+#: count above resolves bindings of ``read_secret_scan_policy``, so a module that
+#: takes the *module object* and calls ``project_config.read_secret_scan_policy``
+#: introduces no such binding and moved nothing -- planted and measured green
+#: while ``ingest.md``, the schema description, ``SECURITY.md`` and T-15 all say
+#: the policy is consulted at the approval gate.
+#:
+#: **Two entries, and the second is not a defect.**
+#: ``application/project_service.py`` takes ``PROJECT_CONFIG_FILE`` from this
+#: module -- the file name, not the policy -- so it is an importer that reads no
+#: policy. The membership is what this pin holds; what each importer *does* with
+#: the module is held by the call count beside it, and the pair is what makes a
+#: third importer a change somebody has to explain.
+SECRET_SCAN_POLICY_IMPORTERS: tuple[str, ...] = (
+    "application/project_service.py",
+    "application/proposal_service.py",
+)
+
 #: Number words as the changelog spells them, index = value.
 #:
 #: The sentence pinned below mixes digits and words -- "**12** descriptions",
@@ -1697,6 +1717,15 @@ def _shipped_modules() -> Iterator[tuple[str, ast.Module]]:
         yield module, ast.parse(path.read_text(encoding="utf-8"), filename=module)
 
 
+#: The parsed package as the two SEC-11 keys read it, or a planted variant of it.
+#:
+#: Both keys take this rather than calling :func:`_shipped_modules` themselves, so
+#: :data:`SEC11_REACH_CASES` can hand them the shipped tree with one module added
+#: or one module's source extended. That is what turns "this route escapes" from a
+#: sentence in a docstring into a row that runs.
+Parsed = tuple[tuple[str, ast.Module], ...]
+
+
 def _imported_module(node: ast.ImportFrom, module: str) -> str:
     """The dotted module ``node`` imports from, with a relative form resolved.
 
@@ -1732,7 +1761,7 @@ def _local_bindings(tree: ast.Module, module: str, defining_module: str, name: s
     }
 
 
-def _binding_resolved_calls(defining_module: str, name: str) -> dict[str, int]:
+def _binding_resolved_calls(defining_module: str, name: str, modules: Parsed) -> dict[str, int]:
     """How many times each module calls ``defining_module.name``, whatever it calls it.
 
     **Bindings first, calls second, and that order is the point.** The previous
@@ -1752,13 +1781,13 @@ def _binding_resolved_calls(defining_module: str, name: str) -> dict[str, int]:
 
     What it does not resolve, stated rather than implied: a call reached through
     the module object (``content_secrets.scan_text(...)``), through ``getattr``,
-    or through a name re-exported by a third module. The first is what
-    :data:`SECRET_SCANNER_IMPORTERS` covers -- every one of those routes has to
-    import the defining module, and that import is counted -- and the last two are
-    outside any AST key here.
+    or through a name re-exported by a third module. The first is the import-graph
+    key's, and the routes that key reaches are the rows of
+    :data:`SEC11_REACH_CASES` marked caught; the routes neither reaches are the
+    rows marked as escaping, and they run rather than being described.
     """
     counts: dict[str, int] = {}
-    for module, tree in _shipped_modules():
+    for module, tree in modules:
         bindings = _local_bindings(tree, module, defining_module, name)
         if not bindings:
             continue
@@ -1774,28 +1803,62 @@ def _binding_resolved_calls(defining_module: str, name: str) -> dict[str, int]:
     return counts
 
 
-def _importers_of(defining_module: str) -> tuple[str, ...]:
-    """Every module of the shipped package that imports ``defining_module``, sorted.
+def _ancestor_steps(defining_module: str) -> tuple[tuple[str, str], ...]:
+    """Each ancestor package of ``defining_module``, with the component under it.
 
-    All three import forms, because the point of this key is that it does not
-    depend on recognising a call: ``import theurian.security.content_secrets``,
-    ``from theurian.security.content_secrets import scan_text``, and ``from
-    theurian.security import content_secrets`` all reach the same module and the
-    last two of them bind nothing a call-shaped key would recognise.
+    ``theurian.security.content_secrets`` gives ``("theurian", "security")`` and
+    ``("theurian.security", "content_secrets")``. Those are the two pairs a
+    ``from <package> import <component>`` has to be checked against, and the two
+    dotted names a plain ``import`` reaches the defining module through.
     """
-    package, _, leaf = defining_module.rpartition(".")
+    parts = defining_module.split(".")
+    return tuple((".".join(parts[:index]), parts[index]) for index in range(1, len(parts)))
+
+
+def _importers_of(defining_module: str, modules: Parsed) -> tuple[str, ...]:
+    """Each module of the parsed package that imports ``defining_module``, sorted.
+
+    The point of this key is that it does not depend on recognising a call. Six
+    spellings reach the module and are counted here:
+
+    * ``import theurian.security.content_secrets``, and any deeper ``import`` of
+      something inside it;
+    * ``from theurian.security.content_secrets import scan_text``, in absolute or
+      relative form;
+    * ``from theurian.security import content_secrets``;
+    * ``import theurian.security`` and ``import theurian``, each of which binds a
+      name the defining module hangs off as an attribute;
+    * ``from theurian import security``, the same reach spelled the other way.
+
+    The last three are round four's: the reviewer planted a new module for each,
+    called ``theurian.security.content_secrets.scan_text`` down the attribute
+    chain, confirmed the call resolves at run time, and measured each one moving
+    nothing here. The package writes no plain ``import theurian...`` anywhere, and
+    what it takes through ``from theurian import ...`` is ``__version__`` and
+    ``__protocol_version__`` rather than a subpackage name -- so counting the
+    ancestor spellings adds no member to either recorded tuple, which is what the
+    two import-graph pins below assert rather than what this paragraph promises.
+
+    What it does not reach is written down as rows of :data:`SEC11_REACH_CASES`
+    that plant the route and assert it escapes: an ``import`` of some *other*
+    submodule, which binds the root package without naming an ancestor of this
+    one, and the two run-time import functions.
+    """
+    steps = _ancestor_steps(defining_module)
+    reached_by_import = {defining_module, *(package for package, _component in steps)}
     found: set[str] = set()
-    for module, tree in _shipped_modules():
+    for module, tree in modules:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import) and any(
-                alias.name == defining_module or alias.name.startswith(f"{defining_module}.")
+                alias.name in reached_by_import or alias.name.startswith(f"{defining_module}.")
                 for alias in node.names
             ):
                 found.add(module)
             elif isinstance(node, ast.ImportFrom):
                 target = _imported_module(node, module)
-                if target == defining_module or (
-                    target == package and any(alias.name == leaf for alias in node.names)
+                names = {alias.name for alias in node.names}
+                if target == defining_module or any(
+                    target == package and component in names for package, component in steps
                 ):
                     found.add(module)
     return tuple(sorted(found))
@@ -1837,7 +1900,9 @@ def test_the_secret_scan_policy_is_read_at_one_call_site_only() -> None:
     means the opposite -- the control the schema publishes ``default: "block"``
     for has gone, and every surface describing a shipped control is now false.
     """
-    calls = _binding_resolved_calls(SECRET_SCAN_POLICY_MODULE, SECRET_SCAN_POLICY_READER)
+    calls = _binding_resolved_calls(
+        SECRET_SCAN_POLICY_MODULE, SECRET_SCAN_POLICY_READER, tuple(_shipped_modules())
+    )
 
     assert calls == SECRET_SCAN_POLICY_CALL_SITES, (
         f"`{SECRET_SCAN_POLICY_READER}` is called {calls}, and the "
@@ -1888,7 +1953,9 @@ def test_the_secret_scanner_runs_at_one_call_site_only() -> None:
     new policy-reading wrapper reddens the sibling above, and a scan that skips the
     policy entirely reddens here. Neither substitutes for the other.
     """
-    calls = _binding_resolved_calls(SECRET_SCANNER_MODULE, SECRET_SCANNER)
+    calls = _binding_resolved_calls(
+        SECRET_SCANNER_MODULE, SECRET_SCANNER, tuple(_shipped_modules())
+    )
 
     assert calls == SECRET_SCANNER_CALL_SITES, (
         f"`{SECRET_SCANNER}` is called {calls}, and the recorded "
@@ -1911,27 +1978,30 @@ def test_the_detector_module_is_imported_by_one_module_only() -> None:
     """SEC-11: the other half of the pair, keyed on the import graph (round three).
 
     The count beside this one resolves the *bindings* a module introduces for
-    ``scan_text`` and counts the calls through them. That key is exact for every
-    module that imports the name -- alias included -- and blind to a module that
-    reaches the detector through the module object instead::
+    ``scan_text`` and counts the calls through them. That key is exact for a module
+    that imports the name -- alias included -- and blind to a module that reaches
+    the detector through the module object instead::
 
         from theurian.security import content_secrets
         content_secrets.scan_text(body)
 
-    No binding of ``scan_text`` exists there, so nothing above counts it. What
-    every such route does have in common is an **import of the defining module**,
-    and that is what this counts: all three import forms, over the whole shipped
-    package.
+    No binding of ``scan_text`` exists there, so nothing above counts it. What such
+    a route does have is an **import of the defining module**, and that is what
+    this counts: the six spellings :func:`_importers_of` enumerates, over the whole
+    shipped package.
 
-    So the pair holds exactly this much. A module that is not
-    ``application/proposal_service.py`` cannot reach the detector at all without
-    reddening here, and ``application/proposal_service.py`` cannot call it a second
-    time without reddening the count beside this. What neither reaches is a call
-    assembled at runtime -- ``getattr(module, "scan_" + "text")`` -- or a re-export
-    from a module that has already been recorded as an importer, which is the same
-    class of bound this module's docstring records for its config-key scan.
+    **What the pair reaches, and what it does not, is a table that runs.**
+    :data:`SEC11_REACH_CASES` plants each route into a parsed copy of the package
+    and records whether the pair reddens on it, so a row marked as escaping fails
+    the moment it stops escaping and a row marked caught fails the moment it stops
+    being caught. Round four is why: it planted five new-module import routes, and
+    three of them -- ``from theurian import security``, ``import
+    theurian.security`` and ``import theurian`` -- were measured moving nothing,
+    each with its call confirmed to resolve at run time, under a sentence in this
+    docstring saying a module could not reach the detector at all without
+    reddening here.
     """
-    importers = _importers_of(SECRET_SCANNER_MODULE)
+    importers = _importers_of(SECRET_SCANNER_MODULE, tuple(_shipped_modules()))
 
     assert importers == SECRET_SCANNER_IMPORTERS, (
         f"`{SECRET_SCANNER_MODULE}` is imported by {list(importers)}, and the "
@@ -1945,6 +2015,223 @@ def test_the_detector_module_is_imported_by_one_module_only() -> None:
         "makes those four documents narrower than the product.\n\n"
         "A MISSING importer: the accept path no longer imports the detector, so "
         "SEC-11's gate is gone while every surface still describes it."
+    )
+
+
+def test_the_policy_module_is_imported_by_the_two_modules_this_file_records() -> None:
+    """SEC-11: the reader's import graph, the half the call count cannot see (round four).
+
+    ``read_secret_scan_policy`` has the shape ``scan_text`` had before round three
+    gave it an import-graph sibling: the count beside this one resolves *bindings*
+    of the function name, so a module that takes the module object instead
+    introduces no binding and moves nothing::
+
+        from theurian.security import project_config
+        project_config.read_secret_scan_policy(root, config)
+
+    That was planted in round four and measured green, while
+    ``plugins/claude-code/commands/ingest.md``, the schema's
+    ``security.secretScan`` description, ``SECURITY.md`` and the threat model's
+    T-15 controls each say where the policy is consulted. The reader half now has
+    the same two-key pair the detector half has had since round three.
+
+    **Two importers, and the difference between them is the point of having both
+    keys.** ``application/project_service.py`` takes ``PROJECT_CONFIG_FILE`` -- the
+    file name -- and reads no policy, which is why the call count beside this one
+    lists ``application/proposal_service.py`` alone. A third importer is a module
+    that has reached for the policy module, and what it then does with it is a
+    question somebody has to answer in the same change.
+
+    The direction that matters is again the *addition*. A removal reddens too, and
+    means the accept path no longer reaches the module the schema publishes
+    ``default: "block"`` for.
+    """
+    importers = _importers_of(SECRET_SCAN_POLICY_MODULE, tuple(_shipped_modules()))
+
+    assert importers == SECRET_SCAN_POLICY_IMPORTERS, (
+        f"`{SECRET_SCAN_POLICY_MODULE}` is imported by {list(importers)}, and the "
+        f"recorded importers are {list(SECRET_SCAN_POLICY_IMPORTERS)}.\n\n"
+        "A NEW importer: a module of the shipped package has reached for SEC-11's "
+        "policy module. It may only want `PROJECT_CONFIG_FILE`, as "
+        "`application/project_service.py` does -- or it may be reading the policy "
+        "through the module object, which the call count beside this one cannot "
+        "see. Say which in the same change, then record it here.\n\n"
+        "A MISSING importer: `theurian propose accept` no longer reaches the "
+        "module that reads `security.secretScan`, so the control the schema "
+        "publishes a default for is gone while four documents still describe it."
+    )
+
+
+#: Each route to SEC-11's two symbols, and whether the pins above redden on it.
+#:
+#: **This table is the bound, and it runs.** Round three wrote the pair's reach
+#: into three docstrings as prose -- "all three import forms", "cannot reach the
+#: detector at all without reddening here" -- and round four planted five import
+#: routes and three call routes and measured three of the five and two of the
+#: three escaping under those sentences. A sentence claiming reach stays true by
+#: nobody testing it; a row that plants the route and asserts the verdict fails the
+#: day the verdict changes, in either direction.
+#:
+#: Each row is ``(label, module path, source, caught)``. ``caught`` is what the
+#: *pair* does, because that is the claim: a route is caught when either key moves
+#: off its recorded value. Where the module path names a module the package already
+#: ships, the source is appended to it -- which is how a second call inside the
+#: already-recorded module is planted.
+#:
+#: The escaping rows belong to #512
+#: (https://github.com/theurian/theurian/issues/512) alongside the census's own
+#: escape table; the terminal form for both is to stop enumerating syntax.
+SEC11_REACH_CASES: Final[tuple[tuple[str, str, str, bool], ...]] = (
+    (
+        "C0 a new module, `from ... import scan_text`",
+        "application/planted.py",
+        "from theurian.security.content_secrets import scan_text\n"
+        "def screen(text: str) -> object:\n    return scan_text(text)\n",
+        True,
+    ),
+    (
+        "C1 a new module, `from theurian.security import content_secrets`",
+        "application/planted.py",
+        "from theurian.security import content_secrets\n"
+        "def screen(text: str) -> object:\n    return content_secrets.scan_text(text)\n",
+        True,
+    ),
+    (
+        "C2 round four: a new module, `from theurian import security`",
+        "application/planted.py",
+        "from theurian import security\n"
+        "def screen(text: str) -> object:\n"
+        "    return security.content_secrets.scan_text(text)\n",
+        True,
+    ),
+    (
+        "C3 round four: a new module, `import theurian.security`",
+        "application/planted.py",
+        "import theurian.security\n"
+        "def screen(text: str) -> object:\n"
+        "    return theurian.security.content_secrets.scan_text(text)\n",
+        True,
+    ),
+    (
+        "C4 round four: a new module, `import theurian`",
+        "application/planted.py",
+        "import theurian\n"
+        "def screen(text: str) -> object:\n"
+        "    return theurian.security.content_secrets.scan_text(text)\n",
+        True,
+    ),
+    (
+        "C5 a second call inside the module already recorded",
+        "application/proposal_service.py",
+        "\n\ndef _planted_second(text: str) -> object:\n    return scan_text(text)\n",
+        True,
+    ),
+    (
+        "R4b round four: the policy read through the module object, in a new module",
+        "application/planted.py",
+        "from theurian.security import project_config\n"
+        "def gate(root: object, config: object) -> object:\n"
+        "    return project_config.read_secret_scan_policy(root, config)\n",
+        True,
+    ),
+    (
+        "escape: an `import` of another submodule, then the attribute chain (#512)",
+        "application/planted.py",
+        "import theurian.domain.knowledge\n"
+        "def screen(text: str) -> object:\n"
+        "    return theurian.security.content_secrets.scan_text(text)\n",
+        False,
+    ),
+    (
+        "escape: `importlib.import_module`, a name assembled at run time (#512)",
+        "application/planted.py",
+        "import importlib\n"
+        "def screen(text: str) -> object:\n"
+        '    return importlib.import_module("theurian.security.content_secrets").scan_text(text)\n',
+        False,
+    ),
+    (
+        "escape: `__import__`, the same reach with no import statement (#512)",
+        "application/planted.py",
+        "def screen(text: str) -> object:\n"
+        '    module = __import__("theurian.security.content_secrets", fromlist=["scan_text"])\n'
+        "    return module.scan_text(text)\n",
+        False,
+    ),
+    (
+        "escape C6: a local rebinding, second call in the recorded module (#512)",
+        "application/proposal_service.py",
+        "\n\n_planted_alias = scan_text\n\n\n"
+        "def _planted_second(text: str) -> object:\n    return _planted_alias(text)\n",
+        False,
+    ),
+    (
+        "escape C7: a default-argument rebinding in the recorded module (#512)",
+        "application/proposal_service.py",
+        "\n\ndef _planted_second(text: str, _screen: object = scan_text) -> object:\n"
+        "    return _screen(text)\n",
+        False,
+    ),
+)
+
+
+def _package_with(module: str, source: str) -> Parsed:
+    """The parsed package with ``source`` planted at ``module``.
+
+    Appended where the package already ships that module, added where it does not.
+    Appending rather than replacing is what makes a *second* call inside an
+    already-recorded module a plant rather than a rewrite.
+    """
+    shipped = dict(_shipped_modules())
+    existing = SRC / module
+    text = (existing.read_text(encoding="utf-8") + source) if existing.exists() else source
+    shipped[module] = ast.parse(text, filename=module)
+    return tuple(sorted(shipped.items()))
+
+
+@pytest.mark.parametrize(
+    ("module", "source", "caught"),
+    [(row[1], row[2], row[3]) for row in SEC11_REACH_CASES],
+    ids=[row[0] for row in SEC11_REACH_CASES],
+)
+def test_each_recorded_sec11_route_is_reached_or_not_as_this_file_records(
+    module: str, source: str, caught: bool
+) -> None:
+    """RED means a SEC-11 route changed sides, which is news in either direction.
+
+    A route that stops being caught is an opened hole in the pair that four
+    documents' truth rests on. A route recorded as escaping that becomes caught is
+    the good direction and still fails here, because the record is what a reader is
+    told the pins reach -- that record moves in the commit that moves the key, or
+    it is a sentence nobody rechecked, which is what round four found in three
+    docstrings at once.
+
+    The verdict is the *pair's*: either the call count or the import graph moving
+    off its recorded value counts as caught, because either one failing is what a
+    change author sees.
+    """
+    planted = _package_with(module, source)
+
+    reddened = (
+        _binding_resolved_calls(SECRET_SCANNER_MODULE, SECRET_SCANNER, planted)
+        != SECRET_SCANNER_CALL_SITES
+        or _importers_of(SECRET_SCANNER_MODULE, planted) != SECRET_SCANNER_IMPORTERS
+        or _binding_resolved_calls(SECRET_SCAN_POLICY_MODULE, SECRET_SCAN_POLICY_READER, planted)
+        != SECRET_SCAN_POLICY_CALL_SITES
+        or _importers_of(SECRET_SCAN_POLICY_MODULE, planted) != SECRET_SCAN_POLICY_IMPORTERS
+    )
+
+    assert reddened is caught, (
+        f"the route planted at {module} is recorded as "
+        f"{'caught' if caught else 'escaping'} and the four SEC-11 keys "
+        f"{'caught' if reddened else 'did not catch'} it.\n\n"
+        f"  planted:\n{source}\n"
+        "Caught -> escaping is a hole opened in the pair `ingest.md`, the schema's "
+        "`security.secretScan` description, `SECURITY.md` and the threat model's "
+        "T-15 controls all rest on. Escaping -> caught is the good direction and "
+        "still belongs in the record: move the row and say so in the same commit, "
+        "because the rows marked escaping are what this module tells a reader it "
+        "does not see (#512)."
     )
 
 
