@@ -1,6 +1,7 @@
-"""What three files claim about who reads ``.theurian/config.yaml`` (#426).
+"""What the governed records claim about who reads ``.theurian/config.yaml`` (#426).
 
-All three recorded that **nothing in ``src/`` reads ``.theurian/config.yaml``**.
+Every one of them recorded that **nothing in ``src/`` reads
+``.theurian/config.yaml``**.
 That was true when each was written and stopped being true with
 [ADR-0027](../../../../docs/adr/0027-accept-validates-before-it-moves.md)
 decision 3: ``security/project_config.py::read_secret_scan_policy`` opens the
@@ -24,6 +25,14 @@ narrowed the premises rather than deleting the paragraphs:
 - ``examples/sample-project/.theurian/config.yaml``: the annotation above
   ``providers.review.repositories`` said "Nothing in ``src/`` reads this file".
   It now names the reader the file has and the key that has none.
+
+Three more surfaces joined in #199 unit B, each already narrowed and none of them
+pinned until then. ``schemas/config/project-config.schema.json``'s root
+``description`` is #455's; ``application/forest_builder.py``,
+``tests/unit/test_forest_derivation.py`` and ``tests/unit/test_schemas.py`` are
+#447's, narrowed on 2026-09-01 with nothing watching the narrowed wording
+afterwards. :data:`SCANNED_SURFACES` is the list, and it is the only one — a
+second copy in this docstring is a second copy to keep in step.
 
 **A narrowed never-claim is still a never-claim, and it needs both halves.** The
 fact half lives in ``tests/unit/test_config_key_call_sites.py``, whose scan
@@ -55,7 +64,7 @@ stays green. That is the #198 failure shape (round-two mutations B1-B4, recorded
 in ``test_config_key_call_sites.py``) arriving from the documentation side.
 
 **What this module enforces, which is narrower than "the record is true".** It is
-a wording pin over three files:
+a wording pin over a named set of files:
 
 - The **positive** half requires the narrowed sentences to still be there. A
   rewrite that simply deletes them asserts nothing false and would pass the
@@ -66,19 +75,24 @@ a wording pin over three files:
   surviving somewhere else in the file does not satisfy it.
 - The **negative** half refuses the retracted universal in the three forms it
   actually took — "nothing … reads ``.theurian/config.yaml``" in the present
-  tense, "the config file is still unread", and, in the sample config only,
-  "nothing in ``src/`` reads this file". Measured escapes, recorded rather than
-  chased, because a rule that pins grammar always has a next grammar: the past
-  tense (which the corrected rationale deliberately uses, and which must keep
-  passing), "nothing *opens* it", "no loader exists", "the file is not read", and
-  "no config surface".
+  tense, "the config file is still unread", and, where the pronoun has one
+  possible referent, "nothing in ``src/`` reads this file".
+- **The escape space is a table now, not a sentence.** This paragraph used to
+  list five phrasings the scan does not catch and assert nothing about them;
+  #199 unit B turned the list into :data:`MEASURED_ESCAPE_CASES`, so each one is
+  a test result. Four are shapes a live reassertion could take and slip past —
+  "nothing *opens* it", "no loader exists", "the file is not read", "no config
+  surface" — and the fifth is the past tense, which the corrected rationale uses
+  deliberately and which must keep passing. A row that stops escaping is RED, and
+  that is the good direction: the scan widened, and this paragraph has to move
+  with it.
 - It says nothing at all about the source tree. Whether a reader exists is
   ``test_config_key_call_sites.py``'s question; this module would stay green
-  against a build that shipped a raptor loader and left all three files alone —
-  which is exactly why the two halves are separate tests and neither is
+  against a build that shipped a raptor loader and left every scanned file
+  alone — which is exactly why the two halves are separate tests and neither is
   sufficient.
 
-**Scoped to three source files, never a repo-wide walk.** The served corpus
+**Scoped to a named file set, never a repo-wide walk.** The served corpus
 carries governed snapshots of the two Markdown documents —
 ``.theurian/knowledge/architecture/raptor-forest.<ulid>.md`` still says "Nothing
 in ``src/`` reads ``.theurian/config.yaml``, so flipping the default" — held
@@ -142,10 +156,11 @@ contain, and has its own pin in
 cost a read; the direction they refuse to trade for costs the claim.
 
 **The population of this class outside the files scanned here is tracked in the
-issues, not counted here.** #447 records the Python members narrowed the same way
-on 2026-09-01, still outside this module's scope, so their prose is unpinned, and
-#461 a Markdown member in ``plugins/``. Two attempts to state that population as
-a number have been wrong — round one said the schema string was the only one
+issues, not counted here.** #461 holds a Markdown member in ``plugins/`` that no
+pin here reaches. #447's three Python members are no longer on that list: unit B
+scanned them, which is what closes the gap #487 recorded — narrowed prose with
+nothing watching it. Two attempts to state that population as a number have been
+wrong — round one said the schema string was the only one
 outside ``src/``, and round two found the ``plugins/`` member outside every key
 either attempt had used — so this docstring names the issues and stops counting.
 
@@ -166,8 +181,11 @@ paragraph.
 **The ledger is empty, and that is a measured state rather than a scope
 boundary** — see :data:`UNNARROWED_UNIVERSALS`.
 
-Pure: it reads two Markdown files, one YAML file and one JSON schema as text, and
-opens no database, no socket and no temporary directory.
+Pure: it reads two Markdown files, one YAML file, one JSON schema and three
+Python modules as text, and opens no database, no socket and no temporary
+directory. :data:`SCANNED_SURFACES` is the list; this sentence deliberately does
+not repeat it as names, because a second copy of a file set is a second copy to
+keep in step.
 """
 
 from __future__ import annotations
@@ -190,6 +208,13 @@ ADR_0008: Final = REPO_ROOT / "docs" / "adr" / "0008-raptor-forest.md"
 RAPTOR_MD: Final = REPO_ROOT / "docs" / "architecture" / "raptor.md"
 SAMPLE_CONFIG: Final = REPO_ROOT / "examples" / "sample-project" / ".theurian" / "config.yaml"
 PROJECT_CONFIG_SCHEMA: Final = REPO_ROOT / "schemas" / "config" / "project-config.schema.json"
+
+#: The three Python surfaces #447 narrowed, whose prose nothing pinned until
+#: #199 unit B took them.
+_CORE: Final = REPO_ROOT / "packages" / "theurian-core"
+FOREST_BUILDER: Final = _CORE / "src" / "theurian" / "application" / "forest_builder.py"
+FOREST_DERIVATION_TEST: Final = _CORE / "tests" / "unit" / "test_forest_derivation.py"
+SCHEMAS_TEST: Final = _CORE / "tests" / "unit" / "test_schemas.py"
 
 #: Leading Markdown blockquote markers, however deeply nested.
 #:
@@ -221,6 +246,15 @@ _SENTENCE_END: Final = re.compile(r"\.(?=\s|$)")
 #: The first such ``#`` wins, so the rest of the line — including any further
 #: ``#`` — is the comment's own text.
 _INLINE_COMMENT: Final = re.compile(r"\s#(?P<comment>.*)$")
+
+#: A ``#:`` or ``#`` comment marker at the head of a Python line, stripped before
+#: the prose behind it is read.
+#:
+#: Python is the third source language this module scans, and it needs its own
+#: marker rule for the same reason YAML did: an attribute docstring in
+#: ``application/forest_builder.py`` is a run of ``#:`` lines, and a sentence
+#: wraps across four of them.
+_PYTHON_COMMENT: Final = re.compile(r"^[ \t]*#:?[ \t]?")
 
 #: An ATX heading at depth two, which is what bounds a section of ``raptor.md``.
 #:
@@ -395,14 +429,17 @@ _FILE_UNREAD: Final = re.compile(
     re.IGNORECASE,
 )
 
-#: The third shape, and the reason it is applied to the sample config alone.
+#: The third shape, and the reason it rides two surfaces and not every one.
 #:
 #: The annotation the sample config carried said "Nothing in ``src/`` reads **this
 #: file**" — a pronoun, never the path, so :data:`_FILE_UNREAD` cannot see it.
 #: Inside ``config.yaml`` the pronoun has one possible referent and the rule is
-#: safe. In ``raptor.md`` or an ADR it does not: "this file" there means the
-#: document, and a sentence about a document that reads nothing is not this
-#: claim. Applying the pattern to all three surfaces would buy one shape at the
+#: safe; inside the published schema, whose whole subject is that file, it has the
+#: same one, which is why #199 unit B could take the schema root with this pattern
+#: rather than by loosening the path one. In ``raptor.md``, an ADR or a Python
+#: module it does not: "this file" there means the document or the module a reader
+#: is holding, and a sentence about a document that reads nothing is not this
+#: claim. Applying the pattern to every scanned surface would buy one shape at the
 #: cost of a false RED on prose that is true.
 _THIS_FILE_UNREAD: Final = re.compile(
     r"\b(?:nothing|nobody|none|no code|no module)\b[^\n]{0,40}?"
@@ -626,6 +663,63 @@ PRONOUN_CASES: Final[tuple[tuple[str, bool], ...]] = (
     ("Every provider defaults to a deterministic in-tree implementation.", False),
 )
 
+#: The phrasings both scans measurably do **not** catch, as ``(what the shape is,
+#: the sentence, is it a defect the scan would miss)``.
+#:
+#: The module docstring used to carry these five as a list and assert nothing
+#: about them. A list of escapes nobody runs is a list that stops being true the
+#: first time either pattern moves, in whichever direction: widen one and a row
+#: here is silently wrong, narrow one and a shape nobody recorded starts escaping.
+#: So the list is a table and the table is a test.
+#:
+#: **The third field is what the row means, and the two values are opposites.**
+#: ``True`` is the escape space: a sentence that would be a live reassertion of
+#: the retracted universal, which neither :data:`_FILE_UNREAD` nor
+#: :data:`_THIS_FILE_UNREAD` reaches. ``False`` is correct prose that must keep
+#: passing — the past tense the corrected rationale deliberately uses, and which a
+#: looser pattern would flag on the fix itself. Both are asserted the same way
+#: (neither scan matches), and the field is there so a reader knows which rows are
+#: debt and which are the guard against over-reach.
+#:
+#: **"no config surface" is the row with a live subject.**
+#: ``application/forest_builder.py``'s corrected block opens with exactly those
+#: words, about ``SUMMARY_MAX_TOKENS`` rather than about the file — true there, and
+#: a shape that would hide a false claim about the file if one were ever written
+#: that way. #199 unit B's object-keyed census carries it as its own key shape for
+#: the same reason (``tools/audit/config_object_claims.py``).
+#:
+#: **A row that stops escaping is RED, and that is the good direction.** Delete it
+#: and move the docstring paragraph in the same commit, naming the mechanism that
+#: closed it — the discipline :data:`FALSE_RED_RESIDUE_CASES` and
+#: :data:`UNNARROWED_UNIVERSALS` are run on.
+MEASURED_ESCAPE_CASES: Final[tuple[tuple[str, str, bool], ...]] = (
+    (
+        "the verb `opens` instead of `reads`",
+        "Nothing in `src/` opens `.theurian/config.yaml`.",
+        True,
+    ),
+    (
+        "the absence stated as a missing loader",
+        "No loader for `.theurian/config.yaml` exists anywhere in `src/`.",
+        True,
+    ),
+    (
+        "the passive voice",
+        "`.theurian/config.yaml` is not read by anything in `src/`.",
+        True,
+    ),
+    (
+        "no config surface, which names neither a verb nor an object",
+        "It has no config surface.",
+        True,
+    ),
+    (
+        "the past tense, which the corrected rationale uses and must keep passing",
+        "When this was written nothing in `src/` read `.theurian/config.yaml` at all.",
+        False,
+    ),
+)
+
 #: The opening every case in :data:`NOTE_EXCLUSION_CASES` shares: the link form
 #: :data:`_CORRECTION_NOTE` keys on, so each case is scanned as a note.
 _NOTE_OPENING: Final = (
@@ -830,6 +924,35 @@ def _published_descriptions(text: str) -> list[str]:
 
     walk(json.loads(text))
     return blocks
+
+
+def _python_prose(text: str) -> list[str]:
+    """A Python module's prose, joined and collapsed, one block per paragraph.
+
+    The fourth block reader, for the three surfaces #447 narrowed and #199 unit B
+    took: ``application/forest_builder.py``'s ``#:`` attribute docstrings and two
+    test-module docstrings. Their sentences wrap exactly as the Markdown ones do,
+    so a per-line scan would never see one whole.
+
+    Blank lines are the boundary and comment markers are stripped;
+    :func:`_paragraphs` cannot be reused because its block rule treats ``# `` as
+    an ATX heading, which would make every commented line its own block and split
+    every wrapped sentence in the file.
+
+    **Code lines are read as prose, deliberately.** A retracted universal
+    transcribed into a string literal is a sentence this repository ships, and
+    a reader who greps for it finds it there; excluding literals would be a rule
+    whose only effect is to hide members of the class this module watches.
+    """
+    blocks: list[list[str]] = [[]]
+    for raw in text.splitlines():
+        line = _PYTHON_COMMENT.sub("", raw)
+        if not line.strip():
+            blocks.append([])
+            continue
+        blocks[-1].append(line)
+
+    return [collapsed for block in blocks if (collapsed := _collapsed(" ".join(block)))]
 
 
 def _comment_blocks(text: str) -> list[str]:
@@ -1089,6 +1212,9 @@ SCANNED_SURFACES: Final[
     (RAPTOR_MD, _paragraphs, (_FILE_UNREAD,)),
     (SAMPLE_CONFIG, _comment_blocks, (_FILE_UNREAD, _THIS_FILE_UNREAD)),
     (PROJECT_CONFIG_SCHEMA, _published_descriptions, (_FILE_UNREAD, _THIS_FILE_UNREAD)),
+    (FOREST_BUILDER, _python_prose, (_FILE_UNREAD,)),
+    (FOREST_DERIVATION_TEST, _python_prose, (_FILE_UNREAD,)),
+    (SCHEMAS_TEST, _python_prose, (_FILE_UNREAD,)),
 )
 
 #: How many ``issues/426`` correction notes each scanned surface carries, keyed by
@@ -1111,6 +1237,9 @@ _NOTE_COUNTS: Final[dict[pathlib.Path, int]] = {
     RAPTOR_MD: 0,
     SAMPLE_CONFIG: 0,
     PROJECT_CONFIG_SCHEMA: 0,
+    FOREST_BUILDER: 0,
+    FOREST_DERIVATION_TEST: 1,
+    SCHEMAS_TEST: 0,
 }
 
 #: The parametrized form, **derived from :data:`SCANNED_SURFACES` rather than
@@ -1169,6 +1298,54 @@ def test_the_unread_file_scan_sees_the_retracted_wording_and_not_the_narrowed_on
         f"trusting a green result from "
         f"`test_no_scanned_surface_reasserts_that_nothing_in_src_reads_the_config_file`, "
         f"which would keep passing against a pattern that matches nothing."
+    )
+
+
+@pytest.mark.parametrize(
+    ("shape", "sentence", "is_a_missed_defect"),
+    MEASURED_ESCAPE_CASES,
+    ids=[case[0][:60] for case in MEASURED_ESCAPE_CASES],
+)
+def test_the_recorded_escapes_are_still_escapes(
+    shape: str,
+    sentence: str,
+    is_a_missed_defect: bool,
+) -> None:
+    """RED means a scan moved and the docstring's escape list is stale.
+
+    The module docstring tells a reader how far these patterns reach, and until
+    #199 unit B the sentence "measured escapes, recorded rather than chased" was
+    the only thing standing behind that. It named five phrasings and no test ran
+    any of them, so either pattern could have been widened -- or narrowed -- with
+    the paragraph left describing a scan that no longer exists.
+
+    Both directions are the same assertion here and mean different things. A row
+    marked as a missed defect that starts matching is **good news and still RED**:
+    the scan reaches a shape it did not, so delete the row and say in the same
+    commit what closed it. The past-tense row starting to match is bad news of the
+    opposite kind -- a pattern that flags the corrected sentence would make this
+    module RED on a clean tree, and the only way back to green would be to
+    un-narrow the prose it exists to protect.
+
+    This asserts nothing about whether such a sentence is *true*. It asserts what
+    the scans see, which is the only thing a scan can be held to.
+    """
+    collapsed = _collapsed(sentence)
+
+    matched = bool(_FILE_UNREAD.search(collapsed)) or bool(_THIS_FILE_UNREAD.search(collapsed))
+
+    assert not matched, (
+        f"{shape}: {sentence!r} is now caught by one of the two scans, and the module "
+        f"docstring still records it as a phrasing they do not reach.\n\n"
+        + (
+            "This is the good direction -- the scan is wider than it was. Delete the row "
+            "from `MEASURED_ESCAPE_CASES`, and name the mechanism that closed it in the "
+            "same commit."
+            if is_a_missed_defect
+            else "This is the bad direction. That sentence is the *corrected* wording, in "
+            "the past tense, and a pattern that flags it goes RED against prose this "
+            "module exists to protect. Narrow the pattern rather than the prose."
+        )
     )
 
 
@@ -1505,7 +1682,7 @@ def test_adr_0008_decision_three_reaches_its_conclusion_from_the_raptor_block() 
         )
 
 
-# -- All three surfaces: the universal must not come back --------------------
+# -- Every scanned surface: the universal must not come back -----------------
 
 
 def test_no_scanned_surface_reasserts_that_nothing_in_src_reads_the_config_file() -> None:

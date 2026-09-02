@@ -250,7 +250,8 @@ def test_the_option_defaults_are_the_config_schemas_own() -> None:
 
     **This premise said "nothing in `src/` reads `.theurian/config.yaml` at all"
     until 2026-09-01, and both sources it cites had already been narrowed away
-    from it** (#426, 2026-08-31): the file has one reader,
+    from it** (corrected in https://github.com/theurian/theurian/issues/426,
+    2026-08-31): the file has one reader,
     `security/project_config.py::read_secret_scan_policy`, which takes
     `security.secretScan` and nothing else (ADR-0027 decision 3). The conclusion
     never leaned on the file being unread -- it leans on these two keys being
