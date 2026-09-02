@@ -160,24 +160,39 @@ Still owed, with the milestone that will satisfy it:
   > **The sweep behind "no test" is two-stage, because one key cannot answer
   > it** — the first form of it, `Thread|ThreadPool|ProcessPool|fork()`, could
   > not see `asyncio` at all and so could not see the one suite in the
-  > repository that really runs things concurrently. Widened and re-run
-  > 2026-09-02 over `packages/theurian-core/tests` and `tests`:
+  > repository that really runs things concurrently. Widened, and re-taken at
+  > `1a37c86` because the count is a dated measurement and the first paste of it
+  > reproduced under no run form. **Stage 1, whole and runnable:**
   >
   > ```sh
-  > # stage 1: any concurrency primitive -> 33 files
-  > \bThread\b|ThreadPool|ProcessPool|\bfork\(\)|\basyncio\b|run_in_executor
-  >   |create_task|\bgather\b|\bexecutor\b|multiprocessing|\bPopen\b
-  > # stage 2: of those, also driving an index build -> 15 files
-  > IndexBuilder|index_build\b|"build"|'build'|index build
+  > git grep -lP '\bThread\b|ThreadPool|ProcessPool|\bfork\(\)|\basyncio\b|run_in_executor|create_task|\bgather\b|\bexecutor\b|multiprocessing|\bPopen\b' -- packages/theurian-core/tests tests | wc -l
   > ```
   >
-  > All fifteen were read. **Fourteen use `asyncio.run` or
-  > `@pytest.mark.asyncio` to await a single MCP call synchronously**, which
-  > interleaves nothing; the fifteenth,
-  > `tests/integration/test_search_concurrency_cap.py`, is the one suite with
-  > real concurrency and it caps concurrent *searches* against an already
-  > published build, running no build of its own. So the index-side result is
-  > still **zero**, now against a key that can see the asyncio forms.
+  > **29 files.** **`-P` is mandatory and the dialect is the whole point**:
+  > POSIX ERE has no `\b`, so the same key under `git grep -lE` returns **3**
+  > — `test_search_concurrency_cap.py`, `test_connection_claims.py` and
+  > `tests/e2e/test_daemon_single_instance.py`, the three files whose matches
+  > happen to need no boundary. A reader who runs it with `-E` gets an order of
+  > magnitude too few and no error. The earlier paste of this bullet quoted 33
+  > from a Python `re` run of the same alternation, wrapped it across lines so it
+  > could not be pasted at all, and named no dialect; the number moved because
+  > the tool did, which is exactly the failure the key is supposed to prevent.
+  >
+  > **Stage 2 — of those, the files that also drive an index build:**
+  >
+  > ```sh
+  > git grep -lP '\bThread\b|ThreadPool|ProcessPool|\bfork\(\)|\basyncio\b|run_in_executor|create_task|\bgather\b|\bexecutor\b|multiprocessing|\bPopen\b' -- packages/theurian-core/tests tests | xargs git grep -lP 'IndexBuilder|index_build\b|index build' -- | wc -l
+  > ```
+  >
+  > **15 files**, and that figure and the zero below were reproduced
+  > independently by two reviewers. All fifteen were read. **Fourteen use
+  > `asyncio.run` or `@pytest.mark.asyncio` to await a single MCP call
+  > synchronously**, which interleaves nothing; the fifteenth,
+  > `packages/theurian-core/tests/integration/test_search_concurrency_cap.py`,
+  > is the one suite with real concurrency and it caps concurrent *searches*
+  > against an already published build, running no build of its own. So the
+  > index-side result is still **zero**, now against a key that can see the
+  > asyncio forms.
   >
   > **The zero is a zero because the key works.** A synthetic test that starts
   > `IndexBuilder.build` on a `threading.Thread` and searches while it runs was

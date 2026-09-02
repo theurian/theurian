@@ -454,15 +454,35 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    index files being WAL, which `test_a_built_index_is_always_in_wal_mode` pins.
 
    > **Coverage corrected on 2026-09-02 in PR #498's round-one review: this said
-   > "over every read method", and it is seven of eleven.** Measured by walking
-   > `SqliteIndexStore`'s public methods and subtracting the eight writers:
-   > fifteen public reads, of which `path` is a property that touches no file and
-   > `session` opens the connection the others use, leaving thirteen; two of
-   > those — `schema_version` and `is_searchable` — **return `0` and `False`
-   > rather than raising, by design**, so eleven are in the pin's population.
-   > Parametrised: `chunk_count`, `chunk_texts`, `metadata`, `search_dense`,
-   > `search_lexical`, `search_substring`, `texts`. Not parametrised:
-   > `holds_any_revision`, `raptor_path`, `search_summaries`,
+   > "over every read method", and it is seven of eleven.** The population is a
+   > runnable key rather than a description, because the first statement of it
+   > described a procedure and the count moved when a second reader chose a
+   > different key:
+   >
+   > ```sh
+   > uv run --frozen python -c "
+   > import ast,pathlib
+   > s=pathlib.Path('packages/theurian-core/src/theurian/infrastructure/sqlite/index_store.py');src=s.read_text();L=src.splitlines()
+   > c=next(n for n in ast.parse(src).body if isinstance(n,ast.ClassDef) and n.name=='SqliteIndexStore')
+   > r=sorted(n.name for n in c.body if isinstance(n,ast.FunctionDef) and not n.name.startswith('_') and n.name!='session' and 'self._read' in '\n'.join(L[n.lineno-1:n.end_lineno]))
+   > print(len(r),r)"
+   > ```
+   >
+   > **12** at `1a37c86`: `chunk_count`, `chunk_texts`, `holds_any_revision`,
+   > `metadata`, `raptor_path`, `schema_version`, `search_dense`,
+   > `search_lexical`, `search_substring`, `search_summaries`,
+   > `surviving_chunks`, `texts`.
+   >
+   > **The 11 and the 12 are two keys, not a disagreement, and the relation is
+   > one line**: 12 is the public methods that reach `self._read`; **11 is those
+   > that *raise*, which is 12 minus `schema_version`**, whose contract is to
+   > return `0` on an unreadable build. `session` is excluded from both — it is
+   > the context manager the others open through, not a read — and
+   > `is_searchable` appears in neither, because it reaches `_read` only by
+   > calling `schema_version()` and returns `False` rather than raising. Of the
+   > 11, **7 are parametrised** — `chunk_count`, `chunk_texts`, `metadata`,
+   > `search_dense`, `search_lexical`, `search_substring`, `texts` — and **4 are
+   > not**: `holds_any_revision`, `raptor_path`, `search_summaries`,
    > `surviving_chunks`.
    >
    > **The behaviour underneath is correct, and that is why this is a coverage

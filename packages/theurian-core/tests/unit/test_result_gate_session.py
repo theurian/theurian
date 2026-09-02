@@ -407,12 +407,29 @@ def test_the_canonical_read_count_is_the_ranking_length_and_so_the_withheld_coun
     **This test keeps its own scope, and that is why it is not retired by the
     purge.** It measures ``cleared`` given a ranking that carries withheld rows,
     which is still what happens in the window between a withdrawal and the purge
-    that follows it. Beyond that window it is **two of the three residual cases
-    T-17a records**: a request already in flight at the pointer swap, and a
-    *double* failure in which the purge fails and the taint write that should
-    have marked the pointer fails with it. The third -- a concurrent clean build
-    reverted by the non-atomic taint write -- is T-17a's and is deferred to the
-    derived index's single-writer contract (#439).
+    that follows it. Beyond that window, T-17a's structure is **two residuals,
+    the second of which has three windows**, and this gate is reached in three
+    of those four places -- an attribution this docstring got wrong until PR
+    #498's round-two review, which said "two of the three residual cases" and so
+    dropped a real one:
+
+    * **residual #1** -- a request already in flight at the pointer swap
+      finishes against the pre-purge build;
+    * **residual #2, first window** -- a request already in flight at the moment
+      the taint is written finishes against the pre-taint build, which is the
+      same bound as #1 one step later;
+    * **residual #2, second window** -- a *double* failure, in which the purge
+      fails and the taint write that should have marked the pointer is refused
+      with it, so the stale build stays served. It needs two independent disk
+      faults, not one.
+
+    **The third window is not this test's**, and saying so is the point of
+    listing them: a clean build published by a concurrent ``theurian index
+    build`` and reverted by the non-atomic taint write leaves a pointer still
+    carrying ``purgeFailed: true``, so the serve path stands that build aside and
+    no ranking reaches this gate at all. T-17a records it **SAFE-direction, no
+    disclosure**, a recorded MEDIUM deferred to the derived index's
+    single-writer contract (#439).
 
     **"A purge that failed" is no longer one of them, and this docstring said it
     was until PR #498's round-one review.** GHSA-97q9-xxfg-33r6 inverted it:
@@ -421,7 +438,9 @@ def test_the_canonical_read_count_is_the_ranking_length_and_so_the_withheld_coun
     *before* the id, file, provenance, project and flavor gates, so a
     purge-failed build does not answer at all. A single purge failure therefore
     reaches this gate with no ranking rather than with a stale one. What is left
-    is the double failure above, which is why it is named that way here.
+    of it are the two windows named above -- the request already in flight when
+    the taint is written, and the double failure -- which is why neither is
+    called "a purge that failed" here.
 
     The number this test holds is the price of those windows, not of a healthy
     request.
