@@ -53,18 +53,28 @@ uv run --frozen python tools/audit/threat_model_1e.py /tmp/tm/threat-model.md
 
 The object-keyed census. Where the keys above answer *what is the population*,
 these answer *does every member of it discharge* — so each exits `1` on a
-violation and prints its classification, and each carries a **ledger** that is
-exact in both directions: an unclassified member is a finding, and a ledger row
-the sweep no longer produces means somebody fixed a sentence and left the record
-behind.
+violation and prints its classification, and four of the five carry a **ledger**:
+an unclassified member is a finding, and a ledger row the sweep no longer
+produces means somebody fixed a sentence and left the record behind.
+(`ref_field_pair.py` has no ledger — each site discharges against its own text.)
 
-Two of them carry a third direction, because two dimensions were not enough to
-tell a *new* member from a recorded one. `owner_position_cites.py` compares the
-recorded verdict against the machine's, so a row recorded as retracted that comes
-back a suspect is drift; `sha_anchors.py` records an occurrence count per
-`(token, path)`, so a second anchor added to a file already judged moves it.
-`controls_discharge.py` reports a ledger row that covers more than one member,
-which is what a fragment key can do and a line key could not.
+**A ledger reconciles in every direction two records can disagree**, and the list
+grew each time one of them was found not to. The first two are the ones every
+ledger has; the rest are per-audit, and each was added because a real member
+slipped through the ones above it.
+
+| Direction | What it catches | Where |
+| :-- | :-- | :-- |
+| unrecorded / undischarged | a produced member nobody judged | every ledger |
+| stale | a recorded row the sweep no longer produces | every ledger |
+| **ambiguous** | one recorded row covering *two* produced members — a fragment is a substring test and counts nothing, so a second live member containing a recorded fragment reads as recorded | `config_object_claims.py`, `controls_discharge.py`, `owner_position_cites.py` |
+| verdict drift | a row recorded as retracted that comes back a suspect, which means the amendment block moved or was deleted | `owner_position_cites.py` |
+| occurrence count | a second anchor added to a `(token, path)` already judged | `sha_anchors.py` |
+
+So `owner_position_cites.py` reconciles in four directions, `config_object_claims.py`
+and `sha_anchors.py` in three, and `controls_discharge.py` in two — it has no
+"unrecorded" direction, because its population is discharged by naming a symbol
+or a test rather than by a hand verdict.
 
 They read the whole tracked tree rather than one file, minus two exclusions that
 [`claim_surfaces.py`](claim_surfaces.py) states as a constant: `.theurian/` (the
@@ -81,18 +91,23 @@ undercounts by an amount nobody can state.
 | `sha_anchors.py` | every sha-like token in governed prose | the commit is an ancestor of `main`, or the cite carries the pull-request qualifier — and a qualifier that names the commit its branch *landed as* is held to the same reachability test |
 | `ref_field_pair.py` | every `unresolvedRefCount` / `refWalkTruncated` site | the site states the narrowed contract, in its block or in its section |
 
-A `CHANGELOG.md` is a record only in its **dated** sections. `[Unreleased]`
-describes the tree a reader has checked out and is classified like any other
-governed prose; the two audits that clear a release note cleared it unread until
-#501's round one.
+A `CHANGELOG.md` sentence is a record because a **dated** `## [x.y.z] - date`
+section states it — asked positively, which is what makes both of its faces one
+rule. `[Unreleased]` describes the tree a reader has checked out, and a changelog
+with no dated sections at all (the repository-root `CHANGELOG.md`) records
+nothing; both are classified like any other governed prose. Round one asked
+"outside `[Unreleased]`?" and cleared the second whole, which #501's round two
+found.
 
 **Run the positive control before reading a zero.** A key that has stopped
 matching reports exactly what a clean tree reports, and this repository has
 shipped that failure before. Each `--positive-control` run also **drives the
 ledger reconciliation itself**, from planted rows against a planted ledger, in
-every direction that audit has — a ledger claiming exactness in both directions
-while no control ever ran either one is an assertion about code nobody has
-executed with a mismatch in it:
+every direction that audit has — a ledger claiming exactness while no control
+ever ran a direction is an assertion about code nobody has executed with a
+mismatch in it. `config_object_claims.py` additionally runs its recorded escape
+space (`MEASURED_ESCAPES`), so the bound on what its key cannot see fails
+instead of rotting:
 
 ```sh
 for audit in config_object_claims controls_discharge owner_position_cites \
@@ -100,6 +115,13 @@ for audit in config_object_claims controls_discharge owner_position_cites \
   uv run --frozen python "tools/audit/$audit.py" --positive-control
 done
 ```
+
+**The suite runs all of it.** `tests/integration/audit/test_census_audits_run.py`
+subprocess-runs every audit and every control with `--offline` and asserts each
+exits 0, and reads each module's control tables to fail when one is emptied — a
+control loop over an empty table reports zero failures, which is how an
+instrument stops checking without anything going red. Before it existed, six
+mutations reverting round-one fixes survived the whole suite.
 
 Tracker states come from [`tracker_state.py`](tracker_state.py): a live `gh`
 query by default, falling back to the committed `tracker-state.json` with its

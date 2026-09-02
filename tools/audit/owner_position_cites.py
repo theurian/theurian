@@ -160,19 +160,32 @@ _SUPERSEDED: Final = re.compile(
 #: re-opened the false clear above.
 _AMENDMENT_OPENER: Final = re.compile(r"^\*\*(?P<opener>[^*]+)\*\*")
 
-#: How many blocks past the sentence's own the walk reads, and it is a measured
-#: number rather than a chosen one.
+#: How many blocks past the sentence's own the walk reads.
 #:
-#: Measured at ``be4b67c`` over the four superseded members: the retraction sits
-#: **one** block later in ADR-0018, ADR-0023 and the threat model, and **two**
-#: later in ADR-0027, where a paragraph about T-15's grade sits between. Two is
-#: therefore the smallest reach that covers every member, and it is the reach used
-#: -- a larger one buys nothing and costs false clears. The threat model's #15 row
-#: is the control in the other direction: it is a genuine dead owner, and no
-#: block within this reach carries an amendment marker, so it stays ``SUSPECT``.
+#: **Measured from below, and only from below.** At ``be4b67c``, over the four
+#: superseded members: the retraction sits **one** block later in ADR-0018,
+#: ADR-0023 and the threat model, and **two** later in ADR-0027, where a
+#: paragraph about T-15's grade sits between. Two is therefore the smallest reach
+#: that covers every member, and a reach of one leaves ADR-0027's member reported
+#: as a live dead-owner claim.
+#:
+#: **From above the tree bounds it far higher than this, and the earlier note
+#: claiming otherwise was unmeasured** -- round two's R2-i. The threat model's #15
+#: row is the control in that direction: a genuine dead owner that must stay
+#: ``SUSPECT``. Measured at ``b92449b`` by running :data:`TREE_CONTROLS` at every
+#: reach from 0 to 60, all four controls hold for **every reach from 2 to 38**,
+#: and #15 first clears wrongly at **39**. So the interval this file's own
+#: controls pin is ``[2, 38]``.
+#:
+#: Two rather than three is therefore a **judgement, not a measurement**: it is
+#: the smallest value that works, chosen because a walk that reads no further
+#: than it has been shown to need cannot clear a row nobody has looked at. What
+#: would settle it is a member whose retraction sits three blocks down, and this
+#: tree has none.
 #:
 #: The walk stops at a heading, because a reader following a heading has left the
-#: region the amendment was written for.
+#: region the amendment was written for. That is what keeps the interval as wide
+#: as it is: most walks terminate on a heading long before the count runs out.
 _SUPERSESSION_REACH: Final = 2
 
 #: A section boundary, spelled the way :mod:`claim_surfaces` spells it. ``#468``
@@ -392,7 +405,7 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "stays open for both halves",
         f"{SUPERSEDED_IN_PLACE} -- ADR-0018:155",
         "The sentence says '#468 stays open for both halves', and #468 closed COMPLETED on "
-        "2026-09-01. It is not a live claim: :128-130 marks the paragraph "
+        "2026-09-01. It is not a live claim: :128-131 marks the paragraph "
         "'**Superseded by the 2026-09-01 closure below -- read this paragraph as dated "
         "history**', :155 opens '**Closed on 2026-09-01 ([#468])**', and :179 says '#468 "
         "is closed for both halves.' Round one graded this `DEFECT` from the sentence's "
@@ -846,13 +859,28 @@ def _historical_overlap_rows(root: Path, *, offline: bool) -> list[tuple[str, in
     phrasing, so one incidental ``was`` anywhere in a sentence clears a cite that
     is otherwise in owner position. That is the audit's largest silent
     over-clear; :func:`main` prints the count and ``--overlap`` lists the members.
+
+    **Scoped the way :func:`classify` is scoped, which is round two's R2-k.** This
+    walk kept the blanket "a CHANGELOG is a record" skip that round one's M-j
+    removed from the classifier, so the number it printed described a narrower
+    population than the one being classified -- a measured escape space that left
+    out exactly the section the same round had just brought in. It now skips a
+    changelog sentence only where a *dated* release states it, so the two
+    populations are the same population.
     """
     table, _ = tracker_state.states(offline=offline)
     found: list[tuple[str, int, str, str]] = []
     for path in governed_paths(root):
-        if not in_scope(path) or path.endswith(_RELEASE_RECORDS):
+        if not in_scope(path):
             continue
+        dated = (
+            dated_lines((root / path).read_text(encoding="utf-8", errors="surrogateescape"))
+            if path.endswith(_RELEASE_RECORDS)
+            else frozenset()
+        )
         for sentence in sentences(root, path):
+            if sentence.path.endswith(_RELEASE_RECORDS) and sentence.line in dated:
+                continue
             if not _HISTORICAL.search(sentence.text):
                 continue
             for number in _numbers(sentence.text):
@@ -1022,14 +1050,11 @@ def main(argv: list[str]) -> int:
     judged = [row for row in rows if row.verdict in _JUDGED_VERDICTS]
     print("\n=== JUDGED (closed number, owner-position phrasing, no historical marker) ===")
     for row in judged:
-        recorded = next(
-            (
-                entry
-                for entry in SUSPECTS
-                if entry[0] == row.sentence.path and entry[1] == row.number
-            ),
-            None,
-        )
+        # `_covers`, never a second spelling of it: keyed on `(path, number)`
+        # alone this printed a recorded verdict beside a row the reconciliation
+        # below counts as unrecorded, which is the display half of round two's
+        # code-L3 -- one rule, one place.
+        recorded = next((entry for entry in SUSPECTS if _covers(entry, row)), None)
         print(
             f"  #{row.number:<5} [{row.state}] {row.sentence.path}:{row.sentence.line}"
             f"  [{row.verdict}]  {recorded[2] if recorded else 'UNRECORDED'}"

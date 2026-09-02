@@ -159,8 +159,14 @@ def main(argv: list[str]) -> int:
             ).stdout.strip()
         ),
         "repository": REPOSITORY,
+        # Built from `_PAGE` rather than spelling the number twice. The snapshot
+        # says how it was taken, and a reader checking whether a full page could
+        # have truncated it needs that figure to be *the* figure -- round two's
+        # R2-l, where the literal read 2000 beside a constant that no longer had
+        # to be 2000.
         "how": (
-            "gh issue list --state all --limit 2000 --json number,state; the same for gh pr list"
+            f"gh issue list --state all --limit {_PAGE} --json number,state; "
+            f"the same for gh pr list"
         ),
         "state": {number: live[number] for number in sorted(live, key=int)},
     }
