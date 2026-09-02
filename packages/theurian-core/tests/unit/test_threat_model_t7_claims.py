@@ -95,10 +95,13 @@ _BULLET_START: Final = re.compile(r"(?m)^- ")
 SPAWN_BULLET_ANCHOR: Final = "process spawns, structurally"
 
 #: How the bullet states the count, as the phrase rather than as a bare number
-#: word. The bullet names three other numbers -- "that third **one**", the
-#: retracted "**two** sites" it quotes, and the "**four** constants" of the
-#: trailer source's argument vector -- so a key matching any spelled number would
-#: read a retraction or an aside as the claim.
+#: word. Every other spelled number the bullet carries, measured at this commit:
+#: "that third **one**"; the retracted "**two** sites" it quotes and the "first
+#: **two**" beside it; the "**four** constants" of the trailer source's argument
+#: vector; and a second **three**, in the sentence recording what the pinned set
+#: has held. So a key matching any spelled number would read a retraction or an
+#: aside as the claim -- and a key matching any *three* would be satisfied by the
+#: record sentence while the sentence that permits the sites said something else.
 #:
 #: The caller asserts exactly one match, so a rewrite that made the key ambiguous
 #: fails naming both rather than silently reading the first.
