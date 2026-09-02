@@ -485,6 +485,22 @@ OLDEST_FINDING = "a bearer token reached the log"
 #: row that must not appear on the transport, in any field.
 REJECTED_TRAILER = "Review-Finding: nonsense CRITICAL — the private key is in fixtures/"
 
+#: The published bound on a served `findingText` (docs/protocol/mcp-tools.md), and
+#: the length a cut value comes back at: the bound plus the three-character
+#: marker. Spelled rather than imported, like the `between 1 and 100` assertion
+#: below: this file speaks to the daemon the way a client does, and a client has
+#: the published numbers and not the package. That these numbers *are* the build's
+#: is pinned in process by
+#: `test_review_findings_tool.py::test_the_published_bounds_are_the_bounds_this_build_enforces`.
+SERVED_TEXT_BOUND = 2_000
+CUT_TEXT_LENGTH = SERVED_TEXT_BOUND + len("...")
+
+#: A trailer three times the served bound, committed as one line -- what a
+#: repository contributor can put in front of this tool (T-5's actor, not the
+#: caller). Oldest of the three, so it does not disturb the page-boundary
+#: assertions above it.
+PLANTED_FINDING = "z" * (SERVED_TEXT_BOUND * 3)
+
 
 def _build_findings(daemon: Daemon) -> None:
     """Land a real findings store for ``daemon``'s project, the way a user does.
@@ -516,6 +532,14 @@ def _build_findings(daemon: Daemon) -> None:
         f"fix: a later change\n\nReview-Finding: adversarial HIGH — {NEWEST_FINDING}\n"
         f"{REJECTED_TRAILER}",
         when="2026-08-26T09:00:00+00:00",
+    )
+    _git(
+        daemon.root,
+        "commit",
+        "--allow-empty",
+        "-m",
+        f"chore: a planted change\n\nReview-Finding: code-review LOW — {PLANTED_FINDING}",
+        when="2026-08-24T09:00:00+00:00",
     )
     _git(daemon.root, "push", "-q", "origin", "main")
     _git(daemon.root, "fetch", "-q", "origin")
@@ -568,9 +592,29 @@ def test_findings_are_served_over_the_transport_once_a_build_has_run(
     assert row["mayContainInstructions"] is True
     assert row["executable"] is False
 
-    assert whole["count"] == 2, f"the build landed a corpus this test cannot reason about: {whole}"
+    assert whole["count"] == 3, f"the build landed a corpus this test cannot reason about: {whole}"
     assert whole["truncated"] is False, "the whole answer must not claim more exists"
-    assert [f["findingText"] for f in whole["findings"]] == [NEWEST_FINDING, OLDEST_FINDING]
+    assert [f["findingText"] for f in whole["findings"][:2]] == [NEWEST_FINDING, OLDEST_FINDING]
+
+    # The byte bound, over the transport. The daemon fetches `bound + 1`
+    # characters from the store and publishes `bound` plus the marker, so a
+    # planted line three times the bound arrives at a fixed size whatever it held
+    # -- and it arrives *marked*, so a client cannot read the cut as the whole
+    # line. Asserted here because only the transport shows what a client receives:
+    # the in-process tests see the tool's return value, not the serialized frame.
+    planted = whole["findings"][2]
+    assert len(planted["findingText"]) == CUT_TEXT_LENGTH, (
+        f"a planted trailer of {len(PLANTED_FINDING)} characters arrived at "
+        f"{len(planted['findingText'])} over the wire, not the published "
+        f"{CUT_TEXT_LENGTH}: the bound a client is promised is not the one it gets"
+    )
+    assert planted["findingText"] == "z" * SERVED_TEXT_BOUND + "...", (
+        "the cut value is not the bound's own prefix followed by the marker"
+    )
+    assert len(json.dumps(whole, ensure_ascii=False)) < 10_000, (
+        "one planted trailer still sizes the whole response, so the bound is not "
+        "reaching the bytes that cross the wire"
+    )
     assert REJECTED_TRAILER not in json.dumps(whole, ensure_ascii=False), (
         "the malformed keyed line reached a client through the transport"
     )
