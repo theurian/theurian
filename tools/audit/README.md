@@ -78,10 +78,10 @@ matching reports exactly what a clean tree reports, and this repository has
 shipped that failure before:
 
 ```sh
-uv run --frozen python tools/audit/config_object_claims.py --positive-control
-uv run --frozen python tools/audit/owner_position_cites.py --positive-control
-uv run --frozen python tools/audit/sha_anchors.py --positive-control
-uv run --frozen python tools/audit/ref_field_pair.py --positive-control
+for audit in config_object_claims controls_discharge owner_position_cites \
+             sha_anchors ref_field_pair; do
+  uv run --frozen python "tools/audit/$audit.py" --positive-control
+done
 ```
 
 Tracker states come from [`tracker_state.py`](tracker_state.py): a live `gh`

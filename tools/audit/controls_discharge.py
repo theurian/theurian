@@ -319,26 +319,97 @@ PROSE_ONLY: Final[tuple[tuple[str, str], ...]] = (
 )
 
 
+def verdict_for(member: Member, table: dict[str, str]) -> Verdict:
+    cites = _cited(member.text)
+    return Verdict(
+        member=member,
+        names_symbol=bool(_SRC_SYMBOL.search(member.text)),
+        names_test=bool(_TEST.search(member.text)),
+        not_shipped=bool(_NOT_SHIPPED.search(member.text)),
+        cites=tuple(cites),
+        open_cites=tuple(n for n in cites if tracker_state.is_open(table, n)),
+        unknown_cites=tuple(n for n in cites if n not in table),
+    )
+
+
 def audit(root: Path, *, offline: bool = False) -> tuple[list[Verdict], str]:
     table, provenance = tracker_state.states(offline=offline)
-    verdicts: list[Verdict] = []
-    for member in members(root):
-        cites = _cited(member.text)
-        verdicts.append(
-            Verdict(
-                member=member,
-                names_symbol=bool(_SRC_SYMBOL.search(member.text)),
-                names_test=bool(_TEST.search(member.text)),
-                not_shipped=bool(_NOT_SHIPPED.search(member.text)),
-                cites=tuple(cites),
-                open_cites=tuple(n for n in cites if tracker_state.is_open(table, n)),
-                unknown_cites=tuple(n for n in cites if n not in table),
-            )
+    return [verdict_for(member, table) for member in members(root)], provenance
+
+
+#: Planted blocks run instead of the tree under ``--positive-control``, as
+#: ``(what it demonstrates, block, discharged, dead owner)``.
+#:
+#: The fourth row is AC-2's seeded violation in miniature: a block that says its
+#: control is owed and cites a closed issue has nobody owing it. The fifth is the
+#: rule that makes the fourth mean something -- the dead-owner check runs whatever
+#: else the block names, so a block cannot buy its way out by naming a symbol in
+#: another sentence.
+POSITIVE_CONTROLS: Final[tuple[tuple[str, str, bool, bool], ...]] = (
+    (
+        "a block naming the symbol that implements it",
+        "**Controls:** `security/project_config.py::read_secret_scan_policy` reads it.",
+        True,
+        False,
+    ),
+    (
+        "a block naming the test that pins it",
+        "**Controls:** pinned by `tests/unit/test_config_key_call_sites.py`.",
+        True,
+        False,
+    ),
+    (
+        "an owed control whose owner is open",
+        "**Controls:** none yet; the three fetch controls are owed "
+        "([#429](https://github.com/theurian/theurian/issues/429)).",
+        True,
+        False,
+    ),
+    (
+        "an owed control whose owner is closed -- AC-2's seeded violation",
+        "**Controls:** none yet; the three fetch controls are owed "
+        "([#129](https://github.com/theurian/theurian/issues/129)).",
+        False,
+        True,
+    ),
+    (
+        "a closed owner beside a named symbol: still a dead owner",
+        "**Controls:** `security/project_config.py` reads it, and the rest is owed "
+        "([#129](https://github.com/theurian/theurian/issues/129)).",
+        True,
+        True,
+    ),
+    (
+        "prose with no symbol, no test and no cite",
+        "**Controls:** bind loopback only; validate `Origin` against an allowlist.",
+        False,
+        False,
+    ),
+)
+
+
+def _run_positive_controls(*, offline: bool) -> int:
+    table, provenance = tracker_state.states(offline=offline)
+    failures = 0
+    print(f"=== POSITIVE CONTROLS (tracker states: {provenance}) ===")
+    for label, text, discharged, dead in POSITIVE_CONTROLS:
+        verdict = verdict_for(
+            Member(population="control", where="control", label=label, text=text), table
         )
-    return verdicts, provenance
+        ok = verdict.discharged is discharged and verdict.owner_is_dead is dead
+        status = "OK  " if ok else "FAIL"
+        failures += status == "FAIL"
+        print(
+            f"  {status} {label}: discharged={verdict.discharged} (expected {discharged}), "
+            f"dead owner={verdict.owner_is_dead} (expected {dead})"
+        )
+    return 1 if failures else 0
 
 
 def main(argv: list[str]) -> int:
+    if "--positive-control" in argv:
+        return _run_positive_controls(offline="--offline" in argv)
+
     root = repo_root()
     verdicts, provenance = audit(root, offline="--offline" in argv)
 
