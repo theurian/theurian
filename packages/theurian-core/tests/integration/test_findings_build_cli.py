@@ -343,6 +343,47 @@ def test_a_write_side_permission_error_is_converted_to_the_graded_contract_under
     assert "writable" in payload["remedy"], payload["remedy"]
 
 
+def test_a_first_build_whose_lock_dir_is_unwritable_is_a_graded_refusal(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R1-2: the write lock's own mkdir/open OSError arrives graded, not as a traceback.
+
+    ``findings build`` composes ``WriteLock(paths.write_lock).held`` inside its
+    ``try``, but *entering* that lock runs ``mkdir`` + ``open("w")`` on
+    ``.theurian/runtime/`` -- a directory findings build never touched before #404
+    added the lock -- and both raise a bare ``OSError``, which the command's
+    ``except TheurianError`` does not catch. The read-only-state sibling above runs
+    a successful build **first**, which creates ``.theurian/runtime``, so the lock's
+    ``mkdir`` is a no-op there and the gap is invisible to it. Here no build has run:
+    the lock's own filesystem call is the first write attempted, and it is refused.
+
+    Fault-injected on the lock's ``mkdir`` rather than a ``chmod``, so it drives the
+    arm on every runner including the offline root job -- the same portability shape
+    the root sibling above uses for ``unlink``.
+    """
+    _commit(project, "fix: a change (#1)", "Review-Finding: security HIGH — a finding")
+    _publish(project)
+    real_mkdir = Path.mkdir
+
+    def _refuse_the_runtime_dir(self: Path, *args: object, **kwargs: object) -> None:
+        # The lock lives at `.theurian/runtime/write.lock`; its parent is the first
+        # directory `held()` creates. Refuse exactly that, nothing else.
+        if self.name == "runtime" and self.parent.name == ".theurian":
+            raise PermissionError(13, "Permission denied")
+        real_mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "mkdir", _refuse_the_runtime_dir)
+
+    code, payload = _invoke("findings", "build")
+
+    assert code == 1, payload
+    assert set(payload) == {"error", "remedy"}, (
+        f"the write lock's OS refusal must arrive as the graded {{error, remedy}} contract, "
+        f"not a raw traceback; got {sorted(payload)}"
+    )
+    assert "writable" in payload["remedy"], payload["remedy"]
+
+
 @_NEEDS_SYMLINKS
 def test_a_symlinked_store_leaf_escaping_the_tree_is_refused_and_writes_nothing_outside(
     project: Path, tmp_path: Path

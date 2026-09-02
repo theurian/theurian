@@ -19,19 +19,70 @@ bytes already sit readable in ``.git`` on that clone, but a premise the findings
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Annotated, Final
 
 import typer
 
-from theurian.application.findings_builder import FindingsBuilder, FindingsBuildRequest
+from theurian.application.findings_builder import (
+    FindingsBuilder,
+    FindingsBuildRequest,
+    WriteSection,
+)
 from theurian.domain.errors import TheurianError
 from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
 from theurian.infrastructure.sqlite.connection import WriteLock
-from theurian.infrastructure.sqlite.findings_store import SqliteReviewFindingStore
+from theurian.infrastructure.sqlite.findings_store import (
+    FindingsStoreError,
+    SqliteReviewFindingStore,
+)
 
 findings_app = typer.Typer(help="Rebuild the review-finding store.", no_args_is_help=True)
 
 JsonOption = Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")]
+
+#: The remedy for an OS refusal *acquiring* the write lock (#404 R1-2). Entering
+#: ``WriteLock.held`` runs ``mkdir`` + ``open("w")`` on ``.theurian/runtime/``,
+#: which raise a bare ``OSError`` -- not a ``TheurianError`` -- so on a first build
+#: whose state area is unwritable the raw traceback escaped the command's handler.
+#: Names the precondition to fix first (a writable ``.theurian``), with the retry
+#: as the trailing clause, the same shape ``FindingsStoreError``'s write remedy
+#: takes.
+_LOCK_ACQUIRE_REMEDY: Final = (
+    "Check that .theurian/ is writable and there is free disk space, then retry "
+    "`theurian findings build`."
+)
+
+
+def _lock_write_section(lock_path: Path) -> WriteSection:
+    """A write-section factory whose lock-acquisition ``OSError`` arrives graded.
+
+    ``WriteLock(lock_path).held`` is the real section, but its ``__enter__``
+    ``mkdir``/``open`` raise a bare ``OSError`` the command's ``except
+    TheurianError`` cannot see (#404 R1-2). This converts *only* that -- an
+    ``OSError`` escaping the acquisition -- into a :class:`FindingsStoreError` a
+    ``TheurianError`` handler catches. It cannot mislabel a body fault: the one
+    thing run inside is ``replace_all``, which converts its own ``(sqlite3.Error,
+    OSError)`` before any escapes, and a ``WriteLockTimeoutError`` is a
+    ``TheurianError``, not an ``OSError``, so it passes straight through with the
+    lock-specific remedy #404 R1-5 gave it.
+    """
+
+    @contextmanager
+    def section() -> Iterator[None]:
+        try:
+            with WriteLock(lock_path).held():
+                yield
+        except OSError as exc:
+            raise FindingsStoreError(
+                f"acquiring the write lock at {lock_path.name}: {exc}",
+                remedy=_LOCK_ACQUIRE_REMEDY,
+            ) from exc
+
+    return section
+
 
 #: One stable store per project. Findings are a wholesale projection of the repo's
 #: public history, so a rebuild overwrites a single artifact rather than minting a
@@ -76,11 +127,12 @@ def findings_build(as_json: JsonOption = False) -> None:
             source=GitTrailerFindingSource(paths.root),
             store_factory=SqliteReviewFindingStore,
             # The project's one writer lock (ADR-0018), passed as the factory the
-            # builder enters once around the store write -- `WriteLock(...).held`
-            # is bound, not called, because a hold is single-use. Named here and
-            # only here: this is the composition root, and `application/` may not
-            # reach for a concrete adapter (ADR-0003).
-            write_section=WriteLock(paths.write_lock).held,
+            # builder enters once around the store write. `_lock_write_section`
+            # wraps `WriteLock(...).held` so an OSError from the lock's own
+            # `mkdir`/`open` at acquisition arrives graded, not as a raw traceback
+            # (#404 R1-2). Named here and only here: this is the composition root,
+            # and `application/` may not reach for a concrete adapter (ADR-0003).
+            write_section=_lock_write_section(paths.write_lock),
         )
         report = builder.build(request)
     except TheurianError as exc:
