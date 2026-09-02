@@ -1477,8 +1477,19 @@ def test_serving_a_missing_store_does_not_conjure_one(tmp_path: Path) -> None:
     nothing store where ``findings build`` expects either its own file or none.
     That is the defect ``index_store._open_read`` already records, asserted here
     for this store.
+
+    **The state directory has to exist for this test to be able to fail**, which
+    is why it is created here rather than left as :func:`_store` leaves it.
+    ``sqlite3.connect`` cannot create a database inside a directory that is not
+    there, so an assertion written over the bare fixture path is satisfied by the
+    missing *directory* and says nothing about the connection -- measured: the
+    first cut of this test re-ran the same mutation and it survived again. A
+    project that has ever run ``migrate apply`` has this directory, so this is
+    also the shape a real missing store arrives in.
     """
     store = _store(tmp_path)
+    store.path.parent.mkdir(parents=True)
+    assert not store.path.exists(), "the premise: the directory exists and the store does not"
 
     with pytest.raises(FindingsStoreError):
         store.serve_findings(FindingQuery(limit=10))
