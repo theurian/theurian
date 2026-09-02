@@ -58,6 +58,14 @@ exact in both directions: an unclassified member is a finding, and a ledger row
 the sweep no longer produces means somebody fixed a sentence and left the record
 behind.
 
+Two of them carry a third direction, because two dimensions were not enough to
+tell a *new* member from a recorded one. `owner_position_cites.py` compares the
+recorded verdict against the machine's, so a row recorded as retracted that comes
+back a suspect is drift; `sha_anchors.py` records an occurrence count per
+`(token, path)`, so a second anchor added to a file already judged moves it.
+`controls_discharge.py` reports a ledger row that covers more than one member,
+which is what a fragment key can do and a line key could not.
+
 They read the whole tracked tree rather than one file, minus two exclusions that
 [`claim_surfaces.py`](claim_surfaces.py) states as a constant: `.theurian/` (the
 served corpus, moved by a re-seed, never an edit) and `docs/work-logs/` (dated
@@ -69,13 +77,22 @@ undercounts by an amount nobody can state.
 | :-- | :-- | :-- |
 | `config_object_claims.py` | liveness claims about a watched object; the inventory is the schema key surface (json-parsed) ∪ the `ProjectPaths` file surface (introspected) ∪ the `.theurian/` paths governed prose names | a classified verdict per suspect in `SUSPECTS` |
 | `controls_discharge.py` | the threat model's `**Controls` blocks ∪ the project-config schema's descriptions | names a `src/` symbol, or a pinning test, or is owed by an **open** issue, or has a row in `PROSE_ONLY` |
-| `owner_position_cites.py` | every tracker cite in governed prose | the cite is historical, or its number is open |
-| `sha_anchors.py` | every sha-like token in governed prose | the commit is an ancestor of `main`, or the cite carries the pull-request qualifier |
-| `ref_field_pair.py` | every `unresolvedRefCount` / `refWalkTruncated` site | the site states the narrowed contract |
+| `owner_position_cites.py` | every tracker cite in governed prose | the cite is historical, or its number is open, or the block after it retracts the sentence in place |
+| `sha_anchors.py` | every sha-like token in governed prose | the commit is an ancestor of `main`, or the cite carries the pull-request qualifier — and a qualifier that names the commit its branch *landed as* is held to the same reachability test |
+| `ref_field_pair.py` | every `unresolvedRefCount` / `refWalkTruncated` site | the site states the narrowed contract, in its block or in its section |
+
+A `CHANGELOG.md` is a record only in its **dated** sections. `[Unreleased]`
+describes the tree a reader has checked out and is classified like any other
+governed prose; the two audits that clear a release note cleared it unread until
+#501's round one.
 
 **Run the positive control before reading a zero.** A key that has stopped
 matching reports exactly what a clean tree reports, and this repository has
-shipped that failure before:
+shipped that failure before. Each `--positive-control` run also **drives the
+ledger reconciliation itself**, from planted rows against a planted ledger, in
+every direction that audit has — a ledger claiming exactness in both directions
+while no control ever ran either one is an assertion about code nobody has
+executed with a mismatch in it:
 
 ```sh
 for audit in config_object_claims controls_discharge owner_position_cites \
