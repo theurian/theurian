@@ -363,20 +363,21 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "describes the shipped control. It is here only because `lands with them` sits "
         "beside the cite -- a false positive of the owner key, kept rather than tuned away.",
     ),
-    (
-        "plugins/claude-code/CHANGELOG.md",
-        "129",
-        "owed with review ingestion",
-        "DEFECT -- file, outside this assignment's file set",
-        "'It now states FR-V5 as owed with review ingestion ([#129])', in the plugin "
-        "CHANGELOG's `[Unreleased]` section, with #129 closed. The schema's own "
-        "`providers.review.repositories` description carried the same dead cite and was "
-        "repointed #129 -> #429 on this branch; the plugin's copy was not, because the "
-        "blanket release-note clear covered `[Unreleased]` until round one's M-j scoped "
-        "it to dated sections. This is the first row this ledger has ever carried from a "
-        "CHANGELOG. The census assignment may not edit `plugins/` or a CHANGELOG, so it "
-        "is recorded here for the prose pass rather than corrected.",
-    ),
+    # `plugins/claude-code/CHANGELOG.md`'s 'It now states FR-V5 as owed with
+    # review ingestion ([#129])' stood here as a `DEFECT` until #199 unit B's
+    # prose assignment repointed it. It was the first row this ledger ever
+    # carried from a CHANGELOG: the blanket release-note clear covered
+    # `[Unreleased]` until round one's M-j scoped it to dated sections.
+    #
+    # The live owner is **#479**, not the #429 the schema's allowlist description
+    # took on this branch: #429 owns the T-7 *fetch controls* and #479 owns
+    # review ingestion, and FR-V5 is a review-ingestion requirement. The sentence
+    # this entry describes -- `ingest.md`'s own FR-V5 bullet -- was repointed
+    # #129 -> #479 in `ec0dbcd` (#482) on `main`; the plugin CHANGELOG was
+    # outside that pass's file set, which is why the member survived here. The
+    # entry now names #479 and keeps #129 in historical position with the reason
+    # it stopped owning anything, so the sweep verdicts it `history` and no row
+    # is owed.
     (
         "docs/adr/0018-single-writer-synchronous-in-m1.md",
         "468",

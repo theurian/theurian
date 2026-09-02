@@ -176,8 +176,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   candidate generation fails (FR-V5). `theurian ingest` generates no candidates
   and runs no summarization stage, and its JSON has no field for a partial
   result, so the instruction described a run that cannot happen. It now states
-  FR-V5 as owed with review ingestion
-  ([#129](https://github.com/theurian/theurian/issues/129)).
+  FR-V5 as owed with review ingestion, which is owned by
+  [#479](https://github.com/theurian/theurian/issues/479) — this entry and the
+  document both named [#129](https://github.com/theurian/theurian/issues/129)
+  until it closed on the wording rather than on the adapter, and the document
+  was repointed in [#482](https://github.com/theurian/theurian/pull/482) while
+  this changelog was outside that pass's file set
+  ([#501](https://github.com/theurian/theurian/pull/501)).
 - **`/theurian:propose` ran a command that does not exist.** Its step 2 shelled
   out to a `propose` subcommand to generate the proposal, and its step 4 offered
   a `propose accept` to approve it. The CLI registers neither, so a user running
