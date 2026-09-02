@@ -1,6 +1,6 @@
 # ADR-0029: Review findings are governed knowledge, ingested from commit trailers
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-08-26
 - Deciders: Theurian maintainers
 - Requirements: FR-S1, FR-S3, FR-V1, FR-V2, FR-V3, FR-V5, FR-V6, FR-K10, FR-T6,
@@ -17,6 +17,12 @@
   served finding is evidence, it gates nothing), and
   [ADR-0027](0027-accept-validates-before-it-moves.md) (the accept path whose
   review rounds emitted the trailers this ADR ingests)
+
+> **The two paragraphs below describe this ADR's own change, not the state of the
+> codebase.** Three of the deferred lanes have since landed — the trailer parser
+> (#387), the store (#396), and the serving read (#504) — and each is recorded in
+> *Compliance* with what it discharged and what it left owed. The paragraphs are
+> kept as written because they say what the deciding CL contained.
 
 **This ADR records a decision and ships no code.** The parser
 ([#200](https://github.com/theurian/theurian/issues/200)), the family-taxonomy
@@ -527,7 +533,12 @@ The surfaces the design defines today are instances of this, not the extent of i
   is the *standard* shape of this data, not an edge case: measured 2026-08-26,
   `dd4b991` (#364) carries **17** `Review-Finding:` trailers on one commit/PR node,
   `e39572c` **5**, `6c3019c` **3**
-  (`git log -1 --format='%B' <sha> | grep -c 'Review-Finding:'`). A withheld finding
+  (`git log -1 --format='%B' <sha> | grep -c 'Review-Finding:'`). Co-location has
+  grown since, and the newer figure is added rather than substituted for that one:
+  measured 2026-09-02 against `origin/main` @ `141cf6f`, the busiest node is
+  `d70dc21` with **45** trailers on one commit, over a corpus of **502** accepted
+  findings and **1** rejected line (the same per-commit command, and
+  `GitTrailerFindingSource.load_findings()` for the corpus split). A withheld finding
   sharing a node with a served one must appear in neither that node's edge set nor
   its cardinality;
 - **The FR-V6 review-unit (PR-level) Markdown view** (decision 4): its **members**
@@ -813,7 +824,11 @@ What this slice discharges:
   unconditionally on every run regardless of what the stamp says — the
   detection is real, the reaction arrives with the serving slice
   (`tests/integration/test_findings_store.py`).
-- **AC-7: structurally, no path a caller reaches serves a finding.** Two
+- **AC-7: structurally, no path a caller reaches serves a finding.**
+  *Slice-2's claim, and slice-3 inverted it on purpose: the guard now asserts
+  **exactly one** sanctioned reader rather than none, and the registered tool set
+  it holds has gained `review.findings` — see* **Landed in #504** *below. The
+  rest of this entry is kept as slice-2 wrote it.* Two
   prongs, each blind to what the other catches — an AST import scan of every
   serving module, and a grep for the store's table and file-name tokens plus
   the MCP tool registry — assert that `mcp/`, `daemon/`, `review/`, the
@@ -956,6 +971,112 @@ unchanged — nothing here serves a finding, and `pullRequest`, `family` and
   unaffected: the `%b` and `%B` counts agree at every commit this ADR names, which
   is measured in *Re-anchored census* rather than asserted, and every `%b` cite in
   this file is re-anchored to `%B` with its figure unchanged.
+
+**Landed in [#504](https://github.com/theurian/theurian/pull/504) — #368 phase-2
+slice-3, the serving read.** **S1**, the per-record filtered read the closure
+argument names, now exists: the MCP tool `review.findings`, announced by
+`system.capabilities` as `reviewFindings: true`. No decision above changes. What
+changes is that one of the surfaces the closure argument reasons about is built,
+so its controls are code rather than requirements — and the AC-7 entry above is
+inverted rather than relaxed: the guards now assert that **exactly one**
+registered tool serves a finding, and that it is this one
+(`tests/unit/test_findings_store_is_unreachable.py`,
+`tests/integration/test_findings_tool_registry.py`).
+
+- **The response is two members, and each is a function of the rows it
+  returned.** `{count, findings}`: `count` sizes the returned array — never a
+  total before `limit` — and each row is stored columns, unmodified, under the
+  SEC-15 triple. Three values were considered and are deliberately absent: a
+  **rejected count** (a statistic over rows this tool never serves, so a
+  malformed trailer somebody committed would move a served value), the store's
+  **stamp** (build metadata whose only purpose is a staleness decision the tool
+  has already made), and an **echo of the caller's filters**. **Staleness speaks
+  only through the constant refusal** — a store that is missing, stale-schema,
+  stale-parser or unreadable is refused with one constant message that
+  interpolates nothing, not the project, not the filters, not the file, so which
+  of those causes fired is not a published value (`FINDINGS_UNAVAILABLE_REFUSAL`
+  in `mcp/tools.py`;
+  `test_review_findings_tool.py::test_every_unservable_store_gives_the_same_constant_refusal`
+  and `::test_the_unservable_refusal_does_not_vary_with_what_the_store_holds`).
+  The staleness comparison runs **inside the one `mode=ro` connection the rows
+  come back on**, so a rebuild landing mid-call cannot have the check pass on one
+  file and the rows come from another. That is why `is_current()` is
+  deliberately dead in production rather than merely unused — a caller that asked
+  it first would open a second connection and reintroduce the split
+  (`test_findings_store_is_unreachable.py::test_no_shipped_module_asks_the_store_whether_it_is_current`).
+- **A rejected trailer is excluded at the type, not filtered out.** `FindingQuery`
+  has no member that can select one, and the serving statement names `findings`
+  alone, so a rejected line's author-controlled `raw_line` and `reason` are never
+  read into the process on a call that answers a caller. `limit` has **no default
+  and must be positive**, so the type cannot express an unbounded read: a caller
+  that omits the bound gets a construction error rather than a whole-store scan
+  (`domain/ports/review_finding_store.py`;
+  `test_review_findings_tool.py::test_no_response_carries_a_byte_of_a_rejected_trailer`,
+  `::test_a_rejected_trailer_moves_no_byte_of_any_response`).
+- **The three reach residuals slice-2 recorded are closed by one runtime
+  instrument, not three scanners.** All three are the same shape — *a reach a
+  source scanner cannot spell* — so
+  `tests/integration/test_findings_store_reads_are_governed.py` asserts nothing
+  about source: it drives the whole registered tool surface, identifies the store
+  by the file SQLite reports it opened (`PRAGMA database_list`, so a
+  runtime-assembled path and a literal one are one file), and holds every
+  statement executed against that file to the port's three promises — no read of
+  `rejected_trailers`, no read of `findings` without a `LIMIT`, and no findings
+  read on a connection that did not first read the stamp. Its own prongs are
+  demonstrated against a synthetic evasive reader whose file name *and* table
+  names are assembled at runtime, so a green run means the checks looked and
+  found nothing. Its stated bounds: it sees only paths the drive executes (the
+  static prongs remain the arm for unreachable code), and a reader that built a
+  `sqlite3.Connection` directly or parsed the file's bytes without SQLite is
+  outside it.
+
+**Discharged from the owed list above: a served `findingText` carries the SEC-15
+safety triple.** The bullet asked for a test on the serving path plus a companion
+that the check can fail, and both exist:
+`test_review_findings_tool.py::test_every_served_finding_carries_the_trust_triple`
+asserts the triple on every row of a real tool response, and
+`::test_the_trust_triple_check_can_fail` mutates each of the three labels in turn
+and requires the check to reject — so the acceptance test is not asserting
+nothing. That is the only owed item this slice discharges.
+
+**What stays owed, and to whom.** Serving one surface does not discharge the
+others. Each owner below is the change that would implement the item, not the
+milestone it sits in — the mistake T-7 records paying for twice:
+
+| Owed item | Owner |
+| :-- | :-- |
+| The recurrence query, and its count over embargo-cleared rows only (decision 5) | [#368](https://github.com/theurian/theurian/issues/368), this epic's remaining slices (Phase B) |
+| The family-taxonomy corpus items landing through propose → guard → accept (decision 4) | [#368](https://github.com/theurian/theurian/issues/368) |
+| The reverse `recorded-in` edge set, and its per-edge `_relation_is_visible` gate | [#368](https://github.com/theurian/theurian/issues/368) |
+| The FR-V6 review-unit Markdown view | [#368](https://github.com/theurian/theurian/issues/368) |
+| A ranked-search surface over findings, ranking the T-17a-purged population | [#368](https://github.com/theurian/theurian/issues/368) |
+| Retiring the manual burn-in in the CL that ships the recurrence query (decision 5) | [#368](https://github.com/theurian/theurian/issues/368) |
+| A non-public ingestion path refusing an embargoed finding uniformly at serve (decision 6) | [#479](https://github.com/theurian/theurian/issues/479), the GitHub arm that has advisory context, which needs [#429](https://github.com/theurian/theurian/issues/429)'s fetch controls first |
+
+Every owner above was read on 2026-09-02 rather than assumed: #368, #479 and #429
+are open, and #479 carries `phase-b`. The six git-native items are **not** #479's:
+that issue is the GitHub-API arm, and an epic in the right milestone is not
+automatically the change that implements a control.
+
+`review.findings` is not a ranked surface and computes no aggregate, so it owes
+none of the controls those rows carry — but it also does not discharge them, and
+a second findings surface does not inherit this one's disclosure round.
+
+**The deployment precondition this serving read rests on, recorded in full in the
+threat model.** Slice-1 pinned the source to `refs/remotes/origin/main`, so what
+`review.findings` serves is what a `git log` on the same clone would already
+show — but only *for a caller who can read that clone's `.git`*. An MCP caller is
+a distinct audience from a local repository reader, so the reach argument is a
+**precondition on the deployment**, not a property of the code: *the daemon's MCP
+audience must not be broader than the set of principals who may read the
+repository it serves from.* On a clone of the private embargo fork the daemon
+therefore sits **inside** the embargo boundary, and the URL verification that
+would make that structural is still Amendment 1's D7 stated non-goal. Per-finding
+embargo control arrives with the GitHub arm, which is the path that has advisory
+context (decision 6). The acceptance, its conditions and its owners are audited
+in [`../security/threat-model.md`](../security/threat-model.md) — recorded there
+rather than here, because an acceptance is a security record with owners, not a
+sentence in an ADR.
 
 ## Amendment 1 — the parser contract (2026-08-26, PR #387, #368 phase-2 slice-1)
 

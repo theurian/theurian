@@ -1,20 +1,22 @@
-"""What ADR-0029's #492 landing note and its CHANGELOG entries claim, against the code.
+"""What ADR-0029's landing notes and its CHANGELOG entries claim, against the code.
 
 **Effective scope, stated as narrowly as it is true.** This module reads exactly
 two records -- ``docs/adr/0029-review-findings-are-governed-knowledge.md`` and the
 one ``##`` section of ``packages/theurian-core/CHANGELOG.md`` that cites
-``pull/492`` -- and holds four claims they make about the findings pipeline
-against five live symbols: :data:`FINDINGS_SCHEMA_VERSION`,
+``pull/492`` -- and holds five claims they make about the findings pipeline
+against seven live symbols: :data:`FINDINGS_SCHEMA_VERSION`,
 ``trailer_source._FORMAT``, ``review_finding._STAMP_PROBES`` with
-:func:`keyed_lines`, ``SqliteReviewFindingStore.replace_all``'s publish, and
-``FindingsBuilder``'s ``write_section``. **It does not test the findings pipeline.**
+:func:`keyed_lines`, ``SqliteReviewFindingStore.replace_all``'s publish,
+``FindingsBuilder``'s ``write_section``, :class:`FindingQuery`'s fields, and
+:func:`findings_payload`'s response keys. **It does not test the findings
+pipeline.**
 Every mechanism named below has its own driver, cited at each pin; what is held
 here is that the *records* move when the mechanism does. A build that computed the
 right ``.building`` path and never renamed onto it would fail
 ``test_findings_store.py``, not this module -- except where a pin below says
 otherwise, and each one says which.
 
-Four claims, each with a prose half over the records and a fact half over the code:
+Five claims, each with a prose half over the records and a fact half over the code:
 
 -- 1. The residuals paragraph is closed, not standing --------------------------
 
@@ -120,6 +122,34 @@ outside the hold, ``replace_all`` inside it, one entry -- is
 ``test_findings_builder.py::test_the_build_publishes_inside_one_continuous_write_section``
 and is not repeated here.
 
+-- 5. The slice-3 landing note, and the two type-level facts it rests on --------
+
+ADR-0029's slice-3 note records that ``review.findings`` serves S1, and it rests
+its disclosure argument on two shapes rather than on a filter: **a rejected
+trailer cannot be asked for**, because :class:`FindingQuery` carries no member
+that selects one; and **an unbounded read cannot be expressed**, because ``limit``
+has no default. Both are properties of a live type, so both are read off it --
+:func:`test_the_query_type_cannot_ask_for_a_rejection_or_an_unbounded_read` walks
+``dataclasses.fields(FindingQuery)``. A member named ``include_rejected``, or a
+``limit`` that acquired a default, makes the note's sentence false and reddens
+here; the *behaviour* underneath is
+``test_review_findings_tool.py::test_no_response_carries_a_byte_of_a_rejected_trailer``
+and ``test_findings_store_reads_are_governed.py``, not this module.
+
+The response's shape is held the same way. The note says the response is **two
+members** and names both, and
+:func:`test_the_served_response_holds_exactly_the_members_the_note_names`
+recomputes them from :func:`findings_payload` rather than restating them: a
+surface that added a rejected count or the store's stamp -- the two values the
+note says were considered and left out -- moves the live key set and the record
+has to move with it.
+
+The prose half is the note's own anchor and its one verbatim sentence.
+**Staleness speaks only through the constant refusal** is pinned literally
+because it is the whole of what the response says about a store's build state:
+if a later slice publishes a stamp or distinguishes the refusal's causes, that
+sentence is the record that must be corrected rather than left standing.
+
 -- What this module deliberately does not hold ---------------------------------
 
 - **It proves no atomicity and takes no lock.** The AST pins say the source has the
@@ -137,6 +167,7 @@ and is not repeated here.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import re
 from pathlib import Path
@@ -147,10 +178,12 @@ from write_lock_claims import REPO_ROOT, collapsed
 
 from theurian.application.findings_builder import FindingsBuilder
 from theurian.domain import review_finding
+from theurian.domain.ports.review_finding_store import FindingQuery
 from theurian.domain.review_finding import keyed_lines
 from theurian.infrastructure.git import trailer_source
 from theurian.infrastructure.sqlite.findings_schema import FINDINGS_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.findings_store import SqliteReviewFindingStore
+from theurian.mcp.findings import findings_payload
 
 ADR_0029: Final = REPO_ROOT / "docs" / "adr" / "0029-review-findings-are-governed-knowledge.md"
 CHANGELOG: Final = REPO_ROOT / "packages" / "theurian-core" / "CHANGELOG.md"
@@ -215,6 +248,35 @@ _SCHEMA_VERSION_MOVE: Final = re.compile(r"`findings_schema_version` (?:moves|mo
 #: bullet's prose cannot be counted as that residual's own entry.
 _LANDING_BULLET: Final = re.compile(r"^- \*\*#(\d+) —")
 
+#: The slice-3 landing note, keyed on its claim rather than on the PR link, for
+#: :data:`CLOSURE_MARKER`'s reason. The link is asserted separately, inside the
+#: paragraph this finds.
+SLICE_3_NOTE: Final = "#368 phase-2 slice-3, the serving read"
+
+#: The pull request the slice-3 note is anchored to, as a link target rather than
+#: a bare ``#504``: same rule as :data:`LANDING_PR`.
+SLICE_3_PR: Final = "pull/504"
+
+#: The one sentence about a store's build state the response is allowed to carry.
+#: Pinned literally: a later slice that published the stamp, or that told the
+#: refusal's four causes apart, would falsify it, and this is the record that has
+#: to move rather than quietly stand.
+STALENESS_SENTENCE: Final = "staleness speaks only through the constant refusal"
+
+#: How the slice-3 note spells the size of the response, one word per count. The
+#: count is recomputed from :func:`findings_payload`; this only translates it, so
+#: a response that grew a member fails naming the word the note should now use.
+_NUMBER_WORDS: Final = {
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+}
+
 #: Every key above that is matched against :func:`collapsed` prose, so the premise
 #: test can refuse a capital before a pin reads a record. ``collapsed`` lowercases
 #: both sides; a key carrying a capital matches no paragraph however intact the
@@ -234,6 +296,9 @@ _COLLAPSED_KEYS: Final = {
     "PROBE_RESIDUAL[1]": PROBE_RESIDUAL[1],
     "_SCHEMA_VERSION_MOVE": _SCHEMA_VERSION_MOVE.pattern,
     "_LANDING_BULLET": _LANDING_BULLET.pattern,
+    "SLICE_3_NOTE": SLICE_3_NOTE,
+    "SLICE_3_PR": SLICE_3_PR,
+    "STALENESS_SENTENCE": STALENESS_SENTENCE,
 }
 
 #: A probe the shipped matrix does not carry, used to perturb the behaviour section.
@@ -894,4 +959,127 @@ def test_the_shipped_findings_build_hands_the_builder_the_projects_write_lock() 
         f"`theurian findings build` no longer hands the builder the project's write "
         f"lock, so `write_section` falls back to `nullcontext` and two rebuilds "
         f"assemble at one working name (#404): {passed}"
+    )
+
+
+# -- 5. the slice-3 landing note, and the types it rests on -------------------
+
+
+def _slice_3_note() -> str:
+    """The slice-3 landing note and everything under it, up to the next heading."""
+    blocks = _blocks(ADR_0029.read_text(encoding="utf-8"))
+    start = _the_one_block_carrying(blocks, SLICE_3_NOTE, record="ADR-0029's slice-3 landing note")
+
+    return _section_from(blocks, start)
+
+
+def test_the_adr_carries_the_slice_3_landing_note_naming_the_pr_that_served() -> None:
+    """RED means the record of when a finding first reached a caller is gone.
+
+    ADR-0029 was written when nothing served a finding, and its closure argument
+    is stated over surfaces that did not exist. The slice-3 note is what says
+    which of them is now built and under what name, so a reader meeting the
+    ``no path a caller reaches serves a finding`` entry above it is not left
+    reading a retired claim as current.
+
+    Anchored to the pull request as a link rather than a bare ``#504``, because a
+    cross-reference a reader cannot follow is not a record of anything.
+    """
+    note = _slice_3_note()
+
+    assert SLICE_3_PR in note, (
+        f"ADR-0029's slice-3 landing note no longer names `{SLICE_3_PR}`, so a reader "
+        f"cannot reach the change that made `review.findings` callable"
+    )
+
+
+def test_the_slice_3_note_states_that_staleness_speaks_only_through_the_refusal() -> None:
+    """RED means the record stopped bounding what the response says about the store.
+
+    The response carries no stamp, no schema version and no build date: a store
+    that cannot be served from is refused with one constant message, and which of
+    its causes fired is not published. That sentence is the whole of the claim,
+    and it is the one a later slice would falsify by publishing build metadata or
+    by telling the causes apart.
+
+    The behaviour is
+    ``test_review_findings_tool.py::test_every_unservable_store_gives_the_same_constant_refusal``
+    and ``::test_the_unservable_refusal_does_not_vary_with_what_the_store_holds``;
+    what is held here is that the record still says it.
+    """
+    note = collapsed(_slice_3_note())
+
+    assert STALENESS_SENTENCE in note, (
+        f"ADR-0029's slice-3 landing note no longer carries {STALENESS_SENTENCE!r}, so "
+        f"nothing in the record bounds what a served response may say about the store's "
+        f"build state"
+    )
+
+
+def test_the_query_type_cannot_ask_for_a_rejection_or_an_unbounded_read() -> None:
+    """RED means the note's two type-level claims describe a type that changed.
+
+    The note rests the rejected-trailer exclusion on the *shape of the query*
+    rather than on a filter: there is no member that selects a rejection, so the
+    read cannot be asked for one. And it rests boundedness on ``limit`` having no
+    default, so a caller that omits the bound gets a construction error rather
+    than a whole-store scan.
+
+    Both are read off the live dataclass. A member named ``include_rejected``, or
+    a ``limit`` that acquired a default, leaves the note asserting a property the
+    type no longer has -- and each would be a serving change that needs its own
+    disclosure round, which is what this RED is for. The behaviour underneath is
+    ``test_review_findings_tool.py::test_no_response_carries_a_byte_of_a_rejected_trailer``
+    and ``test_findings_store_reads_are_governed.py``'s runtime audit.
+    """
+    members = {field.name: field for field in dataclasses.fields(FindingQuery)}
+
+    assert members, "FindingQuery carries no fields at all, so the scan below reads nothing"
+    naming_a_rejection = sorted(name for name in members if "reject" in name)
+    assert not naming_a_rejection, (
+        f"`FindingQuery` gained {naming_a_rejection}, so ADR-0029's slice-3 note is wrong "
+        f"that no member of the query type can select a rejected trailer"
+    )
+    assert "limit" in members, (
+        "`FindingQuery` has no `limit`, so the note's `the type cannot express an "
+        "unbounded read` rests on a member that is gone"
+    )
+    assert members["limit"].default is dataclasses.MISSING, (
+        f"`FindingQuery.limit` now defaults to {members['limit'].default!r}; the note says "
+        f"it has none, which is what makes forgetting the bound a construction error "
+        f"rather than a whole-store read"
+    )
+
+
+def test_the_served_response_holds_exactly_the_members_the_note_names() -> None:
+    """RED means the response grew or lost a member and the record did not follow.
+
+    The note says the response is two members and names both, and its disclosure
+    argument turns on the ones that are *absent*: a rejected count would be a
+    statistic over rows this tool never serves, and the store's stamp would
+    publish build metadata the refusal already stands for. Adding either moves the
+    live key set, so the count and the names are recomputed from
+    :func:`findings_payload` rather than restated here.
+
+    Both halves are asserted: the number word the note spells, and each member's
+    own name. A note that kept saying `two` while naming one of them would pass
+    the first and fail the second.
+    """
+    members = sorted(findings_payload(()))
+    note = collapsed(_slice_3_note())
+
+    assert len(members) in _NUMBER_WORDS, (
+        f"the response now has {len(members)} members, past what this pin can spell; "
+        f"extend `_NUMBER_WORDS` and correct ADR-0029's slice-3 note with it"
+    )
+    assert f"the response is {_NUMBER_WORDS[len(members)]} members" in note, (
+        f"`findings_payload` returns {len(members)} members ({members}), and ADR-0029's "
+        f"slice-3 note does not say `the response is {_NUMBER_WORDS[len(members)]} "
+        f"members`. A member added here is a new published value and owes its own "
+        f"disclosure argument, not just a reworded sentence."
+    )
+    unnamed = [member for member in members if f"`{member}`" not in note]
+    assert not unnamed, (
+        f"the served response carries {unnamed} and ADR-0029's slice-3 note names "
+        f"neither the value nor why it is safe to publish"
     )
