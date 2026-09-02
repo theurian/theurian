@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 import threading
 import time
 from contextlib import closing
@@ -57,6 +58,10 @@ from theurian.infrastructure.sqlite.findings_store import (
 from theurian.infrastructure.sqlite.schema import read_only_uri
 
 pytestmark = pytest.mark.integration
+
+_NEEDS_SYMLINKS = pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks need privileges on Windows"
+)
 
 
 def _sha(seed: str) -> str:
@@ -667,6 +672,42 @@ def test_the_building_sibling_stays_inside_the_state_directory(tmp_path: Path) -
 
     assert store.building_path.parent == store.path.parent
     assert store.building_path.name == store.path.name + ".building"
+
+
+@_NEEDS_SYMLINKS
+def test_a_symlink_at_the_building_path_is_unlinked_never_written_through(tmp_path: Path) -> None:
+    """#404 R1-8: the unlink is the containment control, so a planted symlink escapes nothing.
+
+    ``building_path`` is derived *lexically* -- ``self._path.with_name(name +
+    ".building")`` -- so it is contained only as far as the publish path is
+    (``findings_for`` proves that). What actually stops a rebuild writing *through*
+    a symlink planted at that name, out to a target beyond the tree, is the
+    pre-write ``_unlink_with_sidecars(building)``: it removes the symlink before
+    ``sqlite3.connect`` opens the name, so the connection creates a fresh regular
+    file inside the tree rather than following the link.
+
+    Planted here at ``building_path`` pointing to an empty, writable file outside
+    the project. After ``replace_all`` the outside target must be byte-unchanged
+    (empty), and the store must publish correctly. Dropping the pre-write unlink
+    makes the write land on the target instead (measured: 24 KB written through the
+    link), so this is RED against that mutation.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "empty.sqlite"
+    target.write_bytes(b"")  # empty and writable, so a leaked write WOULD land here
+    store = _store(tmp_path)
+    store.building_path.parent.mkdir(parents=True, exist_ok=True)
+    store.building_path.symlink_to(target)
+    assert store.building_path.is_symlink()
+
+    store.replace_all(FindingLoad(accepted=(_finding(_sha("a"), text="contained"),), rejected=()))
+
+    assert target.read_bytes() == b"", "the rebuild wrote through the symlink to a target outside"
+    assert [f.finding_text for f in store.dump().findings] == ["contained"]
+    # The symlink is gone (unlinked), replaced by a real published file in the tree.
+    assert not store.path.is_symlink()
+    assert list(outside.iterdir()) == [target]
 
 
 # --- #405 R1-1: an un-normalisable date is a graded refusal at the store too ---

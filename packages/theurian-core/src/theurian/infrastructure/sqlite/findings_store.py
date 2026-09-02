@@ -316,9 +316,16 @@ class SqliteReviewFindingStore:
 
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            # A previous run that died mid-build leaves this behind; sqlite would
-            # happily open and extend it, which would land its rows in the new
-            # store. Wholesale means from empty, so it goes first.
+            # This unlink is TWO controls, not one. Its wholesale role: a previous
+            # run that died mid-build leaves a `.building` file behind, and sqlite
+            # would happily open and extend it, landing its rows in the new store --
+            # so it goes first. Its CONTAINMENT role (#404 R1-8): `building` is
+            # derived lexically, so if a hostile tree plants a *symlink* there
+            # pointing outside the project, unlinking it before `sqlite3.connect`
+            # opens the name is what makes the connection create a fresh regular
+            # file in the tree rather than write through the link to the target
+            # (measured: dropping this unlink writes 24 KB to the outside target).
+            # `building_path`'s own containment is only lexical; this is the control.
             _unlink_with_sidecars(building)
             with closing(sqlite3.connect(building)) as connection:
                 for pragma in CONNECTION_PRAGMAS:
