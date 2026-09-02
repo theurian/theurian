@@ -155,17 +155,26 @@ SEARCH_CAPACITY_REFUSAL: Final = (
 
 
 #: What `review.findings` answers when the store cannot be served from: it does
-#: not exist, it was built by a superseded schema or trailer grammar, or it
-#: cannot be read.
+#: not exist, this installation did not build it (ADR-0004, SEC-7), it was built
+#: by a superseded schema or trailer grammar, or it cannot be read.
 #:
-#: **One message for all three, and it is a constant.** It interpolates nothing --
+#: "It has not been built" in the text below is read as *has not been built here*,
+#: which is what lets one sentence cover the second cause as honestly as the
+#: first: a store delivered with a repository is one this installation has no
+#: record of building, and the cure for it is the same local rebuild.
+#:
+#: **One message for all four, and it is a constant.** It interpolates nothing --
 #: not the project, not the filters, not the file, and above all nothing read
 #: from the store -- so it cannot become the "an error that fires for one input
 #: and not another" channel SEC-13 closes elsewhere (the same discipline
-#: `SEARCH_CAPACITY_REFUSAL` holds). Distinguishing the three arms would publish
+#: `SEARCH_CAPACITY_REFUSAL` holds). Distinguishing the four arms would publish
 #: which of them fired, which is a statement about a file the caller cannot read
 #: and buys nothing: the cure is the same rebuild for each, because the store is
-#: a projection of git history (ADR-0004).
+#: a projection of git history (ADR-0004). The provenance arm is the one where
+#: distinguishing would cost something rather than merely buying nothing: telling
+#: "this store is not yours" apart from "there is no store" tells whoever planted
+#: it that the plant was detected, and tells the victim a story about a file only
+#: the attacker wrote.
 #:
 #: An empty result would be the alternative and is deliberately not it: "nothing
 #: has been built here" read as "this project has no findings" is a false absence
@@ -1655,12 +1664,20 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         is deliberate -- a second, weaker resolution path for one tool is how a
         gate ends up applying to four tools out of five.
 
+        **Served only if this installation built the store** (ADR-0004, SEC-7,
+        T-19). The store is derived and git-ignored like the canonical state and
+        the retrieval index, so a repository contributor can force-add a
+        fabricated one past that ignore; presence on disk is therefore not
+        evidence of anything. The out-of-tree :class:`BuildProvenance` record is,
+        and a store with no record in it is refused with the constant below --
+        the same one an absent store gets, so the two are indistinguishable.
+
         Raises:
             ToolError: If the project does not resolve (see :func:`_resolve`), if
                 a filter is outside its bound or vocabulary (see
                 :mod:`theurian.mcp.findings`), or if the store cannot be served
                 from -- one constant message for that last case, whichever of its
-                three causes fired (:data:`FINDINGS_UNAVAILABLE_REFUSAL`).
+                four causes fired (:data:`FINDINGS_UNAVAILABLE_REFUSAL`).
         """
         # Bounds first, before the registry is read and before any file is
         # touched: a refused request costs the daemon nothing (T-6), and the
@@ -1677,6 +1694,30 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             limit=limit,
         )
         paths, _database, _active = _resolve(projectId)
+
+        # **Provenance before presence** (ADR-0004, SEC-7, T-19). `_resolve` gates
+        # the *canonical* state; the findings store is a third derived database
+        # under `.theurian/state/`, git-ignored like the other two and therefore
+        # force-addable past that ignore by whoever authored the repository. Without
+        # this line the trust was filesystem presence: a clone shipping a fabricated
+        # store under the name `findings_for` derives -- correct schema, current
+        # stamp, rows naming commits that never existed -- was served as this
+        # repository's own review history to a victim who never ran `findings build`
+        # (reproduced end to end, PR #504 round 1, R1-1). The discriminator is the
+        # one `verify_state_provenance` uses and the only one a repository author
+        # cannot forge: did *this installation* build it.
+        #
+        # Refused with the same constant an absent or stale store gets, deliberately.
+        # A planted store and a missing one must be indistinguishable to the caller:
+        # a refusal of its own would tell an attacker's victim which of the two
+        # states they are in, it would be a second input to an error channel SEC-13
+        # keeps at one message, and the cure is `theurian findings build` either way.
+        #
+        # Ahead of constructing the store, so an unprovenanced file is not opened at
+        # all -- T-19's "before a byte of `.theurian/state/` reaches a caller" is a
+        # statement about the read, not only about the response.
+        if not provenance.has_findings(paths.root, FINDINGS_STORE_ID):
+            raise ToolError(FINDINGS_UNAVAILABLE_REFUSAL)
 
         # `FINDINGS_STORE_ID` is the constant `theurian findings build` writes
         # under, imported rather than respelled: two spellings would leave this

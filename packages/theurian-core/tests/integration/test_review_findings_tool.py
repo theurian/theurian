@@ -11,7 +11,7 @@ and the *content* under test here is a synthetic load whose oracle is a value
 this file wrote. ``tests/integration/test_findings_build_cli.py`` is where the
 build command is driven end to end.
 
-Four properties this file exists to hold, each named where it is asserted below:
+Five properties this file exists to hold, each named where it is asserted below:
 
 - a served row carries the SEC-15 triple, **and the check that says so can fail**
   (ADR-0029 Compliance: "a result missing the triple is rejected");
@@ -21,7 +21,9 @@ Four properties this file exists to hold, each named where it is asserted below:
   the rebuild remedy -- never an empty result, and never a message that varies
   with what the store holds;
 - a rejected trailer is not served, and its presence does not move a single byte
-  of any response (the two-corpora differential ADR-0029's closure is stated as).
+  of any response (the two-corpora differential ADR-0029's closure is stated as);
+- a store **this installation did not build** is refused in the words a missing
+  one gets, however well-formed the file is (ADR-0004, SEC-7, T-19).
 """
 
 from __future__ import annotations
@@ -40,7 +42,12 @@ from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
-from theurian.application.project_service import FINDINGS_STORE_ID, ProjectPaths, ProjectRegistry
+from theurian.application.project_service import (
+    FINDINGS_STORE_ID,
+    BuildProvenance,
+    ProjectPaths,
+    ProjectRegistry,
+)
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.knowledge import SourceAnchor
@@ -225,9 +232,35 @@ def _store_path(registry: ProjectRegistry, project_id: str = "demo") -> Path:
     return ProjectPaths.of(root).findings_for(FINDINGS_STORE_ID)
 
 
-def _land(registry: ProjectRegistry, load: FindingLoad = LANDED) -> SqliteReviewFindingStore:
+def _record_provenance(registry: ProjectRegistry, project_id: str = "demo") -> None:
+    """Record the store as this installation's, exactly as ``findings build`` does.
+
+    Writing the file is not enough to make it servable: the tool refuses a store
+    this installation has no record of building, because presence on disk is what
+    a hostile clone manufactures (ADR-0004, SEC-7, T-19). These tests land the
+    store with the adapter rather than the command -- the command reads
+    ``refs/remotes/origin/main``, which a fixture repository does not have -- so
+    they have to make the same provenance record the command makes, through the
+    same class, keyed the same way.
+    """
+    root = Path(registry.load()[project_id]["rootPath"])
+    BuildProvenance.for_registry(registry).record_findings(root, FINDINGS_STORE_ID)
+
+
+def _plant(registry: ProjectRegistry, load: FindingLoad = LANDED) -> SqliteReviewFindingStore:
+    """Land a store on disk and record **nothing** -- the hostile-clone shape.
+
+    What a repository contributor can produce with ``git add -f``: a well-formed,
+    current, fully readable store that this installation never built.
+    """
     store = SqliteReviewFindingStore(_store_path(registry))
     store.replace_all(load)
+    return store
+
+
+def _land(registry: ProjectRegistry, load: FindingLoad = LANDED) -> SqliteReviewFindingStore:
+    store = _plant(registry, load)
+    _record_provenance(registry)
     return store
 
 
@@ -636,6 +669,74 @@ async def test_every_unservable_store_gives_the_same_constant_refusal(
     message = await _call_failing(project, projectId="demo")
 
     assert FINDINGS_UNAVAILABLE_REFUSAL in message
+
+
+@pytest.mark.asyncio
+async def test_a_store_this_installation_did_not_build_is_not_served(
+    project: ProjectRegistry,
+) -> None:
+    """ADR-0004, SEC-7, T-19: presence on disk is not evidence of anything.
+
+    The findings store is derived and git-ignored, so a repository contributor can
+    force-add a fabricated one past that ignore and a victim who clones, registers
+    and serves -- without ever running ``theurian findings build`` -- was handed
+    its rows as this repository's own review history (PR #504 round 1, R1-1). The
+    planted store here is well-formed, current and readable: nothing about the
+    *file* is wrong, which is exactly why file-shaped checks cannot catch it.
+    """
+    planted = _plant(project)
+    assert planted.dump().findings, "the premise: the planted store really holds rows"
+
+    message = await _call_failing(project, projectId="demo")
+
+    assert FINDINGS_UNAVAILABLE_REFUSAL in message
+    assert "bearer token" not in message, "a refused response quoted the planted store"
+
+
+@pytest.mark.asyncio
+async def test_recording_the_build_is_what_makes_the_same_store_servable(
+    project: ProjectRegistry,
+) -> None:
+    """The other arm, over one unchanged file: provenance is the whole difference.
+
+    The store's bytes are written once and never touched again. What changes
+    between the refusal and the rows is a record in ``THEURIAN_DATA_DIR`` --
+    outside the repository, the one place a repository contributor cannot write --
+    which is the discriminator :class:`BuildProvenance` exists to be.
+    """
+    _plant(project)
+    before = await _call_failing(project, projectId="demo")
+    digest = _store_path(project).read_bytes()
+
+    _record_provenance(project)
+    payload = await _call(project, projectId="demo")
+
+    assert FINDINGS_UNAVAILABLE_REFUSAL in before
+    assert payload["count"] == 3
+    assert _store_path(project).read_bytes() == digest, (
+        "the store was rewritten between the two calls, so this test compared two "
+        "different files rather than one file's provenance"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_planted_store_is_refused_in_the_same_words_as_a_missing_one(
+    project: ProjectRegistry,
+) -> None:
+    """The two states a caller must not be able to tell apart (SEC-13).
+
+    A refusal that named the provenance arm would tell whoever planted the store
+    that the plant was detected, and would tell the victim a story about a file
+    only the attacker wrote. One string, or the error channel carries a second
+    input.
+    """
+    missing = await _call_failing(project, projectId="demo")
+    _plant(project)
+    planted = await _call_failing(project, projectId="demo")
+
+    assert planted == missing, (
+        f"a planted store and a missing one are distinguishable:\n{planted}\n{missing}"
+    )
 
 
 @pytest.mark.asyncio

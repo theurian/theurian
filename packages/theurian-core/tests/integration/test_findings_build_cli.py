@@ -43,7 +43,7 @@ from typing import Any, Final
 import pytest
 from typer.testing import CliRunner
 
-from theurian.application.project_service import ProjectPaths
+from theurian.application.project_service import FINDINGS_STORE_ID, BuildProvenance, ProjectPaths
 from theurian.cli.main import app
 from theurian.domain.review_finding import PARSER_STAMP
 from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
@@ -198,6 +198,35 @@ def test_a_json_build_reports_the_real_asymmetric_counts_and_the_live_parser_sta
     store_path = Path(payload["storePath"])
     assert store_path.is_file(), "the report names a store the build did not actually write"
     assert store_path == ProjectPaths.of(project).findings_for("local")
+
+
+def test_a_build_records_that_this_installation_produced_the_store(
+    project: Path, tmp_path: Path
+) -> None:
+    """The write half of the provenance gate (ADR-0004, SEC-7, T-19).
+
+    ``review.findings`` stands aside any store this installation has no record of
+    building, so a build that landed the file and recorded nothing would ship an
+    artifact nothing can serve -- the failure mode is silent in both directions,
+    which is why both halves are driven. The record is asserted *absent* first: a
+    file that already said yes would make the assertion after the build true for
+    the wrong reason.
+    """
+    provenance = BuildProvenance.default(tmp_path / "datadir")
+    root = ProjectPaths.of(project).root
+    assert not provenance.has_findings(root, FINDINGS_STORE_ID), (
+        "the premise: nothing has recorded a findings build for this project yet"
+    )
+    _commit(project, "fix: a change (#1)", "Review-Finding: code-review HIGH — a finding")
+    _publish(project)
+
+    code, payload = _invoke("findings", "build")
+
+    assert code == 0, payload
+    assert provenance.has_findings(root, FINDINGS_STORE_ID), (
+        "`findings build` wrote a store this installation does not vouch for, so "
+        "`review.findings` will refuse to serve what it just built"
+    )
 
 
 def test_findings_build_constructs_the_git_source_from_the_project_root(

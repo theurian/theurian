@@ -31,7 +31,7 @@ from theurian.application.findings_builder import (
     FindingsBuildRequest,
     WriteSection,
 )
-from theurian.application.project_service import FINDINGS_STORE_ID
+from theurian.application.project_service import FINDINGS_STORE_ID, BuildProvenance
 from theurian.domain.errors import TheurianError
 from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
 from theurian.infrastructure.sqlite.connection import WriteLock
@@ -54,6 +54,17 @@ JsonOption = Annotated[bool, typer.Option("--json", help="Emit machine-readable 
 _LOCK_ACQUIRE_REMEDY: Final = (
     "Check that .theurian/ is writable and there is free disk space, then retry "
     "`theurian findings build`."
+)
+
+#: The remedy for an OS refusal *recording* the build in this installation's
+#: provenance file. That file lives in ``THEURIAN_DATA_DIR`` -- outside the
+#: repository, which is the whole point of it (ADR-0004, SEC-7) -- so the
+#: precondition to fix is a different directory than every other failure this
+#: command reports, and naming ``.theurian/`` here would send a reader to the
+#: wrong one.
+_PROVENANCE_REMEDY: Final = (
+    "Check that the Theurian data directory (THEURIAN_DATA_DIR, or ~/.theurian) is "
+    "writable and there is free disk space, then retry `theurian findings build`."
 )
 
 
@@ -147,6 +158,17 @@ def findings_build(as_json: JsonOption = False) -> None:
             write_section=_lock_write_section(paths.write_lock),
         )
         report = builder.build(request)
+        # Record that *this installation* built this store, out of the repository
+        # tree, the instant the rebuild returns (ADR-0004, SEC-7). `review.findings`
+        # stands aside a store it does not find here, so this call is what makes the
+        # store just built servable -- and what keeps one that arrived with a clone,
+        # force-added past ADR-0004's ignore, unservable however well-formed it is.
+        #
+        # Inside the `try` and graded below rather than left to escape: a store on
+        # disk that this file does not vouch for is a store the serving surface
+        # refuses, so a failure here is a failed build reported with the precondition
+        # to fix -- not a success whose artifact nothing will serve.
+        BuildProvenance.default().record_findings(paths.root, FINDINGS_STORE_ID)
     except TheurianError as exc:
         # Each failure carries its own remedy: a path that cannot be contained
         # names the escape, unreachable git history (a fresh clone) names the
@@ -156,5 +178,16 @@ def findings_build(as_json: JsonOption = False) -> None:
         # offered as the cure on its own (see `FindingsStoreError`'s write/read
         # remedy split).
         _fail(str(exc), remedy=exc.remedy or "Run `theurian doctor`.", as_json=as_json, code=1)
+        return
+    except OSError as exc:
+        # Only the provenance write raises a bare `OSError` here: `replace_all`
+        # converts its own, and the lock's are converted by `_lock_write_section`.
+        _fail(
+            f"The store was rebuilt, but this installation could not record that it "
+            f"built it ({exc}), so `review.findings` will refuse to serve it.",
+            remedy=_PROVENANCE_REMEDY,
+            as_json=as_json,
+            code=1,
+        )
         return
     _emit({**report, "built": True}, as_json=as_json)

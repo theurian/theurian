@@ -1661,6 +1661,19 @@ class BuildProvenance:
     only the clone, since repackaging strips the tracking metadata and leaves the
     file present-but-untracked.
 
+    **Three artifact families, one record.** ``state`` and ``index`` are the
+    canonical state database and the retrieval index; ``findings`` is the
+    review-finding store ``theurian findings build`` writes (ADR-0029 phase-2).
+    All three sit under `.theurian/state/`, all three are git-ignored, and all
+    three are therefore force-addable by a repository contributor -- so the third
+    inherits the class this record closes rather than a milder version of it: a
+    clone shipping a fabricated ``theurian-findings-local.sqlite`` would otherwise
+    have `review.findings` serve its rows as the repository's own review history.
+    The findings family is keyed by :data:`FINDINGS_STORE_ID` rather than by a
+    per-build id, because the store is a wholesale rebuild under one constant name
+    (see that constant): there is no build id to record, and "this installation
+    has built this project's findings store" is the whole question.
+
     **Keyed by resolved root path, not project id.** The resolution layer that
     enforces the check holds the root (:attr:`ProjectPaths.root`) but not always
     the id; the root is the physical location the victim's own machine chose for
@@ -1730,6 +1743,10 @@ class BuildProvenance:
         """Whether this installation built the retrieval index named by ``index_build_id``."""
         return index_build_id in self._built(self._load(), root, "index")
 
+    def has_findings(self, root: Path, findings_store_id: str) -> bool:
+        """Whether this installation built the review-finding store ``findings_store_id``."""
+        return findings_store_id in self._built(self._load(), root, "findings")
+
     def record_state(self, root: Path, state_hash: str) -> None:
         """Record that this installation built the canonical state ``state_hash``."""
         self._record(root, "state", state_hash)
@@ -1737,6 +1754,10 @@ class BuildProvenance:
     def record_index(self, root: Path, index_build_id: str) -> None:
         """Record that this installation built the retrieval index ``index_build_id``."""
         self._record(root, "index", index_build_id)
+
+    def record_findings(self, root: Path, findings_store_id: str) -> None:
+        """Record that this installation built the review-finding store ``findings_store_id``."""
+        self._record(root, "findings", findings_store_id)
 
     def _record(self, root: Path, kind: str, value: str) -> None:
         """Append one built artifact to a root's record, atomically.

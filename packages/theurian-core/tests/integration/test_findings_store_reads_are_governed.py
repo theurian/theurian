@@ -76,7 +76,12 @@ import pytest
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
-from theurian.application.project_service import FINDINGS_STORE_ID, ProjectPaths, ProjectRegistry
+from theurian.application.project_service import (
+    FINDINGS_STORE_ID,
+    BuildProvenance,
+    ProjectPaths,
+    ProjectRegistry,
+)
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.knowledge import SourceAnchor
@@ -209,6 +214,14 @@ def _store_path(registry: ProjectRegistry) -> Path:
 def _land(registry: ProjectRegistry) -> Path:
     path = _store_path(registry)
     SqliteReviewFindingStore(path).replace_all(LANDED)
+    # Landing the file is not enough to make it servable: `review.findings` refuses
+    # a store this installation has no record of building (ADR-0004, SEC-7, T-19),
+    # so the audit below would observe no read at all without this. The command
+    # `theurian findings build` makes the same record; it is not driven here because
+    # it reads `refs/remotes/origin/main`, which this fixture repository lacks.
+    BuildProvenance.for_registry(registry).record_findings(
+        Path(registry.load()["demo"]["rootPath"]), FINDINGS_STORE_ID
+    )
     return path
 
 

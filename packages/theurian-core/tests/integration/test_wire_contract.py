@@ -1224,7 +1224,11 @@ def _land_findings(root: pathlib.Path) -> None:
     """
     from datetime import datetime
 
-    from theurian.application.project_service import FINDINGS_STORE_ID, ProjectPaths
+    from theurian.application.project_service import (
+        FINDINGS_STORE_ID,
+        BuildProvenance,
+        ProjectPaths,
+    )
     from theurian.domain.knowledge import SourceAnchor
     from theurian.domain.review_finding import (
         FindingLoad,
@@ -1262,6 +1266,11 @@ def _land_findings(root: pathlib.Path) -> None:
     SqliteReviewFindingStore(ProjectPaths.of(root).findings_for(FINDINGS_STORE_ID)).replace_all(
         load
     )
+    # `review.findings` refuses a store this installation has no record of building
+    # (ADR-0004, SEC-7, T-19), so without this record every capture below would be a
+    # refusal rather than a response to validate. `theurian findings build` makes the
+    # same record; it is not driven here because it reads `refs/remotes/origin/main`.
+    BuildProvenance.default().record_findings(ProjectPaths.of(root).root, FINDINGS_STORE_ID)
 
 
 async def _call_findings(registry: Any, **arguments: Any) -> dict[str, Any]:
