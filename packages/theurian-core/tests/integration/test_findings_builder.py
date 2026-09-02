@@ -44,6 +44,7 @@ import pytest
 
 from theurian.application.findings_builder import FindingsBuilder, FindingsBuildRequest
 from theurian.domain.ports.review_finding_store import (
+    FindingQuery,
     FindingsDump,
     StoredFinding,
     StoredRejection,
@@ -253,6 +254,16 @@ def test_the_build_publishes_inside_one_continuous_write_section(tmp_path: Path)
 
         def dump(self) -> FindingsDump:
             return FindingsDump(findings=(), rejected=())
+
+        def serve_findings(
+            self,
+            query: FindingQuery,  # noqa: ARG002 - the port's signature
+        ) -> tuple[StoredFinding, ...]:
+            # Present because the port declares it. The builder is a write path
+            # and never serves, so this returns nothing rather than recording an
+            # event; `events` below is the assertion that the build reached the
+            # write and nothing else.
+            return ()
 
     builder = FindingsBuilder(
         source=RecordingSource(),

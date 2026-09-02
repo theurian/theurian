@@ -99,6 +99,22 @@ UNBUILT_STATE_REMEDY: Final = (
     "derived state must never be version-controlled (ADR-0004)."
 )
 
+#: The one review-finding store a project has (ADR-0029 phase-2).
+#:
+#: Findings are a wholesale projection of the repository's public history, so a
+#: rebuild overwrites a single artifact rather than minting a build id per run --
+#: which is why this is a constant and not a value read from a pointer file, and
+#: why :meth:`ProjectPaths.findings_for` needs no state-scoped containment check
+#: for it (see that method).
+#:
+#: **Public, and beside the method that spends it, because two surfaces now name
+#: it.** ``theurian findings build`` writes this store and the ``review.findings``
+#: MCP tool reads it; a private constant re-typed in the second place is a
+#: constant that drifts the first time either is reworded, and the failure it
+#: causes is silent -- the reader would open a path nothing writes and report an
+#: empty or missing store for a project that has one.
+FINDINGS_STORE_ID: Final = "local"
+
 #: The half of "rename a project" that is easy to omit and impossible to notice.
 #: Canonical rows are stamped with the id in force at `migrate apply`, and
 #: `migrate apply` is idempotent, so it will not restamp them. An id changed

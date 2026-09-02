@@ -31,6 +31,7 @@ from theurian.application.findings_builder import (
     FindingsBuildRequest,
     WriteSection,
 )
+from theurian.application.project_service import FINDINGS_STORE_ID
 from theurian.domain.errors import TheurianError
 from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
 from theurian.infrastructure.sqlite.connection import WriteLock
@@ -98,15 +99,6 @@ def _lock_write_section(lock_path: Path) -> WriteSection:
     return section
 
 
-#: One stable store per project. Findings are a wholesale projection of the repo's
-#: public history, so a rebuild overwrites a single artifact rather than minting a
-#: new build id per run. There is no findings pointer yet (no serving), so this id
-#: is a trusted constant supplied here, not a value read from a mutable file --
-#: which is why ``findings_for`` contains it through ``_contained`` rather than the
-#: state-scoped check ``index_for`` owes an untrusted pointer.
-_FINDINGS_STORE_ID: Final = "local"
-
-
 @findings_app.command("build")
 def findings_build(as_json: JsonOption = False) -> None:
     """Rebuild this project's review-finding store from public git history.
@@ -136,7 +128,12 @@ def findings_build(as_json: JsonOption = False) -> None:
         # `TheurianError`) -- an earlier cut left `findings_for` outside, so that
         # escape bypassed this handler just like the write-path escape below, and
         # a `write_lock` composed outside would have re-opened it at a new path.
-        request = FindingsBuildRequest(store_path=paths.findings_for(_FINDINGS_STORE_ID))
+        # `FINDINGS_STORE_ID`, not a constant spelled here: `review.findings`
+        # reads the store this command writes, and the two surfaces have to name
+        # one file. A second spelling would leave the reader opening a path
+        # nothing writes -- reported as a missing store for a project that has
+        # one, which is a silent wrong answer rather than a loud failure.
+        request = FindingsBuildRequest(store_path=paths.findings_for(FINDINGS_STORE_ID))
         builder = FindingsBuilder(
             # The project root is the git working tree the trailers are read from.
             source=GitTrailerFindingSource(paths.root),

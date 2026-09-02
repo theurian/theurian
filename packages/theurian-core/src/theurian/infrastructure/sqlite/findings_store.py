@@ -22,9 +22,12 @@ neither this adapter nor its port verifies commit provenance (see
 :class:`~theurian.domain.ports.review_finding_store.ReviewFindingStore`'s port
 docstring for the measured detail).
 
-**No serving read.** The reads are two metadata lookups and one whole-table
-verification dump in a fixed order -- never a query-by-content. A findings search
-is a later slice with its own disclosure round.
+**One serving read, and it is :meth:`SqliteReviewFindingStore.serve_findings`**
+(ADR-0029 phase-2 slice-3). The other reads are two metadata lookups and one
+whole-table verification dump. Every SQL statement in this module that names the
+``rejected_trailers`` table is a write or a dump; the serving statement selects
+from ``findings`` alone, so no rejected trailer's bytes are read on a path that
+answers a caller -- not filtered out afterwards, never fetched.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ from typing import Final, final
 
 from theurian.domain.errors import TheurianError
 from theurian.domain.ports.review_finding_store import (
+    FindingQuery,
     FindingsDump,
     FindingsStamp,
     StoredFinding,
@@ -67,6 +71,27 @@ _INSERT_METADATA: Final = (
     "INSERT INTO findings_metadata (id, findings_schema_version, parser_stamp, built_at) "
     "VALUES (1, ?, ?, ?)"
 )
+
+#: The eleven columns of one accepted finding, in :class:`StoredFinding` order.
+#: One string, so the dump and the serving read cannot drift on what a row is.
+_FINDING_COLUMNS: Final = (
+    "commit_sha, position, reviewer, severity, finding_text, provider, source_uri, "
+    "committed_at, pull_request, family, specialist"
+)
+
+#: The served order: most recently committed first, ties broken by the primary
+#: key. ``committed_at`` is UTC-normalised and fixed-width (#405), so byte order
+#: *is* instant order and a TEXT ``DESC`` really is newest-first;
+#: ``(commit_sha, position)`` is unique, so the whole ordering is total and two
+#: calls over one store return one sequence. Without the tiebreak, `LIMIT` would
+#: truncate an order SQLite is free to vary between runs -- a response that
+#: changes without the store changing.
+_SERVE_ORDER: Final = "ORDER BY committed_at DESC, commit_sha ASC, position ASC"
+
+#: The escape character for the ``finding_text`` substring match. A caller's text
+#: is matched *literally*: ``%`` and ``_`` in it are its own characters, not
+#: wildcards, so ``q`` cannot be turned into a pattern language.
+_LIKE_ESCAPE: Final = "\\"
 
 
 #: The read-path remedy: the store is a projection of git history (ADR-0004), so
@@ -173,6 +198,50 @@ def committed_at_text(moment: datetime) -> str:
             f"committer date {moment.isoformat()!r} is out of range once converted to UTC, "
             "so it cannot be stored"
         ) from exc
+
+
+def _contains_pattern(needle: str) -> str:
+    """``needle`` as a LIKE pattern that matches it literally, anywhere in a value.
+
+    The three characters LIKE gives meaning to -- the escape itself, ``%`` and
+    ``_`` -- are escaped, so a caller's ``%`` matches a percent sign rather than
+    every row. The escape character is doubled *first*: doing it after would also
+    escape the backslashes this function itself just introduced.
+    """
+    escaped = (
+        needle.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace("%", f"{_LIKE_ESCAPE}%")
+        .replace("_", f"{_LIKE_ESCAPE}_")
+    )
+    return f"%{escaped}%"
+
+
+def _where(query: FindingQuery) -> tuple[str, list[str | int]]:
+    """``query``'s filters as a SQL clause and its bound parameters.
+
+    Every value is a **bound parameter**; only the fixed column names and
+    operators below are ever concatenated into SQL, so no caller-supplied text
+    reaches the statement text. An absent filter contributes no clause at all
+    rather than a tautology, so an unfiltered query is a plain ordered read.
+    """
+    clauses: list[str] = []
+    parameters: list[str | int] = []
+    equalities: tuple[tuple[str, str | int | None], ...] = (
+        ("reviewer", None if query.reviewer is None else query.reviewer.value),
+        ("severity", None if query.severity is None else query.severity.value),
+        ("family", query.family),
+        ("specialist", query.specialist),
+        ("commit_sha", query.commit_sha),
+        ("pull_request", query.pull_request),
+    )
+    for column, value in equalities:
+        if value is not None:
+            clauses.append(f"{column} = ?")
+            parameters.append(value)
+    if query.text_contains is not None:
+        clauses.append(f"finding_text LIKE ? ESCAPE '{_LIKE_ESCAPE}'")
+        parameters.append(_contains_pattern(query.text_contains))
+    return ("WHERE " + " AND ".join(clauses) if clauses else ""), parameters
 
 
 def _finding_rows(accepted: tuple[ReviewFinding, ...]) -> list[_FindingRow]:
@@ -404,14 +473,19 @@ class SqliteReviewFindingStore:
 
         ``False`` for a missing, stale-schema, or stale-parser store. The parser
         stamp and the schema version are independent forcing functions; either
-        mismatch is staleness. The signal exists for the consumer that arrives with
-        the serving slice: **no shipped caller reads it today** (verified over the
-        shipped package, 2026-08-28 -- the only production call to
-        :meth:`is_current`, :meth:`stamp`, or :meth:`dump` is this method's own use
-        of :meth:`stamp` below). The one shipped writer, ``findings build``,
-        rebuilds wholesale on every run regardless of staleness -- strictly
-        stronger than staleness-checking, not weaker -- so nothing in this slice
-        needs this signal to decide whether to rebuild.
+        mismatch is staleness.
+
+        **The staleness *reaction* ships, and it is not here.**
+        :meth:`serve_findings` refuses a stale store, but it makes the comparison
+        itself, inside the connection it reads rows through, rather than calling
+        this method first -- two opens would let a rebuild land between the check
+        and the read, leaving the check answering for a file the rows did not come
+        from. So this method still has no shipped caller: it is the standalone
+        question, for a surface asking *about* a store rather than serving from
+        it. The one shipped writer, ``findings build``, rebuilds wholesale on
+        every run regardless of staleness -- strictly stronger than
+        staleness-checking, not weaker -- so nothing needs this signal to decide
+        whether to rebuild either.
         """
         recorded = self.stamp()
         return (
@@ -458,9 +532,9 @@ class SqliteReviewFindingStore:
                         "committed but before its data transaction did"
                     )
                 finding_rows = connection.execute(
-                    "SELECT commit_sha, position, reviewer, severity, finding_text, provider, "
-                    "source_uri, committed_at, pull_request, family, specialist FROM findings "
-                    "ORDER BY commit_sha, position"
+                    # The only interpolation is this module's own column-list
+                    # constant; nothing here comes from a caller (S608).
+                    f"SELECT {_FINDING_COLUMNS} FROM findings ORDER BY commit_sha, position"  # noqa: S608
                 ).fetchall()
                 rejected_rows = connection.execute(
                     "SELECT commit_sha, position, raw_line, reason FROM rejected_trailers "
@@ -472,6 +546,83 @@ class SqliteReviewFindingStore:
             findings=tuple(_stored_finding(row) for row in finding_rows),
             rejected=tuple(_stored_rejection(row) for row in rejected_rows),
         )
+
+    def serve_findings(self, query: FindingQuery) -> tuple[StoredFinding, ...]:
+        """The accepted findings ``query`` selects, newest first, at most ``limit``.
+
+        The one sanctioned serving read (see the port). What this implementation
+        adds to the port's four promises is *how* each is kept:
+
+        **Accepted rows only, by the statement.** The ``SELECT`` names
+        ``findings``; ``rejected_trailers`` appears nowhere on this path, so a
+        rejected trailer's author-controlled ``raw_line`` and ``reason`` are never
+        even read into this process on a call that answers a caller. That is
+        stronger than fetching both and filtering: there is no filter to get
+        wrong.
+
+        **Current, or nothing -- checked through the connection that reads the
+        rows.** ``mode=ro`` binds this connection to the file that existed when it
+        opened, and ``replace_all`` publishes by ``os.replace`` onto that name
+        (see its docstring), which swaps the *directory entry* and leaves an open
+        connection reading the inode it already holds. So a rebuild landing
+        mid-call cannot split this method across two stores: the stamp and the
+        rows come from one file, and the worst a concurrent rebuild does is make
+        this call answer from the immediately-previous store -- whole, consistent,
+        and one publish behind. A reader that asked :meth:`is_current` first and
+        then opened a second connection would have exactly the split this avoids.
+
+        **Bounded.** ``LIMIT`` is bound as a parameter from
+        :class:`FindingQuery`'s already-positive value. The scan behind it is a
+        full pass over ``findings`` (the table's only index is its primary key,
+        and the sort is on ``committed_at``), so the work is
+        **corpus-bounded, not caller-bounded**: no filter a caller sends makes it
+        larger, and the corpus is this repository's own history -- 502 accepted
+        findings measured on ``origin/main`` @ ``141cf6f``, 2026-09-02 (T-6).
+
+        **Substring matching folds ASCII case and nothing else.** ``LIKE`` is
+        SQLite's, which case-folds the 26 ASCII letters and leaves every other
+        codepoint exact: ``critical`` finds ``CRITICAL``, ``É`` does not find
+        ``é``, and text in a script with no case is matched exactly. Recorded
+        rather than fixed here: ``lower()`` has the identical ASCII-only bound
+        without an ICU build, so a "fully case-insensitive" claim is not one this
+        store can make, and stating the bound is what keeps a caller from relying
+        on the claim it cannot keep.
+
+        Raises:
+            FindingsStoreError: If the store is missing, its metadata row is
+                absent, its stamp is stale, or it cannot be read. All four carry
+                the rebuild remedy, because the store is a projection of git
+                history (ADR-0004) and rebuilding is the cure for each.
+        """
+        where, parameters = _where(query)
+        # Interpolated: this module's column list, `_where`'s fixed column names
+        # and operators, and the fixed order clause. Every *value* -- including
+        # the limit -- is a bound parameter, so no caller text reaches the
+        # statement text (S608).
+        statement = f"SELECT {_FINDING_COLUMNS} FROM findings {where} {_SERVE_ORDER} LIMIT ?"  # noqa: S608
+        try:
+            with self._read() as connection:
+                stamp_row = connection.execute(
+                    "SELECT findings_schema_version, parser_stamp FROM findings_metadata "
+                    "WHERE id = 1"
+                ).fetchone()
+                if stamp_row is None:
+                    raise FindingsStoreError(
+                        f"{self._path.name} carries no stamp, so nothing can say which "
+                        "grammar produced its rows"
+                    )
+                if (
+                    int(stamp_row["findings_schema_version"]) != FINDINGS_SCHEMA_VERSION
+                    or str(stamp_row["parser_stamp"]) != PARSER_STAMP
+                ):
+                    raise FindingsStoreError(
+                        f"{self._path.name} was built by a superseded schema or trailer "
+                        "grammar, so its rows would be read differently now"
+                    )
+                rows = connection.execute(statement, (*parameters, query.limit)).fetchall()
+        except (sqlite3.Error, OSError) as exc:
+            raise FindingsStoreError(f"reading {self._path.name}: {exc}") from exc
+        return tuple(_stored_finding(row) for row in rows)
 
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:

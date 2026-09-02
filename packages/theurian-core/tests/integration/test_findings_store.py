@@ -28,16 +28,21 @@ import sys
 import threading
 import time
 from contextlib import closing
+from dataclasses import astuple
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from theurian.domain.errors import DomainError
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.ports.review_finding_store import (
+    FindingQuery,
     FindingsDump,
     FindingsStamp,
     ReviewFindingStore,
+    StoredFinding,
 )
 from theurian.domain.review_finding import (
     PARSER_STAMP,
@@ -51,6 +56,7 @@ from theurian.domain.review_finding import (
 )
 from theurian.infrastructure.sqlite.findings_schema import FINDINGS_DDL, FINDINGS_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.findings_store import (
+    _REBUILD_REMEDY,
     FindingsStoreError,
     SqliteReviewFindingStore,
     committed_at_text,
@@ -69,21 +75,35 @@ def _sha(seed: str) -> str:
     return seed * 40
 
 
-def _finding(
+def _finding(  # noqa: PLR0913 - one keyword per filterable column
     sha: str,
     *,
     reviewer: ReviewerToken = ReviewerToken.CODE_REVIEW,
     severity: FindingSeverity = FindingSeverity.HIGH,
     text: str = "a finding",
     when: str = "2026-08-27T12:00:00+00:00",
+    pull_request: int | None = None,
+    family: str | None = None,
+    specialist: str | None = None,
 ) -> ReviewFinding:
+    """One finding, with every field a serving filter can key on settable.
+
+    ``pull_request``, ``family`` and ``specialist`` are ``None`` on every row the
+    shipped git source produces (ADR-0029 D5: derived in a later slice), so a
+    filter on them has no live input to be driven by. They are constructible here
+    -- the record admits them -- and that is deliberately how the serving tests
+    reach those three predicates: a guard no data reaches survives its own
+    deletion.
+    """
     return ReviewFinding(
         reviewer=reviewer,
         severity=severity,
         finding_text=text,
         anchor=SourceAnchor(provider="git", source_uri=sha, commit_sha=sha),
-        pull_request=None,
+        pull_request=pull_request,
         date=datetime.fromisoformat(when),
+        family=family,
+        specialist=specialist,
     )
 
 
@@ -1117,4 +1137,413 @@ def test_the_rejected_reason_carries_a_crafted_reviewer_token_verbatim(tmp_path:
     assert dump.rejected[0].reason == reason
     assert repr(crafted_token) in dump.rejected[0].reason, (
         "the crafted token did not survive the store byte-for-byte, repr-escaped"
+    )
+
+
+# -- The one sanctioned serving read (ADR-0029 phase-2 slice-3) --------------
+
+
+def _served_load() -> FindingLoad:
+    """Three accepted findings across two commits, plus one rejected trailer.
+
+    The rejected member is not decoration: every test below that asserts what a
+    serve returns is also asserting that this row was not part of it, and a load
+    without one would make each of them pass over a store that had nothing to
+    withhold.
+    """
+    return FindingLoad(
+        accepted=(
+            _finding(
+                _sha("a"),
+                reviewer=ReviewerToken.SECURITY,
+                severity=FindingSeverity.CRITICAL,
+                text="a token reached the log",
+                when="2026-08-25T09:00:00+00:00",
+                pull_request=11,
+                family="a published field",
+                specialist="theurian-python",
+            ),
+            _finding(
+                _sha("a"),
+                reviewer=ReviewerToken.CODE_REVIEW,
+                severity=FindingSeverity.LOW,
+                text="a name reads as its opposite",
+                when="2026-08-25T09:00:00+00:00",
+                pull_request=11,
+                family="a duration",
+                specialist="theurian-tests",
+            ),
+            _finding(
+                _sha("b"),
+                reviewer=ReviewerToken.ADVERSARIAL,
+                severity=FindingSeverity.HIGH,
+                text="the test stays green with the code deleted",
+                when="2026-08-26T09:00:00+00:00",
+                pull_request=12,
+                family="a published field",
+                specialist="theurian-tests",
+            ),
+        ),
+        rejected=(
+            RejectedTrailer(
+                _sha("c"),
+                "Review-Finding: nonsense CRITICAL — a token reached the log",
+                "unknown reviewer 'nonsense'",
+            ),
+        ),
+    )
+
+
+def _served(store: SqliteReviewFindingStore, **filters: object) -> tuple[str, ...]:
+    """The finding texts one serve returns, in the order it returned them."""
+    query = FindingQuery(**{"limit": 50, **filters})  # type: ignore[arg-type]
+    return tuple(finding.finding_text for finding in store.serve_findings(query))
+
+
+def test_a_serve_returns_every_accepted_finding_newest_first(tmp_path: Path) -> None:
+    """The unfiltered read: all three accepted rows, in the published order.
+
+    Newest-committed first, ties broken by ``(commit_sha, position)`` -- so the
+    two rows sharing one commit and one instant come back in the order the source
+    gave them rather than in whatever order SQLite finds convenient. Asserted as a
+    sequence, not a set: ``limit`` truncates this order, so an order that is not
+    total makes a truncated response arbitrary.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+
+    assert _served(store) == (
+        "the test stays green with the code deleted",
+        "a token reached the log",
+        "a name reads as its opposite",
+    )
+
+
+def test_a_serve_carries_every_stored_column_of_the_row_it_returns(tmp_path: Path) -> None:
+    """The row is the store's, whole: the serving read projects nothing away."""
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+
+    served = store.serve_findings(FindingQuery(limit=1, commit_sha=_sha("b")))
+
+    assert served == (
+        StoredFinding(
+            commit_sha=_sha("b"),
+            position=0,
+            reviewer="adversarial",
+            severity="HIGH",
+            finding_text="the test stays green with the code deleted",
+            provider="git",
+            source_uri=_sha("b"),
+            committed_at=committed_at_text(datetime.fromisoformat("2026-08-26T09:00:00+00:00")),
+            pull_request=12,
+            family="a published field",
+            specialist="theurian-tests",
+        ),
+    )
+
+
+def test_a_serve_never_returns_a_rejected_trailer(tmp_path: Path) -> None:
+    """AC-5 at the store: no query reaches ``rejected_trailers``, so none can.
+
+    The load's rejected line is byte-identical to an accepted finding's text
+    except for its reviewer token, so a serve that leaked it would look like an
+    ordinary extra row rather than an obvious break. Both its fields are searched
+    for across every value of every served row, not merely counted: a leak that
+    arrived through ``finding_text`` and a leak that arrived through
+    ``source_uri`` are the same disclosure.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+    rejected = store.dump().rejected
+    assert len(rejected) == 1, "the fixture's premise: the store really holds a rejected row"
+
+    every_value = [
+        str(value)
+        for finding in store.serve_findings(FindingQuery(limit=50))
+        for value in astuple(finding)
+    ]
+
+    assert rejected[0].raw_line not in every_value
+    assert rejected[0].reason not in every_value
+    assert not any(rejected[0].reason in value for value in every_value)
+    assert len(store.serve_findings(FindingQuery(limit=50))) == 3
+
+
+def test_a_rejected_row_does_not_move_what_a_serve_returns(tmp_path: Path) -> None:
+    """The two-corpora differential, at the store: one corpus held it, one never did.
+
+    ADR-0029's closure is stated as one query against two corpora -- a store that
+    holds a withheld row and a store that never did must answer identically. This
+    is that comparison for the rejected-trailer dimension, over the whole returned
+    value rather than over a field list: equal tuples of frozen dataclasses is
+    equality of every field of every row, in order.
+    """
+    with_rejected = _store(tmp_path / "with")
+    without_rejected = _store(tmp_path / "without")
+    load = _served_load()
+    with_rejected.replace_all(load)
+    without_rejected.replace_all(FindingLoad(accepted=load.accepted, rejected=()))
+
+    assert with_rejected.dump().rejected and not without_rejected.dump().rejected
+
+    for query in (
+        FindingQuery(limit=50),
+        FindingQuery(limit=1),
+        FindingQuery(limit=50, text_contains="a token reached the log"),
+        FindingQuery(limit=50, severity=FindingSeverity.CRITICAL),
+        FindingQuery(limit=50, commit_sha=_sha("c")),
+    ):
+        assert with_rejected.serve_findings(query) == without_rejected.serve_findings(query)
+
+
+def test_a_query_cannot_be_built_without_a_positive_limit() -> None:
+    """The bound is on the type, so no caller can issue an unbounded read (T-6)."""
+    for limit in (0, -1):
+        with pytest.raises(DomainError) as raised:
+            FindingQuery(limit=limit)
+        assert "at least 1" in str(raised.value)
+
+    assert FindingQuery(limit=1).limit == 1
+
+
+def test_a_serve_returns_no_more_than_the_limit(tmp_path: Path) -> None:
+    """``limit`` truncates the published order -- the newest rows, not any rows."""
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+
+    assert _served(store, limit=2) == (
+        "the test stays green with the code deleted",
+        "a token reached the log",
+    )
+
+
+@pytest.mark.parametrize(
+    "filters, expected",
+    [
+        ({"reviewer": ReviewerToken.SECURITY}, ("a token reached the log",)),
+        (
+            {"reviewer": ReviewerToken.CODE_REVIEW},
+            ("a name reads as its opposite",),
+        ),
+        ({"severity": FindingSeverity.HIGH}, ("the test stays green with the code deleted",)),
+        ({"severity": FindingSeverity.MEDIUM}, ()),
+        (
+            {"family": "a published field"},
+            ("the test stays green with the code deleted", "a token reached the log"),
+        ),
+        (
+            {"specialist": "theurian-tests"},
+            ("the test stays green with the code deleted", "a name reads as its opposite"),
+        ),
+        (
+            {"commit_sha": _sha("a")},
+            ("a token reached the log", "a name reads as its opposite"),
+        ),
+        (
+            {"pull_request": 11},
+            ("a token reached the log", "a name reads as its opposite"),
+        ),
+        ({"text_contains": "token"}, ("a token reached the log",)),
+        (
+            {"reviewer": ReviewerToken.ADVERSARIAL, "severity": FindingSeverity.HIGH},
+            ("the test stays green with the code deleted",),
+        ),
+        ({"reviewer": ReviewerToken.ADVERSARIAL, "severity": FindingSeverity.LOW}, ()),
+    ],
+    ids=[
+        "reviewer-security",
+        "reviewer-code-review",
+        "severity-high",
+        "severity-matching-nothing",
+        "family",
+        "specialist",
+        "commit-sha",
+        "pull-request",
+        "text-contains",
+        "two-filters-conjoined",
+        "two-filters-conjoined-empty",
+    ],
+)
+def test_each_filter_selects_exactly_the_rows_that_match(
+    tmp_path: Path, filters: dict[str, object], expected: tuple[str, ...]
+) -> None:
+    """Every predicate the query type carries, driven -- including the empty answer.
+
+    The two-filter cases are why the clause is a conjunction rather than a
+    disjunction someone would have to read the SQL to discover: an adversarial
+    row matches one filter and not the other, and an ``OR`` would return it.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+
+    assert _served(store, **filters) == expected
+
+
+def test_the_substring_filter_matches_a_wildcard_as_a_literal_character(tmp_path: Path) -> None:
+    """``q`` is a substring, not a pattern: ``%`` and ``_`` are ordinary characters.
+
+    Unescaped, ``%`` is LIKE's "anything" and would return every row for a caller
+    who typed a percent sign -- a wrong answer dressed as a broad one. Each
+    metacharacter gets both directions: it finds the row that really contains it,
+    and it does not find the row that does not.
+    """
+    store = _store(tmp_path)
+    store.replace_all(
+        FindingLoad(
+            accepted=(
+                _finding(_sha("a"), text="a 100% regression", when="2026-08-25T09:00:00+00:00"),
+                _finding(_sha("b"), text="an under_scored name", when="2026-08-24T09:00:00+00:00"),
+                _finding(_sha("d"), text="plain text", when="2026-08-23T09:00:00+00:00"),
+            ),
+            rejected=(),
+        )
+    )
+
+    assert _served(store, text_contains="%") == ("a 100% regression",)
+    assert _served(store, text_contains="100% reg") == ("a 100% regression",)
+    assert _served(store, text_contains="_") == ("an under_scored name",)
+    assert _served(store, text_contains="under_scored") == ("an under_scored name",)
+    assert _served(store, text_contains="under scored") == ()
+    assert _served(store, text_contains="\\") == ()
+
+
+def test_the_substring_filter_folds_ascii_case_and_nothing_else(tmp_path: Path) -> None:
+    """The recorded bound on "case-insensitive", asserted in both directions.
+
+    SQLite's ``LIKE`` folds the 26 ASCII letters and leaves every other codepoint
+    exact. That is what the store's docstring claims, and a claim about case
+    folding is exactly the kind that drifts silently -- so the ASCII case is
+    pinned as working and the non-ASCII case is pinned as *not* working, which is
+    what stops the bound being quietly widened in prose without a build that
+    carries ICU.
+
+    The CJK row is data, not decoration: a script with no case is matched exactly
+    either way, and it is the shape a Japanese-language corpus actually sends.
+    """
+    store = _store(tmp_path)
+    store.replace_all(
+        FindingLoad(
+            accepted=(
+                _finding(_sha("a"), text="a CRITICAL regression", when="2026-08-25T09:00:00+00:00"),
+                _finding(_sha("b"), text="ÉCLAIR in the log", when="2026-08-24T09:00:00+00:00"),
+                _finding(
+                    _sha("d"),
+                    text="署名付きトークンを持つ",
+                    when="2026-08-23T09:00:00+00:00",
+                ),
+            ),
+            rejected=(),
+        )
+    )
+
+    assert _served(store, text_contains="critical") == ("a CRITICAL regression",)
+    assert _served(store, text_contains="CRITICAL") == ("a CRITICAL regression",)
+    assert _served(store, text_contains="éclair") == (), (
+        "SQLite's LIKE folds ASCII only; if this now matches, the store folds more "
+        "than its docstring says and the claim there is the thing to fix"
+    )
+    assert _served(store, text_contains="ÉCLAIR") == ("ÉCLAIR in the log",)
+    assert _served(store, text_contains="トークン") == ("署名付きトークンを持つ",)
+
+
+def test_serving_a_missing_store_raises_rather_than_answering_empty(tmp_path: Path) -> None:
+    """ "Nothing was built" is not "the build found nothing" (ADR-0029 AC-3).
+
+    An empty tuple here would let a caller read "this project has no findings"
+    off a project whose store was never built -- the same false-absence class the
+    canonical store's own missing-database refusal exists for.
+    """
+    store = _store(tmp_path)
+
+    with pytest.raises(FindingsStoreError) as raised:
+        store.serve_findings(FindingQuery(limit=10))
+
+    assert raised.value.remedy == _REBUILD_REMEDY
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "UPDATE findings_metadata SET parser_stamp = 'superseded' WHERE id = 1",
+        "UPDATE findings_metadata SET findings_schema_version = -1 WHERE id = 1",
+        "DELETE FROM findings_metadata WHERE id = 1",
+    ],
+    ids=["stale-parser-stamp", "stale-schema-version", "no-stamp-at-all"],
+)
+def test_serving_a_stale_or_unstamped_store_raises_rather_than_answering(
+    tmp_path: Path, damage: str
+) -> None:
+    """The staleness *reaction* (ADR-0029: detection landed, this is the response).
+
+    Each arm leaves the rows intact and only the stamp wrong, so a read that
+    ignored the stamp would answer happily with rows a superseded grammar
+    produced. The no-stamp arm is the half-built file ``dump`` already refuses:
+    schema committed, data transaction never did.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+    assert store.serve_findings(FindingQuery(limit=50)), "the premise: it serves before the damage"
+
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute(damage)
+        connection.commit()
+
+    with pytest.raises(FindingsStoreError) as raised:
+        store.serve_findings(FindingQuery(limit=50))
+
+    assert raised.value.remedy == _REBUILD_REMEDY
+
+
+def test_serving_an_unreadable_store_raises_with_the_rebuild_remedy(tmp_path: Path) -> None:
+    """A damaged file is a rebuild, not a partial answer.
+
+    The store is a projection of git history (ADR-0004), so there is no repair to
+    attempt and no subset worth returning: bytes that are not a database cannot be
+    read as a smaller-but-valid corpus.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+    store.path.write_bytes(b"not a database at all")
+
+    with pytest.raises(FindingsStoreError) as raised:
+        store.serve_findings(FindingQuery(limit=50))
+
+    assert raised.value.remedy == _REBUILD_REMEDY
+
+
+def test_a_serve_reads_one_store_through_one_connection(tmp_path: Path) -> None:
+    """The lifecycle argument, pinned where it is decidable: one open, not two.
+
+    A serve racing a rebuild must not have its stamp check answer for one file
+    and its rows come from another. What makes that impossible is that both
+    statements run on one ``mode=ro`` connection, which holds the inode it opened
+    while ``os.replace`` swaps the directory entry (:meth:`replace_all`). The
+    *race* itself is recorded rather than driven -- a timing loop over a rename
+    proves whichever interleaving it happened to hit -- but the property the
+    argument rests on is structural and is asserted here: the read opens the file
+    exactly once.
+
+    A reader that re-acquired the file per statement -- ``is_current()`` followed
+    by a query, the shape this method deliberately does not use -- opens it twice
+    and reddens this.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+    opens: list[str] = []
+    real_connect = sqlite3.connect
+
+    def counting_connect(*args: Any, **kwargs: Any) -> Any:
+        opens.append(str(args[0] if args else kwargs.get("database", "")))
+        return real_connect(*args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sqlite3, "connect", counting_connect)
+        served = store.serve_findings(FindingQuery(limit=50))
+
+    assert len(served) == 3, "the premise: the serve really answered from the store"
+    assert len(opens) == 1, (
+        f"the serving read opened the store {len(opens)} times ({opens}); the "
+        f"one-connection property is what keeps a concurrent rebuild from splitting "
+        f"the stamp check away from the rows it vouches for"
     )
