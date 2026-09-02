@@ -29,6 +29,19 @@ than :data:`MAX_FILTER_CHARS` is reported by its length, never quoted -- the
 amplifier ``MAX_QUERY_CHARS`` and ``ItemId`` already close for ``query`` and
 ``itemId``. Below that bound a caller's own token is quoted back, because a typo
 is what the refusal exists to make visible and the bytes are the caller's own.
+
+**The published input schema types ``reviewer`` and ``severity`` as strings, not
+as enums, and that is a decision rather than an omission.** Annotating them as
+``Literal[...]`` would put the vocabularies in ``tools/list`` -- read for real
+against a running daemon, the SDK derives each parameter's schema straight from
+its annotation -- but it would also move the *rejection* into the SDK's argument
+validation, before any code here runs. What comes back then is a message this
+module neither writes nor bounds: it cannot name the omit-the-filter remedy, it
+cannot be held to the length discipline above, and it is one more error shape
+this surface would have to reason about under SEC-13. The vocabulary is
+published in ``schemas/mcp/review-findings-response.schema.json`` and in
+``docs/protocol/mcp-tools.md`` instead, and the refusal a caller actually reads
+is the one written here.
 """
 
 from __future__ import annotations
