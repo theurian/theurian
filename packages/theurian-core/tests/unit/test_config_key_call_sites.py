@@ -1193,8 +1193,15 @@ CORE_CHANGELOG = REPO_ROOT / "packages" / "theurian-core" / "CHANGELOG.md"
 #: them is a call, which is why this is an AST count and not a text count.
 SECRET_SCAN_POLICY_READER = "read_secret_scan_policy"  # noqa: S105 - a function name, not a secret
 
-#: The modules that may call it, as paths under the imported ``theurian`` package.
-SECRET_SCAN_POLICY_CALL_SITES: tuple[str, ...] = ("application/proposal_service.py",)
+#: The module that defines it, so the count below resolves a *binding* rather than
+#: trusting a spelling.
+SECRET_SCAN_POLICY_MODULE: Final = "theurian.security.project_config"  # noqa: S105 - a module path, not a credential
+
+#: How many times each module calls it, as paths under the imported ``theurian``
+#: package. A count and not a set: a second call inside a module already on the
+#: list is a second place the policy is consulted, and a membership test cannot
+#: see it.
+SECRET_SCAN_POLICY_CALL_SITES: dict[str, int] = {"application/proposal_service.py": 1}
 
 #: The detector itself, and the reason it is pinned beside the policy reader.
 #:
@@ -1208,8 +1215,28 @@ SECRET_SCAN_POLICY_CALL_SITES: tuple[str, ...] = ("application/proposal_service.
 #: runs no scan became false.
 SECRET_SCANNER = "scan_text"  # noqa: S105 - a function name, not a secret
 
-#: Where the detector may run, on the same terms as the reader's list above.
-SECRET_SCANNER_CALL_SITES: tuple[str, ...] = ("application/proposal_service.py",)
+#: The module that defines the detector.
+#:
+#: Named because both halves of the pin below are keyed on it rather than on the
+#: word ``scan_text``: the call count resolves the *bindings* this module's name
+#: is imported under, and the import-graph pin asks who imports the module at all.
+SECRET_SCANNER_MODULE: Final = "theurian.security.content_secrets"  # noqa: S105 - a module path, not a credential
+
+#: Where the detector runs, on the same terms as the reader's count above.
+SECRET_SCANNER_CALL_SITES: dict[str, int] = {"application/proposal_service.py": 1}
+
+#: Every module of the shipped package that imports :data:`SECRET_SCANNER_MODULE`,
+#: by any import form.
+#:
+#: The second half of the pair, and the half that does not depend on knowing what
+#: a screening call looks like. The count above resolves the bindings a module
+#: introduces with ``from theurian.security.content_secrets import scan_text``,
+#: however it renames them; this one reddens on the routes that introduce no such
+#: binding at all -- ``import theurian.security.content_secrets``,
+#: ``from theurian.security import content_secrets``, and a call through the
+#: module object. One importer today, and a second is a module that has reached
+#: for the detector whatever it then does with it.
+SECRET_SCANNER_IMPORTERS: tuple[str, ...] = ("application/proposal_service.py",)
 
 #: Number words as the changelog spells them, index = value.
 #:
@@ -1281,29 +1308,115 @@ def _described_key_paths() -> tuple[str, ...]:
     return tuple(sorted(walk(schema, ())))
 
 
-def _call_site_modules(function: str) -> tuple[str, ...]:
-    """Every module in the imported package that *calls* ``function``, sorted.
-
-    Calls only. The definition, the import and a docstring mentioning the name
-    are all excluded, because the claim this serves is about where the control
-    runs and not about where its name appears.
-    """
-    modules: set[str] = set()
+def _shipped_modules() -> Iterator[tuple[str, ast.Module]]:
+    """Every ``.py`` of the imported package, parsed, in path order."""
     for path in sorted(SRC.rglob("*.py")):
         module = path.relative_to(SRC).as_posix()
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=module)):
-            if not isinstance(node, ast.Call):
-                continue
-            called = node.func
-            if isinstance(called, ast.Name):
-                name: str | None = called.id
-            elif isinstance(called, ast.Attribute):
-                name = called.attr
-            else:
-                name = None
-            if name == function:
-                modules.add(module)
-    return tuple(sorted(modules))
+        yield module, ast.parse(path.read_text(encoding="utf-8"), filename=module)
+
+
+def _imported_module(node: ast.ImportFrom, module: str) -> str:
+    """The dotted module ``node`` imports from, with a relative form resolved.
+
+    ``from theurian.security.content_secrets import scan_text`` carries its target
+    in ``node.module``; ``from .content_secrets import scan_text`` carries the same
+    target in ``node.level`` plus the importing module's own package, and reading
+    only the first would leave the relative form outside every key here. The
+    package has no relative import today, which is exactly why the form is worth
+    resolving rather than assuming.
+    """
+    if not node.level:
+        return node.module or ""
+    package = ["theurian", *module.split("/")[:-1]]
+    base = package[: len(package) - (node.level - 1)]
+    return ".".join((*base, *([node.module] if node.module else [])))
+
+
+def _local_bindings(tree: ast.Module, module: str, defining_module: str, name: str) -> set[str]:
+    """Every local name ``module`` binds ``defining_module.name`` to.
+
+    ``from theurian.security.content_secrets import scan_text`` binds it to
+    ``scan_text``; ``... import scan_text as _screen`` binds it to ``_screen``, and
+    the two are the same function. A key that spells the imported name therefore
+    counts one of them and not the other -- which is the whole of round three's
+    security HIGH-1.
+    """
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and _imported_module(node, module) == defining_module
+        for alias in node.names
+        if alias.name == name
+    }
+
+
+def _binding_resolved_calls(defining_module: str, name: str) -> dict[str, int]:
+    """How many times each module calls ``defining_module.name``, whatever it calls it.
+
+    **Bindings first, calls second, and that order is the point.** The previous
+    key matched a call whose spelled name was ``name``, so it counted
+    ``scan_text(body)`` and missed ``_screen(body)`` after ``from
+    theurian.security.content_secrets import scan_text as _screen`` -- the same
+    function, screening the same content, invisible.
+
+    **A count per module rather than a set of modules**, because the set could not
+    see a second call inside a module already recorded: a screening call added
+    beside the accept path's one, in the accept path's own module, moved nothing.
+    Both faces are reproduced in this module's own RED checks.
+
+    Calls only. The definition, the import itself and a docstring naming the
+    function are all excluded, because the claim this serves is about where the
+    control runs.
+
+    What it does not resolve, stated rather than implied: a call reached through
+    the module object (``content_secrets.scan_text(...)``), through ``getattr``,
+    or through a name re-exported by a third module. The first is what
+    :data:`SECRET_SCANNER_IMPORTERS` covers -- every one of those routes has to
+    import the defining module, and that import is counted -- and the last two are
+    outside any AST key here.
+    """
+    counts: dict[str, int] = {}
+    for module, tree in _shipped_modules():
+        bindings = _local_bindings(tree, module, defining_module, name)
+        if not bindings:
+            continue
+        calls = sum(
+            1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in bindings
+        )
+        if calls:
+            counts[module] = calls
+    return counts
+
+
+def _importers_of(defining_module: str) -> tuple[str, ...]:
+    """Every module of the shipped package that imports ``defining_module``, sorted.
+
+    All three import forms, because the point of this key is that it does not
+    depend on recognising a call: ``import theurian.security.content_secrets``,
+    ``from theurian.security.content_secrets import scan_text``, and ``from
+    theurian.security import content_secrets`` all reach the same module and the
+    last two of them bind nothing a call-shaped key would recognise.
+    """
+    package, _, leaf = defining_module.rpartition(".")
+    found: set[str] = set()
+    for module, tree in _shipped_modules():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import) and any(
+                alias.name == defining_module or alias.name.startswith(f"{defining_module}.")
+                for alias in node.names
+            ):
+                found.add(module)
+            elif isinstance(node, ast.ImportFrom):
+                target = _imported_module(node, module)
+                if target == defining_module or (
+                    target == package and any(alias.name == leaf for alias in node.names)
+                ):
+                    found.add(module)
+    return tuple(sorted(found))
 
 
 def test_the_secret_scan_policy_is_read_at_one_call_site_only() -> None:
@@ -1321,10 +1434,16 @@ def test_the_secret_scan_policy_is_read_at_one_call_site_only() -> None:
     This is the fact side, and it holds **exactly two symbols and no more**:
     ``read_secret_scan_policy`` here, and ``scan_text`` in
     :func:`test_the_secret_scanner_runs_at_one_call_site_only`. Each is asserted
-    to have one call site, in the accept path. Round two's R2-C is why the second
-    exists: this test alone pinned the *reader* and read as though it pinned the
-    control, so a scan added on the ingest path that never consults the policy
-    left it green.
+    to be called exactly once, in the accept path. Round two's R2-C is why the
+    second exists: this test alone pinned the *reader* and read as though it
+    pinned the control, so a scan added on the ingest path that never consults the
+    policy left it green.
+
+    **The count is per module and the name is resolved through the import**, which
+    is round three's security HIGH-1 on both of these tests: a spelled-name key
+    counted ``read_secret_scan_policy(...)`` and missed the same function called
+    under an ``as`` alias, and a set of modules could not see a second call added
+    inside the module already on it.
 
     What the pair does not hold, stated so a reader does not over-read it: that
     the scan at that site is *gated* by the policy, and that no third symbol
@@ -1336,11 +1455,11 @@ def test_the_secret_scan_policy_is_read_at_one_call_site_only() -> None:
     means the opposite -- the control the schema publishes ``default: "block"``
     for has gone, and every surface describing a shipped control is now false.
     """
-    modules = _call_site_modules(SECRET_SCAN_POLICY_READER)
+    calls = _binding_resolved_calls(SECRET_SCAN_POLICY_MODULE, SECRET_SCAN_POLICY_READER)
 
-    assert modules == SECRET_SCAN_POLICY_CALL_SITES, (
-        f"`{SECRET_SCAN_POLICY_READER}` is called from {list(modules)}, and the "
-        f"recorded call sites are {list(SECRET_SCAN_POLICY_CALL_SITES)}.\n\n"
+    assert calls == SECRET_SCAN_POLICY_CALL_SITES, (
+        f"`{SECRET_SCAN_POLICY_READER}` is called {calls}, and the "
+        f"recorded call sites are {SECRET_SCAN_POLICY_CALL_SITES}.\n\n"
         "A NEW call site: SEC-11's scan now runs somewhere besides `theurian "
         "propose accept`, so `plugins/claude-code/commands/ingest.md`'s \"it "
         "covers the approval gate only -- `theurian ingest` and index building "
@@ -1367,17 +1486,31 @@ def test_the_secret_scanner_runs_at_one_call_site_only() -> None:
     T-15 controls were all false.
 
     So the claim those four documents make is about the *detector*, and the
-    detector is what this counts. One call site, in the accept path.
+    detector is what this counts. One call, in the accept path.
+
+    **What this half holds, exactly.** Every local binding of
+    ``theurian.security.content_secrets.scan_text`` is resolved out of each
+    module's imports first, and every call through one of those bindings is
+    counted -- so ``import ... as _screen`` is counted under its alias, and a
+    second call inside ``application/proposal_service.py`` moves the number rather
+    than disappearing into a set. Round three planted both.
+
+    **What it does not hold is what the import-graph pin beside it does**:
+    a call reached through the module object rather than through an imported name.
+    :func:`test_the_detector_module_is_imported_by_one_module_only` is that half,
+    and neither is sufficient alone -- this one cannot see
+    ``content_secrets.scan_text(body)``, and that one cannot see a second call in
+    the module that is already allowed to import it.
 
     The two tests fail in different directions on purpose: a scan moved behind a
-    new policy-reading wrapper reddens the sibling, and a scan that skips the
+    new policy-reading wrapper reddens the sibling above, and a scan that skips the
     policy entirely reddens here. Neither substitutes for the other.
     """
-    modules = _call_site_modules(SECRET_SCANNER)
+    calls = _binding_resolved_calls(SECRET_SCANNER_MODULE, SECRET_SCANNER)
 
-    assert modules == SECRET_SCANNER_CALL_SITES, (
-        f"`{SECRET_SCANNER}` is called from {list(modules)}, and the recorded "
-        f"call sites are {list(SECRET_SCANNER_CALL_SITES)}.\n\n"
+    assert calls == SECRET_SCANNER_CALL_SITES, (
+        f"`{SECRET_SCANNER}` is called {calls}, and the recorded "
+        f"call sites are {SECRET_SCANNER_CALL_SITES}.\n\n"
         "A NEW call site: content is screened for secrets somewhere besides "
         "`theurian propose accept`. Four documents say it is not -- "
         "`plugins/claude-code/commands/ingest.md`, the schema's "
@@ -1389,6 +1522,47 @@ def test_the_secret_scanner_runs_at_one_call_site_only() -> None:
         "screens content, and it is the screening those documents deny.\n\n"
         "A MISSING call site: the detector is no longer reached from the accept "
         "path, so SEC-11's gate is gone while every surface still describes it."
+    )
+
+
+def test_the_detector_module_is_imported_by_one_module_only() -> None:
+    """SEC-11: the other half of the pair, keyed on the import graph (round three).
+
+    The count beside this one resolves the *bindings* a module introduces for
+    ``scan_text`` and counts the calls through them. That key is exact for every
+    module that imports the name -- alias included -- and blind to a module that
+    reaches the detector through the module object instead::
+
+        from theurian.security import content_secrets
+        content_secrets.scan_text(body)
+
+    No binding of ``scan_text`` exists there, so nothing above counts it. What
+    every such route does have in common is an **import of the defining module**,
+    and that is what this counts: all three import forms, over the whole shipped
+    package.
+
+    So the pair holds exactly this much. A module that is not
+    ``application/proposal_service.py`` cannot reach the detector at all without
+    reddening here, and ``application/proposal_service.py`` cannot call it a second
+    time without reddening the count beside this. What neither reaches is a call
+    assembled at runtime -- ``getattr(module, "scan_" + "text")`` -- or a re-export
+    from a module that has already been recorded as an importer, which is the same
+    class of bound this module's docstring records for its config-key scan.
+    """
+    importers = _importers_of(SECRET_SCANNER_MODULE)
+
+    assert importers == SECRET_SCANNER_IMPORTERS, (
+        f"`{SECRET_SCANNER_MODULE}` is imported by {list(importers)}, and the "
+        f"recorded importers are {list(SECRET_SCANNER_IMPORTERS)}.\n\n"
+        "A NEW importer: a second module of the shipped package has reached for "
+        "SEC-11's detector. Four documents say the scan runs at `theurian propose "
+        "accept` and nowhere else -- `plugins/claude-code/commands/ingest.md`, the "
+        "schema's `security.secretScan` description, `SECURITY.md` and the threat "
+        "model's T-15 controls. Check what the new module does with it before "
+        "recording anything: an import with no call still needs saying, and a call "
+        "makes those four documents narrower than the product.\n\n"
+        "A MISSING importer: the accept path no longer imports the detector, so "
+        "SEC-11's gate is gone while every surface still describes it."
     )
 
 
