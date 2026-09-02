@@ -1073,11 +1073,20 @@ against a real index and its purged twin at `ec0dbcd`
 (`docs/work-logs/2026-09-01-472-purged-build-re-measurement.md`, §F2/F1′): the
 stale build reproduces the shape at 24.3 µs per withheld row, a different
 machine 27 days later and so comparable in shape rather than in magnitude, while
-the purged build carries no such term at all — `|ranking|` is the visible count
-at every withheld level, so there is nothing for a per-row rate to multiply.
-Pinned by
+the purged build carries no per-withheld-row term at all. **Why it carries none
+is branch-dependent**: on the scan below the trigram floor, which has no `LIMIT`,
+the purged `|ranking|` is the visible count; on the branches that truncate it is
+`depth` whatever was withheld, before and after the purge alike. Pinned by
 `test_a_purged_build_reads_canonical_once_per_visible_row_however_many_were_withheld`
-in `packages/theurian-core/tests/integration/test_purged_build_quantities.py`.
+over withheld counts 0, 50 and 200, and by
+`test_a_purged_build_stays_at_one_retriever_pass_across_the_first_pass_depth_edge`
+over 49–52 for the truncating branch, both in
+`packages/theurian-core/tests/integration/test_purged_build_quantities.py`.
+**What the purge does not remove is the segment residue**: the same rows'
+postings survive as FTS5 tombstones and are monotone in the withdrawn count on
+the trigram path ([#499](https://github.com/theurian/theurian/issues/499), a
+face of T-17a), so this frame bounds the canonical-read term and not query
+duration.
 
 **What the cap bounds, and what it does not.** It bounds concurrent occupancy
 of the retrieval answer path alone — all three members enter through
@@ -4055,7 +4064,8 @@ round-six correction below records is a different member with a different size.
 > what an end-to-end stopwatch on this corpus can call a signal. Neither is a
 > claim that nothing remains at a resolution these harnesses cannot reach.
 >
-> > **Annotated 2026-09-01: the same edge on a purged build (work log §F7/F8′).**
+> > **Annotated 2026-09-01 against `ec0dbcd`: the same edge on a purged build
+> > (work log §F7/F8).**
 > > The two figures above were taken on a build that still held the withdrawn
 > > rows, with a fake retriever and a database-free gate pass. Re-taken on the
 > > shipped `search_lexical` at 500 visible rows, 200 iterations, the withheld
@@ -4117,8 +4127,8 @@ round-six correction below records is a different member with a different size.
 > 0.09 s for a 6,000-row ranking. What was missed is that the *number* of reads is
 > `|ranking|`, so it carries the withheld count.
 >
-> > **Annotated 2026-09-01: the table and the rate above, re-taken as a pair
-> > (work log §F2/F1′).** The table reproduces exactly on a real index and a real
+> > **Annotated 2026-09-01 against `ec0dbcd`: the table and the rate above,
+> > re-taken as a pair (work log §F2/F1′).** The table reproduces exactly on a real index and a real
 > > store rather than a fake retriever — 10 / 11 / 60 / 210 / 6,000 canonical
 > > reads at 0 / 1 / 50 / 200 / 5,990 withheld, one pass throughout — and the
 > > **purged** build reads 10 at every one of those counts, one pass, the same ten
@@ -4129,10 +4139,13 @@ round-six correction below records is a different member with a different size.
 > > magnitude*. The **purged** build costs 0.2339 ms → 0.2427 ms: 0.0088 ms over
 > > 400 rows against a within-condition run-to-run spread of ~0.01 ms, and across
 > > the whole 0 → 5,990 sweep it spans 0.2339–0.2433 ms. That is not a smaller
-> > rate, it is **no rate**: `|ranking|` is 10 in every purged row, so the term
+> > rate, it is **no rate**: on this branch — the scan below the trigram floor,
+> > which carries no `LIMIT` — `|ranking|` is 10 in every purged row, so the term
 > > this paragraph is about has nothing to multiply. Pinned by
 > > `test_a_purged_build_reads_canonical_once_per_visible_row_however_many_were_withheld`,
-> > whose stale control asserts `visible + withheld` first.
+> > whose stale control asserts `visible + withheld` first; **that pin sweeps
+> > withheld counts 0, 50 and 200**, where the measured sweep above runs to 5,990,
+> > so the pin holds the shape and not the sweep's far end.
 >
 > **The deleted justification is inverted on the scan branch, not merely narrow.**
 > Comparing the two arrangements directly — walk the whole ranking, against
@@ -4203,8 +4216,8 @@ round-six correction below records is a different member with a different size.
 > Quoting it as the upper bound over the whole of T-17 is not supported; it bounds
 > the lookup's pass-count face and nothing else.
 >
-> > **Annotated 2026-09-01: +90 ms and +14% re-derived, because they were never
-> > measured (work log §F6′).** The evidence-grade paragraph below already says
+> > **Annotated 2026-09-01 against `ec0dbcd`: +90 ms and +14% re-derived, because
+> > they were never measured (work log §F6′).** The evidence-grade paragraph below already says
 > > so — "that rate multiplied out, not a measured end-to-end separation" — so
 > > the only honest re-run is to re-derive them on the new ground. On the
 > > **stale** build the same arithmetic at the largest scale measured is 5,950
@@ -4213,6 +4226,12 @@ round-six correction below records is a different member with a different size.
 > > request's 1.22 ms gate and 1.21 ms scan. On a **purged** build the derivation
 > > has no input at all: the multiplier is the withheld term in `|ranking|`, and
 > > it is zero. **+14% becomes +0%.**
+> >
+> > *Evidence grade for the two-decimal figures here:* 24.3 µs comes from §F1′,
+> > which records 40 iterations per timing cell; 156.24 / 1.22 / 1.21 ms come
+> > from §F3/F4 and §F5′, which record **neither a repeat count nor the statistic
+> > behind the column**, as those sections state about themselves. Read them for
+> > the two orders of magnitude between the columns, not for the second decimal.
 >
 > **What did not change, and it is the reason this is a correction rather than a
 > new finding.** The attacker's reach is not widened. One withheld row costs
@@ -4302,8 +4321,8 @@ round-six correction below records is a different member with a different size.
 > removes the withheld term from `|ranking|` and takes every quantity proportional
 > to it — time and memory alike — with it.
 >
-> > **Annotated 2026-09-01: the sweep above, re-taken on a real store and its
-> > purged twin (work log §F3/F4′).** Same shape — fifty visible rows, pass count
+> > **Annotated 2026-09-01 against `ec0dbcd`: the sweep above, re-taken on a real
+> > store and its purged twin (work log §F3/F4).** Same shape — fifty visible rows, pass count
 > > held at one, `tracemalloc` around `_visible_ranking` — with a real
 > > `SqliteCanonicalStore` this time, which is the "larger by an unmeasured
 > > factor" the paragraph above predicts. The **stale** peaks are 80.6 / 155.9 /
@@ -4325,8 +4344,16 @@ round-six correction below records is a different member with a different size.
 > > so the composite has no stage left to carry a residual; separately, warm-up
 > > history alone reproduces the entire spread at a fixed withheld count. Pinned
 > > by `test_a_purged_builds_peak_memory_stops_moving_with_the_withheld_count`,
-> > which holds *equality* over the counts measured flat rather than a tolerance
-> > nobody could defend, and does not extend the equality past them.
+> > which holds *equality* over the counts it sweeps — 0, 50 and 200 withheld —
+> > rather than a tolerance nobody could defend, and does not extend the equality
+> > past them; its stale control asserts strict increase rather than derived
+> > values, for the reason the evidence grade above gives.
+> >
+> > *Evidence grade:* §F3/F4 records **no repeat count and no statistic** behind
+> > its two columns, unlike §F2/F1′ which names 40 iterations per timing cell.
+> > The isolations quoted here do name theirs (nine repeats, min and median
+> > identical). Read the composite peaks for the direction and the order of
+> > magnitude, not for the tenth of a kilobyte.
 
 Evidence grade: the three rows are one harness, one corpus, run by the change
 that produced them. The shipped configuration was reproduced once independently,
@@ -4369,7 +4396,8 @@ extraction takes and not ceilings.
 > with #445's ADR-0024 reconciliation because both need the same purge-path
 > ground truth.
 >
-> > **Re-run on 2026-09-01, and the paragraph above is discharged: face B of
+> > **Re-run on 2026-09-01 against `ec0dbcd`, and the paragraph above is
+> > discharged: face B of
 > > [#472](https://github.com/theurian/theurian/issues/472) is closed, and that
 > > issue stays open for face A — the T-16 cross-surface pin — alone.** The
 > > figures were re-taken against a real state database and a real index that
@@ -4382,28 +4410,57 @@ extraction takes and not ceilings.
 > > place rather than rewritten.
 > >
 > > **The finding is this entry's own round-five argument measured rather than
-> > reasoned, and it has one shape everywhere: the purge does not make these
-> > quantities smaller, it removes the term they are functions of.** The stale
-> > build is reported beside the purged one in every table, because "the purged
-> > column is flat" is also what a harness that measured nothing would report —
-> > and the stale column reproduces each record's shape on a real store and a
-> > real retriever rather than on a fake: round six's 10 / 11 / 60 / 210 / 6,000
-> > canonical reads at one pass, round five's step from one pass to two at 51
-> > withheld, round seven's rising peak. In the purged column `|ranking|` is the
-> > visible count at every withheld level, so there is nothing left for a
-> > per-withheld-row rate to multiply. Round five's own falsification condition —
-> > *"the purge did not remove it"* — is now measured on the shipped purge.
+> > reasoned, and over the three quantities measured here it has one shape: the
+> > purge does not make them smaller, it removes the term they are functions
+> > of.** The three are the canonical-read count, the retriever pass count and
+> > the `tracemalloc` peak — the ones pinned below. **The scope is those three
+> > and not "any quantity"**, and the boundary is not a hedge: PR #498's round-one
+> > adversarial review measured **query duration on the trigram path**, where the
+> > purge only *shrinks* the term because FTS5 `'delete'` tombstones the postings
+> > and nothing merges them — 5.67× end to end at 5,950 withdrawn, owned by
+> > [#499](https://github.com/theurian/theurian/issues/499) and recorded as a
+> > face of T-17a below. The two results do not conflict; they are different
+> > instruments. Everything here is measured below the trigram floor, on the scan
+> > branch and on Python-side counts, and #499's is above it, in the segments.
+> >
+> > The stale build is reported beside the purged one in every table, because
+> > "the purged column is flat" is also what a harness that measured nothing would
+> > report — and the stale column reproduces each record's shape on a real store
+> > and a real retriever rather than on a fake: round six's 10 / 11 / 60 / 210 /
+> > 6,000 canonical reads at one pass, round five's step from one pass to two at
+> > 51 withheld, round seven's rising peak. Round five's own falsification
+> > condition — *"the purge did not remove it"* — is now measured on the shipped
+> > purge.
+> >
+> > **Why the per-withheld-row term goes to zero is branch-dependent, and stating
+> > it as one mechanism was this note's own error, caught in review.** On the
+> > branch that never truncates — `search_substring`'s scan below the trigram
+> > floor, which carries no `LIMIT` — the purged `|ranking|` *is* the visible
+> > count, because the whole match set is handed to the gate. On the branches that
+> > truncate, `|ranking|` is `depth` whatever was withheld both before and after
+> > the purge, and the pass-count pin below measures exactly that: 200 visible
+> > rows and 100 canonical reads at every withheld level. **The conclusion holds
+> > on every branch — no purged quantity carries a per-withheld-row term — and
+> > only the scan branch reaches it by `|ranking|` collapsing to the visible
+> > count.**
 > >
 > > **The flat columns are pinned**, in
-> > `packages/theurian-core/tests/integration/test_purged_build_quantities.py`:
+> > `packages/theurian-core/tests/integration/test_purged_build_quantities.py`,
+> > over withheld counts 0 / 50 / 200 for the first and third and 49–52 for the
+> > second — the shape is fully formed there, and the pins do not claim beyond
+> > their sweep:
 > > `test_a_purged_build_reads_canonical_once_per_visible_row_however_many_were_withheld`
 > > for the canonical-read term,
 > > `test_a_purged_build_stays_at_one_retriever_pass_across_the_first_pass_depth_edge`
 > > for the pass count, and
 > > `test_a_purged_builds_peak_memory_stops_moving_with_the_withheld_count` for
-> > the peak. Each asserts its stale control *first* and against exactly derived
-> > values that grow with the withheld count, so a fixture that never held the
-> > withdrawn rows fails before the claim is reached; each half was taken RED by
+> > the peak. Each asserts its stale control *first*, so a fixture that never held
+> > the withdrawn rows fails before the claim is reached — **but not all three
+> > controls are the same kind**: the read-count and pass-count controls assert
+> > exactly derived values (`visible + withheld`, and the one-then-two step at
+> > `CANDIDATE_DEPTH`), while the peak-memory control asserts only that the stale
+> > peaks *strictly increase*, because round seven's own evidence grade says no
+> > absolute `tracemalloc` figure there is quotable. Each half was taken RED by
 > > mutation, and that module's docstring records which mutation took which.
 > >
 > > **One figure has no purged-build counterpart, and the reason is that its
@@ -4682,34 +4739,88 @@ the dense path, which T-6 enumerates as the second member of that class.
 > caller through any tool; it is a disk-forensics surface, tracked as
 > [#344](https://github.com/theurian/theurian/issues/344).
 >
-> > **Corrected on 2026-09-01: the residue is not a fixed overhang, it scales
-> > with what was withdrawn** (`docs/work-logs/2026-09-01-472-purged-build-re-measurement.md`).
-> > The paragraph above establishes that the withdrawn text lingers in the copy's
-> > free list, and it is right about that and about the trust boundary. What it
-> > does not state is the **quantity**, and the quantity is the part a reader
-> > would get wrong: a purge page-copies the published build and `DELETE`s from
-> > the copy, so the purged file's size and free-page count are a *monotone
-> > function of the pre-purge corpus*. Measured over five builds each serving the
-> > same fifty rows and differing only in how many rows were withdrawn before the
-> > purge:
+> > **Corrected on 2026-09-01, and corrected again on 2026-09-02 in review: the
+> > residue scales with what was withdrawn, most of it is not in the free list,
+> > and it does reach a caller — as a duration.** Owner for the live half:
+> > [#499](https://github.com/theurian/theurian/issues/499).
 > >
-> > | withdrawn | file bytes | pages | free pages |
-> > | --: | --: | --: | --: |
-> > | 0 | 282,624 | 69 | 7 |
-> > | 50 | 376,832 | 92 | 12 |
-> > | 200 | 765,952 | 187 | 57 |
-> > | 2,000 | 4,022,272 | 982 | 263 |
-> > | 5,950 | 9,715,712 | 2,372 | 587 |
+> > **What the paragraph above does and does not say.** It is right that the
+> > withdrawn text lingers in the copy, right about the `deprecateItem` control,
+> > and right that the *content* reaches no caller. It states **no quantity at
+> > all** — it neither called the residue fixed nor called it proportional, and
+> > an earlier draft of this note said it "described it as fixed", which it does
+> > not. What is added below is the quantity and the location, not a retraction.
+> >
+> > **The quantity**, measured over five builds each serving the same fifty rows
+> > and differing only in how many rows were withdrawn before the purge
+> > (2026-09-01, `ec0dbcd`, Apple M1 Max / CPython 3.13.3 / SQLite 3.47.1;
+> > `docs/work-logs/2026-09-01-472-purged-build-re-measurement.md`):
+> >
+> > | withdrawn | file bytes | pages | free pages | free share |
+> > | --: | --: | --: | --: | --: |
+> > | 0 | 282,624 | 69 | 7 | 10% |
+> > | 50 | 376,832 | 92 | 12 | 13% |
+> > | 200 | 765,952 | 187 | 57 | 30% |
+> > | 2,000 | 4,022,272 | 982 | 263 | 27% |
+> > | 5,950 | 9,715,712 | 2,372 | 587 | 25% |
 > >
 > > So the **file's size carries the withdrawn count** to anyone who can `stat`
-> > it — 9.7 MB and 587 free pages to serve fifty rows — rather than only the
-> > withdrawn *text* being recoverable by someone who can read the free list.
-> > **The trust boundary is unchanged and the surface is still disk forensics**:
-> > no query reads a free page, and the retriever's peak is flat to 0.1 KB across
-> > the whole 34× change in file size, so nothing here reaches a caller through
-> > any tool. What is new is the scaling, and it is recorded because a residue
-> > described as fixed reads as bounded by the schema when it is bounded by the
-> > corpus.
+> > it: 9.7 MB to serve fifty rows.
+> >
+> > **The location was wrong, and this table already said so.** This note read
+> > the growth as free-list residue. **Three quarters of it is live**: 587 free
+> > pages of 2,372 at 5,950 withdrawn is 25%, so 1,785 pages are pages SQLite
+> > considers in use. FTS5's `'delete'` writes a **tombstone** — the row's
+> > postings stay in the segment structure until a merge, and nothing in the
+> > shipped purge merges. Measured independently in PR #498's round-one
+> > adversarial review at 5,950 withdrawn and reproduced by the orchestrator:
+> > a purged build carries 1,481 trigram blocks and 5,403,892 trigram bytes
+> > against a never-held build's 13 and 35,638 — **151× the postings for rows it
+> > no longer serves** — and `optimize` plus `VACUUM` takes that build from
+> > 8,564,736 B to 241,664 B, against the never-held build's 270,336 B. A
+> > free-list explanation cannot survive that: `VACUUM` alone would reclaim the
+> > free list, and what collapses the file is the merge.
+> >
+> > **So "nothing here reaches a caller through any tool" was false, and the
+> > channel is a duration.** Corrected rather than narrowed. The retriever's
+> > *peak memory* is flat to 0.1 KB across the whole sweep and no query reads a
+> > free page — both still true — but a query above the trigram floor walks the
+> > tombstoned segments. Isolated at 5,950 withdrawn, the substring scan costs
+> > **16.8 ms on the purged build against 1.2 ms on a never-held one** (1.1 ms on
+> > the purged build's own `optimize`d copy, which is what says the merge is the
+> > variable). End to end through `RetrievalService.search` over real adapters,
+> > interleaved A/B, 40 rounds: **1.02× at nothing withdrawn rising to 5.67×
+> > (+27.36 ms) at 5,950**, crossing this model's recorded 1.40 ms end-to-end
+> > floor (TB-1) between 500 and 1,000 withdrawn rows. A five-point calibration
+> > read **the withdrawn count off the clock alone at 3 of 5 exact**, missing to
+> > an adjacent point. Not a fixture artefact (4.38× at 2,000 on a varied-body
+> > corpus), and it does not clear: ten successive purges leave the file size
+> > constant while the trigram bytes grow, so the residue is bounded by everything
+> > indexed since the last full `theurian index build`, not by one withdrawal.
+> >
+> > **This is a new face of this entry's class, not a new class**, and it is named
+> > by the root cause the entry already carries — *the index still holds the
+> > withdrawn rows* — surviving the remediation one level down, at the FTS5
+> > segment rather than at the row. Score the class, not the face. **The content
+> > channels stay closed, and the reason is specific:** `'delete'` decrements the
+> > averages record (`nRow` and the per-column totals `bm25` reads as `N` and
+> > `avgdl`) even though it only tombstones the postings, which is why purged and
+> > never-held builds return byte-identical rankings — asserted by
+> > `test_index_purge.py::test_a_purged_build_answers_as_if_the_rows_were_never_indexed`
+> > and re-confirmed in that review round across all three builds. **The clock
+> > carries the count, not the content.**
+> >
+> > **Owner and closure condition.** The face is owned by
+> > [#499](https://github.com/theurian/theurian/issues/499) (graded High on the
+> > class, labelled pre-1.0). Its recorded closure is **land the merge inside the
+> > purge, or record an acceptance here with the measured bound — silence is not
+> > a closure**; either way the records move in the pull request that settles it.
+> > Two conditions ride with it: the remediation is measured suite-safe today
+> > (adding `optimize` to the purge's delete step survives the whole suite, which
+> > is itself the finding that nothing pins the post-delete segment state in
+> > either direction), and count-recovery being demonstrated at 3 of 5 means the
+> > face still owes its own extraction program — a channel with no demonstrated
+> > sibling needs one before it closes.
 >
 > **Two residuals remain, both measured. The first is content-independent and not
 > an extraction channel; the second is a purge failure, now closed by
