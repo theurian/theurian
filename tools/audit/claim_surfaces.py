@@ -94,6 +94,41 @@ _YAML_INLINE_COMMENT: Final = re.compile(r"\s#[ \t]?(?P<comment>.*)$")
 #: demands whitespace, the trap both the ADR-0013 and ADR-0018 modules record.
 _SENTENCE_END: Final = re.compile(r"(?<=[.!?])\s+")
 
+#: CommonMark's two emphasis delimiters, wherever a reader sees none.
+#:
+#: An asterisk run is unconditional: CommonMark gives ``*`` no other job in
+#: running text. An underscore run is admitted only where it is *not* inside a
+#: word, which is CommonMark's own rule and this repository's need at once --
+#: ``providers.review.repositories`` carries none, but ``project_config.py``,
+#: ``SUMMARY_MAX_TOKENS`` and every dunder in the tree do, and a rule that ate
+#: them would rewrite the symbol names these audits key on.
+_EMPHASIS_DELIMITERS: Final = re.compile(r"\*+|(?<![0-9A-Za-z_])_+(?![0-9A-Za-z_])")
+
+
+def without_emphasis(text: str) -> str:
+    """``text`` with its emphasis delimiters removed, leaving the words.
+
+    **What this closes, and it is a matching rule rather than a cosmetic one.**
+    A key that spells a path with its markup -- a backtick run, a quote -- reads
+    ``**`` as neither, so wrapping the same span in bold moves the path out of
+    reach of every such key while a reader sees the identical sentence. Measured
+    in round two: ``Nothing in ``src/`` reads **`.theurian/config.yaml`**`` in a
+    wheel-shipped module left the census, all five audits and the whole suite
+    green, because the delimiter run in front of the path cannot step over the
+    two asterisks. The escape is composition -- any key over spelled markup has a
+    wrapper it does not spell -- and the answer is to stop matching on the markup
+    at all, which is what ``test_raptor_config_claims.py`` had already done on
+    the pin side and the census had not.
+
+    **Not applied to every audit here, and the exception is load-bearing.**
+    ``owner_position_cites.py``'s supersession probe reads a block's *bold
+    opener* -- ``**Closed on 2026-09-01 ([#468]).**`` -- so for that audit the
+    emphasis is the signal rather than noise. This is a function a caller applies
+    where its keys are about words, not a normalisation
+    :func:`sentences` performs for everybody.
+    """
+    return _EMPHASIS_DELIMITERS.sub("", text)
+
 
 @dataclass(frozen=True, slots=True)
 class Sentence:

@@ -9,6 +9,16 @@ those five misses demonstrate, and the rule this module is built on:
 **you cannot enumerate the phrasings of a claim; you can enumerate the
 references to a bounded object.**
 
+**The qualifier the theorem needs, which round two measured.** Enumerating the
+objects bounds *what* a claim can be about; it does not bound *how the sentence
+spells the reference*, and that is a second surface with its own escapes. A path
+wrapped in bold is the same reference to the same enumerated object and defeated
+every key here (R2-B); :func:`as_read` is what removes that whole dimension, by
+matching on text whose emphasis is gone rather than on text whose markup a
+pattern has to anticipate. What is left of the dimension is not argued away:
+:data:`MEASURED_ESCAPES` runs it, so the bound is a table that fails rather than
+a sentence that rots.
+
 So the population is built the other way round. First an *inventory* of objects,
 each derived by a machine rather than transcribed:
 
@@ -72,6 +82,7 @@ from claim_surfaces import (
     repo_root,
     sentences,
     unreleased_lines,
+    without_emphasis,
 )
 
 #: The published schema whose key surface is enumeration source 1.
@@ -216,6 +227,14 @@ class Row:
 #:
 #: ``{0,2}`` over one character class admits a mismatched pair (`` `" ``), which
 #: over-approximates in the direction that costs a read rather than a miss.
+#:
+#: **Widening this run is not what closed the markup family, and round two is
+#: why.** Any run spelled here is a run some wrapper is outside of: bold defeated
+#: this one because ``*`` is not in the class, and adding it would have left the
+#: next wrapper. :func:`as_read` removes the emphasis before any key runs, so the
+#: composition stops being enumerable rather than being enumerated one delimiter
+#: at a time. What this run still does is separate a *spelled* reference from a
+#: bare English word, which is why it stays.
 _DELIMITER_RUN: Final = r"[`\"'“”]{0,2}"
 
 #: The same run where a delimiter is **required**, for the bare-leaf key surface.
@@ -445,12 +464,36 @@ def _referring(members: tuple[WatchedObject, ...], path: str, block: str) -> lis
     return named + at_home
 
 
+def as_read(sentence: Sentence) -> Sentence:
+    """The twin of ``sentence`` every key here is applied to.
+
+    **One normalisation seam for the whole audit**, which is the point: the
+    pre-filter, the three claim keys, the reference keys, the record markers and
+    the ledger fragments all run against this and none of them against the raw
+    text, so a markup form that defeats one cannot defeat only one.
+
+    Today the normalisation is :func:`claim_surfaces.without_emphasis`, and round
+    two's R2-B is why. The population and the line numbers are unaffected -- the
+    row still reports the raw sentence at the line it opens on, because that is
+    what a person opens.
+    """
+    return Sentence(
+        path=sentence.path,
+        line=sentence.line,
+        text=without_emphasis(sentence.text),
+        block=without_emphasis(sentence.block),
+    )
+
+
 def sweep(root: Path) -> list[Row]:
     """Every classified row, in path order.
 
     A sentence enters the population *because* its block refers to a watched
     object; it stays as one row, carrying every object it refers to. The shape
     recorded is the first that matched, and the verdict reads the whole set.
+
+    Matching runs on :func:`as_read`'s twin; the row keeps the raw sentence, so
+    what is printed is what the file says.
     """
     members = inventory(root)
     keys = {member.name: _keys_for(member) for member in members}
@@ -464,12 +507,13 @@ def sweep(root: Path) -> list[Row]:
             else frozenset()
         )
         for sentence in sentences(root, path):
-            if not _ANY_CLAIM.search(sentence.text):
+            read = as_read(sentence)
+            if not _ANY_CLAIM.search(read.text):
                 continue
             matched: list[tuple[WatchedObject, str]] = []
-            for member in _referring(members, path, sentence.block):
+            for member in _referring(members, path, read.block):
                 for shape, key in keys[member.name]:
-                    if key.search(sentence.text):
+                    if key.search(read.text):
                         matched.append((member, shape))
                         break
             if not matched:
@@ -481,7 +525,7 @@ def sweep(root: Path) -> list[Row]:
                     verdict=_classify(
                         matched[0][1],
                         {member.kind for member, _ in matched},
-                        sentence,
+                        read,
                         unreleased=unreleased,
                     ),
                     sentence=sentence,
@@ -651,6 +695,17 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
         "transcription",
         "The unbalanced-backtick probe (E1), quoted in the docstring that states what it measures.",
     ),
+    (
+        "packages/theurian-core/tests/unit/test_raptor_config_claims.py",
+        "only the watched claim where the pronoun has one possible referent",
+        "quotation",
+        "`_THIS_FILE_UNREAD`'s own test docstring, quoting the shape that pattern matches "
+        "in order to say which two surfaces it may run on. **This row is what the "
+        "emphasis strip added** (round two's R2-B): the quotation writes the pronoun as "
+        "`**this file**`, and until `as_read` ran, the two asterisks sat between the verb "
+        "and its object and no key here could see it. It is a quotation inside a test "
+        "module about the pattern, not a claim about the tree.",
+    ),
     # `plugins/claude-code/commands/ingest.md`'s "nothing reads that file today"
     # stood here as `DEFECT, #461` until #199 unit B's prose assignment corrected
     # it. The sentence now names the one reader and narrows the negation to
@@ -686,6 +741,16 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
 #: surfaces shipped, which is the wording a regression would restore. They are
 #: kept in their published form for that reason and are not re-tensed into the
 #: corrected text, which the key is not supposed to match.
+#:
+#: **The ``expected=False`` rows are the other edge, and round two's
+#: normalisation is why they matter more than they did.** :func:`as_read` widens
+#: what the keys can see, and a matcher measured only by what it catches drifts
+#: towards catching everything: the narrowed #426 sentence, the past-tense
+#: record, the key-scoped claim inside a home and -- since R2-B -- ADR-0028's
+#: house style, a bold-wrapped ``.theurian/`` path in a sentence whose negation is
+#: about something else entirely. That last row is not vacuous: :data:`_ANY_CLAIM`
+#: fires on it and the block names a watched object, so it reaches the per-object
+#: keys and is declined there rather than filtered out before they run.
 POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, bool], ...]] = (
     (
         "the schema root as it shipped before #455 (corrected)",
@@ -800,6 +865,77 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, bool], ...]] = (
         False,
         False,
     ),
+    (
+        "round two's R2-B: the same claim with the path wrapped in bold, in a wheel-shipped "
+        "module outside the pin's seven surfaces",
+        "packages/theurian-core/src/theurian/security/project_config.py",
+        "Nothing in ``src/`` reads **`.theurian/config.yaml`**, so no default here is in force.",
+        True,
+        False,
+    ),
+    (
+        "the same claim italicised on its verb, the emphasis form that is not bold",
+        "docs/architecture/raptor.md",
+        "Nothing in `src/` *reads* `.theurian/config.yaml`, so the default is safe to flip.",
+        True,
+        False,
+    ),
+    (
+        "the house style the strip must NOT turn into a claim: a bold-wrapped path in a "
+        "sentence whose negation is about something else (ADR-0028's shape)",
+        "docs/adr/0028-a-local-proposal-is-a-different-directory.md",
+        "**`.theurian/proposals-local/<proposal-id>/`** is a different directory, and "
+        "nothing in `src/` reads a draft the author has not published.",
+        False,
+        False,
+    ),
+)
+
+#: The escape space, as a table that **runs** rather than a sentence that rots, as
+#: ``(what the escape is, path, the planted sentence, does a key reach it today)``.
+#:
+#: A census that states its bound in prose states it once and then drifts: the pin
+#: side learned this in #199 unit B, where a docstring's list of escapes described
+#: a scan that no longer existed, and turned the list into
+#: ``test_raptor_config_claims.py``'s ``MEASURED_ESCAPE_CASES``. This is the same
+#: instrument on the census side. A row whose ``reached`` flag stops being true is
+#: a FAIL either way round: an escape that closed is news the record has to carry,
+#: and an escape that opened is a key that moved.
+#:
+#: **Every row here is a way of writing a reference, not a way of phrasing a
+#: claim** -- which is precisely the dimension the module's opening theorem does
+#: not bound, and the reason it now carries a qualifier.
+#:
+#: **What the last two would cost to close, measured rather than guessed.**
+#: Adding ``[`` and ``]`` to :data:`_DELIMITER_RUN`'s class and taking its bound
+#: from ``{0,2}`` to ``{0,3}`` reaches both: measured at ``484bbf9``, that variant
+#: takes both rows to ``SUSPECT`` and leaves the tree byte-for-byte where it is --
+#: 55 rows, 19 suspects, one unrecorded row, no ledger drift, and the passive-voice
+#: row and the ADR-0028 negative both unchanged. It is not taken here because it
+#: is a *second* mechanism in a round whose closure argument is the first one, and
+#: a delimiter class widened to reach two spellings is the enumeration this module
+#: exists to stop doing. Recorded so the next change decides it on a measurement
+#: rather than rediscovering it.
+MEASURED_ESCAPES: Final[tuple[tuple[str, str, str, bool], ...]] = (
+    (
+        "adv-L3: passive voice -- the object first, the negation as the agent",
+        "docs/architecture/raptor.md",
+        "`.theurian/config.yaml` is read by nothing in `src/`, so the default is safe to flip.",
+        False,
+    ),
+    (
+        "the path as a Markdown link, whose `[` the delimiter run does not spell",
+        "docs/architecture/raptor.md",
+        "Nothing in `src/` reads [`.theurian/config.yaml`](../../.theurian/config.yaml), "
+        "so the default is safe to flip.",
+        False,
+    ),
+    (
+        "the path in a run of three backticks, one more than the delimiter run admits",
+        "docs/architecture/raptor.md",
+        "Nothing in `src/` reads ```.theurian/config.yaml```, so the default is safe to flip.",
+        False,
+    ),
 )
 
 
@@ -812,8 +948,27 @@ def _covers(entry: tuple[str, str, str, str], row: Row) -> bool:
     claim then reads as a new unrecorded suspect *and* leaves its own row stale --
     two findings for one edit, neither of them real. The sibling ledgers here take
     the same rule.
+
+    **Emphasis-insensitive for the same reason**, and it is the same rule
+    :func:`as_read` applies to the keys: italicising one word of a recorded
+    sentence is a typographic edit, and it must not read as a new claim plus a
+    stale row. Both sides are normalised, so a fragment transcribed *with* its
+    markup still matches.
+
+    This is the one place the question "is this row recorded" is answered.
+    :func:`main`'s own display lookup used to re-implement it case-sensitively
+    and without the path-and-fragment pair the ledger uses, so a recorded suspect
+    could print as ``UNRECORDED`` while the reconciliation below said it was
+    covered (round two's code-L2/L3).
     """
-    return row.sentence.path == entry[0] and entry[1].lower() in row.sentence.text.lower()
+    return row.sentence.path == entry[0] and _fragment_key(entry[1]) in _fragment_key(
+        row.sentence.text
+    )
+
+
+def _fragment_key(text: str) -> str:
+    """The form both sides of a ledger fragment comparison are reduced to."""
+    return without_emphasis(text).lower()
 
 
 def ledger_drift(
@@ -967,6 +1122,34 @@ def _run_ledger_controls() -> int:
     return 1 if failures else 0
 
 
+def _verdict_for_planted(
+    members: tuple[WatchedObject, ...],
+    keys: dict[str, tuple[tuple[str, re.Pattern[str]], ...]],
+    path: str,
+    planted: str,
+    *,
+    unreleased: frozenset[int],
+) -> str:
+    """One planted sentence classified through exactly the seam :func:`sweep` uses.
+
+    :func:`as_read` runs here too, and that is not a detail: a control that
+    matched the raw plant would report a key reaching a sentence the sweep never
+    hands it, which is the failure mode a positive control exists to rule out.
+    """
+    read = as_read(Sentence(path=path, line=0, text=planted, block=planted))
+    hit: str | None = None
+    kinds: set[str] = set()
+    for member in _referring(members, path, read.block):
+        for shape, key in keys[member.name]:
+            if key.search(read.text):
+                hit = hit or shape
+                kinds.add(member.kind)
+                break
+    if hit is None:
+        return "no match"
+    return _classify(hit, kinds, read, unreleased=unreleased)
+
+
 def _run_positive_controls() -> int:
     """Show each shape's key hitting a planted sentence before any zero is read."""
     root = repo_root()
@@ -975,32 +1158,37 @@ def _run_positive_controls() -> int:
     failures = 0
     print("=== POSITIVE CONTROLS ===")
     for label, path, planted, expected, unreleased in POSITIVE_CONTROLS:
-        hit: str | None = None
-        kinds: set[str] = set()
-        for member in _referring(members, path, planted):
-            for shape, key in keys[member.name]:
-                if key.search(planted):
-                    hit = hit or shape
-                    kinds.add(member.kind)
-                    break
-        verdict = (
-            _classify(
-                hit,
-                kinds,
-                Sentence(path=path, line=0, text=planted, block=planted),
-                # The planted sentence sits at line 0, so a control marked
-                # `unreleased` is one whose line is inside the section.
-                unreleased=frozenset({0}) if unreleased else frozenset(),
-            )
-            if hit
-            else "no match"
+        verdict = _verdict_for_planted(
+            members,
+            keys,
+            path,
+            planted,
+            # The planted sentence sits at line 0, so a control marked
+            # `unreleased` is one whose line is inside the section.
+            unreleased=frozenset({0}) if unreleased else frozenset(),
         )
         found = verdict.startswith("SUSPECT")
         status = "OK  " if found is expected else "FAIL"
         failures += status == "FAIL"
         print(f"  {status} {label}")
         print(f"        expected suspect={expected}  got {verdict!r}")
-    return (1 if failures else 0) | _run_ledger_controls()
+    return (1 if failures else 0) | _run_escape_controls(members, keys) | _run_ledger_controls()
+
+
+def _run_escape_controls(
+    members: tuple[WatchedObject, ...],
+    keys: dict[str, tuple[tuple[str, re.Pattern[str]], ...]],
+) -> int:
+    """Run the recorded escape space, so the bound fails instead of rotting."""
+    failures = 0
+    print("\n=== MEASURED ESCAPES (the bound, run) ===")
+    for label, path, planted, reached in MEASURED_ESCAPES:
+        verdict = _verdict_for_planted(members, keys, path, planted, unreleased=frozenset())
+        found = verdict.startswith("SUSPECT")
+        status = "OK  " if found is reached else "FAIL"
+        failures += status == "FAIL"
+        print(f"  {status} {label}: recorded reached={reached}, got {verdict!r}")
+    return 1 if failures else 0
 
 
 def _report_drift(rows: list[Row]) -> int:
@@ -1062,14 +1250,7 @@ def main(argv: list[str]) -> int:
     for row in rows:
         if not row.verdict.startswith("SUSPECT"):
             continue
-        recorded = next(
-            (
-                entry
-                for entry in SUSPECTS
-                if entry[0] == row.sentence.path and entry[1] in row.sentence.text
-            ),
-            None,
-        )
+        recorded = next((entry for entry in SUSPECTS if _covers(entry, row)), None)
         print(f"  {row.sentence}  [{row.shape}]  {recorded[2] if recorded else 'UNRECORDED'}")
         print(f"      {row.sentence.text[:_MAX_ROW_TEXT]}")
 
