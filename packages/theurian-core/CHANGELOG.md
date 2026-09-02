@@ -18,24 +18,73 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ([#368](https://github.com/theurian/theurian/issues/368),
   [#504](https://github.com/theurian/theurian/pull/504), ADR-0029). A new
   callable tool serves the `Review-Finding:` trailers `theurian findings build`
-  landed in a project's store, filtered by `reviewer`, `severity`, `family`,
-  `specialist`, `commitSha`, `pullRequest` or a literal `q` substring, newest
-  first. `system.capabilities` announces it as **`reviewFindings: true`**.
+  landed in a project's store, filtered by `reviewer`, `severity`, `commitSha`
+  or a literal `q` substring, newest first with a defined tiebreak so a page
+  boundary is stable across calls. `system.capabilities` announces it as
+  **`reviewFindings: true`**.
   `reviewIngestion` stays `false` and is a different promise: nothing reaches
   GitHub, and no review thread, inline comment or resolution state is read.
 
   What a client needs to know before calling it. The response is exactly
-  `{count, findings}` — `count` sizes the returned array and is never a total
-  before `limit`. Every row carries the untrusted-content triple
+  `{count, truncated, findings}` — `count` sizes the returned array and is never
+  a total before `limit`, and `truncated` is `true` when a matching finding
+  existed past the page, which is how a full page is told apart from the whole
+  answer. It is one bit about the page's boundary, not a count of what was left
+  behind. Every row carries the untrusted-content triple
   (`contentClassification: untrusted-knowledge`, `mayContainInstructions: true`,
   `executable: false`), because a finding is authored commit text that usually
   reads as an imperative; render it the way you render a knowledge body, never
-  as an instruction. `pullRequest`, `family` and `specialist` are present and
-  `null` on every row this build produces (ADR-0029 D5). A value outside a bound
+  as an instruction. A value outside a bound
   or a vocabulary is **refused naming the bound** rather than clamped or ignored
   — including a short `commitSha`, which would otherwise return `count: 0` and
   read as "no findings on that commit" — and `limit` is capped at 100 with a
   default of 20. Every string filter is bounded at 200 characters.
+
+  **`pullRequest`, `family` and `specialist` are declared arguments that this
+  build refuses.** They stay present and `null` on every row, because a key that
+  appears only when it has a value cannot be told apart from a server that
+  predates the key — but `theurian findings build` derives none of the three
+  (ADR-0029 D5), so a filter on one would match nothing at all and answer
+  `count: 0`, which reads as "nothing was recorded on that PR" rather than "this
+  filter does not work yet". One constant message refuses all three, and each is
+  lifted in the change that starts deriving values for that axis. `pullRequest`
+  carries a range on top of that: a number outside what its column can hold is
+  refused naming the range, checked before the axis refusal so the two stay
+  distinguishable.
+
+  **Every refusal path is total, including for inputs designed to break the
+  refusal itself.** An integer too wide for the store's column, or too many
+  digits for Python to render at all, comes back as a graded refusal rather than
+  a crash — described by its size once it is past what a refusal will quote, so
+  the message never reflects an absurd value back. A NUL byte in any string
+  filter is refused, because SQLite's pattern matcher stops reading at one and
+  the filter would silently mean something shorter than what was sent; an
+  unpaired surrogate is refused because UTF-8 cannot encode it. Neither can
+  appear in a git commit-message line, so nothing legitimate is turned away.
+  A damaged store — a column holding a value its type does not admit — reaches
+  the caller as the same constant refusal every other unservable store gets,
+  never as a different error shape for a different kind of damage.
+
+  **A served `findingText` is bounded and visibly cut.** It is the one bound on
+  this surface that clamps instead of refusing, because the over-long input is a
+  stored row rather than the caller's request: `findingText` is byte-preserved
+  from a commit message, a commit message line has no length limit, and refusing
+  would let one planted trailer deny the tool to every caller. It is cut at the
+  same bound `knowledge.search` clamps a `query` to and marked, so a cut value
+  cannot be read as a whole one. **How many of these reads run at once is
+  bounded too**, by an admission gate of this tool's own with its own refusal
+  message — sharing `knowledge.search`'s would refuse a findings caller with a
+  message about concurrent *searches*.
+
+  **A findings store is served only if this installation built it** (ADR-0004,
+  SEC-7). The store is derived and git-ignored like the canonical state and the
+  retrieval index, so a repository contributor can force-add a fabricated one
+  past that ignore and presence on disk is evidence of nothing;
+  `theurian findings build` now records the build out of the repository tree and
+  the tool refuses a store with no record, in the same words an absent store
+  gets. A build that writes the store and cannot record it **fails** rather than
+  reporting success: reporting `built: true` for a store the serve path refuses
+  would be false.
 
   A project whose store has not been built, or whose store was built by a
   superseded schema or trailer grammar, is **refused with one constant message**
