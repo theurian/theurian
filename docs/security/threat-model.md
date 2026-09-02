@@ -1294,7 +1294,7 @@ listed separately because none of the measurements above ranges over it.
 | bytes per string filter, before anything is matched or echoed | `mcp/findings.py::MAX_FILTER_CHARS` (200) | **refuses**, reporting the length and never quoting the value (#17's amplification discipline) |
 | magnitude of `pullRequest` | `mcp/findings.py::MAX_PULL_REQUEST`, defined as the widest value the store's signed 64-bit column can hold (`2**63 - 1`); a refusal quotes at most `MAX_ECHOED_DIGITS` (20) decimal digits and describes anything larger by its digit count | **refuses** |
 | concurrent occupancy | its own `threading.BoundedSemaphore` sized by `MAX_CONCURRENT_SEARCHES` (4), waited on for `ADMISSION_WAIT_SECONDS` (1.0 s), refusing with `FINDINGS_CAPACITY_REFUSAL` | **refuses** |
-| wall clock per call | **nothing**, for the reason recorded above: a sync tool's worker thread is not stopped by cancelling the awaiting task, so a transport timeout bounds the wait and not the spend |
+| wall clock per call | **nothing**, for the reason recorded above: a sync tool's worker thread is not stopped by cancelling the awaiting task, so a transport timeout bounds the wait and not the spend | neither — recorded as not taken, like its three siblings |
 
 **Only the row count was bounded when the tool was first written, and that was
 not a bound on anything a caller receives.** `findingText` is byte-preserved
