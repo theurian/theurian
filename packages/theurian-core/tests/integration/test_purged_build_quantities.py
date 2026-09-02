@@ -273,6 +273,17 @@ class Measured:
     #: ``CanonicalReadSession.get_item`` calls. The *distinct item* count of the
     #: ranking, not ``len(ranked)``: `CanonicalVisibility` memoises per request,
     #: and this is the number a canonical store can observe.
+    #:
+    #: **Under this module's fixture the two coincide, and no assertion below
+    #: separates them.** :data:`BODY` is shorter than ``chunking.TARGET_CHARS``, so
+    #: every document is exactly one chunk, every ranked row is a distinct item,
+    #: and the memoisation never returns a cached answer. Stating the definition
+    #: as the distinct count anyway is not pedantry: it is what the store can
+    #: observe and therefore what T-17's residual is a count *of*, and it is what
+    #: keeps the read-count arithmetic below from reading as general when it rests
+    #: on the one-chunk-per-document choice. A fixture with longer bodies would
+    #: pull the two apart without any assertion here changing, which is the case
+    #: this comment exists to leave documented rather than to leave discovered.
     canonical_reads: int
     #: How many rows the caller was left with.
     returned: int
@@ -291,6 +302,16 @@ class CountingReadSession:
     counter, and the counter is the instrument: T-17's residual is *how many
     times the canonical store was asked*, which no published field reports and
     no return value carries.
+
+    **The context-manager pair is the session's, and :func:`_measure` enters it
+    through this class rather than beside it.** `CanonicalReadSession` declares
+    ``__enter__``/``__exit__`` because acquiring the handle at session open rather
+    than at the first read is a security decision, not symmetry -- a lazily
+    acquired handle charges its setup only to requests that found something, and
+    "found something" is what the response is withholding. The pair here forwards
+    once. Until PR #498's first review round `_measure` opened the inner store in
+    its own ``with`` and wrapped it afterwards, which left these two never called
+    and would have entered the store twice had anything called them.
     """
 
     def __init__(self, inner: SqliteCanonicalStore) -> None:
@@ -484,8 +505,15 @@ def _measure(corpus: Corpus, index: SqliteIndexStore, *, query: str, lexical: bo
     """Drive `_visible_ranking` over one build and count what it spent.
 
     The gate is a real `CanonicalVisibility` over a real `SqliteCanonicalStore`
-    session, so `get_item` is an actual SQLite read and the memoisation that
-    turns ``len(ranked)`` into a *distinct item* count is the shipped one.
+    session, so `get_item` is an actual SQLite read and the per-request
+    memoisation in the path is the shipped one. It has nothing to do under this
+    fixture, where one chunk per document makes every ranked row a distinct item
+    -- :attr:`Measured.canonical_reads` records why the count is still defined as
+    the distinct one.
+
+    The session, not this function, owns the handle: `CountingReadSession`
+    forwards the ``with`` to the store it wraps, so the handle is acquired at
+    session open exactly as `CanonicalReadSession` requires.
     """
     rows_per_pass: list[int] = []
 
@@ -501,8 +529,7 @@ def _measure(corpus: Corpus, index: SqliteIndexStore, *, query: str, lexical: bo
         rows_per_pass.append(len(page.rows))
         return page
 
-    with SqliteCanonicalStore(corpus.database) as inner:
-        session = CountingReadSession(inner)
+    with CountingReadSession(SqliteCanonicalStore(corpus.database)) as session:
         visible = CanonicalVisibility(
             session,
             RequestContext(project_id=ProjectId(PROJECT)),
@@ -521,7 +548,28 @@ def _measure(corpus: Corpus, index: SqliteIndexStore, *, query: str, lexical: bo
 
 
 def _peak_bytes(corpus: Corpus, index: SqliteIndexStore, *, query: str) -> int:
-    """The smallest traced peak of :data:`PEAK_REPEATS` runs, after a warm-up."""
+    """The smallest traced peak of :data:`PEAK_REPEATS` runs, after a warm-up.
+
+    **Refuses to run inside somebody else's trace rather than nesting in one.**
+    `tracemalloc.start()` does nothing while tracing is already on, but
+    `tracemalloc.stop()` below is not conditional -- so under ``-X tracemalloc``,
+    or under a profiler that traces, the first call here would tear down a trace
+    this module did not start, and the peaks read back would be the *outer*
+    tracer's: an absolute figure carrying every object the process still holds.
+    `reset_peak` would rebase that, but the rebased baseline moves between the
+    withheld levels this pin compares for *equality*, so the claim is only
+    defined when this function owns the tracer.
+
+    Nothing in the shipped gate enables tracing, so the skip is a guard against a
+    developer's ``-X tracemalloc`` run rather than a routine outcome.
+    """
+    if tracemalloc.is_tracing():  # pragma: no cover - only under an outer tracer
+        pytest.skip(
+            "tracemalloc was already tracing when this pin ran (-X tracemalloc, or "
+            "a profiler). Its equality claim holds over peaks it measured itself, "
+            "and taking them here would stop a trace somebody else started"
+        )
+
     _measure(corpus, index, query=query, lexical=False)
 
     samples: list[int] = []
