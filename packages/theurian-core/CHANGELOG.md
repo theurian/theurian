@@ -14,93 +14,6 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed
 
-- **A refusal keeps reaching its MCP caller with its own message under mcp
-  2.1 and later, exactly as it did under 2.0**
-  ([#469](https://github.com/theurian/theurian/issues/469),
-  [#491](https://github.com/theurian/theurian/issues/491)). mcp 2.1.0
-  (upstream PR #3314, listed there as a behaviour change) split the tool
-  dispatcher's `except Exception` arm: `str(exc)` is forwarded only for
-  exceptions that *are* the SDK's own `ToolError` or `ResourceError`, and
-  everything else is treated as a crash — logged with its traceback
-  server-side, answered with a bare `Error executing tool <name>`. Every
-  refusal this daemon raises fell into the crash arm at once, so an agent
-  that should have been told to re-register a project or to rebuild an
-  unreadable state database would have read the tool's name and nothing
-  else. Measured on [#460](https://github.com/theurian/theurian/pull/460)'s
-  `mcp` 2.0.0 → 2.1.1 bump: 44 assertions on message text went RED.
-
-  **Two causes, not one.** `mcp/tools.py`'s `ToolError` carried the SDK's
-  *name* without its identity — it shadowed
-  `mcp.server.mcpserver.exceptions.ToolError` and never subclassed it. It
-  now declares both bases, `TheurianError` first so `remedy` and every
-  `except TheurianError` clause are untouched; that closes 41 of the 44. The
-  other 3 were a different root cause (#491): `TheurianError` subclasses
-  raised *below* that module — `SchemaVersionMismatchError` and
-  `StateDatabaseUnreadableError` from `infrastructure/sqlite/connection.py`
-  — travel up through a tool body that never converts them, so they were
-  never the SDK's `ToolError` either. Those two are the measured reachable
-  set: instrumenting the conversion seam and driving nine MCP integration
-  files, exactly two types reach it — `StateDatabaseUnreadableError` 192
-  times and `SchemaVersionMismatchError` 6. Conversion is now one seam
-  rather than five tool bodies: `_tool` replaces the five `@server.tool`
-  registrations and turns an escaping `TheurianError` into
-  `ToolError(str(exc))`, so "a refusal raised below the surface still
-  reaches its caller" is a property of the surface. Two tests hold that,
-  and the division matters: a source scan catches a *decorator* that names
-  something other than the seam, and a runtime check asks the built server
-  whether each registered tool *is* the forwarding seam — identified by the
-  code object every one of its wrappers shares, not by the presence of a
-  `functools.wraps` marker, which a lookalike wrapper also carries. Only the
-  second can fail when the seam is bypassed from *inside* the registration
-  helper — the first reads spelling, and adversarial review demonstrated
-  bypasses (a deleted application, then a `wraps` lookalike) that left every
-  decorator identical and the whole suite green.
-
-  **Nothing a caller reads moves.** The seam forwards the refusal's own text
-  and adds nothing to it — not `remedy`, not a path, not the class name, not
-  the traceback or the exception chain. `str(exc)` is exactly what mcp
-  2.0.0's blanket arm folded in, and widening an error while restoring it is
-  how a restoration becomes a disclosure (SEC-13); it is what keeps
-  `StateDatabaseUnreadableError` naming the failing exception's *type* and
-  never the corrupted cell. Measured with one probe against three trees: for
-  all five refusal classes probed — the two reachable ones included — the
-  wire text is byte-identical between this fix under 2.1.1, this fix under
-  2.0.0, and the unfixed tree under 2.0.0. The 44 node ids that were RED
-  under 2.1.1 pass.
-
-  **The text of an exception that escapes a tool body stays withheld under
-  mcp 2.1 and later unless it is a deliberate refusal, by design.** The seam
-  catches `TheurianError` and nothing wider, so a `TypeError`, an `OSError`
-  or a bare `sqlite3.Error` is left in upstream's crash arm — the one cell
-  the same probe measured moving. In that probe each tool was *named* after
-  the exception class it raises, so the tool name is what mcp interpolates
-  and what the quotes below repeat: `Error executing tool TypeError: an
-  internal call was made with the wrong arity` under 2.0.0 against `Error
-  executing tool TypeError` under 2.1.1. Upstream's withholding is hardening
-  this project agrees with, and catching `Exception` at the seam would
-  defeat the change that surfaced the bug.
-
-  The claim is scoped to exceptions that *escape a tool body*, because it is
-  not true of the whole wire: the SDK refuses a malformed call before the
-  body runs, with its own `ToolError` carrying pydantic's validation text —
-  which echoes the caller's own argument back. Measured under both 2.0.0 and
-  2.1.1, that text is byte-identical, so this change neither widens nor
-  narrows it, and what it echoes is the caller's own input rather than
-  anything read from a project.
-
-  The seam only sees what is raised while it is on the stack, so a tool that
-  returned before running its body would silently opt out. Registration now
-  refuses a coroutine, async-generator or generator function, and a callable
-  object whose `__call__` is one of those; a plain function that *returns* an
-  awaitable cannot be recognised until it is called, so the wrapper refuses
-  that at call time rather than letting the SDK serialise an un-awaited
-  object as a successful result. No registered tool has any of these shapes.
-
-  Under mcp 2.0.0 nothing user-visible changes either way: that dispatcher
-  wraps the SDK's own `ToolError` exactly like anything else, so the added
-  base is inert there, and the seam emits the text the blanket arm already
-  folded in.
-
 - **Two `theurian findings build` runs at once no longer tear each other's
   store, and a reader never observes a half-built one**
   ([#404](https://github.com/theurian/theurian/issues/404),
@@ -295,6 +208,246 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   commits and a named command, which is the one form of a written number this
   file set accepts without one — the ADR carries each with its command and, for
   "38 lines", its positive control. The module's own docstring states this reach.
+
+- **The records now carry the purged-build ground truth: T-17 and T-17a are
+  updated, ADR-0024 point 4 is corrected against measurement, the NFR-4 record is
+  reconciled, and the flat purged columns are pinned**
+  ([#472](https://github.com/theurian/theurian/issues/472),
+  [#445](https://github.com/theurian/theurian/issues/445),
+  [#140](https://github.com/theurian/theurian/issues/140)). The re-measurement
+  below landed as a work log and edited nothing; this is the pass that moves the
+  records to match it.
+
+  **T-17's discharge note said no figure had been re-run against a purged build,
+  and that is now discharged.** Each of the four figure records it covers carries
+  a dated annotation naming its own measured pair, so the history is annotated
+  rather than rewritten: the pass-count edge (stale +5,116.7 µs at 51 withheld,
+  purged flat at one pass), the canonical-read table and its rate (24.3 µs per
+  withheld row stale, none purged), the +90 ms residual that was never a
+  measurement (+14% re-derives to +0%), and the peak-memory sweep (stale 80.6 →
+  8,244.4 KB, purged 80.6 → 84.9 KB). F5's 29.17 ms is recorded as **not
+  re-runnable** — its subject was deleted with
+  [#16](https://github.com/theurian/theurian/issues/16) — with what the cache
+  stood in front of measured in its place.
+
+  **T-17a's [#344](https://github.com/theurian/theurian/issues/344) byte-residue
+  record stated no quantity at all**, and this entry said it "called the residue
+  a fixed overhang" until PR #498's round-one review corrected that claim about
+  what the record said. The quantity is what is new: the purged file's size is a
+  monotone function of the pre-purge corpus (282,624 B and 7 free pages at
+  nothing withdrawn, 9,715,712 B and 587 at 5,950), so the *file's size* carries
+  the withdrawn count to anyone who can `stat` it.
+
+  **And the residue is not where that record placed it, nor is it only a disk
+  surface.** Three quarters of the growth is live rather than free-list — 587
+  free pages of 2,372 is 25%. FTS5's `'delete'` writes a **tombstone**: the
+  postings stay in the segment structure until a merge, and nothing in the
+  shipped purge merges, so a purged build carries 151× a never-held build's
+  trigram postings for rows it no longer serves and `optimize` takes it from
+  8,564,736 B to 241,664 B (the source table records `optimize`; a `VACUUM`
+  applied in the reproduction lands at the same figure). **That reaches a caller as a
+  duration** — 16.8 ms against 1.2 ms isolated at 5,950 withdrawn, and **+27.4
+  ms** end to end there (the round-one measurement, +27.36 ms; six later re-runs
+  give +27.59…+28.18 ms, so the delta is stable across runs while the ratio
+  moves with its denominator at 5.08–5.67×, median 5.41×), crossing the 1.40 ms
+  noise floor between 500 and 1,000 withdrawn rows, with a five-point
+  calibration reading the withdrawn count off the clock at 3
+  of 5. Content is not recovered: responses stay byte-identical, because
+  `'delete'` *does* decrement the averages record even while tombstoning the
+  postings. Recorded as a new **face of T-17a**, named by the root cause that
+  entry already carries — *the index still holds the withdrawn rows*, surviving
+  at the FTS5 segment level — and owned by
+  [#499](https://github.com/theurian/theurian/issues/499), whose closure is the
+  merge or a recorded acceptance carrying the measured bound.
+
+  **So "the purge removes the term the quantities are functions of" is scoped**
+  rather than left as a universal: it holds for the canonical-read count, the
+  retriever pass count and the `tracemalloc` peak — the three quantities measured
+  and pinned — and is false for query duration on the trigram path, where the
+  purge only shrinks the term. The two results do not conflict; they are
+  different instruments, this re-measurement's below the trigram floor and
+  #499's above it. **Read the re-measurement entry in the `0.1.0.dev17` section
+  below under that scope**: it states the same sentence unqualified, and it is
+  left standing as what the re-measurement reported at the time — it shipped in
+  that release — rather than edited after the fact.
+
+  **The flat columns are pinned** in
+  `packages/theurian-core/tests/integration/test_purged_build_quantities.py`,
+  over withheld counts 0/50/200 for the read count and the peak and 49–52 for
+  the pass count. Each asserts its stale control first — exactly derived values
+  for the read and pass counts, strict increase for the peak, whose own evidence
+  grade says no absolute `tracemalloc` figure is quotable — and each half was
+  taken RED by mutation, so a change putting the withheld term back goes RED
+  there rather than being rediscovered by a fourth review round.
+
+  **Ten satellite sites cited a pre-purge figure as a current cost**, and each
+  now says which build its figure belongs to. Two carried a claim rather than a
+  number — `application/visibility.py` and
+  `tests/unit/test_result_gate_session.py` both asserted the cost is linear in
+  the withheld count with no threshold in it — and on a purged build there is no
+  line left to be linear, so the linearity is scoped to a build that still holds
+  the withdrawn rows and the purged behaviour is stated beside it. **Why the term
+  is absent is branch-dependent**, and five sites stated it as one unconditional
+  mechanism until the review: the purged `|ranking|` equals the visible count on
+  the scan below the trigram floor, which carries no `LIMIT`, while on the
+  truncating branches it is `depth` whatever was withheld, before and after the
+  purge alike — which this PR's own pass-count pin measures at 200 visible rows
+  and 100 canonical reads.
+
+  **ADR-0024 decision 4 made three claims; one holds and two were false when they
+  were written.** "Publishing takes the index write lock" has no referent — the
+  pointer swap is a write-to-temp plus `os.replace`, the lock file is never
+  created, and the purge says so in its own source. "There is exactly one such
+  interface" is false: eleven writable opens of an index file across two modules,
+  seven of them public, with no common gate. "Nothing outside that interface
+  opens an index file for writing" is the clause that holds, with its
+  measurement. The point is narrowed in place with the retracted text quoted, and
+  the header line that said this ADR **discharges** the index half of ADR-0018's
+  single-writer debt now says it **narrows** it — a published build is never
+  written, which is a property of when writes happen and not of how many
+  interfaces perform them. That never-written property belongs to decisions 1 and
+  2 plus the naming discipline rather than to point 4, and is held by three
+  refusal tests plus the byte-for-byte untouched-build test; attributing it to
+  point 4 was this entry's own error, corrected in the same review. ADR-0018's
+  own blue/green note, which predicted that point 4 "is what discharges this
+  bullet when it lands", now carries a dated correction saying it landed and does
+  not. Decision 7's "pinned over every read method" is likewise stated as what it
+  is: **seven of the eleven** public read methods that raise on a missing file,
+  with the four unpinned ones named and each verified to raise and create no
+  file. The contract stays owed under
+  [#439](https://github.com/theurian/theurian/issues/439).
+
+  **Six records state NFR-4's discharge status and five of them disagreed with
+  the sixth; they now agree.** Settled
+  against decision 7's own acceptance module,
+  `tests/integration/test_gc_during_a_search.py`, read rather than re-run:
+  ADR-0024's "discharged by points 6 and 7 together" is the direction that
+  survives, and ADR-0018's Compliance bullet, ADR-0022's Still-owed opener,
+  ADR-0007's in-progress-build bullet, `indexing/__init__.py` and
+  `infrastructure/sqlite/store.py` now carry dated corrections agreeing with it.
+  Six and five is the pair to quote: earlier drafts of this reconciliation said
+  "four different ways", "three other records" and "all four records", none of
+  which agreed with each other or with the corrected set. The settlement is split by clause rather than
+  granted whole: **zero read downtime is discharged** — it is the clause NFR-4
+  was recorded unmet for, and points 6 and 7 close it with pins including a
+  no-session counterexample — while **"while a new build runs" is true by
+  construction with every element pinned and no test issuing a query during a
+  build**. So the mechanism is discharged and one acceptance test is owed. That
+  residue is ADR-0007's own Still-owed bullet, whose "(Milestone 6)" owner was
+  dead; it is now owned by
+  [#497](https://github.com/theurian/theurian/issues/497), whose definition of
+  done requires the records that state the gap to move in the same pull request
+  the test lands in, because each becomes false the moment it exists. **Scoped to
+  this branch's files that population is seven** — ADR-0007, ADR-0018, ADR-0022,
+  ADR-0024, `indexing/__init__.py`, `infrastructure/sqlite/store.py` and this
+  entry — **and repo-wide the same key returns eight**, the eighth being
+  ADR-0007's dogfood-corpus twin, which is served content re-seeded from its ADR
+  rather than edited in place and belongs to the M7 lane
+  ([#317](https://github.com/theurian/theurian/issues/317) is its drift checker).
+  The absence behind the gap was re-swept with a widened key covering the
+  `asyncio` forms the first one could not see, and the still-zero result was
+  confirmed against a planted positive control. **This entry is in that
+  seven-file population and not in the six-record one**, and the two keys are
+  why: the gap population is every record *stating* that no test issues a query
+  while a build runs, which this entry does; the discharge-status population is
+  every record carrying the dated `#140 member 1` correction marker, which this
+  entry does not — it states NFR-4's status in its own words as release prose
+  rather than correcting an ADR. This also answers what the `store.py` NFR-4
+  correction in the `0.1.0.dev17` section below left open.
+
+## [0.1.0.dev17] - 2026-09-02
+
+### Fixed
+
+- **A refusal keeps reaching its MCP caller with its own message under mcp
+  2.1 and later, exactly as it did under 2.0**
+  ([#469](https://github.com/theurian/theurian/issues/469),
+  [#491](https://github.com/theurian/theurian/issues/491)). mcp 2.1.0
+  (upstream PR #3314, listed there as a behaviour change) split the tool
+  dispatcher's `except Exception` arm: `str(exc)` is forwarded only for
+  exceptions that *are* the SDK's own `ToolError` or `ResourceError`, and
+  everything else is treated as a crash — logged with its traceback
+  server-side, answered with a bare `Error executing tool <name>`. Every
+  refusal this daemon raises fell into the crash arm at once, so an agent
+  that should have been told to re-register a project or to rebuild an
+  unreadable state database would have read the tool's name and nothing
+  else. Measured on [#460](https://github.com/theurian/theurian/pull/460)'s
+  `mcp` 2.0.0 → 2.1.1 bump: 44 assertions on message text went RED.
+
+  **Two causes, not one.** `mcp/tools.py`'s `ToolError` carried the SDK's
+  *name* without its identity — it shadowed
+  `mcp.server.mcpserver.exceptions.ToolError` and never subclassed it. It
+  now declares both bases, `TheurianError` first so `remedy` and every
+  `except TheurianError` clause are untouched; that closes 41 of the 44. The
+  other 3 were a different root cause (#491): `TheurianError` subclasses
+  raised *below* that module — `SchemaVersionMismatchError` and
+  `StateDatabaseUnreadableError` from `infrastructure/sqlite/connection.py`
+  — travel up through a tool body that never converts them, so they were
+  never the SDK's `ToolError` either. Those two are the measured reachable
+  set: instrumenting the conversion seam and driving nine MCP integration
+  files, exactly two types reach it — `StateDatabaseUnreadableError` 192
+  times and `SchemaVersionMismatchError` 6. Conversion is now one seam
+  rather than five tool bodies: `_tool` replaces the five `@server.tool`
+  registrations and turns an escaping `TheurianError` into
+  `ToolError(str(exc))`, so "a refusal raised below the surface still
+  reaches its caller" is a property of the surface. Two tests hold that,
+  and the division matters: a source scan catches a *decorator* that names
+  something other than the seam, and a runtime check asks the built server
+  whether each registered tool *is* the forwarding seam — identified by the
+  code object every one of its wrappers shares, not by the presence of a
+  `functools.wraps` marker, which a lookalike wrapper also carries. Only the
+  second can fail when the seam is bypassed from *inside* the registration
+  helper — the first reads spelling, and adversarial review demonstrated
+  bypasses (a deleted application, then a `wraps` lookalike) that left every
+  decorator identical and the whole suite green.
+
+  **Nothing a caller reads moves.** The seam forwards the refusal's own text
+  and adds nothing to it — not `remedy`, not a path, not the class name, not
+  the traceback or the exception chain. `str(exc)` is exactly what mcp
+  2.0.0's blanket arm folded in, and widening an error while restoring it is
+  how a restoration becomes a disclosure (SEC-13); it is what keeps
+  `StateDatabaseUnreadableError` naming the failing exception's *type* and
+  never the corrupted cell. Measured with one probe against three trees: for
+  all five refusal classes probed — the two reachable ones included — the
+  wire text is byte-identical between this fix under 2.1.1, this fix under
+  2.0.0, and the unfixed tree under 2.0.0. The 44 node ids that were RED
+  under 2.1.1 pass.
+
+  **The text of an exception that escapes a tool body stays withheld under
+  mcp 2.1 and later unless it is a deliberate refusal, by design.** The seam
+  catches `TheurianError` and nothing wider, so a `TypeError`, an `OSError`
+  or a bare `sqlite3.Error` is left in upstream's crash arm — the one cell
+  the same probe measured moving. In that probe each tool was *named* after
+  the exception class it raises, so the tool name is what mcp interpolates
+  and what the quotes below repeat: `Error executing tool TypeError: an
+  internal call was made with the wrong arity` under 2.0.0 against `Error
+  executing tool TypeError` under 2.1.1. Upstream's withholding is hardening
+  this project agrees with, and catching `Exception` at the seam would
+  defeat the change that surfaced the bug.
+
+  The claim is scoped to exceptions that *escape a tool body*, because it is
+  not true of the whole wire: the SDK refuses a malformed call before the
+  body runs, with its own `ToolError` carrying pydantic's validation text —
+  which echoes the caller's own argument back. Measured under both 2.0.0 and
+  2.1.1, that text is byte-identical, so this change neither widens nor
+  narrows it, and what it echoes is the caller's own input rather than
+  anything read from a project.
+
+  The seam only sees what is raised while it is on the stack, so a tool that
+  returned before running its body would silently opt out. Registration now
+  refuses a coroutine, async-generator or generator function, and a callable
+  object whose `__call__` is one of those; a plain function that *returns* an
+  awaitable cannot be recognised until it is called, so the wrapper refuses
+  that at call time rather than letting the SDK serialise an un-awaited
+  object as a successful result. No registered tool has any of these shapes.
+
+  Under mcp 2.0.0 nothing user-visible changes either way: that dispatcher
+  wraps the SDK's own `ToolError` exactly like anything else, so the added
+  base is inert there, and the seam emits the text the blanket arm already
+  folded in.
+
+### Documentation
+
 - **T-17's round-5/6/7 residual figures are re-run against a real purged build,
   and the ADR-0024 point-4 clauses #445 asks about are answered by measurement**
   ([#472](https://github.com/theurian/theurian/issues/472),
@@ -436,13 +589,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   daemon's single-instance lock and none in an index write path. That count is
   the anchor's, not today's — `266e6b6` (#478, merged during this release
   window) took the same lock across `migrate apply`'s critical section and the
-  command returned 18 lines at `266e6b6`. The count is anchored to a commit, not
-  to "this branch's head", because this branch is itself what would falsify a
-  head-relative form: its findings write path adds four more
-  `ProjectPaths.write_lock` matches. The conclusion is unchanged whether the
-  count is the 18 at `266e6b6` or those four additions, because every added line
-  is that same state-database lock or prose about `flock` semantics, and none is
-  an index write path. ADR-0008's
+  command returns 18 lines at this branch's head. The conclusion is unchanged,
+  because every added line is that same state-database lock or prose about
+  `flock` semantics, and none is an index write path. ADR-0008's
   "#15 removes those rows" is history: the actor is
   `application/withdrawal_purge.py`, and the sentence never named a live tracker
   — #15 closed at 19:45 +0900 and the sentence entered the file at 22:27 +0900

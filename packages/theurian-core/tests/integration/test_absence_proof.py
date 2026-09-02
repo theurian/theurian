@@ -205,6 +205,23 @@ Four further things this file does not reach, so nobody has to rediscover them:
   take to flatten it are on ``SqliteCanonicalStore.list_items_by_status``, and the
   flattening is owned by https://github.com/theurian/theurian/issues/338.
 
+  **The 14.7 us the comparison is against is the stale build's, and the two sides
+  are not alike in that.** It was taken on a published build that still held the
+  withdrawn rows. Re-taken 2026-09-01 against a real index and its purged twin
+  (``ec0dbcd``;
+  ``docs/work-logs/2026-09-01-472-purged-build-re-measurement.md``, F2/F1'), the
+  stale build reproduces the shape at 24.3 us per withheld row -- a different
+  machine 27 days later, so comparable in shape and not in magnitude -- while a
+  purged build carries no per-withheld-row term at all. **Why it carries none is
+  branch-dependent**: on the scan below the trigram floor, which has no
+  ``LIMIT``, the purged ``|ranking|`` is the visible count; on the branches that
+  truncate it is ``depth`` whatever was withheld, before and after the purge
+  alike. So the ceiling-axis term above survives a purge and its comparison base
+  does not; the per-row comparison holds inside the window between a withdrawal
+  and the purge that follows it. The purged side is pinned in
+  ``tests/integration/test_purged_build_quantities.py``, over withheld counts
+  0, 50 and 200 for the read count and 49--52 for the pass count.
+
   **This suite deliberately does not measure it.** Every pair here compares
   *response content*, and a term of that size is far below what a pair built out
   of one process's wall clock could separate from noise -- the threat model puts

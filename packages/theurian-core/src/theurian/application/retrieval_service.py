@@ -623,6 +623,15 @@ class RetrievalService:
         :meth:`~theurian.application.visibility.CanonicalVisibility.cleared` asks
         about every row of it, at 15 us per distinct document.
 
+        **That per-read price is the stale build's, and it is the half a purge
+        does not touch.** Re-taken 2026-09-01 against a real index and its purged
+        twin (`ec0dbcd`;
+        ``docs/work-logs/2026-09-01-472-purged-build-re-measurement.md``, F2/F1'),
+        a read costs about 23 us on that machine on both builds -- a different
+        machine 27 days later, so comparable in shape and not in magnitude. What
+        a purged build removes is not the price per read but the withheld term in
+        *how many* reads there are, which is the next paragraph's subject.
+
         **That read count is ``len(page.rows)``, so it carries the withheld count
         on every branch where the retriever does not fill the ask.** Where
         ``fetch`` truncates and the match set fills the ask, it is ``depth``
@@ -650,6 +659,20 @@ class RetrievalService:
         return, so this residual survives only for a request in flight at the
         purge's pointer swap. T-17 in the threat model carries the argument and the
         five conditions that would falsify it.
+
+        **The +90 ms was never measured, and it is the stale build's either way.**
+        The threat model's round-six record says so itself -- "that rate
+        multiplied out, not a measured end-to-end separation". Re-derived
+        2026-09-01 on a real index and its purged twin (`ec0dbcd`;
+        ``docs/work-logs/2026-09-01-472-purged-build-re-measurement.md``, F6'):
+        at the largest scale measured the stale term is 5,950 withheld rows at
+        24.3 us = +144.6 ms, and measured directly rather than derived the stale
+        gate walk costs 156.24 ms against a purged request's 1.22 ms. On a purged
+        build the derivation has no input -- the multiplier is the withheld term
+        in ``|ranking|``, and it is zero -- so the residual above is +0%, pinned
+        by
+        ``test_a_purged_build_reads_canonical_once_per_visible_row_however_many_were_withheld``
+        in ``tests/integration/test_purged_build_quantities.py``.
 
         The alternative to the loop entirely, asking the canonical store up front
         which revisions are surfaceable, cost 32 ms on every query including

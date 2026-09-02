@@ -354,6 +354,34 @@ Still owed, with the issue or milestone that will satisfy it:
   > discharges this bullet when it lands. The `CanonicalStore.transaction()`
   > half above is untouched by it and still owed.
 
+  > **Corrected on 2026-09-02: the note above predicted that ADR-0024's point 4
+  > "is what discharges this bullet when it lands". It has landed, and it does
+  > not discharge it.** The prediction is left standing as the state of the
+  > argument when it was written; this records what measuring it showed.
+  >
+  > Point 4 made three claims and two were false. Measured at `fe2925c`: no index
+  > write path takes a lock — the purge's publish half is a write-to-temp plus
+  > `os.replace` and creates no lock file at all — and there is no single
+  > interface but **eleven writable opens of an index file across
+  > `index_store.py` and `index_purge.py`, seven of them public methods, with
+  > nothing serialising them against each other**. Only its third clause
+  > survived: nothing outside those two modules opens an index file for writing.
+  > ADR-0024's header line was changed from "Discharges" to **"Narrows"** in the
+  > same pass, and its Compliance section now records this debt as still owed
+  > rather than satisfied.
+  >
+  > **What point 4 does buy is real, and it is not this bullet's subject.** A
+  > published build is never written — which is decisions 1 and 2 plus the naming
+  > discipline rather than point 4, held by
+  > `test_building_over_an_existing_file_is_refused`,
+  > `test_a_purge_into_an_existing_path_is_refused`,
+  > `test_a_purge_refuses_to_write_over_another_writers_building_file` and
+  > `test_a_purge_leaves_the_published_build_untouched`. That is a property of
+  > *when* writes happen; this bullet asks *how many interfaces* perform them,
+  > and that stays owed and unscheduled under
+  > [#439](https://github.com/theurian/theurian/issues/439), the owner the
+  > repoint below also names.
+
   > **Repointed on 2026-08-31
   > ([#436](https://github.com/theurian/theurian/issues/436)): Milestone 6 has
   > passed and this bullet did not close.** The tracker it named,
@@ -373,3 +401,29 @@ Still owed, with the issue or milestone that will satisfy it:
   > [#439](https://github.com/theurian/theurian/issues/439).
 - **NFR-4 is not discharged**, per the amendment above. It belongs with the same
   blue/green work.
+
+  > **Corrected on 2026-09-01
+  > ([#140](https://github.com/theurian/theurian/issues/140) member 1): that
+  > blue/green work has landed, so this bullet is stale rather than wrong.** What
+  > it says about *this* ADR does not move — WAL does not reach the retrieval
+  > index, and nothing in this document discharges NFR-4 — so the bullet and the
+  > Neutral amendment it cites are left standing. What has changed is its second
+  > half: "it belongs with the same blue/green work" now has an answer.
+  > [ADR-0024](0024-a-purge-is-a-build.md) points 6 and 7 are that work —
+  > publishing stops reaping, reclaiming becomes `theurian index gc`, and a search
+  > holds one read connection for the duration of a request — and that ADR's
+  > Compliance section carries the reconciliation and names the pins:
+  > `tests/integration/test_gc_during_a_search.py`, decision 7's own acceptance
+  > module, whose four tests include the no-session counterexample;
+  > `test_publishing_a_build_no_longer_reclaims_the_one_it_replaced`; and
+  > `test_a_read_of_a_missing_index_creates_no_file`.
+  >
+  > **What is still owed is a test, not a mechanism**, and it is recorded under
+  > [ADR-0007](0007-state-hash-partitioned-databases.md)'s Still owed rather than
+  > restated here: no test in the suite issues a query while a build is running,
+  > so "the previously published index answers every query while a new build runs"
+  > is argued from pinned elements rather than measured. **That test is owned by
+  > [#497](https://github.com/theurian/theurian/issues/497)**, which requires this
+  > bullet to move in the same pull request it lands in. Read this bullet as *not
+  > discharged here*, which is what it has always meant, and not as *not
+  > discharged anywhere*.

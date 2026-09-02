@@ -14,9 +14,15 @@ since ADR-0022, republished by writing a new one and swapping a pointer, which n
 WAL connection spans. ADR-0018's Neutral consequence made the same mis-citation
 and its amendment retracted it -- nothing in this file discharges NFR-4, whose
 discharge rests on ADR-0024 points 6 and 7 -- but the retraction had not
-travelled to this file (#454). Whether those points leave NFR-4 discharged is not
-settled here: the ADR records still disagree about that, and reconciling them is
-#140's.
+travelled to this file (#454). Those points were reconciled on 2026-09-01 across the
+six records that state NFR-4's discharge status, five of them corrected to agree
+with ADR-0024 and this paragraph among them (#140 member 1): they discharge it, and what remains
+owed is a test rather than a mechanism -- no test issues a query while a build is
+running, recorded under ADR-0007's Still owed and owned by
+`#497 <https://github.com/theurian/theurian/issues/497>`_, which requires this
+paragraph to move in the same pull request the test lands in. ADR-0024's
+Compliance section carries the argument and names the pins. None of that changes this file: it is
+still the state database's WAL that is cited here, and still not NFR-4.
 
 Every line here that turns a stored cell into a value goes through
 :func:`_reading`, which answers for the whole class of ways this file can fail to
@@ -509,6 +515,15 @@ class SqliteCanonicalStore:
         # **What it is worth is a per-row comparison and only a per-row one.** The
         # ranked path already accepts, and the threat model records, a canonical read
         # of 14.7 us per withheld row (T-17); this is about 70 times smaller per row.
+        # **That base is the stale build's**: it was taken on a published build
+        # that still held the withdrawn rows, and re-taken 2026-09-01 against a
+        # real index and its purged twin (`ec0dbcd`;
+        # `docs/work-logs/2026-09-01-472-purged-build-re-measurement.md`, F2/F1')
+        # the stale build reproduces the shape at 24.3 us per withheld row while a
+        # purged build carries no per-withheld-row term at all. So the comparison
+        # holds inside the window between a withdrawal and its purge; outside it
+        # there is no other side to be seventy times smaller than. This term is
+        # not like that -- it is corpus-bounded and a purge does not touch it.
         # Compared as totals the two say nothing to each other, because they are
         # bounded by different populations. Against the end-to-end noise floor the
         # threat model records for a real client -- 1.40 ms across the loopback hop

@@ -135,6 +135,77 @@ Still owed, with the milestone that will satisfy it:
   that NFR-4 is not discharged. This bullet asserted as tested exactly what two
   other ADRs record as missing. It belongs with the blue/green work (Milestone
   6).
+
+  > **Corrected on 2026-09-01
+  > ([#140](https://github.com/theurian/theurian/issues/140) member 1): this
+  > bullet's own claim survives and is now the *whole* residue, while the two
+  > records it cites as agreeing with it no longer do.** Verified at `fe2925c`:
+  > no test in the suite issues a query while a build is running, so nothing
+  > still asserts the composite. What moved underneath it is the support —
+  > [ADR-0024](0024-a-purge-is-a-build.md) points 6 and 7 shipped the blue/green
+  > work, and ADR-0022's Still-owed opener and ADR-0018's NFR-4 bullet each now
+  > carry a dated correction saying so. **What is left is a missing test rather
+  > than a missing mechanism.** Every element the composite rests on is pinned: a
+  > build writes to a `.building` name `theurian index gc` will not reap
+  > (`test_a_build_is_written_under_a_name_gc_will_not_reclaim`,
+  > `tests/integration/test_index_gc_cli.py`), a build over an existing index
+  > file is refused (`test_building_over_an_existing_file_is_refused`,
+  > `tests/integration/test_index_store.py`), publishing retains the build it
+  > replaced (`test_publishing_a_build_no_longer_reclaims_the_one_it_replaced`),
+  > and the pointer swap is a write-to-temp plus `os.replace`. So a query during
+  > a build resolves the pointer to a file the build never opens — an argument
+  > from pinned elements, which is not a measurement, and saying so is what this
+  > bullet has been for since it was written.
+  >
+  > **The sweep behind "no test" is two-stage, because one key cannot answer
+  > it** — the first form of it, `Thread|ThreadPool|ProcessPool|fork()`, could
+  > not see `asyncio` at all and so could not see the one suite in the
+  > repository that really runs things concurrently. Widened, and re-taken at
+  > `1a37c86` because the count is a dated measurement and the first paste of it
+  > reproduced under no run form. **Stage 1, whole and runnable:**
+  >
+  > ```sh
+  > git grep -lP '\bThread\b|ThreadPool|ProcessPool|\bfork\(\)|\basyncio\b|run_in_executor|create_task|\bgather\b|\bexecutor\b|multiprocessing|\bPopen\b' -- packages/theurian-core/tests tests | wc -l
+  > ```
+  >
+  > **29 files.** **`-P` is mandatory and the dialect is the whole point**:
+  > POSIX ERE has no `\b`, so the same key under `git grep -lE` returns **3**
+  > — `test_search_concurrency_cap.py`, `test_connection_claims.py` and
+  > `tests/e2e/test_daemon_single_instance.py`, the three files whose matches
+  > happen to need no boundary. A reader who runs it with `-E` gets an order of
+  > magnitude too few and no error. The earlier paste of this bullet quoted 33
+  > from a Python `re` run of the same alternation, wrapped it across lines so it
+  > could not be pasted at all, and named no dialect; the number moved because
+  > the tool did, which is exactly the failure the key is supposed to prevent.
+  >
+  > **Stage 2 — of those, the files that also drive an index build:**
+  >
+  > ```sh
+  > git grep -lP '\bThread\b|ThreadPool|ProcessPool|\bfork\(\)|\basyncio\b|run_in_executor|create_task|\bgather\b|\bexecutor\b|multiprocessing|\bPopen\b' -- packages/theurian-core/tests tests | xargs git grep -lP 'IndexBuilder|index_build\b|index build' -- | wc -l
+  > ```
+  >
+  > **15 files**, and that figure and the zero below were reproduced
+  > independently by two reviewers. All fifteen were read. **Fourteen use
+  > `asyncio.run` or `@pytest.mark.asyncio` to await a single MCP call
+  > synchronously**, which interleaves nothing; the fifteenth,
+  > `packages/theurian-core/tests/integration/test_search_concurrency_cap.py`,
+  > is the one suite with real concurrency and it caps concurrent *searches*
+  > against an already published build, running no build of its own. So the
+  > index-side result is still **zero**, now against a key that can see the
+  > asyncio forms.
+  >
+  > **The zero is a zero because the key works.** A synthetic test that starts
+  > `IndexBuilder.build` on a `threading.Thread` and searches while it runs was
+  > planted, swept, and found — stage 2 returned 16 with the plant present and 15
+  > without it — then deleted. A sweep for an absence that has never been shown
+  > to hit a known positive is not evidence.
+  >
+  > **Milestone 6 has passed, and the missing test is owned
+  > by [#497](https://github.com/theurian/theurian/issues/497)** — whose
+  > definition of done requires every record stating this gap to move in the same
+  > pull request the test lands in, because each becomes false the moment it
+  > exists. ADR-0024's Compliance section carries the reconciliation and names
+  > this bullet as where the residue lives.
 - **Nothing asserts two worktrees keep independent active states.** This section
   claimed a test; the string `worktree` does not appear anywhere under
   `tests/`. This is the case ADR-0016's amendment makes load-bearing — the state
