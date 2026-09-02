@@ -138,7 +138,14 @@ def _commit_split_date(
 
 
 def _commit_body_file(clone: Path, body_bytes: bytes, when: str = "2026-03-01T12:00:00") -> str:
-    """Commit a message authored as raw bytes via ``-F`` (for RS/US byte bodies)."""
+    """Commit a message authored as raw bytes via ``-F`` (for RS/US byte bodies).
+
+    "Raw" reaches as far as bytes git will *keep*: measured 2026-09-03 on git
+    2.47.1, ``-F`` re-encodes a message that is not valid UTF-8 (a lone ``0x80``
+    stored as ``0xc2 0x80``) and warns. The RS/US and lone-CR bodies below are
+    ASCII, so they survive; a non-UTF-8 plant needs
+    :func:`_commit_with_raw_message` instead.
+    """
     message_file = clone / "_msg.bin"
     message_file.write_bytes(body_bytes)
     _git(clone, "commit", "--allow-empty", "-F", str(message_file), env=_date_env(when))
@@ -455,11 +462,14 @@ def test_git_config_parameters_is_stripped_so_the_output_stays_utf8(
 
     ``GIT_CONFIG_PARAMETERS`` injects config as if by ``-c`` -- a vector the
     ``GIT_CONFIG{,_COUNT,_GLOBAL,_SYSTEM}`` strip did not cover. An inherited
-    ``i18n.logOutputEncoding=UTF-16`` makes ``git log`` emit UTF-16, so the
-    adapter's ``stdout.decode("utf-8")`` would raise an uncaught
-    ``UnicodeDecodeError`` and crash the whole load. The adapter now strips
-    ``GIT_CONFIG_PARAMETERS`` with the rest of the ``GIT_*`` overrides, so the
-    finding reads cleanly whatever config the ambient environment tried to inject.
+    ``i18n.logOutputEncoding=UTF-16`` makes ``git log`` emit UTF-16, and a load
+    that reads such a stream is refused whole: UTF-16 carries NUL bytes of its own,
+    so the stream does not partition into records and the framing guard raises --
+    ``test_a_utf16_git_log_stream_is_a_typed_framing_error_not_an_uncaught_decode``
+    drives exactly that. The adapter strips ``GIT_CONFIG_PARAMETERS`` with the rest
+    of the ``GIT_*`` overrides, so the finding reads cleanly whatever config the
+    ambient environment tried to inject, and that refusal stays the backstop rather
+    than the behaviour.
     """
     _origin, clone = _origin_and_clone(tmp_path)
     _commit(clone, "fix: utf8 (#1)", "Review-Finding: security HIGH — a public finding")
