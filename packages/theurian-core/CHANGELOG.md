@@ -40,8 +40,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
   **Pinned in both directions for the first time**, which is why the false
   sentence survived four sweeps unnoticed. What is pinned is stated as a
-  derivation rather than as coverage. Re-derived after round three widened the
-  table: the schema publishes **12** descriptions — the root and 11 key blocks —
+  derivation rather than as coverage, and the sentence below is *rebuilt* from
+  the table and the schema by
+  `test_the_changelog_states_the_pin_reach_this_module_actually_has` — so
+  unpinning a key reddens it here rather than leaving this paragraph to rot.
+  Re-derived after round three widened the table: the schema publishes **12**
+  descriptions — the root and 11 key blocks —
   and **12 of the 12** carry a `WATCHED_KEY_DESCRIPTIONS` row in
   `tests/unit/test_config_key_call_sites.py`: the root, `providers`,
   `providers.embedding.apiKeyEnv`, `providers.embedding.endpointEnv`,

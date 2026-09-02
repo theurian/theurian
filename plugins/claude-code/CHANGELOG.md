@@ -66,9 +66,15 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fourth arrived in round three, when every published description was pinned
   whole instead of three by fragment, which puts `security.secretScan` in that
   table's parametrised row as well — so the entry says four where it used to say
-  three. Re-measured on this entry's own tree (2026-09-03) against the **57**
-  tests of `tests/unit/test_config_key_call_sites.py`, each plant applied on its
-  own to a throwaway checkout, control 0 failed / 57 passed:
+  three. Re-measured on this entry's own tree (2026-09-03), each plant applied on
+  its own to a throwaway checkout and reverted before the next. The suite the
+  counts below are out of is one command, so the totals are derivable rather than
+  quoted:
+
+  ```console
+  $ uv run --frozen pytest -q packages/theurian-core/tests/unit/test_config_key_call_sites.py
+  57 passed
+  ```
 
   | The plant | What goes RED |
   | :-- | :-- |
