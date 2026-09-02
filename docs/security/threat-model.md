@@ -127,8 +127,11 @@ may read the repository it serves from.*
 - **What would break it.** A deployment that shared the token with a principal
   holding no read access to the repository, or a future non-loopback bind, makes
   `review.findings` a disclosure surface for that deployment rather than a
-  restatement of what its caller could already read. Neither is reachable in the
-  shipped build.
+  restatement of what its caller could already read. The two are not equally
+  reachable, and saying so is the point of recording this as a precondition
+  rather than as a control: the bind is refused **in code**, while sharing a
+  token is an operator act nothing in this build can prevent or detect. That
+  second one is the whole of what the precondition asks an operator to hold.
 - **On a clone of the private embargo fork, the daemon sits *inside* the embargo
   boundary.** Embargo work lives on a private fork until its advisory ships, so
   that clone's own `origin/main` can carry an embargoed trailer. Verifying

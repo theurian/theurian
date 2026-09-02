@@ -1020,9 +1020,12 @@ registered tool serves a finding, and that it is this one
   about source: it drives the whole registered tool surface, identifies the store
   by the file SQLite reports it opened (`PRAGMA database_list`, so a
   runtime-assembled path and a literal one are one file), and holds every
-  statement executed against that file to the port's three promises — no read of
-  `rejected_trailers`, no read of `findings` without a `LIMIT`, and no findings
-  read on a connection that did not first read the stamp. Its own prongs are
+  statement executed against that file **while that surface is driven** to the
+  port's three promises — no read of `rejected_trailers`, no read of `findings`
+  without a `LIMIT`, and no findings read on a connection that did not first read
+  the stamp. (`dump` reads both tables whole and takes no `LIMIT`; it is the
+  verification read, reachable from no tool, which is why the audit's population
+  is what the drive executes.) Its own prongs are
   demonstrated against a synthetic evasive reader whose file name *and* table
   names are assembled at runtime, so a green run means the checks looked and
   found nothing. Its stated bounds: it sees only paths the drive executes (the
