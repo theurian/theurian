@@ -393,6 +393,52 @@ def build_query(  # noqa: PLR0913 - one parameter per published filter
     )
 
 
+def max_finding_text_chars() -> int:
+    """The bound on a served ``findingText``, which is ``MAX_QUERY_CHARS``.
+
+    Derived from that constant rather than respelled, and read through a function
+    because the two modules cannot import each other at module scope:
+    ``mcp/tools.py`` imports this one to register the tool. Deriving it keeps one
+    number governing both directions of this daemon's caller-facing text -- the
+    largest string it will accept in a ``query`` and the largest it will hand back
+    in a finding -- which is the number ``test_a_refusal_is_never_a_bigger_reflector
+    _than_the_published_echo`` already measures this surface against.
+    """
+    from theurian.mcp.tools import MAX_QUERY_CHARS  # noqa: PLC0415 - import cycle
+
+    return MAX_QUERY_CHARS
+
+
+def _bounded_text(text: str) -> str:
+    """A stored ``findingText`` as the wire carries it: whole, or cut and marked.
+
+    **The one value on this surface whose size a caller does not control and the
+    corpus does.** Every other bound here refuses; this one truncates, because the
+    over-long input is a *stored row*, not a request -- refusing the response would
+    make one planted commit message deny the whole tool, which is a worse failure
+    than a marked cut.
+
+    A finding is one trailer line, and the real corpus's longest is 193 characters
+    (``origin/main``, 2026-09-02), so this never fires on authored data. What it
+    bounds is the planted case: ``findingText`` is byte-preserved from a commit
+    message, a commit message line has no length limit, and a 2 MiB trailer served
+    at ``limit=40`` measured 83.9 MB in one response (PR #504 round 1, R1-3). The
+    row count was the only dimension bounded; this is the byte dimension.
+
+    The shape is ``knowledge.search``'s excerpt: cut at the bound, then an explicit
+    marker, so a truncated value cannot be read as the whole one. The length is
+    *not* that function's 280 -- an excerpt is a fragment offered so a caller can
+    decide whether to fetch the rest, and there is nothing further to fetch here.
+    """
+    bound = max_finding_text_chars()
+    if len(text) <= bound:
+        return text
+    # The marker `domain.retrieval.excerpt` uses, spelled here rather than shared:
+    # what is mirrored is the *shape* -- cut, then say so -- and borrowing that
+    # function would borrow its 280-character bound with it.
+    return text[:bound] + "..."
+
+
 def finding_row(finding: StoredFinding) -> dict[str, Any]:
     """One stored finding as the wire carries it: every column, plus the triple.
 
@@ -405,17 +451,20 @@ def finding_row(finding: StoredFinding) -> dict[str, Any]:
     ``findingText`` is authored commit text and rides under the SEC-15 triple
     like any other knowledge body: an instruction hidden in a reviewer's line
     arrives marked ``mayContainInstructions: true``, which is a not-executed
-    guarantee rather than a not-disclosed one (ADR-0029 decision 3, T-3).
+    guarantee rather than a not-disclosed one (ADR-0029 decision 3, T-3). It is
+    also the one field with a size bound on the way out -- see
+    :func:`_bounded_text`, and note that the bound is a function of *this row's*
+    own length and of nothing else.
 
-    Nothing here is computed: each value is the stored column, so no published
-    field can be a function of anything but the row it came from.
+    Nothing here is computed across rows: each value is this row's stored column,
+    so no published field can be a function of anything but the row it came from.
     """
     return {
         "commitSha": finding.commit_sha,
         "position": finding.position,
         "reviewer": finding.reviewer,
         "severity": finding.severity,
-        "findingText": finding.finding_text,
+        "findingText": _bounded_text(finding.finding_text),
         "provider": finding.provider,
         "sourceUri": finding.source_uri,
         "committedAt": finding.committed_at,

@@ -28,10 +28,12 @@ Five properties this file exists to hold, each named where it is asserted below:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import subprocess
 import sys
+import threading
 from collections.abc import Iterator
 from contextlib import closing
 from datetime import datetime
@@ -66,9 +68,16 @@ from theurian.mcp.findings import (
     MAX_FILTER_CHARS,
     MAX_FINDINGS_LIMIT,
     MAX_PULL_REQUEST,
+    max_finding_text_chars,
 )
 from theurian.mcp.results import SAFETY
-from theurian.mcp.tools import FINDINGS_UNAVAILABLE_REFUSAL, MAX_QUERY_CHARS
+from theurian.mcp.tools import (
+    ADMISSION_WAIT_SECONDS,
+    FINDINGS_CAPACITY_REFUSAL,
+    FINDINGS_UNAVAILABLE_REFUSAL,
+    MAX_CONCURRENT_SEARCHES,
+    MAX_QUERY_CHARS,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -411,6 +420,136 @@ async def test_the_response_holds_exactly_two_members(project: ProjectRegistry) 
     payload = await _call(project, projectId="demo")
 
     assert set(payload) == {"count", "findings"}
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_finding_is_served_bounded_and_visibly_cut(
+    project: ProjectRegistry,
+) -> None:
+    """R1-3: the byte dimension, which nothing bounded (only the row count did).
+
+    ``findingText`` is byte-preserved from a commit message, and a commit message
+    line has no length limit -- so one planted trailer made a response arbitrarily
+    large: a 2 MiB line served at ``limit=40`` measured 83.9 MB. The planting actor
+    is T-5's contributor, and the store copies the line through without inspecting
+    it, deliberately.
+
+    Both halves are asserted, because a bound that fires is only half a bound: the
+    long row comes back cut *and marked*, and the short row beside it comes back
+    byte-identical. Without the second, a bound of one character would pass.
+    """
+    bound = max_finding_text_chars()
+    ordinary = "a finding of ordinary length"
+    _land(
+        project,
+        FindingLoad(
+            accepted=(
+                _finding(_sha("a"), text="x" * (bound * 3), when="2026-08-25T09:00:00+00:00"),
+                _finding(_sha("b"), text=ordinary, when="2026-08-24T09:00:00+00:00"),
+            ),
+            rejected=(),
+        ),
+    )
+
+    payload = await _call(project, projectId="demo")
+    served = {row["commitSha"]: row["findingText"] for row in payload["findings"]}
+
+    assert served[_sha("a")] == "x" * bound + "...", (
+        "an over-long finding was not cut at the bound and marked; a truncated "
+        "value that is not marked reads as the whole one"
+    )
+    assert served[_sha("b")] == ordinary, "a finding inside the bound was altered"
+
+
+@pytest.mark.asyncio
+async def test_the_findings_read_is_admission_gated_like_a_search(
+    project: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R1-3's other half: how many of these reads may run at once is bounded.
+
+    A sync tool runs on a worker thread ``anyio.to_thread.run_sync`` dispatched,
+    and cancelling the awaiting task does not stop that thread -- so a transport
+    timeout bounds how long a caller waits and never how much the daemon spends.
+    The cap is what bounds the spend rate, and without it this tool was a
+    documented entry point with no ceiling on concurrent occupancy (T-6, SEC-8).
+
+    Its own semaphore rather than ``knowledge.search``'s: the search refusal names
+    "concurrent searches", and a findings flood refusing searches with it would
+    make a published message false. So this asserts the *findings* refusal, which
+    is what distinguishes the two gates from one shared one.
+
+    Every wait is bounded: a stub left blocked is a worker thread the suite cannot
+    finish, and it fails loudly here instead of hanging.
+    """
+    import theurian.mcp.tools as tools_module
+
+    _land(project)
+    release = threading.Event()
+    all_entered = threading.Event()
+    lock = threading.Lock()
+    entered = 0
+
+    class _BlockingStore:
+        """Stands in for the adapter, occupying a permit until released."""
+
+        def __init__(self, path: Path) -> None:
+            self._path = path
+
+        def serve_findings(self, query: Any) -> tuple[Any, ...]:  # noqa: ARG002 - port shape
+            nonlocal entered
+            with lock:
+                entered += 1
+                if entered >= MAX_CONCURRENT_SEARCHES:
+                    all_entered.set()
+            assert release.wait(timeout=5.0), "the gate's release was never set"
+            return ()
+
+    monkeypatch.setattr(tools_module, "SqliteReviewFindingStore", _BlockingStore)
+    server = build_server(project)
+    holders = [
+        asyncio.create_task(server.call_tool("review.findings", {"projectId": "demo"}))
+        for _ in range(MAX_CONCURRENT_SEARCHES)
+    ]
+    try:
+        saturated = await asyncio.get_running_loop().run_in_executor(None, all_entered.wait, 5.0)
+        assert saturated, f"only {entered} holders entered; the harness did not saturate"
+
+        with pytest.raises(SdkToolError) as raised:
+            await asyncio.wait_for(
+                server.call_tool("review.findings", {"projectId": "demo"}),
+                timeout=ADMISSION_WAIT_SECONDS + 5.0,
+            )
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*holders, return_exceptions=True), timeout=5.0)
+
+    assert FINDINGS_CAPACITY_REFUSAL in str(raised.value)
+    assert "concurrent searches" not in str(raised.value), (
+        "the findings gate answered with the search cap's message, so the two tools "
+        "share one semaphore and one of the two refusals is false about its own load"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_real_corpus_never_reaches_the_finding_text_bound(
+    project: ProjectRegistry,
+) -> None:
+    """The bound is a ceiling on planted data, not a truncation of authored data.
+
+    Measured against this repository's own history: the longest landed finding is
+    193 characters, an order of magnitude inside the bound. Asserted against the
+    live constant rather than restated, so raising or lowering the bound is
+    checked against the corpus it has to clear rather than against a number
+    somebody wrote down once.
+    """
+    longest_real_finding = 193
+
+    assert longest_real_finding < max_finding_text_chars(), (
+        f"the served-text bound is {max_finding_text_chars()}, which is not clear of "
+        f"the longest finding this repository's own history holds "
+        f"({longest_real_finding} characters as of 2026-09-02) -- so the bound would "
+        f"start cutting authored review findings rather than planted ones"
+    )
 
 
 @pytest.mark.asyncio

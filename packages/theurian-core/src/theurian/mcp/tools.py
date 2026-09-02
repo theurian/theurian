@@ -105,10 +105,14 @@ MAX_CONCURRENT_SEARCHES: Final = 4
 #: `threading.BoundedSemaphore.acquire(timeout=...)` releases the GIL while
 #: waiting, so a caller parked here never blocks the asyncio loop serving
 #: `/health` or any other tool. But the wait is not free: the token it holds
-#: is drawn from the same pool `knowledge.get`, `knowledge.status` and
-#: `project.list` draw from -- the anyio worker pool (40 tokens, anyio
-#: 4.14.2, re-measured 2026-08-30; T-6 records it) `anyio.to_thread.run_sync`
-#: gives out.
+#: is drawn from the same pool every other tool draws from -- `knowledge.get`,
+#: `knowledge.status`, `project.list`, `review.findings` and
+#: `system.capabilities`, which is all of them, because every registered tool
+#: on this server is a synchronous `def` and the SDK dispatches each through
+#: `anyio.to_thread.run_sync` (the anyio worker pool: 40 tokens, anyio 4.14.2,
+#: re-measured 2026-08-30; T-6 records it). The list is stated as the whole
+#: registered set rather than as three names, because a tool added later is a
+#: sixth queue behind this wait whether or not anybody updates a comment.
 #:
 #: A parked waiter holds one pool token for at most `ADMISSION_WAIT_SECONDS`,
 #: but the queue behind it is not bounded by that constant: a freed token goes
@@ -151,6 +155,20 @@ SEARCH_CAPACITY_REFUSAL: Final = (
     f"({MAX_CONCURRENT_SEARCHES}). Retry shortly. This refusal message is a "
     f"constant: it carries nothing from your request or from any project's "
     f"contents."
+)
+
+#: The same refusal for `review.findings`, whose admission is its own semaphore
+#: (see `register`). Its own message because its own gate: a caller refused by the
+#: findings cap has not been refused by the search cap, and one message covering
+#: both would be false about which occupancy is full. Built from
+#: `MAX_CONCURRENT_SEARCHES` alone and interpolating nothing else, for the reason
+#: `SEARCH_CAPACITY_REFUSAL` states -- a refusal that varied with the request or
+#: the store would be the "an error that fires for one input and not another"
+#: channel SEC-13 closes.
+FINDINGS_CAPACITY_REFUSAL: Final = (
+    f"The daemon is already answering its maximum number of concurrent review-finding "
+    f"reads ({MAX_CONCURRENT_SEARCHES}). Retry shortly. This refusal message is a "
+    f"constant: it carries nothing from your request or from any project's contents."
 )
 
 
@@ -800,6 +818,28 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
     # why this is a cap rather than a per-query timeout, and why a refusal is
     # a `ToolError` rather than an empty result or a `fallbackReason`.
     search_admission = threading.BoundedSemaphore(MAX_CONCURRENT_SEARCHES)
+
+    # `review.findings` gets **its own** semaphore, sized by the same constant,
+    # and the split is the decision rather than the number (PR #504 round 1, R1-3).
+    #
+    # Sharing one pool with `knowledge.search` would have made a findings flood
+    # refuse searches with `SEARCH_CAPACITY_REFUSAL`, whose text says the daemon is
+    # answering its maximum number of concurrent *searches* -- a published message
+    # made false by load on a different tool, which is the class this round is
+    # fixing rather than a class to open. Each tool's refusal then describes its
+    # own occupancy and nothing else.
+    #
+    # The cost is that concurrent occupancy across both tools is 2 x
+    # `MAX_CONCURRENT_SEARCHES` rather than one bound: 8 worker threads against the
+    # 40-token anyio pool `ADMISSION_WAIT_SECONDS` records, so the pool still
+    # bounds them both. What each cap bounds is an unbounded queue building up
+    # behind whatever work is already running on *that* tool.
+    #
+    # The same constant, deliberately: a findings serve is one bounded SQLite read
+    # over a corpus-sized table, strictly cheaper than a search, so a second number
+    # would be a tuning claim nothing here has measured (T-6 records it as a
+    # default, like its sibling).
+    findings_admission = threading.BoundedSemaphore(MAX_CONCURRENT_SEARCHES)
 
     def _with_remedy(exc: ProjectError) -> ToolError:
         """A ``ProjectError``, with its remedy still attached.
@@ -1653,6 +1693,13 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         :mod:`theurian.mcp.findings` for why this tool differs from
         ``knowledge.search`` there.
 
+        **Bounded in three dimensions, not one.** ``limit`` bounds the rows;
+        :func:`~theurian.mcp.findings._bounded_text` bounds each row's bytes, so
+        one planted commit message cannot make a response arbitrarily large; and
+        the admission gate below bounds how many of these reads run at once. The
+        row bound alone was the shipped state, and a 2 MiB trailer served 83.9 MB
+        at ``limit=40`` under it (PR #504 round 1, R1-3).
+
         **Project-scoped, through the same gate as every other project tool.**
         ``projectId`` is required (ADR-0002: many agents share one daemon, so an
         implicit default resolves one agent's query against another's project),
@@ -1727,6 +1774,25 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # Reach premise: see ADR-0029's landing note (slice-3) for what
         # `origin/main` is trusted to mean on a clone of the private fork.
         store = SqliteReviewFindingStore(paths.findings_for(FINDINGS_STORE_ID))
+
+        # Admission-gated, like `knowledge.search` and for the same reason (T-6,
+        # SEC-8, #26): this block is the only work a caller can make this daemon
+        # spend, and a sync tool's thread cannot be cancelled by a transport
+        # timeout -- so what bounds the daemon is how many of these run at once,
+        # not how long a caller waits. Round 1 added the byte bound on
+        # `findingText`; this is the other half, and the two are what make the
+        # per-call cost bounded in both dimensions rather than only in rows.
+        #
+        # This block alone: `build_query` refuses before anything is opened, and
+        # `_resolve` plus the provenance check are filesystem reads whose cost does
+        # not vary with the corpus -- gating them would slow every caller without
+        # bounding anything.
+        #
+        # Raised before the `try`, like its sibling: a failed `acquire` holds no
+        # permit, and releasing one it never had would hand this semaphore a permit
+        # from nowhere.
+        if not findings_admission.acquire(timeout=ADMISSION_WAIT_SECONDS):
+            raise ToolError(FINDINGS_CAPACITY_REFUSAL)
         try:
             # One call, one connection: the store checks its own stamp inside the
             # connection it reads the rows through, so a `findings build` landing
@@ -1739,6 +1805,8 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             # failure, and it varies with the store's state. One constant message
             # carries the same remedy without that variation (SEC-13).
             raise ToolError(FINDINGS_UNAVAILABLE_REFUSAL) from exc
+        finally:
+            findings_admission.release()
         return findings_payload(served)
 
     @_tool(
