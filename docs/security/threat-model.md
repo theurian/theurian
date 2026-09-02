@@ -1309,7 +1309,7 @@ T-5's contributor, not the caller.
 **The class is "one planted trailer sizes what one call costs", and it has two
 faces.** The **response** face closed in round 1: `findingText` is cut at the
 bound and marked before it reaches the wire. The **read** face was still open
-after that fix and closed in round 2 (`1629902`). `serve_findings` fetched
+after that fix and closed in round 2 (PR #504, `fix(findings): bound the served finding text at the read, not after it`). `serve_findings` fetched
 `finding_text` whole and left the cut to the surface above it, so the daemon
 materialised every planted byte — `limit + 1` rows per call, once per concurrent
 call — before anything could clamp one of them. The bound is now applied **by the
