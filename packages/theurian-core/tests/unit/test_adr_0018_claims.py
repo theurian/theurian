@@ -878,7 +878,23 @@ CORRECTION_NOTES: Final[dict[str, CorrectionNote]] = {
 #:   than a category: its deletion removes provenance but resurrects nothing,
 #:   because point 2 was corrected *in place* and is held in both directions by
 #:   :func:`test_adr_0018_says_the_write_lock_is_a_separate_file_and_names_it` and
-#:   :func:`test_adr_0018_does_not_reattach_the_write_lock_to_a_database`.
+#:   :func:`test_adr_0018_does_not_reattach_the_write_lock_to_a_database`;
+#: - the 2026-09-02 correction under the index bullet, which retracts that
+#:   bullet's prediction that ADR-0024 point 4 would discharge it. Three
+#:   paragraphs, none anchored, and **its two clauses are held unequally**. The
+#:   lock clause is pinned in both directions by
+#:   :func:`test_no_index_write_path_module_takes_a_lock` and
+#:   :func:`test_every_lock_in_the_package_belongs_to_one_of_the_two_known_families`,
+#:   which go RED the day an index write lock lands -- inside the API reach
+#:   :data:`KNOWN_LOCK_FAMILIES` states. The eleven-writable-opens clause is
+#:   **not pinned anywhere**: it is an anchored measurement, and the census pin
+#:   that would hold it is owed to
+#:   https://github.com/theurian/theurian/issues/439. So this blockquote's
+#:   deletion is green partly by design and partly by that gap;
+#: - the 2026-09-01 #140 reconciliation under the NFR-4 bullet, which answers
+#:   "it belongs with the same blue/green work" by naming ADR-0024 points 6 and 7
+#:   and #497. Two paragraphs, none anchored; the discharge status it reconciles
+#:   is ADR-0024's own subject and is pinned there.
 #:
 #: **The Neutral point's NFR-4 amendment used to be on that list, and the reason
 #: given was refuted.** It said the amendment is ADR-0022's subject and cited from
@@ -895,27 +911,44 @@ CORRECTION_NOTES: Final[dict[str, CorrectionNote]] = {
 #: returns for this record, one at a time, and run this module.
 #:
 #: At ``155dc08`` that was sixteen paragraphs, of which eight deletions stayed
-#: green -- the two whole blockquotes listed above, plus six paragraphs inside a
-#: pinned blockquote. One of those six is now pinned: the NFR-4 amendment's body,
-#: which the Compliance section cites and which is anchored above on "what this
-#: point is right about is the canonical store". Re-run after that pin against
-#: this module's twenty-six tests, seven deletions stay green and the residue
-#: inside pinned blockquotes is **five**:
+#: green -- two whole blockquotes plus six paragraphs inside a pinned one. One of
+#: those six was then pinned: the NFR-4 amendment's body, anchored above on "what
+#: this point is right about is the canonical store". Re-run after that pin, seven
+#: deletions stayed green and the residue inside pinned blockquotes was five.
+#:
+#: **Re-measured at ``3c299a2`` against this module's thirty tests, and the
+#: figures above were stale by eight paragraphs.** The record is now **eight
+#: blockquotes, twenty-four paragraphs, fifteen deletions green, nine RED.**
+#: Every one of the eight paragraphs added since is green, and they arrived in
+#: three notes: the #468 closure under Decision point 2 (three paragraphs, from
+#: ``main``), and on this branch the index bullet's 2026-09-02 correction (three)
+#: and the NFR-4 bullet's #140 reconciliation (two). Seven of the fifteen are the
+#: four whole blockquotes listed above; the residue inside pinned blockquotes is
+#: **eight**:
 #:
 #: - the Milestone-5 amendment's "decision is not superseded" paragraph, carrying
 #:   the standing ``#15`` cite, and its GOVERNANCE note. That amendment is seven
 #:   paragraphs: four anchored above, a fifth held by
 #:   :data:`AMENDMENT_COUNT_NOTE`, and these two;
-#: - the #468 narrowing's mechanism and not-superseded paragraphs. That blockquote
-#:   is three: one anchored, and these two;
+#: - **five** in the blockquote run under Decision point 2: the #468 narrowing's
+#:   mechanism and not-superseded paragraphs, and the three of #468's closure
+#:   note. That run is six paragraphs with one anchored. **It was recorded here
+#:   as "three: one anchored, and these two", which was true before the closure
+#:   note landed and is the drift this re-measurement found**;
 #: - the NFR-4 amendment's "this point said WAL is ..." paragraph, which argues
 #:   for the retraction its heading states. That blockquote is three, and the other
-#:   two are anchored above.
+#:   two are anchored above -- unchanged.
 #:
 #: They are recorded rather than pinned because each restates
 #: something an anchored paragraph or a live pin already carries, and a pin per
 #: paragraph would go RED on every ordinary rewrite of a record that is rewritten
-#: often.
+#: often. **This is a measurement, not an assertion**: nothing reads these numbers
+#: at run time, so they go stale silently and the re-run above is the only thing
+#: that catches it. Two rounds have now found them stale -- #446's third, which
+#: caught "four" against a swept six, and PR #498's first -- which is the argument
+#: for a pin that recomputes this census from the record instead. Building one is
+#: a new mechanism rather than a line edit, so it is not done inside a fix pass;
+#: this note is the evidence for whoever decides.
 _UNPINNED_BLOCKQUOTES: Final = "recorded above, not enumerated in code"
 
 #: The two things the point-1 bullet's re-measurement has to keep saying. Not
