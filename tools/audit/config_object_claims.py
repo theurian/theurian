@@ -218,10 +218,21 @@ class Row:
 
 #: A markup delimiter **run**, not a single optional delimiter.
 #:
-#: **The house style is two backticks.** Measured at ``5d0b1d9``: 323 of this
-#: repository's 352 governed ``.py`` files write inline code in the RST form
-#: ``` ``like this`` ```, because Sphinx-flavoured docstrings are what the
-#: package is written in. A single optional delimiter therefore could not see a
+#: **The house style is two backticks.** Measured at ``5d0b1d9``, a commit on
+#: #501's branch and not on ``main``: 323 of this repository's 352 governed
+#: ``.py`` files write inline code in the RST form ``` ``like this`` ```, because
+#: Sphinx-flavoured docstrings are what the package is written in.
+#:
+#: **The figure is dated, not standing** -- the tree gains ``.py`` files -- so it
+#: is derived here once and the prose sites that cite it point at this constant
+#: rather than each carrying a count of their own. Numerator then denominator::
+#:
+#:     git grep -lF '``' -- '*.py' ':!.theurian/' | wc -l
+#:     git ls-files -- '*.py' ':!.theurian/' | wc -l
+#:
+#: The pathspec is :data:`claim_surfaces.EXCLUDED_PREFIXES` spelled for ``git``;
+#: ``docs/work-logs/`` holds no ``.py`` file, so excluding it changes neither
+#: number. A single optional delimiter therefore could not see a
 #: claim written the way most of the tree writes one -- round one planted
 #: ``Nothing in ``src/`` reads ``.theurian/config.yaml``.`` in a wheel-shipped
 #: module and every audit and every pin stayed green. The escape was in the

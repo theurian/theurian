@@ -201,9 +201,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   **Object-keyed is not markup-free, and this round measured the difference.**
   The object still has to be *spelled*, and both keys for this class admitted a
   single optional delimiter character — so a false universal written in the RST
-  double-backtick form, the house style in 326 of this tree's 356 governed `.py`
-  files, passed the census, passed the prose pin, and shipped inside a wheel when
-  it was planted in `application/forest_builder.py`. The escape was in the
+  double-backtick form, the house style in **323 of this tree's 352** governed
+  `.py` files measured at `5d0b1d9`, a commit on this pull request's branch and
+  not on `main`, passed the census, passed the prose pin, and shipped inside a
+  wheel when it was planted in `application/forest_builder.py`. That is a dated
+  figure, not a standing one, and the derivation is beside the key it justifies
+  in `tools/audit/config_object_claims.py`. The escape was in the
   markup, which is the one thing an object-keyed sweep is supposed to be immune
   to. Both delimiter classes are runs of `{0,2}` now, the schema's bare-leaf
   reference keeping a required `{1,2}` so widening a key does not quietly widen

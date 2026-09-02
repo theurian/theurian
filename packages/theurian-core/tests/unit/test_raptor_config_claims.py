@@ -427,9 +427,12 @@ _QUOTED_RETRACTION: Final = re.compile(
 #:
 #: **And it is a run of up to two, not one, which is round one's H-F.** This
 #: repository's house style for inline code is the RST form — two backticks
-#: either side, which 323 of its 352 governed ``.py`` files carry at ``5d0b1d9``
+#: either side, which 323 of its 352 governed ``.py`` files carry at ``5d0b1d9``,
+#: a commit on #501's branch and not on ``main``
 #: — so a single-character delimiter class could not see the claim written the way
-#: most of the tree writes one. A false universal planted in that markup in
+#: most of the tree writes one. The figure is dated and moves with the tree;
+#: ``tools/audit/config_object_claims.py``'s ``_DELIMITER_RUN`` derives it, with
+#: the two commands that reproduce it. A false universal planted in that markup in
 #: ``application/forest_builder.py`` shipped with this pin and every audit green.
 #: The escape was in the markup rather than in the phrasing, which is what a
 #: pattern keyed on a *path* is supposed to be immune to; :data:`UNIVERSAL_CASES`
@@ -586,8 +589,12 @@ UNIVERSAL_CASES: Final[tuple[tuple[str, bool], ...]] = (
     # -- round one's H-F: the same universal in the RST house style -----------
     # Not a shape any document took; a shape a *future* document would take,
     # because two backticks is how 323 of this repository's 352 governed `.py`
-    # files spell inline code. The pattern was blind to it until the delimiter
-    # class became a run, and a false claim planted this way in the wheel-shipped
+    # files spelled inline code at `5d0b1d9`, a commit on #501's branch and not
+    # on `main`. The figure is dated and moves with the tree —
+    # `tools/audit/config_object_claims.py`'s `_DELIMITER_RUN` is where it is
+    # derived, and it carries the two commands that reproduce it. The pattern was
+    # blind to this markup until the delimiter class became a run, and a false
+    # claim planted this way in the wheel-shipped
     # `application/forest_builder.py` passed every test in this module.
     ("Nothing in ``src/`` reads ``.theurian/config.yaml``, so no default is in force", True),
     ("The ``.theurian/config.yaml`` file is still unread", True),
