@@ -195,11 +195,19 @@ class CanonicalStore(Protocol):
         ``docs/work-logs/2026-09-01-472-purged-build-re-measurement.md``, F2/F1'),
         the stale build reproduces the shape at 24.3 us per withheld row -- a
         different machine 27 days later, so comparable in shape and not in
-        magnitude -- while a purged build has no per-withheld-row term at all,
-        because ``|ranking|`` is the visible count at every withheld level. The
-        0.20 us above is not like that: it is corpus-bounded and survives a purge,
-        which is why the seventy-times-smaller comparison holds only inside the
-        window between a withdrawal and the purge that follows it.
+        magnitude -- while a purged build has no per-withheld-row term at all.
+        **Why it has none is branch-dependent**, and stating it as one mechanism
+        was this note's own error, caught in review: on the scan below the
+        trigram floor, which carries no ``LIMIT``, the purged ``|ranking|`` is
+        the visible count; on the branches that truncate it is ``depth`` whatever
+        was withheld, before and after the purge alike. Pinned over withheld
+        counts 0, 50 and 200 by
+        ``test_a_purged_build_reads_canonical_once_per_visible_row_however_many_were_withheld``
+        and over 49--52 by
+        ``test_a_purged_build_stays_at_one_retriever_pass_across_the_first_pass_depth_edge``.
+        The 0.20 us above is not like that: it is corpus-bounded and survives a
+        purge, which is why the seventy-times-smaller comparison holds only
+        inside the window between a withdrawal and the purge that follows it.
 
         Adding ``sensitivity`` as a third column of ``idx_items_status`` flattens
         it exactly -- 2,032 steps at 0 and at 1,000, measured the same way -- at

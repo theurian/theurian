@@ -407,9 +407,24 @@ def test_the_canonical_read_count_is_the_ranking_length_and_so_the_withheld_coun
     **This test keeps its own scope, and that is why it is not retired by the
     purge.** It measures ``cleared`` given a ranking that carries withheld rows,
     which is still what happens in the window between a withdrawal and the purge
-    that follows it, and in the residual cases T-17a records -- a request in
-    flight at the pointer swap, and a purge that failed. The number it holds is
-    the price of that window, not of a healthy request.
+    that follows it. Beyond that window it is **two of the three residual cases
+    T-17a records**: a request already in flight at the pointer swap, and a
+    *double* failure in which the purge fails and the taint write that should
+    have marked the pointer fails with it. The third -- a concurrent clean build
+    reverted by the non-atomic taint write -- is T-17a's and is deferred to the
+    derived index's single-writer contract (#439).
+
+    **"A purge that failed" is no longer one of them, and this docstring said it
+    was until PR #498's round-one review.** GHSA-97q9-xxfg-33r6 inverted it:
+    ``mark_active_index_purge_failed`` taints the pointer, and
+    ``mcp.search._published_index`` returns ``_PURGE_FAILED`` on that flag
+    *before* the id, file, provenance, project and flavor gates, so a
+    purge-failed build does not answer at all. A single purge failure therefore
+    reaches this gate with no ranking rather than with a stale one. What is left
+    is the double failure above, which is why it is named that way here.
+
+    The number this test holds is the price of those windows, not of a healthy
+    request.
     """
     measured = {
         (withheld, placement): _measure(withheld, placement).reads
