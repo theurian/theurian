@@ -438,10 +438,14 @@ def test_concurrent_builds_all_succeed_and_leave_one_complete_store(project: Pat
     Before #404 the rebuild took no lock and wrote in place under the published
     name, so concurrent invocations tore each other's file: measured on PR #396,
     workers reported ``FindingsStoreError`` in 17-21 of 25 rounds and one iteration
-    left a file with **no tables at all** under the publish name. Re-measured here
-    on the pre-fix shape, 12 of 48 workers failed with ``disk I/O error`` or
-    ``table findings_metadata already exists``; on the fixed shape, 48 of 48
-    succeeded.
+    left a file with **no tables at all** under the publish name. The 12-of-48 /
+    48-of-48 comparison in this file's history is the *scratch twin*'s number
+    (``4 * 12`` real CLI children, the constant comment above names it), not this
+    test's: **this** test runs ``_RACE_ROUNDS * _RACE_WORKERS`` = 3 * 3 = 9
+    children, chosen to detect the pre-fix tearing at high probability in ~3 s
+    while staying a suite-runnable regression guard. On the pre-fix shape a worker
+    here fails the same way (``disk I/O error`` / ``table findings_metadata already
+    exists``); on the fixed shape all 9 succeed.
 
     Every worker must reach a *defined* outcome -- a successful build, or a refusal
     that carries a remedy -- and the survivor must be complete and stamp-current,

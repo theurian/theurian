@@ -23,12 +23,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   (which `dump` answers *empty*, indistinguishable from a genuinely empty
   corpus) or one whose schema had committed and whose rows had not, and an
   interrupted rebuild destroyed the previously good store outright. Measured
-  2026-09-02 on the pre-fix shape, three rounds of three real CLI children: 12
-  of 48 workers failed with `disk I/O error` or
-  `table findings_metadata already exists`; on the fixed shape 48 of 48 exited
-  0. PR #396 had already recorded the same class from the other side — workers
-  reporting `FindingsStoreError` in 17–21 of 25 rounds, one iteration leaving a
-  file with **no tables at all** under the publish name.
+  2026-09-02 on a 12×4 scratch twin (48 real CLI children): on the pre-fix shape
+  12 of 48 workers failed with `disk I/O error` or
+  `table findings_metadata already exists`; on the fixed shape 48 of 48 exited 0.
+  The suite-runnable regression guard runs a smaller 3×3 = 9 children, enough to
+  detect the tearing at high probability in ~3 s. PR #396 had already recorded
+  the same class from the other side — workers reporting `FindingsStoreError` in
+  17–21 of 25 rounds, one iteration leaving a file with **no tables at all**
+  under the publish name.
 
   The rebuild now assembles at a `.building` sibling and publishes with
   `os.replace`, the discipline `index build` already used, and `findings build`
@@ -172,9 +174,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   and that correcting it to a commit-anchored form was the parser lane's owed
   work. The parser lane had already taken it: the comment reads "55 lines across
   7 commits ... measured 2026-08-26 on `origin/main` @ `4c4a784`". Measured
-  2026-09-02, `git grep -n '38 lines' -- packages/ tools/ tests/` returns
-  nothing, against a `55 lines` positive control that hits that same docstring.
-  The owed item is now recorded as discharged rather than left open.
+  2026-09-02, `git grep -n '38 lines' -- packages/theurian-core/src tools tests`
+  returns nothing, against a `55 lines` positive control that hits that same
+  docstring. The key is source-only on purpose: a `packages/ tools/ tests/` sweep
+  scans this changelog too, where "38 lines" is named to explain the correction,
+  so that key reports its own explanatory prose as a live occurrence and returns
+  four — the record falsifying itself (#404 R1-7). The owed item is now recorded
+  as discharged rather than left open.
 
   **Both halves are pinned, in the same pull request that made the correction.**
   `test_adr_0029_claims.py` is the record — the ADR-0018 and ADR-0027 shape,

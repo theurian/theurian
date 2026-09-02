@@ -878,11 +878,13 @@ unchanged — nothing here serves a finding, and `pullRequest`, `family` and
   two sequential ones [#468](https://github.com/theurian/theurian/issues/468)
   measured leaving a worse window; the git read stays outside it because it
   touches nothing the lock protects. Atomicity is now a clause of the
-  `ReviewFindingStore` **port**, not a property of one adapter. Measured: on the
-  pre-fix shape 12 of 48 concurrent workers failed with `disk I/O error` or
-  `table findings_metadata already exists`, against 48 of 48 succeeding on the
-  fixed one (`test_findings_build_cli.py::test_concurrent_builds_all_succeed_and_leave_one_complete_store`,
-  three rounds of three real CLI children, 2026-09-02). A reader polling the
+  `ReviewFindingStore` **port**, not a property of one adapter. Measured on a
+  12×4 scratch twin (48 real CLI children): on the pre-fix shape 12 of 48 failed
+  with `disk I/O error` or `table findings_metadata already exists`, against 48 of
+  48 succeeding on the fixed one (2026-09-02). The suite-runnable regression guard
+  `test_findings_build_cli.py::test_concurrent_builds_all_succeed_and_leave_one_complete_store`
+  runs a smaller 3×3 = 9 children — enough to detect the pre-fix tearing at high
+  probability in ~3 s — not the 48 the scratch twin used. A reader polling the
   publish name through two rebuilds observes only whole stores
   (`test_findings_store.py::test_a_reader_polling_through_a_rebuild_sees_only_whole_stores`,
   which fails loudly rather than passing when its sampler is starved); the same
@@ -1202,9 +1204,12 @@ so this paragraph's owed item is discharged:** the comment now reads "55 lines
 across 7 commits are already frozen in signed history (measured 2026-08-26 on
 `origin/main` @ `4c4a784`)", which is the commit-anchored form this paragraph
 asked for. Measured 2026-09-02 with
-`git grep -n '38 lines' -- packages/ tools/ tests/`: no source file carries the
-superseded figure; the only occurrences left in the repository are the two in
-this paragraph.
+`git grep -n '38 lines' -- packages/theurian-core/src tools tests`: no source
+file carries the superseded figure, against a `55 lines` positive control that
+hits that same docstring. The key is source-only on purpose (#404 R1-7): a
+`packages/ tools/ tests/` sweep also scans the core CHANGELOG, where "38 lines"
+is named to explain the correction, so that broader key returns four — the
+records describing the sweep counted as live occurrences of it.
 
 ## Appendix — advisory census (non-normative, dated)
 
