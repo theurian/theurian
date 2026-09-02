@@ -354,6 +354,34 @@ Still owed, with the issue or milestone that will satisfy it:
   > discharges this bullet when it lands. The `CanonicalStore.transaction()`
   > half above is untouched by it and still owed.
 
+  > **Corrected on 2026-09-02: the note above predicted that ADR-0024's point 4
+  > "is what discharges this bullet when it lands". It has landed, and it does
+  > not discharge it.** The prediction is left standing as the state of the
+  > argument when it was written; this records what measuring it showed.
+  >
+  > Point 4 made three claims and two were false. Measured at `fe2925c`: no index
+  > write path takes a lock — the purge's publish half is a write-to-temp plus
+  > `os.replace` and creates no lock file at all — and there is no single
+  > interface but **eleven writable opens of an index file across
+  > `index_store.py` and `index_purge.py`, seven of them public methods, with
+  > nothing serialising them against each other**. Only its third clause
+  > survived: nothing outside those two modules opens an index file for writing.
+  > ADR-0024's header line was changed from "Discharges" to **"Narrows"** in the
+  > same pass, and its Compliance section now records this debt as still owed
+  > rather than satisfied.
+  >
+  > **What point 4 does buy is real, and it is not this bullet's subject.** A
+  > published build is never written — which is decisions 1 and 2 plus the naming
+  > discipline rather than point 4, held by
+  > `test_building_over_an_existing_file_is_refused`,
+  > `test_a_purge_into_an_existing_path_is_refused`,
+  > `test_a_purge_refuses_to_write_over_another_writers_building_file` and
+  > `test_a_purge_leaves_the_published_build_untouched`. That is a property of
+  > *when* writes happen; this bullet asks *how many interfaces* perform them,
+  > and that stays owed and unscheduled under
+  > [#439](https://github.com/theurian/theurian/issues/439), the owner the
+  > repoint below also names.
+
   > **Repointed on 2026-08-31
   > ([#436](https://github.com/theurian/theurian/issues/436)): Milestone 6 has
   > passed and this bullet did not close.** The tracker it named,

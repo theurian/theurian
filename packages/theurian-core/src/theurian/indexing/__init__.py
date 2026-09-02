@@ -19,7 +19,9 @@ sentence above has an answer and this docstring is stale rather than wrong.**
 ADR-0024 points 6 and 7 shipped it -- publishing stops reaping, reclaiming
 becomes ``theurian index gc``, and a search holds one read connection for the
 duration of a request -- and that ADR's Compliance section carries the
-reconciliation across every record that states NFR-4, with the pins named:
+reconciliation across the six records that state NFR-4's discharge status --
+five of them corrected to agree with it, this docstring among them -- with the
+pins named:
 ``tests/integration/test_gc_during_a_search.py``, decision 7's acceptance module,
 whose four tests include the connection-per-call counterexample;
 ``test_publishing_a_build_no_longer_reclaims_the_one_it_replaced``; and

@@ -183,8 +183,9 @@ Still owed, with the milestone that will satisfy it:
   > already records. **That missing test is owned by
   > [#497](https://github.com/theurian/theurian/issues/497)**, which requires
   > this bullet to move in the same pull request it lands in. ADR-0024's
-  > Compliance section carries the reconciliation across all four records that
-  > state NFR-4.
+  > Compliance section carries the reconciliation across the six records that
+  > state NFR-4's discharge status, five of which were corrected to agree with it
+  > — this bullet among them.
 - **Something other than a build will write to an index** (answered below; the
   writer discipline owed,
   [#439](https://github.com/theurian/theurian/issues/439)). This ADR's model is

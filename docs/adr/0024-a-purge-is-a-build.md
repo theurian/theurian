@@ -8,10 +8,18 @@
 - **Narrows** the index half of
   [ADR-0018](0018-single-writer-synchronous-in-m1.md)'s "the derived index has no
   single-writer contract at all": a published build is never written, so there is
-  no live file for a second writer to reach. It does **not discharge** it. This
-  line read "Discharges the index half of…" until 2026-09-01, and decision 4's
-  correction below records the measurement that retired the word. The contract
-  itself is owed and unscheduled, tracked in
+  no live file for a second writer to reach. **That property is decisions 1 and
+  2 plus the naming discipline, not decision 4** — every production writes a new
+  file under a fresh ULID and a `.building` suffix and publishes by `os.replace`,
+  and three tests refuse the alternative
+  (`test_building_over_an_existing_file_is_refused`,
+  `test_a_purge_into_an_existing_path_is_refused`,
+  `test_a_purge_refuses_to_write_over_another_writers_building_file`), with
+  `test_a_purge_leaves_the_published_build_untouched` holding the published build
+  byte-for-byte. It does **not discharge** ADR-0018's contract. This line read
+  "Discharges the index half of…" until 2026-09-01, and decision 4's correction
+  below records the measurement that retired the word. The contract itself is
+  owed and unscheduled, tracked in
   [#439](https://github.com/theurian/theurian/issues/439).
 
 ## Context
@@ -157,13 +165,42 @@ withheld document of average length moves it least:
 untruncated.
 
 **The implementation property this rests on**: FTS5's `'delete'` command, issued
-by `chunks_fts_delete` and `chunks_trigram_delete`, removes the row's postings
-*and* decrements the averages record — `nRow` and the per-column total sizes —
-that `bm25` reads as `N` and `avgdl`. Deleting the `chunks` row is what makes the
-statistics equal, not merely what makes the row absent. If a future FTS5 kept the
-averages record and only removed postings, every line of that table would still
-say "identical" for `nHit` and stop saying it for `avgdl`, so the fixture must
-carry a long-document configuration or it stops testing the channel it names.
+by `chunks_fts_delete` and `chunks_trigram_delete`, stops the row's postings
+being *matched* and decrements the averages record — `nRow` and the per-column
+total sizes — that `bm25` reads as `N` and `avgdl`. Deleting the `chunks` row is
+what makes the statistics equal, not merely what makes the row absent. If a
+future FTS5 kept the averages record and only stopped matching the postings,
+every line of that table would still say "identical" for `nHit` and stop saying
+it for `avgdl`, so the fixture must carry a long-document configuration or it
+stops testing the channel it names.
+
+> **Corrected on 2026-09-02 in PR #498's round-one review. This sentence said
+> `'delete'` "removes the row's postings *and* decrements the averages record",
+> and only the second half is true.** `'delete'` writes a **tombstone**: the
+> postings stay in the segment structure until a merge, and **nothing in the
+> shipped purge merges**. The equality this section measures is real, and its
+> stated mechanism was half wrong. The averages half is what carries the
+> equality — the record *is* decremented, which is why the rankings above are
+> byte-identical — and the postings half is not, and has a measured cost of its
+> own.
+>
+> Measured at 5,950 withdrawn rows (visible 50), a purged build against its own
+> `optimize`d copy against a never-held build: **1,481 trigram blocks and
+> 5,403,892 trigram bytes purged; 11 and 33,439 optimized; 13 and 35,638
+> never-held** — 151× the postings for rows the build no longer serves — with
+> the substring scan at 16.8 ms, 1.1 ms and 1.2 ms and every response identical.
+> End to end the duration is monotone in the withdrawn count: 5.67× at 5,950,
+> crossing the threat model's 1.40 ms end-to-end floor (TB-1) between 500 and
+> 1,000 withdrawn rows.
+>
+> So this section's *content* conclusion is unchanged and the *implementation
+> property* under it is narrowed, above, to what `'delete'` actually guarantees.
+> The residue and its closure — merging inside the purge — are owned by
+> [#499](https://github.com/theurian/theurian/issues/499), which is a **face of
+> T-17a** (*the index still holds the withdrawn rows*, surviving at the FTS5
+> segment level) rather than a new class; its recorded closure is the merge or
+> an acceptance carrying the measured bound. The threat model's T-17a entry
+> carries the full measurement, and these records move again when #499 lands.
 
 `認証` is the one row where the control agrees, and that is the expected answer
 rather than a weak fixture: two characters fall below the trigram floor and are
@@ -411,10 +448,29 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    filename containing `?` would otherwise be read as a query parameter and
    override the mode.
 
-   **Landed.** The whole read surface goes through `_open_read`, pinned by
-   `test_a_read_of_a_missing_index_creates_no_file` over every read method. The
-   pragmas it runs rest on index files being WAL, which
-   `test_a_built_index_is_always_in_wal_mode` pins.
+   **Landed.** The whole read surface goes through `_open_read`, and
+   `test_a_read_of_a_missing_index_creates_no_file` pins **seven of the eleven**
+   public read methods that raise on a missing file. The pragmas it runs rest on
+   index files being WAL, which `test_a_built_index_is_always_in_wal_mode` pins.
+
+   > **Coverage corrected on 2026-09-02 in PR #498's round-one review: this said
+   > "over every read method", and it is seven of eleven.** Measured by walking
+   > `SqliteIndexStore`'s public methods and subtracting the eight writers:
+   > fifteen public reads, of which `path` is a property that touches no file and
+   > `session` opens the connection the others use, leaving thirteen; two of
+   > those — `schema_version` and `is_searchable` — **return `0` and `False`
+   > rather than raising, by design**, so eleven are in the pin's population.
+   > Parametrised: `chunk_count`, `chunk_texts`, `metadata`, `search_dense`,
+   > `search_lexical`, `search_substring`, `texts`. Not parametrised:
+   > `holds_any_revision`, `raptor_path`, `search_summaries`,
+   > `surviving_chunks`.
+   >
+   > **The behaviour underneath is correct, and that is why this is a coverage
+   > gap and not a defect.** Each of the four unpinned methods was driven against
+   > a missing index path (2026-09-02, this branch): all four raise
+   > `IndexUnreadableError` and none creates a file. So the decision holds; what
+   > is narrower than the sentence is the *pin*, and a read method added later
+   > that forgets `_open_read` is caught only if it is one of the seven.
 
 8. **Withdrawal is transitive over derived content.** A node whose text is
    *derived* from a chunk — a RAPTOR summary (ADR-0008) is the case this project
@@ -990,20 +1046,44 @@ gate. Its `CanonicalStore.transaction()` half is not touched here either.
 > tests: … discharged for the index when one interface owns every index write and
 > a test asserts that surface."* The condition it names is the right one and it
 > is **not met** — decision 4's dated correction carries the measurement and the
-> eleven-site table. What point 4 does establish is narrower and is worth keeping
-> on its own terms: a published build is never written, so a second writer has no
-> live file to reach. That is a property of *when* writes happen, not of *how
-> many interfaces* perform them, and the single-writer contract is owed and
-> unscheduled under
+> eleven-site table. What point 4 does establish is narrower: **nothing outside
+> `index_store.py` and `index_purge.py` opens an index file for writing** — a
+> layering fact, measured, and the only one of its three clauses that held.
+>
+> **The property worth keeping is not point 4's, and attributing it there was
+> this correction's own error, caught in review.** "A published build is never
+> written, so a second writer has no live file to reach" is **decisions 1 and 2
+> plus the naming discipline**: decision 1 states the rule, decision 2 makes a
+> purge a copy-and-publish rather than an in-place edit, and every production
+> writes a new file under a fresh ULID and a `.building` suffix, published by
+> `os.replace`. Three tests refuse the alternative —
+> `test_building_over_an_existing_file_is_refused`,
+> `test_a_purge_into_an_existing_path_is_refused` and
+> `test_a_purge_refuses_to_write_over_another_writers_building_file` — and
+> `test_a_purge_leaves_the_published_build_untouched` holds the published build
+> byte-for-byte across a real `derive_purged`. That is a property of *when*
+> writes happen, not of *how many interfaces* perform them, and the single-writer
+> contract is owed and unscheduled under
 > [#439](https://github.com/theurian/theurian/issues/439).
 
 NFR-4 is discharged by points 6 and 7 together, and by neither alone. It is not
 discharged by this ADR being accepted.
 
 > **Reconciled on 2026-09-01 across every record that states it
-> ([#140](https://github.com/theurian/theurian/issues/140) member 1). The
-> sentence above stands; three other records disagreed with it and are
-> corrected.** ADR-0018's Compliance section, ADR-0022's Still-owed opener and
+> ([#140](https://github.com/theurian/theurian/issues/140) member 1). Six records
+> state NFR-4's discharge status; the sentence above is the one that stands, and
+> the other five disagreed with it and are corrected.** The population is a key,
+> not a list — every file carrying the dated `#140 member 1` correction, read
+> with blockquote markers stripped and whitespace collapsed: this ADR,
+> `docs/adr/0018-single-writer-synchronous-in-m1.md`,
+> `docs/adr/0022-index-lives-in-its-own-database.md`,
+> `docs/adr/0007-state-hash-partitioned-databases.md`,
+> `packages/theurian-core/src/theurian/indexing/__init__.py` and
+> `packages/theurian-core/src/theurian/infrastructure/sqlite/store.py`. **Six and
+> five is the pair to quote**; earlier drafts of this reconciliation said "three
+> other records", "all four records" and "four different ways", none of which
+> agreed with each other or with the corrected set. ADR-0018's Compliance
+> section, ADR-0022's Still-owed opener and
 > `packages/theurian-core/src/theurian/indexing/__init__.py`'s docstring each
 > recorded NFR-4 as undischarged and owed to "Milestone 6's blue/green work" —
 > which is the work this ADR *is*, and which has landed. Each now carries a dated
@@ -1054,10 +1134,23 @@ discharged by this ADR being accepted.
 > [#497](https://github.com/theurian/theurian/issues/497)**, whose definition of
 > done requires every record stating this gap to move in the same pull request
 > the test lands in, because each becomes false the moment it exists. That
-> population is **seven files**, measured rather than listed — a wrap-aware
-> search of `while a build is|during a build|during an in-progress build` over
-> the record-update diff: ADR-0007's bullet, ADR-0018's Compliance bullet,
-> ADR-0022's Still-owed opener, this note, `indexing/__init__.py`'s docstring,
+> population is measured rather than listed — a wrap-aware, blockquote-aware
+> search of `while a build is|during a build|during an in-progress build`.
+> **Scoped to the files this record-update branch touches it is seven**:
+> ADR-0007's bullet, ADR-0018's Compliance bullet, ADR-0022's Still-owed opener,
+> this note, `indexing/__init__.py`'s docstring,
 > `infrastructure/sqlite/store.py`'s module docstring, and the CHANGELOG entry.
-> A line-oriented `git grep` under-counts it, because three of the seven wrap the
-> phrase across a soft line break.
+> **Run repo-wide the same key returns eight**, and the eighth is
+> `.theurian/knowledge/architecture/state-hash-partitioned-databases.01M0D5GWD03YD4TFJV2E0SHAVW.md`
+> — ADR-0007's **dogfood-corpus twin**, which is served content rather than a
+> record and is re-seeded from its ADR rather than edited in place. It moves when
+> the corpus is re-seeded, and that is the M7 dogfooding lane's, not this
+> reconciliation's; the drift checker that would catch it is
+> [#317](https://github.com/theurian/theurian/issues/317). State the scope with
+> the number or the two disagree: seven is the record population, eight is the
+> repository.
+>
+> A line-oriented `git grep` under-counts either figure, because three of the
+> seven wrap the phrase across a soft line break and one sits inside a nested
+> blockquote — which is why the key above is run over text with the `>` markers
+> stripped and the whitespace collapsed.
