@@ -294,6 +294,14 @@ def _transportable(name: str, value: str) -> None:
     commit-message line cannot contain a NUL, so no stored value contains one and
     no legitimate filter needs one.
 
+    **The truncation is ``q``'s alone, and the refusal now says so.** The other
+    five filters are equality comparisons, which ``sqlite3`` binds with an explicit
+    length: a NUL in one of them compares whole and simply matches nothing. So they
+    are refused for the *first* reason -- no stored value can equal them -- while
+    only ``q`` carries the second, and a message that attributed the pattern-matcher
+    behaviour to all six would be telling a caller of ``reviewer`` something untrue
+    about their own filter.
+
     **An unpaired surrogate.** ``"\\ud800"`` is a ``str`` Python accepts and UTF-8
     cannot encode, so it dies as a ``UnicodeEncodeError`` -- at the SQLite bind if
     it is a filter, or in the SDK's serializer if it were echoed back.
@@ -311,9 +319,11 @@ def _transportable(name: str, value: str) -> None:
     if _NUL in value:
         raise FindingsQueryError(
             f"`{name}` contains a NUL byte (U+0000). No stored value can contain one -- "
-            f"a git commit-message line cannot carry it -- and SQLite's pattern matcher "
-            f"stops reading at it, which would silently shorten the filter instead of "
-            f"matching what was sent. Nothing was searched. Send the value without it."
+            f"a git commit-message line cannot carry it -- so this filter could match "
+            f"nothing at best; sent as `q`, it would not even do that, because SQLite's "
+            f"pattern matcher stops reading at a NUL and would silently shorten the "
+            f"filter instead of matching what was sent. Nothing was searched. Send the "
+            f"value without it."
         )
     try:
         value.encode("utf-8")

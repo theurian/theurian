@@ -64,7 +64,10 @@ from theurian.domain.review_finding import (
     ReviewFinding,
 )
 from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
-from theurian.infrastructure.sqlite.findings_store import SqliteReviewFindingStore
+from theurian.infrastructure.sqlite.findings_store import (
+    FindingsStoreError,
+    SqliteReviewFindingStore,
+)
 from theurian.mcp.findings import (
     DEFAULT_FINDINGS_LIMIT,
     INERT_FILTER_REFUSAL,
@@ -736,6 +739,87 @@ async def test_a_text_filter_matches_past_the_served_bound(project: ProjectRegis
     assert needle not in payload["findings"][0]["findingText"]
 
 
+#: Every wait in the admission tests below. A stub left blocked is a worker thread
+#: the whole suite cannot finish, and ``anyio.to_thread.run_sync`` gives it no way
+#: to be cancelled from outside -- so each wait is bounded and fails loudly.
+_GATE_WAIT_SECONDS: Final = 5.0
+
+
+class _StoreGate:
+    """A stand-in adapter whose serve holds a permit until it is released.
+
+    :meth:`factory` is what ``mcp/tools.py`` calls where it would construct
+    ``SqliteReviewFindingStore``, so a call that reaches the gated block occupies
+    exactly one permit and stays there -- which is how a semaphore's occupancy is
+    made observable at all.
+
+    Shared by the two admission tests below: one asserts that the cap refuses the
+    excess caller, the other that every exit path gives its permit back. Both need
+    a deterministic saturation, and a second copy of that harness is a second place
+    for it to drift.
+    """
+
+    def __init__(self, expected: int) -> None:
+        self._lock = threading.Lock()
+        self._entered = 0
+        self._expected = expected
+        self.all_entered = threading.Event()
+        self.release = threading.Event()
+
+    @property
+    def entered(self) -> int:
+        with self._lock:
+            return self._entered
+
+    def factory(self, path: Path) -> Any:  # noqa: ARG002 - the adapter's constructor shape
+        gate = self
+
+        class _Store:
+            def serve_findings(
+                self,
+                query: Any,  # noqa: ARG002 - port shape
+                *,
+                text_chars: int,  # noqa: ARG002 - port shape
+            ) -> tuple[Any, ...]:
+                return gate._serve()
+
+        return _Store()
+
+    def _serve(self) -> tuple[Any, ...]:
+        with self._lock:
+            self._entered += 1
+            if self._entered >= self._expected:
+                self.all_entered.set()
+        assert self.release.wait(timeout=_GATE_WAIT_SECONDS), (
+            "the gate's release was never set within "
+            f"{_GATE_WAIT_SECONDS}s -- a leaked blocked worker would hang the whole "
+            "suite, so this fails loudly instead"
+        )
+        return ()
+
+
+async def _saturate(server: Any, gate: _StoreGate, count: int) -> list[asyncio.Task[Any]]:
+    """Launch ``count`` concurrent calls and block until every one has *entered*.
+
+    The wait runs on another thread (``run_in_executor``): a blocking wait on the
+    loop's own thread would stop those tasks from ever reaching
+    ``anyio.to_thread.run_sync``, which is a deadlock rather than a saturation.
+    """
+    tasks = [
+        asyncio.create_task(server.call_tool("review.findings", {"projectId": "demo"}))
+        for _ in range(count)
+    ]
+    entered = await asyncio.get_running_loop().run_in_executor(
+        None, gate.all_entered.wait, _GATE_WAIT_SECONDS
+    )
+    assert entered, (
+        f"only {gate.entered}/{count} callers entered the gate within "
+        f"{_GATE_WAIT_SECONDS}s -- the harness failed to saturate, which is also "
+        f"exactly what a permit leaked by an earlier exit path looks like"
+    )
+    return tasks
+
+
 @pytest.mark.asyncio
 async def test_the_findings_read_is_admission_gated_like_a_search(
     project: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
@@ -752,62 +836,124 @@ async def test_the_findings_read_is_admission_gated_like_a_search(
     "concurrent searches", and a findings flood refusing searches with it would
     make a published message false. So this asserts the *findings* refusal, which
     is what distinguishes the two gates from one shared one.
-
-    Every wait is bounded: a stub left blocked is a worker thread the suite cannot
-    finish, and it fails loudly here instead of hanging.
     """
     import theurian.mcp.tools as tools_module
 
     _land(project)
-    release = threading.Event()
-    all_entered = threading.Event()
-    lock = threading.Lock()
-    entered = 0
-
-    class _BlockingStore:
-        """Stands in for the adapter, occupying a permit until released."""
-
-        def __init__(self, path: Path) -> None:
-            self._path = path
-
-        def serve_findings(
-            self,
-            query: Any,  # noqa: ARG002 - port shape
-            *,
-            text_chars: int,  # noqa: ARG002 - port shape
-        ) -> tuple[Any, ...]:
-            nonlocal entered
-            with lock:
-                entered += 1
-                if entered >= MAX_CONCURRENT_SEARCHES:
-                    all_entered.set()
-            assert release.wait(timeout=5.0), "the gate's release was never set"
-            return ()
-
-    monkeypatch.setattr(tools_module, "SqliteReviewFindingStore", _BlockingStore)
+    gate = _StoreGate(MAX_CONCURRENT_SEARCHES)
+    monkeypatch.setattr(tools_module, "SqliteReviewFindingStore", gate.factory)
     server = build_server(project)
-    holders = [
-        asyncio.create_task(server.call_tool("review.findings", {"projectId": "demo"}))
-        for _ in range(MAX_CONCURRENT_SEARCHES)
-    ]
+    holders = await _saturate(server, gate, MAX_CONCURRENT_SEARCHES)
     try:
-        saturated = await asyncio.get_running_loop().run_in_executor(None, all_entered.wait, 5.0)
-        assert saturated, f"only {entered} holders entered; the harness did not saturate"
-
         with pytest.raises(SdkToolError) as raised:
             await asyncio.wait_for(
                 server.call_tool("review.findings", {"projectId": "demo"}),
-                timeout=ADMISSION_WAIT_SECONDS + 5.0,
+                timeout=ADMISSION_WAIT_SECONDS + _GATE_WAIT_SECONDS,
             )
     finally:
-        release.set()
-        await asyncio.wait_for(asyncio.gather(*holders, return_exceptions=True), timeout=5.0)
+        gate.release.set()
+        await asyncio.wait_for(
+            asyncio.gather(*holders, return_exceptions=True), timeout=_GATE_WAIT_SECONDS
+        )
 
     assert FINDINGS_CAPACITY_REFUSAL in str(raised.value)
     assert "concurrent searches" not in str(raised.value), (
         "the findings gate answered with the search cap's message, so the two tools "
         "share one semaphore and one of the two refusals is false about its own load"
     )
+
+
+class _RaisingStore:
+    """A stand-in adapter whose serve fails, for the exit paths that are not returns.
+
+    Two failures, and they leave the gated block differently: a
+    :class:`FindingsStoreError` is caught and converted to the constant refusal,
+    while an unrelated exception escapes the tool body entirely. The permit has to
+    come back on both.
+    """
+
+    error: type[Exception] = RuntimeError
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def serve_findings(
+        self,
+        query: Any,  # noqa: ARG002 - port shape
+        *,
+        text_chars: int,  # noqa: ARG002 - port shape
+    ) -> tuple[Any, ...]:
+        raise self.error("synthetic failure inside the gated block")
+
+
+@pytest.mark.asyncio
+async def test_the_findings_gate_returns_its_permit_on_every_exit_path(
+    project: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If a call leaves the gated block by any path, it must not leak a permit.
+
+    The cap above proves the gate *closes*; nothing proved it re-opens. Deleting
+    ``finally: findings_admission.release()`` left the whole suite green, because
+    the saturation test releases its holders and then asserts nothing further --
+    and a leak is not visible in one call's result at all. It is visible only when
+    the next callers arrive, which is what this walks: every exit path is taken
+    ``MAX_CONCURRENT_SEARCHES`` times, and then that many concurrent callers must
+    still all be admitted.
+
+    The three paths are the three ways out of the block: a clean return, the
+    store-unservable refusal (a ``FindingsStoreError`` caught and converted), and
+    an unrelated exception escaping the tool body. The middle one is the path a
+    caller can provoke on purpose -- a damaged store answers it for every call --
+    so a leak there is a documented entry point that permanently narrows the gate,
+    which is the T-6 shape the gate itself exists to close.
+
+    One server for the whole test, deliberately: ``build_server`` constructs the
+    semaphore, so a per-call server would hand every exit path a fresh gate and
+    assert nothing.
+    """
+    import theurian.mcp.tools as tools_module
+
+    _land(project)
+    server = build_server(project)
+
+    # (a) the clean return.
+    for _ in range(MAX_CONCURRENT_SEARCHES):
+        await asyncio.wait_for(
+            server.call_tool("review.findings", {"projectId": "demo"}),
+            timeout=_GATE_WAIT_SECONDS,
+        )
+
+    # (b) the refusal a damaged store answers with, raised inside the block.
+    monkeypatch.setattr(tools_module, "SqliteReviewFindingStore", _RaisingStore)
+    monkeypatch.setattr(_RaisingStore, "error", FindingsStoreError)
+    for _ in range(MAX_CONCURRENT_SEARCHES):
+        with pytest.raises(SdkToolError) as refused:
+            await asyncio.wait_for(
+                server.call_tool("review.findings", {"projectId": "demo"}),
+                timeout=_GATE_WAIT_SECONDS,
+            )
+        assert FINDINGS_UNAVAILABLE_REFUSAL in str(refused.value)
+
+    # (c) an unrelated exception, escaping the tool body.
+    monkeypatch.setattr(_RaisingStore, "error", RuntimeError)
+    for _ in range(MAX_CONCURRENT_SEARCHES):
+        with pytest.raises(SdkToolError):
+            await asyncio.wait_for(
+                server.call_tool("review.findings", {"projectId": "demo"}),
+                timeout=_GATE_WAIT_SECONDS,
+            )
+
+    # Every permit must be back: this saturates only if all of them are.
+    gate = _StoreGate(MAX_CONCURRENT_SEARCHES)
+    monkeypatch.setattr(tools_module, "SqliteReviewFindingStore", gate.factory)
+    holders: list[asyncio.Task[Any]] = []
+    try:
+        holders = await _saturate(server, gate, MAX_CONCURRENT_SEARCHES)
+    finally:
+        gate.release.set()
+        await asyncio.wait_for(
+            asyncio.gather(*holders, return_exceptions=True), timeout=_GATE_WAIT_SECONDS
+        )
 
 
 def _live_repo_root() -> Path | None:

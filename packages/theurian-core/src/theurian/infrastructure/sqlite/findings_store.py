@@ -116,6 +116,22 @@ _FINDING_COLUMNS: Final = ", ".join(_FINDING_COLUMN_NAMES)
 #: verified across ASCII, CJK, combining sequences and astral planes (2026-09-03,
 #: SQLite 3.51.2), so a bound stated in characters means the same thing on both
 #: sides of the boundary and the surface above can reason in ``len``.
+#:
+#: **One value would disagree, and it is one no writer here can produce.**
+#: ``substr`` stops at an embedded NUL (measured: ``substr('abc\0defghij', 1, 8)``
+#: is ``'abc'``), so a stored ``finding_text`` carrying one would serve shorter
+#: than the Python-side clamp would have cut it. Nothing reaches that. The shipped
+#: writer takes its text from ``GitTrailerFindingSource``, which frames ``git log``
+#: output by **splitting on NUL** -- so a NUL in a commit message is consumed by
+#: that split (or mis-frames the stream into a ``GitOutputFramingError``) and can
+#: never survive into a finding's text; and a store this installation did not build
+#: is refused before it is opened at all (ADR-0004, SEC-7, T-19), which is what
+#: stands between this statement and a hand-written store. Recorded rather than
+#: repaired because the difference
+#: fails closed: the value is *shorter*, never longer, so nothing is disclosed
+#: that a whole fetch would have withheld. The byte-based alternative
+#: (``substr(CAST(finding_text AS BLOB), 1, ?)``) has no NUL stop and would split
+#: multi-byte characters instead, which is a worse trade on real data.
 _SERVE_COLUMNS: Final = ", ".join(
     "substr(finding_text, 1, ?) AS finding_text" if name == "finding_text" else name
     for name in _FINDING_COLUMN_NAMES
