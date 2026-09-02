@@ -22,13 +22,17 @@ errors it raises. How a search is actually answered lives in
 
 from __future__ import annotations
 
+import functools
+import inspect
 import shlex
 import threading
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 
 from theurian import __protocol_version__, __version__
 from theurian.application.authorization import DEPLOYMENT_TENANT, AuthorizationGrant
@@ -144,8 +148,261 @@ SEARCH_CAPACITY_REFUSAL: Final = (
 )
 
 
-class ToolError(TheurianError):
-    """A tool could not answer. Carries a remedy, never a stack trace."""
+class ToolError(TheurianError, SdkToolError):
+    """A tool could not answer. Carries a remedy, never a stack trace.
+
+    **Both bases are load-bearing, and each answers a different question.**
+
+    ``TheurianError`` is what makes this a deliberate refusal rather than a
+    crash inside this codebase: it carries ``remedy``, and it is the type every
+    ``except TheurianError`` clause outside this module already names.
+
+    ``SdkToolError`` -- ``mcp.server.mcpserver.exceptions.ToolError`` -- is what
+    makes the message reach the caller. From mcp 2.1.0 (upstream PR #3314, "Log
+    MCPServer handler exceptions by kind and keep crash details off the wire",
+    listed as a behaviour change in that release), the tool dispatcher forwards
+    ``str(exc)`` only for exceptions that *are* the SDK's own ``ToolError`` or
+    ``ResourceError``; anything else is treated as a crash, logged with its
+    traceback server-side, and answered with a bare ``Error executing tool
+    <name>``. This class carried the SDK's *name* without its identity, so
+    every remedy written in this module -- ``_with_remedy``, ``_unresolvable``,
+    ``_tenant_boundary_refusal`` and each direct ``raise`` -- was dropped on the
+    way out under 2.1: 44 assertions on the message text went RED (issue #469).
+
+    The SDK's hardening is this project's own posture, so the fix is to say
+    which kind of failure this is rather than to stay behind it (#469, and the
+    same reasoning `_with_remedy` was written under).
+
+    **Nothing about the message moves.** This class defines no ``__init__``, so
+    what a caller reads is what the raise site built, unchanged; the wire shape
+    (``isError`` plus a text content block) is the SDK's and was never a
+    function of the exception's Python type. Under the pinned mcp 2.0.0 the
+    behaviour is identical for a second reason: that dispatcher's
+    ``except Exception`` arm wraps every escaping exception the same way,
+    including the SDK's own ``ToolError``, so the base added here is inert until
+    2.1. Which errors fire, and their text, are unchanged by this class header
+    -- the property the refusal-distinguishability family (SEC-13) depends on.
+
+    ``TheurianError`` is named first so it wins the MRO wherever both bases
+    could answer, which is what keeps ``remedy`` this project's attribute.
+    """
+
+
+#: What a caller sees when a registered tool hands back an un-run body.
+#:
+#: Interpolates the *tool function's* name and nothing else -- no argument, no
+#: `projectId`, nothing read from a store -- so it cannot become the
+#: "an error that fires for one input and not another" channel SEC-13 closes
+#: elsewhere. It fires for one *tool* and not another, which discloses only what
+#: `tools/list` already publishes.
+DEFERRED_RESULT_REFUSAL: Final = (
+    "The tool {tool} returned an un-awaited object instead of a result. This is a "
+    "defect in this daemon, not something your request can fix; the daemon's own "
+    "logs name it. Nothing was read and nothing was changed."
+)
+
+
+def _forwarding[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
+    """Let a deliberate refusal raised *below* this module still reach the caller.
+
+    The second face of issue #469. Subclassing the SDK's ``ToolError`` fixes
+    every refusal this module raises, and nothing else: the store and the
+    connection layer raise their own ``TheurianError`` subclasses --
+    ``SchemaVersionMismatchError``, ``StateDatabaseUnreadableError`` -- which
+    travel up through a tool body that never converts them, are not the SDK's
+    ``ToolError``, and so are treated by mcp >= 2.1 as crashes. Their remedies
+    reached callers under 2.0.0 and stopped under 2.1 (issue #491).
+
+    **Parity, not enrichment.** The wrapper raises ``ToolError(str(exc))`` and
+    nothing more, because ``str(exc)`` is exactly what mcp 2.0.0's blanket
+    ``except Exception`` arm folded into ``Error executing tool {name}: {e}``.
+    Deliberately *not* ``_with_remedy``'s fold: ``exc.remedy`` was dropped by
+    2.0.0 too, so adding it here would publish text this wire has never
+    carried, at a seam whose whole justification is that it changes nothing.
+    The same reasoning forbids the path, the class name and the traceback --
+    an error is a channel, and widening one while restoring it is how a
+    restoration becomes a disclosure (SEC-13, and the family
+    ``StateDatabaseUnreadableError``'s own docstring is written against: it
+    carries the failing exception's *type* and never the corrupted cell, and
+    that stays true because this wrapper only passes its message through).
+
+    **Scoped to ``TheurianError`` alone.** A ``TypeError`` or a bare
+    ``sqlite3.Error`` is a crash, not a refusal, and upstream's decision to keep
+    crash detail off the wire is hardening this project agrees with -- it is
+    left in force. Catching ``Exception`` here would defeat exactly the change
+    that surfaced the bug.
+
+    ``ToolError`` is re-raised untouched rather than rebuilt, so a refusal this
+    module already worded cannot be reworded by passing through this seam.
+    """
+
+    @functools.wraps(fn)
+    def forwarding(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            result = fn(*args, **kwargs)
+        except ToolError:
+            raise
+        except TheurianError as exc:
+            raise ToolError(str(exc)) from exc
+        if inspect.isawaitable(result) or inspect.isasyncgen(result):
+            # The one deferral `_defers_its_body` cannot see at registration: a
+            # plain `def` that *returns* a coroutine. Its body has not run yet,
+            # so the `except` arms above protected nothing, and the SDK -- which
+            # does not await a sync tool's return value -- would serialise the
+            # object's `repr` as a successful result. A caller would receive
+            # `<coroutine object ...>` as knowledge.
+            #
+            # Refused rather than awaited: awaiting here would need an event
+            # loop this synchronous worker thread does not own, and a tool
+            # shaped this way is a defect in the daemon rather than something a
+            # caller can retry into working. The message is a constant apart
+            # from the tool's own name, which the caller supplied.
+            raise ToolError(DEFERRED_RESULT_REFUSAL.format(tool=getattr(fn, "__name__", "?")))
+        return result
+
+    return forwarding
+
+
+#: The code object every :func:`_forwarding` wrapper shares.
+#:
+#: ``forwarding`` is compiled once, when this module is imported, so every
+#: function :func:`_forwarding` returns is a distinct closure over a distinct
+#: ``fn`` but over the *same* ``__code__``. That identity is what
+#: ``is_forwarding_wrapper`` tests: a lookalike built with ``functools.wraps``
+#: -- which copies ``__wrapped__``, ``__name__`` *and* ``__qualname__`` from the
+#: body it wraps, so none of those distinguish it -- still has its own code
+#: object, and a raw ``server.tool`` registration has no ``__wrapped__`` chain
+#: at all. Nothing a refactor can spell to look like the seam shares this
+#: object without going through :func:`_forwarding`.
+_FORWARDING_CODE: Final = _forwarding(lambda: None).__code__
+
+
+def is_forwarding_wrapper(fn: object) -> bool:
+    """Whether ``fn`` is a wrapper :func:`_forwarding` produced.
+
+    The seam's universality is pinned on this rather than on ``hasattr(fn,
+    "__wrapped__")``: the latter accepts *any* ``functools.wraps`` wrapper, so a
+    refactor swapping :func:`_forwarding` for a thin ``wraps`` wrapper would keep
+    the pin green while silently dropping #491's conversion under mcp >= 2.1.
+    Identity of the shared code object cannot be reproduced without calling
+    :func:`_forwarding` (adversarial R2-A).
+
+    ``__wrapped__`` is followed first so the check survives an *additional*
+    wrapper layered outside the seam -- ``functools.wraps`` copies
+    ``__wrapped__`` through, so ``inspect.unwrap`` still reaches the seam
+    beneath a conforming outer wrapper -- while still refusing a lookalike that
+    replaced the seam.
+    """
+    for candidate in (fn, *_wrapped_chain(fn)):
+        code = getattr(candidate, "__code__", None)
+        if code is _FORWARDING_CODE:
+            return True
+    return False
+
+
+def _wrapped_chain(fn: object) -> Iterator[object]:
+    """Each ``__wrapped__`` link out from ``fn``, ``fn`` itself excluded."""
+    seen: set[int] = set()
+    current = getattr(fn, "__wrapped__", None)
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = getattr(current, "__wrapped__", None)
+
+
+def _defers_its_body(fn: object) -> bool:
+    """Whether calling ``fn`` returns *before* its body runs.
+
+    The predicate `_tool`'s guard needs, and it is not "is it async". What
+    breaks :func:`_forwarding` is any callable that hands back an object and
+    runs its body later, outside the ``try`` -- so the refusal is raised when
+    the wrapper is no longer on the stack and the ``except`` arm cannot see it.
+    Three shapes do that, and a first version of this guard named only the first:
+
+    * a coroutine function -- awaited later;
+    * an async generator function -- iterated later;
+    * a plain generator function -- iterated later. Not async at all, which is
+      why an "is it async" predicate misses it.
+
+    Each is asked twice: once of ``fn`` itself, and once of ``type(fn).__call__``
+    for a callable *object*, whose deferral lives on the method rather than on
+    the instance. ``inspect.iscoroutinefunction`` answers ``False`` for an
+    instance of a class whose ``__call__`` is ``async def``.
+
+    **The fourth shape is not decidable here and is deliberately left to
+    runtime.** A plain ``def`` that *returns* a coroutine looks exactly like a
+    well-behaved tool at registration; nothing short of calling it can tell.
+    :func:`_forwarding` checks its own result for that instead -- see the
+    awaitable branch there -- which is where the information exists.
+    """
+    deferring = (
+        inspect.iscoroutinefunction,
+        inspect.isasyncgenfunction,
+        inspect.isgeneratorfunction,
+    )
+    call = getattr(type(fn), "__call__", None)  # noqa: B004 -- the method, not a call
+    return any(test(fn) for test in deferring) or any(test(call) for test in deferring)
+
+
+def _tool[**P, R](
+    server: MCPServer, **registration: Any
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """``server.tool``, with :func:`_forwarding` applied first.
+
+    The one seam. Registration goes through here rather than through
+    ``server.tool`` directly so that "a refusal raised below this module still
+    reaches the caller" is a property of the *surface*, not of five separately
+    remembered tool bodies -- the shape that let ``knowledge.get`` and
+    ``knowledge.search`` disagree about the same store failure in the first
+    place.
+
+    **A tool registered any other way silently opts out, and two different pins
+    catch that -- because one of them cannot.**
+    ``tests/unit/test_tool_error_type_contract.py::test_every_tool_is_registered_through_the_one_seam``
+    reads ``register``'s AST and catches a *decorator* that names something other
+    than ``_tool``. It cannot catch a bypass inside this function: deleting
+    :func:`_forwarding`'s application below leaves that decorator untouched, and
+    the whole suite stayed green under exactly that mutation while every #491
+    remedy went back to being withheld under mcp >= 2.1.
+    ``tests/integration/test_mcp_tools.py::test_every_registered_tool_goes_through_the_forwarding_seam``
+    is the pin that cannot be spelled around: it asks the *built* server whether
+    each registered ``Tool.fn`` carries ``functools.wraps``' ``__wrapped__``.
+
+    ``functools.wraps`` keeps the wrapped signature, annotations and docstring,
+    which is what the SDK reads to build each tool's input and output schema;
+    ``tests/integration/test_wire_contract.py`` validates real responses
+    against the published schemas, so a wrapper that broke that introspection
+    would fail there rather than silently reshape the contract.
+    """
+
+    def decorate(fn: Callable[P, R]) -> Callable[P, R]:
+        if _defers_its_body(fn):
+            # `_forwarding`'s wrapper is synchronous, and its `except` arm only
+            # sees exceptions raised *while it is on the stack*. Any callable
+            # that returns before its body runs -- a coroutine function, an
+            # async generator, a plain generator -- hands back an object instead,
+            # and the refusal is raised later, when the wrapper is long gone. The
+            # conversion silently stops applying, and only under mcp >= 2.1.
+            # Refused at registration, where it is a startup failure rather than
+            # a disclosure regression discovered by a caller.
+            #
+            # `getattr` rather than `fn.__name__`: a `functools.partial` has no
+            # `__name__`, and building this message would raise `AttributeError`
+            # from inside the guard -- a refusal either way, but one that names
+            # nothing.
+            msg = (
+                f"{getattr(fn, '__name__', repr(fn))} defers its body (it is a "
+                f"coroutine, async generator, or generator function), and "
+                f"`_forwarding` only wraps callables that run their body when "
+                f"called. Give `_forwarding` a matching branch before registering "
+                f"it, or the below-surface refusal conversion (#491) will not "
+                f"apply to it."
+            )
+            raise TypeError(msg)
+        registered: Callable[P, R] = server.tool(**registration)(_forwarding(fn))
+        return registered
+
+    return decorate
 
 
 #: Cap on `asOf` before it can be echoed into an error message. An RFC 3339
@@ -724,7 +981,8 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
 
         return paths, database, active
 
-    @server.tool(
+    @_tool(
+        server,
         name="knowledge.search",
         description=(
             "Search a project's approved knowledge. Returns results with full "
@@ -962,7 +1220,8 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             )
         return answer if integrity is None else {**answer, "integrity": integrity}
 
-    @server.tool(
+    @_tool(
+        server,
         name="knowledge.get",
         description="Fetch one knowledge item's current revision, with provenance.",
     )
@@ -1122,7 +1381,8 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             payload["integrity"] = integrity
         return payload
 
-    @server.tool(
+    @_tool(
+        server,
         name="knowledge.status",
         description=(
             "Report a project's knowledge state: item counts by status, the "
@@ -1210,7 +1470,8 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             response["integrity"] = integrity
         return response
 
-    @server.tool(
+    @_tool(
+        server,
         name="project.list",
         description=(
             "List projects this daemon serves, and the registry entries it could "
@@ -1272,7 +1533,8 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             else None,
         }
 
-    @server.tool(
+    @_tool(
+        server,
         name="system.capabilities",
         description=(
             "What this Core build supports. Lets a client degrade per feature "
