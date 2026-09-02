@@ -9,10 +9,13 @@ on the diff that changes that, and it is the record of which claims had to be
 corrected alongside.
 
 **Scoped to one key on purpose.** ``providers.review.repositories`` is SEC-10's
-allowlist and is still owed with review ingestion
-(`#129 <https://github.com/theurian/theurian/issues/129>`_); nothing here reads
-it, and the call-sites test still pins that absence. A reader added for one key
-does not license adding one for the other.
+allowlist and is still owed
+(`#429 <https://github.com/theurian/theurian/issues/429>`_ owns it against the
+first external fetch path, as
+`#129 <https://github.com/theurian/theurian/issues/129>`_ closed on this
+sentence's wording rather than on the control); nothing here reads it, and the
+call-sites test still pins that absence. A reader added for one key does not
+license adding one for the other.
 
 **Absent means ``block``, and unrecognised means refuse.** Those are two rules
 and not one. A project with no configuration file, or one that says nothing

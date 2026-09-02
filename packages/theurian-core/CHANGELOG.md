@@ -12,7 +12,778 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **A refusal keeps reaching its MCP caller with its own message under mcp
+  2.1 and later, exactly as it did under 2.0**
+  ([#469](https://github.com/theurian/theurian/issues/469),
+  [#491](https://github.com/theurian/theurian/issues/491)). mcp 2.1.0
+  (upstream PR #3314, listed there as a behaviour change) split the tool
+  dispatcher's `except Exception` arm: `str(exc)` is forwarded only for
+  exceptions that *are* the SDK's own `ToolError` or `ResourceError`, and
+  everything else is treated as a crash — logged with its traceback
+  server-side, answered with a bare `Error executing tool <name>`. Every
+  refusal this daemon raises fell into the crash arm at once, so an agent
+  that should have been told to re-register a project or to rebuild an
+  unreadable state database would have read the tool's name and nothing
+  else. Measured on [#460](https://github.com/theurian/theurian/pull/460)'s
+  `mcp` 2.0.0 → 2.1.1 bump: 44 assertions on message text went RED.
+
+  **Two causes, not one.** `mcp/tools.py`'s `ToolError` carried the SDK's
+  *name* without its identity — it shadowed
+  `mcp.server.mcpserver.exceptions.ToolError` and never subclassed it. It
+  now declares both bases, `TheurianError` first so `remedy` and every
+  `except TheurianError` clause are untouched; that closes 41 of the 44. The
+  other 3 were a different root cause (#491): `TheurianError` subclasses
+  raised *below* that module — `SchemaVersionMismatchError` and
+  `StateDatabaseUnreadableError` from `infrastructure/sqlite/connection.py`
+  — travel up through a tool body that never converts them, so they were
+  never the SDK's `ToolError` either. Those two are the measured reachable
+  set: instrumenting the conversion seam and driving nine MCP integration
+  files, exactly two types reach it — `StateDatabaseUnreadableError` 192
+  times and `SchemaVersionMismatchError` 6. Conversion is now one seam
+  rather than five tool bodies: `_tool` replaces the five `@server.tool`
+  registrations and turns an escaping `TheurianError` into
+  `ToolError(str(exc))`, so "a refusal raised below the surface still
+  reaches its caller" is a property of the surface. Two tests hold that,
+  and the division matters: a source scan catches a *decorator* that names
+  something other than the seam, and a runtime check asks the built server
+  whether each registered tool *is* the forwarding seam — identified by the
+  code object every one of its wrappers shares, not by the presence of a
+  `functools.wraps` marker, which a lookalike wrapper also carries. Only the
+  second can fail when the seam is bypassed from *inside* the registration
+  helper — the first reads spelling, and adversarial review demonstrated
+  bypasses (a deleted application, then a `wraps` lookalike) that left every
+  decorator identical and the whole suite green.
+
+  **Nothing a caller reads moves.** The seam forwards the refusal's own text
+  and adds nothing to it — not `remedy`, not a path, not the class name, not
+  the traceback or the exception chain. `str(exc)` is exactly what mcp
+  2.0.0's blanket arm folded in, and widening an error while restoring it is
+  how a restoration becomes a disclosure (SEC-13); it is what keeps
+  `StateDatabaseUnreadableError` naming the failing exception's *type* and
+  never the corrupted cell. Measured with one probe against three trees: for
+  all five refusal classes probed — the two reachable ones included — the
+  wire text is byte-identical between this fix under 2.1.1, this fix under
+  2.0.0, and the unfixed tree under 2.0.0. The 44 node ids that were RED
+  under 2.1.1 pass.
+
+  **The text of an exception that escapes a tool body stays withheld under
+  mcp 2.1 and later unless it is a deliberate refusal, by design.** The seam
+  catches `TheurianError` and nothing wider, so a `TypeError`, an `OSError`
+  or a bare `sqlite3.Error` is left in upstream's crash arm — the one cell
+  the same probe measured moving. In that probe each tool was *named* after
+  the exception class it raises, so the tool name is what mcp interpolates
+  and what the quotes below repeat: `Error executing tool TypeError: an
+  internal call was made with the wrong arity` under 2.0.0 against `Error
+  executing tool TypeError` under 2.1.1. Upstream's withholding is hardening
+  this project agrees with, and catching `Exception` at the seam would
+  defeat the change that surfaced the bug.
+
+  The claim is scoped to exceptions that *escape a tool body*, because it is
+  not true of the whole wire: the SDK refuses a malformed call before the
+  body runs, with its own `ToolError` carrying pydantic's validation text —
+  which echoes the caller's own argument back. Measured under both 2.0.0 and
+  2.1.1, that text is byte-identical, so this change neither widens nor
+  narrows it, and what it echoes is the caller's own input rather than
+  anything read from a project.
+
+  The seam only sees what is raised while it is on the stack, so a tool that
+  returned before running its body would silently opt out. Registration now
+  refuses a coroutine, async-generator or generator function, and a callable
+  object whose `__call__` is one of those; a plain function that *returns* an
+  awaitable cannot be recognised until it is called, so the wrapper refuses
+  that at call time rather than letting the SDK serialise an un-awaited
+  object as a successful result. No registered tool has any of these shapes.
+
+  Under mcp 2.0.0 nothing user-visible changes either way: that dispatcher
+  wraps the SDK's own `ToolError` exactly like anything else, so the added
+  base is inert there, and the seam emits the text the blanket arm already
+  folded in.
+
+### Documentation
+
+- **T-17's round-5/6/7 residual figures are re-run against a real purged build,
+  and the ADR-0024 point-4 clauses #445 asks about are answered by measurement**
+  ([#472](https://github.com/theurian/theurian/issues/472),
+  [#445](https://github.com/theurian/theurian/issues/445),
+  [#486](https://github.com/theurian/theurian/pull/486)). The threat model's
+  T-17 discharge note records that every figure in those rounds was taken
+  against a build that still held withdrawn rows, and that none had been re-run.
+  [`docs/work-logs/2026-09-01-472-purged-build-re-measurement.md`](../../docs/work-logs/2026-09-01-472-purged-build-re-measurement.md)
+  is that re-run, on a real canonical store and a real index purged through
+  `SqliteIndexStore.derive_purged` — the call the withdrawal trigger makes —
+  with the stale build reported beside the purged one in every table, so a
+  harness that measures nothing cannot pass. #472 stays open for face A, and
+  #445 stays open for the ADR-0024 reconciliation these answers feed.
+
+  **The purge does not make these quantities smaller; it removes the term they
+  are functions of.** At 5,990 withheld rows the canonical-read count goes
+  6,000 → 10 and the gate 157.71 ms → 0.24 ms; at 5,950 the `tracemalloc` peak
+  goes 8,244.4 KB → 84.9 KB; the pass-count edge at `FIRST_PASS_DEPTH` is
+  crossed by the stale build from 51 withheld and never by the purged one; one
+  scan over the corpus goes 85.10 ms → 1.21 ms, against 1.05 ms for a build that
+  never held the rows; and T-17a's five BM25 collection statistics match the
+  never-held build on all five where the stale build differs on all five. The
+  4.3 KB step visible in the purged peak-memory column is isolated to the harness
+  rather than explained away — retriever and gate measured separately are flat to
+  0.1 KB across the whole sweep, nine repeats each. **F5's 29.17 ms has no
+  purged-build counterpart and is recorded as not re-runnable**: its subject,
+  `SqliteIndexStore._scan_cache`, was deleted in Milestone 6
+  ([#16](https://github.com/theurian/theurian/issues/16)), so what the cache
+  saved cannot be re-priced; what it stood in front of is measured instead.
+
+  **What a purged build still carries** is the byte residue
+  [#344](https://github.com/theurian/theurian/issues/344) already records, now
+  quantified: a purge page-copies the published build and deletes from the copy,
+  so the purged file's size and free-page count are a monotone function of the
+  pre-purge corpus — 9.7 MB and 587 free pages to serve fifty rows. No query
+  reads a free page and the retriever's peak is flat across a 34× change in file
+  size, so the residue stays a disk-forensics surface rather than a query-side
+  one; what is new is that it scales with what was withdrawn.
+
+  **ADR-0024 point 4 is one true clause and two false ones.** No index write path
+  takes a lock — the advisory lock guards the *state* databases, and the purge's
+  publish half creates no lock file at all. There are eleven writable opens of an
+  index file across `index_store.py` and `index_purge.py` with no common gate, so
+  "exactly one such interface" holds only if *interface* means the port plus the
+  module it delegates to, which is a layering statement and not the single-writer
+  contract ADR-0018 point 1 defines. Nothing outside those two modules opens an
+  index file for writing, and that is the clause that survives. The records
+  themselves are not edited here; that is the follow-up pull request's scope.
+
+  **The population of records to update is derived rather than guessed.** A key
+  built from the work log's own F1–F9 reconstruction table — every figure those
+  records publish in its Figure column, plus the roundings the records use —
+  returns 48 lines at `ec0dbcd`, classified exhaustively into four buckets that
+  sum to 48: 19 inside the T-17 entry, 15 lines over **ten** satellite sites that
+  cite a round-5/6/7 figure as current, one shipped changelog line, and 13 hits
+  on figures these records borrow rather than produce. Two of the ten —
+  `application/visibility.py` and `tests/unit/test_result_gate_session.py` —
+  carry a linearity claim as well as the figures, and the purged column's flat
+  ten reads leave no line to be linear, so those two need the claim rewritten in
+  addition to the numbers.
+
+  Every figure is a measurement at one anchor (`ec0dbcd`, Apple M1 Max, CPython
+  3.13.3, SQLite 3.47.1, 2026-09-01) and not an invariant. The work log grades
+  itself the way it grades the records it re-measures: the harness was scratch
+  and is not committed, so no table here is reproducible by a reader yet. The
+  durable producer is the pins work in flight on
+  `docs/472-purged-records-and-pins`, which turns the flat purged columns into
+  tests under `packages/theurian-core/tests/integration/`.
+
+- **Four more config-reader universals are narrowed, `store.py`'s retracted
+  NFR-4 citation is corrected, and the dead `#15`/`#113` owner cites in the
+  purge path and three ADRs are repointed or classified as history**
+  ([#447](https://github.com/theurian/theurian/issues/447),
+  [#454](https://github.com/theurian/theurian/issues/454),
+  [#444](https://github.com/theurian/theurian/issues/444),
+  [#464](https://github.com/theurian/theurian/issues/464),
+  [#487](https://github.com/theurian/theurian/pull/487)). Four records that
+  [#426](https://github.com/theurian/theurian/issues/426) and
+  [#428](https://github.com/theurian/theurian/issues/428) had already corrected
+  elsewhere still carried the retracted version, each in a file those sweeps did
+  not reach.
+
+  **Three "nothing in `src/` reads `.theurian/config.yaml`" universals** —
+  `application/forest_builder.py`'s `SUMMARY_MAX_TOKENS` comment,
+  `test_forest_derivation.py::test_the_option_defaults_are_the_config_schemas_own`
+  and `test_schemas.py::test_the_raptor_forest_is_declared_off_by_default` — are
+  narrowed to the `raptor` block, the population that still has no reader. The
+  universal stopped being true when ADR-0027 decision 3 shipped
+  `security/project_config.py::read_secret_scan_policy`, which reads
+  `security.secretScan` and nothing else. No conclusion leaned on the file being
+  unread — each leans on these keys being unread — so the premise is narrowed
+  rather than the paragraph deleted.
+
+  **Which half is pinned is stated rather than assumed.**
+  `test_config_key_call_sites.py` holds the fact side, over `raptor` key
+  spellings derived from `properties.raptor.properties` in the schema, so a
+  loader that names one goes RED. The prose side of these three is **unpinned**,
+  because `test_raptor_config_claims.py` is scoped to the three files #426
+  corrected and these are not among them; both test docstrings now say so. So is
+  the fact side's one measured gap: a read bound to `max_levels` or
+  `min_children_per_summary` inside `application/forest_builder.py` adds no new
+  `(module, spelling)` pair, since `ForestOptions` already owns both names there
+  — mutation A1 SURVIVED for that reason where A2, the same read in another
+  module, was KILLED.
+
+  **`store.py`'s module docstring** said reads open their own WAL connection "so
+  a search never blocks on a running rebuild (NFR-4, NFR-7)". NFR-4 is about the
+  *retrieval index*, which has been a separate file since ADR-0022 and is
+  republished by writing a new one and swapping a pointer — something no WAL
+  connection spans. ADR-0018's Neutral consequence made the same mis-citation and
+  its Milestone 5 amendment retracted it, but the retraction had not travelled
+  here. The NFR-7 half is kept and stated as what this file settles: a
+  `migrate apply` write does not block a reader of the state database. Whether
+  ADR-0024 points 6 and 7 leave NFR-4 discharged is left open rather than
+  answered — the ADR records still disagree, which is
+  [#140](https://github.com/theurian/theurian/issues/140)'s first item.
+
+  **The purge path's two owner cites** named things that cannot own work.
+  `application/withdrawal_purge.py` handed the single index-writer interface
+  ADR-0018 point 1 owes to "issue #15's follow-through", and no such tracker
+  exists: #15 closed on 2026-08-10 (`66a43ae`) by shipping the withdrawal→purge
+  trigger that function *is*, not the interface it writes without.
+  `application/project_service.py` called a compare-and-swap pointer write
+  "#113's scope", and #113 is the merged pull request that shipped the
+  purge-is-a-build model the same day, so it holds no owed work. Both now name
+  [#439](https://github.com/theurian/theurian/issues/439), which owns the derived
+  index's single-writer contract. The other #113 cite at the head of that bullet
+  names the same pull request as the *mechanism* the check rests on, which is
+  history and is left alone.
+
+  **The doc-side `#15` cites are classified per the closure-reason rule**, so
+  only the one that pointed at unbuilt work moved. ADR-0022's Still-owed bullet
+  headed "(Milestone 6, #15)" is repointed at #439 — Milestone 6 has passed, and
+  #15 closed by wiring ADR-0024 decision 5, which is the *answer* recorded below
+  that bullet and not the writer discipline the bullet asks for. Its measurement
+  is pasted rather than summarised, and anchored: at `ec0dbcd`,
+  `git grep -nE "flock|lockf|LOCK_EX|write_lock" -- packages/theurian-core/src`
+  returned ten lines, every one the canonical `ProjectPaths.write_lock` or the
+  daemon's single-instance lock and none in an index write path. That count is
+  the anchor's, not today's — `266e6b6` (#478, merged during this release
+  window) took the same lock across `migrate apply`'s critical section and the
+  command returns 18 lines at this branch's head. The conclusion is unchanged,
+  because every added line is that same state-database lock or prose about
+  `flock` semantics, and none is an index write path. ADR-0008's
+  "#15 removes those rows" is history: the actor is
+  `application/withdrawal_purge.py`, and the sentence never named a live tracker
+  — #15 closed at 19:45 +0900 and the sentence entered the file at 22:27 +0900
+  the same day (`379e197`). ADR-0023's two future-tensed sentences are tensed
+  against the shipped purge, each dated note naming its subject so the two are
+  distinguishable when scanning: T-17a's duration face, and the canonical-read
+  residual left by dropping the `LIMIT`.
+
+  Prose, comments and docstrings only — `forest_builder.py`,
+  `project_service.py`, `withdrawal_purge.py` and `store.py` are AST-identical to
+  their parents once docstrings are stripped, checked with a positive control,
+  and no behaviour changes. Carried: the three served corpus twins under
+  `.theurian/knowledge/architecture/` — `raptor-forest`,
+  `index-lives-in-its-own-database` and
+  `trigram-index-beside-the-word-index` — hold the uncorrected sentences
+  byte-identically and move only on a governed re-seed (#199 unit C mechanics),
+  which follows in its own PR.
+
+## [0.1.0.dev16] - 2026-09-02
+
+### Fixed
+
+- **Two concurrent `theurian migrate apply` invocations against a fresh
+  project no longer race `create_database` and the pointer publish outside
+  the advisory write lock**
+  ([#468](https://github.com/theurian/theurian/issues/468)). Measured on
+  eight real two-process runs (`theurian-adversarial-review`, PR #446 round
+  2): the loser crashed in four, three distinct unhandled `sqlite3` errors,
+  because `create_database` ran before the migration transaction opened and
+  `write_active_state` ran after it committed, both unlocked, so `--json`
+  requested a defined outcome and got a Rich traceback instead.
+
+  `migrate apply` now holds one advisory lock across its whole critical
+  section — the discard/create decision, `create_database`, the migration
+  transaction, the provenance record and the pointer publish, in that order
+  — rather than the migration content alone. A first version of this fix
+  held the same lock in two separate acquire/release cycles instead of one,
+  and review found a real gap in the window between them:
+  `provenance.record_state` ran after the pointer publish and outside any
+  lock, so a slower process racing a faster one could observe
+  `has_state == False` for a database the faster process had already built
+  and published, and the untrusted-state discard branch — meant for a
+  doctored, committed `.theurian/state/` — deleted and rebuilt that live
+  database out from under it (13/78 raced pairs measured both processes
+  `databaseCreated: true`; one pair produced two winners). The shipped
+  design holds one lock for the whole sequence instead, with the provenance
+  record moved ahead of the pointer publish, so there is no window where
+  `active.json` names a state hash the serve-side provenance gate has not
+  yet been told about. Re-measured with the same two-process harness and a
+  synthetic stagger sweep built to reproduce the two-winner shape directly:
+  zero crashes, zero double-`databaseCreated`, zero two-winner pairs, across
+  five runs of eight pairs each.
+
+  ADR-0018 Decision point 2 and its Positive-consequence bullet — narrowed
+  on 2026-08-31 to record the gap this closes — are updated to say so.
+
+### Documentation
+
+- **ADR-0027 and the SQLite write path no longer repeat ADR-0018's corrected
+  lock clause or its retracted single-interface claim**
+  ([#433](https://github.com/theurian/theurian/issues/433),
+  [#434](https://github.com/theurian/theurian/issues/434),
+  [#441](https://github.com/theurian/theurian/pull/441)). Two records carried
+  copies of claims that [#432](https://github.com/theurian/theurian/pull/432)
+  and ADR-0018's own Milestone 5 amendment had already retracted, and nothing
+  tied a copy to its original.
+
+  **ADR-0027's decision-2 residue** described the Milestone 1 mechanism as "an
+  OS advisory file lock on the state database" while reasoning about the accept
+  path's file moves. It is narrowed the way #432 narrowed ADR-0018 point 2 — the
+  lock is taken on the separate `.theurian/runtime/write.lock` and guards the
+  state databases under `.theurian/state/` — and the reasoning built on it is
+  unchanged, because it never depended on which object was locked: the accept
+  path's file moves are outside that lock either way.
+
+  **`connection.py` and `store.py`** asserted that writes go through one
+  interface. In `connection.py` the module docstring said so and
+  `write_transaction`'s called itself "The only way to write", adding that
+  "`CanonicalStore` exposes no connection"; `store.py` carried three more faces,
+  the last of which — "there is no way to build one otherwise, so the
+  single-writer guarantee cannot be sidestepped by reaching for this class" —
+  was not merely overstated: `SqliteWriter(sqlite3.connect(":memory:"))` builds
+  a writer from any connection, with no lock and no transaction. All five
+  docstrings now state the mechanism that is real — `write_transaction` takes
+  the advisory flock on `lock_path` and holds it for the transaction — and the
+  guarantee as the amendment records it: held by convention at each call site,
+  because the `CanonicalStore` port publishes its write methods directly. What
+  the read/write split does buy is kept and made checkable rather than asserted:
+  `SqliteCanonicalStore` publishes no write method and reads through
+  `open_read_connection`, which passes `mode=ro`, so SQLite refuses a write
+  issued on that connection. `write_transaction`'s `Raises:` now documents
+  `WriteLockTimeoutError` beside `StateDatabaseUnreadableError`, and the
+  ADR-0018 point 3 citation carries both of that point's mechanisms — the
+  daemon-owned queue *and* the file lock a CLI invocation running alongside it
+  still needs.
+
+  **Both corrections are pinned in both directions**, so drifting back and the
+  owed mechanism landing each turn a test RED: `test_adr_0027_claims.py` and
+  `test_connection_claims.py` hold the prose, a shared
+  `tests/write_lock_claims.py` derives the two paths once from the live
+  `ProjectPaths` for every record that names them, and the port's shape is read
+  live rather than restated — the day a single write interface lands, "held by
+  convention" must move with it. One limit is stated rather than implied: the
+  docstrings say two processes entering `write_transaction` serialise, which is
+  inherited from `fcntl.flock` rather than measured here, since the one test
+  that builds the lock directly runs two `WriteLock` objects in a single
+  interpreter.
+
+  Prose and docstrings only — `connection.py` and `store.py` are AST-identical
+  to their parents once docstrings are stripped, and no behaviour changes.
+  Residues owned: the single write interface ADR-0018 records as owed
+  ([#439](https://github.com/theurian/theurian/issues/439)); ADR-0018's
+  Milestone 5 amendment, whose count of the port's write methods the port never
+  matched
+  ([#446](https://github.com/theurian/theurian/pull/446)); and the served corpus
+  twin under `.theurian/knowledge/architecture/`, which carries the retracted
+  sentence byte-identically and moves only on a governed re-seed (#199 unit C) —
+  the same carry #417 and #432 record.
+
+- **The "nothing in `src/` reads `.theurian/config.yaml`" universals are narrowed
+  to the key populations that are still unread, and pinned**
+  ([#426](https://github.com/theurian/theurian/issues/426),
+  [#448](https://github.com/theurian/theurian/pull/448)). ADR-0027 decision 3
+  shipped `security/project_config.py::read_secret_scan_policy`, called from
+  `application/proposal_service.py` at `theurian propose accept`. A sentence that
+  had been true across several records stopped being true that day, and nothing
+  went red. Each is narrowed to the population that still has no reader rather
+  than deleted, and every conclusion that leaned on the retracted premise is
+  re-derived rather than carried over.
+
+  **The raptor family**: `docs/architecture/raptor.md`, and three sentences of
+  ADR-0008 — decision 10's rationale, its "switch is the CLI flag" note, and the
+  amendment to decision 3, the last found by the pin work after the first two
+  were fixed. What is unread is the `raptor` block, not the file, and both
+  conclusions hold on that narrower fact: the CLI flag is still the switch and
+  not the config key, and an operator still cannot move
+  `minChildrenPerSummary`. The rationale took a different repair from the other
+  two — it is *tensed* rather than narrowed, since it describes the state as the
+  decision was taken, and its own paragraph now says which of its clauses have
+  moved since and which have not.
+
+  **ADR-0024 decision 2** said nothing reads either `index_metadata` column back,
+  so a copy inheriting its parent's identity was "latent rather than broken".
+  That is true of `built_at` alone now: `SqliteIndexStore.add_nodes` selects
+  `index_build_id` out of the file it is writing into, to stamp each summary node
+  with the build it belongs to. The re-derivation is sharper than the retracted
+  version rather than merely narrower — the first reader the decision predicted
+  arrived *on the purge path itself*, because `purge_into` runs the forest
+  recompute before `_restamp`, so a `--raptor` purge writes nodes carrying the
+  parent's id and `_restamp`'s `UPDATE nodes` is what repairs them. The docstring
+  of `test_index_purge.py::test_a_purged_build_names_itself_in_its_own_metadata`
+  carries the same correction; its assertions are unchanged.
+
+  **The sample project's allowlist annotation** carried two defects in one
+  comment block: the file-level premise, and an owner that had closed.
+  `providers.review.repositories` still has no reader, but the file it sits in
+  does, so the annotation names the key rather than the file, and names the
+  reader the file has beside it. SEC-10's allowlist is owed against the first
+  external fetch path, which [#429](https://github.com/theurian/theurian/issues/429)
+  owns — [#129](https://github.com/theurian/theurian/issues/129) closed on the
+  wording rather than on the control, and this annotation had been left out of
+  the repoint [#425](https://github.com/theurian/theurian/pull/425) made to the
+  threat model, `docs/architecture/review-knowledge.md` and
+  `infrastructure/github/`.
+
+  **Every narrowed claim is held by something derived rather than restated, and
+  in both directions.** The `raptor` keys join `test_config_key_call_sites.py`'s
+  call-site watch with their spellings **derived from the schema** —
+  `properties.raptor.properties` in
+  `schemas/config/project-config.schema.json`, guarded by a population control
+  that reddens if the block is renamed or emptied — so the day a loader names one
+  of them, the enumeration reddens and these records must move with it.
+  `test_index_metadata_claims.py` scans the imported package for a consumer of
+  each `index_metadata` column, with the column population parsed out of
+  `INDEX_DDL` rather than transcribed, so a column added to the table is watched
+  from the moment it exists; the count the decision bounds its `built_at` claim
+  with is held beside it, since `metadata()` fetches every column and the claim
+  rests on neither of its two callers reading that one.
+  `test_index_build_id_read_back.py` drives the read
+  itself rather than asserting it: a file whose metadata row is missing is refused
+  with the product's own error, and `add_nodes` is pinned to take no build-id
+  argument, so the stamp cannot quietly become something a caller supplies.
+  `test_raptor_config_claims.py` holds the prose — each narrowed sentence
+  positively, plus a negative scan that reddens if the retracted wording returns —
+  with the dated correction notes scanned rather than skipped: only what a
+  retraction verb introduces is excised, inline code spans are neutralised first
+  so the asterisks of a `SELECT *` cannot swallow a live sentence between them,
+  and every scanned surface has a recorded note count so the exclusion cannot
+  widen unnoticed. `test_examples.py`'s `ANNOTATED_KEYS` row pins the sample
+  config's annotation in three parts: the reader the file has, the key that has
+  none, and the live owner.
+
+  Documentation and tests only — this change touches no file under
+  `packages/theurian-core/src/`. Two limits are recorded in the modules rather
+  than left implied. The column scan resolves only what sits between `SELECT` and
+  `FROM`, so a `WHERE`, `ORDER BY`, `GROUP BY`, `HAVING` or `DELETE` keyed on a
+  column is pinned as a deliberate miss: whether a filter or a delete key
+  "consumes the value" is a question ADR-0024 decision 2 has not answered, and the
+  shapes are recorded where the next reader sees the gap and the question
+  together. The note exclusion's backtick pairing is an approximation, and an
+  unbalanced backtick can leave a verb-led reassertion hidden — a false green,
+  bounded on the shipped surfaces by
+  `test_every_block_the_exclusion_runs_on_pairs_its_backticks`. Residues owned:
+  the members of this class outside the surfaces these modules scan —
+  [#447](https://github.com/theurian/theurian/issues/447) for the Python ones,
+  [#455](https://github.com/theurian/theurian/issues/455) for the wheel-shipped
+  root `description` in `schemas/config/project-config.schema.json`, and
+  [#461](https://github.com/theurian/theurian/issues/461) for a Markdown one under
+  `plugins/` — and the served corpus twins of ADR-0008 and ADR-0024 under
+  `.theurian/knowledge/architecture/`, which carry the retracted sentences
+  byte-identically and move only on a governed re-seed (#199 unit C), the same
+  carry #417 and #432 record.
+
+- **ADR-0018's owed single-writer work names a live owner, its write-method
+  count matches the port, and the README states the NFS exclusion**
+  ([#436](https://github.com/theurian/theurian/issues/436),
+  [#417](https://github.com/theurian/theurian/issues/417),
+  [#446](https://github.com/theurian/theurian/pull/446)). One document was
+  pointing owed work at a closed issue, naming a count the port has never had,
+  and keeping an operator-facing exclusion in records operators do not read.
+
+  **The owner-cites.** ADR-0018 cited
+  [#15](https://github.com/theurian/theurian/issues/15) three times as the
+  Milestone-6 owner of owed work: the `CanonicalStore` single write interface,
+  the Protocol-surface pin that waits on it, and the derived index's missing
+  contract. #15 closed on 2026-08-10 (`66a43ae`) by wiring ADR-0024 decision
+  5 — the withdrawal→purge trigger — which is none of those three, and Milestone
+  6 is past. Each cite is classified by what that closure shipped and repointed
+  at [#439](https://github.com/theurian/theurian/issues/439), filed for the work
+  itself: the two Compliance cites are corrected in place, each keeping the
+  retracted pointer inside the sentence that corrects it, while the Milestone-5
+  amendment's sentence stays verbatim under a dated note, because that
+  blockquote is a record of what was believed then. The index bullet now records
+  what did land — `migrate apply` publishes a purged build through
+  `application/withdrawal_purge.py`, so `theurian index build` is no longer the
+  index's only writer — and what did not: no index write lock exists anywhere
+  under `packages/theurian-core/src` (measured at `6b83be1`, unchanged at
+  `c3886db`), which the purge states of itself in its own source.
+
+  **The write-method count.** The Milestone-5 amendment said the port publishes
+  "twelve write methods directly". It publishes thirteen, and the measurement
+  refutes the obvious reading that the port grew one: counted by the key
+  `test_connection_claims.py` uses — `CanonicalStore`'s public members that
+  declare no return value — the port has published thirteen since `261eff3`
+  (2026-08-01), the commit that introduced it, and still did at `f665ecf`
+  (2026-08-07), the commit that wrote the amendment, with no revision of that
+  file counting otherwise. So it is corrected in place under a dated note rather
+  than left standing as a record that aged. This discharges the residue the
+  entry above records, and corrects that entry's framing: the count never
+  matched, rather than stopped matching.
+
+  **The NFS exclusion, where an operator meets it.** ADR-0018 accepts the
+  advisory lock's behaviour on network filesystems by putting a `.theurian/`
+  directory on NFS outside the supported configuration, records that nothing
+  detects that it is, and rejects rather than defers building a probe. README's
+  quick start now carries one line of that, immediately after what `init`
+  creates, citing ADR-0018 rather than re-asserting the absence on its own
+  authority. It promises no detection in any tense.
+
+  **The point-1 escape hatch, re-measured.** The Compliance bullet for point 1
+  said that adding a `connection()` method to the port leaves the suite green
+  and nothing notices. Two of the three spellings now fail:
+  `-> sqlite3.Connection` under `test_connection_claims.py`'s port-shape pin,
+  which reads it as a member returning a context manager, and the unannotated
+  `def connection(self)` under
+  `test_ports.py`'s annotation rule. `-> object` still slips through, and the
+  bullet now records it as the residual. Every spelling was injected in a
+  throwaway checkout with a control run first, and the two failures were re-run
+  at `c3886db` — an ancestor on `main`, not a branch tip — so the anchor survives
+  the squash. The Milestone-5 figures the bullet used to quote are dropped rather
+  than refreshed, since nothing here re-measured that suite, and no new suite
+  total is quoted in their place.
+
+  **Point 2's serialisation claim is narrowed to the write transaction**
+  ([#468](https://github.com/theurian/theurian/issues/468)). The Decision said
+  two concurrent `theurian migrate apply` invocations serialise and the loser
+  becomes a no-op, and the Positive consequence called two concurrent CLI
+  invocations "already safe". Measured on eight real two-process runs, the loser
+  crashed in four of them, because `create_database` runs before the write
+  transaction opens and `write_active_state` publishes the pointer after it
+  commits — both outside the lock, both completing while another process holds
+  it. Point 2 now serialises the work inside the transaction and says so, the
+  Positive bullet records what was false, and a narrowing blockquote carries the
+  measurement and the control that the lock itself works. The record is narrowed
+  rather than the design changed: #468 owns bringing both writes inside the lock,
+  and stays open.
+
+  Prose only, and no behaviour changes. What holds these claims, all in
+  `test_adr_0018_claims.py`: the NFS sentence is pinned in both directions and
+  README's copy of it is read in the same sweep, so neither record can drift
+  alone; `test_both_corrected_compliance_bullets_name_the_live_owner_of_the_owed_work`
+  and `test_neither_corrected_bullet_cites_the_closed_tracker_as_an_owner` hold
+  the two repointed bullets — the first requires #439's link in each, the second
+  refuses a #15 mention whose own sentence does not retract it;
+  `test_no_index_write_path_module_takes_a_lock` sweeps the modules the published
+  index is written through, so the index bullet's "no lock" half moves when a
+  lock lands; and
+  `test_the_amendment_spells_the_write_method_count_the_port_publishes` holds the
+  count spelled in the amendment against the live port, RED whether the sentence
+  drifts or the port gains a write method — so the number is not a copy anyone
+  keeps in step by hand.
+  The review rounds added four more, each closing a deletion or an edit measured
+  green against the tree before it:
+  `test_decision_point_2_says_what_its_serialisation_promise_does_not_cover`
+  holds the boundary clause inside the point a reader who stops at the Decision
+  actually reads, and
+  `test_the_positive_consequence_records_that_already_safe_was_measured_false`
+  holds the three fragments that keep that bullet a retraction rather than a
+  statement of fact;
+  `test_every_correction_note_still_carries_what_makes_it_a_correction` requires
+  the content each correction blockquote turns on, so a note cannot be cut down
+  to its anchor or rewritten around it to assert what it retracted; and
+  `test_every_symbol_pointer_in_the_adr_resolves_to_something_live` reads every
+  `module.py::symbol` the record hands a reader out of the live module, with the
+  harvested set of those references held **equal** to the list — so a reference
+  added to the ADR fails as loudly as one renamed out of the code.
+  Residues owned: the engineering the repoints point
+  at ([#439](https://github.com/theurian/theurian/issues/439), filed without a
+  milestone), and the served corpus twin under
+  `.theurian/knowledge/architecture/`, which still carries the dead cites and
+  the old count and moves only on a governed re-seed (#199 unit C) — the same
+  carry #417, #432 and #441 record.
+
+- **Every issue cite in the threat model is classified, and the seven that named
+  an owner unable to receive work are repointed or corrected**
+  ([#427](https://github.com/theurian/theurian/issues/427),
+  [#470](https://github.com/theurian/theurian/pull/470)). The #199 unit-A audit
+  measured its escape space empty *of control-capability claims*. A different
+  claim shape lived there and was never a stated verification axis: the
+  **owner-cite** — "[#N] removes this face" — asserting that a tracked issue owns
+  a residual. The container census misses one on a blockquote continuation line,
+  and the verb sweep's list did not carry "removes".
+
+  **The population, and one row per cite rather than per number.** Run at
+  `5a9a1e5`: 114 cite occurrences over 56 distinct numbers on 110 lines, plus 97
+  bare `#N` mentions outside the key. #15 alone is cited six times and each cite
+  is classified on its own context, because the classification is a property of
+  the surrounding prose and not of the number. The whole table is committed —
+  `docs/work-logs/2026-08-31-427-owner-cite-sweep.md` — with the rule each label
+  is earned by: 88 history, 20 owner-with-an-open-issue, 2 explicit acceptance
+  records, 4 dead owners. Those four numbers are counted off the table by script
+  and its `(number, line)` pairs asserted equal as a set to the key's own output,
+  because counting by reading is what this arc had already lost three counts to.
+
+  **Four defects in the bracket key.** `#198` was still named as tracking
+  ingest-time secret scanning; it closed on the `propose accept` half it shipped,
+  and [#329](https://github.com/theurian/theurian/issues/329) — which quotes
+  #198's own measurement of that path — owns it. `#15` was named three times in
+  T-17's residual chain as the future fix for the `|ranking|` term; it closed
+  `COMPLETED` on 2026-08-10 having shipped exactly that, as `66a43ae`. The three
+  records are left byte-for-byte, because each is the argument as it stood at the
+  round that produced it and the fix location they name did not move — only the
+  register did, from owed to shipped — so a dated discharge blockquote is
+  appended at the end of the chain instead, locating each by a phrase chosen so
+  `grep -F` finds it exactly twice: the pointer and its target.
+
+  **It says what it does not claim.** None of the round-five, -six or -seven
+  figures has been re-run against a purged build. A Critical entry therefore goes
+  on publishing pre-purge numbers with a caveat and no scheduled correction — an
+  accurate residue the discharge created rather than closed, and it is named as
+  one rather than left to read as a closure.
+
+  **Three more in the bare-mention escape space, which no bracket key reaches.**
+  Two deferred a recorded MEDIUM to `#113`, a pull request that merged on
+  2026-08-10 and so cannot receive work — the same PR-as-owner shape
+  [#444](https://github.com/theurian/theurian/issues/444) records in the source
+  twin of that sentence — repointed to
+  [#439](https://github.com/theurian/theurian/issues/439), whose own body
+  measures the same file set, with ADR-0022/ADR-0018 kept as the mechanism
+  reference. The third attributed T-16's cross-surface gap to closed `#39`. That
+  the escape count was itself wrong — three places said two — is a round-one
+  finding on this PR, and is the whole reason the count now appears with its
+  population named beside it everywhere it appears.
+
+  **The key is committed and re-runnable**, as `tools/audit/threat_model_owner_cites.py`,
+  on the same terms as the three unit-A keys beside it: one file argument,
+  report-only, not CI-wired, classification explicitly out of scope because a
+  script can read neither the tracker nor the sentence. Its coverage guard
+  compares tracker links to cites **as occurrences and as distinct numbers**, and
+  its verdict is now stated as the two comparisons it computes rather than as a
+  property derived from them. The escape that forces that wording is recorded
+  beneath it, measured four ways against the file at `5a9a1e5`: untouched 114
+  cites / 114 links, green; one prose-labelled link, 114 / 115, red; one unlinked
+  `[#N]`, 115 / 114, red; **both together, 115 / 115, green** — a compensating
+  pair leaving two cites outside the correspondence. Closing it needs per-line
+  pairing, which is a different check and is recorded rather than built.
+
+  **One corrected claim about the codebase, so it ships with its pin.** T-16's
+  evidence for "nothing holds the three release-claim surfaces to the step's own
+  words" was that no test reads `README.md`, `packages/theurian-core/CHANGELOG.md`
+  or the threat model. Measured false: seven files under
+  `packages/theurian-core/tests` named the root README at `5a9a1e5` and eight do
+  at this PR's tip (#470) — the eighth being the pin module itself — and
+  `test_setup_claims.CORE_ARRIVAL_SURFACES` carries the root README, which the
+  same entry recorded twenty lines further up. The conclusion survives on a
+  narrower fact and is now stated on both keys **with the pathspec in each**,
+  because the unscoped pair is not a population at all: it counts every prose
+  mention of the step id anywhere in the repository, so it read 8 and 9 while
+  this change was in flight and 9 and 10 once this entry named the token. Scoped,
+  it holds: `probe_artifact_integrity` reaches one module and the step id reaches
+  two, at `5a9a1e5` and at this PR's tip alike.
+  `test_threat_model_t16_claims.py` holds both
+  directions — the retracted wording refused as an assertion while legal as a
+  quotation, every block carrying it required to mark it retracted, and the
+  narrow fact held as an exact set so a third module naming the probe is the
+  moment the record must move to *held* rather than a test to make green. Its
+  self-exclusion is derived rather than intended: the token comes from
+  `StepId.ARTIFACT_INTEGRITY` and is asserted absent from the module's own bytes,
+  so the pin cannot make the entry's published key answer one more than the entry
+  says.
+
+  Documentation, one work log and one audit script — no file under
+  `packages/theurian-core/src/` is touched, and no behaviour changes. Three
+  review rounds, and every HIGH in all three was a count or a stated mechanism in
+  this change's *own* new prose rather than in the material it audited: the class
+  the sweep exists to close, recurring inside it. That is why each figure above
+  names its key and its commit, and why no sentence here restates a check as
+  something wider than the check computes. Residues owned: the two unowned faces
+  the discharge created, T-16's cross-surface pin and T-17's pre-purge figures
+  ([#472](https://github.com/theurian/theurian/issues/472), face B sequenced with
+  #445's ADR-0024 reconciliation, which needs the same purge-path ground truth);
+  the docstring-backslash ratchet a round-one fix surfaced
+  ([#473](https://github.com/theurian/theurian/issues/473) — D301 is off, and
+  enabling it flags 31 existing non-raw docstrings under
+  `packages/theurian-core/tests/unit/`); and the owner-cite class beyond this one
+  file, which #199 unit B's object-keyed census subsumes — the threat model's
+  members of the `#129`/`#39`/`#198` population are discharged here and listed
+  separately in the work log for #428's accounting.
+
+- **Every repo-wide cite of closed `#129`, `#39` and `#198` is classified, and
+  the 28 that named a closed issue as the owner of unbuilt work are repointed or
+  stated**
+  ([#428](https://github.com/theurian/theurian/issues/428),
+  [#482](https://github.com/theurian/theurian/pull/482)). #427 swept one file for
+  every number; this is the other half of that split — three numbers, the whole
+  tree. All three are closed, and all three were still being cited as the owner
+  of controls that do not ship.
+
+  **The population, keyed and anchored.** The key is the one pasted on the issue,
+  run with `git grep` rather than `rg` because this repository serves a tracked
+  corpus under a dot directory: `214 cite-rows over 199 lines in 47 files` at
+  `e546c15`. The unit is a **cite**, not a line and not a number — one roadmap
+  line carries a `#129` cite and a `#198` cite repointed at different issues, and
+  a Markdown link spells one cite twice — so both counts are stated where either
+  appears. Classified per the closure-reason rule, which is what makes the fix
+  set 28 and not 199: **#129** and **#39** closed on *documentation* fixes with
+  their controls unbuilt, so every owner cite is stale; **#198** closed by
+  *shipping* `propose accept`'s scan, so its cites are stale only where they
+  point at the unshipped ingest-time and index-time siblings. 28 dead, 8 routed
+  to the slices that own them, 177 history, 1 false positive — `&#39;`, the HTML
+  entity for an apostrophe inside a Mermaid label, left in the population and
+  classified rather than special-cased.
+
+  **The tallies are a script's output, not a reading.** The classifier is pasted
+  whole into `docs/work-logs/2026-09-01-428-closed-owner-aggregate.md`, holds the
+  classification as data, fails loudly if a classified row is not in the
+  population, and was re-extracted from the Markdown and re-run to reproduce its
+  own three lines. `(b)` is its default rather than 177 typed judgements.
+
+  **Where each dead owner went, each target read before it was named** — the
+  repoint that is not verified is how #429 came to exist, after T-7 was pointed
+  at an issue whose scope reaches no fetch path. 14 cites to
+  [#429](https://github.com/theurian/theurian/issues/429), which owns the scheme
+  allowlist, private-network rejection and repository allowlist against the first
+  external fetch path; 4 to
+  [#329](https://github.com/theurian/theurian/issues/329), whose body quotes
+  #198's own measurement of the unscanned ingest path; 4 to
+  [#80](https://github.com/theurian/theurian/issues/80) for T-16, each carrying
+  the successor clause the threat model already used, because #80 owns the stale
+  pointer and *records that an issue for the control itself is still owed* — a
+  partial cover, said as one; and **five cites over four files** to
+  [#479](https://github.com/theurian/theurian/issues/479).
+
+  **That five is the entry's own instrument turned on itself.** The count was
+  first written as three, corrected to four, and is five. Both wrong answers came
+  from keying it on *files* rather than on what each fix targets, and the member
+  that kept dropping out — `test_findings_store_is_unreachable.py:25` — reads
+  `(Milestone 7, #129)` at the base commit, the same owner-cite shape as the other
+  four. It looked like a paraphrase only because an earlier commit *on this
+  branch* had already re-shaped it, so the count could no longer see what it was
+  counting. The work log's row is now the single authority for the vocabulary,
+  derived from the rows whose repoint target is #479 and tabulated with all five
+  base texts.
+
+  **What could not be repointed is stated, not invented.** No open issue owned
+  GitHub review ingestion. Measured over the full open set (164 issues,
+  2026-09-01) by title and body on eight keys, with the four nearest candidates
+  each read and rejected — #368 calls itself a git-history source, #223 is
+  external tools, #429 gates but does not ingest, and #200's body says the
+  `GitHub review` row is outside its scope. The sites said so, with the table
+  behind them, until the measurement was filed as #479 and they were repointed at
+  it; the absence is kept in the work log rather than replaced by its answer,
+  because the record of measuring it is what made the issue fileable.
+
+  **Two pins, both bidirectional.** `docs/roadmap.md` asserted that the threat
+  model's T-16 summary row "still points at #39", which stopped being true at
+  `efd30fe`; the sentence now quotes what that row reads today and
+  `test_roadmap_claims.py` holds it from both sides — the fact rule reads the live
+  row out of `docs/security/threat-model.md` rather than a copy, selects the
+  quotation by the row's own link labels so the selection moves when the row does,
+  and enforces a minimum quotation length so a trivial substring cannot satisfy
+  it; the prose rule refuses the retired assertion coming back, with its excusing
+  window measured and then narrowed to the cited number's own span after four
+  ordinary-English escapes were demonstrated green. And `test_examples.py`'s
+  `ANNOTATED_KEYS` required an issue number that a **closed** number satisfied —
+  measured one number over, 16 passed — so a required cite may no longer be
+  described as closed within its own clause, which keeps the annotations naming
+  closed issues as the history that explains the live owner. Every rule shipped
+  in these two modules is now driven from both directions; the last one to lack a
+  driver survived deleting its own iteration, and that is recorded rather than
+  smoothed over.
+
+  **Discharges accounted, not re-fixed.** The threat model's 12 cites are #470's
+  and were re-measured here as all history-shaped with zero defects surviving —
+  the figure #470's own log predicted. Three wheel-shipped schema descriptions and
+  the two `WATCHED_KEY_DESCRIPTIONS` rows that pin them ride
+  [#455](https://github.com/theurian/theurian/issues/455)/#199 unit B, and two of
+  those five were named in no recorded exclusion until this sweep found them. The
+  `ISSUE_URL` triple — the shipped probe string, its byte-identical transcript in
+  `release.md`, and the pin comparing them — is #80's, and moving one without the
+  others breaks the pin.
+
+  **What the sweep found and did not fold in.**
+  [#479](https://github.com/theurian/theurian/issues/479) and
+  [#480](https://github.com/theurian/theurian/issues/480) were filed from it (the
+  76 lines still anchoring plans to a milestone the project stopped trusting),
+  and the shared instrument's own "model output" exemplar was corrected on #199 —
+  it offered `docs/roadmap.md:630` as the correct modern form, and that line
+  carried two dead cites.
+
+  **The classification never moved; the prose about it did.** Every count this
+  entry corrects — three→four→five, 27→28, a fixes table stale by one commit in
+  each of two rounds — was prose *about* the branch, written from a list rather
+  than derived from the branch's own diff. The 214/28/8/177/1 classification
+  survived two review rounds unchanged. That is the distinction worth carrying
+  out of this entry: the machinery held, and what failed each time was a sentence
+  counting the machinery's work by hand.
 
 ## [0.1.0.dev15] - 2026-08-31
 

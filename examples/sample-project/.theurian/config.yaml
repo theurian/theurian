@@ -16,9 +16,11 @@ providers:
     adapter: sqlite-vec
   review:
     adapter: none
-    # The allowlist review ingestion will read (SEC-10). Nothing in `src/` reads
-    # this file, so the allowlist is not in force; review ingestion is owed with
-    # Milestone 7 (#129).
+    # The allowlist review ingestion will read (SEC-10). This file is read --
+    # `security/project_config.py` opens it for `security.secretScan` alone --
+    # but nothing in `src/` reads `providers.review.repositories`, so the
+    # allowlist is not in force. It is owed with the first external fetch path
+    # (#429 owns it; #129 was closed on the wording rather than the control).
     repositories:
       - acme/order-service
 
@@ -57,7 +59,8 @@ security:
   # nothing, `warn` accepts and reports, `"off"` skips the scan; `block` is also
   # what an absent key selects, so this line states the default rather than
   # changing it. The detector is best effort and covers the approval gate only --
-  # `theurian ingest` and index building run no scan (#198).
+  # `theurian ingest` and index building run no scan (#329 owns those two; #198
+  # is closed, having shipped the `propose accept` half above).
   #
   # `off` needs the quotes. YAML reads a bare `off` as the boolean false, and the
   # acceptance is refused rather than guessing which policy that meant.

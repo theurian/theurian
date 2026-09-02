@@ -116,7 +116,8 @@ holds that the purge does not over-reach and delete it). Read
 threat model for the residual that remains.
 
 **Three of the five published tools, and the other two are not oversights.** The
-population is ``@server.tool(name=...)`` in :mod:`theurian.mcp.tools` -- five --
+population is the ``_tool(server, name=...)`` registrations in
+:mod:`theurian.mcp.tools` -- five --
 and the pairs here compare ``knowledge.search`` and ``knowledge.get``:
 
 ``knowledge.status``

@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M1EVD67M9PAHGGXYS16TJ4SX",
+  "migrationId": "01M1EVD67M9PAHGGXYS16TJ4SY",
+  "itemId": "architecture.yaml-knowledge-migrations",
+  "agentId": "claude-code-theurian-python",
+  "taskId": "315-reseed-nine-drifted-twins",
+  "model": "claude-opus-5",
+  "reasoning": "Verbatim copy of the tracked ADR-0005 at 266e6b6, read with `git cat-file blob`. The tracked document is the source of truth; the revision this replaces pins a body docs/adr/0005-yaml-knowledge-migrations.md no longer matches, so Theurian's own agents retrieve superseded text labelled approved and reviewed (#315).",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "266e6b668a5e0723ee63accf23f3ae70b501e193",
+      "filePath": "docs/adr/0005-yaml-knowledge-migrations.md"
+    }
+  ]
+}

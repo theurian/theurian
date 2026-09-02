@@ -646,12 +646,18 @@ def test_a_gitless_copy_scans_the_population_the_harness_recorded(
     ``tools/mutate.py`` copies the checkout without ``.git`` and the copy keeps
     every untracked file the developer's tree carried, so nothing in it can be
     asked what ships. Until the corpus landed, the name-based guess was close
-    enough; ``dogfood/dev7-corpus`` tracks 81 files under ``.theurian/`` -- 26
-    knowledge documents, 27 migrations, 27 proposals, one specification, 78 of
-    them with a suffix the scan reads -- and the guess refuses that directory
-    wholesale. The gate's scanned population there is 321 files, so a harness
-    running on the guess reports verdicts about a suite 24% smaller than the one
-    it stands in for.
+    enough; on the corpus-seeding commit ``e165e4e`` (``dogfood/dev7-corpus``,
+    which no longer resolves on the remote) the tree held 81 files under
+    ``.theurian/`` (measured 2026-08-20) -- 26 knowledge documents, 26 migrations,
+    26 proposal evidence files and 3 ``.gitkeep`` placeholders, 78 of them with a
+    suffix the scan reads -- and the guess refuses that directory wholesale.
+    Corrected here to match ``command_population.py``'s own note on
+    :func:`_walked`: an earlier
+    "27 migrations, 27 proposals and one specification" phrasing counted a
+    ``.gitkeep`` placeholder as a member of each directory it holds open, which
+    reaches the same 81-file total by the wrong partition. The gate's scanned
+    population there is 321 files, so a harness running on the guess reports
+    verdicts about a suite 24% smaller than the one it stands in for.
 
     So the harness records ``git ls-files --cached -z`` into the copy and this
     reads it. Asserted in both directions on purpose: the tracked knowledge

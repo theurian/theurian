@@ -91,6 +91,7 @@ class Options:
     keep_trees: bool
     json_path: Path | None
     work_dir: Path | None
+    with_git: bool = False
 
 
 def _uv() -> str:
@@ -107,7 +108,20 @@ def _child_env(tree: Path, cache_dir: Path) -> dict[str, str]:
         env.pop(leaked, None)
     home = tree / ".mutate-home"
     data = tree / ".mutate-data"
-    tmp = tree / ".mutate-tmp"
+    # A sibling of `tree`, not a child of it. `--with-git` (#452) gives `tree`
+    # a real `.git`, and `git rev-parse --show-toplevel` walks *up* from any
+    # nested directory to find it -- so a `tmp` this deep inside `tree` would
+    # make every `tmp_path`-rooted test look like it is running inside a Git
+    # repository, which is exactly the boundary
+    # `test_init_outside_a_git_repository_fails_clearly` exists to check.
+    # Measured: with `tmp` left under `tree`, that test turned the control run
+    # `control-red` under `--with-git`, which per this harness's own rule means
+    # "no KILLED verdict here means anything" -- the one thing `--with-git`
+    # cannot be allowed to do to the verdict path it was built to unblock.
+    # `tree.parent` is `root` (see `_execute`/`_prepare_mode`), which never
+    # carries a `.git` of its own, so this stays outside every tree regardless
+    # of `--with-git`.
+    tmp = tree.parent / f".mutate-tmp-{tree.name}"
     for directory in (home, data, tmp):
         directory.mkdir(exist_ok=True)
     env.update(

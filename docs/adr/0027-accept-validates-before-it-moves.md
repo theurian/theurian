@@ -346,7 +346,9 @@ the conclusion, which stands.
 - **Two `accept` invocations racing at the process level stay deferred, and
   this decision widens the window.** ADR-0018 makes single-writer a contract in
   the application layer, enforced in Milestone 1 by an OS advisory file lock on
-  the state database — and the accept path's file moves are not under that
+  a separate lock file, `.theurian/runtime/write.lock`, held for the duration
+  of a write transaction and guarding the state databases under
+  `.theurian/state/` — and the accept path's file moves are not under that
   lock. So each of two concurrent invocations can pre-check against a landed
   set the other is about to change, and **the replay lengthens the interval
   between examining and moving by the replay's own duration**. Saying so is

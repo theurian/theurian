@@ -20,7 +20,7 @@ dev = [
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
     "pytest==9.1.1",
-    "ruff==0.16.4",
+    "ruff==0.16.5",
     "types-jsonschema==4.26.0.20260518",
     "types-pyyaml==6.0.12.20260815",
     # `[all]` so a single `uv sync` at the repo root gives contributors the

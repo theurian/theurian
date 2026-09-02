@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M1C9111NGF0PFSGQKT8XP7SE",
+  "migrationId": "01M1C9111NGF0PFSGQKT8XP7SF",
+  "itemId": "architecture.raptor-forest",
+  "agentId": "claude-code-theurian-python",
+  "taskId": "199-unit-c-second-wave",
+  "model": "claude-sonnet-5",
+  "reasoning": "Verbatim copy of the corrected ADR at the pinned commit; one revision carrying all source fixes landed since the seed.",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "37495813bb0a19f6ecc845f6aaf74c8164cc6d8b",
+      "filePath": "docs/adr/0008-raptor-forest.md"
+    }
+  ]
+}

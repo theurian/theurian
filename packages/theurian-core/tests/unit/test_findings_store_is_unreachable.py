@@ -21,9 +21,10 @@ path, so nothing under any of them needs excluding, and a brand-new file under
 any of them is scanned automatically with no list to fall out of date.
 ``review/`` is walked rather than acknowledged like most of the rest of the
 package (see below) because it is *not* an ordinary non-serving package: its
-own docstring names it the future home of review-knowledge serving code
-(Milestone 7, ``#129``), so a package-level acknowledgement there would wave
-through the exact file this whole test guards against -- measured by a
+own docstring names it the future home of review-knowledge serving code (owned
+by ``#479``; that docstring named ``#129`` until it closed ``COMPLETED`` on the
+wording rather than on the code), so a package-level acknowledgement there would
+wave through the exact file this whole test guards against -- measured by a
 round-two review, which planted ``review/findings_search.py`` importing the
 store and watched it pass the entire suite, because ``review/`` was in neither
 the walked set nor any completeness bucket. ``application/`` and ``cli/`` do
@@ -82,9 +83,10 @@ artifact tokens (``findings_metadata``, ``rejected_trailers``, ``theurian-findin
 the ``findings`` table SQL, matched loosely enough to catch a quoted or
 schema-qualified table name) are grepped out of every serving module -- the arm
 that catches a raw ``SELECT ... FROM findings`` an import scan cannot see. And the
-MCP tool registry in ``mcp/tools.py`` is parsed for every ``@server.tool(name=...)``
-it registers, pinned to the known read-only set, and asserted to expose no tool
-whose name serves a finding. (The runtime companion -- that the *built* server
+MCP tool registry in ``mcp/tools.py`` is parsed for every tool it registers --
+through the ``_tool`` seam or straight onto ``server.tool``, both shapes -- pinned
+to the known read-only set, and asserted to expose no tool whose name serves a
+finding. (The runtime companion -- that the *built* server
 registers exactly that set and no registered tool reaches a store symbol in its
 bytecode -- lives in ``tests/integration/test_findings_tool_registry.py``, because
 it constructs a server.)
@@ -972,7 +974,7 @@ def test_the_sql_table_pattern_does_not_false_positive_on_prose_or_other_tables(
 # -- Prong (b) AST: the MCP tool registry serves no finding ------------------
 
 #: The read-only tools this slice ships (Milestone 3's surface). Pinned as a whole
-#: set, not a subset, so a *new* ``@server.tool(name=...)`` fails this test until
+#: set, not a subset, so a *new* ``_tool(server, name=...)`` fails this test until
 #: it is classified here -- the drift guard that stops a findings-serving tool from
 #: being added silently and read as "not on the list, so fine".
 KNOWN_TOOL_NAMES = frozenset(
@@ -991,21 +993,38 @@ _FINDING_TOOL_PATTERN = re.compile(r"finding", re.IGNORECASE)
 
 
 def _registered_tool_names(tools_source: str) -> Iterator[str]:
-    """Every ``@server.tool(name="...")`` string literal in ``mcp/tools.py``.
+    """Every registered tool's ``name="..."`` string literal in ``mcp/tools.py``.
 
     Reads the registration source rather than a running server, so it stays a pure
-    unit check. It finds a ``.tool(...)`` call carrying a ``name=<str constant>``
-    keyword -- the one mechanism all five tools register through. A tool registered
-    by some *other* mechanism (a dynamic ``add_tool``) would evade this AST arm;
-    the runtime companion in ``tests/integration/test_findings_tool_registry.py``,
-    which enumerates the built server, is the arm that would catch that.
+    unit check. **Two registration shapes count, and both must**, because since
+    issue #491 the five tools go through ``mcp/tools.py``'s own ``_tool`` seam
+    rather than straight onto ``server.tool``:
+
+    * ``_tool(server, name=...)`` -- the seam every tool uses today. It wraps the
+      body in ``_forwarding`` so a refusal raised below the surface still reaches
+      the caller under mcp >= 2.1.
+    * ``server.tool(name=...)`` -- the SDK call the seam delegates to. No tool
+      uses it directly now, and ``test_tool_error_type_contract.py`` pins that;
+      it stays recognised here because a tool added that way is *still a
+      registered tool*, and this check must see it in order to make someone
+      classify it.
+
+    Recognising only the first would make this arm blind to exactly the bypass
+    the other arm calls a defect -- one refactor already reduced this function's
+    result to the empty set, which is why the shapes are enumerated rather than
+    assumed. A tool registered by some *other* mechanism (a dynamic ``add_tool``)
+    would evade this AST arm entirely; the runtime companion in
+    ``tests/integration/test_findings_tool_registry.py``, which enumerates the
+    built server, is the arm that would catch that.
     """
     tree = ast.parse(tools_source, filename="mcp/tools.py")
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if not (isinstance(func, ast.Attribute) and func.attr == "tool"):
+        through_the_sdk = isinstance(func, ast.Attribute) and func.attr == "tool"
+        through_the_seam = isinstance(func, ast.Name) and func.id == "_tool"
+        if not (through_the_sdk or through_the_seam):
             continue
         for keyword in node.keywords:
             value = keyword.value
@@ -1020,7 +1039,7 @@ def _registered_tool_names(tools_source: str) -> Iterator[str]:
 def test_the_tool_registry_registers_exactly_the_known_read_tools() -> None:
     """Guards the finding-tool check: a new tool must be classified, not defaulted in.
 
-    Pinned as a whole-set equality so a new ``@server.tool`` reddens this until
+    Pinned as a whole-set equality so a new registration reddens this until
     someone adds it to :data:`KNOWN_TOOL_NAMES` -- which is the moment they must
     decide whether it serves a finding. Without the pin, a findings-serving tool
     whose name did not literally contain "finding" would sail past the check below;

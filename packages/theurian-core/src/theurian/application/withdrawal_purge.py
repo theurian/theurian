@@ -309,8 +309,13 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
         # `.building` name and `os.replace`s into position, so a file under the
         # final name is complete by construction. The single index-writer
         # interface ADR-0018 point 1 still owes the index is entangled with this
-        # purge -- both are "productions of a new build" -- and is tracked in
-        # issue #15's follow-through rather than opened here.
+        # purge -- both are "productions of a new build" -- and is owed,
+        # unscheduled, in issue #439.
+        #
+        # This said "issue #15's follow-through" until 2026-09-01, and there is no
+        # such tracker: #15 closed on 2026-08-10 (`66a43ae`) by shipping the
+        # withdrawal->purge trigger this function *is*, not the interface it
+        # writes without (#444).
         new_id = ids.new_ulid().value
         target = paths.index_for(new_id)
         removed = current.derive_purged(

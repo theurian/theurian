@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import json
 import pathlib
-from typing import Any
+import re
+from typing import Any, Final
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -69,10 +70,21 @@ def test_the_example_does_not_switch_the_raptor_forest_on() -> None:
 # Two keys in the sample config are a trap for a reader who copies the file, for
 # opposite reasons.
 #
-# `providers.review.repositories` (SEC-10's allowlist, #129) selects a control
+# `providers.review.repositories` (SEC-10's allowlist, #429) selects a control
 # that does not exist. It is kept as data on purpose -- the example teaches the
 # shape a reader will need once the control ships -- and a reader who copies it
 # reasonably concludes that repositories are allowlisted. They are not.
+#
+# Its annotation used to reach that conclusion through a false premise: "Nothing
+# in `src/` reads this file". The file *is* read -- `security/project_config.py`
+# opens it for `security.secretScan` (ADR-0027 decision 3) -- and the true fact
+# is narrower and key-scoped, so the annotation now names the reader module, what
+# the file is read for, and the key that has none. #429 owns the allowlist
+# against the first external fetch path; #129, the owner the annotation used to
+# name, closed on the wording rather than on the control. The retracted sentence
+# is refused by `test_raptor_config_claims.py`, which scans this file's comment
+# blocks; the rows below are the positive half and cannot see a sentence coming
+# back beside them.
 #
 # `security.secretScan` (SEC-11's policy, #198) is the mirror image since
 # ADR-0027 decision 3: it now selects real behaviour, and the trap is
@@ -92,10 +104,13 @@ def test_the_example_does_not_switch_the_raptor_forest_on() -> None:
 def _annotation_above(text: str, key: str) -> str:
     """The contiguous comment block immediately above ``key``'s line, joined.
 
-    Joined into one string because both annotations wrap across lines: the
-    `repositories` one splits "Nothing in `src/` reads / this file" over a line
-    break, and a per-line search would miss the sentence that is actually there.
-    Leading `#` and indentation are stripped from each line first.
+    Joined into one string, so that where an annotation happens to wrap is not
+    part of the contract. Both blocks run to several lines, and rewording one
+    reflows the rest of it: #426 narrowed the `repositories` claim and moved
+    every wrap in that block. A per-line search would have gone red on the
+    reflow while the sentence it pins was still there, and would pass while a
+    pinned sentence was broken in half. Leading `#` and indentation are
+    stripped from each line first.
 
     The key line is located by ``<indent><key>:``, and the caller asserts that
     exactly one such line exists -- a second occurrence would make "the comment
@@ -128,6 +143,60 @@ def _in_config(config: dict[str, Any], key: str) -> Any:
     return None
 
 
+#: A required sentence that is nothing but an issue number. That shape is the
+#: rows' "the annotation stays a claim someone owns" half, and it is the only one
+#: :data:`_CITE_SAID_TO_BE_CLOSED` is applied to: a required sentence carrying
+#: prose as well says something a closed issue can still be the correct authority
+#: for, and these annotations cite closed issues on purpose.
+_ISSUE_CITE: Final = re.compile(r"^#\d+$")
+
+#: The same cite described as closed, within one clause of itself. This is what
+#: makes *naming* an issue different from naming a **live** one, and it is keyed on
+#: the required cite rather than on the annotation at large: these annotations
+#: name closed issues on purpose, as the history that explains the live owner.
+#:
+#: The window stops at a full stop or a semicolon, which is what keeps the shipped
+#: text legal: ``#329 owns those two; #198 is closed`` puts the semicolon between
+#: the required cite and the word, and ``#429 owns it; #129 was closed`` does the
+#: same one row down. Measured 2026-09-01 -- both rows green as written, and the
+#: defect shape (``#500 owns those two; #198 is closed``, with ``#198`` still
+#: required) RED.
+#:
+#: **Escapes measured in both directions, recorded rather than chased.** A closure
+#: written past the window -- ``#329 owns those two, and after a long paragraph of
+#: qualification it is closed`` -- is not caught, and a live owner whose clause
+#: happens to carry the word as an adjective -- ``#329 owns the closed-loop pass``
+#: -- is caught although it is correct. Neither shape is in the file today. The
+#: rule is a cheap second signal beside the substring test, not a classifier.
+_CITE_SAID_TO_BE_CLOSED: Final = r"{cite}\b[^.;]{{0,30}}?\bclosed\b"
+
+
+def _cites_said_to_be_closed(annotation: str, required: tuple[str, ...]) -> dict[str, str]:
+    """The requirements of ``required`` that ``annotation`` calls closed, to the match.
+
+    Extracted rather than left inline so that :data:`CLOSED_CITE_CASES` drives
+    *this* predicate. A driver that rebuilt the rule out of :data:`_ISSUE_CITE`
+    and :data:`_CITE_SAID_TO_BE_CLOSED` by hand would go RED against its own copy
+    and stay green whatever the rows below actually ran, which is the failure the
+    two constants were already in: the shipped annotations are compliant, so both
+    patterns matched nothing and deleting either changed no result.
+
+    Keyed on the requirement rather than on the annotation at large. Only a
+    requirement that is *nothing but* an issue number is a claim about who owns
+    the gap the row states; a requirement carrying prose says something a closed
+    issue can still be the correct authority for, and these annotations cite
+    closed issues on purpose.
+    """
+    return {
+        sentence: found.group(0)
+        for sentence in required
+        if _ISSUE_CITE.match(sentence)
+        and (
+            found := re.search(_CITE_SAID_TO_BE_CLOSED.format(cite=re.escape(sentence)), annotation)
+        )
+    }
+
+
 #: ``(key, the value the example teaches, the sentences its annotation must keep)``.
 #:
 #: The value is asserted as well as the annotation because the two together are
@@ -139,9 +208,41 @@ def _in_config(config: dict[str, Any], key: str) -> Any:
 #: opposite directions. ``repositories`` still reads nowhere, so its annotation
 #: has to say so. ``secretScan`` now reads somewhere, so its annotation has to
 #: say *how far* -- the approval gate, and not ``theurian ingest``.
+#:
+#: ``repositories``' four sentences are one claim in four parts, and the first two
+#: are there because the annotation used to get this wrong (#426). It said
+#: "Nothing in ``src/`` reads this file", which was true until ADR-0027 decision
+#: 3 and is now false: ``security/project_config.py`` opens the file for
+#: ``security.secretScan``. So the row pins **the reader by module**
+#: (``security/project_config.py``), **what the file is read for**
+#: (``security.secretScan``), **the key that has none** -- spelled in full,
+#: because the file-level sentence does not contain it and cannot satisfy this --
+#: and **the live owner**. #129 closed on the wording rather than on the control,
+#: which is why naming it is no longer enough to make the annotation somebody's.
+#:
+#: ``secretScan``'s third sentence is the same requirement on the other key, and
+#: it moved for the same reason (#428). It used to require ``#198``, which closed
+#: by *shipping* the ``propose accept`` half the annotation's first sentence
+#: describes -- so on the gap the third sentence states, ingest-time and
+#: index-time scanning, #198 is history and owns nothing. #329 owns those two.
+#: A live owner is what this row is for, and a closed one satisfied it.
+#:
+#: The module fragment is required *as well as* the key because the two are
+#: different facts and the annotation's job is to carry both. A rewrite naming
+#: only ``security.secretScan`` says what the file is read *for* and leaves a
+#: reader with nowhere to check it; it passed this row until round one.
 ANNOTATED_KEYS: tuple[tuple[str, Any, tuple[str, ...]], ...] = (
-    ("secretScan", "block", ("propose accept", "best effort", "#198")),
-    ("repositories", ["acme/order-service"], ("Nothing in `src/` reads", "#129")),
+    ("secretScan", "block", ("propose accept", "best effort", "#329")),
+    (
+        "repositories",
+        ["acme/order-service"],
+        (
+            "`security/project_config.py`",
+            "security.secretScan",
+            "nothing in `src/` reads `providers.review.repositories`",
+            "#429",
+        ),
+    ),
 )
 
 
@@ -154,8 +255,21 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
     """The example is what a reader copies, so each key must state its own reach.
 
     `providers.review.repositories` selects nothing: SEC-10's allowlist is still
-    owed (#129), so a reader who copies it and believes repositories are
-    allowlisted is wrong, and the annotation is what tells them.
+    owed against the first external fetch path (#429), so a reader who copies it
+    and believes repositories are allowlisted is wrong, and the annotation is
+    what tells them. It has to say that with the *key* named, because the file
+    itself is read -- for `security.secretScan` and nothing else -- and the
+    file-level sentence the annotation used to carry was false (#426). The
+    reader's *module* is required with the key: "read for `security.secretScan`"
+    says what, `security/project_config.py` says where, and a reader who has to
+    grep for the second is back in the habit #426 was opened to break.
+
+    **The retracted sentence is refused, not merely superseded.**
+    `tests/unit/test_raptor_config_claims.py::test_no_scanned_surface_reasserts_that_nothing_in_src_reads_the_config_file`
+    scans this file's comment blocks for it, in the pronoun form the annotation
+    actually used ("Nothing in `src/` reads this file"). Without that half, the
+    sentence could be restored verbatim beside these required ones and every
+    test here would still pass -- measured in round one.
 
     `secretScan: block` is the other error. Until ADR-0027 decision 3 it selected
     nothing either, and this test required the annotation to say so. It now
@@ -175,6 +289,28 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
     re-read what the example is promising rather than pass unremarked. The issue
     reference is required beside them so the annotation stays a claim someone
     owns.
+
+    **A named issue is not a live one, and the substring test alone cannot tell
+    them apart.** ``sentence in annotation`` is satisfied by the number appearing
+    anywhere in the block -- including inside a sentence saying that issue is
+    closed. That is not hypothetical: #428 found the ``secretScan`` row satisfied
+    by a closed #198 and moved it to #329, and the naive coordinated change did
+    not go RED. Measured again here, 2026-09-01, one number over: with the
+    annotation rewritten to *"(#500 owns those two; #329 is closed, having
+    shipped ...)"* and the row still requiring ``"#329"``, this module reported
+    **16 passed** while the live owner it names had changed. So a required
+    sentence that is *only* an issue number must also not be described as closed
+    within its own clause. The rows' history cites are untouched -- they sit on
+    the far side of a semicolon, and the window stops there.
+
+    **That half is driven elsewhere and has to be**, by
+    :func:`test_an_annotation_that_calls_its_own_owner_closed_is_refused`. Both
+    shipped annotations are compliant, so the guard reports nothing on either row
+    whether it works or matches nothing at all. Measured on this module as it
+    stood at ``57c3da3``, the commit before that driver: `_ISSUE_CITE` made
+    unmatchable, `_CITE_SAID_TO_BE_CLOSED` made unmatchable, and both at once --
+    16 passed on all three. These rows hold the config; the synthetic rows hold
+    the guard.
     """
     text = CONFIG.read_text(encoding="utf-8")
     config = load_yaml_mapping(text)
@@ -206,11 +342,122 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
             f"A reader copies this file, and without that sentence `{key}` reads "
             f"as something it is not. `secretScan` is in force at `theurian "
             f"propose accept` and nowhere else, with a best-effort detector "
-            f"(#198); `providers.review.repositories` is read by nothing at all "
-            f"(#129). `tests/unit/test_config_key_call_sites.py` is the pin that "
+            f"(#198); `providers.review.repositories` is read by nothing, though "
+            f"the file it sits in is read for `security.secretScan` -- say the "
+            f"key, not the file, or the annotation is the false claim #426 "
+            f"corrected -- and #429 owns the allowlist against the first "
+            f"external fetch path. `tests/unit/test_config_key_call_sites.py` is the pin that "
             f"records which keys have readers, and the schema descriptions are "
             f"what change with them."
         )
+
+    retired = _cites_said_to_be_closed(annotation, required)
+
+    assert not retired, (
+        f"the annotation above `{key}` names {sorted(retired)} and says in the "
+        f"same clause that it is closed: {retired}. This row requires that token "
+        f"so the gap it states stays somebody's, and a closed issue owns nothing "
+        f"-- the substring test alone cannot tell the owner from the history "
+        f"beside it, which is how a closed #198 satisfied this row until #428. "
+        f"Move the requirement to whichever issue the annotation now names as "
+        f"the owner."
+    )
+
+
+#: ``(what the row is, a fabricated annotation, what it requires, the requirements
+#: the guard must refuse)`` -- the driver for :data:`_ISSUE_CITE` and
+#: :data:`_CITE_SAID_TO_BE_CLOSED`.
+#:
+#: Both constants survived their own deletion before this table existed. The two
+#: shipped annotations are compliant, so ``_cites_said_to_be_closed`` returns ``{}``
+#: on them whether the patterns work or match nothing at all: at ``57c3da3``, the
+#: commit before these rows, the module reported **16 passed** with `_ISSUE_CITE`
+#: unmatchable, 16 with :data:`_CITE_SAID_TO_BE_CLOSED` unmatchable, and 16 with
+#: both (measured 2026-09-01). A guard no input reaches reports a safety it does
+#: not have, and every row here exists because one shape of mutation has to die
+#: on it.
+#:
+#: **The annotations are fabricated, and one of them is false on purpose.** #329
+#: is live; the first row writes *"#329 is closed"* as **input** to the guard, in
+#: the wording the round-one measurement used, and says so here so that a search
+#: for that sentence lands on this note rather than on a claim the repository
+#: appears to be making. Nothing in this table is read off disk: a driver keyed on
+#: the real annotations would go green the day somebody rewords one, which is the
+#: hole the shipped rows already have and the reason for these.
+#:
+#: One row per direction the guard can be wrong in:
+#:
+#: 1. the required cite called closed inside its own clause -- the shape #428
+#:    found on the ``secretScan`` row, and the only row that fails if either
+#:    pattern stops matching;
+#: 2. the shipped shape, whose closure sits past a semicolon -- it fails if the
+#:    ``[^.;]`` boundary is widened, which would make the live annotation the
+#:    defect;
+#: 3. a requirement that is prose beside a genuinely closed cite -- it fails if
+#:    :data:`_ISSUE_CITE` stops being anchored, since ``best effort`` sits 18
+#:    characters from ``closed`` in the same clause. This is the false positive
+#:    the rows have to stay clear of: these annotations name closed issues as
+#:    history on purpose.
+CLOSED_CITE_CASES: tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        "the required cite, called closed in its own clause",
+        "`theurian ingest` and index building run no scan (#500 owns those two; "
+        "#329 is closed, having shipped the `propose accept` half above).",
+        ("#329",),
+        ("#329",),
+    ),
+    (
+        "the shipped shape, the closure past a semicolon",
+        "`theurian ingest` and index building run no scan (#329 owns those two; "
+        "#198 is closed, having shipped the `propose accept` half above).",
+        ("#329",),
+        (),
+    ),
+    (
+        "a prose requirement in a clause about a closed issue",
+        "The detector is best effort now that #198 is closed; #329 owns the two gaps above.",
+        ("best effort", "#329"),
+        (),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("annotation", "required", "refused"),
+    [case[1:] for case in CLOSED_CITE_CASES],
+    ids=[case[0] for case in CLOSED_CITE_CASES],
+)
+def test_an_annotation_that_calls_its_own_owner_closed_is_refused(
+    annotation: str, required: tuple[str, ...], refused: tuple[str, ...]
+) -> None:
+    """RED means the closed-owner guard cannot fail, whatever the example says.
+
+    The guard above exists because `sentence in annotation` is satisfied by a
+    number appearing anywhere in the block, including inside a sentence saying
+    that issue is closed -- which is how a closed #198 held the `secretScan` row
+    until #428, with every test in this module green. It is checked here rather
+    than on the shipped rows because the shipped rows cannot check it: both
+    annotations are compliant, so the guard's result is `{}` either way and the
+    two patterns were surviving their own deletion.
+
+    Both directions in one table. Refusing too little is the defect the guard was
+    added for. Refusing too much is worse than not having it: these annotations
+    cite closed issues deliberately, as the history that explains the live owner,
+    and a guard that reported those would be removed by the next author rather
+    than narrowed.
+    """
+    found = _cites_said_to_be_closed(annotation, required)
+
+    assert sorted(found) == sorted(refused), (
+        f"the closed-owner guard read {sorted(found)} out of {list(required)}, "
+        f"expected {sorted(refused)}. The annotation is:\n  {annotation!r}\n\n"
+        f"Too few means it cannot see a required cite the annotation itself calls "
+        f"closed -- `_ISSUE_CITE` selects which requirements are owner claims and "
+        f"`_CITE_SAID_TO_BE_CLOSED` decides whether the clause retires one, and "
+        f"the shipped rows exercise neither. Too many means it refuses text that "
+        f"is correct: a history cite on the far side of a semicolon, or a "
+        f"requirement that is prose rather than an owner cite."
+    )
 
 
 @pytest.mark.parametrize("path", MIGRATIONS, ids=lambda p: p.name)

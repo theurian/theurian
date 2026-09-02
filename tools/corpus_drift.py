@@ -231,9 +231,10 @@ THIS_REPOSITORY: Final = "https://github.com/theurian/theurian.git"
 #: since #317 restricted that to each item's terminal revision.
 #: ``MINIMUM_MIGRATIONS`` bounds *tracked migration files*, and a re-seed grows
 #: that population without growing this one: this repository's own corpus, after
-#: the ADR-0013 re-seed, is 27 tracked migrations and 26 compared anchors. "The
-#: same number and the same shape" describes the day both constants were set to
-#: 26 each, not a claim that the two populations stay equal.
+#: the ADR-0013 re-seed, is 27 tracked migrations and 26 compared anchors
+#: (measured 2026-08-31 at 0f7ff79). "The same number and the same shape"
+#: describes the day both constants were set to 26 each, not a claim that the
+#: two populations stay equal.
 #:
 #: What it buys that ``NOTHING_COMPARED`` alone does not: that status fires only
 #: when the compared count reaches *zero*, so 25 of 26 anchors going uncheckable

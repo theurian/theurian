@@ -3,10 +3,10 @@
 ``scan(root, tracked=...)`` is the seam the implementer left for exactly this:
 with ``tracked`` passed explicitly the function never shells out to git, so a
 directory holding ``.theurian/migrations/one.yaml`` and ``docs/one.md`` is a
-complete, self-contained corpus. Nothing here reads this repository's own 26
-migrations -- a test keyed to live content would flip the day somebody re-seeds
-ADR-0005, and would say nothing about the branches no committed anchor happens
-to exercise.
+complete, self-contained corpus. Nothing here reads this repository's own
+committed migrations -- a test keyed to live content would flip the day
+somebody re-seeds ADR-0005, and would say nothing about the branches no
+committed anchor happens to exercise.
 
 **The expected digest is computed with `hashlib.sha256`, not with
 `ContentHash.of_bytes`.** The tool deliberately reuses the product's own call so
@@ -463,8 +463,10 @@ def test_a_tree_git_cannot_answer_for_is_a_refusal_not_a_filesystem_walk(
 
     `HOME` and `GIT_CEILING_DIRECTORIES` are redirected so this asks about
     `tmp_path` and never discovers a repository above it -- including the
-    developer's own checkout, when a mutation run has put `TMPDIR` inside a copy
-    of the tree.
+    developer's own checkout, when a mutation run used to put `TMPDIR` inside a
+    copy of the tree (moved to a sibling of the copy in #452). The ceiling stays
+    regardless of where `TMPDIR` lands: it is what makes this test's own
+    assertion independent of the harness's current placement.
     """
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", f"{tmp_path}:{tmp_path.resolve()}")

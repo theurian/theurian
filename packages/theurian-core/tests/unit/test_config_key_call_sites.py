@@ -1,6 +1,6 @@
-"""Which published config keys have readers, and which are still reserved (#198, #129).
+"""Which published config keys have readers, and which are still reserved (#198, #129, #426).
 
-``schemas/config/project-config.schema.json`` publishes two keys this module
+``schemas/config/project-config.schema.json`` publishes the keys this module
 holds to their own descriptions, and since ADR-0027 decision 3 they are in
 opposite states:
 
@@ -10,8 +10,23 @@ opposite states:
   ``default: "block"`` — the policy an absent key and an absent config file both
   select (#198).
 - ``providers.review.repositories`` — SEC-10's repository allowlist. **Still
-  reserved**, owed with review ingestion (#129). Nothing reads it, its
-  description says so, and this module is what holds the source tree to that.
+  reserved**, owed with review ingestion. Nothing reads it, its description says
+  so, and this module is what holds the source tree to that. The description's
+  ``#129`` cite is **stale**: #129 closed on the wording rather than on the
+  control, so the live owner is #429 (the T-7 fetch controls) and the repointing
+  belongs to #428's stale-owner sweep — with the same schema file's *root*
+  description, which still carries an unnarrowed "Nothing in src/ reads this
+  file" (#455). Both stay outside this PR because they land on
+  ``project-config.schema.json``, which #199 unit B owns.
+- **Every key in the ``raptor`` block** — ADR-0008 decision 10's switch. **Still
+  reserved.** ``docs/architecture/raptor.md`` and ADR-0008 decision 10 used to
+  say nothing in ``src/`` read ``.theurian/config.yaml`` at all; ADR-0027
+  decision 3 falsified that and #426 narrowed both sentences to *the ``raptor``
+  block is unread*, which is the claim this scan now holds. The block's keys are
+  **derived from the schema** rather than listed here (see
+  :func:`_published_keys`), so a fourth key added to the block is watched by the
+  change that adds it. The prose halves live in
+  ``tests/unit/test_raptor_config_claims.py``.
 
 Those are not descriptions of a design. They are load-bearing security claims,
 and both directions of the claim can go wrong. ``SECURITY.md``,
@@ -36,12 +51,27 @@ the scan walks every ``*.py`` under the *imported* ``theurian`` package —
 ``tools/``, ``plugins/`` and the tests themselves are outside it — and flags a
 module for naming any spelling in :data:`WATCHED_SPELLINGS`. A spelling is
 matched **exactly**, as a whole identifier or a whole string constant, never as a
-substring. That is what separates the two occurrences that matter from the six
-that do not: ``repositories`` appears five times in ``src/`` as an English word
-inside a docstring and once inside a sentence-shaped f-string
-(``application/setup_withholding.py``), and a substring scan would read all six
-as readers and force this pin to be silenced on its first run. Both real shapes
-have a negative case in :data:`SCANNER_CASES`.
+substring.
+
+That is what keeps the prose out of the enumeration, and there is a lot of it.
+Counted with ``git grep -o -n -i -E "(^|[^A-Za-z0-9_])repositories([^A-Za-z0-9_]|$)"
+-- packages/theurian-core/src`` at ``5a14145``: **ten** occurrences of
+``repositories``, none of them a whole name. Seven are the English word in a
+docstring or a comment; one is inside a sentence-shaped f-string
+(``application/setup_withholding.py``); two name the dotted path
+``providers.review.repositories`` in ``security/project_config.py``'s own
+docstring, which describes the key precisely because nothing reads it. A
+substring scan would read all ten as readers and force this pin to be silenced on
+its first run. The three real shapes have a negative case in
+:data:`SCANNER_CASES`.
+
+The ``raptor`` block pays the same rent. The same key over ``enabled`` returns
+**four** occurrences, on four lines in three modules: ``systemd_user.py``'s
+"without lingering enabled", ``index_scan.py``'s "an ICU-enabled build", and two
+in ``application/forest_builder.py`` (a ``#:`` comment at line 139 and an
+error-message f-string at line 173) that name ``raptor.enabled`` itself. None is
+a whole name — the f-string's own constant is the sentence around the word, not
+the word — so none is seen.
 
 **What this cannot see.** It reads names, so a key assembled at runtime
 (``config["secret" + "Scan"]``), one reached through a variable whose value comes
@@ -59,7 +89,9 @@ from __future__ import annotations
 import ast
 import json
 import pathlib
+import re
 from collections.abc import Iterator
+from typing import Final
 
 import pytest
 
@@ -79,6 +111,42 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
 PROJECT_CONFIG_SCHEMA = REPO_ROOT / "schemas" / "config" / "project-config.schema.json"
 
+#: Where the ``raptor`` block's keys live in the published schema.
+_RAPTOR_PROPERTIES: Final = ("properties", "raptor", "properties")
+
+_CAMEL_HUMP: Final = re.compile(r"(?<!^)(?=[A-Z])")
+
+
+def _published_keys(*pointer: str) -> tuple[str, ...]:
+    """The property names the schema publishes under ``pointer``, sorted.
+
+    Read from ``project-config.schema.json`` rather than transcribed, because a
+    hand-written key list cannot honour the property this scan claims: that a key
+    *added* to the block is watched by the change that adds it. A transcribed
+    list would leave the new key unwatched while every test here stayed green —
+    the ``_swept_modules`` finding in ``test_adr_0018_claims.py``, in the shape a
+    config block takes.
+    """
+    node: object = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
+    for step in pointer:
+        assert isinstance(node, dict), f"the schema has no `{'/'.join(pointer)}`"
+        node = node[step]
+    assert isinstance(node, dict), f"`{'/'.join(pointer)}` is not a mapping of properties"
+    return tuple(sorted(node))
+
+
+def _plausible_spellings(key: str) -> frozenset[str]:
+    """The three shapes a published JSON key takes once a loader binds it.
+
+    The key as the file spells it, the snake_case name Python would bind it to,
+    and the SCREAMING_SNAKE module constant a loader would hold it in — the same
+    three ``secretScan`` is watched under, and for the same reason: a loader
+    names the key at least once in one of them.
+    """
+    snake = _CAMEL_HUMP.sub("_", key).lower()
+    return frozenset({key, snake, snake.upper()})
+
+
 #: Every spelling a reader of these keys would plausibly use, keyed by the config
 #: path the schema publishes.
 #:
@@ -90,17 +158,40 @@ PROJECT_CONFIG_SCHEMA = REPO_ROOT / "schemas" / "config" / "project-config.schem
 #: ordinary words in this codebase — ``security/tokens.py`` handles secrets and
 #: ``cli/context.py`` talks about repository roots — and a scan that flagged them
 #: would have to be silenced with an allowlist so long that nobody would read it.
-WATCHED_SPELLINGS: dict[str, frozenset[str]] = {
+#:
+#: ``enabled`` sits awkwardly on that rule and is watched anyway. It *is* an
+#: ordinary word, and as a whole identifier — ``enabled = True``, a keyword
+#: argument ``enabled=...``, a dataclass field — it would be flagged with nothing
+#: to do with ``raptor``. It is kept because it is also the published JSON key
+#: exactly, so ``config["raptor"]["enabled"]`` is the shape a loader takes, and
+#: this scan does not distinguish a string constant from an identifier (see
+#: :func:`_spellings`, which yields both from one stream). The cost is a false RED
+#: on an unrelated ``enabled``: a read, in the direction that keeps the claim. The
+#: enumeration's failure message therefore reports what was found and what each
+#: possibility would mean, rather than announcing a loader.
+_RECORDED_KEYS: Final[dict[str, frozenset[str]]] = {
     "security.secretScan": frozenset({"secretScan", "secret_scan", "SECRET_SCAN"}),
     "providers.review.repositories": frozenset({"repositories", "REPOSITORIES"}),
 }
+
+#: The ``raptor`` block, derived. Two of these keys already have a snake_case
+#: twin in ``src/`` — ``ForestOptions.max_levels`` and
+#: ``ForestOptions.min_children_per_summary`` carry the schema's *defaults*, not
+#: the file's values — and both are recorded in :data:`CONFIG_KEY_READER_SITES`
+#: as the fields they are. What has no site at all is the JSON spelling of any of
+#: them, which is what a loader would have to name.
+_RAPTOR_KEYS: Final[dict[str, frozenset[str]]] = {
+    f"raptor.{key}": _plausible_spellings(key) for key in _published_keys(*_RAPTOR_PROPERTIES)
+}
+
+WATCHED_SPELLINGS: dict[str, frozenset[str]] = _RECORDED_KEYS | _RAPTOR_KEYS
 
 _ALL_SPELLINGS = frozenset().union(*WATCHED_SPELLINGS.values())
 
 #: Every place in the shipped package that names one of the keys above, as
 #: ``(module path under theurian/, the spelling it names)``.
 #:
-#: **Three entries, and exactly one of them reads the file.** The scan matches
+#: **Five entries, and exactly one of them reads the file.** The scan matches
 #: whole names and not semantics -- deliberately, see the population key above --
 #: so it cannot tell a reader from a field named after one, and this list is
 #: therefore the honest output of the scan rather than a curated set of readers:
@@ -112,13 +203,26 @@ _ALL_SPELLINGS = frozenset().union(*WATCHED_SPELLINGS.values())
 #:   ``cli/propose_commands.py :: secret_scan`` are the ``AcceptedProposal``
 #:   field carrying what the scan did, and the local the accept path binds it to.
 #:   They name the *outcome*, never the file.
+#: * ``application/forest_builder.py :: max_levels`` and
+#:   ``:: min_children_per_summary`` are ``ForestOptions`` fields. They are named
+#:   after ``raptor.maxLevels`` and ``raptor.minChildrenPerSummary`` and carry the
+#:   schema's *defaults* -- pinned against the schema by
+#:   ``test_forest_derivation.py::test_the_option_defaults_are_the_config_schemas_own``
+#:   -- which is the opposite of reading the file: a default is what applies
+#:   *because* nothing read a value.
 #:
-#: Adding a fourth entry is not a bookkeeping edit. For ``repositories`` it says
-#: a key the published schema still calls inert is now read, which makes the
-#: schema description and the prose surfaces in this module's docstring false
-#: until they are corrected in the same change.
+#: Adding a sixth entry is not a bookkeeping edit. For ``repositories`` it says a
+#: key the published schema still calls inert is now read, which makes the schema
+#: description and the prose surfaces in this module's docstring false until they
+#: are corrected in the same change. For anything under ``raptor.`` it says
+#: ADR-0008 decision 10's "Nothing in ``src/`` reads ``raptor.enabled``, nor any
+#: other key in the ``raptor`` block" and ``docs/architecture/raptor.md``'s "no
+#: ``raptor`` key is read" have become false, and
+#: ``tests/unit/test_raptor_config_claims.py`` is what holds those two sentences.
 CONFIG_KEY_READER_SITES: frozenset[tuple[str, str]] = frozenset(
     {
+        ("application/forest_builder.py", "max_levels"),
+        ("application/forest_builder.py", "min_children_per_summary"),
         ("application/proposal_service.py", "secret_scan"),
         ("cli/propose_commands.py", "secret_scan"),
         ("security/project_config.py", "secretScan"),
@@ -213,6 +317,22 @@ SCANNER_CASES: tuple[tuple[str, frozenset[str]], ...] = (
         frozenset(),
     ),
     ('"""Repositories must be allowlisted in `.theurian/config.yaml`."""', frozenset()),
+    # -- the real prose the `raptor` block's keys collide with ---------------
+    # All four occurrences of `enabled` in `src/` (population key in the module
+    # docstring), transcribed. The first two use it as an ordinary English word;
+    # the last two name `raptor.enabled` itself, in `application/forest_builder.py`
+    # -- a `#:` comment, which never reaches the AST at all, and one arm of an
+    # implicitly concatenated f-string, whose constant is the sentence around the
+    # word rather than the word. A substring scan would read all four as readers
+    # of `raptor.enabled` and make this pin red on a clean tree.
+    ('"""Without lingering enabled, closing the last session stops it."""', frozenset()),
+    ('"""`lower()` is one of the functions an ICU-enabled build replaces."""', frozenset()),
+    ("#: (`raptor.enabled: false` is that). The schema admits up to 8", frozenset()),
+    (
+        'raise InvariantViolationError(f"max_levels must be at least 1, got "'
+        'f"{n} -- a forest of zero tiers is `raptor.enabled: false`")',
+        frozenset(),
+    ),
     # -- other ordinary code that names a neighbouring word ------------------
     ("from theurian.infrastructure.github import ReviewProvider", frozenset()),
     ('path = root / "repository"', frozenset()),
@@ -225,11 +345,19 @@ SCANNER_CASES: tuple[tuple[str, frozenset[str]], ...] = (
     ('policy = block.get("secretScan", "block")', frozenset({"secretScan"})),
     ('allowlist = review.get("repositories", [])', frozenset({"repositories"})),
     ('if "repositories" in review: pass', frozenset({"repositories"})),
+    # -- the raptor loader that does not exist, in the shape it would take ---
+    ('on = config["raptor"]["enabled"]', frozenset({"enabled"})),
+    ('levels = block.get("maxLevels", 3)', frozenset({"maxLevels"})),
+    (
+        'floor = block.get("minChildrenPerSummary", 3)',
+        frozenset({"minChildrenPerSummary"}),
+    ),
     # -- a constant holding the key, which names both spellings at once ------
     ('SECRET_SCAN = "secretScan"', frozenset({"SECRET_SCAN", "secretScan"})),
     # -- an identifier the value is bound to ---------------------------------
     ("secret_scan = policy", frozenset({"secret_scan"})),
     ("repositories = registry.entries()", frozenset({"repositories"})),
+    ("tiers = min(self._options.max_levels, MAX_LEVEL)", frozenset({"max_levels"})),
     ("def apply(secret_scan: str) -> None: ...", frozenset({"secret_scan"})),
     ("self.secret_scan = value", frozenset({"secret_scan"})),
     ("ingest(repositories=allowlist)", frozenset({"repositories"})),
@@ -274,6 +402,42 @@ def test_the_config_key_scan_sees_each_naming_form_and_no_other(
     )
 
 
+def test_the_raptor_block_still_publishes_the_keys_the_scan_is_derived_from() -> None:
+    """The population control for the derived half, asserted before it is searched.
+
+    ADR-0008 decision 10 and ``docs/architecture/raptor.md`` claim that no key in
+    the ``raptor`` block is read. The enumeration below reports that as an
+    absence — and a search over an empty key set reports exactly the same
+    absence, so the key set has to be established first. Emptying
+    ``properties.raptor.properties`` in the schema, or renaming the block, would
+    otherwise leave every test in this module green while the claim it enforces
+    covered nothing.
+
+    ``raptor.enabled`` is required by name because it is the key ADR-0008
+    decision 10 is *about*: the decision is phrased in terms of that key's
+    default, and its correction note says "Nothing in ``src/`` reads
+    ``raptor.enabled``". A block that no longer publishes it makes the record's
+    subject vanish, which is a documentation change and not a schema tidy-up.
+    """
+    keys = _published_keys(*_RAPTOR_PROPERTIES)
+
+    assert keys, (
+        "the schema's `raptor` block publishes no properties, so the reader scan "
+        "below would enforce ADR-0008 decision 10's claim over nothing"
+    )
+    assert "enabled" in keys, (
+        f"the schema's `raptor` block no longer publishes `enabled`, which is the key "
+        f"ADR-0008 decision 10 decides the default of: {list(keys)}"
+    )
+    assert set(_RAPTOR_KEYS) == {f"raptor.{key}" for key in keys}, (
+        "the watched raptor keys are not the ones the schema publishes"
+    )
+    assert _RAPTOR_KEYS.keys() <= WATCHED_SPELLINGS.keys(), (
+        "the derived raptor keys were dropped on the way into WATCHED_SPELLINGS, so "
+        "the scan below would not look for them"
+    )
+
+
 def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_ones() -> None:
     """SEC-11 and SEC-10: the schema says how far each key reaches, and six documents rest on it.
 
@@ -297,6 +461,28 @@ def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_one
     found. The removing direction is the one that matters now that ``secretScan``
     works: a diff that deletes the reader while the schema still publishes a
     default and six documents still describe a shipped control reddens here.
+
+    **The ``raptor`` block rides the same enumeration** (#426). ADR-0008 decision
+    10 and ``docs/architecture/raptor.md`` say no key in that block is read, and
+    the day a config loader names ``"enabled"``, ``"maxLevels"`` or
+    ``"minChildrenPerSummary"`` a sixth site appears here and both records have
+    to be narrowed again in the same change.
+
+    **One measured gap in that tripwire.** This is an equality over ``(module,
+    spelling)`` pairs, and ``application/forest_builder.py`` already owns the
+    pairs ``max_levels`` and ``min_children_per_summary`` as ``ForestOptions``
+    fields. A loader added *in that one module* binding only those two snake_case
+    names adds no new pair and stays green -- round-one mutation A1 SURVIVED for
+    exactly that reason, and A2, the same read in another module, was KILLED. Any
+    spelling of ``enabled``, any JSON or SCREAMING spelling anywhere, and either
+    snake name in any other module all trip it. The gap is recorded rather than
+    closed: telling a ``ForestOptions`` field from a config read inside one module
+    needs the semantics this scan refuses on purpose (see the ordinary-words rule
+    on :data:`_RECORDED_KEYS`).
+
+    What this cannot see is otherwise unchanged and stated in the module
+    docstring: a key assembled at runtime, or a whole-mapping read that never
+    names it, still passes.
     """
     sites = sorted(
         {
@@ -335,7 +521,18 @@ def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_one
         'publishes `default: "block"` on that basis, and those same documents '
         "describe a shipped control. If the reader is gone, all of that is now "
         "false and has to be corrected in the same change -- do not simply drop "
-        "the entry."
+        "the entry.\n\n"
+        "A NEW site under `raptor.`: check which of two things happened before "
+        "editing anything. If the site is a config read, ADR-0008 decision 10's "
+        "`Nothing in `src/` reads `raptor.enabled`, nor any other key in the "
+        "`raptor` block` and docs/architecture/raptor.md's `no `raptor` key is "
+        "read` are both false (#426); narrow them in the same change, and check "
+        "whether `raptor.enabled`'s published default is now the switch the "
+        "decision says it must default to. If it is an unrelated use of an "
+        "ordinary word -- `enabled` in particular is the JSON key and an English "
+        "word at once, and this scan cannot tell a string constant from an "
+        "identifier -- then no record moved and the honest fix is to record the "
+        "site here with a note saying which it is."
     )
 
 

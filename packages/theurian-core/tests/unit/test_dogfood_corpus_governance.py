@@ -87,18 +87,37 @@ them -- the floor and the index-mode rule -- were the only ones that read a
 count. Two guards for eleven, not one for twelve.
 
 **And the refusal does not reach every rule, which is stated rather than
-rounded up.** Run against a tree that cannot be asked what it tracks, 21 of the
-24 rules here skip and 3 pass: the two managed-``.gitignore`` rules read
-``.gitignore`` and not the corpus, and
+rounded up.** Run against a tree that cannot be asked what it tracks, 23 of the
+28 rules here skip and 5 pass (measured 2026-08-31 at c220733, in a ``.git``-
+and ``.mutate-population``-less copy): the two managed-``.gitignore`` rules
+read ``.gitignore`` and not the corpus,
 :func:`test_the_known_families_are_exactly_what_family_can_return` reads this
-module's own source. Those three assert something real about a tree with no
-corpus in it; the other 21 would not, which is why they refuse instead.
+module's own source, and two rules added since the count above was first
+written -- :func:`test_the_evidence_key_rule_admits_the_optional_key_and_nothing_else`
+and :func:`test_the_fold_key_orders_by_the_migration_document_id_not_the_file_name`
+-- are driven entirely by literal input and never touch the population either.
+Those five assert something real about a tree with no corpus in it; the other
+23 would not, which is why they refuse instead. This paragraph moves whenever a
+rule is added that does or does not read the population, independently of
+whether the corpus itself grows -- a different trigger from the floor and the
+tracked-path count below, both of which move only when the corpus does.
 
-**A floor, recorded as a lower bound rather than an exact count.** 26 is what
-this branch ships; the dogfood corpus is expected to grow, and every item added
-is fully governed by the rules below whether or not anyone updates the number
-here. What the bound catches is the direction that is never routine: committed
-knowledge disappearing.
+**A floor, recorded as a lower bound rather than an exact count.**
+:data:`MINIMUM_MIGRATIONS` is checked against
+:func:`test_the_committed_corpus_is_present_and_has_not_shrunk`'s
+``len(_migration_paths())`` -- a count of tracked migration files, not of
+live items, and the two are not the same number: a re-seed is a second
+migration, and a second revision, over an item that already exists (see
+:data:`GOVERNED_OPERATIONS`), so it grows the migration count without
+growing the item count. A branch-relative "this branch ships" figure here
+re-binds on every read and every branch, so the count is instead a dated
+point measurement rather than a live claim: 30 tracked migrations over 26
+live items, measured 2026-09-01 at ``2844ea5`` (the ADR-0013 re-seed plus
+the three #199 unit C second-wave re-seeds). The constant itself
+stays 26 and stays a lower bound: the dogfood corpus is expected to grow,
+and every item or revision added is fully governed by the rules below
+whether or not anyone raises the number here. What the bound catches is
+the direction that is never routine: committed knowledge disappearing.
 
 **What is out of scope, and why.** A pinned body is compared against the blob at
 its own ``sourceAnchor.commitSha`` -- never against the *current* ``docs/`` file.
@@ -135,7 +154,7 @@ import pathlib
 import re
 import stat
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from types import MappingProxyType
@@ -179,6 +198,12 @@ GOVERNED_METADATA: Final[Mapping[str, str]] = MappingProxyType(
 #: 26 migrations, each ``createItem`` then ``upsertRevision`` and nothing else
 #: (measured 2026-08-20).
 #:
+#: **A governed re-seed does not violate that pin.** It is a second migration
+#: over the same item -- ``createItem`` (idempotent under FR-K8 against an item
+#: that already exists) then ``upsertRevision`` carrying ``expectedRevision`` --
+#: not an edit, so the pinned tuple continues to hold
+#: (https://github.com/theurian/theurian/issues/416).
+#:
 #: **This is what stops an appended operation from moving governance behind the
 #: rules' backs.** Every governance rule here reads ``upsertRevision.metadata``;
 #: a trailing ``changeSensitivity`` op would reclassify the same item to
@@ -211,10 +236,10 @@ EVIDENCE_KEYS: Final = frozenset(
 #: inferring it from which files are left in the directory, which was wrong in
 #: both directions (#253). ``itemId`` is the cross-check that stops a forged
 #: ``migrationId`` (pointing at another proposal's landed migration) from reading
-#: as accepted. Optional and not required, because all 26 committed proposals
-#: predate both fields, and a required key would take the corpus RED for a field
-#: the tool did not write when they were drafted. Every proposal drafted since
-#: carries both.
+#: as accepted. Optional and not required, because the 26 original seed
+#: proposals predate both fields, and a required key would take the corpus RED
+#: for a field the tool did not write when they were drafted. Every proposal
+#: drafted since carries both.
 #:
 #: This is an allowance for *these* keys and not a relaxation of the rule: the
 #: escape the rule below closes is an evidence file carrying a field nothing reads
@@ -230,10 +255,11 @@ ANCHOR_KEYS: Final = frozenset({"provider", "sourceUri", "commitSha", "filePath"
 #: that can start failing for reasons that have nothing to do with the corpus.
 _FULL_OBJECT_NAME: Final = re.compile(r"\A[0-9a-fA-F]{40}\Z")
 
-#: The corpus holds 26 migrations, 26 bodies, 26 ``evidence.json`` files and 3
-#: ``.gitkeep`` placeholders -- 81 tracked paths under the root ``.theurian/``
-#: (measured 2026-08-20). Recorded as content rather than as a branch SHA: a
-#: squash merge destroys the branch commit a reader would go looking for.
+#: The corpus holds 27 migrations, 27 bodies, 27 ``evidence.json`` files and 3
+#: ``.gitkeep`` placeholders -- 84 tracked paths under the root ``.theurian/``
+#: (measured 2026-08-31 at 7e7074c). Recorded as content rather than as a
+#: branch SHA: a squash merge destroys the branch commit a reader would go
+#: looking for.
 #:
 #: A lower bound; see the module docstring for why it is not an equality.
 MINIMUM_MIGRATIONS: Final = 26
@@ -273,7 +299,15 @@ def _frozen(value: Any) -> Any:
 
 @dataclass(frozen=True, slots=True)
 class Revision:
-    """One ``upsertRevision`` operation, as the committed document declares it."""
+    """One ``upsertRevision`` operation, as the committed document declares it.
+
+    ``migration`` is the tracked *path*; ``migration_document_id`` is the
+    document's own ``id`` field. The two are not the same key: the loader
+    orders migrations by the parsed ``id`` (Kahn's algorithm, ULID tie-break,
+    see :func:`_application_order`), never by file name, and every committed
+    file's name happening to embed its own ``id`` is a convention this module
+    does not enforce anywhere else.
+    """
 
     migration: str
     item_id: str
@@ -281,6 +315,8 @@ class Revision:
     content_file: str
     content_sha256: str
     metadata: Mapping[str, Any]
+    expected_revision: str | None
+    migration_document_id: str
 
     @property
     def anchors(self) -> tuple[Any, ...]:
@@ -507,6 +543,39 @@ def _requires_git_objects(what: str) -> Index:
 
 # -- The population ----------------------------------------------------------
 
+#: The one *live* record of the corpus's population -- the rest of this
+#: module's prose (the module docstring's "30 tracked migrations over 26 live
+#: items", the comment above :data:`MINIMUM_MIGRATIONS`, :data:`EVIDENCE_KEYS`
+#: and :data:`GOVERNED_OPERATIONS`) narrates the same numbers as dated
+#: measurements that intentionally freeze at the commit named beside them --
+#: the anchor-counts convention -- and none of those sites is checked against
+#: the tree. This mapping is checked, by
+#: :func:`test_the_corpus_population_matches_its_recorded_expectation`, which
+#: recomputes every key from the same population helpers every rule in this
+#: module already reads: :func:`_migration_paths`, :func:`_corpus_paths`,
+#: :func:`_evidence_paths`, :func:`_family`, :func:`_revisions`. No new I/O
+#: path is opened for it.
+#:
+#: The stale-count class this closes opened three times across the #440 and
+#: #471 review rounds -- the same seven numbers, hand-carried across roughly a
+#: dozen prose sites, went stale in both directions of hand maintenance: stale
+#: when written, and mis-copied when re-scoped
+#: (https://github.com/theurian/theurian/issues/458). A future re-seed or a
+#: new item moves at least one of these numbers; the fix from here on is a
+#: one-line, deliberate update to this mapping in the same change that moves
+#: the corpus, not a sweep across however many places happened to narrate it.
+EXPECTED_CORPUS_POPULATION: Final[Mapping[str, int]] = MappingProxyType(
+    {
+        "tracked_migrations": 41,
+        "bodies": 41,
+        "evidence_files": 41,
+        "gitkeep_placeholders": 3,
+        "tracked_paths": 126,
+        "distinct_items": 26,
+        "multi_revision_items": 13,
+    }
+)
+
 
 @functools.cache
 def _corpus_paths() -> tuple[str, ...]:
@@ -571,12 +640,15 @@ def _revisions() -> tuple[Revision, ...]:
     """Every ``upsertRevision`` the committed corpus declares, in path order."""
     found: list[Revision] = []
     for path in _migration_paths():
-        operations = _document(path).get("operations", [])
+        document = _document(path)
+        operations = document.get("operations", [])
         assert isinstance(operations, list), f"{path} declares no `operations` list"
+        document_id = document.get("id")
         for operation in operations:
             if not isinstance(operation, dict) or operation.get("op") != "upsertRevision":
                 continue
             metadata = operation.get("metadata")
+            expected = operation.get("expectedRevision")
             found.append(
                 Revision(
                     migration=path,
@@ -587,6 +659,8 @@ def _revisions() -> tuple[Revision, ...]:
                     metadata=_frozen(metadata)
                     if isinstance(metadata, dict)
                     else MappingProxyType({}),
+                    expected_revision=expected if isinstance(expected, str) else None,
+                    migration_document_id=str(document_id) if isinstance(document_id, str) else "",
                 )
             )
     assert found, (
@@ -756,6 +830,51 @@ def test_the_committed_corpus_is_present_and_has_not_shrunk() -> None:
     )
 
 
+def test_the_corpus_population_matches_its_recorded_expectation() -> None:
+    """The corpus's population is derived here once, not narrated by hand a dozen times.
+
+    Companion to :func:`test_the_committed_corpus_is_present_and_has_not_shrunk`: that rule
+    is a floor (``>=``), because the corpus is expected to grow between reads of this
+    module's own prose. This rule is the exact count (``==``) that prose kept trying and
+    failing to state by hand -- #458, split from #440's re-confirmation round, after the
+    stale-count class had produced roughly a dozen hand-fixed prose sites across the #440
+    and #471 rounds, wrong in both directions: stale when written, mis-copied when
+    re-scoped (the seed-pair figure "2 crossings / holds for 24" was actually 1 / 25 the
+    day it was written).
+
+    Every number below is computed from the same population helpers every other rule in
+    this module reads -- :func:`_migration_paths`, :func:`_corpus_paths`,
+    :func:`_evidence_paths`, :func:`_family`, :func:`_revisions` -- and checked against
+    :data:`EXPECTED_CORPUS_POPULATION`, the one mapping this module asks a human to keep
+    current. Everywhere else a count appears in this module's prose, it is a dated
+    measurement that intentionally freezes (the anchor-counts convention) and is not
+    re-checked here; this is the one place a divergence goes RED instead of stale.
+    """
+    corpus = _corpus_paths()
+    revisions_by_item: dict[str, list[Revision]] = {}
+    for revision in _revisions():
+        revisions_by_item.setdefault(revision.item_id, []).append(revision)
+
+    measured: dict[str, int] = {
+        "tracked_migrations": len(_migration_paths()),
+        "bodies": sum(1 for path in corpus if _family(path) == "body"),
+        "evidence_files": len(_evidence_paths()),
+        "gitkeep_placeholders": sum(1 for path in corpus if _family(path) == "gitkeep"),
+        "tracked_paths": len(corpus),
+        "distinct_items": len(revisions_by_item),
+        "multi_revision_items": sum(
+            1 for revisions in revisions_by_item.values() if len(revisions) > 1
+        ),
+    }
+
+    for key, expected in EXPECTED_CORPUS_POPULATION.items():
+        assert measured[key] == expected, (
+            f"{key} measured {measured[key]}, EXPECTED_CORPUS_POPULATION records {expected} -- "
+            f"a re-seed or new item moved the population -- update the EXPECTED mapping in "
+            f"the same change, deliberately."
+        )
+
+
 def test_every_tracked_corpus_path_belongs_to_a_family_this_module_governs() -> None:
     """A stranger under ``.theurian/`` is a publication nothing below inspects.
 
@@ -904,6 +1023,198 @@ def test_every_committed_revision_id_is_unique_across_the_corpus() -> None:
         f"revision ids declared by more than one committed migration: {duplicated}. A "
         f"revision id is an identity; two migrations claiming one means a reader following "
         f"it reaches whichever the store kept."
+    )
+
+
+def _revisions_in_application_order() -> tuple[Revision, ...]:
+    """:func:`_revisions`, reordered to the loader's real application order.
+
+    **Corrected from a false equivalence.** This module first folded by
+    :func:`_migration_paths`'s file-name sort, on the claim that it was "the
+    same order ``load_migrations`` applies in". It is not.
+    :meth:`~theurian.domain.migration.MigrationSet._topological_order` runs
+    Kahn's algorithm over ``dependsOn``, with each round's ready set broken by
+    the migration document's own ``id`` -- never by file name -- and the
+    orchestrator reproduced the miss on this branch: renaming the re-seed
+    migration's inner ``id`` to sort before the seed's, file name left
+    untouched, left every rule in this module green while ``migrate apply``
+    would apply the re-seed first and refuse it (its ``expectedRevision``
+    would then name a revision that does not exist yet).
+
+    No committed migration declares ``dependsOn`` today (checked below, and
+    skipped loudly rather than assumed), so every migration is "ready" in
+    Kahn's first and only round and the whole ordering collapses to one sort
+    key: the document's own ``id``, ascending. That every committed file's
+    *name* happens to embed the same ``id`` is a convention this module does
+    not enforce anywhere -- it is not what the loader reads.
+
+    A stable sort over :func:`_revisions`' existing sequence is sufficient
+    to derive that order without reproducing the loader: :func:`_revisions`
+    already emits one migration's operations contiguously before the next
+    (it walks :func:`_migration_paths` outer, ``operations`` inner), so
+    sorting by ``migration_document_id`` regroups those blocks by the correct
+    key while stability leaves each migration's own operations in their
+    original, correct, document order. The sort itself is
+    :func:`_sorted_by_application_order`, pulled out so it can be pinned
+    directly against a hand-built clash between the two keys
+    (ADV-RC MEDIUM-2) rather than only through the committed corpus, where
+    every file name happens to embed its own id and the two keys never
+    disagree.
+    """
+    for path in _migration_paths():
+        depends_on = _document(path).get("dependsOn")
+        if depends_on:
+            pytest.skip(
+                f"{path} declares dependsOn ({depends_on!r}). Reproducing the loader's "
+                f"Kahn ordering under a real dependency graph is out of this rule's scope; "
+                f"it only re-derives the id-tie-break case the corpus has exercised so far "
+                f"(zero dependsOn declarations). Widen this helper before trusting the "
+                f"chain rule again once one is committed."
+            )
+    return _sorted_by_application_order(_revisions())
+
+
+def _sorted_by_application_order(revisions: Iterable[Revision]) -> tuple[Revision, ...]:
+    """The pure fold key: a stable sort on ``migration_document_id``, never on
+    ``migration`` (the tracked file path).
+
+    Split out of :func:`_revisions_in_application_order` so the key itself is
+    directly testable against hand-built input, independent of the real
+    corpus's ``dependsOn`` check and its ``_revisions()`` read -- on the
+    committed corpus the two keys never disagree (every file name embeds its
+    own id), so a test that only ever exercises this through the corpus
+    cannot tell a correct fold from one that quietly reverted to the file
+    path, which is exactly what happened once (see the module docstring's
+    "Corrected from a false equivalence").
+    """
+    return tuple(sorted(revisions, key=lambda revision: revision.migration_document_id))
+
+
+def test_the_fold_key_orders_by_the_migration_document_id_not_the_file_name() -> None:
+    """The corrected fold key (cdef404), pinned against a clash the real corpus cannot pose.
+
+    ADV-RC MEDIUM-2: on the committed corpus every migration's file name
+    embeds its own inner id, so reverting :func:`_sorted_by_application_order`
+    back to ``key=lambda revision: revision.migration`` -- the mistake this
+    module shipped once -- survives the whole suite; the two keys never
+    disagree there. Smallest honest pin: two hand-built :class:`Revision`
+    objects whose file-name order is the *opposite* of their
+    ``migration_document_id`` order, fed straight into the pure sort rather
+    than through the real corpus, its ``dependsOn`` check or its
+    ``_migration_paths()`` population.
+    """
+    sorts_last_by_name_first_by_id = Revision(
+        migration="zzz-sorts-last-by-file-name.yaml",
+        item_id="test.fold-key-item",
+        revision_id="rev-applied-first",
+        content_file="a.md",
+        content_sha256="a" * 64,
+        metadata=MappingProxyType({}),
+        expected_revision=None,
+        migration_document_id="01-sorts-first-by-id",
+    )
+    sorts_first_by_name_second_by_id = Revision(
+        migration="aaa-sorts-first-by-file-name.yaml",
+        item_id="test.fold-key-item",
+        revision_id="rev-applied-second",
+        content_file="a.md",
+        content_sha256="a" * 64,
+        metadata=MappingProxyType({}),
+        expected_revision="rev-applied-first",
+        migration_document_id="02-sorts-second-by-id",
+    )
+
+    ordered = _sorted_by_application_order(
+        (sorts_first_by_name_second_by_id, sorts_last_by_name_first_by_id)
+    )
+
+    assert [revision.revision_id for revision in ordered] == [
+        "rev-applied-first",
+        "rev-applied-second",
+    ], (
+        f"sorted by application order: {[r.revision_id for r in ordered]}. Folding by "
+        f"revision.migration (file name) would give ['rev-applied-second', "
+        f"'rev-applied-first'] instead, because 'aaa-...' sorts before 'zzz-...'; the "
+        f"corrected key sorts by migration_document_id, which orders '01-...' before "
+        f"'02-...' regardless of file name."
+    )
+
+
+def test_every_expected_revision_names_the_chain_the_migrations_construct() -> None:
+    """``expectedRevision`` is the corpus's first optimistic-concurrency pin, and
+    nothing static held it before this rule.
+
+    Reproduced by the orchestrator (code-review MEDIUM): mutate a committed
+    migration's ``expectedRevision`` to a well-formed ULID no revision holds,
+    and the whole static surface stays green -- this module (32 tests, before
+    this rule existed) and ``theurian migrate validate`` both pass, because
+    neither reconstructs the chain the field claims to extend; the schema only
+    checks the *shape* of the value (a well-formed ULID, or ``null``), never
+    what it names. Only ``theurian migrate apply`` refuses, with a revision
+    conflict, on whichever machine applies the corpus next -- the run where a
+    wrong pin is most expensive, same reasoning as
+    :func:`test_every_committed_revision_id_is_unique_across_the_corpus` just
+    above.
+
+    Application order is :func:`_revisions_in_application_order`'s -- the
+    loader's own Kahn-ordered sequence, folded by the migration document's
+    ``id``, not by file name; see that function's docstring for why the two
+    are not the same key and for the adversarial finding (ADV MEDIUM) that
+    caught this rule folding by the wrong one. Folding ``upsertRevision`` by
+    ``itemId`` in that order, "current" is last-upsert-wins: whichever
+    revision the most recent prior ``upsertRevision`` for an item declared is
+    what the *next* one for that item has to name.
+
+    Two branches, and they are exhaustive over this corpus: a revision naming
+    ``expectedRevision`` has to match what the fold above left current for its
+    item, and one naming none has to be that item's *first* ``upsertRevision``
+    -- optimistic concurrency has nothing to check against before an item holds
+    a revision at all, which is why ``expectedRevision`` is absent from all 26
+    seed migrations by design. The published schema also allows a third
+    absence -- FR-K8's idempotent re-run of an operation whose own
+    ``revisionId`` the item already holds -- but that requires two migrations
+    naming the same ``revisionId``, which
+    :func:`test_every_committed_revision_id_is_unique_across_the_corpus` above
+    already forbids across this corpus, so it cannot arise while walking the
+    committed migrations once from empty.
+
+    This is the static half. The applicability test in
+    ``tests/integration/test_root_corpus_applies.py`` catches the same face
+    dynamically -- the real loader and engine, not a reconstruction of them --
+    so a defect that escapes one of these mechanisms still meets the other.
+    """
+    current: dict[str, str] = {}
+    wrong_pin: list[str] = []
+    not_first: list[str] = []
+    for revision in _revisions_in_application_order():
+        preceding = current.get(revision.item_id)
+        if revision.expected_revision is None:
+            if preceding is not None:
+                not_first.append(
+                    f"{revision.migration}: upsertRevision {revision.revision_id} on "
+                    f"{revision.item_id} carries no expectedRevision, but the preceding "
+                    f"migrations already left {preceding} current for that item"
+                )
+        elif revision.expected_revision != preceding:
+            wrong_pin.append(
+                f"{revision.migration}: upsertRevision {revision.revision_id} on "
+                f"{revision.item_id} names expectedRevision {revision.expected_revision!r}, "
+                f"but the preceding migrations left {preceding!r} current for that item"
+            )
+        current[revision.item_id] = revision.revision_id
+
+    assert not wrong_pin, (
+        f"upsertRevision operations whose expectedRevision does not name the revision the "
+        f"preceding migrations left current for that item: {wrong_pin}. `migrate apply` "
+        f"refuses every one of these with a revision conflict; nothing static did before "
+        f"this rule."
+    )
+    assert not not_first, (
+        f"upsertRevision operations with no expectedRevision that are not their item's "
+        f"first revision: {not_first}. Optimistic concurrency has nothing to check against "
+        f"on a first revision, but a later one silently skipping the field means "
+        f"`migrate apply` accepts whatever happens to be current with no confirmation at "
+        f"all."
     )
 
 
@@ -1283,12 +1594,14 @@ def test_the_evidence_key_rule_admits_the_optional_key_and_nothing_else(
 ) -> None:
     """The rule above, driven by input rather than by the corpus it reads.
 
-    Every committed evidence file predates ``migrationId``, so the corpus cannot
-    exercise the allowance that admits it: get the allowance wrong -- widen it to
-    any key, or make the new field required -- and the rule above stays green
-    until the first proposal drafted since #253 is committed, which is the run
-    where a wrong rule is most expensive. These five cases are the ones the
-    allowance has to separate.
+    The 26 original seed files predate ``migrationId`` and ``itemId``; the 27th,
+    re-seeded through ``propose``/``accept`` in
+    https://github.com/theurian/theurian/issues/416, carries both -- the first
+    real exercise of the *admitting* half of the allowance. What landing more
+    proposals never exercises is the *refusal* half: `propose` does not write a
+    stray key like ``notes`` or ``handoff``, so an allowance wrongly widened to
+    admit any key would stay green however large the corpus grows. These eight
+    cases are the ones the allowance has to separate.
     """
     assert _evidence_key_difference(dict.fromkeys(keys, "value")) == expected
 
@@ -1306,13 +1619,27 @@ def _evidence_key_difference(document: Mapping[str, object]) -> list[str]:
 def test_the_committed_corpus_holds_one_evidence_file_per_migration() -> None:
     """Provenance for every item, and no proposal directory left over.
 
-    The corpus is one item per proposal per migration by construction: 26 and 26
-    (measured 2026-08-20). The proposal id is *not* derivable from the migration
-    id -- the seed generated them monotonically, and 2 of the 26 crossed a
-    millisecond boundary, so ``proposalId + 1 == migration.id`` holds for 24 and
-    is not a relation this can assert. Counts and uniqueness are what the data
-    actually supports, and asserting the false relation would be a rule that
-    goes RED on the next correctly-seeded item.
+    The corpus is one proposal per migration by construction: 27 and 27 (dated
+    2026-08-31). That is no longer the same claim as one item per proposal: the
+    ADR-0013 re-seed (https://github.com/theurian/theurian/issues/416) landed a
+    27th proposal and a 27th migration whose ``upsertRevision`` names an
+    *existing* item (``architecture.ai-writes-produce-proposals``) rather than a
+    new one, so an item can hold more than one revision while this file still
+    holds exactly one evidence record per migration. The proposal id is *not*
+    derivable from the migration id -- the seed generated the first 26
+    monotonically, and index-pairing the 26 seed proposal ids against the 26
+    seed migration ids, sorted ascending (identical whether the migration is
+    keyed by its parsed ``id`` or by its filename's ULID prefix -- measured
+    2026-08-31, the two never disagree across this corpus), only **1** of the
+    26 pairs crosses a millisecond boundary; ``proposalId + 1 ==
+    migration.id`` holds for **25** of the 26, not 24, and fails on exactly
+    the pair that crosses (both figures measured 2026-08-31, at b7bb4cd). Not
+    a relation this can assert regardless: even one
+    failing pair means it is not universal, and it is not the seed's only
+    boundary crossing that will ever exist -- the next correctly-seeded item
+    can cross one too. Counts and uniqueness are what the data actually
+    supports, and asserting the false relation would be a rule that goes RED
+    on the next correctly-seeded item.
 
     An extra evidence directory is a proposal whose migration was never
     committed -- reasoning published for a decision the repository does not
@@ -1366,6 +1693,73 @@ def test_every_evidence_anchor_is_one_a_committed_migration_also_names() -> None
         f"evidence anchors no committed migration names: {uncited}. Only the migrations' "
         f"anchors are verified against a blob, so an anchor that appears only here has been "
         f"published and never checked -- and a path is a disclosure before it is a pin."
+    )
+
+
+def test_every_evidence_migration_claim_resolves_against_a_committed_migration() -> None:
+    """The corpus half of #253's own cross-check, unchecked until now (ADV-RC MEDIUM-3).
+
+    ``propose accept`` treats a committed ``evidence.json``'s optional
+    ``migrationId``/``itemId`` as a *claim*, not as ground truth: it looks the
+    named migration up in the loaded set and confirms the migration's own
+    operations -- ``createItem`` and ``upsertRevision``, the two
+    :data:`GOVERNED_OPERATIONS` permit, matching ``ProposalService``'s
+    ``_migration_item_ids`` exactly -- actually name the claimed item before
+    treating the proposal as accepted (``_landed_state``). Nothing here
+    re-derived that on the *committed* data: a hand-edited ``evidence.json``
+    could claim a ``migrationId`` naming nothing, or a real migration that
+    operates on a different item, and every rule in this module stayed
+    green -- the same shape as the anchor cross-check just above, applied to
+    the other cross-check field pair.
+
+    ``migrationId`` gates the check; ``itemId`` is checked only when also
+    present. Both fields are independently optional
+    (:data:`OPTIONAL_EVIDENCE_KEYS`, admitted one at a time), and a record
+    with neither makes no claim for this rule to resolve.
+    """
+    item_ids_by_migration_id: dict[str, frozenset[str]] = {}
+    for path in _migration_paths():
+        document = _document(path)
+        migration_id = document.get("id")
+        if not isinstance(migration_id, str):
+            continue
+        operations = document.get("operations", [])
+        item_ids_by_migration_id[migration_id] = frozenset(
+            str(operation["itemId"])
+            for operation in operations
+            if isinstance(operation, Mapping)
+            and operation.get("op") in {"createItem", "upsertRevision"}
+            and isinstance(operation.get("itemId"), str)
+        )
+
+    unresolved = []
+    for evidence in _evidence():
+        migration_id = evidence.document.get("migrationId")
+        if migration_id is None:
+            continue
+        if not isinstance(migration_id, str) or migration_id not in item_ids_by_migration_id:
+            unresolved.append(
+                (evidence.path, "migrationId", migration_id, "names no committed migration")
+            )
+            continue
+        item_id = evidence.document.get("itemId")
+        if item_id is None:
+            continue
+        if not isinstance(item_id, str) or item_id not in item_ids_by_migration_id[migration_id]:
+            unresolved.append(
+                (
+                    evidence.path,
+                    "itemId",
+                    item_id,
+                    f"is not an item migration {migration_id} operates on",
+                )
+            )
+
+    assert not unresolved, (
+        f"evidence records whose migrationId/itemId cross-check does not resolve against the "
+        f"committed migrations: {unresolved}. `propose accept` confirms these fields against "
+        f"the loaded migration set before treating a proposal as accepted; a claim nothing "
+        f"here checks could be wrong in the committed corpus and nothing would notice."
     )
 
 
