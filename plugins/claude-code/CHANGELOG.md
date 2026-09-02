@@ -56,27 +56,48 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `security.secretScan` description (SEC-11,
   [#198](https://github.com/theurian/theurian/issues/198)).
 
-  **What holds the two surfaces together is three pins, and the reach is the
+  **What holds the two surfaces together is four pins, and the reach is the
   bullet rather than the document.** Both surfaces are pinned *whole* — the
   schema's `security.secretScan` description by an exact match, and this
   paragraph's list item by another — so a reword, a deletion and a sentence
   *added* beside the bound are each RED; a fragment pin catches the first two
   and not the third. The shared clause is then derived from the published schema
-  and matched byte for byte in the document, so neither side can move alone.
-  Measured at `7ddfd16`, a commit on this pull request's branch and not on
-  `main`, against the forty-seven tests of
-  `tests/unit/test_config_key_call_sites.py`:
+  and matched byte for byte in the document, so neither side can move alone. The
+  fourth arrived in round three, when every published description was pinned
+  whole instead of three by fragment, which puts `security.secretScan` in that
+  table's parametrised row as well — so the entry says four where it used to say
+  three. Re-measured on this entry's own tree (2026-09-03) against the **57**
+  tests of `tests/unit/test_config_key_call_sites.py`, each plant applied on its
+  own to a throwaway checkout, control 0 failed / 57 passed:
 
   | The plant | What goes RED |
   | :-- | :-- |
-  | *"Ingested content is screened on the way in as well"* appended to the schema description | `test_the_secret_scan_description_is_exactly_what_this_file_records` — 1 failed, 46 passed |
-  | the same sentence appended to this bullet | `test_the_ingest_command_states_the_config_bound_and_nothing_beside_it` — 1 failed, 46 passed |
-  | the shared clause reworded on the schema side alone | `test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it`, and the fragment row with it — 2 failed, 45 passed |
+  | *"Ingested content is screened on the way in as well."* appended to the schema description | `test_the_secret_scan_description_is_exactly_what_this_file_records`, and `WATCHED_KEY_DESCRIPTIONS`' parametrised whole-description row for `security.secretScan` — 2 failed, 55 passed |
+  | the same sentence appended to this bullet | `test_the_ingest_command_states_the_config_bound_and_nothing_beside_it` — 1 failed, 56 passed |
+  | the shared clause reworded on the schema side alone | those two, and `test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it` with them — 3 failed, 54 passed |
 
-  **What is not held**: the same contradiction written into a *different* bullet
-  of this document ships with all forty-seven green and the census at exit 0,
-  measured the same way. The pins hold the paragraph that carries the claim, not
-  the file around it.
+  **The bullet pin ends the item where CommonMark ends one, and round three is
+  why.** It had read a list item as "the `- ` line plus the lines indented by two
+  spaces", and four ways of appending a sentence render inside the same bullet
+  while sitting outside that rule — so the contradiction above went in four times
+  over with every pin green. All four are RED now, each failing
+  `test_the_ingest_command_states_the_config_bound_and_nothing_beside_it` alone
+  at 1 failed, 56 passed:
+
+  | The contradiction appended to the pinned bullet | Held |
+  | :-- | :-- |
+  | at column 0, as a lazy continuation | yes |
+  | indented by one space | yes |
+  | indented by a tab | yes |
+  | as a second paragraph after a blank line | yes |
+  | **as its own `- ` bullet of the same document** | **no** |
+
+  **What is not held is the last row, and only that row.** A sibling bullet opens
+  a block, so the item ends there: the same contradiction written into a
+  *different* bullet of this document ships with all 57 pins green and all five
+  audits at exit 0, measured the same way. The pins hold the paragraph that
+  carries the claim, not the file around it, and a whole-document pin is
+  [#512](https://github.com/theurian/theurian/issues/512)'s.
 - **`/theurian:propose` told the agent the secret scan reads the body only.** It
   said to keep credentials out of `--title`, `--description`, `--label` and the
   `--source-*` anchors because "those are not scanned". Core now scans the

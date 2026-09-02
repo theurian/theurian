@@ -221,7 +221,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   found out.** Any delimiter run that is spelled is a run some wrapper sits
   outside of: the same claim with its path wrapped in bold — in a wheel-shipped
   module, outside the prose pin's surfaces — passed the widened key, all five
-  audits and the whole suite. So the census stopped matching on emphasis at all.
+  audits and the whole suite. So the census stopped matching on emphasis.
   `claim_surfaces.without_emphasis` is applied at one seam, `as_read`, which the
   pre-filter, the three claim keys, the reference keys, the record markers and
   the ledger fragments all run against, so a form that defeats one cannot defeat
@@ -233,16 +233,38 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `no match`, so the five were not bought with a false positive on a true
   sentence.
 
-  **What that closes is the emphasis family, not markup composition.** A path
-  written as a Markdown link or in a three-backtick run is still out of reach,
-  and both are rows in `MEASURED_ESCAPES` — a table that fails when a row's
-  reach changes, rather than a sentence that rots. Closing them costs two
-  characters in the delimiter class and was measured rather than guessed: 55
-  rows, 19 suspects and no ledger drift on both sides, every control holding on
-  both sides, and the two escapes moving to `SUSPECT`. It is not taken, because
-  a delimiter class widened to reach two more spellings is the enumeration this
-  module exists to stop doing, and because it is a second mechanism in a round
-  closed on the first.
+  **"Emphasis" meant the CommonMark spellings only, and round three reopened the
+  escape by typing four characters.** `<b>` renders as `**` and was invisible to
+  the strip, so ``Nothing in `src/` reads <b>`.theurian/config.yaml`</b>``
+  planted in a wheel-shipped module left the census, the five audits and the
+  whole suite green — in the one markup this repository already writes by hand.
+  The criterion the strip already rested on settles which tags join it: a form
+  **invisible in the rendered sentence**, so that a reader cannot tell the two
+  apart. `<b>`, `<i>`, `<em>` and `<strong>` are stripped beside the asterisk
+  and underscore runs, case-insensitively; `<code>` and `<summary>` are not,
+  because a reader sees them and a key can be widened to spell them. A/B against
+  this tree with that one constant changed moves nothing: **56 rows, 19
+  suspects, (0, 0, 0) ledger drift and 124 watched objects on both sides, and an
+  empty symmetric difference over the produced rows** — the plant flips
+  `no match` → `SUSPECT` and ADR-0028's house style stays `no match` either way.
+
+  **What that closes is the emphasis family, not markup composition.** Four
+  forms are still out of reach and each is a row in `MEASURED_ESCAPES` — a table
+  that fails when a row's reach changes, rather than a sentence that rots: a
+  path written as a Markdown link, a path in a three-backtick run, JSON's `\/`
+  escape (which every parser undoes and this module's JSON reader does not), and
+  an `e.g.` that puts a negation and its object in different sentences. **Only
+  the first two are reachable by widening the delimiter class**, and that was
+  measured rather than guessed — as shipped against `{0,3}` plus `[` and `]`,
+  both sides give 56 rows, 19 suspects and (0, 0, 0) ledger drift, with the link
+  and the three-backtick run moving to `SUSPECT` and the JSON and `e.g.` rows
+  not moving at all. The widening is not taken: a delimiter class widened to
+  reach two more spellings is the enumeration this module exists to stop doing,
+  it is a second mechanism in a round closed on the first, and it would leave
+  half the recorded escape space open regardless. All four rows are
+  [#512](https://github.com/theurian/theurian/issues/512)'s, whose north star —
+  normalise to rendered text, then match — is the terminal form that ends the
+  enumeration rather than extending it.
 
   Two further properties, both measured. The sweep reads **wrap-joined
   sentences**, not lines: at `75c4c7a`, a commit on this pull request's branch
@@ -261,11 +283,17 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   which a substring fragment absorbs and only a cardinality check sees;
   **verdict drift**, a row recorded as retracted that comes back a suspect; and
   an **occurrence count**, a second anchor added to a place already judged. So
-  `owner_position_cites` reconciles in four directions, `config_object_claims`
-  and `sha_anchors` in three, and `controls_discharge` in two. Each *direction*
-  is driven by a control rather than asserted, which is what makes a correction
-  and its record land in one commit instead of the record rotting behind the
-  fix.
+  `owner_position_cites` reconciles in four directions and the other three in
+  three each — **4/3/3/3**. This paragraph said `controls_discharge` reconciled
+  in *two* until round three: it counted the arity of `ledger_drift`, which
+  returns the two ledger-keyed directions, and `controls_discharge`'s first
+  direction is spelled **undischarged** — a member naming no `src/` symbol, no
+  test, no open owner and no `PROSE_ONLY` row — and is computed in `_report`
+  instead, where an arity key cannot see it. It is the same direction its
+  siblings spell *unrecorded*, with the same exit status: `_report` returns 1 on
+  `undischarged or dead or unknown or stale or ambiguous`. Each *direction* is
+  driven by a control rather than asserted, which is what makes a correction and
+  its record land in one commit instead of the record rotting behind the fix.
 
   **And the suite runs the audits now, which it did not.** Committing five
   instruments that nothing invokes leaves them free to rot: mutations reverting
@@ -278,10 +306,42 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `*_CONTROLS` name must bind a non-empty tuple, `POSITIVE_CONTROLS` is required
   of every audit, and `LEDGER_CONTROLS` of every audit that defines a ledger
   runner, derived from the source rather than from a list of four names kept in
-  step by hand. Its reach is stated where it runs: emptying a table is caught;
-  deleting the table *and* its runner *and* the call to it is not, because
-  nothing is left to be inconsistent with. Full
-  populations, keys and mutation controls:
+  step by hand.
+
+  **A structural read is not a bound on how much runs, and round three priced
+  the difference at five one-line edits.** Reading a table as *bound and
+  non-empty* says nothing about the rows a loop reaches, so each audit now
+  counts the rows its loops **execute** — never `len(TABLE)`, which none of
+  those edits moves — and prints one `CONTROL-TALLY` line per table through a
+  single seam in `claim_surfaces`. The guard pins those counts per audit in
+  `CONTROL_TALLIES`, reads the control call graph transitively from
+  `_run_positive_controls` so a runner nobody reaches is RED rather than silent,
+  and holds its own keys to the rule it imposes. Measured against the guard as
+  it stood before those changes and as it stands now, each edit applied on its
+  own to `config_object_claims.py` in a throwaway checkout:
+
+  | The one-line edit | Guard before | Guard now | What fails now |
+  | :-- | :-- | :-- | :-- |
+  | a control runner opens with `return 0` | green | **RED** | pinned tally |
+  | the `LEDGER_CONTROLS` loop iterates `()` | green | **RED** | pinned tally |
+  | the `MEASURED_ESCAPES` loop iterates `()` | green | **RED** | pinned tally |
+  | `POSITIVE_CONTROLS` sliced to `[:1]` | green | **RED** | pinned tally |
+  | the guard's own required-table set emptied to `frozenset()` | green | **RED** | the guard's own keys |
+  | the call to a runner removed, table and runner kept | green | **RED** | reachability, and the tally |
+  | the table, its runner *and* the call deleted together | green | **RED** | the tally line stops being printed |
+  | *control:* `POSITIVE_CONTROLS` emptied to `()` | **RED** | **RED** | structural (the check that already held) |
+
+  **So the reach this entry previously claimed is now wrong in the good
+  direction.** It said deleting a table *and* its runner *and* the call to it
+  was not caught, "because nothing is left to be inconsistent with"; a pinned
+  figure fails on that too, since the tally line simply stops being printed —
+  the last row above. The audit's own `--positive-control` still exits 0 under
+  both deletion edits, so the guard is what catches them. The bound that *does*
+  hold is narrower and stated so it can be attacked: **every check here asks
+  whether a control ran, none asks whether it still asserts anything.** A row
+  duplicated to keep the count, or a row whose expected value is edited to match
+  what the code now does, passes every one of them. That is what review is for.
+  Full populations, keys and mutation controls:
   [`docs/work-logs/2026-09-02-199-unit-b-census.md`](../../docs/work-logs/2026-09-02-199-unit-b-census.md).
 
 - **ADR-0008's two dated measurement anchors say which pull requests they belong
