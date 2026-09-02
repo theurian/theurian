@@ -155,9 +155,14 @@ Still owed, with the milestone that will satisfy it:
   > and the pointer swap is a write-to-temp plus `os.replace`. So a query during
   > a build resolves the pointer to a file the build never opens — an argument
   > from pinned elements, which is not a measurement, and saying so is what this
-  > bullet has been for since it was written. **Milestone 6 has passed and no
-  > open issue owns this**; ADR-0024's Compliance section carries the
-  > reconciliation and names this bullet as where the residue lives.
+  > bullet has been for since it was written. The sweep behind "no test" is
+  > `Thread|ThreadPool|ProcessPool|fork()` over the test tree, whose index-side
+  > result is **zero**. **Milestone 6 has passed, and the missing test is owned
+  > by [#497](https://github.com/theurian/theurian/issues/497)** — whose
+  > definition of done requires every record stating this gap to move in the same
+  > pull request the test lands in, because each becomes false the moment it
+  > exists. ADR-0024's Compliance section carries the reconciliation and names
+  > this bullet as where the residue lives.
 - **Nothing asserts two worktrees keep independent active states.** This section
   claimed a test; the string `worktree` does not appear anywhere under
   `tests/`. This is the case ADR-0016's amendment makes load-bearing — the state

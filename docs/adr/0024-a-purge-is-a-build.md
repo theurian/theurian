@@ -1050,4 +1050,14 @@ discharged by this ADR being accepted.
 > build sees the previous complete state" — and it remains accurate; what has
 > changed underneath it is that the two records it cites as agreeing with it
 > (ADR-0018's and ADR-0022's) no longer do. It is annotated there rather than
-> restated here.
+> restated here. **The owed test is owned by
+> [#497](https://github.com/theurian/theurian/issues/497)**, whose definition of
+> done requires every record stating this gap to move in the same pull request
+> the test lands in, because each becomes false the moment it exists. That
+> population is **seven files**, measured rather than listed — a wrap-aware
+> search of `while a build is|during a build|during an in-progress build` over
+> the record-update diff: ADR-0007's bullet, ADR-0018's Compliance bullet,
+> ADR-0022's Still-owed opener, this note, `indexing/__init__.py`'s docstring,
+> `infrastructure/sqlite/store.py`'s module docstring, and the CHANGELOG entry.
+> A line-oriented `git grep` under-counts it, because three of the seven wrap the
+> phrase across a soft line break.

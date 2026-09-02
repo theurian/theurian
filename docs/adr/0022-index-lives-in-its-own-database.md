@@ -180,8 +180,11 @@ Still owed, with the milestone that will satisfy it:
   > missing test rather than a missing mechanism: nothing in the suite issues a
   > query while a build is actually running, which is what
   > [ADR-0007](0007-state-hash-partitioned-databases.md)'s Still-owed bullet
-  > already records. ADR-0024's Compliance section carries the reconciliation
-  > across all four records that state NFR-4.
+  > already records. **That missing test is owned by
+  > [#497](https://github.com/theurian/theurian/issues/497)**, which requires
+  > this bullet to move in the same pull request it lands in. ADR-0024's
+  > Compliance section carries the reconciliation across all four records that
+  > state NFR-4.
 - **Something other than a build will write to an index** (answered below; the
   writer discipline owed,
   [#439](https://github.com/theurian/theurian/issues/439)). This ADR's model is

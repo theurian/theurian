@@ -17,8 +17,10 @@ discharge rests on ADR-0024 points 6 and 7 -- but the retraction had not
 travelled to this file (#454). Those points were reconciled across every record
 stating NFR-4 on 2026-09-01 (#140 member 1): they discharge it, and what remains
 owed is a test rather than a mechanism -- no test issues a query while a build is
-running, recorded under ADR-0007's Still owed. ADR-0024's Compliance section
-carries the argument and names the pins. None of that changes this file: it is
+running, recorded under ADR-0007's Still owed and owned by
+`#497 <https://github.com/theurian/theurian/issues/497>`_, which requires this
+paragraph to move in the same pull request the test lands in. ADR-0024's
+Compliance section carries the argument and names the pins. None of that changes this file: it is
 still the state database's WAL that is cited here, and still not NFR-4.
 
 Every line here that turns a stored cell into a value goes through

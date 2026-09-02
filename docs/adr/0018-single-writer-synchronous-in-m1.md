@@ -394,6 +394,8 @@ Still owed, with the issue or milestone that will satisfy it:
   > [ADR-0007](0007-state-hash-partitioned-databases.md)'s Still owed rather than
   > restated here: no test in the suite issues a query while a build is running,
   > so "the previously published index answers every query while a new build runs"
-  > is argued from pinned elements rather than measured. Read this bullet as *not
+  > is argued from pinned elements rather than measured. **That test is owned by
+  > [#497](https://github.com/theurian/theurian/issues/497)**, which requires this
+  > bullet to move in the same pull request it lands in. Read this bullet as *not
   > discharged here*, which is what it has always meant, and not as *not
   > discharged anywhere*.

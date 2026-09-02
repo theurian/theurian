@@ -174,9 +174,14 @@ Nothing yet.
   no-session counterexample — while **"while a new build runs" is true by
   construction with every element pinned and no test issuing a query during a
   build**. So the mechanism is discharged and one acceptance test is owed. That
-  residue is ADR-0007's own Still-owed bullet, whose "(Milestone 6)" owner is
-  dead and which no open issue owns; this also answers what the `store.py` NFR-4
-  correction below left open.
+  residue is ADR-0007's own Still-owed bullet, whose "(Milestone 6)" owner was
+  dead; it is now owned by
+  [#497](https://github.com/theurian/theurian/issues/497), whose definition of
+  done requires all seven records that state the gap — ADR-0007, ADR-0018,
+  ADR-0022, ADR-0024, `indexing/__init__.py`,
+  `infrastructure/sqlite/store.py` and this entry — to move in the same pull
+  request the test lands in, because each becomes false the moment it exists.
+  This also answers what the `store.py` NFR-4 correction below left open.
 
 - **T-17's round-5/6/7 residual figures are re-run against a real purged build,
   and the ADR-0024 point-4 clauses #445 asks about are answered by measurement**

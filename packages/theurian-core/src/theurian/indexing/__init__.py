@@ -26,8 +26,9 @@ whose four tests include the connection-per-call counterexample;
 ``test_a_read_of_a_missing_index_creates_no_file``. **Builds are still not
 incremental**, and the test named above still holds that. What remains owed is a
 *test* rather than a mechanism: nothing in the suite issues a query while a build
-is running, which ADR-0007's Still-owed bullet records and which no open issue
-owns.
+is running, which ADR-0007's Still-owed bullet records and which
+`#497 <https://github.com/theurian/theurian/issues/497>`_ owns -- that issue
+requires this docstring to move in the same pull request the test lands in.
 
 External model calls outside write transactions (NFR-8) is a rule with nothing to
 apply it to yet: no provider that calls a model has an implementation. It is
