@@ -26,7 +26,7 @@ import functools
 import inspect
 import shlex
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -261,6 +261,53 @@ def _forwarding[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
         return result
 
     return forwarding
+
+
+#: The code object every :func:`_forwarding` wrapper shares.
+#:
+#: ``forwarding`` is compiled once, when this module is imported, so every
+#: function :func:`_forwarding` returns is a distinct closure over a distinct
+#: ``fn`` but over the *same* ``__code__``. That identity is what
+#: ``is_forwarding_wrapper`` tests: a lookalike built with ``functools.wraps``
+#: -- which copies ``__wrapped__``, ``__name__`` *and* ``__qualname__`` from the
+#: body it wraps, so none of those distinguish it -- still has its own code
+#: object, and a raw ``server.tool`` registration has no ``__wrapped__`` chain
+#: at all. Nothing a refactor can spell to look like the seam shares this
+#: object without going through :func:`_forwarding`.
+_FORWARDING_CODE: Final = _forwarding(lambda: None).__code__
+
+
+def is_forwarding_wrapper(fn: object) -> bool:
+    """Whether ``fn`` is a wrapper :func:`_forwarding` produced.
+
+    The seam's universality is pinned on this rather than on ``hasattr(fn,
+    "__wrapped__")``: the latter accepts *any* ``functools.wraps`` wrapper, so a
+    refactor swapping :func:`_forwarding` for a thin ``wraps`` wrapper would keep
+    the pin green while silently dropping #491's conversion under mcp >= 2.1.
+    Identity of the shared code object cannot be reproduced without calling
+    :func:`_forwarding` (adversarial R2-A).
+
+    ``__wrapped__`` is followed first so the check survives an *additional*
+    wrapper layered outside the seam -- ``functools.wraps`` copies
+    ``__wrapped__`` through, so ``inspect.unwrap`` still reaches the seam
+    beneath a conforming outer wrapper -- while still refusing a lookalike that
+    replaced the seam.
+    """
+    for candidate in (fn, *_wrapped_chain(fn)):
+        code = getattr(candidate, "__code__", None)
+        if code is _FORWARDING_CODE:
+            return True
+    return False
+
+
+def _wrapped_chain(fn: object) -> Iterator[object]:
+    """Each ``__wrapped__`` link out from ``fn``, ``fn`` itself excluded."""
+    seen: set[int] = set()
+    current = getattr(fn, "__wrapped__", None)
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = getattr(current, "__wrapped__", None)
 
 
 def _defers_its_body(fn: object) -> bool:

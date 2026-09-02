@@ -169,3 +169,55 @@ def test_no_registered_tool_serves_or_reaches_a_finding(empty_registry: ProjectR
         "with its own disclosure round (ADR-0029), not as a reach from a Milestone "
         "3 read tool."
     )
+
+
+def _names_without_following_wrapped(function: Any) -> set[str]:
+    """``_referenced_names``' walk with the ``__wrapped__`` hop removed.
+
+    The reblinded walk, kept beside the real one so the premise check below can
+    say what the hop is worth. Identical in every respect but that one hop.
+    """
+    seen: set[str] = set()
+    pending = [function.__code__]
+    while pending:
+        code = pending.pop()
+        seen.update(code.co_names)
+        pending.extend(const for const in code.co_consts if hasattr(const, "co_names"))
+    return seen
+
+
+def test_the_findings_walk_reaches_a_real_tool_body(empty_registry: ProjectRegistry) -> None:
+    """The premise the disclosure guard above rests on, asserted not assumed.
+
+    ``test_no_registered_tool_serves_or_reaches_a_finding`` answers "does any
+    tool reach a store symbol?" and reports *no* as clean. A walk that reaches
+    nothing therefore passes it while checking nothing -- exactly what the #491
+    seam caused when ``Tool.fn`` became a wrapper whose body hangs off a free
+    variable: the walk collapsed to the wrapper's own names, and a planted
+    ``SqliteReviewFindingStore`` inside a tool body passed.
+
+    ``test_mcp_tools.py`` grew this ratchet in round one; this file's walker did
+    not, so reverting *its* ``__wrapped__`` hop alone -- no plant -- survived the
+    full suite while the ADR-0029 disclosure guard passed vacuously (adversarial
+    R2-B). The two walkers now carry the same premise check.
+
+    Stated as a strict superset per tool rather than as a count: following
+    ``__wrapped__`` must add at least one name for every registered tool, or the
+    walk that backs the disclosure guard is inspecting the wrapper, not the body.
+    """
+    server = build_server(empty_registry)
+    tools = server._tool_manager.list_tools()
+    assert tools, "an empty tool list would pass this test vacuously"
+
+    thin: dict[str, int] = {}
+    for tool in tools:
+        full = _referenced_names(tool.fn)
+        wrapper_only = _names_without_following_wrapped(tool.fn)
+        if not wrapper_only < full:
+            thin[tool.name] = len(full)
+
+    assert not thin, (
+        f"following `__wrapped__` added no name for these tools, so the disclosure "
+        f"guard that walks them is inspecting the wrapper rather than the tool body "
+        f"and would report a store reference in a tool as clean: {thin}"
+    )

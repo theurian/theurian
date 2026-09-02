@@ -9,7 +9,7 @@ same entry point the transport uses -- against a project built by the real CLI.
 from __future__ import annotations
 
 import contextlib
-import inspect
+import functools
 import json
 import re
 import sqlite3
@@ -58,7 +58,7 @@ from theurian.infrastructure.sqlite.connection import (
 )
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
-from theurian.mcp.tools import MAX_PROJECT_ID_CHARS, MAX_RESULTS
+from theurian.mcp.tools import MAX_PROJECT_ID_CHARS, MAX_RESULTS, is_forwarding_wrapper
 
 pytestmark = pytest.mark.integration
 
@@ -2388,10 +2388,15 @@ def test_every_registered_tool_goes_through_the_forwarding_seam(
     back to being withheld under 2.1.1. Six bypass shapes pass the source scan.
 
     What cannot be spelled around is the object the SDK actually holds. Each
-    registered ``Tool.fn`` must *be* ``_forwarding``'s wrapper, which
-    ``functools.wraps`` marks with ``__wrapped__``. Deleting the application, or
-    registering a sixth tool straight onto ``server.tool``, reddens this
-    immediately.
+    registered ``Tool.fn`` must *be* a wrapper :func:`~theurian.mcp.tools._forwarding`
+    produced -- identified by the code object every one of its products shares,
+    not by the mere presence of ``__wrapped__``. A ``functools.wraps`` lookalike
+    (``functools.wraps(fn)(lambda ...)``) carries ``__wrapped__``, ``__name__``
+    and ``__qualname__`` copied from the body, and runs none of the seam's
+    ``except`` arms; adversarial R2-A confirmed the full suite stayed green under
+    exactly that substitution while every #491 remedy was withheld again under
+    mcp >= 2.1. ``is_forwarding_wrapper`` closes it: the shared code object
+    cannot be reproduced without calling :func:`_forwarding`.
 
     Asserted over the built server rather than the source, and asserted
     per-tool with the tool named, so a partial bypass is not averaged away by a
@@ -2403,20 +2408,32 @@ def test_every_registered_tool_goes_through_the_forwarding_seam(
     tools = server._tool_manager.list_tools()
     assert tools, "an empty tool list would pass this test vacuously"
 
-    unwrapped = {
-        tool.name
-        for tool in tools
-        if not hasattr(tool.fn, "__wrapped__") or inspect.unwrap(tool.fn) is tool.fn
-    }
-    assert not unwrapped, (
+    not_the_seam = {tool.name for tool in tools if not is_forwarding_wrapper(tool.fn)}
+    assert not not_the_seam, (
         f"these registered tools are not wrapped by `_forwarding`, so a refusal "
         f"raised below `mcp/tools.py` is withheld from their callers under mcp "
-        f">= 2.1 (#491): {sorted(unwrapped)}"
+        f">= 2.1 (#491): {sorted(not_the_seam)}"
     )
 
-    # The positive control for the key above: `__wrapped__` must be absent from a
-    # tool registered straight onto the SDK, or "every tool has it" is satisfied
-    # by something other than the seam and the assertion means nothing.
+    # The negative control that gives the assertion above teeth. A lookalike
+    # `functools.wraps` wrapper carries `__wrapped__` and every name the seam
+    # carries, yet runs none of `_forwarding`'s conversion -- the exact shape
+    # adversarial R2-A slipped past the old `hasattr(..., "__wrapped__")` pin. It
+    # must read as *not* the seam, or the pin is back to accepting any wrapper.
+    def lookalike_body() -> dict[str, str]:  # pragma: no cover - registered, never called
+        return {}
+
+    @functools.wraps(lookalike_body)
+    def lookalike(*args: object, **kwargs: object) -> dict[str, str]:  # pragma: no cover
+        return lookalike_body()
+
+    assert hasattr(lookalike, "__wrapped__"), "the control must be a wraps wrapper to be meaningful"
+    assert not is_forwarding_wrapper(lookalike), (
+        "a `functools.wraps` lookalike passed `is_forwarding_wrapper`, so the pin "
+        "is accepting any wrapper again rather than the forwarding seam"
+    )
+
+    # The positive control: a raw `server.tool` registration is not the seam.
     control = MCPServer("seam-pin-control")
 
     @control.tool(name="raw")
@@ -2425,9 +2442,9 @@ def test_every_registered_tool_goes_through_the_forwarding_seam(
 
     raw_tool = control._tool_manager.get_tool("raw")
     assert raw_tool is not None
-    assert not hasattr(raw_tool.fn, "__wrapped__"), (
-        "a raw `server.tool` registration already carries `__wrapped__`, so the "
-        "assertion above cannot distinguish a wrapped tool from an unwrapped one"
+    assert not is_forwarding_wrapper(raw_tool.fn), (
+        "a raw `server.tool` registration read as the forwarding seam, so the "
+        "assertion above cannot distinguish a seam-wrapped tool from a raw one"
     )
 
 

@@ -65,7 +65,13 @@ from theurian.infrastructure.sqlite.connection import (
     StateDatabaseUnreadableError,
     WriteLockTimeoutError,
 )
-from theurian.mcp.tools import DEFERRED_RESULT_REFUSAL, ToolError, _forwarding, _tool
+from theurian.mcp.tools import (
+    DEFERRED_RESULT_REFUSAL,
+    ToolError,
+    _forwarding,
+    _tool,
+    is_forwarding_wrapper,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -382,6 +388,51 @@ def test_the_seam_keeps_the_signature_the_sdk_builds_schemas_from() -> None:
     assert wrapped.__name__ == answer.__name__
 
 
+def test_is_forwarding_wrapper_admits_the_seam_and_rejects_every_lookalike() -> None:
+    """The predicate the runtime seam pin rests on (adversarial R2-A).
+
+    ``functools.wraps`` copies ``__wrapped__``, ``__name__`` and ``__qualname__``
+    from the body onto the wrapper, so none of those distinguish the seam from a
+    lookalike -- a fact this test pins directly, because a check keyed on any of
+    them would silently accept the substitution adversarial R2-A demonstrated.
+    Identity of the shared code object is what does distinguish them.
+    """
+
+    def body(projectId: str) -> dict[str, str]:  # noqa: N803
+        return {}
+
+    seam = _forwarding(body)
+    assert is_forwarding_wrapper(seam)
+
+    # A second product of `_forwarding` around a different body: still the seam,
+    # because all its products share one code object.
+    assert is_forwarding_wrapper(_forwarding(lambda: None))
+
+    # The lookalike R2-A used: `functools.wraps` over a lambda. Carries
+    # `__wrapped__` and copies the body's names, runs none of the seam's arms.
+    @functools.wraps(body)
+    def lookalike(*args: object, **kwargs: object) -> dict[str, str]:
+        return body(*args, **kwargs)  # type: ignore[arg-type]
+
+    assert hasattr(lookalike, "__wrapped__")
+    assert lookalike.__qualname__ == body.__qualname__, (
+        "wraps copies __qualname__, so a suffix check fails"
+    )
+    assert not is_forwarding_wrapper(lookalike)
+
+    # The raw body, and a plain object: neither is the seam.
+    assert not is_forwarding_wrapper(body)
+    assert not is_forwarding_wrapper(object())
+
+    # An *outer* conforming wrapper around the seam still reads as the seam,
+    # because `wraps` copies `__wrapped__` through and the chain reaches it.
+    @functools.wraps(seam)
+    def outer(*args: Any, **kwargs: Any) -> dict[str, str]:
+        return seam(*args, **kwargs)
+
+    assert is_forwarding_wrapper(outer)
+
+
 def test_the_seam_leaves_the_sdk_derived_tool_metadata_byte_identical() -> None:
     """The stronger property, over what the SDK *derived* rather than what it read.
 
@@ -520,7 +571,7 @@ def test_a_plain_def_returning_a_coroutine_is_refused_at_call_time() -> None:
     """
     coroutine_returned: Any = None
 
-    def looks_synchronous() -> Any:
+    def looks_synchronous(projectId: str = "secret-project") -> Any:  # noqa: N803
         nonlocal coroutine_returned
 
         async def body() -> str:
@@ -530,11 +581,20 @@ def test_a_plain_def_returning_a_coroutine_is_refused_at_call_time() -> None:
         return coroutine_returned
 
     try:
-        with pytest.raises(ToolError, match="un-awaited object"):
-            _forwarding(looks_synchronous)()
+        with pytest.raises(ToolError) as refused:
+            _forwarding(looks_synchronous)("secret-project")
     finally:
         if coroutine_returned is not None:
             coroutine_returned.close()  # or Python warns about it, and warnings are errors
+
+    # The rendered raise, not the template (adversarial R2-C): the constant test
+    # below inspects `DEFERRED_RESULT_REFUSAL` only, so a raise site that appended
+    # `args`/`kwargs` -- here the caller's own `projectId` -- would pass it and a
+    # `match=` substring alike. Byte-equality with the formatted constant is what
+    # forbids that, and it is what proves the argument did not ride along: the
+    # tool name is the function's own `__name__`, nothing from the call.
+    assert str(refused.value) == DEFERRED_RESULT_REFUSAL.format(tool="looks_synchronous")
+    assert "secret-project" not in str(refused.value)
 
 
 def test_the_deferred_result_refusal_carries_nothing_but_the_tool_name() -> None:
@@ -544,7 +604,9 @@ def test_the_deferred_result_refusal_carries_nothing_but_the_tool_name() -> None
     "an error that fires for one input and not another" channel SEC-13 closes
     everywhere else on this surface. This one interpolates the tool function's
     own name and nothing more -- and a tool's name is what ``tools/list``
-    already publishes.
+    already publishes. The template is checked here; the *rendered* raise is
+    checked in ``test_a_plain_def_returning_a_coroutine_is_refused_at_call_time``,
+    because a raise site can diverge from its own template.
     """
     assert DEFERRED_RESULT_REFUSAL.count("{") == 1
     assert "{tool}" in DEFERRED_RESULT_REFUSAL
