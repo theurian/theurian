@@ -182,8 +182,10 @@ def _quoted(path: str) -> str:
 
 #: How a file object is referred to when the sentence uses a pronoun instead of
 #: its path. Admitted only inside a block that already names the object, which is
-#: how the shipped ``ingest.md`` claim -- *"nothing reads that file today"*, one
-#: clause after the path -- is reachable at all.
+#: how ``ingest.md``'s shipped claim -- *"nothing reads that file today"*, one
+#: clause after the path -- was reachable at all. #199 unit B corrected that
+#: sentence; this shape stays because the paragraph can be written that way
+#: again, and no path-bearing key would see it if it were.
 _PRONOUN_FILE: Final = r"(?:it|this|that|the)\s+(?:config(?:uration)?\s+)?file\b"
 
 #: The same for a key object.
@@ -491,15 +493,12 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
         "transcription",
         "The unbalanced-backtick probe (E1), quoted in the docstring that states what it measures.",
     ),
-    (
-        "plugins/claude-code/commands/ingest.md",
-        "nothing reads that file today",
-        "DEFECT, #461",
-        "False since ADR-0027 decision 3: `security/project_config.py` reads the file for "
-        "`security.secretScan`. The conservative conclusion survives on the narrower fact "
-        "-- `providers.review.repositories` has no reader -- and has to be re-derived on "
-        "it, the #426 treatment. Corrected by #199 unit B's prose assignment.",
-    ),
+    # `plugins/claude-code/commands/ingest.md`'s "nothing reads that file today"
+    # stood here as `DEFECT, #461` until #199 unit B's prose assignment corrected
+    # it. The sentence now names the one reader and narrows the negation to
+    # `providers.review.repositories`, so the sweep produces no row for it and
+    # the ledger carries none: a file-wide claim returning to that paragraph is
+    # an unrecorded suspect again, which is the direction that has to stay RED.
     (
         "schemas/config/project-config.schema.json",
         "Nothing reads it today; owed with",
@@ -520,18 +519,24 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
 #: **A zero from a sweep is only readable after the key has hit something.** A
 #: pattern that matches nothing reports exactly what a clean tree reports, and
 #: this repository has already shipped one sweep whose key had stopped matching.
-#: The two live members are here as controls too, because a control that only
-#: ever runs against synthetic text does not show that the key reaches the
-#: shipped surfaces.
+#: The two members this repository actually published are here as controls too,
+#: because a control that only ever runs against synthetic text does not show
+#: that the key reaches a real surface. **Both have since been corrected on this
+#: branch** -- the schema root by #455, the plugin claim by #461 -- so neither
+#: sentence is in the tree any more and what these two rows demonstrate is
+#: narrower than it was: the key still reaches the exact wording those two
+#: surfaces shipped, which is the wording a regression would restore. They are
+#: kept in their published form for that reason and are not re-tensed into the
+#: corrected text, which the key is not supposed to match.
 POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool], ...]] = (
     (
-        "the shipped schema root (#455)",
+        "the schema root as it shipped before #455 (corrected)",
         "schemas/config/project-config.schema.json",
         "Nothing in src/ reads this file, so no value in it takes effect today.",
         True,
     ),
     (
-        "the shipped plugin claim (#461)",
+        "the plugin claim as it shipped before #461 (corrected)",
         "plugins/claude-code/commands/ingest.md",
         "A repository will have to be on the allowlist in `.theurian/config.yaml`; "
         "nothing reads that file today.",

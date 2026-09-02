@@ -30,9 +30,11 @@ Report what was ingested by source type and how many documents changed.
   files under `.theurian/`, plus three `git` reads — the repository root
   (`rev-parse --show-toplevel`), HEAD (`rev-parse HEAD`), and the `origin` URL
   (`remote get-url origin`). When it lands (Milestone 7) a repository will have
-  to be on the allowlist in `.theurian/config.yaml` before Theurian contacts it;
-  nothing reads that file today, so do not tell the user the allowlist is
-  protecting them.
+  to be on the allowlist in `.theurian/config.yaml` before Theurian contacts it.
+  That file is read today, but for one key only: `security/project_config.py`
+  takes `security.secretScan` from it and nothing else (ADR-0027 decision 3).
+  Nothing reads the `providers.review.repositories` allowlist, so do not tell
+  the user the allowlist is protecting them.
 - `theurian ingest` generates no candidates and runs no summarization stage, so
   there is no partial result to report. When review ingestion lands
   (owned by [#479](https://github.com/theurian/theurian/issues/479), which
