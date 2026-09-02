@@ -246,29 +246,42 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   **invisible in the rendered sentence**, so that a reader cannot tell the two
   apart. `<b>`, `<i>`, `<em>` and `<strong>` are stripped beside the asterisk
   and underscore runs, case-insensitively; `<code>` and `<summary>` are not,
-  because a reader sees them and a key can be widened to spell them. A/B against
-  this tree with that one constant changed moves nothing: **56 rows, 19
-  suspects, (0, 0, 0) ledger drift and 124 watched objects on both sides, and an
-  empty symmetric difference over the produced rows** — the plant flips
-  `no match` → `SUSPECT` and ADR-0028's house style stays `no match` either way.
+  because a reader sees them and a key can be widened to spell them.
 
-  **What that closes is the emphasis family, not markup composition.** Four
-  forms are still out of reach and each is a row in `MEASURED_ESCAPES` — a table
-  that fails when a row's reach changes, rather than a sentence that rots: a
-  path written as a Markdown link, a path in a three-backtick run, JSON's `\/`
-  escape (which every parser undoes and this module's JSON reader does not), and
-  an `e.g.` that puts a negation and its object in different sentences. **Only
-  the first two are reachable by widening the delimiter class**, and that was
-  measured rather than guessed — as shipped against `{0,3}` plus `[` and `]`,
-  both sides give 56 rows, 19 suspects and (0, 0, 0) ledger drift, with the link
-  and the three-backtick run moving to `SUSPECT` and the JSON and `e.g.` rows
-  not moving at all. The widening is not taken: a delimiter class widened to
-  reach two more spellings is the enumeration this module exists to stop doing,
-  it is a second mechanism in a round closed on the first, and it would leave
-  half the recorded escape space open regardless. All four rows are
-  [#512](https://github.com/theurian/theurian/issues/512)'s, whose north star —
-  normalise to rendered text, then match — is the terminal form that ends the
-  enumeration rather than extending it.
+  **Round four found that fix written as four literal strings, and a tag is
+  carried by its spelling.** `<b class="x">`, `<b >` and `<strong id="a">`
+  render exactly as the bare forms do, and each was measured escaping the
+  literal pattern. The tag name is now followed by a word boundary and then
+  whatever the tag carries up to its `>`, which admits the attribute and
+  whitespace spellings and keeps `<br>`, `<img>` and `<blockquote>` outside on
+  the boundary. Both directions are driven over a table of spellings in
+  `tests/unit/audit/test_emphasis_strip_spellings.py` rather than asserted in a
+  docstring.
+
+  **What the strip reaches is a list, and the list has a run table beside it.**
+  Six render-adjacent tags sit outside it — `<span>`, as invisible as `<b>` and
+  simply not one of the four, and `<ins>`, `<mark>`, `<u>`, `<s>` and `<small>`,
+  which a reader can see but which wrap a claim just as well. Each is now a row
+  in `MEASURED_ESCAPES` beside the four composition forms already there: a path
+  written as a Markdown link, a path in a three-backtick run, JSON's `\/` escape
+  (which every parser undoes and this module's JSON reader does not), and an
+  `e.g.` that puts a negation and its object in different sentences. Ten rows,
+  and the table **runs** — a row whose reach changes fails the audit rather than
+  rotting in a sentence. Adding six more tag names to the strip instead would
+  have been the move that produced bold, then `<b>`, then these; all ten rows
+  are [#512](https://github.com/theurian/theurian/issues/512)'s, whose north
+  star — normalise to rendered text, then match — is the terminal form that ends
+  the enumeration rather than extending it.
+
+  **Widening the delimiter class reaches two of the four composition rows, and
+  that was measured rather than guessed** — as shipped against `{0,3}` plus `[`
+  and `]`, both sides give the same row count, the same 19 suspects and (0, 0,
+  0) ledger drift, with the link and the three-backtick run moving to `SUSPECT`
+  while the JSON and `e.g.` rows do not move. The widening is not taken: a
+  delimiter class widened to reach two more spellings is the enumeration this
+  module exists to stop doing, it is a second mechanism in a round closed on the
+  first, and it would leave the rest of the recorded escape space open
+  regardless.
 
   Two further properties, both measured. The sweep reads **wrap-joined
   sentences**, not lines: at `75c4c7a`, a commit on this pull request's branch

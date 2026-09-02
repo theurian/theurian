@@ -108,7 +108,8 @@ def split_sentences(block: str) -> list[str]:
     return _SENTENCE_END.split(block)
 
 
-#: CommonMark's two emphasis delimiters, wherever a reader sees none.
+#: CommonMark's two emphasis delimiters, plus four HTML tags that render as they
+#: do -- the markup a reader of the rendered sentence sees no trace of.
 #:
 #: An asterisk run is unconditional: CommonMark gives ``*`` no other job in
 #: running text. An underscore run is admitted only where it is *not* inside a
@@ -127,11 +128,27 @@ def split_sentences(block: str) -> list[str]:
 #: ``Nothing in `src/` reads <b>`.theurian/config.yaml`</b>`` in a wheel-shipped
 #: module and the census, the audits and the whole suite stayed green.
 #:
-#: Only the tags that *are* emphasis. ``<code>`` and ``<summary>`` are not
-#: stripped, because they are not invisible in the rendered sentence -- the
-#: criterion this whole normalisation rests on.
+#: **The tag *spelling* is matched, not four literal strings**, which is round
+#: four's finding on the form this pattern had. ``<b class="x">``, ``<b >`` and
+#: ``<strong id="a">`` are the same four tags with an attribute or a space in
+#: them, they render exactly as the bare forms do, and each of the three was
+#: measured escaping the literal spelling. So the tag name is followed by a word
+#: boundary and then whatever it carries up to its ``>``. The boundary is what
+#: keeps ``<br>``, ``<img>`` and ``<blockquote>`` out of the ``b``/``i``
+#: alternatives, and ``tests/unit/audit/test_emphasis_strip_spellings.py`` drives
+#: both directions over a table of spellings rather than leaving them asserted
+#: here.
+#:
+#: Four tags, chosen by the criterion above. ``<code>`` and ``<summary>`` are
+#: visible in the rendered sentence, so a key can be widened to spell them.
+#: ``<span>``, ``<ins>``, ``<mark>``, ``<u>``, ``<s>`` and ``<small>`` are HTML a
+#: writer can wrap a claim in without reaching for one of the four; each is a
+#: measured row in ``config_object_claims.MEASURED_ESCAPES`` that runs and says
+#: it is still out of reach. Enumerating tags is the move #512 replaces --
+#: normalise to rendered text, then match -- and the table is what keeps the
+#: enumeration honest until then.
 _EMPHASIS_DELIMITERS: Final = re.compile(
-    r"\*+|(?<![0-9A-Za-z_])_+(?![0-9A-Za-z_])|</?(?:b|i|em|strong)>", re.IGNORECASE
+    r"\*+|(?<![0-9A-Za-z_])_+(?![0-9A-Za-z_])|</?(?:b|i|em|strong)\b[^>]*>", re.IGNORECASE
 )
 
 
@@ -152,21 +169,24 @@ def without_emphasis(text: str) -> str:
 
     **The family is the forms that are invisible in the rendered sentence, and
     that criterion is what admitted the HTML tags in round three.** ``**`` and
-    ``<b>`` render identically, so a key that strips one and not the other closes
-    an escape a writer can reopen by typing four characters -- which is what the
+    ``<b>`` render identically, so a key that strips one and not the other leaves
+    an escape a writer reopens by typing four characters -- which is what the
     round-three plant did, in a wheel-shipped module, with every check green.
     ``<b>``, ``<i>``, ``<em>`` and ``<strong>`` are therefore stripped beside the
-    asterisk and underscore runs; ``<code>`` and ``<summary>`` are not, because
-    they are visible in the render and a key can be widened to spell them.
+    asterisk and underscore runs, in whatever attribute or whitespace spelling
+    they are written; ``<code>`` and ``<summary>`` are not, because they are
+    visible in the render and a key can be widened to spell them.
 
-    **This closes the emphasis family, not markup composition generally**, and
-    the difference is measured rather than hedged: a path written as a Markdown
+    **What this reaches is a list, and the list has a run table beside it.** Round
+    four widened the tag spelling and left six render-adjacent tags outside it --
+    ``<span>``, ``<ins>``, ``<mark>``, ``<u>``, ``<s>`` and ``<small>`` -- beside
+    four composition forms that were already outside: a path written as a Markdown
     link, in a three-backtick run, with JSON's ``\\/`` escape, or split from its
-    negation by an ``e.g.`` is still out of reach, and all four are live rows in
-    ``config_object_claims.MEASURED_ESCAPES``. The terminal form -- normalising to
-    rendered text before any key runs, which ends the syntax enumeration rather
-    than extending it -- is #512's, and the table is what keeps the current bound
-    honest until then.
+    negation by an ``e.g.``. Each of the ten is a live row in
+    ``config_object_claims.MEASURED_ESCAPES``, and that table *runs*, so a row
+    whose reach changes fails rather than rots. The terminal form -- normalising to
+    rendered text before a key runs, which ends the syntax enumeration rather than
+    extending it -- is #512's.
 
     **Not applied to every audit here, and the exception is load-bearing.**
     ``owner_position_cites.py``'s supersession probe reads a block's *bold

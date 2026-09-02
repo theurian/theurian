@@ -19,8 +19,9 @@ that render as them -- by matching on text a reader would see rather than on
 markup a pattern has to anticipate.
 
 The rest of the dimension is open and is not argued away. A Markdown link, a
-three-backtick fence, JSON's ``\\/`` escape and an ``e.g.`` between a negation and
-its object each still defeat these keys; every one is a row in
+three-backtick fence, JSON's ``\\/`` escape, an ``e.g.`` between a negation and
+its object, and six HTML tags outside the four the strip covers each still defeat
+these keys; each is a row in
 :data:`MEASURED_ESCAPES`, which **runs**, so the bound fails rather than rots.
 Closing them one syntax at a time is the move that produced this list, and the
 terminal form -- normalise to rendered text, then match -- is #512's
@@ -255,9 +256,11 @@ class Row:
 #: and three are both why.** Any run spelled here is a run some emphasis wrapper is
 #: outside of: bold defeated this one because ``*`` is not in the class, adding
 #: ``*`` would have left the underscore form, and adding both would have left
-#: ``<b>``. :func:`as_read` strips emphasis before any key runs, which is
-#: what makes the family a closed set -- the forms a reader cannot see -- rather
-#: than a list extended one delimiter at a time.
+#: ``<b>``. :func:`as_read` strips emphasis before a key runs, which moves the
+#: question from *which delimiter* to *which markup a reader sees no trace of* --
+#: a shorter list, and one whose remainder is run rather than asserted:
+#: :data:`MEASURED_ESCAPES` carries the six HTML tags round four measured outside
+#: the strip.
 #:
 #: **Markup composition in general is not closed, and saying so is the point of
 #: the escape table.** Emphasis is one wrapper family; a Markdown link's ``[``
@@ -509,9 +512,11 @@ def as_read(sentence: Sentence) -> Sentence:
     population and the line numbers are unaffected -- the row still reports the raw
     sentence at the line it opens on, because that is what a person opens.
 
-    It is one seam and not a general answer: what it normalises is the markup that
-    is *invisible in the render*. Everything else the reference dimension admits is
-    a row in :data:`MEASURED_ESCAPES`.
+    It is one seam and not a general answer: what it normalises is a list of forms
+    judged *invisible in the render*, and the reference dimension admits more than
+    that list reaches. What it admits is recorded and run in
+    :data:`MEASURED_ESCAPES` rather than described here -- six HTML tags beside the
+    four composition forms.
     """
     return Sentence(
         path=sentence.path,
@@ -965,7 +970,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, str], ...]] = (
 #:
 #: **The last row is a ``reached=True`` one, and it is not decoration.** Every
 #: other row records ``no match``, which is exactly what a harness that had stopped
-#: matching at all would report -- five silent rows and a green run. One row the key
+#: matching at all would report -- a table of silent rows and a green run. One row the key
 #: does reach is the positive control on this table's own loop, and it carries its
 #: claim in the *second* sentence of the plant so that it holds the sentence split
 #: that loop performs as well.
@@ -973,6 +978,16 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, str], ...]] = (
 #: **Every row here is a way of writing or breaking up a reference, not a way of
 #: phrasing a claim** -- which is precisely the dimension the module's opening
 #: theorem does not bound, and the reason it now carries a qualifier.
+#:
+#: **Six of the rows are HTML tags, and they are round four's.** The emphasis
+#: strip covers ``<b>``, ``<i>``, ``<em>`` and ``<strong>`` on the criterion that
+#: a reader of the rendered sentence cannot tell them from no markup at all.
+#: ``<span>`` meets that criterion too and is outside the four; ``<ins>``,
+#: ``<mark>``, ``<u>``, ``<s>`` and ``<small>`` render as something a reader
+#: *can* see, and are the wrappers nearest to hand for someone reaching past the
+#: strip. Recording them as rows is the honest form of the bound: the alternative
+#: is to add six tag names and meet the seventh next round, which is the
+#: enumeration #512 exists to replace.
 #:
 #: **What the link and fence rows would cost to close, measured rather than
 #: guessed.** Adding ``[`` and ``]`` to :data:`_DELIMITER_RUN`'s class and taking
@@ -1026,6 +1041,46 @@ MEASURED_ESCAPES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "split separates (#512)",
         "docs/architecture/raptor.md",
         "Nothing in `src/` reads, e.g. `.theurian/config.yaml`, so the default is safe to flip.",
+        False,
+    ),
+    (
+        "round four: `<span>`, invisible in the render and outside the four stripped tags (#512)",
+        "docs/architecture/raptor.md",
+        "Nothing in `src/` reads <span>`.theurian/config.yaml`</span>, so the default is safe "
+        "to flip.",
+        False,
+    ),
+    (
+        "round four: `<ins>`, which renders underlined rather than bold (#512)",
+        "docs/architecture/raptor.md",
+        "Nothing in `src/` reads <ins>`.theurian/config.yaml`</ins>, so the default is safe "
+        "to flip.",
+        False,
+    ),
+    (
+        "round four: `<mark>`, which renders highlighted (#512)",
+        "docs/architecture/raptor.md",
+        "Nothing in `src/` reads <mark>`.theurian/config.yaml`</mark>, so the default is safe "
+        "to flip.",
+        False,
+    ),
+    (
+        "round four: `<u>`, which renders underlined (#512)",
+        "docs/architecture/raptor.md",
+        "Nothing in `src/` reads <u>`.theurian/config.yaml`</u>, so the default is safe to flip.",
+        False,
+    ),
+    (
+        "round four: `<s>`, which renders struck through (#512)",
+        "docs/architecture/raptor.md",
+        "Nothing in `src/` reads <s>`.theurian/config.yaml`</s>, so the default is safe to flip.",
+        False,
+    ),
+    (
+        "round four: `<small>`, which renders in a smaller face (#512)",
+        "docs/architecture/raptor.md",
+        "Nothing in `src/` reads <small>`.theurian/config.yaml`</small>, so the default is safe "
+        "to flip.",
         False,
     ),
     (

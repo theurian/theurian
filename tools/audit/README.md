@@ -98,10 +98,18 @@ Wherever a population comes from `governed_paths`, two exclusions apply, and
 
 The `claim_surfaces` reader matches on **wrap-joined, whitespace-collapsed
 blocks**, not on lines: every Markdown document here is hard-wrapped, and a
-line-oriented pass undercounts by an amount nobody can state. It also strips
-**emphasis** — `*`, `_`, and the `<b>`/`<i>`/`<em>`/`<strong>` tags that render as
-them — because a wrapper a reader cannot see must not move a claim out of reach
-of a key. What it does not normalise is recorded and run: `MEASURED_ESCAPES` in
+line-oriented pass undercounts by an amount nobody can state.
+
+**Emphasis stripping is not something that reader does to every audit.**
+`claim_surfaces` *offers* `without_emphasis` — `*`, `_`, and the
+`<b>`/`<i>`/`<em>`/`<strong>` tags that render as them, in whatever attribute or
+whitespace spelling they are written — and `config_object_claims.py` applies it
+at one seam, `as_read`, so a wrapper a reader cannot see does not move a claim
+out of reach of that census's keys. `owner_position_cites.py` deliberately does
+not apply it: its supersession probe reads a block's **bold opener**, where the
+emphasis is the signal rather than the noise. The markup the strip does not reach
+is recorded and run rather than described — six HTML tags beside four
+composition forms, each a row in `MEASURED_ESCAPES` in
 `config_object_claims.py`.
 
 | Script | Population | Discharge |

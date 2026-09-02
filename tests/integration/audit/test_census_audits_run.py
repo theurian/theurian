@@ -130,7 +130,7 @@ REQUIRED_BY_RUNNER: Final[dict[str, str]] = {
 CONTROL_TALLIES: Final[dict[str, dict[str, int]]] = {
     "config_object_claims": {
         "POSITIVE_CONTROLS": 21,
-        "MEASURED_ESCAPES": 6,
+        "MEASURED_ESCAPES": 12,
         "LEDGER_CONTROLS": 6,
     },
     "controls_discharge": {"POSITIVE_CONTROLS": 6, "LEDGER_CONTROLS": 5},
