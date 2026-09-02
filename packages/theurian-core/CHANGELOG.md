@@ -145,10 +145,11 @@ Nothing yet.
   8,564,736 B to 241,664 B (the source table records `optimize`; a `VACUUM`
   applied in the reproduction lands at the same figure). **That reaches a caller as a
   duration** — 16.8 ms against 1.2 ms isolated at 5,950 withdrawn, and **+27.4
-  ms** end to end there (the delta is the stable figure, +27.59…+28.18 ms over
-  six re-runs; the ratio moves with its denominator at 5.08–5.67×, median
-  5.41×), crossing the 1.40 ms noise floor between 500 and 1,000 withdrawn rows,
-  with a five-point calibration reading the withdrawn count off the clock at 3
+  ms** end to end there (the round-one measurement, +27.36 ms; six later re-runs
+  give +27.59…+28.18 ms, so the delta is stable across runs while the ratio
+  moves with its denominator at 5.08–5.67×, median 5.41×), crossing the 1.40 ms
+  noise floor between 500 and 1,000 withdrawn rows, with a five-point
+  calibration reading the withdrawn count off the clock at 3
   of 5. Content is not recovered: responses stay byte-identical, because
   `'delete'` *does* decrement the averages record even while tombstoning the
   postings. Recorded as a new **face of T-17a**, named by the root cause that

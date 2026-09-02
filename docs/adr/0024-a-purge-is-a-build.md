@@ -190,10 +190,12 @@ stops testing the channel it names.
 > never-held** — 151× the postings for rows the build no longer serves — with
 > the substring scan at 16.8 ms, 1.1 ms and 1.2 ms and every response identical.
 > End to end the duration is monotone in the withdrawn count: at 5,950
-> withdrawn a request costs **+27.4 ms** more than at nothing withdrawn, and the
-> delta is the stable figure (+27.59…+28.18 ms over six re-runs) where the ratio
-> moves with its denominator — 5.08–5.67×, median 5.41×. That crosses the threat
-> model's 1.40 ms end-to-end floor (TB-1) between 500 and 1,000 withdrawn rows.
+> withdrawn a request costs **+27.4 ms** more than at nothing withdrawn — the
+> round-one measurement, +27.36 ms — and **six later re-runs give +27.59…+28.18
+> ms**, so the delta is the stable figure across separate runs while the ratio
+> moves with its denominator: 5.08–5.67×, median 5.41×. The conclusion moves on
+> neither. That crosses the threat model's 1.40 ms end-to-end floor (TB-1)
+> between 500 and 1,000 withdrawn rows.
 > The `optimize`d comparison above is the source table's; a `VACUUM` applied in
 > the reproduction lands at the same 241,664 B.
 >
