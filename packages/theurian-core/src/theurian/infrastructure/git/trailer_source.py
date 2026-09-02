@@ -36,6 +36,21 @@ and decoding under the process locale rather than UTF-8 would corrupt the
 byte-preservation the loss-free mapping (AC-1) depends on. ``log.showSignature``
 is forced off and optional locks disabled so a repo-level config cannot inject
 gpg lines into the parsed stream.
+
+**The stream is framed before it is decoded, and decoded one field at a time**
+(#496). Decoding the whole stdout first made *any* commit whose message is not
+valid UTF-8 -- a hand-built object, an older git, an ``encoding``-header path --
+raise, so one such commit anywhere on public history took the entire corpus with
+it and the remedy named a ``git fetch`` that could not help: the "one commit
+bricks the corpus" abort ADR-0029 D3 forbids. Framing first is exact rather than
+convenient: NUL is a whole code point in UTF-8 and never a continuation byte, so
+the byte-level partition and the decoded-string partition are the *same*
+partition. Each record's git-generated metadata (``%H``, ``%cI`` -- ASCII by
+construction) then decodes strictly and fatally, while its author-controlled
+message decodes strictly and, on failure, is **contained**: that record's trailers
+are skipped and the record is accounted as one
+:class:`~theurian.domain.review_finding.RejectedTrailer`, never silently dropped
+and never fatal.
 """
 
 from __future__ import annotations
@@ -118,11 +133,15 @@ GIT_TIMEOUT_SECONDS: Final = 30.0
 #: 2026-08-27). Either way NUL cannot occur in a field, so the stream partitions
 #: unambiguously into fixed-width records that no commit content can reshape.
 #: The literal byte that separates records in ``git log -z`` output -- this is what
-#: the *stdout* is split on. Distinct from :data:`_FORMAT`'s ``%x00`` placeholders,
-#: which are the text git expands into these bytes: an actual NUL in the argv would
-#: be rejected by ``subprocess`` ("embedded null byte"), so the format carries the
-#: escape and only the output carries the byte.
-_NUL: Final = "\x00"
+#: the *stdout* is split on, as ``bytes``, **before** anything is decoded (#496).
+#: Distinct from :data:`_FORMAT`'s ``%x00`` placeholders, which are the text git
+#: expands into these bytes: an actual NUL in the argv would be rejected by
+#: ``subprocess`` ("embedded null byte"), so the format carries the escape and only
+#: the output carries the byte. Splitting the raw bytes loses nothing the decoded
+#: split had: U+0000 encodes to the single byte ``0x00`` and no continuation byte
+#: of a multi-byte sequence can be ``0x00``, so a byte-level occurrence of the
+#: separator is exactly a code-point-level one.
+_NUL: Final = b"\x00"
 #: ``%B`` -- the **raw whole message**, subject included -- and deliberately not
 #: ``%b`` (#410). git's ``%b`` excludes the first *paragraph*, not the first line:
 #: in a message whose subject is not followed by a blank line, every following line
@@ -142,6 +161,17 @@ _FORMAT: Final = "format:%H%x00%cI%x00%B"
 #: because no field tells the parser which line the subject was.
 _FIELDS_PER_RECORD: Final = 3
 
+#: How many **bytes** of an undecodable commit message reach its rejection's
+#: ``raw_line`` (#496). A commit message is unbounded author-controlled input, and
+#: a record-level rejection is written to the store and counted in an operator's
+#: build report, so the excerpt that locates the failure is capped rather than
+#: copied: 120 bytes is a subject line's worth -- enough to recognise which commit
+#: it is -- and replacement-decoding at most this many bytes yields at most this
+#: many characters, so the bound holds on both sides of the decode. The slice is
+#: taken *before* decoding, so a multi-megabyte message is never materialised as a
+#: ``str`` at all.
+_UNDECODABLE_EXCERPT_BYTES: Final = 120
+
 
 class GitHistoryUnavailableError(TheurianError):
     """``git log`` could not be run, or the public ref does not resolve.
@@ -150,6 +180,12 @@ class GitHistoryUnavailableError(TheurianError):
     the history the source reads from could not be reached at all. The commonest
     cause on a fresh clone is that ``refs/remotes/origin/main`` has not been
     fetched, so the remedy names the fetch rather than an edit to a trailer.
+
+    **A commit message that is not valid UTF-8 no longer arrives here** (#496).
+    History was perfectly reachable in that case, so the fetch remedy was advice
+    that could not work; it is contained per record instead (see
+    :func:`_decode_message`). What is left is exactly what the remedy fits: git
+    could not be run, or the public ref does not resolve.
     """
 
     def __init__(self, repo_root: Path, reason: str) -> None:
@@ -163,24 +199,36 @@ class GitHistoryUnavailableError(TheurianError):
 
 
 class GitOutputFramingError(TheurianError):
-    """``git log -z`` produced output the NUL framing could not partition.
+    """``git log -z`` produced a stream this adapter's framing cannot read.
 
     Distinct from :class:`GitHistoryUnavailableError` (history unreachable) and
     from a malformed trailer (the grammar failed): here ``git`` ran and the ref
-    resolved, but the byte stream did not split into an exact multiple of
-    :data:`_FIELDS_PER_RECORD` NUL-delimited fields. Because NUL cannot occur in a
-    commit message (D4), this is not an author-forgeable condition and should not
-    arise in practice; it signals a git version or invocation whose ``-z`` framing
-    differs from the one this adapter is written against, so the remedy names that
-    rather than a fetch or a trailer edit.
+    resolved, but the byte stream is not the one this adapter is written against.
+    Two shapes reach it, and neither is author-forgeable:
+
+    - the stream did not split into an exact multiple of
+      :data:`_FIELDS_PER_RECORD` NUL-delimited fields. NUL cannot occur in a commit
+      message (D4), so no commit content can reshape the partition;
+    - a record's **git-generated metadata** -- ``%H`` (40 hex characters) or ``%cI``
+      (an ISO-8601 instant), both ASCII by construction -- was not valid UTF-8
+      (#496). An author cannot reach those fields, so bytes that are not ASCII
+      there mean the *stream* is wrong, not the history: a ``-z`` framing this
+      adapter does not know, or output under an encoding it did not ask for.
+
+    Both therefore signal a git version or invocation that differs from the one
+    this adapter is written against, so the remedy names that rather than a fetch
+    or a trailer edit. An undecodable **message** is the opposite case and is
+    contained per record instead (:func:`_decode_message`): its bytes *are*
+    author-controlled, so one of them must never be fatal (D3).
     """
 
     def __init__(self, repo_root: Path, reason: str) -> None:
         self.repo_root = repo_root
         self.reason = reason
         self.remedy = (
-            f"git log -z output in {str(repo_root)!r} was not NUL-framed as expected; "
-            "report this with the installed git version, as it indicates a framing mismatch."
+            f"git log -z output in {str(repo_root)!r} was not the NUL-framed, "
+            "ASCII-metadata stream expected; report this with the installed git "
+            "version, as it indicates a framing mismatch."
         )
         super().__init__(f"Corrupt git log framing in {str(repo_root)!r}: {reason}")
 
@@ -222,14 +270,16 @@ class GitTrailerFindingSource:
         heuristic (D5) unreachable.
 
         **The load is loss-free by accounting, not by aborting** (AC-1, D3): every
-        column-0 keyed line whose record has a valid committer date is either an
-        accepted :class:`ReviewFinding` or a :class:`RejectedTrailer` (its value
-        failed the grammar); and a record whose committer date git emitted outside
-        ``datetime``'s range is accounted as a single record-level
-        :class:`RejectedTrailer`, its trailers skipped rather than parsed. A
-        malformed line, and a whole record with an unrepresentable date, are both
-        captured -- never silently dropped and never a fatal abort -- so neither one
-        quoted grammar example nor one crafted committer date can brick the corpus.
+        column-0 keyed line whose record has a readable message and a valid
+        committer date is either an accepted :class:`ReviewFinding` or a
+        :class:`RejectedTrailer` (its value failed the grammar); and a record whose
+        **message git emitted as non-UTF-8 bytes** (#496), or whose committer date
+        git emitted outside ``datetime``'s range, is accounted as a single
+        record-level :class:`RejectedTrailer`, its trailers skipped rather than
+        parsed. A malformed line, a whole record whose message cannot be decoded,
+        and a whole record with an unrepresentable date are all captured -- never
+        silently dropped and never a fatal abort -- so no one quoted grammar
+        example, raw byte, or crafted committer date can brick the corpus.
 
         The accepted tuple is in total order ``(commit date, commit sha, position
         within the commit)`` -- the sha alone is already total (a position
@@ -244,13 +294,30 @@ class GitTrailerFindingSource:
             GitHistoryUnavailableError: If ``git`` cannot run or
                 ``refs/remotes/origin/main`` does not resolve.
             GitOutputFramingError: If the ``git log -z`` stream does not partition
-                into whole NUL-delimited records.
+                into whole NUL-delimited records, or a record's git-generated
+                metadata field is not valid UTF-8.
         """
         records = _split_records(self._git_log(), self._repo_root)
         accepted: list[tuple[tuple[datetime, str, int], ReviewFinding]] = []
         rejected: list[tuple[tuple[str, int], RejectedTrailer]] = []
         for record in records:
             committed_at = record.committed_at
+            # A record earns at most ONE record-level rejection, and the decode is
+            # asked first: a message whose bytes are not UTF-8 has no candidate
+            # lines at all, so naming the decode locates the failure where naming
+            # the date would only say which record it was on. (A record failing
+            # both is one entry either way -- the accounting is what must not
+            # double-count.)
+            if record.message is None:
+                rejected.append(
+                    (
+                        (record.sha, 0),
+                        RejectedTrailer(
+                            record.sha, record.undecodable_excerpt, record.undecodable_reason
+                        ),
+                    )
+                )
+                continue
             if committed_at is None:
                 # A committer date this runtime cannot hold as a UTC instant -- a
                 # year >= 10000, or (unreachable from `%cI`) a value with no offset
@@ -289,7 +356,7 @@ class GitTrailerFindingSource:
             rejected=tuple(entry for _, entry in rejected),
         )
 
-    def _git_log(self) -> str:
+    def _git_log(self) -> bytes:
         # Top-level options (before ``log``) harden the read (ADR-0029 D7):
         # ``--no-replace-objects`` is *not* a ``log`` option -- placing it after
         # ``log`` gives ``fatal: unrecognized argument`` -- and ``-c
@@ -320,7 +387,11 @@ class GitTrailerFindingSource:
         if completed.returncode != 0:
             reason = completed.stderr.decode("utf-8", errors="replace").strip() or "git log failed"
             raise GitHistoryUnavailableError(self._repo_root, reason)
-        return _decode_git_output(completed.stdout, self._repo_root)
+        # Raw bytes, undecoded: the stream is framed first and decoded one field at
+        # a time (#496), so that a message which is not UTF-8 costs its own record
+        # and not the corpus. See the module docstring for why the byte-level NUL
+        # split is the same partition the decoded one was.
+        return completed.stdout
 
     @staticmethod
     def _child_env() -> dict[str, str]:
@@ -341,25 +412,87 @@ class GitTrailerFindingSource:
         return env
 
 
-def _decode_git_output(raw: bytes, repo_root: Path) -> str:
-    """Decode ``git log``'s stdout as UTF-8, or fail with a remedy -- never a raw crash.
+def _decode_metadata(raw: bytes, *, field: str, repo_root: Path) -> str:
+    """Decode one git-generated metadata field as UTF-8, or fail with a remedy.
 
-    The finding text carries an em-dash separator and other non-ASCII, so the
-    stream is decoded as UTF-8 explicitly rather than under the process locale, to
-    preserve the byte-exact mapping AC-1 depends on. A decode failure means ``git``
-    emitted a non-UTF-8 encoding -- a repo-level ``i18n.logOutputEncoding`` or an
-    unconvertible commit ``encoding`` header, the ``GIT_CONFIG_PARAMETERS`` vector
-    being already stripped (see :data:`_INHERITED_GIT_OVERRIDES`). It is contained
-    as a :class:`GitHistoryUnavailableError` -- the adapter never obtained readable
-    history -- rather than surfaced as an uncaught ``UnicodeDecodeError``, which also
-    matches stderr's decode (``errors="replace"``) instead of leaving stdout strict.
+    ``%H`` and ``%cI`` are ASCII by construction -- 40 hex characters and an
+    ISO-8601 instant -- and no author can reach either. So bytes that do not decode
+    *there* say the stream is not the one this adapter was written against, and the
+    honest answer is the fatal :class:`GitOutputFramingError` with its
+    report-your-git-version remedy: not the fetch remedy of
+    :class:`GitHistoryUnavailableError` (history was reachable), and not a
+    per-record containment (a record whose own sha cannot be read cannot be
+    accounted against a commit at all).
+
+    Fatal, and deliberately so, is safe here only because the field is
+    git-generated. The author-controlled twin is :func:`_decode_message`, which
+    must contain instead (#496, D3).
     """
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise GitHistoryUnavailableError(
-            repo_root, f"git log output was not valid UTF-8 ({exc})"
+        raise GitOutputFramingError(
+            repo_root,
+            f"the {field} field git emitted is not valid UTF-8 ({exc}), "
+            "so the record's own provenance cannot be read",
         ) from exc
+
+
+# The trailer grammar is untouched by the containment below, so `PARSER_STAMP` does
+# not move (#496) -- deliberately, not by omission. The stamp answers "would this
+# parser read the corpus differently from the one that built the store", and none
+# of this is parser mechanics: which lines are candidates and what a line means
+# stay `keyed_lines` and `parse_trailer_line`, byte-identical. What changed is the
+# *source*'s framing and decoding, upstream of the grammar. Nor is there a store to
+# mark stale: a history carrying an undecodable message produced NO store before
+# this fix -- the build aborted -- so no file exists that was written under the old
+# behaviour and could now silently diverge from one written under the new.
+def _decode_message(raw: bytes) -> tuple[str | None, str, str]:
+    """One record's ``%B`` decoded strictly, or the contained account of why not.
+
+    Returns ``(message, excerpt, reason)``: the decoded message with an empty
+    excerpt and reason, or ``None`` with a bounded excerpt and a reason naming the
+    failure. **Contained rather than raised** (#496, ADR-0029 D3): a commit message
+    is author-controlled content, and history is signed and append-only, so a
+    message that is merely not UTF-8 must cost its own record's trailers and
+    nothing else. Decoding the whole ``git log`` stdout at once made one such
+    commit anywhere on public history raise, taking every well-formed sibling with
+    it and answering with a ``git fetch`` remedy that could not help -- the exact
+    "one commit permanently bricks the entire corpus with no forward fix" D3
+    forbids.
+
+    **How such a commit arises**, since a passing familiarity with git suggests it
+    cannot. The causes named for the decode before #496 -- a repo-level
+    ``i18n.logOutputEncoding``, or a commit ``encoding`` header git cannot convert
+    -- are real but were not the whole set, and they left out the simplest one: a
+    message whose bytes are just not UTF-8. git stores a commit message verbatim
+    and validates nothing, so ``git hash-object -t commit --stdin --literally``
+    writes one directly, and it pushes and fetches like any other object (measured
+    2026-09-03). The ordinary porcelain does *not* produce one on git 2.47.1:
+    both ``git commit-tree`` and ``git commit -F`` re-encode a non-UTF-8 message to
+    UTF-8 -- a lone ``0x80`` was stored as ``0xc2 0x80`` -- and warn while doing it
+    (both measured 2026-09-03), which is why a fixture built with either silently
+    exercises valid UTF-8 and proves nothing. So the population is hand-built
+    objects, older
+    or differently-configured gits, and the ``encoding``-header paths -- narrow,
+    but every one of them is a *public commit* the corpus must survive.
+
+    The excerpt is untrusted and bounded (:data:`_UNDECODABLE_EXCERPT_BYTES`): the
+    raw bytes are sliced *before* decoding and then decoded with
+    ``errors="replace"``, so no undecodable byte is ever stored, the replacement
+    characters show where the message went wrong, and an unbounded message cannot
+    inflate the row that reports it.
+    """
+    try:
+        return raw.decode("utf-8"), "", ""
+    except UnicodeDecodeError as exc:
+        excerpt = raw[:_UNDECODABLE_EXCERPT_BYTES].decode("utf-8", errors="replace")
+        reason = (
+            f"commit message is not valid UTF-8 ({exc}), so no trailer can be read "
+            f"from it; raw_line is its first {_UNDECODABLE_EXCERPT_BYTES} bytes "
+            "decoded with replacement characters"
+        )
+        return None, excerpt, reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,6 +503,15 @@ class _Record:
     alone -- because a paragraph rule between the author's bytes and the parse is
     what let a subject-folded trailer go unaccounted (#410, and :data:`_FORMAT`).
     Named for what it holds so no reader infers a subject was stripped on the way in.
+
+    It is ``None`` exactly when git emitted message bytes that are not valid UTF-8
+    (#496), and then ``undecodable_excerpt`` and ``undecodable_reason`` carry the
+    bounded account :meth:`GitTrailerFindingSource.load_findings` turns into one
+    record-level rejection; both are empty for every record whose message decoded,
+    which in practice is every record. The two travel on the record rather than
+    being recomputed by the caller so the ``UnicodeDecodeError``'s own byte and
+    position -- the only thing that locates a failure past the excerpt's cap --
+    survives the one place it exists (:func:`_decode_message`).
 
     ``committed_at`` is a **UTC instant** (#405) and is ``None`` exactly when git
     emitted a committer date this runtime cannot hold as one -- a year >= 10000,
@@ -389,7 +531,9 @@ class _Record:
     """
 
     sha: str
-    message: str
+    message: str | None
+    undecodable_excerpt: str
+    undecodable_reason: str
     date_iso: str
     committed_at: datetime | None
 
@@ -440,26 +584,35 @@ def _parse_committer_date(date_iso: str) -> datetime | None:
         return None
 
 
-def _split_records(stdout: str, repo_root: Path) -> list[_Record]:
-    """Split a ``git log -z`` stream into whole records, each date parsed.
+def _split_records(stdout: bytes, repo_root: Path) -> list[_Record]:
+    """Split a ``git log -z`` stream into whole records, each field decoded.
 
-    The stream is every record's fields joined by NUL with records NUL-*separated*
-    (D4): ``--format=format:`` gives *separator* semantics, not the *terminator*
+    **The raw bytes, framed before anything is decoded** (#496). The stream is
+    every record's fields joined by NUL with records NUL-*separated* (D4):
+    ``--format=format:`` gives *separator* semantics, not the *terminator*
     semantics of ``tformat:`` or a bare format string, so there is no trailing NUL
     after the last record and a well-formed stream is exactly
     :data:`_FIELDS_PER_RECORD` * n tokens. Because NUL cannot occur in a commit
     message, no field -- the multi-line ``%B`` message included -- can hold the
-    separator, so the split is exact and needs no rejoining.
+    separator, so the split is exact and needs no rejoining; and because NUL is a
+    whole code point in UTF-8, splitting the bytes partitions the stream exactly
+    where decoding it first would have (see :data:`_NUL`).
 
-    Each record's committer date is parsed here; a date git emitted outside
+    Each field is then decoded on its own terms, which is the whole point of doing
+    it here: the git-generated ``%H`` and ``%cI`` decode strictly and fatally
+    (:func:`_decode_metadata`), while the author-controlled ``%B`` decodes strictly
+    and, on failure, is contained on the record (:func:`_decode_message`) for the
+    caller to account as one rejection.
+
+    Each record's committer date is parsed here too; a date git emitted outside
     ``datetime``'s range is carried as ``committed_at=None`` (see :class:`_Record`)
     rather than raised, so one crafted commit cannot abort the whole load.
 
     Raises:
-        GitOutputFramingError: if the stream does not partition into whole records
-            (real ``repo_root``, and a framing-specific remedy -- not the fetch
-            remedy of :class:`GitHistoryUnavailableError`, which is a different
-            failure).
+        GitOutputFramingError: if the stream does not partition into whole records,
+            or a record's git-generated metadata field is not valid UTF-8 (real
+            ``repo_root``, and a framing-specific remedy -- not the fetch remedy of
+            :class:`GitHistoryUnavailableError`, which is a different failure).
     """
     tokens = stdout.split(_NUL)
     # Defensive, not the normal path: this adapter's `format:` separates records
@@ -469,7 +622,7 @@ def _split_records(stdout: str, repo_root: Path) -> list[_Record]:
     # would leave one trailing empty token. Drop exactly that one, and only when the
     # count says it is the terminator (`% width == 1`), so an empty final message --
     # a legitimate last field under separator semantics -- is never mistaken for it.
-    if len(tokens) % _FIELDS_PER_RECORD == 1 and tokens[-1] == "":
+    if len(tokens) % _FIELDS_PER_RECORD == 1 and tokens[-1] == b"":
         tokens.pop()
     # Also defensive: separator output is always `3n`, so this refuses only a
     # genuinely mis-framed stream (a git whose `-z` framing differs from both the
@@ -483,11 +636,16 @@ def _split_records(stdout: str, repo_root: Path) -> list[_Record]:
         )
     records: list[_Record] = []
     for start in range(0, len(tokens), _FIELDS_PER_RECORD):
-        sha, date_iso, message = tokens[start : start + _FIELDS_PER_RECORD]
+        raw_sha, raw_date, raw_message = tokens[start : start + _FIELDS_PER_RECORD]
+        sha = _decode_metadata(raw_sha, field="commit sha (%H)", repo_root=repo_root)
+        date_iso = _decode_metadata(raw_date, field="committer date (%cI)", repo_root=repo_root)
+        message, excerpt, reason = _decode_message(raw_message)
         records.append(
             _Record(
                 sha=sha,
                 message=message,
+                undecodable_excerpt=excerpt,
+                undecodable_reason=reason,
                 date_iso=date_iso,
                 committed_at=_parse_committer_date(date_iso),
             )
