@@ -274,14 +274,18 @@ class SqliteReviewFindingStore:
         rename, the new one after it.
 
         **The rename makes an old ``-wal``/``-shm`` beside the publish name
-        dangerous, so they are removed with it.** The in-place shape could argue
-        that ``sqlite3.connect`` reconciles whatever a killed prior connection
-        left; a rename cannot, because the file arriving under the name is a
-        *different database* and a stale write-ahead log beside it belongs to the
-        one just displaced. Our own writes never leave any -- the last connection
-        closing checkpoints and unlinks both (measured) -- so this only reaps a
-        killed process's residue, and it runs after the rename, where an open
-        reader's descriptors are unaffected by a name going away.
+        dangerous, so they are removed just *before* it** (#404 R1-3). The in-place
+        shape could argue that ``sqlite3.connect`` reconciles whatever a killed
+        prior connection left; a rename cannot, because the file arriving under the
+        name is a *different database* and a stale write-ahead log beside it belongs
+        to the one just displaced -- a reader opening the new main beside the old
+        log reads a mixture as neither store. Reaping *after* the rename left
+        exactly that window; reaping before it makes the only intermediate state
+        old-main without its sidecar (a valid earlier checkpoint of one database),
+        and the rename then swaps in the whole new db atomically. Our own writes
+        never leave a sidecar -- the last connection closing checkpoints and unlinks
+        both (measured) -- so this only reaps a killed process's or a reader's
+        residue.
 
         **``os.replace`` is atomic only within a filesystem**, which is why the
         working name is a sibling rather than a temporary directory: both paths sit
@@ -328,9 +332,18 @@ class SqliteReviewFindingStore:
                     _INSERT_METADATA, (FINDINGS_SCHEMA_VERSION, PARSER_STAMP, stamped_at)
                 )
                 connection.commit()
+            # Reap the OLD db's sidecars *before* the rename, not after (#404 R1-3).
+            # After it, the publish name would briefly hold the new main file beside
+            # the old `-wal`/`-shm` -- a db plus a foreign log, which a reader opening
+            # then reads as neither store. Doing it first makes the only intermediate
+            # state old-main WITHOUT its sidecar (a valid earlier checkpoint of one
+            # db), and the rename below then swaps in the whole new db atomically. It
+            # also makes an unlink failure honest: it happens before anything is
+            # published, so reporting a failed build is now correct rather than a
+            # false failure over a store `os.replace` had already committed.
+            _unlink_sidecars(self._path)
             # The atomic primitive. Everything above wrote to a name nothing reads.
             os.replace(building, self._path)  # noqa: PTH105 - the atomic primitive
-            _unlink_sidecars(self._path)
         except (sqlite3.Error, OSError) as exc:
             # Best-effort, and suppressed on purpose: a cleanup failure must not
             # replace the real error with a less informative one (the shape

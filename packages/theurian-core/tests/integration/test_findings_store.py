@@ -22,6 +22,7 @@ ADR-0029 D3).
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 import time
@@ -550,6 +551,100 @@ def test_the_published_store_carries_no_sidecar_from_the_file_it_replaced(tmp_pa
     assert not stale.exists()
     assert not store.path.with_name(store.path.name + "-shm").exists()
     assert [f.finding_text for f in store.dump().findings] == ["rebuilt"]
+
+
+def test_the_stale_sidecars_are_gone_before_the_new_db_is_renamed_into_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#404 R1-3: the new db never lands beside the previous db's sidecar.
+
+    The reap ran *after* ``os.replace``, so between the rename and the unlink the
+    publish name held the **new** main file beside the **old** ``-wal``/``-shm`` --
+    a reader opening in that window saw a mixture SQLite reads as neither store
+    (measured by the round-one reviewer). Reordering the reap to run immediately
+    *before* the rename makes the only intermediate state old-main *without* its
+    sidecar -- a valid earlier checkpoint of one database -- and then an atomic swap
+    to the whole new db. No moment mixes a db with a foreign log.
+
+    Pinned at the rename itself: ``os.replace`` is wrapped to record, at the instant
+    it fires, whether the publish path's planted sidecars still exist. They must
+    already be gone. Before the reorder they were still present at that instant, so
+    this is RED against the old order.
+    """
+    store = _store(tmp_path)
+    store.replace_all(FindingLoad(accepted=(_finding(_sha("a"), text="old"),), rejected=()))
+    wal = store.path.with_name(store.path.name + "-wal")
+    shm = store.path.with_name(store.path.name + "-shm")
+    wal.write_bytes(b"a reader's write-ahead log for the OLD db")
+    shm.write_bytes(b"a reader's shared-memory index for the OLD db")
+
+    sidecars_present_at_rename: list[str] = []
+    real_replace = os.replace
+
+    def _record_then_replace(src: object, dst: object, *args: object, **kwargs: object) -> None:
+        # The rename is the exact boundary: at this instant the publish name is
+        # about to become the NEW db. Any sidecar still here belongs to the OLD db.
+        sidecars_present_at_rename.extend(p.name for p in (wal, shm) if p.exists())
+        real_replace(src, dst, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "replace", _record_then_replace)
+
+    store.replace_all(FindingLoad(accepted=(_finding(_sha("b"), text="new"),), rejected=()))
+
+    assert sidecars_present_at_rename == [], (
+        f"the new db was renamed into place while the previous db's sidecars were "
+        f"still beside the publish name: {sidecars_present_at_rename} -- a reader "
+        f"opening in that window sees a mixture"
+    )
+    # The planted sidecars are gone the instant the rebuild returns, before any
+    # reader opens the file (`dump` below would create a fresh `-wal` of its own).
+    assert not wal.exists()
+    assert not shm.exists()
+    # And the final state is still the whole new store.
+    assert [f.finding_text for f in store.dump().findings] == ["new"]
+
+
+def test_a_sidecar_reap_failure_before_the_rename_publishes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#404 R1-3 / code M2: an OSError reaping the old sidecars is a genuine failed build.
+
+    With the reap after the rename, an ``OSError`` unlinking a sidecar was reported
+    as a failed build even though ``os.replace`` had already published the new store
+    -- a false failure. With the reap *before* the rename, the same ``OSError`` means
+    the rename never ran, so the previous store is still published and reporting a
+    failure is now correct.
+
+    Forced by refusing to unlink the publish path's ``-wal``. The build must raise
+    :class:`FindingsStoreError`, the previous store must be intact, and no working
+    file may be stranded.
+    """
+    store = _store(tmp_path)
+    store.replace_all(
+        FindingLoad(accepted=(_finding(_sha("a"), text="the good store"),), rejected=())
+    )
+    before = store.dump()
+    wal = store.path.with_name(store.path.name + "-wal")
+    wal.write_bytes(b"a sidecar whose unlink will be refused")
+
+    real_unlink = Path.unlink
+
+    def _refuse_the_publish_wal(self: Path, *args: object, **kwargs: object) -> None:
+        if self.name == wal.name:
+            raise PermissionError(13, "Permission denied")
+        real_unlink(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "unlink", _refuse_the_publish_wal)
+
+    with pytest.raises(FindingsStoreError):
+        store.replace_all(
+            FindingLoad(accepted=(_finding(_sha("b"), text="never lands"),), rejected=())
+        )
+
+    monkeypatch.undo()
+    assert store.dump() == before, "the previous store must remain published"
+    assert [f.finding_text for f in store.dump().findings] == ["the good store"]
+    assert not store.building_path.exists()
 
 
 def test_the_building_sibling_stays_inside_the_state_directory(tmp_path: Path) -> None:
