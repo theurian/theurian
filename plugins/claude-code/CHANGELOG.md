@@ -47,6 +47,15 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   protects nobody and the agent must still not say otherwise
   ([#461](https://github.com/theurian/theurian/issues/461),
   [#501](https://github.com/theurian/theurian/pull/501)).
+
+  Naming `security.secretScan` as in force left a second gap in the same
+  paragraph: a scanning control announced, in a document about `theurian
+  ingest`, with nothing saying where it runs. The paragraph now carries the
+  bound — the scan covers the approval gate only, and `theurian ingest` and
+  index building run no scan — worded verbatim from the schema's own
+  `security.secretScan` description so the two surfaces cannot drift into
+  disagreeing (SEC-11,
+  [#198](https://github.com/theurian/theurian/issues/198)).
 - **`/theurian:propose` told the agent the secret scan reads the body only.** It
   said to keep credentials out of `--title`, `--description`, `--label` and the
   `--source-*` anchors because "those are not scanned". Core now scans the
