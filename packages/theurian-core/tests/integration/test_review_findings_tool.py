@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import closing
 from datetime import datetime
@@ -59,11 +60,23 @@ from theurian.domain.review_finding import (
     ReviewFinding,
 )
 from theurian.infrastructure.sqlite.findings_store import SqliteReviewFindingStore
-from theurian.mcp.findings import DEFAULT_FINDINGS_LIMIT, MAX_FILTER_CHARS, MAX_FINDINGS_LIMIT
+from theurian.mcp.findings import (
+    DEFAULT_FINDINGS_LIMIT,
+    MAX_ECHOED_DIGITS,
+    MAX_FILTER_CHARS,
+    MAX_FINDINGS_LIMIT,
+    MAX_PULL_REQUEST,
+)
 from theurian.mcp.results import SAFETY
 from theurian.mcp.tools import FINDINGS_UNAVAILABLE_REFUSAL, MAX_QUERY_CHARS
 
 pytestmark = pytest.mark.integration
+
+#: CPython's own ceiling on rendering an integer as a string, read from the
+#: interpreter rather than written as 4,300: it is configurable per process, and a
+#: test that spelled the number would be asserting about a limit this run may not
+#: have. It is the threshold the refusal-path tests below walk.
+_INT_MAX_STR_DIGITS = sys.get_int_max_str_digits()
 
 #: The repository root, for the one published statement of this tool's bounds.
 #: Four parents up: ``integration`` -> ``tests`` -> ``theurian-core`` ->
@@ -823,6 +836,180 @@ async def test_a_value_outside_its_bound_is_refused_naming_the_bound(
 
     for fragment in expected_fragments:
         assert fragment in message, f"the refusal did not name {fragment!r}: {message}"
+
+
+#: Every string filter this tool publishes. The population for the two
+#: transportability refusals below, so a seventh filter added without the guard
+#: fails here rather than being covered by whichever three somebody listed.
+STRING_FILTERS = ("reviewer", "severity", "family", "specialist", "commitSha", "q")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filter_name", STRING_FILTERS)
+@pytest.mark.parametrize(
+    "value", ["\x00", "log\x00zzz", "\x00log"], ids=["only", "after", "before"]
+)
+async def test_a_nul_in_any_string_filter_is_refused_naming_the_byte(
+    project: ProjectRegistry, filter_name: str, value: str
+) -> None:
+    """R1-6: SQLite's pattern walker stops at a NUL, so "matched literally" was false.
+
+    ``q="\\x00"`` matched every row and ``q="log\\x00zzz"`` became a suffix match --
+    the mechanism is pinned at its source in
+    ``test_findings_store.py::test_a_nul_truncates_the_like_pattern_while_its_neighbour_bytes_do_not``.
+    Refusing is the honest fix rather than the conservative one: a git
+    commit-message line cannot carry a NUL, so no stored value contains one and no
+    legitimate filter needs one. Every string filter, not only ``q``: the byte is
+    equally impossible in a reviewer token and a sha, and a guard applied to the
+    one filter somebody was thinking about is how the next filter arrives without
+    it.
+    """
+    _land(project)
+
+    message = await _call_failing(project, projectId="demo", **{filter_name: value})
+
+    assert "NUL byte" in message, f"the refusal did not name the byte: {message}"
+    assert "U+0000" in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filter_name", STRING_FILTERS)
+async def test_an_untransportable_string_filter_is_refused_rather_than_folded(
+    project: ProjectRegistry, filter_name: str
+) -> None:
+    """A lone surrogate is refused here, where ``knowledge.search`` folds it.
+
+    ``"\\ud800"`` is a ``str`` Python accepts and UTF-8 cannot encode, so it died
+    as a ``UnicodeEncodeError`` at the SQLite bind -- a crash where the contract
+    promises a graded refusal (R1-2 face iii). ``knowledge.search`` answers the
+    same shape by substituting (``mcp/tools.py``'s ``encode("utf-8", "replace")``)
+    because refusing is the behaviour a search box must not have; this tool answers
+    a filtered question, where folding would search for a value the caller did not
+    send and report ``count: 0`` about it. The divergence is deliberate and is
+    recorded at both ends.
+    """
+    _land(project)
+
+    message = await _call_failing(project, projectId="demo", **{filter_name: "a\ud800b"})
+
+    assert "not transportable text" in message, f"the refusal was not the graded one: {message}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value, matches",
+    [("log\x01zzz", []), ("\x01", []), ("token", ["a token reached the log"])],
+    ids=["neighbour-byte-inside", "neighbour-byte-alone", "ordinary-substring"],
+)
+async def test_a_byte_next_to_nul_is_matched_literally_rather_than_refused(
+    project: ProjectRegistry, value: str, matches: list[str]
+) -> None:
+    """The control on the refusal above: it is about NUL, not about control bytes.
+
+    A refusal wide enough to catch ``\\x01`` would be a filter a caller cannot use
+    to search for text that legitimately contains one. ``\\x01`` is not special to
+    ``LIKE``, so it is matched literally -- and matching literally is what this
+    filter promises.
+    """
+    _land(
+        project,
+        FindingLoad(
+            accepted=(_finding(_sha("a"), text="a token reached the log"),),
+            rejected=(),
+        ),
+    )
+
+    payload = await _call(project, projectId="demo", q=value)
+
+    assert _texts(payload) == matches
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments, expected_fragments",
+    [
+        ({"pullRequest": MAX_PULL_REQUEST + 1}, [f"no larger than {MAX_PULL_REQUEST}"]),
+        ({"limit": 2**63}, [f"between 1 and {MAX_FINDINGS_LIMIT}"]),
+    ],
+    ids=["pull-request-past-the-column", "limit-past-the-column"],
+)
+async def test_an_integer_wider_than_the_column_is_refused_rather_than_crashing(
+    project: ProjectRegistry, arguments: dict[str, Any], expected_fragments: list[str]
+) -> None:
+    """R1-2 face i: the bind's ``OverflowError`` was caught by no layer.
+
+    ``pullRequest = 2**63`` passed every check on this surface and died binding
+    the parameter, so a caller received a crash where the published contract
+    promises a refusal naming a bound. The bound is the column's, not a policy:
+    the value one past it is the first that cannot be stored, and therefore the
+    first that could never match a row.
+    """
+    _land(project)
+
+    message = await _call_failing(project, projectId="demo", **arguments)
+
+    for fragment in expected_fragments:
+        assert fragment in message, f"the refusal did not name {fragment!r}: {message}"
+
+
+@pytest.mark.asyncio
+async def test_the_largest_storable_pull_request_is_searched_rather_than_refused(
+    project: ProjectRegistry,
+) -> None:
+    """The other side of the ceiling, which a refusal test alone cannot hold.
+
+    A bound is two claims, and the one that goes silently wrong is "everything
+    inside it still works": an off-by-one here would refuse a value the store can
+    hold, and the refusal would read as "no such PR" to a caller who had one.
+    ``count: 0`` is the right answer for a PR number nothing was recorded against.
+    """
+    _land(project)
+
+    payload = await _call(project, projectId="demo", pullRequest=MAX_PULL_REQUEST)
+
+    assert payload["count"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("argument", ["pullRequest", "limit"])
+@pytest.mark.parametrize(
+    "digits",
+    [_INT_MAX_STR_DIGITS - 1, _INT_MAX_STR_DIGITS, _INT_MAX_STR_DIGITS + 1, 10_000],
+    ids=["under-the-render-limit", "at-the-render-limit", "past-it", "far-past-it"],
+)
+async def test_the_refusal_for_an_absurd_number_is_built_rather_than_crashing(
+    project: ProjectRegistry, argument: str, digits: int
+) -> None:
+    """R1-2 face ii: the refusal path itself must be total.
+
+    CPython refuses to render an integer past ``sys.get_int_max_str_digits()``
+    (4,300), so the f-string that was to carry "got {value}" raised ``ValueError``
+    *while building the promised refusal* -- the tool crashed on the very input its
+    contract says it refuses. The parametrisation walks the threshold from below to
+    far past it, because a fix that measured the number only when it was "very
+    large" would still crash at 4,301.
+
+    The digit count is asserted as the *description*, and the number itself as
+    absent: this is the integer half of "never echo an over-long input" -- a
+    refusal quoting a 4,301-digit integer is a reflector of whatever the caller
+    sent.
+    """
+    _land(project)
+    value = 10 ** (digits - 1)
+
+    message = await _call_failing(project, projectId="demo", **{argument: value})
+
+    if digits > MAX_ECHOED_DIGITS:
+        assert f"a {digits}-digit number" in message, (
+            f"the refusal did not describe the number by its size: {message}"
+        )
+        assert "0" * (MAX_ECHOED_DIGITS + 1) not in message, (
+            "the refusal quoted a run of the caller's own digits back, which is the "
+            "reflector the digit-count description exists to avoid"
+        )
+    assert len(message) < MAX_QUERY_CHARS, (
+        f"a {digits}-digit argument provoked a {len(message)}-character refusal"
+    )
 
 
 @pytest.mark.asyncio

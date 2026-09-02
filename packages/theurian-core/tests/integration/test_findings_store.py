@@ -1590,6 +1590,117 @@ def test_serving_an_unreadable_store_raises_with_the_rebuild_remedy(tmp_path: Pa
     assert raised.value.remedy == _REBUILD_REMEDY
 
 
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "UPDATE findings SET position = 'not a number' WHERE position = 0",
+        "UPDATE findings SET pull_request = 'eleven' WHERE pull_request = 11",
+    ],
+    ids=["position-holds-text", "pull-request-holds-text"],
+)
+def test_a_value_damaged_column_is_the_graded_error_and_not_a_crash(
+    tmp_path: Path, damage: str
+) -> None:
+    """Damage to a column's *value*, not to the file (PR #504 round 1, R1-2 face iv).
+
+    SQLite types columns by affinity, so nothing stops a store -- damaged, or
+    written by something that is not this adapter -- from holding text in
+    ``position`` or invalid UTF-8 in a TEXT column. The stamp is untouched and the
+    file opens cleanly, so every earlier guard passes; the failure happens where
+    the row is *converted*, which used to be outside the method's own boundary and
+    escaped as ``ValueError``/``UnicodeDecodeError``.
+
+    Why that matters above this layer: the tool turns this class into one constant
+    refusal, so an escape of any other type is a second refusal shape for a second
+    kind of damage -- exactly the distinguishability (SEC-13) the constant exists
+    to close.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+    assert store.serve_findings(FindingQuery(limit=50)), "the premise: it serves before the damage"
+
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute(damage)
+        connection.commit()
+
+    with pytest.raises(FindingsStoreError) as raised:
+        store.serve_findings(FindingQuery(limit=50))
+    assert raised.value.remedy == _REBUILD_REMEDY
+
+    with pytest.raises(FindingsStoreError):
+        store.dump()
+
+
+def test_a_filter_wider_than_the_column_is_the_graded_error_and_not_an_overflow(
+    tmp_path: Path,
+) -> None:
+    """The residual behind the boundary's ``pullRequest`` ceiling (R1-2 face i).
+
+    ``mcp/findings.py`` refuses a ``pullRequest`` past 2**63-1 before it is ever
+    built into a query, which is where a caller's mistake belongs -- but
+    :class:`FindingQuery` is a public port type and admits the value, so a second
+    surface constructing one directly would reach the bind. ``sqlite3`` raises
+    ``OverflowError`` there, which is neither a ``sqlite3.Error`` nor an
+    ``OSError``, so it escaped the read's boundary entirely.
+    """
+    store = _store(tmp_path)
+    store.replace_all(_served_load())
+
+    with pytest.raises(FindingsStoreError) as raised:
+        store.serve_findings(FindingQuery(limit=50, pull_request=2**63))
+
+    assert raised.value.remedy == _REBUILD_REMEDY
+
+
+def test_a_nul_truncates_the_like_pattern_while_its_neighbour_bytes_do_not(
+    tmp_path: Path,
+) -> None:
+    """The mechanism the tool's NUL refusal exists for (R1-6), pinned at its source.
+
+    SQLite's ``patternCompare`` walks a NUL-terminated string, so a pattern's
+    bytes after a NUL are never read. ``_contains_pattern`` wraps the caller's text
+    in ``%...%``, so ``"log\\x00zzz"`` becomes ``%log`` -- a **suffix** match, which
+    finds a row ending in ``log`` and misses a row containing it -- and ``"\\x00"``
+    becomes ``%``, which matches every row. Neither is what "matched literally"
+    promises, and this store cannot fix it: ``LIKE`` is SQLite's.
+
+    So the fix is a refusal at the boundary (``mcp/findings.py``), and this test is
+    the record of *why* it is there: if SQLite ever stops truncating, this goes RED
+    and the refusal's justification is the thing to re-examine.
+
+    Both halves of the corpus are load-bearing. One row ends with ``log`` and one
+    merely contains it, so the truncated pattern separates them -- an assertion
+    over a corpus where every match is the same row could not tell "suffix match"
+    from "substring match". The neighbour byte is the other control: ``\\x01`` is
+    not special to ``LIKE``, so it is matched literally and finds nothing, which
+    is what makes these assertions a statement about NUL rather than about control
+    characters generally.
+    """
+    store = _store(tmp_path)
+    store.replace_all(
+        FindingLoad(
+            accepted=(
+                _finding(
+                    _sha("a"), text="a token reached the log", when="2026-08-25T09:00:00+00:00"
+                ),
+                _finding(_sha("b"), text="logged a token", when="2026-08-24T09:00:00+00:00"),
+            ),
+            rejected=(),
+        )
+    )
+
+    assert _served(store, text_contains="log") == ("a token reached the log", "logged a token")
+    assert _served(store, text_contains="log\x00zzz") == ("a token reached the log",), (
+        "SQLite stopped truncating a LIKE pattern at a NUL; the boundary refusal "
+        "that cites this behaviour now cites something untrue"
+    )
+    assert _served(store, text_contains="\x00") == ("a token reached the log", "logged a token")
+    assert _served(store, text_contains="log\x01zzz") == (), (
+        "a byte next to NUL was treated as special too, so the pins above are not "
+        "about NUL in particular"
+    )
+
+
 def test_a_serve_reads_one_store_through_one_connection(tmp_path: Path) -> None:
     """The lifecycle argument, pinned where it is decidable: one open, not two.
 

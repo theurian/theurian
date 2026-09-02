@@ -27,8 +27,21 @@ with a filter.
 **Refusals name the bound and never echo an over-long input.** A filter longer
 than :data:`MAX_FILTER_CHARS` is reported by its length, never quoted -- the
 amplifier ``MAX_QUERY_CHARS`` and ``ItemId`` already close for ``query`` and
-``itemId``. Below that bound a caller's own token is quoted back, because a typo
-is what the refusal exists to make visible and the bytes are the caller's own.
+``itemId``. A *number* past :data:`MAX_ECHOED_DIGITS` digits is reported by its
+digit count, for the same reason and one more: rendering it is where the refusal
+itself used to crash. Below either bound a caller's own value is quoted back,
+because a typo is what the refusal exists to make visible and the bytes are the
+caller's own.
+
+**Every refusal path here is total.** A refusal that can raise while it is being
+built is not a refusal, and this surface shipped two of them: an integer past
+CPython's 4,300-digit string limit died in the f-string of its own error message,
+and a ``pullRequest`` past 2**63 passed every check here and died at the SQLite
+bind. Both are closed by measuring an input rather than rendering it, and by
+bounding it at the boundary rather than where it is used (:func:`_digits`,
+:data:`MAX_PULL_REQUEST`). The same rule is why a value no stored column can hold
+-- a NUL byte, an unpaired surrogate -- is refused here rather than passed down to
+fail somewhere without a remedy (:func:`_transportable`).
 
 **The published input schema types ``reviewer`` and ``severity`` as strings, not
 as enums, and that is a decision rather than an omission.** Annotating them as
@@ -74,6 +87,47 @@ DEFAULT_FINDINGS_LIMIT: Final = 20
 #: amplifier.
 MAX_FILTER_CHARS: Final = 200
 
+#: The largest ``pullRequest`` this surface accepts, which is the largest value
+#: the column behind it can hold: SQLite's INTEGER is a signed 64-bit value, and
+#: ``sqlite3`` raises ``OverflowError`` binding anything past it.
+#:
+#: Bounded here rather than left to that bind, because the bind is not a graded
+#: refusal: it is an ``OverflowError`` no layer catches, so ``pullRequest =
+#: 2**63`` reached the caller as a crash rather than as a refusal naming a bound
+#: (PR #504 round 1, R1-2 face i). The number is not a policy choice -- a PR
+#: number past it cannot be stored, so it could never match a row.
+MAX_PULL_REQUEST: Final = 2**63 - 1
+
+#: How many decimal digits of a caller's own number a refusal will quote back.
+#:
+#: The "never echo an over-long input" rule of the module docstring, extended to
+#: integers. A string filter past :data:`MAX_FILTER_CHARS` is reported by its
+#: length; a number past this is reported by its digit count, for the same reason
+#: -- a refusal that interpolated a 4,300-digit integer would be a reflector of
+#: whatever the caller sent, and building it is where the refusal itself crashed
+#: (R1-2 face ii). 20 is one digit more than :data:`MAX_PULL_REQUEST` has, so
+#: every value a caller could plausibly have meant is still quoted verbatim.
+MAX_ECHOED_DIGITS: Final = 20
+
+#: The size past which :func:`_digits` stops proving its own answer, in bits.
+#:
+#: The digit count is derived from ``int.bit_length()`` and then *corrected* by
+#: comparing against a power of ten -- exact, and cheap while the power is small.
+#: ``10 ** 6_000_000`` costs 3.9 seconds to compute (measured, 2026-09-02), which
+#: is a caller supplying work the daemon must do (T-6), so the correction stops
+#: at this ceiling and the estimate stands above it, within one digit. Nothing on
+#: the wire reaches it: ``json.loads`` refuses an integer literal past CPython's
+#: 4,300-digit limit outright (measured), so an argument that large arrives only
+#: from an in-process caller -- which is exactly how round 1 reproduced the crash.
+_EXACT_DIGIT_BITS: Final = 1 << 20
+
+#: ``log10(2)``, for turning a bit length into a decimal digit count.
+_LOG10_OF_2: Final = 0.30102999566398119521
+
+#: The one byte that cannot appear in any value this store holds, and that
+#: silently changes what a filter means. See :func:`_transportable`.
+_NUL: Final = "\x00"
+
 #: A commit sha as git's ``%H`` writes it, which is what the store keys on:
 #: lowercase hex, 40 characters for a SHA-1 repository and 64 for a SHA-256 one.
 #:
@@ -109,14 +163,107 @@ class FindingsQueryError(TheurianError):
         super().__init__(detail)
 
 
+def _digits(value: int) -> int:
+    """How many decimal digits ``value`` has, without ever building its string.
+
+    ``len(str(value))`` is not available here: CPython refuses to render an
+    integer past ``sys.get_int_max_str_digits()`` (4,300 by default) and raises
+    ``ValueError``. So the refusal for an absurd number crashed *while it was
+    being built* -- the tool promised a graded refusal and delivered a traceback
+    (R1-2 face ii). **A refusal path that can crash is not a refusal**, which is
+    why the size of a number is measured rather than rendered.
+
+    ``bit_length`` is exact and costs nothing. Turning it into a digit count is
+    the inexact step -- ``floor(bits * log10(2)) + 1`` is off by one near a power
+    of ten (521 such values in the first 400 exponents, measured) -- so the
+    estimate is corrected against a power of ten, which is exact. The correction
+    stops at :data:`_EXACT_DIGIT_BITS`, above which the answer is within one
+    digit; see that constant for why nothing on the wire gets there.
+    """
+    magnitude = abs(value)
+    if magnitude == 0:
+        return 1
+    estimate = int(magnitude.bit_length() * _LOG10_OF_2) + 1
+    if magnitude.bit_length() <= _EXACT_DIGIT_BITS:
+        if magnitude >= 10**estimate:
+            estimate += 1
+        elif estimate > 1 and magnitude < 10 ** (estimate - 1):
+            estimate -= 1
+    return estimate
+
+
+def _sized(value: int) -> str:
+    """``value`` as a refusal may quote it: the number itself, or only its size.
+
+    The integer half of "never echo an over-long input". Under
+    :data:`MAX_ECHOED_DIGITS` the caller's own number is quoted, because a typo is
+    what the refusal exists to make visible; past it the number is described by
+    its digit count and its bytes stay out of the response.
+    """
+    digits = _digits(value)
+    if digits > MAX_ECHOED_DIGITS:
+        return f"a {digits}-digit number"
+    return str(value)
+
+
+def _transportable(name: str, value: str) -> None:
+    """Refuse a filter that no stored value can equal or that cannot cross the wire.
+
+    Two shapes, and both are refused rather than repaired:
+
+    **A NUL byte.** SQLite's ``patternCompare`` walks a NUL-terminated string, so
+    ``q="log\\x00zzz"`` silently becomes a search for ``log`` and ``q="\\x00"``
+    matches every row -- the "matched literally" promise broken without a word to
+    the caller (R1-6). Refusing is honest rather than conservative: a git
+    commit-message line cannot contain a NUL, so no stored value contains one and
+    no legitimate filter needs one.
+
+    **An unpaired surrogate.** ``"\\ud800"`` is a ``str`` Python accepts and UTF-8
+    cannot encode, so it dies as a ``UnicodeEncodeError`` -- at the SQLite bind if
+    it is a filter, or in the SDK's serializer if it were echoed back.
+
+    **Refused, where ``knowledge.search`` folds** (``mcp/tools.py``, the
+    ``encode("utf-8", "replace")`` on ``query``). That tool is a search box
+    answering a ranked question, and refusing a search box is the behaviour it
+    must not have; this tool answers a *filtered* question whose whole contract is
+    exact equality or literal substring on stored columns. Folding a surrogate to
+    ``U+FFFD`` here would search for a value the caller did not send and answer
+    ``count: 0`` about it -- the false absence every other refusal on this surface
+    exists to prevent. The divergence is deliberate, and it is the same reasoning
+    that makes ``limit`` a refusal here and a clamp there.
+    """
+    if _NUL in value:
+        raise FindingsQueryError(
+            f"`{name}` contains a NUL byte (U+0000). No stored value can contain one -- "
+            f"a git commit-message line cannot carry it -- and SQLite's pattern matcher "
+            f"stops reading at it, which would silently shorten the filter instead of "
+            f"matching what was sent. Nothing was searched. Send the value without it."
+        )
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise FindingsQueryError(
+            f"`{name}` contains a character that is not transportable text -- an "
+            f"unpaired surrogate, which no UTF-8 encoder accepts -- so it cannot be "
+            f"compared against a stored value or carried in this response. Nothing was "
+            f"searched. Send well-formed Unicode."
+        ) from exc
+
+
 def _bounded(name: str, value: str) -> str:
-    """``value``, or a refusal naming the bound -- never quoting an over-long one."""
+    """``value``, or a refusal naming the bound -- never quoting an over-long one.
+
+    Length first, because it is the amplification control (#17): a value past the
+    bound is reported by its length before anything else looks at it, so no later
+    refusal here can quote an unbounded string.
+    """
     if len(value) > MAX_FILTER_CHARS:
         raise FindingsQueryError(
             f"`{name}` is {len(value)} characters long, and no findings filter may be "
             f"longer than {MAX_FILTER_CHARS}. Nothing was searched. Send a shorter "
             f"value, or omit `{name}` to not filter on it."
         )
+    _transportable(name, value)
     if not value:
         raise FindingsQueryError(
             f"`{name}` is empty, which matches nothing rather than everything. "
@@ -182,13 +329,21 @@ def _commit_sha(value: str | None) -> str | None:
 
 
 def _pull_request(value: int | None) -> int | None:
-    """A PR number, or a refusal: there is no pull request numbered zero."""
+    """A PR number inside the column's own range, or a refusal naming both ends.
+
+    There is no pull request numbered zero, and none past
+    :data:`MAX_PULL_REQUEST` either: the store's column is a signed 64-bit
+    integer, and ``sqlite3`` raises ``OverflowError`` binding anything wider. That
+    overflow was caught by no layer, so a bound that names the ceiling is what
+    turns a crash into an answer a caller can act on (R1-2 face i).
+    """
     if value is None:
         return None
-    if value < 1:
+    if value < 1 or value > MAX_PULL_REQUEST:
         raise FindingsQueryError(
-            f"`pullRequest` must be a positive number; got {value}. Nothing was "
-            f"searched. Omit `pullRequest` to search findings from every PR."
+            f"`pullRequest` must be a positive number no larger than "
+            f"{MAX_PULL_REQUEST}; got {_sized(value)}. Nothing was searched. Omit "
+            f"`pullRequest` to search findings from every PR."
         )
     return value
 
@@ -197,7 +352,7 @@ def _limit(value: int) -> int:
     """The caller's page size, or a refusal naming the bound (never a clamp)."""
     if value < 1 or value > MAX_FINDINGS_LIMIT:
         raise FindingsQueryError(
-            f"`limit` must be between 1 and {MAX_FINDINGS_LIMIT}; got {value}. "
+            f"`limit` must be between 1 and {MAX_FINDINGS_LIMIT}; got {_sized(value)}. "
             f"Nothing was searched. This is a refusal rather than a silent clamp: a "
             f"truncated answer to a filtered question reads as the whole answer, so "
             f"narrow with a filter instead of asking for a larger page."

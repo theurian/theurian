@@ -540,12 +540,19 @@ class SqliteReviewFindingStore:
                     "SELECT commit_sha, position, raw_line, reason FROM rejected_trailers "
                     "ORDER BY commit_sha, position"
                 ).fetchall()
-        except (sqlite3.Error, OSError) as exc:
+                # Converted INSIDE the boundary, for the reason `serve_findings`
+                # records: a value-damaged column raises where the row is built, not
+                # where it is fetched, so a conversion left outside this `try` is a
+                # crash escaping a method that promises to raise this class.
+                dumped = FindingsDump(
+                    findings=tuple(_stored_finding(row) for row in finding_rows),
+                    rejected=tuple(_stored_rejection(row) for row in rejected_rows),
+                )
+        except FindingsStoreError:
+            raise
+        except Exception as exc:
             raise FindingsStoreError(f"reading {self._path.name}: {exc}") from exc
-        return FindingsDump(
-            findings=tuple(_stored_finding(row) for row in finding_rows),
-            rejected=tuple(_stored_rejection(row) for row in rejected_rows),
-        )
+        return dumped
 
     def serve_findings(self, query: FindingQuery) -> tuple[StoredFinding, ...]:
         """The accepted findings ``query`` selects, newest first, at most ``limit``.
@@ -590,9 +597,15 @@ class SqliteReviewFindingStore:
 
         Raises:
             FindingsStoreError: If the store is missing, its metadata row is
-                absent, its stamp is stale, or it cannot be read. All four carry
-                the rebuild remedy, because the store is a projection of git
-                history (ADR-0004) and rebuilding is the cure for each.
+                absent, its stamp is stale, it cannot be read, or a row it
+                returned cannot be converted -- a column holding a value its type
+                does not admit. **Every** failure raised inside this method's own
+                read arrives as this class, whatever its Python type: the caller
+                above turns this class into one constant refusal, so an escape of
+                any other type is a second refusal shape for a second kind of
+                damage (SEC-13). All of them carry the rebuild remedy, because the
+                store is a projection of git history (ADR-0004) and rebuilding is
+                the cure for each.
         """
         where, parameters = _where(query)
         # Interpolated: this module's column list, `_where`'s fixed column names
@@ -620,17 +633,48 @@ class SqliteReviewFindingStore:
                         "grammar, so its rows would be read differently now"
                     )
                 rows = connection.execute(statement, (*parameters, query.limit)).fetchall()
-        except (sqlite3.Error, OSError) as exc:
+                # Converted inside the boundary, not after it (R1-2 face iv). A
+                # store whose `position` or `pull_request` holds text rather than a
+                # number -- SQLite's columns are typed by affinity, so nothing stops
+                # one -- raises `ValueError` in `int()` here, and outside the `try`
+                # that escaped as a crash while this method's contract says a damaged
+                # store raises `FindingsStoreError`. The tool above turns that class
+                # into one constant refusal; a `ValueError` instead reached the caller
+                # as a different error shape for a different kind of damage, which is
+                # the refusal-distinguishability family (SEC-13) arriving by accident.
+                served = tuple(_stored_finding(row) for row in rows)
+        except FindingsStoreError:
+            # The stamp refusals above are already this class, already worded for
+            # their cause; re-wrapping would bury them under "reading <file>".
+            raise
+        except Exception as exc:
+            # Deliberately every exception, not `(sqlite3.Error, OSError)`. What
+            # reaches a caller from a damaged or hostile store must be this class
+            # whatever the damage was: an `OverflowError` binding a parameter, a
+            # `ValueError` converting a column, a `UnicodeDecodeError` on a text
+            # column holding invalid bytes. The narrow tuple was a list of the
+            # damage shapes somebody had thought of, and round 1 found the one
+            # nobody had. Input-side mistakes are refused at the surface
+            # (`mcp/findings.py`) rather than arriving here, so this arm's rebuild
+            # remedy stays the right cure for everything it does catch.
             raise FindingsStoreError(f"reading {self._path.name}: {exc}") from exc
-        return tuple(_stored_finding(row) for row in rows)
+        return served
 
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:
         """A read-only connection that will not create the file it cannot find.
 
         ``mode=ro`` so a query never conjures an empty database at a path whose file
-        is gone -- the defect `index_store._open_read` records. The caller has
-        already checked the file exists; this refuses to write through it anyway.
+        is gone -- the defect `index_store._open_read` records.
+
+        **Not every caller has checked that the file exists**, and this is what
+        makes that safe. :meth:`stamp` and :meth:`dump` probe first;
+        :meth:`serve_findings` deliberately does not, because a probe followed by
+        an open is two looks at a name a rebuild can move between them -- so the
+        missing-store case arrives here as ``sqlite3.OperationalError`` from the
+        open, converted by that method's own boundary. ``mode=ro`` is what keeps
+        that honest: without it, the serving read would *create* an empty database
+        at the path and then report a store with no stamp.
         """
         connection = sqlite3.connect(read_only_uri(self._path), uri=True)
         try:
