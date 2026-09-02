@@ -480,9 +480,21 @@ caller, and the caller refused would not be the one who wrote the row; every
 bound a *caller* can provoke still refuses.
 
 `count: 0` means the filter matched nothing. A project whose store has not been
-built — or whose store is stale or damaged — is **refused**, with one constant
-message naming `theurian findings build`, so "never built" can never be read as
-"no findings".
+built **here** — or whose store is stale or damaged — is **refused**, with one
+constant message naming `theurian findings build`, so "never built" can never be
+read as "no findings".
+
+"Built here" is the load-bearing word, and it is a fourth refusal arm rather than
+a restatement of the first. The store is derived and git-ignored, so a repository
+can ship one anyway — `git add -f` puts it past the ignore, and a ZIP or tarball
+carries it with no tracking metadata at all — and nothing about such a file is
+malformed: correct schema, current stamp, rows naming commits that never existed.
+So presence on disk is not evidence, and **a store that arrived with a clone is
+refused until `theurian findings build` runs locally**, however well-formed it is
+([ADR-0004](../adr/0004-sqlite-is-a-derived-artifact.md), SEC-7, threat-model
+T-19). The refusal is the same constant an absent store gets, deliberately:
+naming this arm would tell whoever planted the store that the plant was detected,
+and the cure is the same local rebuild either way.
 
 ## Specification
 

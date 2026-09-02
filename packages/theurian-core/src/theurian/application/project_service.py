@@ -1706,8 +1706,9 @@ class BuildProvenance:
         Derived from the registry rather than re-reading ``THEURIAN_DATA_DIR`` so
         the serve-side check reads exactly the directory the registry it was
         handed lives in, however that directory was resolved. The build side
-        (``migrate apply``, ``index build``) reaches the same file through
-        :meth:`default`, because both resolve the same environment variable.
+        (``migrate apply``, ``index build``, ``findings build``) reaches the same
+        file through :meth:`default`, because all three resolve the same
+        environment variable.
         """
         return cls(path=registry.path.parent / "provenance.json")
 
@@ -1806,11 +1807,23 @@ def verify_state_provenance(
     The sibling gates, **as of this commit and pinned by nothing**: ``has_state``
     in ``cli/index_commands.py`` (``index build``) and ``cli/commands.py``
     (``migrate apply``); ``has_index`` in ``cli/commands.py`` and
-    ``mcp/search.py``. This list is prose, so a gate added or moved will not
+    ``mcp/search.py``; ``has_findings`` in ``mcp/tools.py`` (``review.findings``).
+
+    **The findings family has one gate and no build-side twin, which is a
+    difference rather than a gap.** ``index build`` and ``migrate apply`` gate
+    because each *consumes* an artifact this record vouches for -- an index built
+    over a doctored state would launder it -- while ``findings build`` consumes
+    nothing derived: it reads git history and rebuilds the store wholesale, so
+    there is no delivered artifact for it to be fooled by. What it does instead is
+    *record*, at ``cli/findings_commands.py``'s ``record_findings`` call, and that
+    call is what makes the store it just built servable.
+
+    This list is prose, so a gate added or moved will not
     redden anything -- an earlier revision of this docstring named the wrong
-    function for the build path and stayed green for a milestone. Re-derive it
-    from ``git grep`` rather than trusting it, and treat a disagreement as this
-    sentence being stale rather than the code being wrong.
+    function for the build path and stayed green for a milestone, and a later one
+    enumerated two families after the third had shipped. Re-derive it from ``git
+    grep`` rather than trusting it, and treat a disagreement as this sentence
+    being stale rather than the code being wrong.
 
     Raises:
         ProjectError: If no out-of-tree record shows this installation built the

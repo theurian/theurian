@@ -661,6 +661,12 @@ async def test_the_wire_cut_is_the_one_the_whole_value_would_have_produced(
     assert not served[shas["exactly-the-bound"]].endswith("..."), (
         "a value of exactly the bound was marked as cut, which is a lie about authored data"
     )
+    assert len(served[shas["far-past-the-bound"]]) == max_finding_text_chars() + 3, (
+        "`review-findings-response.schema.json` publishes that a cut value is "
+        "exactly the bound plus the three-character marker, so a reader can tell a "
+        "cut from an authored value by arithmetic alone -- computed here from the "
+        "live constant rather than from the number the schema spells"
+    )
 
 
 @pytest.mark.asyncio
