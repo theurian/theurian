@@ -963,6 +963,21 @@ SECRET_SCAN_POLICY_READER = "read_secret_scan_policy"  # noqa: S105 - a function
 #: The modules that may call it, as paths under the imported ``theurian`` package.
 SECRET_SCAN_POLICY_CALL_SITES: tuple[str, ...] = ("application/proposal_service.py",)
 
+#: The detector itself, and the reason it is pinned beside the policy reader.
+#:
+#: **The reader is not the scanner, and round two's R2-C is the gap between
+#: them.** ``read_secret_scan_policy`` answers *what should happen when a secret
+#: is found*; ``scan_text`` is what finds one. A scan added on the ingest path
+#: that never consults the policy adds no call site to the reader at all -- the
+#: reviewer planted exactly that, a ``_planted_ingest_scan`` in
+#: ``application/ingestion_service.py`` calling ``scan_text`` directly -- and the
+#: reader's pin stayed green while four documents saying ``theurian ingest``
+#: runs no scan became false.
+SECRET_SCANNER = "scan_text"  # noqa: S105 - a function name, not a secret
+
+#: Where the detector may run, on the same terms as the reader's list above.
+SECRET_SCANNER_CALL_SITES: tuple[str, ...] = ("application/proposal_service.py",)
+
 #: Number words as the changelog spells them, index = value.
 #:
 #: The sentence pinned below mixes digits and words -- "**12** descriptions",
@@ -1059,7 +1074,7 @@ def _call_site_modules(function: str) -> tuple[str, ...]:
 
 
 def test_the_secret_scan_policy_is_read_at_one_call_site_only() -> None:
-    """SEC-11: the fact side of "it covers the approval gate only" (#198, #461).
+    """SEC-11: where the *policy* is consulted, one of the two symbols held (#198, #461).
 
     ``plugins/claude-code/commands/ingest.md`` names ``security.secretScan`` as
     the one key ``.theurian/config.yaml`` has in force, which announces a
@@ -1070,15 +1085,23 @@ def test_the_secret_scan_policy_is_read_at_one_call_site_only() -> None:
     stay green word for word against a build that had started reading the policy
     on the ingest path.
 
-    This is the other half. The policy is read at exactly one call site, in the
-    accept path, so a second call site anywhere makes the clause false and
-    reddens here. The direction that matters is the *addition*: an ingest-time or
-    index-time scan would make four documents over-claim by omission the moment
-    it landed, and this is what makes that change carry them.
+    This is the fact side, and it holds **exactly two symbols and no more**:
+    ``read_secret_scan_policy`` here, and ``scan_text`` in
+    :func:`test_the_secret_scanner_runs_at_one_call_site_only`. Each is asserted
+    to have one call site, in the accept path. Round two's R2-C is why the second
+    exists: this test alone pinned the *reader* and read as though it pinned the
+    control, so a scan added on the ingest path that never consults the policy
+    left it green.
 
-    A removal reddens too, and means the opposite -- the control the schema
-    publishes ``default: "block"`` for has gone, and every surface describing a
-    shipped control is now false.
+    What the pair does not hold, stated so a reader does not over-read it: that
+    the scan at that site is *gated* by the policy, and that no third symbol
+    screens content by some other route. Both are outside an AST call-site count.
+
+    The direction that matters is the *addition*: an ingest-time or index-time
+    call would make four documents over-claim by omission the moment it landed,
+    and this is what makes that change carry them. A removal reddens too, and
+    means the opposite -- the control the schema publishes ``default: "block"``
+    for has gone, and every surface describing a shipped control is now false.
     """
     modules = _call_site_modules(SECRET_SCAN_POLICY_READER)
 
@@ -1095,6 +1118,44 @@ def test_the_secret_scan_policy_is_read_at_one_call_site_only() -> None:
         "A MISSING call site: the control is gone while the schema still "
         'publishes `default: "block"` and four documents still describe a '
         "shipped gate. Do not simply drop the entry."
+    )
+
+
+def test_the_secret_scanner_runs_at_one_call_site_only() -> None:
+    """SEC-11: where the *detector* runs, the second of the two symbols held (R2-C).
+
+    The sibling above pins ``read_secret_scan_policy``, which answers what to do
+    when a secret is found. It cannot see a scan that never asks: an ingest-time
+    call to ``scan_text`` -- planted in round two as a ``_planted_ingest_scan``
+    in ``application/ingestion_service.py`` -- adds no call site to the reader,
+    so the reader's pin stayed green while ``ingest.md``'s "`theurian ingest` and
+    index building run no scan", the identical clause in the schema's
+    ``security.secretScan`` description, ``SECURITY.md`` and the threat model's
+    T-15 controls were all false.
+
+    So the claim those four documents make is about the *detector*, and the
+    detector is what this counts. One call site, in the accept path.
+
+    The two tests fail in different directions on purpose: a scan moved behind a
+    new policy-reading wrapper reddens the sibling, and a scan that skips the
+    policy entirely reddens here. Neither substitutes for the other.
+    """
+    modules = _call_site_modules(SECRET_SCANNER)
+
+    assert modules == SECRET_SCANNER_CALL_SITES, (
+        f"`{SECRET_SCANNER}` is called from {list(modules)}, and the recorded "
+        f"call sites are {list(SECRET_SCANNER_CALL_SITES)}.\n\n"
+        "A NEW call site: content is screened for secrets somewhere besides "
+        "`theurian propose accept`. Four documents say it is not -- "
+        "`plugins/claude-code/commands/ingest.md`, the schema's "
+        "`security.secretScan` description, `SECURITY.md` and the threat model's "
+        "T-15 controls all state that `theurian ingest` and index building run no "
+        "scan. Correct them in the same change, then record the site here. Note "
+        "that this is true whether or not the new call consults "
+        f"`{SECRET_SCAN_POLICY_READER}`: a scan that ignores the policy still "
+        "screens content, and it is the screening those documents deny.\n\n"
+        "A MISSING call site: the detector is no longer reached from the accept "
+        "path, so SEC-11's gate is gone while every surface still describes it."
     )
 
 
