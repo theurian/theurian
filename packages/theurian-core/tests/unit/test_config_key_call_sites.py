@@ -695,6 +695,100 @@ _SCAN_BOUND_CLOSES: Final = "run no scan"
 #: The document that says it quotes the schema here.
 INGEST_COMMAND_DOC: Final = REPO_ROOT / "plugins" / "claude-code" / "commands" / "ingest.md"
 
+#: The one list item in that document whose subject is ``.theurian/config.yaml``,
+#: pinned whole -- the schema description's treatment, on the document side.
+#:
+#: **Measured, because the closure argument was one surface short.** Appending a
+#: contradicting sentence to the *schema* description is caught by the whole pin
+#: below. Appending the same sentence to this bullet was measured green at
+#: ``9517cb2``: every fragment in :data:`SECRET_SCAN_PROSE_SURFACES` still
+#: matched, the derived clause was still byte-identical, and the document then
+#: said both that ingest runs no scan and that it screens content. A pin that
+#: holds only what a document must *keep* cannot see what a document *adds*, and
+#: that is as true of the surface a user reads as of the contract.
+#:
+#: The unit is the list item rather than the file, because the file also carries
+#: prose nobody has to hold this hard. Rewording inside this bullet is therefore a
+#: deliberate act: the diff that makes it RED is the diff that has to say what
+#: moved.
+INGEST_CONFIG_BULLET: Final = (
+    "Review history from GitHub is **not ingested yet**: `system.capabilities` reports "
+    "`reviewIngestion: false`, and `theurian ingest` reads only local data: files under "
+    "`.theurian/`, plus three `git` reads — the repository root (`rev-parse "
+    "--show-toplevel`), HEAD (`rev-parse HEAD`), and the `origin` URL (`remote get-url "
+    "origin`). When it lands (Milestone 7) a repository will have to be on the allowlist "
+    "in `.theurian/config.yaml` before Theurian contacts it. That file is read today, but "
+    "for one key only: `security/project_config.py` takes `security.secretScan` from it "
+    "and nothing else (ADR-0027 decision 3). That key selects a control this command never "
+    "reaches: it covers the approval gate only — `theurian ingest` and index building run "
+    "no scan (SEC-11, [#198](https://github.com/theurian/theurian/issues/198)), the "
+    "schema's own wording. Nothing reads the `providers.review.repositories` allowlist, so "
+    "do not tell the user the allowlist is protecting them."
+)
+
+
+def _markdown_list_item(document: pathlib.Path, anchor: str) -> str:
+    """The one top-level list item of ``document`` containing ``anchor``, collapsed.
+
+    An item is a line opening ``- `` plus the indented, non-blank lines under it,
+    which is how every bullet in these command documents is hard-wrapped. The
+    anchor has to select exactly one item; two would mean the claim moved and the
+    caller would be pinning whichever came first.
+    """
+    items: list[list[str]] = []
+    current: list[str] | None = None
+    for line in document.read_text(encoding="utf-8").splitlines():
+        if line.startswith("- "):
+            if current is not None:
+                items.append(current)
+            current = [line[2:]]
+        elif current is not None and line.startswith("  ") and line.strip():
+            current.append(line.strip())
+        elif current is not None:
+            items.append(current)
+            current = None
+    if current is not None:
+        items.append(current)
+
+    found = [" ".join(" ".join(item).split()) for item in items if anchor in " ".join(item)]
+    assert len(found) == 1, (
+        f"{document.name}: {len(found)} list items mention {anchor!r}, and this pin "
+        f"needs exactly one. If the claim was split across two bullets, the pin has "
+        f"to be split with it rather than silently holding whichever came first."
+    )
+    return found[0]
+
+
+def test_the_ingest_command_states_the_config_bound_and_nothing_beside_it() -> None:
+    """RED means ``ingest.md``'s config bullet moved, addition included (R2-D).
+
+    :data:`SECRET_SCAN_PROSE_SURFACES` holds what this bullet must keep, and
+    adversarial review confirmed that direction: reword or delete any pinned
+    fragment and the row is RED. This is the direction no fragment pin has -- a
+    sentence *added* beside them keeps every fragment matching. Measured at
+    ``9517cb2``: a contradicting "ingested content is screened before it is
+    indexed" appended to this bullet left all forty-six pins in this module green.
+
+    This is the document a user reads before running ``theurian ingest``, and the
+    bullet is where it states which key of ``.theurian/config.yaml`` is in force
+    and how far the control that key selects reaches. Both halves are the kind of
+    claim that misleads by addition rather than by omission.
+    """
+    bullet = _markdown_list_item(INGEST_COMMAND_DOC, "security.secretScan")
+
+    assert bullet == INGEST_CONFIG_BULLET, (
+        "`plugins/claude-code/commands/ingest.md`'s config bullet is not the "
+        "recorded one.\n\n"
+        f"  document: {bullet!r}\n\n"
+        f"  recorded: {INGEST_CONFIG_BULLET!r}\n\n"
+        "This bullet tells a user which key of `.theurian/config.yaml` is in "
+        "force and that `theurian ingest` runs no scan. A sentence added here "
+        "that contradicts either half is a false security claim on the surface a "
+        "user actually reads, and every fragment pin stays green while it is "
+        "there. If the wording genuinely improved, copy the new text in and say "
+        "in the same commit what claim it now makes."
+    )
+
 
 def test_the_secret_scan_description_is_exactly_what_this_file_records() -> None:
     """RED means the wheel's ``security.secretScan`` description moved, in either direction.
