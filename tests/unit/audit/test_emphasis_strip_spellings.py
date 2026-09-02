@@ -1,8 +1,10 @@
 """The emphasis strip is keyed on a tag *spelling*, and both directions are driven.
 
-``claim_surfaces.without_emphasis`` is the one seam every census key runs behind,
-and its job is to remove markup a reader of the rendered sentence sees no trace
-of. Round three added ``<b>``, ``<i>``, ``<em>`` and ``<strong>`` to it as four
+``claim_surfaces.without_emphasis`` is the normalisation
+``config_object_claims`` applies at ``as_read``, before its keys run, and its job
+is to remove markup a reader of the rendered sentence sees no trace of.
+
+Round three added ``<b>``, ``<i>``, ``<em>`` and ``<strong>`` to it as four
 literal strings; round four planted ``<b class="x">``, ``<b >`` and ``<strong
 id="a">`` in a wheel-shipped module and measured all three escaping -- the same
 four tags, rendering identically, spelled with an attribute or a space.

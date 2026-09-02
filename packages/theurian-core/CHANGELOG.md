@@ -223,8 +223,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   The object still has to be *spelled*, and both keys for this class admitted a
   single optional delimiter character — so a false universal written in the RST
   double-backtick form, the house style in **323 of this tree's 352** governed
-  `.py` files measured at `5d0b1d9`, a commit on this pull request's branch and
-  not on `main`, passed the census, passed the prose pin, and shipped inside a
+  `.py` files measured at `5d0b1d9`, a commit on the branch of
+  [#501](https://github.com/theurian/theurian/pull/501) and not on `main`,
+  passed the census, passed the prose pin, and shipped inside a
   wheel when it was planted in `application/forest_builder.py`. That is a dated
   figure, not a standing one, and the derivation is beside the key it justifies
   in `tools/audit/config_object_claims.py`. The escape was in the
@@ -286,19 +287,33 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   star — normalise to rendered text, then match — is the terminal form that ends
   the enumeration rather than extending it.
 
+  **The A/B this entry reported as "moves nothing" moves one row, and round four
+  measured it.** At `5074d08`, a commit on the branch of
+  [#501](https://github.com/theurian/theurian/pull/501) and not on `main`,
+  running the census twice with the emphasis class as its only difference gives
+  **57 rows with the four tags stripped and 56 without**, on both sides 19
+  suspects, (0, 0, 0) ledger drift and 124 watched objects. The
+  symmetric difference over the produced rows is **one row, not zero**: this
+  entry's own paragraph above, which quotes the round-three `<b>` plant and so
+  made the changelog entry describing the fix a member of the census it
+  describes. It classifies `record (past tense)`, which is why no suspect and no
+  ledger direction moves with it. The plant still flips `no match` → `SUSPECT`
+  and ADR-0028's house style stays `no match` either way.
+
   **Widening the delimiter class reaches two of the four composition rows, and
   that was measured rather than guessed** — as shipped against `{0,3}` plus `[`
-  and `]`, both sides give the same row count, the same 19 suspects and (0, 0,
-  0) ledger drift, with the link and the three-backtick run moving to `SUSPECT`
-  while the JSON and `e.g.` rows do not move. The widening is not taken: a
-  delimiter class widened to reach two more spellings is the enumeration this
-  module exists to stop doing, it is a second mechanism in a round closed on the
-  first, and it would leave the rest of the recorded escape space open
-  regardless.
+  and `]`, at the same commit, both sides give **57** rows, 19 suspects and
+  (0, 0, 0) ledger drift,
+  with the link and the three-backtick run moving to `SUSPECT` while the JSON and
+  `e.g.` rows do not move. The widening is not taken: a delimiter class widened
+  to reach two more spellings is the enumeration this module exists to stop
+  doing, it is a second mechanism in a round closed on the first, and it would
+  leave the rest of the recorded escape space open regardless.
 
   Two further properties, both measured. The sweep reads **wrap-joined
-  sentences**, not lines: at `75c4c7a`, a commit on this pull request's branch
-  and not on `main`, the same key over the same scope returns 19 lines and 31
+  sentences**, not lines: at `75c4c7a`, a commit on the branch of
+  [#501](https://github.com/theurian/theurian/pull/501) and not on `main`, the
+  same key over the same scope returns 19 lines and 31
   sentences, and the 19 lines land inside 17 of those sentences — so **14** are
   ones a line pass never returns at all. And every run demonstrates its key
   against a **planted positive** before any zero is read, because a key that has

@@ -1647,8 +1647,8 @@ SECRET_SCANNER_MODULE: Final = "theurian.security.content_secrets"  # noqa: S105
 #: Where the detector runs, on the same terms as the reader's count above.
 SECRET_SCANNER_CALL_SITES: dict[str, int] = {"application/proposal_service.py": 1}
 
-#: Every module of the shipped package that imports :data:`SECRET_SCANNER_MODULE`,
-#: by any import form.
+#: Each module of the shipped package that reaches :data:`SECRET_SCANNER_MODULE`
+#: by one of the import spellings :func:`_importers_of` counts.
 #:
 #: The second half of the pair, and the half that does not depend on knowing what
 #: a screening call looks like. The count above resolves the bindings a module
@@ -1660,7 +1660,9 @@ SECRET_SCANNER_CALL_SITES: dict[str, int] = {"application/proposal_service.py": 
 #: for the detector whatever it then does with it.
 SECRET_SCANNER_IMPORTERS: tuple[str, ...] = ("application/proposal_service.py",)
 
-#: Every module of the shipped package that imports :data:`SECRET_SCAN_POLICY_MODULE`.
+#: Each module of the shipped package that reaches
+#: :data:`SECRET_SCAN_POLICY_MODULE` by one of the import spellings
+#: :func:`_importers_of` counts.
 #:
 #: The reader's half of the same pair, and round four is why it exists. The call
 #: count above resolves bindings of ``read_secret_scan_policy``, so a module that
