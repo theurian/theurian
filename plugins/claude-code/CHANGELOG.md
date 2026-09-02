@@ -82,28 +82,50 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   | the same sentence appended to this bullet | `test_the_ingest_command_states_the_config_bound_and_nothing_beside_it` — 1 failed, 56 passed |
   | the shared clause reworded on the schema side alone | those two, and `test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it` with them — 3 failed, 54 passed |
 
-  **The bullet pin ends the item where CommonMark ends one, and round three is
-  why.** It had read a list item as "the `- ` line plus the lines indented by two
-  spaces", and four ways of appending a sentence render inside the same bullet
-  while sitting outside that rule — so the contradiction above went in four times
-  over with every pin green. All four are RED now, each failing
-  `test_the_ingest_command_states_the_config_bound_and_nothing_beside_it` alone
-  at 1 failed, 56 passed:
+  **The bullet pin ends the item where CommonMark ends one, and rounds three and
+  four are why.** It had read a list item as "the `- ` line plus the lines
+  indented by two spaces", and four ways of appending a sentence render inside
+  the same bullet while sitting outside that rule — so the contradiction above
+  went in four times over with every pin green. Round four rendered twelve line
+  shapes with `markdown_it`'s CommonMark preset, asked per shape whether the
+  added sentence lands in the same `<li>` as the bullet's own text, and asked the
+  pin the same question. Each shape the renderer puts **inside** the item now
+  reddens `test_the_ingest_command_states_the_config_bound_and_nothing_beside_it`
+  alone:
 
-  | The contradiction appended to the pinned bullet | Held |
-  | :-- | :-- |
-  | at column 0, as a lazy continuation | yes |
-  | indented by one space | yes |
-  | indented by a tab | yes |
-  | as a second paragraph after a blank line | yes |
-  | **as its own `- ` bullet of the same document** | **no** |
+  | The contradiction appended to the pinned bullet | Renders | Held |
+  | :-- | :-- | :-- |
+  | at column 0, as a lazy continuation | inside | yes |
+  | indented by one space | inside | yes |
+  | indented by a tab | inside | yes |
+  | as a second paragraph after a blank line | inside | yes |
+  | after a line holding one no-break space, at column 0 | inside | yes |
+  | after a line holding one no-break space, indented | inside | yes |
+  | after a line holding one em space, at column 0 | inside | yes |
+  | as a `\| … \|` line | inside | yes |
+  | as an ordered item, `2. ` | outside | n/a |
+  | as an ordered item, `10. ` | outside | n/a |
+  | as a paren-marked item, `1) ` | outside | n/a |
+  | **as its own `- ` bullet of the same document** | **outside** | **no** |
 
-  **What is not held is the last row, and only that row.** A sibling bullet opens
-  a block, so the item ends there: the same contradiction written into a
-  *different* bullet of this document ships with all 57 pins green and all five
-  audits at exit 0, measured the same way. The pins hold the paragraph that
-  carries the claim, not the file around it, and a whole-document pin is
-  [#512](https://github.com/theurian/theurian/issues/512)'s.
+  Three of those eight were round four's, and two of the three are the same
+  defect: `str.strip()` calls a no-break space and an em space blank, CommonMark
+  calls neither blank, and the sentence one line below such a line rendered
+  inside the bullet while the pin had already ended the item. The third is the
+  pipe row — CommonMark has no tables, so `|` opens nothing and the transcribed
+  rule that said it did left a whole line shape unreachable. The `1) ` row failed
+  in the other direction before this pass: the rule folded it into the bullet and
+  reddened the pin for a document nobody had changed.
+
+  **What is not held is the last row.** A sibling bullet opens a block, so the
+  item ends there: the same contradiction written into a *different* bullet of
+  this document ships with the pins green and the five audits at exit 0, measured
+  the same way. The pins hold the paragraph that carries the claim, not the file
+  around it, and a whole-document pin is
+  [#512](https://github.com/theurian/theurian/issues/512)'s. The twelve shapes are
+  a table in `test_config_key_call_sites.py` that fails in both directions, and
+  the whitespace population it rests on is derived from `str.isspace` at run time
+  rather than transcribed.
 - **`/theurian:propose` told the agent the secret scan reads the body only.** It
   said to keep credentials out of `--title`, `--description`, `--label` and the
   `--source-*` anchors because "those are not scanned". Core now scans the

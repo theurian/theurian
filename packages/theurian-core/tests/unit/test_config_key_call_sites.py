@@ -740,11 +740,55 @@ INGEST_CONFIG_BULLET: Final = (
 #: imported -- ``tools/audit/`` is a script directory, not an installed package --
 #: plus ``>``, which that module leaves out because it strips blockquote markers
 #: before the rule runs and nothing strips them here.
-_OPENS_A_BLOCK: Final = re.compile(r"[ \t]*(?:#{1,6}\s|[-*+]\s|\d+\.\s|\||```|---\s*$|>)")
+#:
+#: **Two corrections, each measured against a renderer rather than argued.** Round
+#: four rendered twelve line shapes with ``markdown_it``'s CommonMark preset and
+#: asked, per shape, whether the added sentence lands inside the ``<li>`` the
+#: pinned bullet produces:
+#:
+#: * A bare ``|`` line renders **inside** it. CommonMark has no tables, so a
+#:   pipe opens nothing; the transcribed shape carried one because the module it
+#:   came from reads documents where a GFM table is a block. Keeping it here made
+#:   ``| Ingested content is screened before it is indexed. |`` a sentence the pin
+#:   could not see.
+#: * ``1) `` renders **outside** it, and the old ``\d+\.\s`` spelled the dot form
+#:   alone. That direction costs a false RED rather than a miss -- the pin folded a
+#:   line the reader sees as a new list into the bullet it holds -- which is
+#:   adversarial round four's L1.
+#:
+#: ``2. `` and ``10. `` were already correct and were re-measured as outside, so
+#: the ordered-marker widening is to the marker's *punctuation*, not to its
+#: number.
+_OPENS_A_BLOCK: Final = re.compile(r"[ \t]*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|```|---\s*$|>)")
+
+
+#: What CommonMark calls a blank line: **spaces and tabs only**.
+#:
+#: ``str.strip()`` strips every character Python calls whitespace, which is a much
+#: larger set -- a no-break space, an em space, a unit separator. CommonMark counts
+#: none of them as blank, so a line holding one of them is a paragraph
+#: continuation line to a renderer and was an end-of-item to this pin. Round four
+#: measured the escape with U+00A0 and U+2003: the sentence after such a line
+#: renders inside the ``<li>`` and the pin went blind to it.
+#:
+#: ``test_a_line_of_exotic_whitespace_does_not_end_the_pinned_item`` derives the
+#: characters this distinguishes rather than transcribing them, so the rule is
+#: held against the Unicode table Python ships rather than against a list.
+_BLANK_LINE_CHARACTERS: Final = " \t"
 
 
 def _markdown_list_item(document: pathlib.Path, anchor: str) -> str:
     """The one top-level list item of ``document`` containing ``anchor``, collapsed.
+
+    A thin wrapper over :func:`_list_item_of` so the rule can be driven from
+    synthetic text without a temporary file: this module is ``unit``, and the pin
+    below is the only caller that needs a path.
+    """
+    return _list_item_of(document.read_text(encoding="utf-8"), anchor, document.name)
+
+
+def _list_item_of(text: str, anchor: str, name: str = "<text>") -> str:
+    """The one top-level list item of ``text`` containing ``anchor``, collapsed.
 
     An item is a line opening ``- `` plus everything CommonMark keeps inside it,
     which is more than the indented lines under it and is round three's adversarial
@@ -759,12 +803,22 @@ def _markdown_list_item(document: pathlib.Path, anchor: str) -> str:
     * a second paragraph of the item, after a blank line and indented.
 
     All four render inside the bullet. So the rule here is CommonMark's: after a
-    blank line the item continues only where the next line is indented, and
-    otherwise any non-blank line that does not *open a block* belongs to the item.
-    A sibling bullet opens a block, so the item still ends where the next ``- ``
-    begins -- which is what keeps a contradiction added as its **own bullet** out
-    of reach, recorded as not held in
+    blank line the item continues where the next line is indented, and otherwise a
+    non-blank line that does not *open a block* belongs to the item. A sibling
+    bullet opens a block, so the item still ends where the next ``- `` begins --
+    which is what keeps a contradiction added as its **own bullet** out of reach,
+    recorded as not held in
     :func:`test_the_ingest_command_states_the_config_bound_and_nothing_beside_it`.
+
+    **Round four moved two edges of that rule, both measured against a renderer.**
+    "Blank" is now CommonMark's blank -- spaces and tabs, :data:`_BLANK_LINE_CHARACTERS`
+    -- rather than ``str.strip()``'s, which counted a no-break space and an em space
+    as blank and so ended the item one line before a sentence a reader sees inside
+    it. And :data:`_OPENS_A_BLOCK` lost the bare ``|`` it had transcribed (a pipe
+    renders inside the item, because CommonMark has no tables) and gained the
+    ``1)`` ordered marker beside ``1.`` (which renders outside it, and whose
+    absence folded a new list into the pinned bullet and reddened this pin for a
+    document that had not moved).
 
     The anchor has to select exactly one item; two would mean the claim moved and
     the caller would be pinning whichever came first.
@@ -772,7 +826,7 @@ def _markdown_list_item(document: pathlib.Path, anchor: str) -> str:
     items: list[list[str]] = []
     current: list[str] | None = None
     after_blank = False
-    for line in document.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         if line.startswith("- "):
             if current is not None:
                 items.append(current)
@@ -780,7 +834,7 @@ def _markdown_list_item(document: pathlib.Path, anchor: str) -> str:
             after_blank = False
         elif current is None:
             continue
-        elif not line.strip():
+        elif not line.strip(_BLANK_LINE_CHARACTERS):
             after_blank = True
         elif line.startswith((" ", "\t")):
             current.append(line.strip())
@@ -796,11 +850,148 @@ def _markdown_list_item(document: pathlib.Path, anchor: str) -> str:
 
     found = [" ".join(" ".join(item).split()) for item in items if anchor in " ".join(item)]
     assert len(found) == 1, (
-        f"{document.name}: {len(found)} list items mention {anchor!r}, and this pin "
+        f"{name}: {len(found)} list items mention {anchor!r}, and this pin "
         f"needs exactly one. If the claim was split across two bullets, the pin has "
         f"to be split with it rather than silently holding whichever came first."
     )
     return found[0]
+
+
+#: Two characters ``str.isspace`` calls whitespace and CommonMark does not call
+#: blank, spelled by code point because a literal one is invisible in a diff.
+_NO_BREAK_SPACE: Final = "\u00a0"
+_EM_SPACE: Final = "\u2003"
+
+#: The contradiction round three and round four appended, in synthetic form.
+_ADDED_SENTENCE: Final = "Ingested content is screened before it is indexed."
+
+#: A two-bullet document shaped like the one the pin reads, so a sibling bullet is
+#: reachable and the item under test is not the last thing in the file.
+_ANCHOR_BULLET: Final = "- That file is read today, but for one key only: `security.secretScan`."
+_SIBLING_BULLET: Final = "- Nothing reads the `providers.review.repositories` allowlist."
+
+
+def _document_with(*appended: str) -> str:
+    """The two-bullet document with ``appended`` inserted after the anchor bullet."""
+    return "\n".join((_ANCHOR_BULLET, *appended, _SIBLING_BULLET, ""))
+
+
+#: Each appended line shape, and whether CommonMark renders it inside the anchor item.
+#:
+#: **The ``inside`` column is a measurement, not a reading of the spec.** Round
+#: three and round four each rendered these shapes with ``markdown_it``'s
+#: CommonMark preset and asked whether the added sentence lands in the same
+#: ``<li>`` as the bullet's own text. Two of the answers are the ones a reader of
+#: the spec gets wrong: ``2. `` renders *outside* the item even though CommonMark
+#: says an ordered list interrupts a paragraph at ``1`` alone, and a bare ``|``
+#: renders *inside* it because CommonMark has no tables.
+#:
+#: The renderer is not imported here -- it is not a dependency of this package,
+#: and a test that took one would be pinning a library rather than this rule. The
+#: external oracle is the round-four script that renders each shape and compares
+#: the two answers; this table is what makes the same twelve shapes fail in the
+#: suite when the rule moves.
+_CONTINUATION_SHAPES: Final[tuple[tuple[str, tuple[str, ...], bool], ...]] = (
+    ("R3-a lazy continuation at column 0", (_ADDED_SENTENCE,), True),
+    ("R3-b indented by one space", (f" {_ADDED_SENTENCE}",), True),
+    ("R3-c indented by a tab", (f"\t{_ADDED_SENTENCE}",), True),
+    ("R3-d second paragraph after a blank line", ("", f"  {_ADDED_SENTENCE}"), True),
+    ("R4 E-4 a no-break-space line, then column 0", (_NO_BREAK_SPACE, _ADDED_SENTENCE), True),
+    (
+        "R4 E-5 a no-break-space line, then an indent",
+        (_NO_BREAK_SPACE, f"  {_ADDED_SENTENCE}"),
+        True,
+    ),
+    ("R4 E-6 an em-space line, then column 0", (_EM_SPACE, _ADDED_SENTENCE), True),
+    ("R4 E-7 a pipe line", (f"| {_ADDED_SENTENCE} |",), True),
+    ("R4 E-1 an ordered marker, `2. `", (f"2. {_ADDED_SENTENCE}",), False),
+    ("R4 E-2 an ordered marker, `10. `", (f"10. {_ADDED_SENTENCE}",), False),
+    ("R4 E-3 a paren marker, `1) `", (f"1) {_ADDED_SENTENCE}",), False),
+    ("N2 its own `- ` bullet, the recorded gap", ("", f"- {_ADDED_SENTENCE}"), False),
+)
+
+
+@pytest.mark.parametrize(
+    ("appended", "inside"),
+    [(row[1], row[2]) for row in _CONTINUATION_SHAPES],
+    ids=[row[0] for row in _CONTINUATION_SHAPES],
+)
+def test_the_item_rule_agrees_with_the_renderer_on_each_measured_shape(
+    appended: tuple[str, ...], inside: bool
+) -> None:
+    """RED means :func:`_list_item_of` and CommonMark disagree about a measured shape.
+
+    The pin below exists to catch a sentence *added* to the bullet a user reads,
+    and it can miss in two directions. A shape that renders inside the item and
+    that the rule does not return is an addition shipping green -- round three
+    found four of those and round four found three more, two of them lines of
+    whitespace CommonMark does not call blank. A shape that renders outside the
+    item and that the rule *does* return is the other direction: the pin reddens
+    for a document that did not move, which is how a real correction gets read as
+    a false alarm and the pin gets relaxed.
+
+    Both directions are here because the second is what a fix for the first
+    produces if it is written as "take more lines".
+    """
+    item = _list_item_of(_document_with(*appended), "security.secretScan")
+
+    assert (_ADDED_SENTENCE in item) is inside, (
+        f"the rule returned {'' if _ADDED_SENTENCE in item else 'no '}sentence for a "
+        f"shape CommonMark renders {'inside' if inside else 'outside'} the item.\n\n"
+        f"  appended: {list(appended)!r}\n"
+        f"  item    : {item!r}\n\n"
+        "Inside-but-missing is an addition the pin below cannot see, which is the "
+        "escape it exists to close. Outside-but-returned reddens that pin against a "
+        "document nobody changed. Re-render the shape before changing this row."
+    )
+
+
+def test_a_line_of_exotic_whitespace_does_not_end_the_pinned_item() -> None:
+    """RED means ``str.strip()``'s idea of blank came back into the item rule.
+
+    CommonMark's blank line is spaces and tabs. Python's is every character
+    ``str.isspace`` admits, and the difference is not academic: a line holding one
+    no-break space is a paragraph continuation to a renderer and was an
+    end-of-item to this rule, so a sentence appended after it rendered inside the
+    bullet and left the pin below green. Round four measured that with U+00A0 and
+    U+2003.
+
+    The population is **derived** rather than transcribed -- every character
+    Python calls whitespace, minus the space and tab CommonMark counts, minus the
+    ones ``str.splitlines`` treats as a line break and which therefore cannot sit
+    inside a line at all. Transcribing it would hold this rule against a list
+    someone wrote once; deriving it holds the rule against the Unicode table the
+    interpreter ships.
+    """
+    exotic = [
+        character
+        for code in range(0x110000)
+        if (character := chr(code)).isspace()
+        and character not in _BLANK_LINE_CHARACTERS
+        and len(f"x{character}x".splitlines()) == 1
+    ]
+
+    blind = [
+        f"U+{ord(character):04X}"
+        for character in exotic
+        if _ADDED_SENTENCE
+        not in _list_item_of(_document_with(character, _ADDED_SENTENCE), "security.secretScan")
+    ]
+
+    assert exotic, (
+        "no character was derived as whitespace-but-not-blank, so this test asserts "
+        "nothing. Either the derivation stopped selecting anything or `str.isspace` "
+        "changed under it; a test whose population is empty passes by running "
+        "nothing."
+    )
+    assert not blind, (
+        f"a line holding one of {blind} ended the pinned item.\n\n"
+        "CommonMark counts spaces and tabs as blank and nothing else, so a line "
+        "made of one of these is a paragraph continuation and the sentence after "
+        "it renders inside the bullet a user reads. Ending the item there makes "
+        "`test_the_ingest_command_states_the_config_bound_and_nothing_beside_it` "
+        "blind to a contradiction added one line lower."
+    )
 
 
 def test_the_ingest_command_states_the_config_bound_and_nothing_beside_it() -> None:
