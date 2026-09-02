@@ -107,6 +107,77 @@ Nothing yet.
 
 ### Documentation
 
+- **The records now carry the purged-build ground truth: T-17 and T-17a are
+  updated, ADR-0024 point 4 is corrected against measurement, the NFR-4 record is
+  reconciled, and the flat purged columns are pinned**
+  ([#472](https://github.com/theurian/theurian/issues/472),
+  [#445](https://github.com/theurian/theurian/issues/445),
+  [#140](https://github.com/theurian/theurian/issues/140)). The re-measurement
+  below landed as a work log and edited nothing; this is the pass that moves the
+  records to match it.
+
+  **T-17's discharge note said no figure had been re-run against a purged build,
+  and that is now discharged.** Each of the four figure records it covers carries
+  a dated annotation naming its own measured pair, so the history is annotated
+  rather than rewritten: the pass-count edge (stale +5,116.7 µs at 51 withheld,
+  purged flat at one pass), the canonical-read table and its rate (24.3 µs per
+  withheld row stale, none purged), the +90 ms residual that was never a
+  measurement (+14% re-derives to +0%), and the peak-memory sweep (stale 80.6 →
+  8,244.4 KB, purged 80.6 → 84.9 KB). F5's 29.17 ms is recorded as **not
+  re-runnable** — its subject was deleted with
+  [#16](https://github.com/theurian/theurian/issues/16) — with what the cache
+  stood in front of measured in its place. T-17a's
+  [#344](https://github.com/theurian/theurian/issues/344) byte-residue record
+  called the residue a fixed overhang; it is a monotone function of the pre-purge
+  corpus (282,624 B and 7 free pages at nothing withdrawn, 9,715,712 B and 587 at
+  5,950), so the *file's size* carries the withdrawn count to anyone who can
+  `stat` it. Same trust boundary, same disk-forensics surface — the scaling is
+  what is new.
+
+  **The flat columns are pinned** in
+  `packages/theurian-core/tests/integration/test_purged_build_quantities.py`,
+  each with a stale control asserted first and each half taken RED by mutation,
+  so a change putting the withheld term back goes RED there rather than being
+  rediscovered by a fourth review round.
+
+  **Ten satellite sites cited a pre-purge figure as a current cost**, and each
+  now says which build its figure belongs to. Two carried a claim rather than a
+  number — `application/visibility.py` and
+  `tests/unit/test_result_gate_session.py` both asserted the cost is linear in
+  the withheld count with no threshold in it — and on a purged build there is no
+  line left to be linear, so the linearity is scoped to a build that still holds
+  the withdrawn rows and the purged behaviour is stated beside it.
+
+  **ADR-0024 decision 4 made three claims; one holds and two were false when they
+  were written.** "Publishing takes the index write lock" has no referent — the
+  pointer swap is a write-to-temp plus `os.replace`, the lock file is never
+  created, and the purge says so in its own source. "There is exactly one such
+  interface" is false: eleven writable opens of an index file across two modules,
+  seven of them public, with no common gate. "Nothing outside that interface
+  opens an index file for writing" is the clause that holds, with its
+  measurement. The point is narrowed in place with the retracted text quoted, and
+  the header line that said this ADR **discharges** the index half of ADR-0018's
+  single-writer debt now says it **narrows** it — a published build is never
+  written, which is a property of when writes happen and not of how many
+  interfaces perform them. The contract stays owed under
+  [#439](https://github.com/theurian/theurian/issues/439).
+
+  **NFR-4 was recorded four different ways, and the records now agree.** Settled
+  against decision 7's own acceptance module,
+  `tests/integration/test_gc_during_a_search.py`, read rather than re-run:
+  ADR-0024's "discharged by points 6 and 7 together" is the direction that
+  survives, and ADR-0018's Compliance bullet, ADR-0022's Still-owed opener,
+  ADR-0007's in-progress-build bullet and `indexing/__init__.py` now carry dated
+  corrections agreeing with it. The settlement is split by clause rather than
+  granted whole: **zero read downtime is discharged** — it is the clause NFR-4
+  was recorded unmet for, and points 6 and 7 close it with pins including a
+  no-session counterexample — while **"while a new build runs" is true by
+  construction with every element pinned and no test issuing a query during a
+  build**. So the mechanism is discharged and one acceptance test is owed. That
+  residue is ADR-0007's own Still-owed bullet, whose "(Milestone 6)" owner is
+  dead and which no open issue owns; this also answers what the `store.py` NFR-4
+  correction below left open.
+
 - **T-17's round-5/6/7 residual figures are re-run against a real purged build,
   and the ADR-0024 point-4 clauses #445 asks about are answered by measurement**
   ([#472](https://github.com/theurian/theurian/issues/472),
