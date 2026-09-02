@@ -195,16 +195,31 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   file surface by introspection, and the `.theurian/` paths governed prose
   names), then asks of each what negated-liveness sentences refer to it.
 
-  Two properties are worth naming because both were measured. The sweep reads
-  **wrap-joined sentences**, not lines: the same key returns 19 lines and 31
-  sentences over the same scope, and the plugin member is one of the twelve a
-  line-oriented pass never returns whole. And every run demonstrates its key
-  against a **planted positive** before any zero is read, because a key that has
-  stopped matching reports exactly what a clean tree reports. Each ledger is
-  exact in both directions — a suspect no row covers and a row the sweep no
-  longer produces are both exit 1 — which is what makes a correction and its
-  record land in one commit instead of the record rotting behind the fix. Full
-  populations, keys and mutation controls:
+  **Object-keyed is not markup-free, and this round measured the difference.**
+  The object still has to be *spelled*, and both keys for this class admitted a
+  single optional delimiter character — so a false universal written in the RST
+  double-backtick form, the house style in 326 of this tree's 356 governed `.py`
+  files, passed the census, passed the prose pin, and shipped inside a wheel when
+  it was planted in `application/forest_builder.py`. The escape was in the
+  markup, which is the one thing an object-keyed sweep is supposed to be immune
+  to. Both delimiter classes are runs of `{0,2}` now, the schema's bare-leaf
+  reference keeping a required `{1,2}` so widening a key does not quietly widen
+  it to zero, and every plant was re-demonstrated against the widened key: single
+  backtick, bare path, double quote and the house style all reach exit 1.
+
+  Two further properties, both measured. The sweep reads **wrap-joined
+  sentences**, not lines: the same key returns 19 lines and 31 sentences over the
+  same scope, and the plugin member is one of the twelve a line-oriented pass
+  never returns whole. And every run demonstrates its key against a **planted
+  positive** before any zero is read, because a key that has stopped matching
+  reports exactly what a clean tree reports. Each of the four ledgers is exact in
+  both directions — a suspect no row covers and a row the sweep no longer
+  produces are both exit 1 — and, since round one, each *direction* is itself
+  driven by a control rather than asserted: a ledger whose reconciliation nothing
+  exercises absorbs a new member that shares an existing key and reports the
+  absorption as a clean tree. That is what makes a correction and its record land
+  in one commit instead of the record rotting behind the fix. Full populations,
+  keys and mutation controls:
   [`docs/work-logs/2026-09-02-199-unit-b-census.md`](../../docs/work-logs/2026-09-02-199-unit-b-census.md).
 
 - **ADR-0008's two dated measurement anchors say which pull requests they belong
