@@ -1416,7 +1416,7 @@ def test_the_substring_filter_matches_a_wildcard_as_a_literal_character(tmp_path
                 _finding(_sha("d"), text="plain text", when="2026-08-23T09:00:00+00:00"),
                 _finding(
                     _sha("e"),
-                    text="a windows path C:\\Users\\ci in a finding",
+                    text="a path C:\\Users\\ci in a finding",
                     when="2026-08-22T09:00:00+00:00",
                 ),
             ),
@@ -1429,8 +1429,8 @@ def test_the_substring_filter_matches_a_wildcard_as_a_literal_character(tmp_path
     assert _served(store, text_contains="_") == ("an under_scored name",)
     assert _served(store, text_contains="under_scored") == ("an under_scored name",)
     assert _served(store, text_contains="under scored") == ()
-    assert _served(store, text_contains="\\") == ("a windows path C:\\Users\\ci in a finding",)
-    assert _served(store, text_contains="C:\\Users") == ("a windows path C:\\Users\\ci in a finding",)
+    assert _served(store, text_contains="\\") == ("a path C:\\Users\\ci in a finding",)
+    assert _served(store, text_contains="C:\\Users") == ("a path C:\\Users\\ci in a finding",)
     assert _served(store, text_contains="C:\\\\Users") == ()
 
 
