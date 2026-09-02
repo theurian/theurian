@@ -62,7 +62,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from claim_surfaces import Sentence, governed_paths, load_json, repo_root, sentences
+from claim_surfaces import (
+    Sentence,
+    governed_paths,
+    load_json,
+    repo_root,
+    sentences,
+    unreleased_lines,
+)
 
 #: The published schema whose key surface is enumeration source 1.
 PROJECT_CONFIG_SCHEMA: Final = "schemas/config/project-config.schema.json"
@@ -119,15 +126,32 @@ _UNSCOPED_TEMPLATE: Final = r"\bno\s+config(?:uration)?\s+surface\b"
 #: The tense and framing markers that make a sentence a record rather than an
 #: assertion. Deliberately narrow: ``says`` is absent, because *"the schema says
 #: nothing reads this file"* is a live claim wearing a reporting verb.
+#:
+#: **Two alternatives were removed in round one, both of which cleared live
+#: prose.** ``until`` is a *future* marker as often as a past one -- "nothing in
+#: ``src/`` reads ``.theurian/config.yaml`` until review ingestion lands" is the
+#: retracted universal with a clause attached, and it cleared as a record. And
+#: the bare verb ``read`` matched the present tense inside a modal: "nothing in
+#: ``src/`` **can read** ``.theurian/config.yaml``" is a live claim, and
+#: ``read\b(?!s)`` read it as the past tense of the same verb. The past tense the
+#: corrected rationale actually uses -- "when this was written nothing read
+#: ``.theurian/config.yaml`` at all" -- is still cleared, by
+#: ``when this was written`` and by ``was``, so nothing this list exists to
+#: protect moved.
 _RECORD_MARKERS: Final = re.compile(
-    r"\b(?:said|stated|used\s+to|until|no\s+longer|previously|was|were|had\s+been|"
+    r"\b(?:said|stated|used\s+to|no\s+longer|previously|was|were|had\s+been|"
     r"when\s+this\s+was\s+written|before\s+this|corrected|retracted|falsified|"
-    r"narrowed|carried|quoted|read\b(?!s))\b",
+    r"narrowed|carried|quoted)\b",
     re.IGNORECASE,
 )
 
-#: Files whose every entry is a dated record of a release, so a claim quoted in
-#: one is history by construction. Correcting one would falsify the record.
+#: Files whose *dated* entries are records of a release, so a claim quoted in one
+#: is history by construction. Correcting one would falsify the record.
+#:
+#: ``[Unreleased]`` is **not** one of those entries, which is round one's M-j:
+#: it describes the tree a reader has checked out rather than what a release did,
+#: it is edited on every merge, and it was cleared unread.
+#: :func:`claim_surfaces.unreleased_lines` is what separates the two.
 _RELEASE_RECORDS: Final = "CHANGELOG.md"
 
 #: A ``.theurian/`` path a document names, at the depth a claim is made about.
@@ -349,17 +373,23 @@ def _keys_for(member: WatchedObject) -> tuple[tuple[str, re.Pattern[str]], ...]:
     )
 
 
-def _classify(shape: str, kinds: set[str], sentence: Sentence) -> str:
+def _classify(
+    shape: str, kinds: set[str], sentence: Sentence, *, unreleased: frozenset[int] = frozenset()
+) -> str:
     """The verdict, in the order the rules have to be applied.
 
-    Order is load-bearing. The release-note rule runs first because a CHANGELOG
-    entry quoting a retracted universal is a record whatever tense it is in; the
-    key-scoped rule runs last because it is the one a defect can hide behind --
-    a sentence that names a key *and* claims the file is unread is the #461 shape
-    exactly, and it stays a suspect as long as one file object is in its
-    reference set.
+    Order is load-bearing. The release-note rule runs first because a dated
+    CHANGELOG entry quoting a retracted universal is a record whatever tense it
+    is in; the key-scoped rule runs last because it is the one a defect can hide
+    behind -- a sentence that names a key *and* claims the file is unread is the
+    #461 shape exactly, and it stays a suspect as long as one file object is in
+    its reference set.
+
+    ``unreleased`` carries the lines of the document's ``[Unreleased]`` section,
+    so the first rule can decline to clear them. A sentence there is not a record
+    of anything: it describes the tree.
     """
-    if sentence.path.endswith(_RELEASE_RECORDS):
+    if sentence.path.endswith(_RELEASE_RECORDS) and sentence.line not in unreleased:
         return "record (release note)"
     if _RECORD_MARKERS.search(sentence.text):
         return "record (past tense)"
@@ -425,6 +455,11 @@ def sweep(root: Path) -> list[Row]:
     for path in governed_paths(root):
         if path.startswith(SELF):
             continue
+        unreleased = (
+            unreleased_lines((root / path).read_text(encoding="utf-8", errors="surrogateescape"))
+            if path.endswith(_RELEASE_RECORDS)
+            else frozenset()
+        )
         for sentence in sentences(root, path):
             if not _ANY_CLAIM.search(sentence.text):
                 continue
@@ -441,7 +476,10 @@ def sweep(root: Path) -> list[Row]:
                     objects=tuple(sorted({member.name for member, _ in matched})),
                     shape=matched[0][1],
                     verdict=_classify(
-                        matched[0][1], {member.kind for member, _ in matched}, sentence
+                        matched[0][1],
+                        {member.kind for member, _ in matched},
+                        sentence,
+                        unreleased=unreleased,
                     ),
                     sentence=sentence,
                 )
@@ -488,11 +526,65 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
         "`it` is `providers.review.repositories`, named in the sentence before. A "
         "key-scoped claim, and the correct one.",
     ),
-    # The next two rows arrived with the delimiter run, and they are the evidence
-    # that the widening reaches the tree and not only the controls: both are
-    # written in the RST house style, so a single optional delimiter could not see
-    # either. Neither is a claim -- both quote the retracted universal in a
-    # docstring that exists to say it was retracted.
+    (
+        "packages/theurian-core/tests/unit/test_config_key_call_sites.py",
+        "those documents say so",
+        "true",
+        "The same key-scoped claim inside the pin's own failure message, explaining why "
+        "six documents describe `providers.review.repositories` as reserved. `it` is that "
+        "key, named in the clause before. It reached the ledger when `_RECORD_MARKERS` "
+        "stopped clearing a sentence for carrying the bare verb `read` (round one's M-i).",
+    ),
+    (
+        "plugins/claude-code/CHANGELOG.md",
+        "so the allowlist protects no one yet",
+        "DEFECT -- file, outside this assignment's file set",
+        "The retracted universal, live, in the plugin CHANGELOG's `[Unreleased]` section: "
+        "'nothing reads that file, so the allowlist protects no one yet'. ADR-0027 "
+        "decision 3 shipped the reader -- `security/project_config.py` opens the file for "
+        "`security.secretScan` -- so the sentence should name the key rather than the "
+        "file, exactly as #461 did for `ingest.md`. It is the first row this ledger has "
+        "ever carried from a CHANGELOG, because the blanket release-note clear covered "
+        "`[Unreleased]` until round one's M-j scoped it to dated sections. The census "
+        "assignment may not edit `plugins/` or a CHANGELOG, so it is recorded here for "
+        "the prose pass rather than corrected.",
+    ),
+    # The rows below arrived with two round-one fixes and are the evidence that
+    # both reach the tree rather than only the controls. The delimiter run (H-F)
+    # brought in every quotation written in the RST house style, which a single
+    # optional delimiter could not see; the narrowed `_RECORD_MARKERS` (M-i)
+    # brought in the ones a bare `read` or an `until` had been clearing. None is a
+    # claim: every one quotes the retracted universal inside a docstring whose
+    # subject is that it was retracted.
+    (
+        "packages/theurian-core/tests/unit/test_raptor_config_claims.py",
+        "followed by the reader the file",
+        "quotation",
+        "The module docstring's bullet, quoting what `raptor.md` says now in order to "
+        "describe the narrowing. `_RECORD_MARKERS` used to clear it for carrying `read`.",
+    ),
+    (
+        "packages/theurian-core/tests/unit/test_raptor_config_claims.py",
+        "they are the verb of the claim itself",
+        "quotation",
+        "`_RETRACTION_LEAD`'s docstring, quoting the double-quoted probe to explain why "
+        "`read`/`reads` are excluded from that key.",
+    ),
+    (
+        "packages/theurian-core/tests/unit/test_raptor_config_claims.py",
+        "a few words earlier, about",
+        "quotation",
+        "`_FILE_UNREAD`'s docstring, quoting the *other* half of the corrected rationale "
+        "-- the key-scoped 'nothing in `src/` reads it' about `raptor.enabled` -- to say "
+        "why the verb has to sit against its object.",
+    ),
+    (
+        "packages/theurian-core/tests/unit/test_raptor_config_claims.py",
+        "Round two's third probe wrote the path in double quotes",
+        "quotation",
+        "The same docstring, quoting round two's probe to record why the delimiter class "
+        "is not a bare backtick.",
+    ),
     (
         "packages/theurian-core/tests/unit/test_raptor_config_claims.py",
         "Every one of them recorded that",
@@ -590,12 +682,13 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
 #: surfaces shipped, which is the wording a regression would restore. They are
 #: kept in their published form for that reason and are not re-tensed into the
 #: corrected text, which the key is not supposed to match.
-POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool], ...]] = (
+POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, bool], ...]] = (
     (
         "the schema root as it shipped before #455 (corrected)",
         "schemas/config/project-config.schema.json",
         "Nothing in src/ reads this file, so no value in it takes effect today.",
         True,
+        False,
     ),
     (
         "the plugin claim as it shipped before #461 (corrected)",
@@ -603,23 +696,27 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "A repository will have to be on the allowlist in `.theurian/config.yaml`; "
         "nothing reads that file today.",
         True,
+        False,
     ),
     (
         "the bare pronoun, which no path-bearing key reaches",
         "docs/architecture/raptor.md",
         "`.theurian/config.yaml` is the file. Nothing reads it today.",
         True,
+        False,
     ),
     (
         "no config surface -- the measured escape of the phrasing-keyed scan",
         "docs/architecture/raptor.md",
         "The summariser's budget lives in `.theurian/config.yaml` terms. It has no config surface.",
         True,
+        False,
     ),
     (
         "the narrowed sentence #426 landed, which must NOT be a suspect",
         "docs/architecture/raptor.md",
         "Nothing in `src/` reads `raptor.enabled`, nor any other key in the `raptor` block.",
+        False,
         False,
     ),
     (
@@ -627,6 +724,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "docs/architecture/raptor.md",
         "Two sentences said nothing in `src/` reads `.theurian/config.yaml`. Each was "
         "true when written.",
+        False,
         False,
     ),
     (
@@ -636,6 +734,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "Per-repository configuration. `security.secretScan` is published here, and "
         "nothing reads it today.",
         True,
+        False,
     ),
     (
         "round one's H-F: the same claim in this repository's RST house style, in a "
@@ -643,11 +742,49 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "packages/theurian-core/src/theurian/application/forest_builder.py",
         "Nothing in ``src/`` reads ``.theurian/config.yaml``, so no default here is in force.",
         True,
+        False,
     ),
     (
         "the RST form of the *narrowed* sentence, which must still NOT be a suspect",
         "docs/architecture/raptor.md",
         "Nothing in ``src/`` reads ``raptor.enabled``, nor any other key in the ``raptor`` block.",
+        False,
+        False,
+    ),
+    (
+        "round one's M-i: a live universal with a future clause, which `until` cleared",
+        "docs/architecture/raptor.md",
+        "Nothing in `src/` reads `.theurian/config.yaml` until review ingestion lands.",
+        True,
+        False,
+    ),
+    (
+        "round one's M-i: the same universal inside a modal, which the bare verb `read` "
+        "cleared as a past tense",
+        "docs/architecture/raptor.md",
+        "Nothing in `src/` can read `.theurian/config.yaml`, so the default is safe to flip.",
+        True,
+        False,
+    ),
+    (
+        "the past tense the corrected rationale actually uses, which must still be cleared",
+        "docs/architecture/raptor.md",
+        "When this was written nothing in `src/` read `.theurian/config.yaml` at all.",
+        False,
+        False,
+    ),
+    (
+        "round one's M-j: a live universal in a CHANGELOG's `[Unreleased]` section",
+        "plugins/claude-code/CHANGELOG.md",
+        "Nothing in `src/` reads `.theurian/config.yaml`, so the allowlist is not in force.",
+        True,
+        True,
+    ),
+    (
+        "the same sentence in a dated release section, which stays a record",
+        "plugins/claude-code/CHANGELOG.md",
+        "Nothing in `src/` reads `.theurian/config.yaml`, so the allowlist is not in force.",
+        False,
         False,
     ),
     (
@@ -656,6 +793,7 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "This file is read -- `security/project_config.py` opens it for "
         "`security.secretScan` alone -- but nothing in `src/` reads "
         "`providers.review.repositories`, so the allowlist is not in force.",
+        False,
         False,
     ),
 )
@@ -777,7 +915,7 @@ def _run_positive_controls() -> int:
     keys = {member.name: _keys_for(member) for member in members}
     failures = 0
     print("=== POSITIVE CONTROLS ===")
-    for label, path, planted, expected in POSITIVE_CONTROLS:
+    for label, path, planted, expected, unreleased in POSITIVE_CONTROLS:
         hit: str | None = None
         kinds: set[str] = set()
         for member in _referring(members, path, planted):
@@ -787,7 +925,14 @@ def _run_positive_controls() -> int:
                     kinds.add(member.kind)
                     break
         verdict = (
-            _classify(hit, kinds, Sentence(path=path, line=0, text=planted, block=planted))
+            _classify(
+                hit,
+                kinds,
+                Sentence(path=path, line=0, text=planted, block=planted),
+                # The planted sentence sits at line 0, so a control marked
+                # `unreleased` is one whose line is inside the section.
+                unreleased=frozenset({0}) if unreleased else frozenset(),
+            )
             if hit
             else "no match"
         )

@@ -121,6 +121,44 @@ class Sentence:
         return f"{self.path}:{self.line}"
 
 
+#: A ``## [Unreleased]`` heading, and any ``## [`` heading that ends it.
+#:
+#: Both audits that clear a CHANGELOG sentence as a record rely on this. Keep-a-
+#: Changelog spells a released section ``## [0.1.0.dev17] - 2026-09-02``: the
+#: version, then a date. ``[Unreleased]`` has no date because it has not
+#: happened, and that is exactly what makes it different -- it is a statement
+#: about the tree as it stands, not a record of what a release did.
+_UNRELEASED_HEADING: Final = re.compile(r"^##\s+\[Unreleased\]", re.IGNORECASE)
+_VERSION_HEADING: Final = re.compile(r"^##\s+\[")
+
+
+def unreleased_lines(text: str) -> frozenset[int]:
+    """Line numbers of one CHANGELOG's ``## [Unreleased]`` section, heading included.
+
+    **The blanket "a CHANGELOG entry is a record" rule is false here, which is
+    round one's M-j.** Every dated section states what a release did on its date,
+    so a retracted claim quoted in one is history by construction and correcting
+    it would falsify the record. ``[Unreleased]`` is the opposite: it describes
+    the tree a reader has checked out, it is edited on every merge, and a false
+    liveness claim or a dead owner written into it is live prose in a governed
+    file. Two audits cleared it unread.
+
+    Returns an empty set for a document with no such section, which is what
+    ``CHANGELOG.md`` at the repository root is -- it carries no
+    Keep-a-Changelog headings at all.
+    """
+    inside = False
+    found: set[int] = set()
+    for number, line in enumerate(text.splitlines(), start=1):
+        if _UNRELEASED_HEADING.match(line):
+            inside = True
+        elif inside and _VERSION_HEADING.match(line):
+            inside = False
+        if inside:
+            found.add(number)
+    return frozenset(found)
+
+
 def repo_root(start: Path | None = None) -> Path:
     """The checkout that owns ``start``, found by walking up to a ``.git`` entry.
 
