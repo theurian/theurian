@@ -214,10 +214,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   backtick, bare path, double quote and the house style all reach exit 1.
 
   Two further properties, both measured. The sweep reads **wrap-joined
-  sentences**, not lines: the same key returns 19 lines and 31 sentences over the
-  same scope, and the plugin member is one of the twelve a line-oriented pass
-  never returns whole. And every run demonstrates its key against a **planted
-  positive** before any zero is read, because a key that has stopped matching
+  sentences**, not lines: at `75c4c7a`, a commit on this pull request's branch
+  and not on `main`, the same key over the same scope returns 19 lines and 31
+  sentences, and the 19 lines land inside 17 of those sentences — so **14** are
+  ones a line pass never returns at all. And every run demonstrates its key
+  against a **planted positive** before any zero is read, because a key that has
+  stopped matching
   reports exactly what a clean tree reports. Each of the four ledgers is exact in
   both directions — a suspect no row covers and a row the sweep no longer
   produces are both exit 1 — and, since round one, each *direction* is itself
