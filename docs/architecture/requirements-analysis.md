@@ -533,6 +533,62 @@ A `.gitignore` is tracked, so a rule lost there shows in `git diff` — a
 mitigation, not the fix, and worth nothing to somebody running `init` in a tree
 that already has changes in it.
 
+**Row 17 names two artefacts, and the step answers the first of them.** The
+predicate — "an `active_index` exists for the current `state_hash`" — is two
+questions: whether the canonical state for the migrations on disk has been
+applied, and whether a retrieval index has been built over it. Since
+[#451](https://github.com/theurian/theurian/issues/451) `probe_initial_index`
+answers the first one truthfully: the state database
+`ProjectPaths.of(root).database_for(state_hash)` exists, for the hash the
+*loaded* migration set resolves to — the value `theurian project status`
+publishes as `stateHash`. It used to ask whether an active-state pointer
+existed at all, and that pointer is never removed once a first `migrate apply`
+writes it, so from that moment the step answered "Knowledge state is built."
+for every later migration set, and the arm naming `theurian migrate apply` was
+unreachable
+(`tests/integration/test_setup_service.py::test_the_initial_index_step_answers_whether_the_current_state_is_built`).
+Its `detail` publishes the separation rather than leaving it to be inferred:
+"This is the canonical state `theurian migrate apply` writes. The retrieval
+index over it is separate: `theurian index build` builds it and `theurian index
+status` reports it."
+(`::test_the_initial_index_detail_names_the_commands_that_build_and_report_the_index`).
+
+**The `active_index` half is answered by no step at all.** `StepId` has 19
+members and none of them is the retrieval index, so a `doctor` run says nothing
+about whether an index exists. Measured 2026-09-03 on a sandbox project one
+`migrate apply` past `theurian init` and with no `index build`: `doctor --json`
+reported all 19 steps, `initial-index` among them as `not-applicable` with
+"Knowledge state is built.", while `theurian index status` on the same tree
+answered `built: false` and `stale: true`, with the remedy "Run `theurian index
+build`." The gap is a silence rather than a false sentence — the summary is
+about canonical state, and the `detail` names the command that owns the other
+half — so this row stands as a requirement, the way rows 2 and 3 above do.
+Wiring an index-side answer into the steps is owned by
+[#528](https://github.com/theurian/theurian/issues/528), which is backlog with a
+pull-forward condition: it re-enters scheduling when `doctor` gains its next
+index-side arm, or at the stable-rc review. Both shapes that wiring could take
+are held. Adding a step moves the count
+`tests/unit/test_setup_domain.py::test_every_step_of_the_specification_has_an_identifier`
+asserts; extending an existing step instead moves nothing there, so two further
+rules cover it — `tests/unit/test_setup_claims.py::test_no_setup_step_reads_the_retrieval_index`
+scans the setup surface for an index read spelled by name, and
+`tests/integration/test_setup_service.py::test_no_step_changes_its_answer_when_a_retrieval_index_appears`
+runs a whole `doctor` against a tree with a published index and the same tree
+without one and requires the two reports to match, step for step and field for
+field. What neither of them sees is a step branching only on a pointer that is
+present and *broken*, which those tests record rather than chase.
+
+**Row 17's action columns describe work no run performs.** The step has no
+`Missing` or `Conflicting` arm and no apply function: `STEPS` pairs
+`probe_initial_index` with `None`, all three of its arms return
+`NotApplicable`, and the only `Conflicting` it can reach is
+`SetupService._probe`'s net for a probe that raised — "Could not check
+initial-index.", which a `.theurian` resolving outside the working tree produces
+(#237, T-5). Setup builds nothing here; `theurian migrate apply` writes the state
+database. So this row's `build` and `reuse` columns are the requirement and not a
+description, the same standing rows 2 and 3 have — §6.4 says it once more from
+the journal's side, about rows 16–17 together.
+
 ### 6.3 Idempotence contract
 
 Running setup twice must produce a second report where every step is

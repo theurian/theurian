@@ -13,18 +13,37 @@ import json
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, override
+from typing import Any, NamedTuple, override
 
 import pytest
+from fakes.clock import FrozenClock
 from fakes.setup import FakeMcpConfig, FakeService
-from setup_migrations import unchecked_migrations
+from migration_fixtures import body_pin
+from setup_migrations import state_hash_from_the_loader, unchecked_migrations
 
-from theurian.application.project_service import ProjectRegistry, ensure_gitignore
+from theurian.application.project_service import (
+    ProjectPaths,
+    ProjectRegistry,
+    derive_project_id,
+    ensure_gitignore,
+    read_active_index_pointer,
+    read_active_state,
+    resolve_state_hash,
+    write_active_index_pointer,
+    write_active_state,
+)
 from theurian.application.setup_context import MigrationsCheck, SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
-from theurian.application.setup_steps import STEPS, Step, probe_project_registered
+from theurian.application.setup_steps import (
+    STEPS,
+    Step,
+    probe_initial_index,
+    probe_project_registered,
+)
 from theurian.cli.commands import _emit
-from theurian.domain.errors import MigrationError
+from theurian.cli.context import schema_root
+from theurian.domain.enums import Sensitivity
+from theurian.domain.errors import MigrationError, TheurianError
 from theurian.domain.setup import (
     SetupReport,
     SetupState,
@@ -33,8 +52,11 @@ from theurian.domain.setup import (
     StepOutcome,
     StepStatus,
 )
+from theurian.domain.state import StateHash
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
+from theurian.infrastructure.filesystem.migration_loader import load_migrations
 from theurian.infrastructure.secrets.file_store import FileSecretStore
+from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.security.env_file import TOKEN_KEY
 from theurian.security.tokens import MIN_TOKEN_LENGTH
 
@@ -712,8 +734,8 @@ def test_the_summaries_carry_the_locations_that_removing_paths_took_out(
 #: returns, two of them CONFLICTING), artifact-integrity 1, serving-profile 1
 #: (three returns, one reachable here), single-instance 3, project-registered 4,
 #: project-layout 3, gitignore 3, mcp-health 2, migrations-valid 3 (four arms,
-#: two of them NOT_APPLICABLE), initial-index 1 (two summaries, one status),
-#: serena-detection 2. Those twelve add to 27.
+#: two of them NOT_APPLICABLE), initial-index 1 (three of its four summaries
+#: reached here, all one status), serena-detection 2. Those twelve add to 27.
 #:
 #: This comment used to carry a second, independent count -- "31 ``return
 #: SetupStep(...)`` statements collapsing onto 26 pairs". It is gone rather than
@@ -723,17 +745,22 @@ def test_the_summaries_carry_the_locations_that_removing_paths_took_out(
 #: The per-step tally above is the derivation, and the assertion below prints
 #: the observed set when it disagrees.
 #:
-#: Two steps have returns no state here can walk, and both are walked elsewhere.
-#: `core-present`'s third -- Core installed without its ``daemon`` extra (#78) --
-#: is unreachable because the test process is a development environment that
-#: always has the extra; ``tests/integration/test_bare_install.py`` blocks the
-#: modules instead of varying the context. `serving-profile`'s SATISFIED and
-#: CONFLICTING arms need a profile file in the data directory, which no context
-#: here writes; ``tests/integration/test_setup_cli.py`` declares one and asserts
-#: all three statuses through `doctor`. The count above is what those arms cost
+#: Three steps have returns no state here can walk, and all three are walked
+#: elsewhere. `core-present`'s third -- Core installed without its ``daemon``
+#: extra (#78) -- is unreachable because the test process is a development
+#: environment that always has the extra;
+#: ``tests/integration/test_bare_install.py`` blocks the modules instead of
+#: varying the context. `serving-profile`'s SATISFIED and CONFLICTING arms need
+#: a profile file in the data directory, which no context here writes;
+#: ``tests/integration/test_setup_cli.py`` declares one and asserts all three
+#: statuses through `doctor`. `initial-index`'s built arm needs a state database
+#: at the hash the migrations on disk resolve to, which means a migration set
+#: the real loader accepts; this module's #451 section builds one and asserts
+#: both that arm and the one beside it. The count above is what those arms cost
 #: this number: nothing for `core-present`, whose other CONFLICTING arm already
-#: supplies the pair, and two pairs for `serving-profile` that simply never
-#: appear here.
+#: supplies the pair, nothing for `initial-index`, whose other arms supply its
+#: only status, and two pairs for `serving-profile` that simply never appear
+#: here.
 #:
 #: **What the assertion holds, exactly.** A fall means a state stopped reaching
 #: a status it used to. A rise means a step began emitting a status it did not
@@ -757,28 +784,26 @@ def _under(tmp_path: Path, name: str) -> Path:
 
 
 def _converged_repository(base: Path) -> SetupContext:
-    """Rows 11-13 satisfied, Serena present, a migration and a built state on disk.
+    """Rows 11-13 satisfied, Serena present, and a migration file on disk.
 
-    The built state is the point of the ``active.json``: `probe_initial_index`
-    branches on `read_active_state`, and with no state ever built no context
-    reached the built side of it. A mutation naming a path only there survived
-    the whole suite.
+    Its ``0001-initial.yaml`` is empty, which the real loader refuses -- an empty
+    document is not a mapping at the root -- so this is the state that walks
+    `probe_initial_index`'s cannot-tell arm. That arm is the one with a raise
+    behind it: `_with` hands every context here the real state-hash resolver, and
+    the loop below calls each probe *directly*, with no `SetupService._probe` net
+    under it, so a resolver or a probe that let the refusal escape ends this test
+    in an error rather than a comparison.
+
+    It used to carry a hand-written ``active.json`` instead, for a question
+    `probe_initial_index` no longer asks: whether a pointer exists at all was the
+    #451 defect, and nothing in ``STEPS`` reads that file now. The built and
+    not-built arms are held where they can be stated against a real state hash,
+    in this module's #451 section.
     """
     root = _repository(base)
     for name in ("migrations", "knowledge", "state"):
         (root / ".theurian" / name).mkdir(parents=True, exist_ok=True)
     (root / ".theurian" / "migrations" / "0001-initial.yaml").touch()
-    (root / ".theurian" / "state" / "active.json").write_text(
-        json.dumps(
-            {
-                "stateHash": "b" * 64,
-                "databaseFilename": "knowledge-bbbb.sqlite",
-                "migrationCount": 1,
-                "updatedAt": "2026-01-01T00:00:00Z",
-            }
-        ),
-        encoding="utf-8",
-    )
     # Written by the function `theurian init` calls, rather than by joining the
     # entries: since #87 `probe_gitignore` reports `satisfied` only for the
     # managed block itself, and the bare entries with no markers around them are
@@ -1063,6 +1088,604 @@ def test_setup_still_reports_what_it_declined_to_do(in_a_repository: SetupContex
         assert any(step_id.value in warning for warning in report.warnings)
     registered = report.step(StepId.PROJECT_REGISTERED)
     assert registered is not None and "theurian project register" in registered.action
+
+
+# -- initial-index answers about the *current* state hash (#451) -------------
+#
+# `probe_initial_index` asked whether an active-state pointer exists at all,
+# while `theurian project status` publishes ``"stateBuilt": database.exists()``
+# for the ``database_for(context.state_hash)`` it resolved a few lines earlier
+# -- whether the database for the migration set *on disk right now* is there
+# (``project_status`` in ``cli/commands.py``). Those two agreed until a
+# migration landed, and then they parted for good: the pointer a first `migrate
+# apply` writes is never removed, so from that moment `doctor` answered
+# "Knowledge state is built." for every later state, and the arm naming the
+# remedy was unreachable.
+#
+# That is the state a pull puts a deployment into -- migrations fetched,
+# `migrate apply` not yet run -- so the step published its false claim exactly
+# when a person was asking `doctor` what to do. #451 records the pair, measured
+# on f2279e1: one migration added to an applied project, `project status --json`
+# reporting ``stateBuilt: false`` and ``migrationCount: 1`` on the same tree
+# whose `doctor --json` reported initial-index "Knowledge state is built.".
+#
+# Observable family: **a published field**. A `doctor` summary is a claim an
+# operator acts on, and the sentence *is* the whole output of a step that has no
+# action -- there is nothing else in it that could carry the answer.
+
+#: The claims `probe_initial_index` chooses between. Quoted from
+#: ``setup_steps.py`` rather than paraphrased, because #451 is entirely about
+#: *which* of them a given project is handed: an assertion naming only one of
+#: them would be satisfied by a summary that says two, or none.
+_STATE_IS_BUILT = "Knowledge state is built."
+_APPLY_REMEDY = "Run `theurian migrate apply`."
+
+#: The third one, pinned **verbatim** where the two above are not. It is the
+#: answer for a set the resolver could not read, and it is the arm with the
+#: least holding it down: a state whose migrations stopped loading still has a
+#: database and a pointer on disk, so rewriting this sentence back to "Knowledge
+#: state is built." is #451's own lie in the one place the fixtures cannot
+#: contradict by arithmetic. Wording that must be typed out is wording a rewrite
+#: has to come here to change.
+_CANNOT_TELL = (
+    "Cannot tell what state this project is at: its migration set could not be "
+    "read. Run `theurian migrate validate`, which prints why."
+)
+
+#: The clauses of the published ``detail`` that #451's second half is about.
+#: `theurian index build` shipped in Milestone 5, so a detail promising
+#: retrieval indexes as future work and telling the reader there is nothing to
+#: build is false twice over on every project that has one to build.
+#:
+#: The token "Milestone 5" is deliberately *not* forbidden here, and neither is
+#: any replacement wording pinned: a detail saying the indexes *shipped* in
+#: Milestone 5 would be true, and a test that refused it would be holding the
+#: wording rather than the claim -- which is how a fossil survives its rewrite.
+_CLAIMS_INDEXES_ARE_FUTURE_WORK = ("Retrieval indexes arrive in", "there is nothing to build yet")
+
+#: What the ``detail`` has to *say*, as opposed to what it must not. Forbidding
+#: phrases alone is satisfied by a field carrying nothing at all: ``detail=""``
+#: was caught by nothing in this file (measured) and by nothing in the suite
+#: when round one measured it, and an empty field is how the reader stops being
+#: told that the canonical state this step reports and the retrieval index it is
+#: named for are two artefacts. Both commands are registered in
+#: ``cli/index_commands.py`` -- ``build``, ``gc``, ``status``, measured off
+#: ``index_app`` -- so the field sends its reader somewhere that exists.
+_DETAIL_NAMES_THE_INDEX_COMMANDS = ("`theurian index build`", "`theurian index status`")
+
+#: Crockford base32, as every ULID in this repository is: no ``I``, ``L``, ``O``
+#: or ``U``, and a first character in ``0-7``. The migration schema's own pattern
+#: is ``^[0-7][0-9A-HJKMNP-TV-Z]{25}$``, and a fixture that fails it is refused
+#: by the loader rather than by the behaviour under test.
+_FIRST_MIGRATION = "01K451AAAA01234567890ABCDE"
+_FIRST_REVISION = "01K451AAAREV01234567890ABC"
+_SECOND_MIGRATION = "01K451BBBB01234567890ABCDE"
+_SECOND_REVISION = "01K451BBBREV01234567890ABC"
+
+
+def _loadable_migration(migration_id: str, revision_id: str, slug: str, body: str) -> str:
+    """A migration the real loader accepts, over its own item.
+
+    Real rather than a stub file, because the state hash these fixtures pivot on
+    is computed from the *loaded* set: `_converged_repository`'s empty
+    ``0001-initial.yaml`` is refused by the loader, so it can stand in for a
+    migration only where nothing asks what the set hashes to.
+    """
+    return f"""apiVersion: theurian.dev/v1
+id: {migration_id}
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.{slug}
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.{slug}
+    revisionId: {revision_id}
+    contentFile: ../knowledge/architecture/{slug}.md
+    contentSha256: {body_pin(body)}
+    metadata:
+      title: {slug}
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/{slug}.md
+"""
+
+
+def _write_a_migration(root: Path, migration_id: str, revision_id: str, slug: str) -> None:
+    """Author one migration and the body it pins, the way a person would."""
+    body = f"# {slug}\n\nEvery call carries a signed token.\n"
+    paths = ProjectPaths.of(root)
+    (paths.knowledge / "architecture").mkdir(parents=True, exist_ok=True)
+    (paths.knowledge / "architecture" / f"{slug}.md").write_text(body, encoding="utf-8")
+    paths.migrations.mkdir(parents=True, exist_ok=True)
+    (paths.migrations / f"{migration_id}-{slug}.yaml").write_text(
+        _loadable_migration(migration_id, revision_id, slug, body), encoding="utf-8"
+    )
+
+
+def _current_state(root: Path) -> tuple[StateHash, int]:
+    """What ``theurian project status`` would publish as ``stateHash`` here.
+
+    The same two calls `cli/context.resolve_context` makes -- `load_migrations`
+    then `resolve_state_hash(loaded, SCHEMA_VERSION)` -- so these fixtures
+    cannot come to disagree with the product about which database is the current
+    one. Deriving the hash any other way would let the test and `project status`
+    address different files while both looked right.
+    """
+    paths = ProjectPaths.of(root)
+    loaded = load_migrations(paths.root, paths.migrations, schema_root())
+    return resolve_state_hash(loaded, SCHEMA_VERSION), len(loaded.migration_set)
+
+
+def _apply_the_current_set(root: Path) -> StateHash:
+    """Leave behind what a successful `theurian migrate apply` leaves behind.
+
+    The database is created empty on purpose: "built" is `database.exists()` --
+    that is the predicate `project status` publishes as ``stateBuilt`` -- so a
+    file at the right path is the whole of the state being fixtured. The pointer
+    goes through the product's own `write_active_state`, so a fixture cannot
+    quietly write a shape the reader would refuse.
+    """
+    paths = ProjectPaths.of(root)
+    state_hash, count = _current_state(root)
+    database = paths.database_for(state_hash)
+    database.parent.mkdir(parents=True, exist_ok=True)
+    database.touch()
+    write_active_state(paths, state_hash, count, FrozenClock())
+    return state_hash
+
+
+def _never_applied(base: Path) -> SetupContext:
+    """Migrations authored, `migrate apply` never run. No pointer, no database."""
+    root = _repository(base)
+    _write_a_migration(root, _FIRST_MIGRATION, _FIRST_REVISION, "auth-policy")
+    return _with(base, project_root=root)
+
+
+def _applied_and_current(base: Path) -> SetupContext:
+    """Applied, and nothing has changed since. The one state that *is* built."""
+    root = _repository(base)
+    _write_a_migration(root, _FIRST_MIGRATION, _FIRST_REVISION, "auth-policy")
+    _apply_the_current_set(root)
+    return _with(base, project_root=root)
+
+
+def _migrations_pulled_but_not_applied(base: Path) -> SetupContext:
+    """Applied once, then a migration landed: #451's state, and the common one.
+
+    Every corpus change puts a deployment here between `git pull` and `theurian
+    migrate apply`. The pointer and the earlier database both survive on disk --
+    they are what made the pointer-existence question answer "built" -- while the
+    migration set has moved and no database exists for what it now hashes to.
+    """
+    root = _repository(base)
+    _write_a_migration(root, _FIRST_MIGRATION, _FIRST_REVISION, "auth-policy")
+    _apply_the_current_set(root)
+    _write_a_migration(root, _SECOND_MIGRATION, _SECOND_REVISION, "rate-limit")
+    return _with(base, project_root=root)
+
+
+def _the_pointer_deleted_but_the_database_kept(base: Path) -> SetupContext:
+    """Applied, then the derived pointer went missing. The old predicate's own face.
+
+    ``.theurian/state/`` is git-ignored, derived and routinely wiped; the
+    database for the current hash surviving without its pointer is what a
+    half-cleaned state directory looks like. The old question -- does a pointer
+    exist -- answered "not built" here while `project status` answered
+    ``stateBuilt: true``, so this is #451 pointing the other way, and it is the
+    shape that proves the new predicate reads the *database* rather than having
+    swapped one proxy for another.
+    """
+    root = _repository(base)
+    _write_a_migration(root, _FIRST_MIGRATION, _FIRST_REVISION, "auth-policy")
+    _apply_the_current_set(root)
+    ProjectPaths.of(root).active_pointer.unlink()
+    return _with(base, project_root=root)
+
+
+def _an_applied_project_whose_migrations_stopped_loading(base: Path) -> SetupContext:
+    """Applied, then the set stopped loading. There is no current state to name.
+
+    Applied *first*, deliberately: this leaves a database and an active pointer
+    on disk, so every proxy for built-ness that #451 was about is present and
+    saying yes while the one question that matters -- which state is this
+    project at -- has no answer at all. A step that reached for either would say
+    "Knowledge state is built." here, about a project whose migrations nothing
+    can read.
+
+    The break is a second, empty ``*.yaml``: an empty document is not a mapping,
+    and the loader refuses the whole set on it, which is the same shape
+    `_converged_repository` reaches by accident.
+    """
+    root = _repository(base)
+    _write_a_migration(root, _FIRST_MIGRATION, _FIRST_REVISION, "auth-policy")
+    _apply_the_current_set(root)
+    (ProjectPaths.of(root).migrations / "0002-broken.yaml").touch()
+    return _with(base, project_root=root)
+
+
+class _Shape(NamedTuple):
+    """One state a project can be in when `initial-index` probes it.
+
+    ``is_built`` is what `theurian project status` publishes as ``stateBuilt``
+    for this shape, and ``None`` means the question has no answer because the
+    migration set does not load. It stays a plain bool everywhere else on
+    purpose: whether a pointer exists is not part of the predicate any more, so
+    a shape that varies the pointer varies nothing this field records.
+    """
+
+    name: str
+    build: Callable[[Path], SetupContext]
+    is_built: bool | None
+
+
+#: Every shape, and the population the tests below select from. Three of the
+#: five are *not* the plain built case, and they differ in exactly the things
+#: #451 confused with built-ness: no pointer and no database, a pointer with the
+#: database behind it, a database with no pointer at all. The last has no
+#: ``stateBuilt`` to publish, which is why it is answered separately rather than
+#: folded in as a third truth value.
+_SHAPES: tuple[_Shape, ...] = (
+    _Shape("never-applied", _never_applied, False),
+    _Shape("applied-and-current", _applied_and_current, True),
+    _Shape("migrations-pulled-not-applied", _migrations_pulled_but_not_applied, False),
+    _Shape("pointer-deleted-database-kept", _the_pointer_deleted_but_the_database_kept, True),
+    _Shape("set-stopped-loading", _an_applied_project_whose_migrations_stopped_loading, None),
+)
+
+#: The shapes whose state hash resolves, so `project status` has a ``stateBuilt``
+#: to publish and the step reaches the built / not-built return. Selected rather
+#: than hardcoded, so a shape added above joins these tests by being added once.
+_DECIDABLE = [
+    pytest.param(s.build, s.is_built, id=s.name) for s in _SHAPES if s.is_built is not None
+]
+
+#: Its complement: the shapes with no state to name at all.
+_UNDECIDABLE = [pytest.param(s.build, id=s.name) for s in _SHAPES if s.is_built is None]
+
+
+@pytest.mark.parametrize(("state", "is_built"), _DECIDABLE)
+def test_the_initial_index_step_answers_whether_the_current_state_is_built(
+    tmp_path: Path, state: Callable[[Path], SetupContext], is_built: bool
+) -> None:
+    """`doctor` must not tell a deployment its knowledge state is built when the
+    database for the migration set on disk does not exist (#451).
+
+    The claim is about *which* state, not about whether any state was ever
+    built: a project applied last week and pulled this morning has a pointer, a
+    database, and no database for what its migrations now hash to. `project
+    status` says ``stateBuilt: false`` there and `doctor` said "Knowledge state
+    is built.", so the two commands disagreed about one project on the same
+    machine, and the one a person runs when something looks wrong was the one
+    that was wrong.
+
+    Both directions are asserted per shape -- the claim that must appear and the
+    claim that must not -- because a summary carrying both would satisfy either
+    half alone. The four decidable shapes are the class: pointer and database
+    both absent, both present and current, pointer present with the database
+    behind it, and database present with no pointer at all. The last pair are
+    #451's two faces, and the second keeps the others from being satisfiable by
+    a step that simply never says anything is built.
+
+    Deliberately silent about `status`: nothing here fixes NOT_APPLICABLE in
+    place, so a later change may make an unbuilt state MISSING with an action.
+    The sentence an operator reads is the requirement.
+    """
+    context = state(tmp_path)
+    root = context.project_root
+    assert root is not None
+    state_hash, _ = _current_state(root)
+    assert ProjectPaths.of(root).database_for(state_hash).exists() is is_built, (
+        "the fixture has to put on disk the state it claims to be fixturing"
+    )
+    expected, refused = (
+        (_STATE_IS_BUILT, _APPLY_REMEDY) if is_built else (_APPLY_REMEDY, _STATE_IS_BUILT)
+    )
+
+    step = probe_initial_index(context)
+
+    assert expected in step.summary, f"the summary has to say {expected!r}: {step.summary!r}"
+    assert refused not in step.summary, f"the summary must not say {refused!r}: {step.summary!r}"
+
+
+@pytest.mark.parametrize("state", _UNDECIDABLE)
+def test_the_step_says_it_cannot_tell_when_the_migration_set_will_not_load(
+    tmp_path: Path, state: Callable[[Path], SetupContext]
+) -> None:
+    """A project whose migrations stopped loading is not a project that is built.
+
+    The sharpest place #451 can come back. A database and an active pointer are
+    both on disk here, so every proxy the old predicate could reach for says
+    yes, while the question the step publishes an answer to -- which state is
+    this project at -- has no answer: the set the hash is computed from does not
+    load. Answering "Knowledge state is built." would be the original defect,
+    and answering "no knowledge state built yet" would be it pointing the other
+    way, because a set nobody can read is not a set anyone can say that about.
+
+    Pinned verbatim, unlike the two decidable arms. This wording is what a
+    reader is sent to `theurian migrate validate` by, and it is the arm with no
+    arithmetic behind it: the fixtures cannot contradict a rewrite here the way
+    a moved state hash contradicts one there. Both other claims are pinned
+    absent in the same breath -- the assertion that would have failed on `main`.
+    """
+    context = state(tmp_path)
+    root = context.project_root
+    assert root is not None
+    paths = ProjectPaths.of(root)
+    assert paths.active_pointer.exists(), "the pointer is present, and must not decide the answer"
+    assert list(paths.state.glob("*.sqlite")), "so is a database; also not the question"
+
+    step = probe_initial_index(context)
+
+    assert step.summary == _CANNOT_TELL
+    assert _STATE_IS_BUILT not in step.summary
+    assert _APPLY_REMEDY not in step.summary
+
+
+@pytest.mark.parametrize(("state", "is_built"), _DECIDABLE)
+def test_the_initial_index_detail_names_the_commands_that_build_and_report_the_index(
+    tmp_path: Path, state: Callable[[Path], SetupContext], is_built: bool
+) -> None:
+    """The step is named for the retrieval index and reports the canonical state,
+    and the ``detail`` is the only place that difference is said (#451).
+
+    The affirmative half, and the reason the negative one below can mean
+    anything: with only forbidden phrases pinned, emptying the field satisfied
+    every one of them trivially, and nothing else in this file looked at it
+    (measured; round one measured the same across the suite). A reader whose
+    state is built and whose index is not would be left with no sentence at all.
+
+    ``is_built`` is taken and unused on purpose: it is what selects this
+    parametrization to the shapes that reach the return carrying a ``detail``.
+    The cannot-tell arm publishes none, which the test above is about.
+    """
+    context = state(tmp_path)
+
+    step = probe_initial_index(context)
+
+    missing = [c for c in _DETAIL_NAMES_THE_INDEX_COMMANDS if c not in step.detail]
+    assert not missing, f"the detail no longer names {missing}: {step.detail!r}"
+
+
+@pytest.mark.parametrize(("state", "is_built"), _DECIDABLE)
+def test_the_initial_index_step_does_not_publish_indexes_as_future_work(
+    tmp_path: Path, state: Callable[[Path], SetupContext], is_built: bool
+) -> None:
+    """The step's ``detail`` is a published claim, and it named a shipped feature
+    as work that had not started (#451).
+
+    "Retrieval indexes arrive in Milestone 5; there is nothing to build yet" is
+    read by someone deciding what to do next, and `theurian index build` shipped
+    in Milestone 5 -- so the reader was told to skip the command the same report
+    exists to send them to. Prose in a report is not decoration: this file
+    already pins three other summaries to the locations they would otherwise have
+    lost, for the same reason.
+
+    **What the sweep across shapes actually buys, stated honestly.** All four
+    decidable shapes land on *one* ``return``, and two of them produce a
+    byte-identical ``detail``, so this is one string checked against several
+    inputs -- not several arms watched at once. It would not catch a rewrite
+    confined to an arm no shape here reaches. What holds the content is the
+    affirmative test above; this one holds that a *particular* false claim, the
+    one #451 was filed over, does not come back in any of them.
+
+    What is pinned is the absence of the false clauses -- see
+    `_CLAIMS_INDEXES_ARE_FUTURE_WORK` for why the milestone number itself is
+    fair game, and why no replacement wording is required here.
+    """
+    context = state(tmp_path)
+
+    step = probe_initial_index(context)
+
+    published = " ".join((step.summary, step.action, step.detail))
+    assert not [clause for clause in _CLAIMS_INDEXES_ARE_FUTURE_WORK if clause in published], (
+        f"a shipped feature is still published as future work: {published!r}"
+    )
+
+
+#: A build id for the index the rule below publishes. Crockford base32 like
+#: every other identifier in this file.
+_AN_INDEX_BUILD = "01K451CCCC01234567890ABCDE"
+
+#: A state hash no tree here is ever at, for the stale-pointer corpus. Sixty-four
+#: hex characters because that is what :class:`StateHash` publishes and what the
+#: pointer's readers compare against; a shorter one would be refused by the shape
+#: rather than by the comparison.
+_A_HASH_NO_TREE_HERE_IS_AT = "f" * 64
+
+
+def _a_hash_the_project_is_at(root: Path) -> str:
+    """The ``stateHash`` a real `theurian index build` here would stamp.
+
+    The migration set as it stands, which is what `index build` indexes and what
+    row 17's predicate compares against. A set that will not load has no such
+    hash, so the state that *was* applied is used instead: the pointer still has
+    to carry the field, and inventing one for that shape would make the "current"
+    corpus differ from the stale one for a reason that is not the state hash.
+    """
+    paths = ProjectPaths.of(root)
+    try:
+        loaded = load_migrations(paths.root, paths.migrations, schema_root())
+    except TheurianError:
+        active = read_active_state(paths)
+        return _A_HASH_NO_TREE_HERE_IS_AT if active is None else str(active.state_hash)
+    return str(resolve_state_hash(loaded, SCHEMA_VERSION))
+
+
+class _Standing(NamedTuple):
+    """One way a published index can stand to the project it was built for.
+
+    Every field `write_active_index_pointer` publishes that a step could branch
+    on, except the two whose *presence* already differs between a tree with a
+    pointer and a tree without one (``indexBuildId`` and ``projectId``). A field
+    this record holds at one value across every standing is a field a step can
+    read without moving anything -- see the rule below on what that leaves.
+    """
+
+    name: str
+    state_hash: Callable[[Path], str]
+    purge_failed: bool
+    indexes_unapproved: bool
+    indexed_sensitivities: frozenset[Sensitivity]
+
+
+#: The three standings the corpora are built at. The first two differ in
+#: ``stateHash`` alone, because a step publishing "an index exists for the
+#: current state" moves only in the first and one publishing "an index exists and
+#: is behind" moves only in the second.
+#:
+#: The third exists because a field held constant is a field a step reads for
+#: free. Measured: a probe branching on ``purgeFailed``, reached by a
+#: hand-assembled path, passed the whole suite while both standings wrote
+#: ``false`` -- absent pointer and published pointer agreeing, so nothing moved.
+#: It flips all three of the remaining branchable fields at once rather than
+#: adding a standing each: five shapes times five standings is a parametrisation
+#: nobody reads, and a step branching on any one of the three moves here.
+_STANDINGS: tuple[_Standing, ...] = (
+    _Standing(
+        "current",
+        _a_hash_the_project_is_at,
+        purge_failed=False,
+        indexes_unapproved=False,
+        indexed_sensitivities=frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL}),
+    ),
+    _Standing(
+        "stale",
+        lambda _root: _A_HASH_NO_TREE_HERE_IS_AT,
+        purge_failed=False,
+        indexes_unapproved=False,
+        indexed_sensitivities=frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL}),
+    ),
+    _Standing(
+        "flagged",
+        _a_hash_the_project_is_at,
+        purge_failed=True,
+        indexes_unapproved=True,
+        indexed_sensitivities=frozenset(Sensitivity),
+    ),
+)
+
+
+def _publish_a_retrieval_index(root: Path, standing: _Standing) -> None:
+    """Publish an index the way the product publishes one, at ``standing``.
+
+    Through `write_active_index_pointer` -- the function `theurian index build`
+    and the withdrawal purge both call -- rather than a hand-written key. That
+    matters and was measured: a pointer carrying ``indexBuildId`` alone satisfies
+    `read_active_index_pointer`, and satisfies **nothing that implements row 17's
+    actual predicate**, which compares ``stateHash`` against the state the
+    project is at. Against a one-key pointer a step answering that predicate
+    reads ``False`` in both corpora and the rule below stays green over it. Six
+    keys, written by the product, is what makes the corpora differ in the way a
+    real index differs from no index.
+    """
+    paths = ProjectPaths.of(root)
+    index = paths.index_for(_AN_INDEX_BUILD)
+    index.parent.mkdir(parents=True, exist_ok=True)
+    index.touch()
+    write_active_index_pointer(
+        paths,
+        index_build_id=_AN_INDEX_BUILD,
+        state_hash=standing.state_hash(root),
+        project_id=derive_project_id(root).value,
+        indexes_unapproved=standing.indexes_unapproved,
+        indexed_sensitivities=standing.indexed_sensitivities,
+        purge_failed=standing.purge_failed,
+    )
+
+
+@pytest.mark.parametrize(
+    ("state", "standing"),
+    [
+        pytest.param(shape.build, standing, id=f"{shape.name}-index-{standing.name}")
+        for shape in _SHAPES
+        for standing in _STANDINGS
+    ],
+)
+def test_no_step_changes_its_answer_when_a_retrieval_index_appears(
+    tmp_path: Path, state: Callable[[Path], SetupContext], standing: _Standing
+) -> None:
+    """§6.2 row 17 names two artefacts and `initial-index` answers the first
+    (#451). **No step** may answer the second, and this is what says so.
+
+    Row 17's predicate -- "an ``active_index`` exists for the current
+    ``state_hash``" -- is two questions. `theurian index status` owns the index
+    half, and `requirements-analysis.md` records `doctor`'s silence about it as
+    a requirement. A record like that is worth what holds it: one query against
+    two corpora, the shape this project's closure arguments settle on. A tree
+    with a published index and the same tree without one must produce the same
+    **report** -- every step, every field -- on every shape a project can be in.
+
+    **The whole report, not this one step**, because the sentence in §6.2
+    quantifies over a `doctor` *run*: the silence it records is broken by any
+    step publishing an index fact, not only by the one named for the index. A
+    version of this rule that probed `initial-index` alone stayed green while
+    `project-layout` published a pointer read in its own ``detail`` -- measured,
+    which is why the subject here is `SetupService.run`.
+
+    **What this and the source scan see, on two separate axes.** The scan reads
+    *how a read is spelled*: by name it is caught, and a hand-assembled path
+    (``root / ".theurian" / "state" / "active-index.json"``), a ``getattr``, a
+    helper in a third module or a new injected port are not. This rule reads
+    *what a read branches on*: a condition whose value differs across the corpora
+    below is caught however it was spelled, and a condition that reads the same
+    in all of them is not. **The residue is the combination** -- a read spelled
+    so the scan misses it, branching on a condition constant across the corpora.
+
+    So which conditions are constant matters, and it is smaller than it was.
+    Measured: a probe branching on ``purgeFailed`` through a hand-assembled path
+    passed the whole suite while every standing wrote ``false``, because an
+    absent pointer and a published one agreed. :data:`_STANDINGS` now varies all
+    three branchable pointer fields, so what is left is narrower than a *field*
+    -- it is a condition keyed to a **value** none of the corpora produce: a
+    pointer that is present and broken (unparseable, or naming no build), or a
+    comparison against some other project's id. Recorded rather than chased, and
+    that was the decision taken in review: a corpus per unmatched value costs
+    more than the silence it would protect.
+
+    **It goes RED when #528 lands as an extension of an existing step**, which
+    is its purpose: `test_setup_domain.py`'s ``len(StepId) == 19`` moves when
+    #528 adds a *step* and does not move when #528 extends one. When this fails,
+    §6.2's paragraph is the thing to change first.
+    """
+    context = state(tmp_path)
+    root = context.project_root
+    assert root is not None
+    paths = ProjectPaths.of(root)
+    # The two corpora must differ in the index and in nothing else. `theurian
+    # init` creates `.theurian/state/`, and so does publishing an index -- so on
+    # a shape whose fixture leaves it absent, the second run sees the *directory*
+    # arrive and `project-layout` moves from `missing` ("... is missing state.")
+    # to `satisfied`. Measured on the `never-applied` shape, and it is not an
+    # index read: that step reports which directories exist and would say the
+    # same about an empty one.
+    paths.state.mkdir(parents=True, exist_ok=True)
+    assert read_active_index_pointer(paths).payload is None, "no index has been built here yet"
+    without_an_index = _service(context).run(SetupRequest(dry_run=True))
+
+    _publish_a_retrieval_index(root, standing)
+
+    published = read_active_index_pointer(paths).payload
+    assert published is not None, "the fixture has to leave an index the product's reader can see"
+    assert (published["stateHash"], published["purgeFailed"], published["indexesUnapproved"]) == (
+        standing.state_hash(root),
+        standing.purge_failed,
+        standing.indexes_unapproved,
+    ), "and one standing where this case says: a field that never varies is one a step reads free"
+    assert _service(context).run(SetupRequest(dry_run=True)) == without_an_index, (
+        "a step's answer moved when a retrieval index appeared, so `doctor` now "
+        "reports on row 17's second artefact; §6.2's record that no step does is "
+        "no longer true"
+    )
 
 
 # -- Degrading rather than failing (§6.1) ------------------------------------
@@ -1519,5 +2142,6 @@ def _with(tmp_path: Path, **overrides: Any) -> SetupContext:
         # where the arm is wanted; the loader itself is wired in
         # `tests/integration/test_probe_migrations_validate.py`.
         "check_migrations": unchecked_migrations,
+        "current_state_hash": state_hash_from_the_loader,
     }
     return SetupContext(**{**defaults, **overrides})

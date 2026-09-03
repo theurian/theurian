@@ -45,7 +45,6 @@ from theurian.application.project_service import (
     ProjectPaths,
     ProjectRegistry,
     locate_gitignore_block,
-    read_active_state,
     render_gitignore_block,
 )
 from theurian.application.setup_context import SetupContext
@@ -1394,10 +1393,84 @@ def probe_migrations(context: SetupContext) -> SetupStep:
 
 
 def probe_initial_index(context: SetupContext) -> SetupStep:
-    """Building a retrieval index. Not applicable until Milestone 5.
+    """Whether the knowledge state for the migrations on disk *right now* is built.
 
     Reported rather than omitted, so that a report never silently lacks a step
-    the specification lists.
+    the specification lists. Setup builds nothing here: `theurian migrate apply`
+    writes the state database, which is why this step has no apply function and
+    why its summary names that command instead.
+
+    **The question is which state, not whether any state was ever built** (#451).
+    This asked ``read_active_state(...) is not None`` -- does an active-state
+    pointer exist at all -- and the pointer a first `migrate apply` writes is
+    never removed, so from that moment the step answered "Knowledge state is
+    built." for every later migration set and the arm naming the remedy was
+    unreachable. That is exactly the state a `git pull` leaves a deployment in --
+    migrations fetched, `migrate apply` not yet run -- so the false claim was
+    published precisely when someone was running `doctor` to find out what to do,
+    and ``theurian project status`` said ``stateBuilt: false`` about the same
+    tree in the same minute.
+
+    So the predicate is `project status`' own: ``database_for(state_hash)``
+    exists, for the hash the *loaded* set resolves to. The hash arrives through
+    :attr:`SetupContext.current_state_hash` rather than being computed here,
+    because resolving it means loading YAML off disk (ADR-0003) -- the same
+    reasoning, and the same shape, as :attr:`SetupContext.check_migrations`.
+
+    **A set the loader refuses gets its own answer rather than a raise.** The
+    resolver returns ``None`` there, and answering "not built" would be the #451
+    defect pointing the other way: a set nothing could read is not a state anyone
+    can say anything about. The refusal itself belongs to ``migrations-valid``,
+    which publishes it in the same report; this step says only that it could not
+    tell and names the command that prints why.
+
+    **And that answer names no culprit**, which is a requirement rather than a
+    style. Two install-integrity failures reach ``None`` here besides a set the
+    loader refuses: ``schema_root()`` finding neither candidate location -- "This
+    build is incomplete; reinstall theurian" -- and
+    :class:`~theurian.domain.errors.SchemaUnreadableError`, a schema that is
+    there and cannot be read. Both are recorded across this tree as
+    install-integrity and *not* migration content, and both were measured landing
+    on this arm, where a sentence about the project's migrations sends the reader
+    to their own YAML for a broken install.
+
+    **The three fail at different points, so the published claim is the weakest
+    one true of all of them.** No candidate schema means the load never starts;
+    an unreadable schema stops it before a migration is parsed; a malformed
+    migration *is* read, and then refused. "Its migration set could not be read"
+    holds for each. "The read did not happen" does not, and neither does anything
+    naming YAML.
+
+    **Wording rather than a catch keyed on the exception -- and not because the
+    types are unavailable.** ``except (SchemaUnreadableError, ProjectError)``
+    would catch those two faces exactly: ``ProjectError`` has no subclasses
+    anywhere in this tree, and inside the resolver's ``try`` the only one raised
+    is ``schema_root()``'s. What rules it out *here* is that
+    ``_check_migrations`` catches ``TheurianError`` for the same load, so
+    splitting one reader and not the other leaves two verdicts about one call on
+    different footings -- #91's divergence in a new place. Doing it honestly
+    means doing it in both, with an arm of its own that says "reinstall", and
+    that is #529's open design space -- where it is worth more, because that
+    step's misattribution survives ``doctor --report`` and this one has no cause
+    to lose.
+
+    **What does not come back as an answer at all** is a ``.theurian`` resolving
+    outside the working tree. ``ProjectPaths.of`` refuses that (#237, T-5) and it
+    is the *first* call the resolver makes, outside its ``try``, so the refusal
+    raises through this probe and is reported by :meth:`SetupService._probe` as
+    ``conflicting``, "Could not check initial-index." -- measured end to end, and
+    the same bytes ``main`` produces. Correct rather than a gap: a containment
+    refusal says nothing about the migration set, and answering it above would
+    publish it as though it did. The ``ProjectPaths.of`` on the line below is the
+    second call on the same root, so it can refuse only for a reason the resolver
+    did not already hit -- which means the tree changed between the two.
+
+    **NOT_APPLICABLE on every arm, deliberately.** ``MISSING`` is
+    :attr:`SetupStep.would_change` -- what `doctor` counts as a problem and
+    `setup` re-probes, warns about and ends DEGRADED over -- and setup neither
+    runs `migrate apply` nor could. Grading an unapplied migration set as work
+    *setup* would do is a claim about the run, and a separate decision from the
+    truth of the sentence.
     """
     root = context.project_root
     if root is None:
@@ -1406,7 +1479,28 @@ def probe_initial_index(context: SetupContext) -> SetupStep:
             status=StepStatus.NOT_APPLICABLE,
             summary="Not inside a Git repository.",
         )
-    built = read_active_state(ProjectPaths.of(root)) is not None
+    state_hash = context.current_state_hash(root)
+    if state_hash is None:
+        # `could not be read`, never "your migrations do not load": a build whose
+        # published JSON Schemas are missing or unreadable arrives here too
+        # (measured, both faces), and the three causes fail at three different
+        # points -- one before the load starts, one during it, one after a
+        # migration has been read. This sentence is the weakest claim true of all
+        # three; the docstring above carries why it is a wording decision rather
+        # than a catch keyed on the exception, and #529 owns the split itself.
+        # `theurian migrate validate` prints which cause it was, and in a
+        # `doctor` run `migrations-valid` probes the same load and publishes what
+        # refused it.
+        return SetupStep(
+            step_id=StepId.INITIAL_INDEX,
+            status=StepStatus.NOT_APPLICABLE,
+            summary=(
+                "Cannot tell what state this project is at: its migration set "
+                "could not be read. Run `theurian migrate validate`, which "
+                "prints why."
+            ),
+        )
+    built = ProjectPaths.of(root).database_for(state_hash).exists()
     return SetupStep(
         step_id=StepId.INITIAL_INDEX,
         status=StepStatus.NOT_APPLICABLE,
@@ -1415,7 +1509,18 @@ def probe_initial_index(context: SetupContext) -> SetupStep:
             if built
             else "No knowledge state built yet. Run `theurian migrate apply`."
         ),
-        detail="Retrieval indexes arrive in Milestone 5; there is nothing to build yet.",
+        # The canonical state and the retrieval index over it are two artefacts,
+        # and this step reports the first. Said here because the step is *named*
+        # for the second, and because the sentence that stood in this field
+        # announced retrieval indexes as unstarted work and told the reader there
+        # was nothing to build -- while `theurian index build` was a shipped
+        # command in `cli/index_commands.py`, which is where the reader was being
+        # sent away from.
+        detail=(
+            "This is the canonical state `theurian migrate apply` writes. The "
+            "retrieval index over it is separate: `theurian index build` builds "
+            "it and `theurian index status` reports it."
+        ),
     )
 
 

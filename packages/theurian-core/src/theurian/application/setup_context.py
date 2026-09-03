@@ -16,6 +16,7 @@ from typing import Any
 from theurian.domain.ports.daemon_manager import DaemonManager
 from theurian.domain.ports.mcp_client_config import McpClientConfig
 from theurian.domain.ports.secret_store import SecretStore
+from theurian.domain.state import StateHash
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +77,46 @@ class SetupContext:
     #: machine whose composition root forgot to wire it, which is #91 wearing a
     #: different hat.
     check_migrations: Callable[[Path], MigrationsCheck]
+    #: The state hash the migration set on disk resolves to (ADR-0016), given the
+    #: repository root -- the value ``theurian project status`` publishes as
+    #: ``stateHash``, and the one that names the database file for the state a
+    #: project is *at*.
+    #:
+    #: ``None`` means **no hash could be produced for this tree**, and the three
+    #: ways that happens fail at three different points: the published JSON
+    #: Schemas cannot be located, so the load never starts; a schema is found and
+    #: cannot be read, so it stops before a migration is parsed; or a migration is
+    #: read and refused. "The load was attempted and refused" covers only the last
+    #: two, which is why the step publishing this says the set *could not be
+    #: read* rather than anything about when the reading stopped.
+    #:
+    #: It is also narrower than "something went wrong". The composition root's
+    #: implementation resolves the project's paths *before* the load, so a
+    #: ``.theurian`` that escapes the working tree raises out of this call rather
+    #: than answering ``None`` (#237, T-5; measured -- the step is reported
+    #: ``conflicting``, "Could not check initial-index."). A caller that reads
+    #: ``None`` as "every failure is contained here" is reading more than this
+    #: returns.
+    #:
+    #: Injected from the CLI composition root for the same reason as
+    #: :attr:`check_migrations`: resolving it means loading YAML off disk against
+    #: the published JSON Schemas, which the application layer does not reach for
+    #: (ADR-0003).
+    #:
+    #: **Separate from :attr:`check_migrations` rather than folded into
+    #: :class:`MigrationsCheck`, because the two questions separate in practice.**
+    #: "Does this set validate?" and "which state is this project at?" are
+    #: answered by the same load, but a test whose subject is some other step
+    #: wants a checker that reads nothing *and* a state hash that is real -- the
+    #: two cannot ride on one record without the record lying about one of them.
+    #:
+    #: **Not defaulted**, for the reason spelled out on :attr:`check_migrations`:
+    #: a probe falling back to "no state hash" would publish "cannot tell whether
+    #: the knowledge state is built" on every machine whose composition root
+    #: forgot to wire it, and a fallback answering with the *active pointer*
+    #: instead is #451 -- `doctor` reporting "Knowledge state is built." for a
+    #: project ``theurian project status`` reports ``stateBuilt: false`` for.
+    current_state_hash: Callable[[Path], StateHash | None]
     #: True when this run's output is bound for somewhere the operator does not
     #: control: ``doctor --report``, which exists to be pasted into a public
     #: issue.

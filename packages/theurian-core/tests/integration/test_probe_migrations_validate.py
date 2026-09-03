@@ -35,7 +35,7 @@ from pathlib import Path
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
-from setup_migrations import checked_by_the_loader
+from setup_migrations import checked_by_the_loader, state_hash_from_the_loader
 
 from theurian.application.project_service import ProjectPaths
 from theurian.application.setup_context import MigrationsCheck, SetupContext
@@ -81,6 +81,7 @@ def _context(tmp_path: Path, root: Path | None, **overrides: object) -> SetupCon
         "service": FakeService(),
         "executable": "",
         "check_migrations": checked_by_the_loader,
+        "current_state_hash": state_hash_from_the_loader,
     }
     return SetupContext(**{**defaults, **overrides})  # type: ignore[arg-type]
 

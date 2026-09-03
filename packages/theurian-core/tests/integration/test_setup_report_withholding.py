@@ -36,7 +36,7 @@ from typing import Any, Final
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
-from setup_migrations import checked_by_the_loader
+from setup_migrations import checked_by_the_loader, state_hash_from_the_loader
 
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
@@ -129,6 +129,7 @@ def _context(tmp_path: Path, *, for_publication: bool = True, **overrides: Any) 
         # make `migrations-valid` a step that reads nothing and therefore has
         # nothing to withhold.
         "check_migrations": checked_by_the_loader,
+        "current_state_hash": state_hash_from_the_loader,
         "for_publication": for_publication,
     }
     return SetupContext(**{**defaults, **overrides})
