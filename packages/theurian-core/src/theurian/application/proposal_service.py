@@ -23,15 +23,18 @@ is where the reasoning lives:
   That is a change from ADR-0013 §4's division, which left every question about
   the migration to ``migrate validate``; it held while ``accept`` was a ``mv``,
   and stopped holding when the same command began deleting its sources (#307).
-* **That nothing it would land appears to carry a secret** (decision 3, SEC-11,
-  T-15), under the policy ``security.secretScan`` selects -- ``block`` unless the
-  project says otherwise. It scans everything the acceptance would land -- each
-  body's content, the migration document's own author-written fields (its
-  ``contentFile`` among them), the migration file's bytes, its filename, and each
-  body's landed path (#336, #349); a field reaches every search result while the
-  body is only read on request. Best effort, and the product's
-  published stance that it is not a replacement for a repository secret scanner
-  is unchanged by it.
+* **That nothing this acceptance puts into the pull request appears to carry a
+  secret** (decision 3, SEC-11, T-15), under the policy ``security.secretScan``
+  selects -- ``block`` unless the project says otherwise. It scans each body's
+  content, the migration document's own author-written fields (its
+  ``contentFile`` among them), the migration file's bytes, its filename, each
+  body's landed path (#336, #349) and the evidence record's own text (#361); a
+  field reaches every search result while the body is only read on request. The
+  evidence record is the one input the command does not *move*: it stays in the
+  proposal directory that ``accept``'s own first next step tells the author to
+  commit, which puts it in history by a different route. Best effort, and the
+  product's published stance that it is not a replacement for a repository
+  secret scanner is unchanged by it.
 
 Both are driven by a composition root -- the CLI today, Milestone 7's
 write-intent MCP tools next -- which is why the schema check arrives as an
@@ -63,6 +66,7 @@ import json
 import os
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from itertools import chain
 from pathlib import Path, PurePosixPath
 from typing import Final, NoReturn
 
@@ -281,8 +285,22 @@ _AT_BODY_PATH: Final = "the landed path of body"
 #: by it republished the value, walking around the same four-character bound the
 #: two name channels do -- and it was the last finding-location channel still
 #: built from scanned text. The broader class of author-supplied names echoed in
-#: *refusal messages* elsewhere on the accept path is tracked separately (#360).
+#: *refusal messages* elsewhere on the accept path is closed by :func:`_bounded`
+#: and the two renderings over it (#360).
 _AT_BODY_CONTENT: Final = "the content of body"
+
+#: The evidence record's own text, whole (#361). The one channel here that names
+#: something the acceptance does **not** land -- and it is scanned for exactly
+#: that reason: ``_remove_proposal_sources`` deletes the migration and every body
+#: and leaves ``evidence.json`` in the proposal directory, while accept's own
+#: first next step tells the author to open a pull request with that directory in
+#: it. So the file travels into Git history by this command's own instruction,
+#: which is the outcome T-15 and SEC-11 name, reached through the evidence file
+#: rather than through the migration.
+#:
+#: Unindexed, because there is exactly one: the name is fixed
+#: (:data:`EVIDENCE_FILE`) and nothing moves it.
+_AT_EVIDENCE: Final = "the evidence record as written"
 
 #: The errnos a ``chmod`` actually cures, for the accept-path read-failure remedy.
 #: An ``EISDIR``/``ENOTDIR``/``ENAMETOOLONG``/``ELOOP`` is the proposal's own input
@@ -905,14 +923,17 @@ class ProposalService:
         accepted proposal answers is unchanged, and it is described where it
         lives: :meth:`_refuse_unless_the_union_applies`.
 
-        **Everything the acceptance would land is scanned for secrets first**
-        (SEC-11, ADR-0027 decision 3, #336, #349) -- each body's content, the
-        migration document's own author-written fields (its ``contentFile``
-        included), the migration file's bytes, its filename and each body's landed
-        path -- under the policy ``security.secretScan`` selects and ``block`` by
-        default. It sits between the structural checks and the pre-check on
-        purpose: the pre-check stages the bodies into a throwaway tree, and a
-        body that is going to be refused should not be written anywhere at all.
+        **Everything this acceptance puts into the pull request is scanned for
+        secrets first** (SEC-11, ADR-0027 decision 3, #336, #349, #361) -- each
+        body's content, the migration document's own author-written fields (its
+        ``contentFile`` included), the migration file's bytes, its filename, each
+        body's landed path and the evidence record's own text -- under the policy
+        ``security.secretScan`` selects and ``block`` by default. It sits between
+        the structural checks and the pre-check on purpose: the pre-check stages
+        the bodies into a throwaway tree, and a body that is going to be refused
+        should not be written anywhere at all. It also sits ahead of every word
+        this command says about what to do next, so a refusal arrives before the
+        author is ever told to commit the directory the finding is in.
         :meth:`_scan_for_secrets` has the reasoning.
 
         Every file this reads is proved to be a regular file inside the project
@@ -938,15 +959,18 @@ class ProposalService:
 
         **CP-2 invariant: no accept-path filesystem or path fault escapes
         ``accept`` untranslated.** A fault that must abort ``accept`` is turned
-        into an error carrying a ``remedy`` at one of five *translation* sites:
+        into an error carrying a ``remedy`` at one of six *translation* sites:
         the examination phase's ``except OSError`` in this method,
         :meth:`_refuse_unless_the_union_applies`, :meth:`_commit`'s own clause,
         :meth:`_destination_of`, which catches its ``resolve()``
         ``ValueError`` -- not an ``OSError``, so the examination clause never sees
-        it -- in place, and
+        it -- in place,
         :func:`~theurian.security.project_config.read_secret_scan_policy`, which
         translates every way ``.theurian/config.yaml`` can fail before it
-        returns. The examination and commit clauses are deliberately separate,
+        returns, and :meth:`_evidence_text`, which reads the evidence record
+        inside the scan and so sits outside the examination clause for the same
+        reason the rest of the scan does (#361). The examination and commit
+        clauses are deliberately separate,
         because a failed *write* must roll the destinations back before it
         reports, and one clause spanning both would describe a half-written tree
         as an unreadable proposal. The pre-check and the secret scan sit outside
@@ -959,8 +983,8 @@ class ProposalService:
         degrades a post-landing cleanup failure to a remedy and still returns
         success, and :func:`_roll_back` stays silent so a raise cannot mask the
         error already propagating. An editor adding a filesystem call that must
-        abort ``accept`` has to land it under one of the five translation sites,
-        or add a sixth -- a raw escape publishes no ``{error, remedy}`` under
+        abort ``accept`` has to land it under one of the six translation sites,
+        or add a seventh -- a raw escape publishes no ``{error, remedy}`` under
         ``--json`` (#227).
 
         Raises:
@@ -1078,9 +1102,10 @@ class ProposalService:
         scanner and is not a replacement for one* -- is unchanged by its
         existence.
 
-        **The population is what ``accept`` lands, not what it parses** (#349).
-        ``_commit`` writes bytes to paths; a parse is something this method does
-        on the way. Five inputs, in the order they are scanned:
+        **The population is what an acceptance puts into the pull request, not
+        what it parses** (#349, #361). ``_commit`` writes bytes to paths; a parse
+        is something this method does on the way. Six inputs, in the order they
+        are scanned:
 
         * **each body's bytes**, the channel since #198 -- the artifact a
           reviewer actually opens in a pull request;
@@ -1105,7 +1130,11 @@ class ProposalService:
         * **each body's landed path** relative to ``.theurian/knowledge/``,
           directory components included -- ``_commit`` calls
           ``destination.parent.mkdir(parents=True)``, so every component becomes
-          a real directory in the tree.
+          a real directory in the tree; and
+        * **the evidence record's own text**, which this command lands nowhere
+          and which travels into the repository all the same (#361). It is the
+          one input here that is not an artifact of the move, and
+          :meth:`_evidence_text` is where that difference is argued.
 
         **No channel subsumes the parsed field values.** A double-quoted YAML
         scalar spells any character as ``\\xNN``, so a token can sit in a parsed
@@ -1183,10 +1212,12 @@ class ProposalService:
             silently rather than given a ceiling of its own.
 
         Raises:
-            ProposalError: If the policy is ``block`` and anything the acceptance
-                would land appears to carry a secret. Raised before anything has
-                been written, so the proposal directory is intact and the change
-                can be corrected rather than re-drafted.
+            ProposalError: If the policy is ``block`` and anything this
+                acceptance would put into the pull request appears to carry a
+                secret, or if it is ``block`` and the evidence record is present
+                but cannot be read (:meth:`_evidence_text`). Raised before
+                anything has been written, so the proposal directory is intact
+                and the change can be corrected rather than re-drafted.
             ProjectConfigError: If ``.theurian/config.yaml`` exists and cannot be
                 read, or states a ``security.secretScan`` value that is not one
                 of the three. Deliberately not translated into a
@@ -1201,7 +1232,16 @@ class ProposalService:
         if policy is SecretScanPolicy.OFF:
             return SecretScanResult(policy=policy)
 
-        findings = _findings_in(self._landed_text(migration_file, migration_bytes, document, moves))
+        # Chained rather than appended, so the laziness `_findings_in` relies on
+        # survives: a run whose budget fills in the bodies never opens
+        # `evidence.json` at all, and the read that channel needs is not paid by
+        # an acceptance that was going to be refused anyway.
+        findings = _findings_in(
+            chain(
+                self._landed_text(migration_file, migration_bytes, document, moves),
+                self._evidence_text(location, policy),
+            )
+        )
         if policy is SecretScanPolicy.BLOCK and findings:
             raise self._secret_refusal(location, findings)
         return SecretScanResult(policy=policy, findings=findings)
@@ -1259,6 +1299,105 @@ class ProposalService:
         for index, at in enumerate(landed):
             yield f"{_AT_BODY_PATH}[{index}]", at
 
+    def _evidence_text(
+        self, location: _ProposalLocation, policy: SecretScanPolicy
+    ) -> Iterable[tuple[str, str]]:
+        """The evidence record's own text, which travels without being landed (#361).
+
+        **The rationale this replaces was half right.** ``accept`` moves neither
+        ``evidence.json`` nor the proposal directory's name, and the conclusion
+        drawn from that -- neither is an artifact this scan can be about -- does
+        not follow for the first of the two. Three facts of this command put the
+        file into Git history without moving it:
+        :meth:`_remove_proposal_sources` deletes the migration and every body and
+        leaves the evidence behind; ``_ACCEPT_STEPS[0]`` tells the author to open
+        a pull request *with the proposal directory in it*, because the merge is
+        the approval; and ``.theurian/proposals/`` is not git-ignored. So an
+        agent's free-text ``reasoning`` carrying a credential becomes a commit,
+        which is the outcome T-15 and SEC-11 name -- reached through the evidence
+        file rather than through the migration.
+
+        **The whole text, never a field walk.** The migration document has an
+        allowlist because what lands there is a *parsed* value that the loader
+        reads and the index publishes; what lands here is the file, byte for
+        byte, so the bytes are the artifact and the bytes are what is scanned.
+        A field enumeration would also be the thing that drifts: ``reasoning`` is
+        free text under no schema constraint, and a record gaining a field would
+        gain an unscanned channel with it.
+
+        The residual, stated: a credential spelled with JSON ``\\uNNNN`` escapes
+        sits in the parsed value and not in the bytes, so this misses it. It is
+        not reachable through the record ``draft`` writes -- ``json.dumps``
+        escapes non-ASCII and never ASCII, and a credential is ASCII -- so
+        reaching it takes a hand-edited evidence file written to hide one, which
+        is the adversary :mod:`theurian.security.content_secrets` already
+        disclaims completeness against.
+
+        **A present record that cannot be read refuses under ``block`` and is
+        skipped under ``warn``**, which is the one place the two postures differ
+        here. ``block`` promises that nothing it cannot clear gets past, and a
+        channel it cannot read is a channel it cannot clear -- a 9 MiB or
+        symlinked ``evidence.json`` would otherwise be a one-line bypass of the
+        control. ``warn`` proceeds even when a credential *is* found, so
+        proceeding when one merely could not be looked for takes nothing away
+        that ``warn`` was offering. ``off`` never reaches this method.
+
+        **A ``--local`` proposal is scanned the same way, though its record
+        travels nowhere** (ADR-0028: the directory is git-ignored, and
+        ``_LOCAL_ACCEPT_FIRST_STEP`` says so). Git-ignored keeps the bytes out of
+        a *commit* and not off the disk -- which is exactly why
+        :meth:`_secret_refusal`'s rotation advice is already unconditional -- and
+        a control whose population depends on a flag is a second path to get
+        wrong for a case where the value is live either way.
+
+        Absent is not a failure: ``draft`` writes the body, then the evidence,
+        then the migration, so an interrupted draft legitimately has none
+        (:meth:`_read_evidence_record` records that split).
+        """
+        evidence = location.directory / EVIDENCE_FILE
+        if not evidence.exists() and not evidence.is_symlink():
+            return
+        try:
+            data = self._read_within_project(evidence)
+        except (OSError, TheurianError) as exc:
+            # CP-2's sixth translation site. This method runs outside `accept`'s
+            # examination clause -- the scan deliberately sits there, so a fault
+            # in `config.yaml` is not reported as an unreadable proposal -- and an
+            # untranslated `OSError` from here would escape `accept` raw and
+            # publish no `{error, remedy}` under `--json` (#227).
+            if policy is SecretScanPolicy.BLOCK:
+                raise self._evidence_unscannable(location, exc) from exc
+            return
+        # `errors="replace"`, the same reasoning as the body channel: an
+        # undecodable evidence file is a fault `_read_evidence_record` reports
+        # with a better message than this scan could, and replacement leaves
+        # every ASCII run -- which is what a credential is -- intact.
+        yield _AT_EVIDENCE, data.decode("utf-8", errors="replace")
+
+    def _evidence_unscannable(
+        self, location: _ProposalLocation, error: BaseException
+    ) -> ProposalError:
+        """``block`` could not read the evidence record, so it cannot clear it.
+
+        The reason is derived from the *type* of the failure and never from
+        ``str(exc)``, whose text carries the absolute filename and with it the
+        machine's home directory -- the discipline :meth:`_evidence_indeterminate`
+        records, and the table it reads is shared with it so a new failure mode
+        cannot fall through to an answer in one and not the other.
+        """
+        return ProposalError(
+            f"{location.relative}/{EVIDENCE_FILE} is present but could not be read "
+            f"({_evidence_failure_reason(error)}), so the secret scan cannot clear it -- and "
+            "accepting this would tell you to commit that directory.",
+            remedy=(
+                f"Make {location.relative}/{EVIDENCE_FILE} readable and no larger than the "
+                "source-file cap, then accept it again. If the record is not recoverable, "
+                "delete it -- an absent one is a legacy or interrupted draft and is allowed. "
+                "To accept without scanning it, set security.secretScan to warn or off in "
+                ".theurian/config.yaml (block, warn, off; block is what an absent key selects)."
+            ),
+        )
+
     def _secret_refusal(
         self, location: _ProposalLocation, findings: tuple[ProposalSecretFinding, ...]
     ) -> ProposalError:
@@ -1269,11 +1408,19 @@ class ProposalService:
         detector bounds it again at its own :data:`~theurian.security
         .content_secrets.MAX_FINDINGS`, so this is the second of two ceilings
         rather than the only one. **``findings`` is every channel's together** --
-        the bodies, the document's fields, the migration's bytes, its filename
-        and each landed path -- so the cap and its deliberate silence about what
-        it dropped apply once, to the whole list. Capped per channel it would
-        publish five times the cap and say which channels the proposal leaked on,
-        which is the contributor's count again in a different shape.
+        the bodies, the document's fields, the migration's bytes, its filename,
+        each landed path and the evidence record -- so the cap and its deliberate
+        silence about what it dropped apply once, to the whole list. Capped per
+        channel it would publish six times the cap and say which channels the
+        proposal leaked on, which is the contributor's count again in a different
+        shape.
+
+        **The sentence names no destination**, because the six channels no longer
+        share one. Five are artifacts the acceptance lands; the evidence record is
+        one it leaves for the pull request instead (#361), and for a ``--local``
+        proposal that record travels nowhere at all. "In what it would land" was
+        true of five of six and is the kind of sentence a reader checks against
+        the finding's own location, which says which channel it was.
 
         **The remedy says to rotate before it says how to proceed.** A secret
         that reached a proposal directory is in a Git working tree and, if the
@@ -1288,8 +1435,7 @@ class ProposalService:
         """
         listed = [finding.describe() for finding in findings[:_MAX_NAMES_LISTED]]
         return ProposalError(
-            f"This proposal appears to carry a secret in what it would land: {_names(listed)}. "
-            "Nothing has moved.",
+            f"This proposal appears to carry a secret: {_names(listed)}. Nothing has moved.",
             remedy=(
                 "Treat the value as exposed and rotate it -- it is already in a working tree, "
                 "and in Git history if the proposal has been committed. Then remove it from the "
@@ -2624,6 +2770,15 @@ class ProposalService:
         self, moves: tuple[_BodyMove, ...], migration_file: Path
     ) -> str | None:
         """Delete the proposal's now-copied files; report, don't raise, on failure.
+
+        **The evidence record is deliberately not among them**, and that is why
+        it is scanned rather than removed (#361). ``_read_evidence_record`` reads
+        it to answer whether a proposal has already been accepted -- the question
+        whose wrong answer mints a duplicate migration (#89) -- so deleting it
+        here would destroy the diagnosis a re-accept depends on. It therefore
+        stays in a directory ``accept`` tells the author to commit, which makes
+        it an input to :meth:`_scan_for_secrets` even though this method moves it
+        nowhere.
 
         Runs only after the migration and every body have landed, so the move is
         already a success: a failure here is a cleanup that could not finish, not

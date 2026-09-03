@@ -523,6 +523,17 @@ def propose_accept(
         return
 
     root = context.paths.root
+    # `migrationFile` and `bodyFiles` name landed paths at full length, and that
+    # is deliberate rather than an oversight of #360's redaction. #360 is about
+    # *refusals*, where the echo is gratuitous: the message is about a name
+    # collision or a missing file and reprints a credential on its way out. This
+    # is a success payload whose entire job is to say what was written, and a
+    # redacted path reports nothing -- the author cannot find the file they were
+    # just told about. Reaching it needs `warn`, because `block` refuses a
+    # secret-shaped landed path before anything moves (`_AT_BODY_PATH`), and
+    # under `warn` the same string is already published beside it in
+    # `secretFindings` with the rotate step above it. Non-disclosing either way:
+    # the caller is the maintainer who wrote the path.
     payload: dict[str, object] = {
         "proposalId": accepted.proposal_id.value,
         "migrationFile": _relative(accepted.migration.destination, root),
@@ -560,15 +571,15 @@ def propose_accept(
 # every compiler and linter emits, so a `--json` consumer can still split it and
 # a human can paste it into an editor.
 #
-# A finding location is one of a fixed set of channels (#336, #349): a body's
-# content or its landed path, a field of the migration document, the migration's
-# own bytes, or its filename. Every one is built from literals in
-# `proposal_service.py` -- a channel name with an integer index, or a document
-# field path assembled from module literals -- and carries no contributor or
-# scanned text, so none can smuggle author-controlled characters through the
-# human sink (`_render`/`escape_terminal_controls`) or the JSON sink
-# (`json.dumps`). #360 tracks the same discipline for the refusal *messages*
-# elsewhere on the accept path.
+# A finding location is one of a fixed set of channels (#336, #349, #361): a
+# body's content or its landed path, a field of the migration document, the
+# migration's own bytes, its filename, or the evidence record. Every one is built
+# from literals in `proposal_service.py` -- a channel name with an integer index,
+# or a document field path assembled from module literals -- and carries no
+# contributor or scanned text, so none can smuggle author-controlled characters
+# through the human sink (`_render`/`escape_terminal_controls`) or the JSON sink
+# (`json.dumps`). The refusal *messages* elsewhere on the accept path hold the
+# same discipline as of #360, through `proposal_service._bounded`.
 
 
 #: What a caller does next, and the one thing about it that surprises people:

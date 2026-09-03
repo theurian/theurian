@@ -506,8 +506,9 @@ def test_every_planted_field_reaches_the_migration_document_and_is_detectable(
     either would leave those tests red for the fixture's reason rather than the
     control's, and one failing the first can be worse than red: a secret planted
     in ``evidence.reasoning`` never reaches the migration at all, so a refusal
-    would mean ``evidence.json`` was scanned -- a different class, out of #336's
-    scope -- while the metadata channel this file is about stayed open.
+    would mean the *evidence* channel had caught it -- a different channel with
+    its own module (``test_proposal_evidence_scan.py``, #361) -- while the
+    metadata channel this file is about stayed open.
 
     The whole migration text is scanned rather than the field in isolation,
     which also pins the thing #336 is about: the value is in the document, in
@@ -2335,8 +2336,14 @@ def test_a_metadata_only_migration_is_still_scanned(
 # directory, and the credential-named body (leaf and directory alike) into
 # `.theurian/knowledge/`.
 #
-# `evidence.json` and the proposal directory's own name are deliberately absent:
-# `accept` moves neither, so neither is an artifact this scan can be about.
+# `evidence.json` and the proposal directory's own name are absent from *this*
+# file because `accept` moves neither, which is what the four faces below are
+# about. That was once given as the reason neither could be scanned at all, and
+# it was wrong for the first of the two: a file this command does not move still
+# travels, because the command's own first next step tells the author to commit
+# the directory it sits in. `evidence.json` is a channel of its own as of #361,
+# pinned in `test_proposal_evidence_scan.py`. The proposal directory's *name* is
+# a validated ULID, so nothing an author wrote is in it.
 
 
 def _hex_tail(seed: bytes, length: int) -> str:
