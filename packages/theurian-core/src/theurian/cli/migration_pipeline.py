@@ -99,9 +99,16 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
             match what the store holds.
         UnenforceableScopeError, DuplicateContentFileError,
             AliasItemCollisionError: From the engine's own whole-set guards.
-        StateDatabaseUnreadableError, WriteLockTimeoutError: From the
-            transaction itself. ``WriteLockTimeoutError`` cannot be raised when
-            ``already_locked`` is ``True``.
+        StateDatabaseUnreadableError, WriteLockTimeoutError,
+            WriteLockUnusableError: From the transaction itself. The last two
+            come from the lock and cannot be raised when ``already_locked`` is
+            ``True``, since no acquisition happens here then;
+            ``WriteLockUnusableError`` is the refusal of a symbolic link at the
+            lock path (#481).
+        WriteTransactionBusyError: If another writer holds the database when
+            this transaction tries to begin or commit. Raised whatever
+            ``already_locked`` says: it comes from the transaction, not from the
+            advisory lock, which cannot mediate a writer outside Theurian.
     """
     with write_transaction(database, write_lock, already_locked=already_locked) as connection:
         writer = SqliteWriter(connection)

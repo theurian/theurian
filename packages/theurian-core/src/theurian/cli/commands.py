@@ -93,6 +93,7 @@ from theurian.infrastructure.sqlite.connection import (
     StateDatabaseUnreadableError,
     WriteLock,
     WriteLockTimeoutError,
+    WriteTransactionBusyError,
     create_database,
     write_transaction,
 )
@@ -168,6 +169,58 @@ def _fail(message: str, *, remedy: str, as_json: bool, code: int) -> None:
 STATE_REBUILD_REMEDY: Final = (
     "Delete `.theurian/state/` and run `theurian migrate apply` to rebuild it from the "
     "Git-tracked migrations. Nothing authored is lost."
+)
+
+#: Cure for an OS or driver fault met *at* the state database -- the class
+#: ``(OSError, sqlite3.Error)`` names and ``StateDatabaseUnreadableError`` does
+#: not (#484).
+#:
+#: **What reaches it, measured rather than reasoned -- and this paragraph has now
+#: been wrong twice, so it names its configurations.** The two clauses that
+#: publish this wrap a whole ``write_transaction`` call, so their reach is every
+#: statement inside it and not the open alone; an earlier draft said "the file was
+#: never opened", which the contention fault falsified by arriving after the open.
+#: The draft that replaced it then offered *an unwritable state directory* as a
+#: measured member, and that is false in every configuration. Measured
+#: 2026-09-03 against the real CLI, one row per configuration of
+#: `.theurian/state/`:
+#:
+#: * **directory 0555, database present** -- the connect succeeds and ``PRAGMA
+#:   journal_mode = WAL`` fails trying to create the sidecars, so ``_prepare``
+#:   converts it and ``STATE_REBUILD_REMEDY`` is published, not this constant.
+#: * **directory 0555, never applied** -- ``migrate status`` exits 0 (there is no
+#:   database to open) and ``migrate apply`` is answered by section A's
+#:   ``_LOCKED_WRITE_FAULT_REMEDY``.
+#: * **database file 0000** -- ``sqlite3.connect`` itself fails, outside
+#:   ``_prepare``'s conversion, and *this* constant is published. This is the
+#:   honest second member: a state database **file** the process cannot open.
+#: * **a directory at the database path** -- the same, and the arm the suite
+#:   drives.
+#:
+#: So both measured members are open-time failures of ``sqlite3.connect`` that
+#: arrive as the driver's own ``SQLITE_CANTOPEN``. The unwritable-*directory*
+#: cases land in the three other places above; that they are graded three
+#: different ways is recorded on #530, not settled here.
+#:
+#: **What must never reach it is a transient fault**, and that is now structural
+#: rather than a matter of wording here: a write conflict is converted at its
+#: source into ``WriteTransactionBusyError``, a ``TheurianError`` caught by the
+#: clause *above* each of these, carrying a wait-and-retry cure. Both places a
+#: conflict can surface before a caller's own statements are covered -- the
+#: pragmas and schema read inside ``_prepare``, and ``BEGIN IMMEDIATE``/``COMMIT``
+#: in ``_open_transaction``. This constant instructs deleting derived state, so
+#: every fault that keeps it has to be one that leaves the state genuinely
+#: unusable.
+#:
+#: Composed from :data:`STATE_REBUILD_REMEDY` rather than restating it, so the
+#: sentence that deletes something has one spelling in this module. The
+#: precondition leads and the rebuild trails, the shape
+#: ``FindingsStoreError``'s write remedy and ``_LOCK_ACQUIRE_REMEDY`` both take:
+#: a cure that opens with "delete your state" for what is really a permissions
+#: problem sends the reader past the thing that is actually wrong.
+_STATE_DATABASE_FAULT_REMEDY: Final = (
+    "Check that `.theurian/state/` is writable, on a supported filesystem (not NFS; "
+    f"ADR-0018), and holds a state database rather than something else. {STATE_REBUILD_REMEDY}"
 )
 
 #: Cure for `UnenforceableScopeError` when the offending revision has not yet
@@ -308,7 +361,18 @@ def _applied_migration_ids(paths: ProjectPaths, project_id: ProjectId) -> frozen
         try:
             with SqliteCanonicalStore(database) as store:
                 ids.update(migration_id for migration_id, _ in store.applied_migrations(project_id))
-        except (SchemaVersionMismatchError, StateDatabaseUnreadableError):
+        except (
+            SchemaVersionMismatchError,
+            StateDatabaseUnreadableError,
+            WriteTransactionBusyError,
+        ):
+            # `WriteTransactionBusyError` joins the two above because the store
+            # stopped re-wrapping it (#484 round three): without it, a database
+            # another process happens to hold would escape this loop and crash a
+            # helper whose only job is choosing a remedy string -- exactly the
+            # "unrelated crash" the docstring above refuses. Skipping the held
+            # database is the same safe over-correction as skipping an unreadable
+            # one, and for the same reason.
             continue
     return frozenset(ids)
 
@@ -432,12 +496,22 @@ def _state_remedy(exc: TheurianError) -> str:
     refused. One cure for all three would send two of the three callers to the
     wrong file -- and :data:`STATE_REBUILD_REMEDY` is the one that deletes
     something, so it is the one that must never be the default.
+
+    A fourth arrived with #481 -- a symbolic link at the lock path, whose cure is
+    to remove that link -- and it is answered by ``exc.remedy`` rather than by a
+    fifth ``isinstance``, which is the #205 rule ``_context_remedy`` already
+    applies: a self-describing subtype carries its own cure, including subtypes
+    this function has never heard of. It sits at the tail, below the two branches
+    above, so the recorded decision that ``STATE_REBUILD_REMEDY`` is never a
+    default is untouched -- and it changes nothing for the types named above,
+    neither of which sets a remedy. ``WriteLockTimeoutError`` does set one, and
+    it is byte-identical to its branch here (#404 R1-5).
     """
     if isinstance(exc, StateDatabaseUnreadableError | SchemaVersionMismatchError):
         return STATE_REBUILD_REMEDY
     if isinstance(exc, WriteLockTimeoutError):
         return "Wait for the other `theurian` process to finish, then retry."
-    return (
+    return exc.remedy or (
         "Fix the migration set, then retry. `theurian migrate validate` reports what can "
         "be checked without touching state."
     )
@@ -1121,7 +1195,26 @@ def project_status(as_json: JsonOption = False) -> None:
     except TheurianError as exc:
         pointer_failure = exc
 
-    database = context.paths.database_for(context.state_hash)
+    # The one place outside `_require_project` that asks where the state
+    # database is, and so the one place its containment refusal has to be graded
+    # separately (#483). This command does not go through `_require_project` at
+    # all -- it answers at exit 0 for a directory that is not a project -- so the
+    # fix there could not reach it, and it published the same Rich traceback with
+    # an empty stdout.
+    #
+    # A refusal, not a degradation, and that is the difference from
+    # `pointer_failure` above. An unreadable pointer costs this payload one
+    # field, so the command answers with the rest and says which field is
+    # missing. A state-database path that resolves outside the project root is
+    # `.theurian/state/` doctored past ADR-0004's ignore, and no partial answer
+    # about a project in that condition is worth publishing: it takes
+    # `_require_project`'s grading for the same exception, `EXIT_STATE_ERROR`
+    # with the error's own remedy.
+    try:
+        database = context.paths.database_for(context.state_hash)
+    except TheurianError as exc:
+        _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
+        return
 
     _emit(
         {
@@ -1257,6 +1350,25 @@ def migrate_status(as_json: JsonOption = False) -> None:
         return
     except TheurianError as exc:
         _fail(str(exc), remedy=_state_remedy(exc), as_json=as_json, code=EXIT_STATE_ERROR)
+        return
+    except (OSError, sqlite3.Error) as exc:
+        # The backstop `migrate apply`'s section A has carried since #478 and
+        # this command did not (#484). `_prepare` converts what it can, but it
+        # only runs once `sqlite3.connect` has *returned* -- a fault opening the
+        # file at all is a bare `sqlite3.OperationalError` or `OSError`, neither
+        # of which is a `TheurianError`, so it escaped `--json` as a Rich
+        # traceback carrying absolute source paths with nothing on the machine
+        # channel. Measured with a directory planted at the state-database path,
+        # which is the artefact an ADR-0004 doctored `.theurian/state/` delivers.
+        #
+        # Nothing is cleaned up here, unlike section A: this command creates no
+        # database and never owns the file it failed to open.
+        _fail(
+            str(exc),
+            remedy=_STATE_DATABASE_FAULT_REMEDY,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
         return
 
     _emit(
@@ -1526,6 +1638,37 @@ def migrate_apply(  # noqa: PLR0911 -- one early return per distinguishable fail
             except TheurianError as exc:
                 _fail(str(exc), remedy=_state_remedy(exc), as_json=as_json, code=EXIT_STATE_ERROR)
                 return
+            except (OSError, sqlite3.Error) as exc:
+                # The backstop sections A and B carry and the section between
+                # them did not (#484). Which section meets a filesystem fault at
+                # the database is decided by the provenance record: with none,
+                # `_discard_untrusted_state`/`create_database` meet it in section
+                # A; with one -- every project after its first apply -- both are
+                # skipped and `sqlite3.connect` inside `apply_migration_set` meets
+                # it here, where a `sqlite3.OperationalError` is none of the five
+                # clauses above and escaped `--json` as a Rich traceback.
+                #
+                # **No cleanup, deliberately, and that is the difference from
+                # section A.** Section A unlinks because `create_database` may
+                # have left a file it wrote part of. Here the database is very
+                # often one that already existed and that this installation built
+                # and provenanced -- `created` is False for it -- and deleting a
+                # live state because an unrelated fault interrupted a write would
+                # turn a failed command into data loss, with `active.json` still
+                # naming the hash it removed. The `created is True` residue needs
+                # no branch of its own either: `_open_transaction` has already
+                # rolled the transaction back and closed the connection, so what
+                # survives is exactly what `create_database` wrote -- a valid,
+                # empty database, unprovenanced (section B never ran) and
+                # unpublished, which the serve-side gate stands aside and the
+                # next apply's own discard branch removes.
+                _fail(
+                    str(exc),
+                    remedy=_STATE_DATABASE_FAULT_REMEDY,
+                    as_json=as_json,
+                    code=EXIT_STATE_ERROR,
+                )
+                return
 
             # -- Section B: record BEFORE publish -----------------------------
             # `record_state` before `write_active_state`, both still under the
@@ -1553,12 +1696,26 @@ def migrate_apply(  # noqa: PLR0911 -- one early return per distinguishable fail
                 )
                 return
     except TheurianError as exc:
-        # Reached only by the lock acquisition itself, above every section:
-        # `WriteLockTimeoutError` when another holder keeps `write_lock` past
-        # `WRITE_LOCK_TIMEOUT_SECONDS`. Nothing inside the `with` block can
-        # raise this -- `already_locked=True` means the transaction never
-        # attempts its own acquisition -- so this is the one place a lock
-        # timeout for this whole critical section is ever caught.
+        # Reached by the `with` statement itself, above every section, and by
+        # three arrivals rather than the one this comment used to name:
+        #
+        # 1. `ProjectError`, from resolving `context.paths.write_lock` -- that
+        #    expression is evaluated here, inside the `try`, and goes through
+        #    `ProjectPaths._contained`, which refuses a lock path that leaves
+        #    the tree (#237, T-5).
+        # 2. `WriteLockUnusableError`, when the lock path is a symbolic link the
+        #    open refuses rather than writing through (#481).
+        # 3. `WriteLockTimeoutError`, when another holder keeps `write_lock` past
+        #    `WRITE_LOCK_TIMEOUT_SECONDS`.
+        #
+        # Nothing *inside* the `with` block adds a fourth: `already_locked=True`
+        # means the transaction never attempts its own acquisition, so this is
+        # still the one place a lock failure for the whole critical section is
+        # caught. Each of the three describes itself, and the branch leans on
+        # that: `_state_remedy` falls through to `exc.remedy` for the first two,
+        # and answers the third from its own `isinstance` arm with text that is
+        # byte-identical to that type's `.remedy` (#404 R1-5). So a fourth
+        # arrival that sets its own remedy needs no new branch there.
         _fail(str(exc), remedy=_state_remedy(exc), as_json=as_json, code=EXIT_STATE_ERROR)
         return
 
@@ -2051,6 +2208,28 @@ def _verify_history(context: CommandContext, as_json: bool) -> None:
         # A previous state written by another schema version tells us nothing
         # about this one. Not an error: it is simply not evidence (ADR-0017).
         return
+    except WriteTransactionBusyError as exc:
+        # Caught ahead of the unreadable arm, and the two must never share it
+        # (#484 round three). Both mean "FR-K5 could not be confirmed", and
+        # there the resemblance stops: a database this build cannot *read* may
+        # really be unusable, so the cure below discards the history and says so.
+        # A database another process merely *holds* is intact -- measured, the
+        # retry succeeds with the file byte-identical -- and handing it that same
+        # cure tells an operator to destroy tamper evidence to clear a fault that
+        # clears itself. This arm therefore names no deletion at all.
+        #
+        # `.remedy` rather than a literal: the type is the one that knows this is
+        # transient, and it already words the wait-and-retry cure for every other
+        # surface that publishes it.
+        _fail(
+            f"Theurian cannot confirm that no applied migration has been edited "
+            f"(FR-K5) right now: the previously active state database is held by "
+            f"another process. {exc}",
+            remedy=exc.remedy,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
     except StateDatabaseUnreadableError as exc:
         # Caught apart from the mismatch above rather than sharing one `except
         # TheurianError`, because the two say opposite things. A state at
@@ -2174,7 +2353,30 @@ def _require_project(as_json: bool) -> tuple[CommandContext, Path]:
         raise
 
     _verify_history(context, as_json)
-    return context, context.paths.database_for(context.state_hash)
+    # Outside the `try` above, because `resolve_context` is not what raises here
+    # -- and outside every handler in it, which is the defect (#483).
+    # `database_for` routes through `ProjectPaths._contained` -> `_contain`,
+    # which raises `ProjectError` when the state-database path resolves outside
+    # the project root: a symlink under the git-ignored `.theurian/state/` that a
+    # repository contributor force-added past ADR-0004's ignore. Being the last
+    # statement of this function, that refusal escaped every caller of it at
+    # once and reached a `--json` caller as a Rich traceback carrying absolute
+    # source paths, with nothing on the machine channel. Measured over
+    # `CLI_SWEEP`: six of the seven swept commands that resolve the path,
+    # `project status` being the seventh through its own direct call.
+    #
+    # Graded exactly as the `PathEscapeError` branch above grades the same kind
+    # of thing -- `EXIT_STATE_ERROR` and the error's own remedy -- because it is
+    # the same kind of thing: a knowledge-state problem the user must fix, not a
+    # broken command. `exc.remedy` bare rather than with a default, for that
+    # branch's reason: `_contain` is the only raiser reachable from here and it
+    # sets `KNOWLEDGE_DIR_ESCAPE_REMEDY` on both of its raise sites.
+    try:
+        database = context.paths.database_for(context.state_hash)
+    except TheurianError as exc:
+        _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
+        raise
+    return context, database
 
 
 __all__ = [

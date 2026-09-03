@@ -6,7 +6,9 @@ is correct; only this proves the adapter is.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import sys
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -47,6 +49,15 @@ from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
 
 pytestmark = pytest.mark.integration
+
+#: Where a POSIX mode decides nothing, so a test that turns on one must not run.
+#:
+#: The suite's standing idiom, spelled identically in fourteen other modules.
+#: Windows has no mode bits to deny with, and root is exempt from the ones it
+#: has -- the offline CI image runs as root, where a file at 0200 opens for
+#: reading as readily as one at 0600 and the test below would pass whatever the
+#: production flags said.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
 PROJECT = ProjectId("demo")
 ITEM = ItemId("architecture.auth-policy")
@@ -438,6 +449,51 @@ def test_write_lock_timeout_error_carries_its_own_lock_specific_remedy() -> None
     assert error.remedy == "Wait for the other `theurian` process to finish, then retry.", (
         "WriteLockTimeoutError inherited TheurianError's empty default remedy, so a "
         "caller reading `exc.remedy or <default>` shipped the wrong cure"
+    )
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_lock_file_left_write_only_by_an_earlier_build_is_still_takeable(lock: Path) -> None:
+    """The lock is opened for writing only, so a 0200 lock file is not refused.
+
+    The open asks for ``O_WRONLY``, and that width is a decision rather than a
+    detail: ``flock`` locks the open file description whatever its access mode
+    and nothing reads these bytes, so asking for read access buys nothing and
+    costs an ``EACCES`` on a lock file left write-only. Such a file is not
+    hypothetical -- the mode argument applies only when the open *creates* the
+    file, so whatever an earlier build or an operator left at the lock path is
+    what a later run has to work with.
+
+    **RED under ``O_RDWR``, and nothing else in the suite was.** The
+    pre-round-two mutation sweep (2026-09-03) widened the open back to
+    ``O_RDWR`` -- the branch's only behavioural change to that call -- and all
+    5134 tests stayed green. The narrowing had a measurement behind it and no
+    test, which is the state a later edit undoes without noticing.
+
+    The environment is asked whether it can refuse before the acquisition is
+    read as a success: the skip above keeps this off root and off Windows, and
+    the probe below fails the test rather than passing it vacuously if the mode
+    turns out to deny nothing here anyway. Without it, a filesystem that ignores
+    permission bits would report this as green under either flag.
+    """
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.touch()
+    lock.chmod(0o200)
+
+    with pytest.raises(PermissionError):
+        # Not a claim about production -- a precondition. Read access to this
+        # file must genuinely be denied here, or the acquisition below cannot
+        # distinguish the two flag sets.
+        os.close(os.open(lock, os.O_RDONLY))
+
+    from theurian.infrastructure.sqlite.connection import WriteLock
+
+    with WriteLock(lock, timeout=0.2).held():
+        pass
+
+    assert lock.stat().st_mode & 0o777 == 0o200, (
+        "taking the lock changed the mode of a file it did not create; the 0o600 "
+        "the open passes applies to creation only"
     )
 
 

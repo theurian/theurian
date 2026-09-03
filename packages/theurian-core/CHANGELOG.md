@@ -75,6 +75,135 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   JSON key, step id or exit code moves. What changed is which sentences a report
   carries.
 
+- **A doctored `.theurian/` no longer truncates a tracked file, and a fault at
+  the state-database path no longer escapes `--json` as a traceback**
+  ([#481](https://github.com/theurian/theurian/issues/481),
+  [#483](https://github.com/theurian/theurian/issues/483),
+  [#484](https://github.com/theurian/theurian/issues/484), ADR-0004).
+  Three failures sharing one delivery: `.theurian/state/` and
+  `.theurian/runtime/` are derived and git-ignored, so a repository
+  contributor can force-add a symbolic link past that ignore and every clone
+  carries it.
+
+  **Taking the write lock truncated whatever the lock path pointed at**
+  (#481). `WriteLock` opened its lock file with `open("w")`, which follows a
+  symbolic link and `O_TRUNC`s the target — and a lock file's bytes are never
+  read by anything here, so clearing them was never a step this class needed.
+  With a link at `.theurian/runtime/write.lock`, a writer's first act
+  destroyed the file the link named: measured with a real CLI run, a tracked
+  file in the working tree went to zero bytes while the command exited 0 and
+  reported success. Containment does not cover this and could not — it refuses
+  a path resolving *outside* the project root, and a link pointing at a file
+  *inside* the tree resolves inside it and passes untouched, which is exactly
+  the shape that damages a working tree. The open is now
+  `os.open(O_WRONLY | O_CREAT | O_NOFOLLOW, 0o600)`: no truncation, and the
+  link is refused inside the kernel's own resolution of that call rather than
+  by an `is_symlink()` check with a window between the test and the open. The
+  refusal arrives as `WriteLockUnusableError`, a `TheurianError` carrying a
+  remedy that names the link, so it reaches a `--json` caller as an envelope
+  rather than as a bare `OSError`. `O_NOFOLLOW` constrains the final component
+  only, and that bound is recorded rather than closed: an attacker who
+  rewrites a *prefix* component between the `mkdir` and the open defeats the
+  ordering the refusal rests on, and the error then names the lock file while
+  the culprit is a directory above it.
+
+  **A containment refusal on the state-database path reached `--json` callers
+  as a Rich traceback** (#483). `ProjectPaths.database_for` routes through the
+  containment chokepoint, which refuses a state-database path resolving
+  outside the project root — and that call was the last statement of
+  `_require_project`, outside the `try` wrapping everything else, so the
+  refusal escaped every caller of it at once. Seven of the nine commands in
+  the CLI sweep answered with nothing on the machine channel and a traceback
+  on stderr carrying absolute paths into the installed source tree;
+  `project status` reached the same refusal through its own direct call and
+  needed its own handler. All seven now publish the `{error, remedy}` envelope
+  at the state exit code, and that population is *derived* — the two commands
+  resolving no state path (`project list`, `version`) are subtracted from the
+  sweep, so a command added later is classified by measurement rather than by
+  a second list someone has to remember.
+
+  **The remedy is keyed to the path that was refused.** One cure was published
+  for every escape alike, and it named the knowledge directory — the
+  operator's authored source — for a problem in derived state, then sent the
+  reader to `theurian init`, which meets the identical refusal. Following it
+  cost a round trip to learn nothing. A leaf under a derived subdirectory now
+  names that *subdirectory*, because a link anywhere between the subdirectory
+  and the leaf produces the same refusal: naming the refused leaf would name a
+  file inside the link's target and cure nothing.
+
+  **That instruction is rendered without a trailing slash, which is a safety
+  property and not a formatting choice.** The first cut named the path with
+  one — `.theurian/runtime/` — and BSD `rm -rf` on a trailing-slash symlink
+  *follows the link*. Measured end to end: obeying that text literally
+  destroyed the entire directory the link pointed at, outside the working
+  tree, and left the link in place, so the retry met the identical refusal.
+  The shipped text gives both forms — `rm` for a link, `rm -rf` for a real
+  directory, since neither command honestly covers both shapes — calls the
+  trailing slash out explicitly so a reader who tidies the path does not get
+  the destructive form back, and is measured curative end to end. What it
+  promises about the cost is narrower than the sentence it replaced: removing
+  a link costs nothing, and removing a real directory here costs only
+  artifacts Theurian rebuilds. "Nothing authored is lost" was never this
+  remedy's to promise, because a link's target is arbitrary.
+
+  **A filesystem fault at the state database escaped `--json` as well**
+  (#484). `migrate status` had no `(OSError, sqlite3.Error)` arm at all, and
+  `migrate apply` carried one on either side of its transaction but not across
+  it — so which section met a fault depended on whether the project had ever
+  been applied. With no provenance record it landed in a covered section; with
+  one, which is every project after its first apply, it landed in the
+  transaction and escaped. Both are backstopped now, at the same exit code and
+  envelope, with a cure that names the precondition to check before the
+  rebuild. Neither deletes anything: `migrate apply` deliberately does not
+  clean up here, because the database is usually one this installation already
+  built and provenanced, and removing a live state because an unrelated fault
+  interrupted a write would turn a failed command into data loss.
+
+  **A write conflict is answered by waiting, not by deleting the state.**
+  Those backstops caught a transient conflict in the same net as a directory
+  planted at the database path, and answered both with the second one's cure:
+  measured with a second connection holding `BEGIN IMMEDIATE` — an operator's
+  `sqlite3` shell, another tool, a process that exited with a transaction open
+  — both commands published `database is locked` beside an instruction to
+  delete `.theurian/state/`, and both exited 0 on the retry once the holder
+  let go. An operator who follows that remedy destroys derived state for
+  nothing; a scripted agent does it without reading. Contention is now
+  converted at its source into `WriteTransactionBusyError`, a typed
+  wait-and-retry answer stating that nothing is damaged and nothing needs
+  rebuilding, across every statement the transaction helper issues on its own
+  behalf. Since round two that includes the pragmas and schema read that make
+  a connection usable, which run *before* `BEGIN IMMEDIATE`: a holder in
+  `PRAGMA locking_mode = EXCLUSIVE`, and a database left in a rollback journal
+  whose `journal_mode = WAL` pragma has to take the conflict itself, both
+  reached the delete-your-state cure for a database in perfect condition. The
+  predicate was already right and only its placement was wrong, so the
+  classification moved ahead of the broad catch rather than being widened. The
+  caller's own statements are untouched: past `BEGIN IMMEDIATE` a failure is
+  the caller's statement against the caller's data, which this layer must not
+  reinterpret.
+
+  **What that conversion is scoped to.** `SQLITE_BUSY` is the only arrival
+  measurement reached (2026-09-03, SQLite 3.47.1). `SQLITE_LOCKED` and the
+  primary-code mask beside it are defense in depth against an extended
+  spelling of a condition the set already names — kept because they over-cover
+  in the safe direction, not because anything produced them. The `COMMIT` arm
+  is believed unreachable under this product's own `journal_mode = WAL`, is
+  driven by no test, and is kept for the rollback-journal edge; the
+  post-`BEGIN` residue is scoped the same way, and the rollback-journal
+  neighbour is stated unproven in both directions rather than folded into the
+  WAL claim. `ROLLBACK` is deliberately left unconverted, and that exclusion
+  is argued rather than measured: no input was found that makes it fail while
+  a caller's exception is already travelling.
+
+  **This closes the contention fault family, not fault routing in general.**
+  The permissions face — a database file the process cannot open, or an
+  unwritable state directory, which three places grade three different ways —
+  is [#530](https://github.com/theurian/theurian/issues/530). Unifying the two
+  escape remedies, and the exit codes that differ beside them, is
+  [#525](https://github.com/theurian/theurian/issues/525). None of this is a
+  breaking change: the new exception types are internal, and the envelopes
+  replace tracebacks that were never a contract.
+
 ## [0.1.0.dev18] - 2026-09-03
 
 ### Added

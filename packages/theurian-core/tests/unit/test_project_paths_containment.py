@@ -30,6 +30,7 @@ from theurian.application.project_service import (
     KNOWLEDGE_DIR_ESCAPE_REMEDY,
     ProjectError,
     ProjectPaths,
+    derived_escape_remedy,
 )
 from theurian.cli.commands import _STATE_DATABASE_GLOB
 from theurian.cli.index_commands import INDEX_FILENAME_PREFIX
@@ -257,6 +258,32 @@ _ESCAPING_CHILD: dict[str, str] = {
 _READER_CONTAINED: set[str] = {"migrations"}
 
 
+#: The helpers whose refused path is a *leaf under* a derived subdirectory, and
+#: which therefore publish :func:`derived_escape_remedy` rather than
+#: :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY` (#483 round one, H-1).
+#:
+#: Written out as a judgement rather than recomputed from
+#: ``DERIVED_SUBDIRECTORIES``, which would be this test asking production the
+#: question production is being tested on. Read off the helper list by hand: each
+#: of these asks for something *inside* ``state`` or ``runtime``, while ``state``
+#: and ``runtime`` themselves ask for the directory and keep the older text --
+#: the same wrong-artifact shape one level up, which belongs to #525's population
+#: rather than to this fix's.
+#:
+#: ``index_for`` is deliberately absent even though it reads under ``state``: its
+#: own escape check raises before ``_contained`` sees the leaf, with
+#: ``INDEX_POINTER_REMEDY``, and the ``self.state`` access it makes first refuses
+#: as the *directory* case. Its presence here would have passed for the wrong
+#: reason, which is why the assertion below is an equality in both directions.
+_NAMES_A_DERIVED_ARTIFACT: set[str] = {
+    "active_pointer",
+    "active_index_pointer",
+    "write_lock",
+    "database_for",
+    "findings_for",
+}
+
+
 #: Sentinel for "no return annotation": distinct from a member annotated
 #: ``-> None``, which is genuinely not a path helper.
 _UNANNOTATED = object()
@@ -344,6 +371,11 @@ def test_the_containment_sweep_covers_every_path_returning_helper() -> None:
     assert set(_HELPER_CALLS) == _reflected_path_helpers()
     assert set(_ESCAPING_CHILD) == set(_HELPER_CALLS)
     assert set(_HELPER_CALLS) >= _READER_CONTAINED
+    # The remedy classes partition the swept population the same way, so a
+    # helper named in neither -- or named in one that no longer exists -- fails
+    # here rather than being silently classified by whichever assertion runs.
+    assert set(_HELPER_CALLS) >= _NAMES_A_DERIVED_ARTIFACT
+    assert not (_NAMES_A_DERIVED_ARTIFACT & _READER_CONTAINED)
 
 
 @pytest.mark.parametrize(
@@ -423,6 +455,15 @@ def test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it(
     ignore. Every helper must refuse rather than hand back a path a read or write
     would follow outside the working tree. A future helper that forgets
     ``_contained`` returns an uncontained path here and goes RED.
+
+    **The remedy is asserted per class, not as one constant** (#483 round one,
+    H-1). ``KNOWLEDGE_DIR_ESCAPE_REMEDY`` was published for every helper here,
+    and for the five in :data:`_NAMES_A_DERIVED_ARTIFACT` it named the operator's
+    authored knowledge directory for a refusal about ``.theurian/state/`` or
+    ``.theurian/runtime/`` -- then sent them to ``theurian init``, which meets
+    the identical refusal. The expectation is a set written out in this module,
+    so a helper that changes class fails here rather than being re-derived into
+    agreement with whatever production now returns.
     """
     root = tmp_path / "repo"
     (root / ".theurian").mkdir(parents=True)
@@ -434,7 +475,19 @@ def test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it(
     with pytest.raises(ProjectError) as excinfo:
         _HELPER_CALLS[helper](paths)
 
-    assert excinfo.value.remedy == KNOWLEDGE_DIR_ESCAPE_REMEDY
+    if helper not in _NAMES_A_DERIVED_ARTIFACT:
+        assert excinfo.value.remedy == KNOWLEDGE_DIR_ESCAPE_REMEDY
+        return
+
+    # The subdirectory the escape happened under, which is the artefact the
+    # remedy must name -- never the leaf, which for `write_lock` sits *inside*
+    # the link's target and removing it would cure nothing.
+    expected = derived_escape_remedy(".theurian", _ESCAPING_CHILD[helper])
+    assert excinfo.value.remedy == expected
+    assert _ESCAPING_CHILD[helper] in excinfo.value.remedy
+    assert "theurian init" not in excinfo.value.remedy, (
+        "the remedy sends the reader to the command that meets this same refusal"
+    )
 
 
 @_NEEDS_SYMLINKS
