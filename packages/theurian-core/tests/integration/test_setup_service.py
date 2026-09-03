@@ -24,9 +24,12 @@ from setup_migrations import state_hash_from_the_loader, unchecked_migrations
 from theurian.application.project_service import (
     ProjectPaths,
     ProjectRegistry,
+    derive_project_id,
     ensure_gitignore,
     read_active_index_pointer,
+    read_active_state,
     resolve_state_hash,
+    write_active_index_pointer,
     write_active_state,
 )
 from theurian.application.setup_context import MigrationsCheck, SetupContext
@@ -39,7 +42,8 @@ from theurian.application.setup_steps import (
 )
 from theurian.cli.commands import _emit
 from theurian.cli.context import schema_root
-from theurian.domain.errors import MigrationError
+from theurian.domain.enums import Sensitivity
+from theurian.domain.errors import MigrationError, TheurianError
 from theurian.domain.setup import (
     SetupReport,
     SetupState,
@@ -1492,72 +1496,135 @@ def test_the_initial_index_step_does_not_publish_indexes_as_future_work(
 #: every other identifier in this file.
 _AN_INDEX_BUILD = "01K451CCCC01234567890ABCDE"
 
+#: A state hash no tree here is ever at, for the stale-pointer corpus. Sixty-four
+#: hex characters because that is what :class:`StateHash` publishes and what the
+#: pointer's readers compare against; a shorter one would be refused by the shape
+#: rather than by the comparison.
+_A_HASH_NO_TREE_HERE_IS_AT = "f" * 64
 
-def _publish_a_retrieval_index(root: Path) -> None:
-    """Put a retrieval index on disk: a pointer naming a build, and that build.
 
-    What the product's own reader requires and no more. ``read_active_index_
-    pointer`` returns a payload for a pointer carrying a non-empty
-    ``indexBuildId`` and ``ActiveIndexPointer()`` for a tree with none, so these
-    two trees are distinguishable by the code that answers the index half --
-    which is the whole property the rule below needs, and it is asserted rather
-    than assumed.
+def _a_hash_the_project_is_at(root: Path) -> str:
+    """The ``stateHash`` a real `theurian index build` here would stamp.
 
-    Freshness is deliberately not fixtured. ``index_staleness`` weighs a state
-    hash, a project id, a schema version and a serving profile, and nothing here
-    claims anything about *which* verdict an index-side answer would reach --
-    only that `initial-index` reaches none.
+    The migration set as it stands, which is what `index build` indexes and what
+    row 17's predicate compares against. A set that will not load has no such
+    hash, so the state that *was* applied is used instead: the pointer still has
+    to carry the field, and inventing one for that shape would make the "current"
+    corpus differ from the stale one for a reason that is not the state hash.
+    """
+    paths = ProjectPaths.of(root)
+    try:
+        loaded = load_migrations(paths.root, paths.migrations, schema_root())
+    except TheurianError:
+        active = read_active_state(paths)
+        return _A_HASH_NO_TREE_HERE_IS_AT if active is None else str(active.state_hash)
+    return str(resolve_state_hash(loaded, SCHEMA_VERSION))
+
+
+def _publish_a_retrieval_index(root: Path, state_hash: str) -> None:
+    """Publish an index the way the product publishes one, at ``state_hash``.
+
+    Through `write_active_index_pointer` -- the function `theurian index build`
+    and the withdrawal purge both call -- rather than a hand-written key. That
+    matters and was measured: a pointer carrying ``indexBuildId`` alone satisfies
+    `read_active_index_pointer`, and satisfies **nothing that implements row 17's
+    actual predicate**, which compares ``stateHash`` against the state the
+    project is at. Against a one-key pointer a step answering that predicate
+    reads ``False`` in both corpora and the rule below stays green over it. Six
+    keys, written by the product, is what makes the two corpora differ in the way
+    a real index differs from no index.
     """
     paths = ProjectPaths.of(root)
     index = paths.index_for(_AN_INDEX_BUILD)
     index.parent.mkdir(parents=True, exist_ok=True)
     index.touch()
-    paths.active_index_pointer.write_text(
-        json.dumps({"indexBuildId": _AN_INDEX_BUILD}), encoding="utf-8"
+    write_active_index_pointer(
+        paths,
+        index_build_id=_AN_INDEX_BUILD,
+        state_hash=state_hash,
+        project_id=derive_project_id(root).value,
+        indexes_unapproved=False,
+        indexed_sensitivities=frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL}),
     )
 
 
-@pytest.mark.parametrize("state", [pytest.param(s.build, id=s.name) for s in _SHAPES])
-def test_no_shape_changes_its_answer_when_a_retrieval_index_appears(
-    tmp_path: Path, state: Callable[[Path], SetupContext]
+#: The two ways a published index can stand to the project it was built for. Both
+#: are exercised, because an index-side answer can be shaped either way and the
+#: two are invisible to each other: a step publishing "an index exists for the
+#: current state" moves only in the first, and one publishing "an index exists,
+#: and it is behind" moves only in the second.
+_INDEX_AT: tuple[tuple[str, Callable[[Path], str]], ...] = (
+    ("current", _a_hash_the_project_is_at),
+    ("stale", lambda _root: _A_HASH_NO_TREE_HERE_IS_AT),
+)
+
+
+@pytest.mark.parametrize(
+    ("state", "index_at"),
+    [
+        pytest.param(shape.build, at, id=f"{shape.name}-index-{label}")
+        for shape in _SHAPES
+        for label, at in _INDEX_AT
+    ],
+)
+def test_no_step_changes_its_answer_when_a_retrieval_index_appears(
+    tmp_path: Path, state: Callable[[Path], SetupContext], index_at: Callable[[Path], str]
 ) -> None:
     """§6.2 row 17 names two artefacts and `initial-index` answers the first
-    (#451). The second one it must not answer at all, and this is what says so.
+    (#451). **No step** may answer the second, and this is what says so.
 
     Row 17's predicate -- "an ``active_index`` exists for the current
     ``state_hash``" -- is two questions. `theurian index status` owns the index
     half, and `requirements-analysis.md` records `doctor`'s silence about it as
     a requirement. A record like that is worth what holds it: one query against
     two corpora, the shape this project's closure arguments settle on. A tree
-    with a published index and the same tree without one must produce the *same*
-    step, field for field, on every shape a project can be in.
+    with a published index and the same tree without one must produce the same
+    **report** -- every step, every field -- on every shape a project can be in.
 
-    Stronger than reading the source for an index symbol, and deliberately kept
-    beside that rule rather than instead of it: this one does not care how an
-    index answer would have been reached -- a helper, a ``getattr``, or a new
-    injected ``SetupContext`` port, which is the shape #451's own fix took and
-    the shape a name scan cannot see. It only cares that the published answer
-    did not move.
+    **The whole report, not this one step**, because the sentence in §6.2
+    quantifies over a `doctor` *run*: the silence it records is broken by any
+    step publishing an index fact, not only by the one named for the index. A
+    version of this rule that probed `initial-index` alone stayed green while
+    `project-layout` published a pointer read in its own ``detail`` -- measured,
+    which is why the subject here is `SetupService.run`.
 
-    **It goes RED when #528 lands as an extension of this step**, which is its
-    purpose: `test_setup_domain.py`'s ``len(StepId) == 19`` moves when #528 adds
-    a *step* and does not move when #528 extends this one. When this fails,
+    **What both this and the source scan can see, exactly.** They see a read that
+    *moves a published field between the corpora this test builds*: no index at
+    all, an index published at the state the project is at, and an index
+    published at a state it is not. A step branching only on a pointer that is
+    present and **broken** -- unparseable, or naming no build -- moves nothing
+    between these three and is visible to neither rule. That gap is recorded
+    rather than chased: the honest fixture for it is a fourth corpus, and the
+    decision taken in review was that a pin at that depth costs more than the
+    silence it would protect.
+
+    **It goes RED when #528 lands as an extension of an existing step**, which
+    is its purpose: `test_setup_domain.py`'s ``len(StepId) == 19`` moves when
+    #528 adds a *step* and does not move when #528 extends one. When this fails,
     §6.2's paragraph is the thing to change first.
     """
     context = state(tmp_path)
     root = context.project_root
     assert root is not None
     paths = ProjectPaths.of(root)
+    # The two corpora must differ in the index and in nothing else. `theurian
+    # init` creates `.theurian/state/`, and so does publishing an index -- so on
+    # a shape whose fixture leaves it absent, the second run sees the *directory*
+    # arrive and `project-layout` moves from `missing` ("... is missing state.")
+    # to `satisfied`. Measured on the `never-applied` shape, and it is not an
+    # index read: that step reports which directories exist and would say the
+    # same about an empty one.
+    paths.state.mkdir(parents=True, exist_ok=True)
     assert read_active_index_pointer(paths).payload is None, "no index has been built here yet"
-    without_an_index = probe_initial_index(context)
+    without_an_index = _service(context).run(SetupRequest(dry_run=True))
 
-    _publish_a_retrieval_index(root)
+    _publish_a_retrieval_index(root, index_at(root))
 
-    assert read_active_index_pointer(paths).payload is not None, (
-        "the fixture has to leave an index the product's own reader can see"
-    )
-    assert probe_initial_index(context) == without_an_index, (
-        "the step's answer moved when a retrieval index appeared, so `doctor` now "
+    published = read_active_index_pointer(paths).payload
+    assert published is not None, "the fixture has to leave an index the product's reader can see"
+    assert published["stateHash"] == index_at(root), "and one standing where this case says"
+    assert _service(context).run(SetupRequest(dry_run=True)) == without_an_index, (
+        "a step's answer moved when a retrieval index appeared, so `doctor` now "
         "reports on row 17's second artefact; §6.2's record that no step does is "
         "no longer true"
     )

@@ -1042,6 +1042,7 @@ def test_the_plugin_document_relays_only_the_actions_that_name_a_command(
 #: mode a bare tuple of strings would hide.
 INDEX_SIDE_READERS: Final = (
     (project_service, "read_active_index_pointer"),
+    (project_service, "read_active_index"),
     (project_service, "ActiveIndexPointer"),
     (ProjectPaths, "active_index_pointer"),
     (ProjectPaths, "index_for"),
@@ -1070,6 +1071,15 @@ def _names_used(path: pathlib.Path) -> Iterator[tuple[str, str]]:
     separate. A grep would report those and would have to be taught to ignore
     them; a scan over ``Name`` and ``Attribute`` nodes never sees a string or a
     comment in the first place.
+
+    **Import statements are read too, and that closes the alias.** ``from
+    project_service import read_active_index as _r`` binds a name this scan does
+    not know and then calls it, so a walk over ``Name`` and ``Attribute`` alone
+    missed it entirely. Lint does not stand in the way: measured against this
+    repository's own ``ruff`` configuration, an aliased import of exactly that
+    shape produces no diagnostic once ``I001`` has sorted it. So the ``alias``
+    node is yielded by its *imported* name rather than the bound one, which is
+    the name that cannot be renamed away.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
@@ -1082,6 +1092,12 @@ def _names_used(path: pathlib.Path) -> Iterator[tuple[str, str]]:
                 yield child.id, ".".join(scope) or "<module>"
             elif isinstance(child, ast.Attribute):
                 yield child.attr, ".".join(scope) or "<module>"
+            elif isinstance(child, ast.alias):
+                # Dotted, so `import theurian.application.project_service` is read
+                # component by component and cannot smuggle a name past this on
+                # the strength of its package path.
+                for component in child.name.split("."):
+                    yield component, ".".join(scope) or "<module>"
             yield from walk(child, scope)
 
     yield from walk(tree, ())
@@ -1122,14 +1138,24 @@ def test_no_setup_step_reads_the_retrieval_index() -> None:
     not an accident to be worked around by widening the scan.
 
     **What it cannot see**, in the tradition of ``test_gate_call_sites.py``: it
-    reads names, so ``getattr(paths, "active_index_" + "pointer")``, a helper in
-    a third module, or an index answer arriving through a new injected
-    ``SetupContext`` port under a name of its own all pass here. The port shape
-    is the near one -- #451's own fix took it -- which is why the composition
-    root is scanned too, and why the behavioural rule in
-    ``test_setup_service.py::test_no_shape_changes_its_answer_when_a_retrieval_index_appears``
-    exists beside this one: that one watches the published answer and does not
-    care how it was reached.
+    reads names, so ``getattr(paths, "active_index_" + "pointer")``, a path
+    assembled by hand (``root / ".theurian" / "state" / "active-index.json"``), a
+    helper in a third module, or an index answer arriving through a new injected
+    ``SetupContext`` port under a name of its own all pass here. The path-built
+    read is not hypothetical -- a reviewer landed one -- and the port shape is the
+    near one, since #451's own fix took it. That is why the composition root is
+    scanned too, and why
+    ``test_setup_service.py::test_no_step_changes_its_answer_when_a_retrieval_index_appears``
+    exists beside this one: it watches the published report and is indifferent to
+    how a read was spelled.
+
+    **And what neither of them sees.** The behavioural rule compares a `doctor`
+    run across the corpora it can build -- no index, an index at the state the
+    project is at, and an index at a state it is not. A step branching only on a
+    pointer that is present and **broken** (unparseable, or naming no build)
+    moves nothing between those and is invisible to both rules. Recorded, not
+    chased: the decision taken in review was that a fourth corpus costs more than
+    the silence it would protect.
     """
     reached = sorted(
         {
