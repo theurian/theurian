@@ -1695,13 +1695,21 @@ SECRET_SCANNER_MODULE: Final = "theurian.security.content_secrets"  # noqa: S105
 
 #: Where the detector runs, on the same terms as the reader's count above.
 #:
-#: **Two sites since #329**: the approval gate, and the index build. The second is
-#: SEC-11's other control -- the build reads every served body on every rebuild, so
-#: it reaches content that entered before the scanner shipped or through a
-#: hand-placed migration that never met ``accept``. It reports and never refuses,
-#: because by then the body is already in the canonical store and already served.
+#: **Two modules since #329**: the approval gate, and the index build. The second
+#: is SEC-11's other control -- the build reads every text channel it serves on
+#: every rebuild, so it reaches content that entered before the scanner shipped or
+#: through a hand-placed migration that never met ``accept``. It reports and never
+#: refuses, because by then the content is already in the canonical store and
+#: already served.
+#:
+#: The build's **three** calls are its three served channels, one helper each: the
+#: document (``served_content_text(title, body)``), each source anchor's
+#: author-written fields, and each published relation ``note`` (round 1). The
+#: number is a per-module count rather than a set for exactly this reason -- a
+#: fourth call is a fourth channel, and the sentence above stops being an
+#: enumeration the moment one lands without moving this.
 SECRET_SCANNER_CALL_SITES: dict[str, int] = {
-    "application/index_builder.py": 1,
+    "application/index_builder.py": 3,
     "application/proposal_service.py": 1,
 }
 
@@ -2057,8 +2065,8 @@ def test_the_secret_scanner_runs_at_the_recorded_call_sites_only() -> None:
     T-15 controls were all false.
 
     So the claim those four documents make is about the *detector*, and the
-    detector is what this counts. Two calls: the accept path, and the index build
-    (#329).
+    detector is what this counts. Two modules: the accept path, and the index
+    build (#329), the latter calling once per served text channel it reads.
 
     **What this half holds, exactly.** Every local binding of
     ``theurian.security.content_secrets.scan_text`` is resolved out of each

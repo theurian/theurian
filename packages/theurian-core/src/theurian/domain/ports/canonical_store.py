@@ -4,15 +4,15 @@ Deliberately exposes no method that updates a revision. Immutability (ADR-0006)
 is expressed in the type signature, not only in prose -- an adapter cannot offer
 an update path without violating the Protocol.
 
-Two Protocols live here, not two ports. :class:`CanonicalReadSession` is a
-narrowing of :class:`CanonicalStore`, so the port set ADR-0003 fixes is
-unchanged.
+Three Protocols live here, not three ports. :class:`CanonicalReadSession` is a
+narrowing of :class:`CanonicalStore` and :class:`IndexBuildSession` is a widening
+of *that* by one method, so the port set ADR-0003 fixes is unchanged.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Protocol, override, runtime_checkable
 
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import KnowledgeStatus, Sensitivity
@@ -490,3 +490,40 @@ class CanonicalReadSession(Protocol):
         ...
 
     def __exit__(self, *details: object) -> None: ...
+
+
+@runtime_checkable
+class IndexBuildSession(CanonicalReadSession, Protocol):
+    """:class:`CanonicalReadSession` plus the edges a build has to read (#329).
+
+    One method wider, and separate rather than folded into the base for a reason
+    the base's own docstring gives: that Protocol is the *read subset a derived
+    artifact builder needs*, and it is also what the serve path's gate is typed
+    against. Adding ``list_relations`` there would oblige every session-shaped
+    collaborator to answer a question only the index build asks --
+    ``test_purged_build_quantities``'s counting decorator among them, which exists
+    to measure the gate and has no business growing an edge reader.
+
+    The build asks because a relation's ``note`` is served verbatim on every
+    ``knowledge.get`` response, so SEC-11's build-time control has to read it or
+    the "every text channel this deployment serves" claim is false for that
+    channel (round 1, adversarial). It is a read like the others: nothing here can
+    write, which is what keeps a derived-artifact builder from making canonical
+    state (ADR-0004).
+    """
+
+    def list_relations(
+        self, context: RequestContext, item_id: ItemId
+    ) -> tuple[KnowledgeRelation, ...]:
+        """Relations touching ``item_id`` in either direction, inverses included."""
+        ...
+
+    @override
+    def __enter__(self) -> IndexBuildSession:
+        """Acquire the handle here, for :class:`CanonicalReadSession`'s reason.
+
+        Re-declared only to narrow the return type: a caller entering this
+        Protocol must get back something that can still answer
+        :meth:`list_relations`.
+        """
+        ...

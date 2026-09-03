@@ -338,6 +338,153 @@ def test_a_secret_in_the_title_is_caught_because_the_scan_reads_the_served_text(
     )
 
 
+# -- Every text channel the deployment serves, not the body alone ---------------
+
+#: A credential in the one anchor field every result carries. ``sourceUri`` is
+#: served verbatim and unexcerpted by ``knowledge.search`` *and*
+#: ``knowledge.get`` -- an agent that never opens a body reads it -- and
+#: ``propose accept`` refuses it, so a hand-placed migration was the one route in.
+_ANCHORED_URI = f"https://oauth2:{PLANTED}@github.example/org/repo.git"
+
+#: A credential in a relation ``note``: free text an author writes on an edge,
+#: which ``knowledge.get`` publishes verbatim on both endpoints' responses. The
+#: shape is the one ``_relation_is_visible`` records from a real project -- a
+#: rationale that names the thing it is a rationale about.
+_EDGE_NOTE = f"superseded because this key was checked in as {PLANTED}"
+
+_RELATION_MIGRATION_ID = "01K1HHHHHH01234567890ABCDE"
+_RELATION = f"""apiVersion: theurian.dev/v1
+id: {_RELATION_MIGRATION_ID}
+createdAt: 2026-09-03T13:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: addRelation
+    sourceItemId: {CLEAN_ITEM}
+    relationType: supersedes
+    targetItemId: {DIRTY_ITEM}
+    note: {_EDGE_NOTE}
+"""
+
+
+def test_a_credential_in_a_source_anchor_is_caught_and_never_echoed(bare: Path) -> None:
+    """The body is not the only text an item is served under (round 1, adversarial).
+
+    ``sourceAnchors[*].sourceUri`` rides on every ranked result and every fetch,
+    verbatim. The approval gate scans it; before this, the build did not, so on
+    the hand-placed-migration population -- the whole reason #329 exists -- the
+    sharpest published channel had no control on it at all.
+
+    The finding names the item and the channel and quotes no more of the match
+    than the body channel does, which is the same bound on a different string.
+    """
+    _corpus(bare, dirty=CLEAN_BODY.replace("Authentication", "Rotation"))
+    anchored = (bare / f".theurian/migrations/{_DIRTY_MIGRATION_ID}-legacy.yaml").read_text(
+        encoding="utf-8"
+    )
+    (bare / f".theurian/migrations/{_DIRTY_MIGRATION_ID}-legacy.yaml").write_text(
+        anchored.replace("sourceUri: git://demo/legacy-keys.md", f"sourceUri: {_ANCHORED_URI}"),
+        encoding="utf-8",
+    )
+    _must(bare, "migrate", "apply")
+
+    code, payload = _in(bare, "index", "build")
+
+    assert code == 6, f"an anchor carrying a credential did not raise the block signal: {payload}"
+    assert [line.split(": ", 1)[0].split(":")[0] for line in _findings(payload)] == [DIRTY_ITEM], (
+        f"the finding does not name the item that carries the anchor: {_findings(payload)}"
+    )
+    assert all("sourceAnchors[0].sourceUri" in line for line in _findings(payload)), (
+        f"the finding does not name the channel it came from: {_findings(payload)}"
+    )
+    quoted = PLANTED[: REDACTED_PREFIX_CHARS + 1]
+    for name, text in (
+        ("index build (rendered)", _streams(bare, "index", "build")),
+        ("index build (json)", json.dumps(payload)),
+        ("doctor (json)", json.dumps(_in(bare, "doctor")[1])),
+    ):
+        assert PLANTED not in text, f"{name} echoed the credential from the anchor"
+        assert quoted not in text, f"{name} quotes past the published redaction bound"
+
+
+def test_a_credential_in_a_relation_note_is_caught_and_never_echoed(bare: Path) -> None:
+    """A ``note`` is served verbatim by ``knowledge.get`` on both endpoints.
+
+    Neither SEC-11 control read it on a hand-placed migration until round 1
+    reported it. It is scanned once for the whole edge, not once per end, and the
+    build's own budget and redaction apply exactly as they do to a body.
+    """
+    _corpus(bare, dirty=CLEAN_BODY.replace("Authentication", "Rotation"))
+    (bare / f".theurian/migrations/{_RELATION_MIGRATION_ID}-edge.yaml").write_text(
+        _RELATION, encoding="utf-8"
+    )
+    _must(bare, "migrate", "apply")
+
+    code, payload = _in(bare, "index", "build")
+
+    lines = _findings(payload)
+    assert code == 6, f"a relation note carrying a credential did not raise the signal: {payload}"
+    assert len(lines) == 1, (
+        f"the edge was scanned once per endpoint rather than once for the edge: {lines}"
+    )
+    assert ".note" in lines[0], f"the finding does not name the channel: {lines}"
+    quoted = PLANTED[: REDACTED_PREFIX_CHARS + 1]
+    for name, text in (
+        ("index build (rendered)", _streams(bare, "index", "build")),
+        ("index build (json)", json.dumps(payload)),
+        ("doctor (json)", json.dumps(_in(bare, "doctor")[1])),
+    ):
+        assert PLANTED not in text, f"{name} echoed the credential from the relation note"
+        assert quoted not in text, f"{name} quotes past the published redaction bound"
+
+
+def test_a_note_on_an_edge_to_a_withheld_item_is_neither_scanned_nor_counted(bare: Path) -> None:
+    """The relation channel obeys the gate that publishes it, or the count leaks.
+
+    ``knowledge.get`` publishes an edge only when **both** endpoints are items
+    the caller may see, so an edge whose far end this build refused to index must
+    move nothing here -- a published number that varies with a withheld row is
+    the shape T-17 took, and it is the reason the body scan sits below both
+    filters in the first place.
+
+    The positive control is the same corpus under ``--include-unapproved``, where
+    the draft *is* indexed and the note therefore *is* served: the zero above is
+    the gate, not a scanner that stopped working.
+    """
+    _corpus(bare, dirty=CLEAN_BODY.replace("Authentication", "Rotation"))
+    (bare / ".theurian/knowledge/architecture/unreleased-keys.md").write_text(
+        CLEAN_BODY, encoding="utf-8"
+    )
+    (bare / f".theurian/migrations/{_DRAFT_MIGRATION_ID}-unreleased.yaml").write_text(
+        _migration(
+            _DRAFT_MIGRATION_ID,
+            DRAFT_ITEM,
+            "01K1CREVCC01234567890ABCDE",
+            "Unreleased keys",
+            "draft",
+            CLEAN_BODY,
+        ),
+        encoding="utf-8",
+    )
+    (bare / f".theurian/migrations/{_RELATION_MIGRATION_ID}-edge.yaml").write_text(
+        _RELATION.replace(f"targetItemId: {DIRTY_ITEM}", f"targetItemId: {DRAFT_ITEM}"),
+        encoding="utf-8",
+    )
+    _must(bare, "migrate", "apply")
+
+    code, default_build = _in(bare, "index", "build")
+    assert code == 0, default_build
+    assert _findings(default_build) == [], (
+        f"a note on an edge to a row this build withheld moved the count: {default_build}"
+    )
+
+    code, opted_in = _in(bare, "index", "build", "--include-unapproved")
+
+    assert code == 6, "the same edge is published under --include-unapproved, so it is scanned"
+    assert any(".note" in line for line in _findings(opted_in)), (
+        f"the control is blind rather than the edge being withheld: {opted_in}"
+    )
+
+
 # -- AC-2: block is a signal, and it does not withhold retrieval ---------------
 
 

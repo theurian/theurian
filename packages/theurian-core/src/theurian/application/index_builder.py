@@ -49,7 +49,7 @@ without an embedding provider, and without a summariser.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Container, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, final
@@ -59,9 +59,14 @@ from theurian.domain.chunking import IndexableChunk, chunk_document
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import Sensitivity, may_disclose, may_surface
 from theurian.domain.errors import InvariantViolationError
-from theurian.domain.identifiers import ProjectId
-from theurian.domain.knowledge import served_content_hash, served_content_text
-from theurian.domain.ports.canonical_store import CanonicalReadSession
+from theurian.domain.identifiers import ItemId, ProjectId
+from theurian.domain.knowledge import (
+    SourceAnchor,
+    authored_anchor_strings,
+    served_content_hash,
+    served_content_text,
+)
+from theurian.domain.ports.canonical_store import IndexBuildSession
 from theurian.domain.ports.embedding import EmbeddingProvider
 from theurian.domain.ports.index_store import IndexStore
 from theurian.domain.raptor import IndexableNode
@@ -93,18 +98,33 @@ class IndexedSecretFinding:
     reader can act on: the remedy for a landed secret is to supersede the revision
     or retire the item, and both take this id.
 
-    ``finding.line``/``finding.column`` are positions within the **served text** --
-    ``served_content_text(title, body)``, the exact string the index chunks -- so a
-    finding in a title sits on line 1 and one in the body is offset by the two
-    lines the title occupies.
+    ``channel`` says *which* served string of that item, and it is empty for the
+    document body -- the channel a reader assumes. Every non-empty value is built
+    from literals this layer chose plus an integer index (``sourceAnchors[0]
+    .sourceUri``, ``relations[2].note``), never from a key or an id read out of
+    the corpus, so the whole location stays free of content for the #349 reason
+    above. The index is a position in the list the serving surface publishes, so
+    ``knowledge.get`` on the named item is where a reader finds the value.
+
+    ``finding.line``/``finding.column`` are positions **within the string that was
+    scanned**, which is the honest reading for every channel and not the same
+    string in each. For the body channel that is ``served_content_text(title,
+    body)``, the exact text the index chunks, so a finding in a title sits on line
+    1 and one in the body is offset by the two lines the title occupies. For an
+    anchor field or a relation note it is that field's own value, which is
+    ordinarily one line -- so a column is an offset into a field a reader is
+    looking straight at. Neither is an offset into a concatenation nobody can see.
     """
 
     item_id: str
     finding: SecretFinding
+    #: Which served string of :attr:`item_id`, or empty for the document body.
+    channel: str = ""
 
     def describe(self) -> str:
-        """One line naming the item, the position, the family, and nothing else."""
-        return self.finding.describe(at=self.item_id)
+        """One line naming the item, the channel, the position, the family, and no more."""
+        at = f"{self.item_id}:{self.channel}" if self.channel else self.item_id
+        return self.finding.describe(at=at)
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,7 +178,7 @@ class IndexBuilder:
     def __init__(
         self,
         *,
-        store_factory: Callable[[Path], CanonicalReadSession],
+        store_factory: Callable[[Path], IndexBuildSession],
         index_factory: Callable[[Path], IndexStore],
         embedder: EmbeddingProvider | None = None,
         forest_builder: ForestBuilder | None = None,
@@ -227,6 +247,16 @@ class IndexBuilder:
         # mean what it says -- the ordering `ProposalService._scan_for_secrets`
         # records for the same control.
         scanning = request.secret_scan is not SecretScanPolicy.OFF
+        # Every item that cleared *both* filters, whether or not it has a revision
+        # to index. It is the relation gate's population, not the index's: an
+        # approved, in-ceiling item with no current revision serves no
+        # `knowledge.get` of its own and is still a legitimate far end of an edge
+        # published from one that does -- exactly what `mcp.tools
+        # ._relation_is_visible` asks `get_item_exact` about each endpoint.
+        visible: set[str] = set()
+        # The items whose `knowledge.get` would publish a relation list at all, in
+        # walk order, so the second pass is deterministic.
+        indexed: list[str] = []
 
         with self._store_factory(request.database) as store:
             for item in store.list_items(context):
@@ -253,6 +283,10 @@ class IndexBuilder:
                 # the label it was authored under.
                 if not may_disclose(item.sensitivity, visible=request.visible_sensitivities):
                     continue
+                # Recorded on the far side of both filters and *before* the
+                # revision check, because that is where the serve-side relation
+                # gate draws its line too.
+                visible.add(item.item_id.value)
                 if item.current_revision_id is None:
                     continue
                 revision = store.get_revision(context, item.current_revision_id)
@@ -320,9 +354,22 @@ class IndexBuilder:
                 # the ceiling arithmetic stays in the one place that owns it. A
                 # guard whose deletion no corpus can observe is a row that cannot
                 # fail rather than a rule that is held.
+                #
+                # The body is not the only text this item is served under. A
+                # source anchor's fields ride on every `knowledge.search` result
+                # and every `knowledge.get`, verbatim and unexcerpted, and
+                # `propose accept` refuses a secret in them -- so a build that
+                # read only the body left the sharpest published channel to the
+                # control that never sees a hand-placed migration (round 1,
+                # adversarial). Same budget, same redaction, one channel tag.
                 if scanning:
+                    at = item.item_id.value
+                    indexed.append(at)
+                    found.extend(_secrets_in(served, at=at, room=MAX_FINDINGS - len(found)))
                     found.extend(
-                        _secrets_in(served, at=item.item_id.value, room=MAX_FINDINGS - len(found))
+                        _anchor_secrets(
+                            revision.source_anchors, at=at, room=MAX_FINDINGS - len(found)
+                        )
                     )
                 for chunk in chunk_document(revision.revision_id.value, served):
                     indexable.append(
@@ -369,6 +416,18 @@ class IndexBuilder:
                             kind=revision.metadata.kind.value,
                         )
                     )
+
+            # A second pass, because an edge's visibility depends on *both* of its
+            # ends and the far one may not have been walked yet. It runs inside
+            # the session -- the handle is released at the `with`'s close -- and
+            # over the items in walk order, so which findings the budget buys is a
+            # property of the corpus and not of when a row was inserted.
+            if scanning:
+                found.extend(
+                    _relation_secrets(
+                        store, context, indexed, visible=visible, room=MAX_FINDINGS - len(found)
+                    )
+                )
 
         index.add_chunks(indexable)
         # After the chunks and before either embedding pass: the forest stands
@@ -535,6 +594,86 @@ def _secrets_in(served: str, *, at: str, room: int) -> tuple[IndexedSecretFindin
         IndexedSecretFinding(item_id=at, finding=finding)
         for finding in scan_text(served, max_findings=room)
     )
+
+
+def _anchor_secrets(
+    anchors: Sequence[SourceAnchor], *, at: str, room: int
+) -> tuple[IndexedSecretFinding, ...]:
+    """Secret-shaped strings in one revision's source anchors, at most ``room``.
+
+    Every field here is served verbatim on a ``knowledge.search`` result and a
+    ``knowledge.get`` response -- unexcerpted, to an agent that never opens the
+    body -- and ``propose accept`` refuses a secret in each of them. The field set
+    is :data:`~theurian.domain.knowledge.AUTHORED_ANCHOR_FIELDS`, imported rather
+    than restated, because a security rule enumerated twice is one that acquires a
+    field on one side and not the other.
+
+    The budget is the build's, spent in list order and then in the field order
+    that constant fixes, so a corpus cannot choose which findings it buys by
+    reordering anything but its own anchors.
+    """
+    findings: list[IndexedSecretFinding] = []
+    for index, anchor in enumerate(anchors):
+        for name, value in authored_anchor_strings(anchor):
+            findings.extend(
+                IndexedSecretFinding(
+                    item_id=at, finding=finding, channel=f"sourceAnchors[{index}].{name}"
+                )
+                for finding in scan_text(value, max_findings=room - len(findings))
+            )
+    return tuple(findings)
+
+
+def _relation_secrets(
+    store: IndexBuildSession,
+    context: RequestContext,
+    indexed: Sequence[str],
+    *,
+    visible: Container[str],
+    room: int,
+) -> tuple[IndexedSecretFinding, ...]:
+    """Secret-shaped strings in the relation notes this deployment would publish.
+
+    A ``note`` is free text an author writes on an edge and ``knowledge.get``
+    serves it verbatim. It was read by neither SEC-11 control on a hand-placed
+    migration until #329 round 1, and the rejection case ``_relation_is_visible``
+    records -- ``REJECTED BECAUSE sessions.token held raw bearer tokens until
+    2026-07`` -- is what a note carrying a credential looks like.
+
+    **Gated exactly as the serve path gates it: both ends, or nothing.**
+    ``knowledge.get`` publishes an edge only when both endpoints are items the
+    caller may see, so an edge to a withheld item must not reach this count either
+    -- a number that moved with a row the build refused to index is the shape T-17
+    took. ``visible`` is the set of ids that cleared both filters in the walk
+    above, which is the same answer ``get_item_exact`` gives for each endpoint and
+    costs no second read; an endpoint absent from the corpus is absent from the
+    set, so a dangling edge is withheld rather than scanned.
+
+    **Each authored edge is scanned once.** ``list_relations`` answers from both
+    ends and mirrors the four invertible types, so an edge between two indexed
+    items arrives twice under two orientations. Keyed on the unordered pair and
+    the note, the second sighting is the same author's string in the same place;
+    reporting it again would spend the build's budget on one value twice and read
+    as two credentials. First sighting wins, and the walk order is the corpus's.
+    """
+    findings: list[IndexedSecretFinding] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item_id in indexed:
+        for index, relation in enumerate(store.list_relations(context, ItemId(item_id))):
+            source, target = relation.source_item_id.value, relation.target_item_id.value
+            if relation.note is None or source not in visible or target not in visible:
+                continue
+            key = (min(source, target), max(source, target), relation.note)
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.extend(
+                IndexedSecretFinding(
+                    item_id=item_id, finding=finding, channel=f"relations[{index}].note"
+                )
+                for finding in scan_text(relation.note, max_findings=room - len(findings))
+            )
+    return tuple(findings)
 
 
 __all__ = ["EMBED_BATCH", "IndexBuilder", "IndexRequest", "IndexedSecretFinding"]

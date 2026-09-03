@@ -18,6 +18,7 @@ from theurian.domain.enums import (
 from theurian.domain.errors import InvalidIdentifierError, InvariantViolationError
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId, SpecId
 from theurian.domain.knowledge import (
+    AUTHORED_ANCHOR_FIELDS,
     AUTHORED_IN_THEURIAN,
     KnowledgeAlias,
     KnowledgeEvidence,
@@ -26,6 +27,7 @@ from theurian.domain.knowledge import (
     KnowledgeRevision,
     RevisionMetadata,
     SourceAnchor,
+    authored_anchor_strings,
 )
 from theurian.domain.values import MARKDOWN, ContentHash, ValidityPeriod
 
@@ -377,6 +379,64 @@ def test_anchor_lines_are_one_based() -> None:
 def test_git_anchored_requires_commit_and_path() -> None:
     assert ANCHOR.is_git_anchored
     assert not SourceAnchor(provider="github", source_uri="https://x").is_git_anchored
+
+
+def test_the_anchor_field_names_and_the_anchor_reader_cannot_drift() -> None:
+    """One enumeration, read two ways, and neither may quietly lose a field.
+
+    :data:`AUTHORED_ANCHOR_FIELDS` is the SEC-11 allowlist ``propose accept``
+    applies to a parsed migration mapping; :func:`authored_anchor_strings` is how
+    ``index build`` reaches the same fields on a stored anchor. They are written
+    out separately because ``getattr`` over a name tuple types as ``Any``, so this
+    is what makes them one enumeration rather than two that agree by inspection --
+    a field added to the constant and not to the reader is a field the build-time
+    control silently stops scanning.
+
+    Every optional field is populated, because the reader drops empty values: an
+    anchor with ``None`` in six of seven would satisfy this against a reader that
+    had lost them.
+    """
+    populated = SourceAnchor(
+        provider="git",
+        source_uri="git://demo/x.md",
+        repository="demo",
+        commit_sha="0123abc",
+        blob_sha="4567def",
+        file_path="x.md",
+        external_id="EX-1",
+    )
+
+    read = authored_anchor_strings(populated)
+
+    assert sorted(name for name, _ in read) == sorted(AUTHORED_ANCHOR_FIELDS), (
+        f"the reader and the allowlist name different fields: {sorted(n for n, _ in read)} "
+        f"against {sorted(AUTHORED_ANCHOR_FIELDS)}"
+    )
+    assert dict(read) == {
+        "blobSha": "4567def",
+        "commitSha": "0123abc",
+        "externalId": "EX-1",
+        "filePath": "x.md",
+        "provider": "git",
+        "repository": "demo",
+        "sourceUri": "git://demo/x.md",
+    }, f"a field is read off the wrong attribute: {dict(read)}"
+
+
+def test_an_anchor_reader_yields_nothing_for_a_field_the_author_left_empty() -> None:
+    """The optional fields are ``None`` far more often than not.
+
+    A scanner handed ``None`` would raise and one handed ``""`` reports nothing,
+    so the reader drops them -- and the sibling above only means something while
+    this stays true, since a reader that yielded every field regardless would
+    satisfy it too.
+    """
+    minimal = SourceAnchor(provider="git", source_uri="git://demo/x.md")
+
+    assert authored_anchor_strings(minimal) == (
+        ("provider", "git"),
+        ("sourceUri", "git://demo/x.md"),
+    )
 
 
 # -- INV-10: identifiers ---------------------------------------------------

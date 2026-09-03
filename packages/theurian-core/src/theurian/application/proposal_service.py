@@ -79,7 +79,11 @@ from theurian.domain.errors import (
     TheurianError,
 )
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, ProposalId, RevisionId
-from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
+from theurian.domain.knowledge import (
+    AUTHORED_ANCHOR_FIELDS,
+    AUTHORED_IN_THEURIAN,
+    SourceAnchor,
+)
 from theurian.domain.migration import (
     MIGRATION_API_VERSION,
     CreateItem,
@@ -3155,25 +3159,19 @@ _AUTHORED_METADATA_FIELDS: Final = (
     "validTo",
 )
 
-#: Every string a source anchor declares -- the whole set, because an anchor has
-#: no Theurian-derived field at all, so there is nothing here to leave out.
-#: ``commitSha`` and ``blobSha`` are enumerated for that uniformity rather than
-#: because they can carry anything. The scan runs *before* schema validation, so
-#: the schema's ``^[0-9a-f]{7,64}$`` pattern is not what stops a secret in them --
-#: the detector's class gate is: it cannot fire on lower-case hex, the generic
-#: family needing an upper-case letter and every prefix family (``sk-``, ``ghp_``,
-#: ``AKIA``, ``xox``, ``AIza``) needing a character hex cannot spell. Scanning
-#: them therefore costs nothing and means a reader does not have to work out why
-#: two of an anchor's nine fields are missing.
-_AUTHORED_ANCHOR_FIELDS: Final = (
-    "blobSha",
-    "commitSha",
-    "externalId",
-    "filePath",
-    "provider",
-    "repository",
-    "sourceUri",
-)
+#: Every string a source anchor declares, and the one allowlist this module does
+#: **not** own: :data:`~theurian.domain.knowledge.AUTHORED_ANCHOR_FIELDS` is
+#: shared with ``index build``'s scan of the same anchors, read back off the
+#: canonical store rather than off a parsed migration (#329 round 1). The names
+#: are identical because the wire format is; the two controls differ only in where
+#: they find the values.
+#:
+#: The scan runs *before* schema validation, so the schema's ``^[0-9a-f]{7,64}$``
+#: pattern is not what stops a secret in ``commitSha``/``blobSha`` -- the
+#: detector's class gate is: it cannot fire on lower-case hex, the generic family
+#: needing an upper-case letter and every prefix family (``sk-``, ``ghp_``,
+#: ``AKIA``, ``xox``, ``AIza``) needing a character hex cannot spell.
+_AUTHORED_ANCHOR_FIELDS: Final = AUTHORED_ANCHOR_FIELDS
 
 
 def _document_findings(document: Mapping[str, object]) -> tuple[ProposalSecretFinding, ...]:
