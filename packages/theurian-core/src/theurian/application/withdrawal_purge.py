@@ -45,6 +45,7 @@ from typing import Protocol
 from theurian.application.authorization import decode_sensitivities
 from theurian.application.forest_builder import ForestBuilder
 from theurian.application.index_builder import EMBED_BATCH
+from theurian.application.index_secret_scan import carry_index_secret_scan_forward
 from theurian.application.migration_engine import WithdrawalCandidate, revisions_to_purge
 from theurian.application.project_service import (
     ProjectPaths,
@@ -345,6 +346,15 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
             indexed_sensitivities=indexed_sensitivities,
         )
         orphan = None
+        # The pointer now names a build the SEC-11 record does not, and that gap
+        # is what let an unrelated `migrate apply` clear a `degraded` doctor with
+        # no rebuild in between (#329 round 1): the purge re-scans nothing and
+        # removes only the withdrawn rows, so the source build's verdict is still
+        # the verdict for this copy. Carried forward rather than dropped, because
+        # dropping it reports `unrecorded` where the credential is still indexed
+        # and still served. After the pointer swap, so a purge that failed to
+        # publish never restamps a record for a build nobody is being served.
+        carry_index_secret_scan_forward(paths, from_build_id=build_id, to_build_id=new_id)
     except Exception as exc:  # fail closed: any adapter's failure leaves the old build serving
         # The withdrawal is already committed to canonical state; only the index
         # follow-up failed. Report it rather than raising, so the command that

@@ -32,6 +32,21 @@ than on what the canonical store holds. Deriving it from ``indexable`` rather
 than reading the rows back is what keeps the derivation a pure function of this
 build's own output, which ADR-0008 decision 9's two-corpus equality rests on.
 
+**The build is also SEC-11's second control** (#329, ADR-0027 decision 3's "still
+owed"). Every served body passes through this loop on every rebuild, so a scan
+here covers every text channel of the approved, in-ceiling corpus this deployment
+serves by default -- the whole of it rather than the delta since the last build,
+which is what reaches a secret that entered the corpus before the scanner
+shipped, or through a migration placed by hand that never met ``propose accept``.
+It is *not* the whole canonical store: a row this build refuses to index is
+never read into a published count (T-17), and a superseded revision stays in the
+store unscanned. The threat model and ``SECURITY.md`` record both.
+
+It reports and never refuses: by the time a build runs, the content is already in
+the canonical store and already served, so halting would deny ranking without
+un-disclosing anything (:mod:`theurian.application.index_secret_scan` carries that
+reasoning and the record the signal survives in).
+
 Takes its collaborators by injection, so a build is testable without a database,
 without an embedding provider, and without a summariser.
 """
@@ -39,7 +54,7 @@ without an embedding provider, and without a summariser.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Container, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, final
@@ -49,17 +64,73 @@ from theurian.domain.chunking import IndexableChunk, chunk_document
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import Sensitivity, may_disclose, may_surface
 from theurian.domain.errors import InvariantViolationError
-from theurian.domain.identifiers import ProjectId
-from theurian.domain.knowledge import served_content_hash, served_content_text
-from theurian.domain.ports.canonical_store import CanonicalReadSession
+from theurian.domain.identifiers import ItemId, ProjectId
+from theurian.domain.knowledge import (
+    KnowledgeRelation,
+    SourceAnchor,
+    authored_anchor_strings,
+    served_content_hash,
+    served_content_text,
+)
+from theurian.domain.ports.canonical_store import IndexBuildSession
 from theurian.domain.ports.embedding import EmbeddingProvider
 from theurian.domain.ports.index_store import IndexStore
 from theurian.domain.raptor import IndexableNode
+from theurian.security.content_secrets import MAX_FINDINGS, SecretFinding, scan_text
+from theurian.security.project_config import SecretScanPolicy
 
 #: Chunks per embedding request. An API-backed provider caps request size, and a
 #: local one gains nothing from an unbounded batch -- while an unbounded batch
 #: holds the whole corpus and all its vectors in memory at once.
 EMBED_BATCH: Final = 128
+
+
+@dataclass(frozen=True, slots=True)
+class IndexedSecretFinding:
+    """One secret-shaped string in what this build indexed, and which item carried it.
+
+    ``item_id``, not the text that was scanned. A location derived from the match
+    would republish it and walk around the four-character bound
+    :class:`~theurian.security.content_secrets.SecretFinding` holds -- the echo
+    review found on the accept path (#349), where every location is now a literal
+    this layer chose.
+
+    An item id is not a literal, and it is admitted here on its own terms rather
+    than by inheriting that argument. It is the operator's own identifier, bounded
+    at construction to ``MAX_IDENTIFIER_LENGTH`` characters of lower-case
+    dot-separated kebab-case (``domain.identifiers._DottedId``) -- so it carries no
+    newline, no control character and no upper case -- and it is a *different*
+    string from the ``title + body`` this scans. It is also the only thing a
+    reader can act on: the remedy for a landed secret is to supersede the revision
+    or retire the item, and both take this id.
+
+    ``channel`` says *which* served string of that item, and it is empty for the
+    document body -- the channel a reader assumes. Every non-empty value is built
+    from literals this layer chose plus an integer index (``sourceAnchors[0]
+    .sourceUri``, ``relations[2].note``), never from a key or an id read out of
+    the corpus, so the whole location stays free of content for the #349 reason
+    above. The index is a position in the list the serving surface publishes, so
+    ``knowledge.get`` on the named item is where a reader finds the value.
+
+    ``finding.line``/``finding.column`` are positions **within the string that was
+    scanned**, which is the honest reading for every channel and not the same
+    string in each. For the body channel that is ``served_content_text(title,
+    body)``, the exact text the index chunks, so a finding in a title sits on line
+    1 and one in the body is offset by the two lines the title occupies. For an
+    anchor field or a relation note it is that field's own value, which is
+    ordinarily one line -- so a column is an offset into a field a reader is
+    looking straight at. Neither is an offset into a concatenation nobody can see.
+    """
+
+    item_id: str
+    finding: SecretFinding
+    #: Which served string of :attr:`item_id`, or empty for the document body.
+    channel: str = ""
+
+    def describe(self) -> str:
+        """One line naming the item, the channel, the position, the family, and no more."""
+        at = f"{self.item_id}:{self.channel}" if self.channel else self.item_id
+        return self.finding.describe(at=at)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +153,18 @@ class IndexRequest:
     #: default parameter is how it would come back. Every caller states it, which
     #: is four lines in the composition roots and a keyword in each test.
     visible_sensitivities: frozenset[Sensitivity]
+    #: What to do about a secret in what this build would serve (SEC-11, #329).
+    #:
+    #: **No default, for the reason :attr:`visible_sensitivities` has none.** The
+    #: value that would have to be the default is ``BLOCK``, and a defaulted
+    #: security control is one a composition root can select by forgetting -- the
+    #: failure ``ProposalService._scan_for_secrets`` records when it reads the
+    #: policy itself rather than taking it injected. Here the policy cannot be
+    #: read at this layer: a build is addressed by a *database path* and has no
+    #: project root to find ``.theurian/config.yaml`` under. So the requirement is
+    #: pushed onto the type instead, which is four lines in the composition root
+    #: and a keyword in each test, and no caller can omit it silently.
+    secret_scan: SecretScanPolicy
     #: Whether unapproved revisions are written at all. Off by default, so an
     #: operator who never opts in has a hard guarantee that no draft is in the
     #: file — not merely that a query filter is expected to hold.
@@ -101,7 +184,7 @@ class IndexBuilder:
     def __init__(
         self,
         *,
-        store_factory: Callable[[Path], CanonicalReadSession],
+        store_factory: Callable[[Path], IndexBuildSession],
         index_factory: Callable[[Path], IndexStore],
         embedder: EmbeddingProvider | None = None,
         forest_builder: ForestBuilder | None = None,
@@ -162,6 +245,24 @@ class IndexBuilder:
 
         context = RequestContext(project_id=ProjectId(request.project_id))
         indexable: list[IndexableChunk] = []
+        # Accumulated across every body under one budget, the way the accept path
+        # accumulates across its five channels: `MAX_FINDINGS` bounds the total,
+        # not each document, so a corpus cannot choose how long this list is.
+        found: list[IndexedSecretFinding] = []
+        # Read once, before a single body is touched, which is what makes `off`
+        # mean what it says -- the ordering `ProposalService._scan_for_secrets`
+        # records for the same control.
+        scanning = request.secret_scan is not SecretScanPolicy.OFF
+        # Every item that cleared *both* filters, whether or not it has a revision
+        # to index. It is the relation gate's population, not the index's: an
+        # approved, in-ceiling item with no current revision serves no
+        # `knowledge.get` of its own and is still a legitimate far end of an edge
+        # published from one that does -- exactly what `mcp.tools
+        # ._relation_is_visible` asks `get_item_exact` about each endpoint.
+        visible: set[str] = set()
+        # The items whose `knowledge.get` would publish a relation list at all, in
+        # walk order, so the second pass is deterministic.
+        indexed: list[str] = []
 
         with self._store_factory(request.database) as store:
             for item in store.list_items(context):
@@ -188,6 +289,10 @@ class IndexBuilder:
                 # the label it was authored under.
                 if not may_disclose(item.sensitivity, visible=request.visible_sensitivities):
                     continue
+                # Recorded on the far side of both filters and *before* the
+                # revision check, because that is where the serve-side relation
+                # gate draws its line too.
+                visible.add(item.item_id.value)
                 if item.current_revision_id is None:
                     continue
                 revision = store.get_revision(context, item.current_revision_id)
@@ -232,6 +337,47 @@ class IndexBuilder:
                 # gate so the text the index chunks and the text the gate re-hashes
                 # cannot drift apart (GHSA-3f65).
                 served = served_content_text(revision.title, revision.body)
+                # SEC-11 at the choke point, and *after* both filters (#329,
+                # ADR-0027 decision 3's "still owed"). Every body this deployment
+                # serves passes through here on every rebuild, so the control
+                # covers the approved, in-ceiling population whole rather than a
+                # delta -- which is what reaches a secret that entered before the
+                # scanner shipped or through a hand-placed migration that never
+                # met `accept`.
+                #
+                # The position in the loop is load-bearing twice over. Below
+                # `may_surface` and `may_disclose`, the count this publishes is a
+                # function of the rows this build *wrote*: a withheld row moves
+                # nothing, so the number cannot carry the existence of content the
+                # reader may not see (the shape T-17 took). And it scans `served`
+                # -- the exact `title + body` string the chunker receives, not the
+                # body alone -- so a credential in a title is caught, which is the
+                # subset-keying GHSA-3f65 was.
+                #
+                # No second "have we room left" test beside the subtraction. One
+                # stood here and was measured to be equivalent (#329 round 1):
+                # `scan_text` refuses a budget of zero or below at its own entry,
+                # so a spent budget already costs a call and no regex pass, and
+                # the ceiling arithmetic stays in the one place that owns it. A
+                # guard whose deletion no corpus can observe is a row that cannot
+                # fail rather than a rule that is held.
+                #
+                # The body is not the only text this item is served under. A
+                # source anchor's fields ride on every `knowledge.search` result
+                # and every `knowledge.get`, verbatim and unexcerpted, and
+                # `propose accept` refuses a secret in them -- so a build that
+                # read only the body left the sharpest published channel to the
+                # control that never sees a hand-placed migration (round 1,
+                # adversarial). Same budget, same redaction, one channel tag.
+                if scanning:
+                    at = item.item_id.value
+                    indexed.append(at)
+                    found.extend(_secrets_in(served, at=at, room=MAX_FINDINGS - len(found)))
+                    found.extend(
+                        _anchor_secrets(
+                            revision.source_anchors, at=at, room=MAX_FINDINGS - len(found)
+                        )
+                    )
                 for chunk in chunk_document(revision.revision_id.value, served):
                     indexable.append(
                         IndexableChunk(
@@ -278,6 +424,18 @@ class IndexBuilder:
                         )
                     )
 
+            # A second pass, because an edge's visibility depends on *both* of its
+            # ends and the far one may not have been walked yet. It runs inside
+            # the session -- the handle is released at the `with`'s close -- and
+            # over the items in walk order, so which findings the budget buys is a
+            # property of the corpus and not of when a row was inserted.
+            if scanning:
+                found.extend(
+                    _relation_secrets(
+                        store, context, indexed, visible=visible, room=MAX_FINDINGS - len(found)
+                    )
+                )
+
         index.add_chunks(indexable)
         # After the chunks and before either embedding pass: the forest stands
         # on `chunks` rows through `node_derivation`'s foreign key, and both
@@ -299,6 +457,19 @@ class IndexBuilder:
             # confusion `indexesUnapproved` exists to prevent for drafts.
             "raptor": request.raptor,
             "nodes": len(nodes),
+            # Part of the shape rather than a pair that appears on trouble, the
+            # discipline `propose accept --json` already holds: an empty list says
+            # the scan ran and found nothing, and it says something different
+            # under `off`, where nothing was read at all -- which is exactly what
+            # the policy beside it distinguishes. A caller that only ever sees a
+            # key when something is wrong learns not to read it.
+            "secretScanPolicy": request.secret_scan.value,
+            # Rendered lines, not mappings, for the reason `propose_commands`
+            # measured: `_render` stringifies a mapping in a list with `repr`, and
+            # this is output whose whole purpose is that a person reads it. The
+            # line is `<item>:<line>:<column>: <family> (<prefix>)`, the shape
+            # every compiler and linter emits.
+            "secretFindings": [finding.describe() for finding in found],
         }
 
     def _derive_forest(
@@ -406,4 +577,151 @@ class IndexBuilder:
             )
 
 
-__all__ = ["EMBED_BATCH", "IndexBuilder", "IndexRequest"]
+def _secrets_in(served: str, *, at: str, room: int) -> tuple[IndexedSecretFinding, ...]:
+    """Secret-shaped strings in one served document, at most ``room`` of them.
+
+    ``room`` is how many findings the build may still take, so the detector's
+    ceiling bounds the *total* across every body rather than each body on its own
+    -- the shape ``proposal_service._findings_in`` gives the same ceiling across
+    its channels. Truncation is silent for the reason
+    :func:`~theurian.security.content_secrets.scan_text` records: a report is
+    actionable on the first finding, and "and N more" would publish a count of the
+    corpus's choosing.
+
+    ``room`` at zero or below is a spent budget and returns nothing, which is
+    :func:`~theurian.security.content_secrets.scan_text`'s own rule rather than a
+    second one here -- so this may be called for every body in the corpus and the
+    caller needs no "have we room left" test of its own.
+
+    A module-level function rather than a method, and it returns rather than
+    appends: a helper handed the accumulator would be mutating its caller's list,
+    and the ceiling arithmetic would then live in two places that have to agree.
+    """
+    return tuple(
+        IndexedSecretFinding(item_id=at, finding=finding)
+        for finding in scan_text(served, max_findings=room)
+    )
+
+
+def _anchor_secrets(
+    anchors: Sequence[SourceAnchor], *, at: str, room: int
+) -> tuple[IndexedSecretFinding, ...]:
+    """Secret-shaped strings in one revision's source anchors, at most ``room``.
+
+    Every field here is served verbatim on a ``knowledge.search`` result and a
+    ``knowledge.get`` response -- unexcerpted, to an agent that never opens the
+    body -- and ``propose accept`` refuses a secret in each of them. The field set
+    is :data:`~theurian.domain.knowledge.AUTHORED_ANCHOR_FIELDS`, imported rather
+    than restated, because a security rule enumerated twice is one that acquires a
+    field on one side and not the other.
+
+    The budget is the build's, spent in list order and then in the field order
+    that constant fixes, so a corpus cannot choose which findings it buys by
+    reordering anything but its own anchors.
+    """
+    findings: list[IndexedSecretFinding] = []
+    for index, anchor in enumerate(anchors):
+        for name, value in authored_anchor_strings(anchor):
+            findings.extend(
+                IndexedSecretFinding(
+                    item_id=at, finding=finding, channel=f"sourceAnchors[{index}].{name}"
+                )
+                for finding in scan_text(value, max_findings=room - len(findings))
+            )
+    return tuple(findings)
+
+
+def _both_ends_visible(relation: KnowledgeRelation, visible: Container[str]) -> bool:
+    """Whether this deployment would publish ``relation`` at all.
+
+    The rule ``mcp.tools._relation_is_visible`` enforces on the serve side, asked
+    of the set the build's own walk produced rather than of a second read: an
+    endpoint that cleared ``may_surface`` and ``may_disclose`` is in ``visible``,
+    and one the corpus does not hold is not. **Both** ends, because
+    ``list_relations`` answers in the stored orientation for every
+    non-invertible type -- so an incoming edge from a withheld item arrives with
+    the *fetched* item as its target, and a gate on the target alone would look
+    up the item the caller already holds and publish the row.
+    """
+    return relation.source_item_id.value in visible and relation.target_item_id.value in visible
+
+
+def _relation_secrets(
+    store: IndexBuildSession,
+    context: RequestContext,
+    indexed: Sequence[str],
+    *,
+    visible: Container[str],
+    room: int,
+) -> tuple[IndexedSecretFinding, ...]:
+    """Secret-shaped strings in the relation notes this deployment would publish.
+
+    A ``note`` is free text an author writes on an edge and ``knowledge.get``
+    serves it verbatim. It was read by neither SEC-11 control on a hand-placed
+    migration until #329 round 1, and the rejection case ``_relation_is_visible``
+    records -- ``REJECTED BECAUSE sessions.token held raw bearer tokens until
+    2026-07`` -- is what a note carrying a credential looks like.
+
+    **Gated exactly as the serve path gates it: both ends, or nothing.**
+    ``knowledge.get`` publishes an edge only when both endpoints are items the
+    caller may see, so an edge to a withheld item must not reach this count either
+    -- a number that moved with a row the build refused to index is the shape T-17
+    took. ``visible`` is the set of ids that cleared both filters in the walk
+    above, which is the same answer ``get_item_exact`` gives for each endpoint and
+    costs no second read; an endpoint absent from the corpus is absent from the
+    set, so a dangling edge is withheld rather than scanned.
+
+    **The index is a position in the published list, so the gate runs before the
+    ``enumerate`` and not inside it.** ``knowledge.get`` emits the gate-cleared
+    subsequence; a build that numbered the *store's* sequence and skipped as it
+    went reported an index one too high for every withheld edge sorting earlier --
+    which is not an overrun but a *misdirection*, because there is usually a
+    published row at that index. Measured 2026-09-03 (round 2, adversarial): with
+    one gated edge sorting first, the finding named ``relations[1]`` while the
+    credential sat at published ``relations[0]`` and ``relations[1]`` was a benign
+    note. A reader following the location read the wrong edge and concluded the
+    report was wrong. A note-less edge is published too, so it takes a position
+    here even though it is never scanned.
+
+    **Each authored edge is scanned once.** ``list_relations`` answers from both
+    ends and mirrors the four invertible types, so an edge between two indexed
+    items arrives twice under two orientations. Keyed on the unordered pair and
+    the note, the second sighting is the same author's string in the same place;
+    reporting it again would spend the build's budget on one value twice and read
+    as two credentials. First sighting wins, and the walk order is the corpus's.
+
+    That key is coarser than "the same edge", and the difference is recorded
+    rather than closed: two *different* edges between one pair of items carrying
+    the identical note -- ``a --depends_on--> b`` and ``a --related_to--> b``, say
+    -- are one finding, naming whichever the walk reached first. Both carry the
+    same credential in the same words, so nothing is unreported; what a reader
+    does not learn is that a second edge also has to go. Widening the key to the
+    relation type would report the value twice, which the paragraph above rejects
+    for the mirrored case; the remedy's "remove the relation" applies to each.
+    """
+    findings: list[IndexedSecretFinding] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item_id in indexed:
+        published = [
+            relation
+            for relation in store.list_relations(context, ItemId(item_id))
+            if _both_ends_visible(relation, visible)
+        ]
+        for index, relation in enumerate(published):
+            if relation.note is None:
+                continue
+            source, target = relation.source_item_id.value, relation.target_item_id.value
+            key = (min(source, target), max(source, target), relation.note)
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.extend(
+                IndexedSecretFinding(
+                    item_id=item_id, finding=finding, channel=f"relations[{index}].note"
+                )
+                for finding in scan_text(relation.note, max_findings=room - len(findings))
+            )
+    return tuple(findings)
+
+
+__all__ = ["EMBED_BATCH", "IndexBuilder", "IndexRequest", "IndexedSecretFinding"]

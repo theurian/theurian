@@ -12,6 +12,91 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **`theurian index build` scans the served corpus for secrets (SEC-11's second
+  control)** ([#329](https://github.com/theurian/theurian/issues/329), ADR-0027
+  decision 3). SEC-11 shipped at the approval gate, so a body that entered the
+  corpus before that scanner existed — or through a migration written straight
+  into `.theurian/migrations/`, which never passes `propose accept` — was indexed
+  and served with no scan having seen it. The build now reads every text channel
+  it serves: the body, keyed on the exact `title + body` string the index chunks
+  so a credential in a title is covered like one in the prose; each source
+  anchor's author-written fields, which ride verbatim on every search result and
+  every fetch; and each relation `note` this deployment would publish. The anchor
+  field set is one constant shared with the approval gate
+  (`domain.knowledge.AUTHORED_ANCHOR_FIELDS`), so a field cannot join one control
+  and not the other. It re-checks that population whole on every rebuild rather
+  than a delta.
+
+  **The population is the approved, in-ceiling corpus this deployment serves by
+  default — not the whole canonical store**, and the difference is recorded
+  rather than implied. A `draft` or `rejected` body reachable through
+  `includeUnapproved` is not scanned by a default build: reading a withheld row
+  into a published count is how the existence of withheld content leaves through
+  a number (T-17), and an operator who serves drafts scans them by building with
+  `--include-unapproved`. A superseded revision stays in the canonical store
+  unscanned, which is why the remedy rotates the value before it supersedes the
+  revision. `SECURITY.md` and the threat model carry both.
+
+  **It reports and never refuses, and that is a boundary rather than a
+  preference.** A landed secret is readable through `knowledge.search` and
+  `knowledge.get` the moment `theurian migrate apply` writes it — search degrades
+  to an unranked canonical substring scan and `get` reads the store by id — so a
+  build that refused to publish would deny ranking without un-disclosing
+  anything, and a project that had never built an index would be denied ranking
+  for ever. The same `security.secretScan` knob therefore selects signal severity
+  here rather than a gate: under **`block`** the index is published, `theurian
+  index build` exits **6** — distinct from 1, so a pipeline can tell "published
+  with a finding" from "nothing was published" — and `theurian doctor` reports
+  `indexSecretScan: degraded` with the get-it-out-of-the-corpus remedy until a rebuild
+  comes back clean; under **`warn`** the finding is reported and the exit stays
+  0; under **`off`** nothing is read. Nothing is ever retired automatically: the
+  detector is best effort, and acting on a false positive would be silent data
+  loss.
+
+  What the report may carry is bounded. A finding names the item id, a channel
+  tag built from literals and an integer index, the position within the string
+  that was scanned, the detector family, and at most four characters of the match
+  — the ceiling `SecretFinding` already refuses to be constructed past — and the
+  findings across every channel of every item share one `MAX_FINDINGS` budget, so
+  a corpus cannot choose how long the list is. The scan sits below the
+  `may_surface` and `may_disclose` filters, and a relation note is gated exactly
+  as `knowledge.get` gates it — both endpoints visible — so the published count
+  is a function of the rows the build wrote and cannot carry the existence of one
+  it withheld. `theurian doctor` publishes only the status, the policy and the
+  count: a `--report` is pasted into public issues, and the build's own output is
+  where items are named. The channel index is a position in the list the serving
+  surface publishes, not in the store's own — `knowledge.get` withholds an edge
+  whose far end the caller may not see, so numbering the unfiltered list would
+  send a reader to a different, benign row. If the record cannot be written after
+  the index has published, the report still lists what was found and carries a
+  named `recordWarning` saying the verdict will not reach `doctor`.
+
+  The remedy names three routes rather than two, because two of the channels do
+  not live in a revision: a new `upsertRevision` replaces a body, a title and a
+  source anchor, a relation note needs `removeRelation` and survives superseding,
+  and `deprecateItem` withholds all of them.
+
+  `theurian ingest` still runs no scan of its own and needs none, for a reason
+  about **storage**: it stores no content at all — a manifest and an in-memory
+  read — so at that point nothing is persisted for a scan to have missed. (The
+  reason this replaces, "everything its manifest names is read again by the
+  build", was false in both directions: a specification and an orphaned body file
+  are named by a manifest and never enter the canonical store, and a body reaches
+  the store through routes no manifest names.) Draft-time advisory scanning
+  remains owed ([#330](https://github.com/theurian/theurian/issues/330)). T-15
+  was re-graded against the shipped control and stays **High**: the build
+  detects, and `migrate apply` is still where the content becomes readable.
+
+  A withdrawal-triggered index purge republishes the pointer at a copy of the
+  published build, and it now carries the scan verdict forward under the new
+  build id: an unrelated `theurian migrate apply` no longer clears a `degraded`
+  `doctor` with no rebuild in between. `doctor`'s verdict is also anchored to
+  `BuildProvenance`, so a repository that ships a `.theurian/state/` past its
+  managed ignore cannot make a never-built machine report `clean` (ADR-0004,
+  SEC-7).
+
 ### Fixed
 
 - **One commit whose message is not valid UTF-8 no longer costs the whole

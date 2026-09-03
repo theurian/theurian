@@ -138,6 +138,7 @@ from theurian.domain.values import MARKDOWN, ValidityPeriod
 from theurian.infrastructure.sqlite.connection import create_database, write_transaction
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
+from theurian.security.project_config import SecretScanPolicy
 
 pytestmark = pytest.mark.integration
 
@@ -458,6 +459,7 @@ def _build_corpus(root: Path, *, visible: int, withheld: int) -> Corpus:
             state_hash=STATE_HASH,
             index_build_id=STALE_BUILD_ID,
             visible_sensitivities=EVERY_SENSITIVITY,
+            secret_scan=SecretScanPolicy.BLOCK,
             include_unapproved=False,
         )
     )

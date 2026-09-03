@@ -1705,14 +1705,14 @@ than an omission.** SEC-11's control now runs (below), but the residual it leave
 — a best-effort detector at one of three points a body can enter, with the merge
 still unenforced — is the same shape as before with a smaller mouth.
 
-**Decided 2026-08-24: T-15 stays High, and it is a count that decides it rather
-than a judgement about how good the detector is.** A body reaches the canonical
-store through three points, and the shipped control covers one of them.
-`theurian propose accept` is scanned. `theurian ingest` records content that is
-already approved and runs no scan — shipped behaviour today, not a future gap
-([#329](https://github.com/theurian/theurian/issues/329)). A migration written
-straight into `.theurian/migrations/` never passes through `accept`, so it never
-meets the scan either. Draft time is not a fourth point but advisory territory
+**Decided 2026-08-24, re-measured 2026-09-03 when #329 shipped: T-15 stays High,
+and it is a count that decides it rather than a judgement about how good the
+detector is.** A body reaches the canonical store through three points, and the
+shipped *pre-write* control covers one of them. `theurian propose accept` is
+scanned before anything moves. `theurian ingest` records content that is already
+approved and runs no scan of its own. A migration written straight into
+`.theurian/migrations/` never passes through `accept`, so it never meets the
+pre-write scan either. Draft time is not a fourth point but advisory territory
 ([#330](https://github.com/theurian/theurian/issues/330)): a refusal there would
 tell an author sooner and would gate nothing that `accept` does not already gate.
 And the one covered point is covered by a detector the product declines to call
@@ -1730,9 +1730,21 @@ has read it since
 residual without moving the count**: the metadata reaches the canonical store
 through the same three points a body does, so a hand-written migration and
 `theurian ingest` skip the metadata scan exactly as they skip the body scan.
-One gate of three is still one gate of three. **The residual falls to be
-re-graded when #329 ships an ingest-time and index-time control**, because that
-is the change that moves the count rather than the confidence.
+One gate of three is still one gate of three.
+
+**[#329](https://github.com/theurian/theurian/issues/329) shipped the index-time
+control on 2026-09-03, and the re-grade it was owed comes back High.**
+`theurian index build` now scans every body it indexes, over every text channel
+of the approved, in-ceiling corpus this deployment serves by default, on every
+rebuild — so all three entry points are *detected* rather than one. What it does not move is the count of gates, because the build sits on the
+far side of the disclosure boundary: a body is readable through
+`knowledge.search` and `knowledge.get` the moment `theurian migrate apply`
+writes it — search degrades to an unranked canonical substring scan, and `get`
+reads the store by id — so a build that refused to publish would deny ranking
+without un-disclosing anything, and on a project that had never built an index
+it would deny ranking for ever. The build therefore reports and never refuses,
+and detection-after-serving is a narrower residual than no detection, not a gate.
+Recorded on the issue with the alternatives that were rejected and why.
 
 It stays High rather than rising because the audience the secret reaches is
 bounded by project authorisation (SEC-13) and by the repository read access the
@@ -1889,14 +1901,47 @@ a separate point:*
   `validTo` or `contentFile`: those are scanned
   ([#336](https://github.com/theurian/theurian/issues/336),
   [#349](https://github.com/theurian/theurian/issues/349)).
-- **`theurian ingest` runs no scan**, and neither does index building. Ingest
-  records a manifest of content that is already approved, so scanning there is a
-  different control at a different point in the lifecycle — a real one, and out
-  of #316's scope. Owned by
-  [#329](https://github.com/theurian/theurian/issues/329), which carries #198's
-  measurement of this path forward: #198 closed on the `propose accept` half it
-  shipped and owns nothing here, which is the form the T-15 summary row already
-  uses.
+- **`theurian ingest` runs no scan** of its own, and the reason is about storage
+  rather than about coverage: **it stores no content**. It writes a manifest and
+  holds what it read in memory, so at that point there is nothing persisted for a
+  scan to have missed. What the canonical store *does* hold is covered by the two
+  controls that write to it and read from it. The claim this replaces —
+  "everything that manifest names is read again by `theurian index build`" — was
+  false in both directions: a specification and an orphaned body file are named
+  by a manifest and never enter the canonical store, and a body reaches the store
+  through routes no manifest names.
+  [#329](https://github.com/theurian/theurian/issues/329) shipped the index-time
+  control and carried #198's measurement of this path forward; #198 closed on the
+  `propose accept` half it shipped and owns nothing here, which is the form the
+  T-15 summary row already uses.
+- **`theurian index build` scans every body it indexes, and reports rather than
+  refusing.** Every text channel of the **approved, in-ceiling corpus this
+  deployment serves by default**, on every rebuild: the body keyed on
+  `served_content_text(title, body)` — the exact string the index chunks, so a
+  credential in a title is covered like one in the prose — plus each source
+  anchor's author-written fields and each published relation `note`, which are
+  served verbatim on a result and were read by neither control until round 1 of
+  #329 reported it. The anchor field set is one constant shared with the accept
+  path (`domain.knowledge.AUTHORED_ANCHOR_FIELDS`), so a field cannot join one
+  control and not the other. The scan sits below the `may_surface` and
+  `may_disclose` filters and a relation note is gated exactly as
+  `knowledge.get` gates it — both endpoints visible — so the count it publishes
+  is a function of the rows the build wrote and cannot carry the existence of a
+  withheld one. `block` publishes and exits 6 with `theurian doctor` reporting
+  `indexSecretScan: degraded` until a rebuild comes back clean; `warn` publishes
+  and reports at exit 0; `off` reads nothing. It never retires an item on its
+  own: the detector is best effort, and a false positive would otherwise be
+  silent data loss plus a governance act the build has no authority to take.
+- **Two parts of the store sit outside that population, deliberately.** A `draft`
+  or `rejected` body is reachable by a caller who passes `includeUnapproved`, and
+  a **superseded revision** stays in the canonical store; neither is scanned by a
+  default build. The first is a T-17 consequence and not an oversight — reading a
+  withheld row into a published count is how the existence of withheld content
+  leaves through a number — and an operator who serves drafts can scan them by
+  building with `--include-unapproved`, which indexes them and therefore scans
+  them. The second has no such switch: a revision the corpus has superseded is
+  where a credential still lives until the history is rewritten, which is why the
+  remedy says to rotate the value *first* and supersede second.
 - **`theurian propose` does not scan at draft time.** A refusal there would tell
   an author sooner, but `accept` is the gate, so a draft-time scan is a
   convenience rather than a control.
@@ -6195,7 +6240,7 @@ fix.
 | T-12 | Agent rewrites approved knowledge | T | High | SEC-17 |
 | T-13 | Concurrent daemon corruption | T | High | NFR-1 |
 | T-14 | Setup overwrites configuration — the MCP entry, and `~/.theurian/env` since #128 | T | Medium | SEC-18 |
-| T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — `theurian propose accept` scans every body it would land **and the migration document's author-written fields** ([#336](https://github.com/theurian/theurian/issues/336)), `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it. The document's derived fields and a proposal's `evidence.json` are not read ([#330](https://github.com/theurian/theurian/issues/330)). Ingest-time and index-time scanning are separate controls and do not ship ([#329](https://github.com/theurian/theurian/issues/329); #198 is closed, having shipped the `propose accept` half) |
+| T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — `theurian propose accept` scans every body it would land **and the migration document's author-written fields** ([#336](https://github.com/theurian/theurian/issues/336)), `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it. The document's derived fields and a proposal's `evidence.json` are not read ([#330](https://github.com/theurian/theurian/issues/330)). `theurian index build` is SEC-11's second control and scans every body it indexes, with the source anchors and relation notes served beside it — every text channel of the approved, in-ceiling corpus this deployment serves by default, on every rebuild — and it reports and never refuses, because by then the content is already served whatever the index holds; an unapproved body reachable through `includeUnapproved` and a superseded revision in the store are outside that population and are recorded as residuals in the threat model and `SECURITY.md` ([#329](https://github.com/theurian/theurian/issues/329); #198 is closed, having shipped the `propose accept` half). `theurian ingest` runs no scan of its own |
 | T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet ([#80](https://github.com/theurian/theurian/issues/80); #39 is closed, on its documentation half only) |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
 | T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15); closed for the sensitivity axis in #119 by exclusion at build plus a `changeSensitivity` purge trigger (ADR-0025 parts 1–2). The unpurged-build (purge-failed) cell — including its verbatim `--raptor` `raptorPath` face — is closed by GHSA-97q9-xxfg-33r6, which refuses to serve a purge-failed build (graded High: two non-default operator conditions), leaving only an in-flight request, a double disk fault, and a concurrent clean build reverted by the non-atomic taint write (all SAFE-direction, the last deferred to the derived index's single-writer contract, ADR-0022/ADR-0018, owned by [#439](https://github.com/theurian/theurian/issues/439) — merged PR #113 stood here until #427's sweep); the byte residue ([#344](https://github.com/theurian/theurian/issues/344)) is recorded — **and it is not mostly free-list, and not only a disk surface**: FTS5 `'delete'` tombstones the postings and nothing in the shipped purge merges them, so about three quarters of a purged build's growth is live segment blocks (587 free pages of 2,372) and query duration on the trigram path is monotone in the withdrawn count — at 5,950 withdrawn, **+27.4 ms** end to end (the round-one measurement, +27.36 ms; six later re-runs give +27.59…+28.18 ms, so the delta is stable across runs), which is 5.08–5.67× the baseline depending on the run, median 5.41×, crossing TB-1's 1.40 ms floor between 500 and 1,000 withdrawn rows, with the withdrawn **count** readable off the clock at 3 of 5 and **no content recovered** (responses byte-identical, because `'delete'` does decrement the averages record). A new face of this entry's own root cause at the FTS5 segment level rather than a new class; open, graded High, labelled pre-1.0, owned by [#499](https://github.com/theurian/theurian/issues/499), whose closure is the merge inside the purge or a recorded acceptance carrying the measured bound |

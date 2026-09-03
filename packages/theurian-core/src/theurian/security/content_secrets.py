@@ -101,6 +101,41 @@ follow from that and are deliberate:
   (``MAX_SOURCE_FILE_BYTES`` for a body, ``MAX_YAML_BYTES`` for the migration)
   rather than a bound on their number.
 
+  **``theurian index build`` multiplies it differently, and pays it on every
+  rebuild** (#329). ``index_builder`` calls this once per served document, once
+  per author-written field of each of that revision's source anchors, and once
+  per relation ``note`` this deployment would publish -- so the corpus is walked
+  whole, not as a delta, every time an index is built. There is no equivalent of
+  the accept path's per-file cap: a document is bounded at authoring time by
+  ``MAX_SOURCE_FILE_BYTES``, but nothing bounds how many documents a project
+  holds, so the total is linear in the corpus and is paid by a command a CI job
+  can run on every merge.
+
+  Measured 2026-09-03 at ``7887c078`` on an M-series laptop, ``off`` against the
+  shipped ``block`` over the same corpus, ``--no-embeddings``, median of three:
+
+  ============================================ ========== ========== =========
+  Corpus                                       ``off``    ``block``  ratio
+  ============================================ ========== ========== =========
+  6 x 1 MiB, worst-case ``sk-`` runs, 0 found     6.705 s   12.697 s   1.894x
+  6 x 1 MiB, benign prose                         7.043 s    7.565 s   1.074x
+  200 x 2 KiB, benign prose                       0.653 s    0.700 s   1.071x
+  ============================================ ========== ========== =========
+
+  Which is **0.999 s per MiB** on the adversarial shape -- the same constant the
+  per-body table above prices, arriving here once per document -- and 0.087 s per
+  MiB on prose. The last row is the axis the byte figures cannot show: it prices
+  the *per-item* work, one ``list_relations`` query and each anchor's fields, at
+  **0.23 ms per indexed item** whether or not the item has an edge or an anchor
+  string worth scanning. On a 10,000-item corpus that is ~2.3 s of fixed cost on
+  every rebuild before a single byte of body is considered.
+
+  Recorded rather than bounded, for the reason the accept path's figures are: the
+  worst-case row needs a body written to provoke it, and a build is a local
+  command whose input is the operator's own approved corpus. What would change
+  the reckoning is a corpus large enough for the per-item term to dominate, which
+  is a limit this module does not impose and the builder does not either.
+
 **A finding never carries the secret.** It names the family, where the match
 starts, and at most :data:`REDACTED_PREFIX_CHARS` leading characters. A refusal
 is printed to a terminal and, under ``warn``, published into an ``accept
@@ -339,7 +374,10 @@ def scan_text(text: str, *, max_findings: int = MAX_FINDINGS) -> tuple[SecretFin
         max_findings: Stop after this many. Truncation is silent by design --
             a refusal is actionable on the first finding, and a caller that
             reported "and N more" would be publishing a count of the input's
-            choosing.
+            choosing. **Zero or below returns nothing**: a caller passing a
+            spent budget is asking for no findings, and the loop below would
+            otherwise append one before testing the ceiling and hand back a
+            finding a budget of zero had refused to pay for.
 
     Returns:
         Findings in document order, which is a total order: the outer pass is
@@ -370,6 +408,13 @@ def scan_text(text: str, *, max_findings: int = MAX_FINDINGS) -> tuple[SecretFin
     comparing two findings has no other way to learn that one of them cleared a
     gate the other never faced.
     """
+    # Checked before the walk, not inside it. The loop appends and *then* tests
+    # the ceiling, so a spent budget reaching here would buy one more finding than
+    # the caller had left -- which is how a per-build budget could be exceeded by
+    # exactly one body (#329 round 1).
+    if max_findings <= 0:
+        return ()
+
     findings: list[SecretFinding] = []
     for match in _SCANNER.finditer(text):
         family = _matched_family(match)

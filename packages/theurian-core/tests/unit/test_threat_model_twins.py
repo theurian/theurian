@@ -52,9 +52,12 @@ REQUIREMENTS_ANALYSIS: Final = REPO_ROOT / "docs/architecture/requirements-analy
 #:
 #: **The population is these two keys and nothing else.** They are the two rows
 #: [#425](https://github.com/theurian/theurian/pull/425) corrected in the threat
-#: model and left stale in the copy; the anchor is where each row's sentence
-#: about an *unshipped* control starts, because that sentence is what carries the
-#: issue number a reader would go to.
+#: model and left stale in the copy; the anchor is where each row's sentence about
+#: the control's *reach beyond the gate it names* starts, because that sentence is
+#: what carries the issue number a reader would go to. T-15's anchor moved with
+#: [#329](https://github.com/theurian/theurian/issues/329): the sentence used to
+#: be about an unshipped control and is now about a shipped one, and it still
+#: carries the cite, so the key held while the claim under it inverted.
 #:
 #: An anchor is asserted present rather than defaulted to the empty string. A
 #: missing anchor means the row was rewritten, and comparing the whole cell
@@ -62,7 +65,7 @@ REQUIREMENTS_ANALYSIS: Final = REPO_ROOT / "docs/architecture/requirements-analy
 #: tables are byte-identical here", which they are not and are not meant to be.
 TWIN_CITE_ANCHORS: Final = {
     "T-7": "scheme allowlist",
-    "T-15": "Ingest-time and index-time scanning",
+    "T-15": "`theurian index build` is SEC-11's second control",
 }
 
 
@@ -71,8 +74,12 @@ def _summary_row(path: pathlib.Path, threat_id: str) -> str:
 
     Anchored at the start of the line, so the key is the row's own id cell and
     not an occurrence of the same string inside another row's prose -- T-15's
-    Control cell alone names seven issue numbers (#336, #349, #360, #361, #330,
-    #329, #198; count over the full cell, the owner cite's own pair included).
+    Control cell alone names seven issue numbers in
+    ``requirements-analysis.md`` (#198, #329, #330, #336, #349, #360, #361) and
+    four in the threat model's shorter copy (#198, #329, #330, #336), the owner
+    cite's own pair included in both. Measured 2026-09-03; the two counts differ
+    because the copy's Control column is the longer shape, which is the same
+    reconciliation this module's docstring records as owed.
     """
     pattern = re.compile(rf"^\| {re.escape(threat_id)} \|", re.MULTILINE)
     rows = [line for line in path.read_text(encoding="utf-8").splitlines() if pattern.match(line)]

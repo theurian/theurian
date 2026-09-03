@@ -484,17 +484,40 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   with a redacted refusal under `block`. A proposal's
   `evidence.json` is not scanned: `accept` never moves it into the canonical
   tree, and scanning it is tracked with the draft-time advisory
-  ([#330](https://github.com/theurian/theurian/issues/330)). Theurian does not
-  scan ingested content for secrets — `theurian ingest` and `index build` run no scan at all
-  ([#329](https://github.com/theurian/theurian/issues/329)) — and a
-  migration written straight into `.theurian/migrations/` by hand never passes
-  through `accept`. A secret that gets past all of that becomes readable through
-  `knowledge.search` and `knowledge.get` the moment `theurian migrate apply`
-  writes it into the canonical store — before any `index build`, since search
-  degrades to a canonical substring scan — unless a human notices it in the
-  migration diff and the body it names. Getting one out afterwards means
-  superseding the revision or retiring the item. Run a repository secret scanner
-  — Theurian is not one and is not a replacement for one.
+  ([#330](https://github.com/theurian/theurian/issues/330)). `theurian ingest`
+  runs no scan of its own, and needs none for a reason about *storage* rather
+  than about coverage: **it stores no content at all** — it writes a manifest and
+  holds what it read in memory — so there is nothing at that point for a scan to
+  reach. What the canonical store holds is covered by the two controls that write
+  to it and read from it. `theurian index build` scans every body it indexes
+  ([#329](https://github.com/theurian/theurian/issues/329)), and with each body
+  the source anchors and relation notes served beside it — every text channel of
+  the **approved, in-ceiling corpus this deployment serves by default**, on every
+  rebuild, so it reaches content that entered before the scanner shipped or
+  through a migration written straight into `.theurian/migrations/` by hand,
+  which never passes through `accept`. Two parts of the store are outside that
+  population and are stated rather than implied: a `draft` or `rejected` body,
+  reachable by a caller who passes `includeUnapproved`, is deliberately unscanned
+  — the build never indexes it, and reading it into a published count would put
+  the existence of withheld content into a number; and a **superseded revision**
+  is unscanned for the same reason, while remaining in the canonical store, which
+  is why rotating the value comes before superseding the revision and not after.
+  **That build-time scan reports and does not refuse, and the reason is a
+  boundary rather than a preference.** A
+  secret that gets past `accept` becomes readable through `knowledge.search` and
+  `knowledge.get` the moment `theurian migrate apply` writes it into the
+  canonical store — before any `index build`, since search degrades to a
+  canonical substring scan — so a build that refused to publish would deny
+  ranking without hiding anything. Under `block` the index is published, the
+  build exits non-zero, and `theurian doctor` reports `indexSecretScan:
+  degraded` until a rebuild comes back clean; under `warn` it is reported and
+  the exit stays 0. Nothing is ever retired automatically: the detector is
+  best effort, and retiring an item on a false positive is silent data loss.
+  Getting one out afterwards depends on which channel it is in: a new
+  `upsertRevision` replaces a body, a title and a source anchor, a relation note
+  needs `removeRelation` and survives superseding, and `deprecateItem` withholds
+  all of them. Run a repository secret scanner — Theurian is not one and is not a
+  replacement for one.
 - **Network-level attackers.** The OSS Core is loopback-only by design. Exposing
   it to a network is unsupported. A hosted deployment requires TLS, OAuth 2.1,
   audience and scope validation, and tenant isolation — none of which the local

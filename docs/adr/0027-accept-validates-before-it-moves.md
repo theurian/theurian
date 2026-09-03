@@ -606,9 +606,13 @@ commit updates it rather than silencing it.
   and it belongs to the CL that ships it. **Taken 2026-08-24, in the threat
   model rather than here: T-15 stays High**, because the shipped control covers
   one of the three points a body can enter and the other two are live and
-  unscanned. It is re-graded when
-  [#329](https://github.com/theurian/theurian/issues/329) closes the ingest and
-  index-time gap; T-15's entry carries the reasoning.
+  unscanned. Re-graded on 2026-09-03 when
+  [#329](https://github.com/theurian/theurian/issues/329) shipped the index-time
+  control, and it comes back **High**: the build detects a landed secret in
+  every text channel of the approved, in-ceiling corpus this deployment serves
+  by default, but it runs on the far side of the disclosure boundary —
+  `migrate apply`, not `index build`, is where the content becomes readable — so
+  the count of *gates* is unmoved. T-15's entry carries the measurement.
 - **Every `accept` copies the project's bodies through `$TMPDIR`, and this is an
   accepted residual.** The rehearsal (`cli/migration_pipeline.py`) stages every
   landed migration and every referenced body — including `confidential` and
@@ -871,11 +875,28 @@ no finding location is built from scanned text. All in
 
 Still owed, with the issue that will satisfy it:
 
-- **Ingest-time and index-time secret scanning**
-  ([#329](https://github.com/theurian/theurian/issues/329)). `theurian ingest`
-  records content that is already approved and no scan runs there. T-15's
-  control is approval-time, so this is a second and distinct control; it was out
-  of #316's scope, and it is what T-15's grade is re-read against.
+- ~~**Ingest-time and index-time secret scanning**~~
+  ([#329](https://github.com/theurian/theurian/issues/329)) — **shipped
+  2026-09-03, at the index build.** T-15's control is approval-time, so this was
+  a second and distinct control, out of #316's scope. `theurian index build` now
+  scans every body it indexes, with the source anchors and relation notes served
+  beside it — every text channel of the approved, in-ceiling corpus this
+  deployment serves by default, on every rebuild — so it reaches content that
+  entered through `theurian ingest` or through a hand-placed migration. It
+  reports and never refuses: the build runs after `migrate apply` has already
+  made the content readable, so refusing to publish would deny ranking without
+  un-disclosing anything. `theurian ingest` still runs no scan of its own, and
+  needs none for a reason about **storage**: it stores no content at all — a
+  manifest and an in-memory read — so at that point nothing is persisted for a
+  scan to have missed. The reason this replaces, "everything its manifest names
+  is read again by the build", was false in both directions: a specification and
+  an orphaned body file are named by a manifest and never enter the canonical
+  store, and a body reaches the store through routes no manifest names. Two
+  parts of the store are outside the build's population and are recorded as
+  residuals in the threat model and `SECURITY.md`: an unapproved body reachable
+  through `includeUnapproved`, unscanned because reading a withheld row into a
+  published count is the T-17 shape; and a superseded revision, unscanned while
+  it remains in the store, which is why the remedy rotates before it supersedes.
 - **Name hygiene in refusal messages**
   ([#360](https://github.com/theurian/theurian/issues/360)). The scan's own
   finding locations never reproduce the value (the `#349` entry above), but

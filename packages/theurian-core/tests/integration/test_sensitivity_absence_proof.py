@@ -227,6 +227,7 @@ from theurian.infrastructure.sqlite.connection import create_database, write_tra
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
 from theurian.mcp.tools import MAX_BUDGET_TOKENS, MAX_RESULTS
+from theurian.security.project_config import SecretScanPolicy
 
 pytestmark = pytest.mark.integration
 
@@ -880,6 +881,7 @@ def _build_project(
             state_hash=str(built_from),
             index_build_id=INDEX_BUILD_ID,
             visible_sensitivities=CEILING_LEVELS,
+            secret_scan=SecretScanPolicy.BLOCK,
             include_unapproved=False,
         )
     )

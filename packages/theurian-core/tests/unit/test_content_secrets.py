@@ -1227,6 +1227,38 @@ def test_one_crowded_run_answers_the_published_ceiling_and_no_more() -> None:
     )
 
 
+@pytest.mark.parametrize("spent", [0, -1, -20])
+def test_a_spent_budget_buys_no_finding_at_all(spent: int) -> None:
+    """The contract every accumulating caller subtracts against.
+
+    Both SEC-11 controls hand ``scan_text`` the budget they have *left*:
+    ``proposal_service._findings_in`` across the accept path's channels, and
+    ``index_builder._secrets_in`` across every body one build indexes. The loop
+    appends and then tests the ceiling, so a run reaching it with nothing left to
+    spend returned one finding anyway -- a per-build ceiling of twenty answering
+    twenty-one (measured 2026-09-03, #329 round 1). Zero means zero, and a
+    negative budget -- which only arithmetic that has already overrun can
+    produce -- means the same rather than something worse.
+
+    **The fixture takes the outer pass's ``append`` branch, and that is the whole
+    point.** A body whose credential sits inside a *refused* candidate run is
+    handed to ``_families_inside``, which bounds itself on ``room`` and answers
+    nothing for a spent budget whatever this entry does -- so such a body reports
+    the right answer for the wrong reason, and a row built on it stays green with
+    the guard deleted (measured 2026-09-03). ``AKIA`` is matched by a specific
+    family in the outer pass, so it is appended before any ceiling is consulted.
+    """
+    credential = _FAMILY_CREDENTIALS["aws-access-key-id"]
+    body = f"config:\n  key: {credential}\n"
+    reported = scan_text(body, max_findings=1)
+    assert [f.family for f in reported] == ["aws-access-key-id"], (
+        f"the fixture is not reported by the outer pass's append branch, so a bounded "
+        f"answer of none below would hold for a reason this row is not about: {reported}"
+    )
+
+    assert scan_text(body, max_findings=spent) == ()
+
+
 #: The four English words the case below has always cited, each ending in the two
 #: letters ``openai-api-key`` begins with and each written here with the same ``-``
 #: that family looks for. ``risk-<hex40>`` and its siblings are 45 characters, all

@@ -68,6 +68,61 @@ class SourceAnchor:
 #: external source, so INV-8 stays checkable without inventing a fake anchor.
 AUTHORED_IN_THEURIAN = "authored-in-theurian"
 
+#: Every string a source anchor's author writes, under the name it is written and
+#: published as. The whole set, because an anchor has no Theurian-derived field at
+#: all, so there is nothing here to leave out.
+#:
+#: **One tuple for both SEC-11 controls, and it lives here because they meet
+#: nowhere else.** ``propose accept`` scans a *parsed migration mapping* by key
+#: (``proposal_service._metadata_strings``); ``index build`` scans the
+#: :class:`SourceAnchor` objects the canonical store hands back
+#: (:func:`authored_anchor_strings`). Two enumerations would be a security rule
+#: written twice at two layers, which is how a field joins one control and not the
+#: other -- the shape round 1 found, with ``sourceUri`` served verbatim by
+#: ``knowledge.search`` and ``knowledge.get`` and scanned by the approval gate
+#: alone.
+#:
+#: ``commitSha`` and ``blobSha`` are enumerated for that uniformity rather than
+#: because they can carry anything: the detector's class gate cannot fire on
+#: lower-case hex. Two of the seven -- ``blobSha`` and ``externalId`` -- are stored
+#: and not served by today's result payload; scanning a stored-but-unserved field
+#: can only over-report, and leaving them out would mean a reader had to work out
+#: why two of an anchor's fields are missing.
+AUTHORED_ANCHOR_FIELDS: tuple[str, ...] = (
+    "blobSha",
+    "commitSha",
+    "externalId",
+    "filePath",
+    "provider",
+    "repository",
+    "sourceUri",
+)
+
+
+def authored_anchor_strings(anchor: SourceAnchor) -> tuple[tuple[str, str], ...]:
+    """Each non-empty author-written string on ``anchor``, with the name it is served under.
+
+    The names are exactly :data:`AUTHORED_ANCHOR_FIELDS`, and
+    ``test_knowledge.py`` pins that rather than leaving it to two lists agreeing
+    by inspection: the pairs are written out here because ``getattr`` over a name
+    tuple types as ``Any``, and a security control's field set is the last place
+    to spend one.
+
+    Empty values are dropped rather than yielded: an anchor's optional fields are
+    ``None`` far more often than not, and a scanner handed ``""`` reports nothing
+    anyway. ``lineStart``/``lineEnd`` are integers and carry no text at all.
+    """
+    written: tuple[tuple[str, str | None], ...] = (
+        ("blobSha", anchor.blob_sha),
+        ("commitSha", anchor.commit_sha),
+        ("externalId", anchor.external_id),
+        ("filePath", anchor.file_path),
+        ("provider", anchor.provider),
+        ("repository", anchor.repository),
+        ("sourceUri", anchor.source_uri),
+    )
+    return tuple((name, value) for name, value in written if value)
+
 
 @dataclass(frozen=True, slots=True)
 class RevisionMetadata:

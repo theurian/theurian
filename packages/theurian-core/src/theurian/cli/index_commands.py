@@ -38,6 +38,10 @@ from theurian.application.authorization import (
 )
 from theurian.application.forest_builder import ForestBuilder
 from theurian.application.index_builder import IndexBuilder, IndexRequest
+from theurian.application.index_secret_scan import (
+    LANDED_SECRET_REMEDY,
+    write_index_secret_scan,
+)
 from theurian.application.project_service import (
     INDEX_POINTER_REMEDY,
     UNBUILT_STATE_REMEDY,
@@ -59,10 +63,24 @@ from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
 from theurian.infrastructure.secrets.file_store import default_data_dir
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore, fts5_available
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
+from theurian.security.project_config import SecretScanPolicy, read_secret_scan_policy
 
 index_app = typer.Typer(help="Build and inspect the retrieval index.", no_args_is_help=True)
 
 JsonOption = Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")]
+
+#: What ``theurian index build`` exits with when it published an index that
+#: appears to carry a secret and ``security.secretScan`` is ``block`` (SEC-11,
+#: #329).
+#:
+#: **Distinct from 1 because the two outcomes are opposite**, and a pipeline has
+#: to be able to tell them apart: exit 1 from this command means nothing was
+#: published and retrieval still uses the previous build, while this means a
+#: *complete* index was published and something in it needs rotating. Collapsing
+#: them would make a CI job that stops on a secret also stop on a corrupt state
+#: database, and vice versa. Beside ``EXIT_STATE_ERROR`` (4) and
+#: ``EXIT_NEEDS_CONSENT`` (5), each declared in the module that owns it.
+EXIT_SECRET_FOUND = 6
 
 
 @index_app.command("build")
@@ -105,6 +123,18 @@ def index_build(
     ``indexed: true``, and ``theurian index status`` reports nothing to do. That
     is the shape a project-id mismatch takes, and this refusal is what turns it
     from silent into a message naming the ids involved.
+
+    Every body it indexes is scanned for secrets under `security.secretScan` in
+    `.theurian/config.yaml`, which is `block` when the key is absent (SEC-11). A
+    finding does not stop the build: the content is already in the canonical
+    store and already served by `knowledge.search` and `knowledge.get`, so
+    refusing to publish would deny ranking without hiding anything. Under `block`
+    the index is published and the command exits 6, and `theurian doctor` goes on
+    reporting it until a build finds nothing; under `warn` it is reported and the
+    exit stays 0; under `off` nothing is scanned. Getting a landed secret out
+    means rotating it and then removing it from the corpus by the route its
+    channel needs: a new `upsertRevision` for a body, a title or a source anchor,
+    `removeRelation` for a note on an edge, `deprecateItem` for any of them.
     """
     from theurian.cli.commands import _emit, _require_project  # noqa: PLC0415 - cycle
 
@@ -118,6 +148,9 @@ def index_build(
         return
     grant = _deployment_grant(as_json)
     if grant is None:
+        return
+    policy = _secret_scan_policy(paths, as_json)
+    if policy is None:
         return
 
     # The context already carries the generator every other command uses, so
@@ -148,6 +181,7 @@ def index_build(
         state_hash=str(active.state_hash),
         index_build_id=index_build_id,
         visible_sensitivities=grant.sensitivities,
+        secret_scan=policy,
         include_unapproved=include_unapproved,
         raptor=raptor,
     )
@@ -173,11 +207,69 @@ def index_build(
     # stands aside any build id it does not find here, so this is what lets the
     # ranked path use the build that was just published.
     BuildProvenance.default().record_index(paths.root, index_build_id)
+    findings: list[str] = list(report["secretFindings"])
+    warning = _record_the_scan(
+        paths, index_build_id=index_build_id, policy=policy, findings=len(findings)
+    )
+    if findings:
+        # A remedy on a success result, the shape `AcceptedProposal
+        # .cleanup_remedy` already has: the build did publish, and telling the
+        # operator otherwise would send them to rebuild something that is fine.
+        report = {**report, "remedy": LANDED_SECRET_REMEDY}
+    if warning is not None:
+        report = {**report, "recordWarning": warning}
     # Publishing does not reclaim (ADR-0024 point 6). Reaping the previous build
     # here is what made ADR-0022's "the previous build is not deleted" false, and
     # measured against a reader it cost 2,627 errors against 40 answered searches
     # in 1.5 seconds. `theurian index gc` reclaims, explicitly.
     _emit({**report, "published": True}, as_json=as_json)
+    if policy is SecretScanPolicy.BLOCK and findings:
+        # Emitted first, and *then* non-zero. The index is published and the
+        # report is the operator's only account of what was found, so `_fail`'s
+        # shape -- which replaces the payload with `{error, remedy}` on stderr --
+        # would hide the very thing that has to be read. This is the signal
+        # posture #329 settled: halting a build does not un-disclose a body the
+        # canonical store already serves, so `block` is loud rather than
+        # obstructive.
+        raise typer.Exit(EXIT_SECRET_FOUND)
+
+
+def _record_the_scan(
+    paths: ProjectPaths, *, index_build_id: str, policy: SecretScanPolicy, findings: int
+) -> str | None:
+    """Write this build's scan record, or say why the report is its only account.
+
+    Written on every publish, clean ones included: this is what clears a previous
+    ``degraded`` as well as what raises a new one, and a record kept only on
+    trouble would leave the last bad verdict standing over a fixed corpus.
+
+    **A failure here degrades to a warning and never to a traceback**, because of
+    where in the command it sits. The index is already published and the pointer
+    already swapped; the findings the caller is about to read are the only account
+    of what was found, and an unhandled ``OSError`` in this window replaced them
+    with a Rich traceback and *empty stdout* -- reproduced round 1 with the record
+    path replaced by a directory, and reachable in the field through ENOSPC. So
+    the build reports what it found, says the signal will not survive the
+    terminal, and still exits on the policy.
+
+    The exception's type name, never its message: an ``OSError``'s ``strerror``
+    carries the operator's absolute paths, which no payload here puts in (the rule
+    ``_purge_fields``' failure reason already holds). ``theurian doctor`` answers
+    ``unrecorded`` for this build afterwards -- honest ignorance, and never a clean
+    bill -- which is what makes degrading safe rather than convenient.
+    """
+    try:
+        write_index_secret_scan(
+            paths, index_build_id=index_build_id, policy=policy, findings=findings
+        )
+    except OSError as exc:
+        return (
+            f"The index published, but this build's secret-scan record could not be written "
+            f"({type(exc).__name__}), so `theurian doctor` will report `unrecorded` for it "
+            f"rather than what is listed above. Make `.theurian/state/` writable and run "
+            f"`theurian index build` again to record the verdict."
+        )
+    return None
 
 
 def _require_buildable_state(paths: ProjectPaths, as_json: bool) -> ActiveState | None:
@@ -263,6 +355,42 @@ def _deployment_grant(as_json: bool) -> AuthorizationGrant | None:
         )
         return None
     return StaticAuthorizationProvider(profile).deployment_grant()
+
+
+def _secret_scan_policy(paths: ProjectPaths, as_json: bool) -> SecretScanPolicy | None:
+    """What this project does about a secret in what it serves (SEC-11, #329).
+
+    The same reader ``propose accept`` uses, on the same key, so the two SEC-11
+    controls cannot end up meaning different things by the same configuration.
+    Absent means ``block`` and unrecognised means refuse -- both rules belong to
+    :func:`~theurian.security.project_config.read_secret_scan_policy`, and neither
+    is re-decided here.
+
+    Read at the composition root rather than inside the builder, unlike the accept
+    path, and the difference is what the two layers can reach. ``ProposalService``
+    holds a ``ProjectPaths`` and so can find ``.theurian/config.yaml`` itself,
+    which is what makes the control impossible for a caller to omit. A build is
+    addressed by a *database path* and has no project root at all, so the
+    requirement moves onto ``IndexRequest.secret_scan``, which has no default and
+    therefore cannot be forgotten either.
+
+    Read before the build starts, beside the other two preconditions, so a
+    configuration file the build cannot act on refuses on the first build rather
+    than after the corpus has been read. Its own ``remedy`` names the file and the
+    three values, which is why it is preferred over a generic one.
+    """
+    from theurian.cli.commands import _fail  # noqa: PLC0415 - cycle
+
+    try:
+        return read_secret_scan_policy(paths.root, paths.config)
+    except TheurianError as exc:
+        _fail(
+            str(exc),
+            remedy=exc.remedy or "Run `theurian doctor`.",
+            as_json=as_json,
+            code=1,
+        )
+        return None
 
 
 def _run_build(

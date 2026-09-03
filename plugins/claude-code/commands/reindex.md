@@ -54,6 +54,14 @@ is step 3 below, not the front-matter
    a plain build of the same state gave `nodes: 0`. There is no duration field —
    if the elapsed time matters, time the call yourself.
 
+   **Exit 6 here means the build published and step 3 may proceed.** It is the
+   SEC-11 signal that something in the published content looks like a credential,
+   not a failed build: relay every `secretFindings` line and the `remedy` beside
+   them, report the build id as usual, and carry on. Do not re-run the build —
+   the finding is in the content and comes back. Exit 1 is the one that means
+   nothing was published, and step 3 must not run after it: reclaiming while the
+   pointer still names the *previous* build is not what this command is for.
+
 3. Show what would be reclaimed, ask, then reclaim:
 
    ```sh

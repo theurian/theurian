@@ -1,0 +1,422 @@
+"""What the last published index build's secret scan found (SEC-11, #329).
+
+``theurian propose accept`` scans **before** anything is written, so a finding
+there can refuse the acceptance and nothing lands. This module belongs to the
+other control: the one that runs at ``theurian index build``, over content that is
+**already in the canonical store**.
+
+**Which is why it records rather than refuses, and the disclosure boundary is
+where that decision comes from.** A landed secret is readable through
+``knowledge.search`` and ``knowledge.get`` the moment ``theurian migrate apply``
+writes it, before any index exists at all -- search degrades to an unranked
+canonical substring scan and ``get`` reads the store by id. So a build that
+refused to publish would deny *ranking* without un-disclosing anything, and on a
+project that has never built one it would deny ranking for ever. The scan is
+therefore a detection-and-signal control: ``block`` publishes the index and makes
+the build exit non-zero, and this record is what carries that signal past the
+terminal that saw it, to the next ``theurian doctor``.
+
+**Never an auto-retire.** The detector is best-effort entropy heuristics
+(:mod:`theurian.security.content_secrets` says so in its own first paragraph), and
+retiring an item on a false positive is silent data loss plus a governance act a
+build has no authority to take.
+
+One record per project, overwritten by every publish, naming the build it
+describes -- so a reader can tell a verdict about the *published* index from one
+left behind by a build the pointer no longer names. It carries a count and a
+policy and nothing else: ``theurian doctor --report`` is pasted into public
+issues, and which item carries a credential is content the reader of a pasted
+report has no business learning. The build's own terminal output names the items.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+from typing import Any, Final
+
+from theurian.application.project_service import (
+    BuildProvenance,
+    ProjectPaths,
+    read_active_index_pointer,
+)
+from theurian.security.project_config import SecretScanPolicy
+
+#: What to do about a secret that has already landed in the canonical store.
+#:
+#: Rotation comes first for the reason ``proposal_service._secret_refusal`` gives
+#: about a proposal directory, only more so: this content is not merely in a
+#: working tree, it is in the applied state and is being served. Telling the
+#: operator to delete the line and carry on would be advice that leaves the
+#: credential live.
+#:
+#: The escape hatch is named second and names the key, because ``block`` is the
+#: default policy and a false positive is otherwise a dead end -- the same
+#: reasoning, and deliberately the same three values, as the accept path's remedy.
+#:
+#: **One string for two readers**, which is what decides how the pointer to the
+#: item list is worded. The build's own report carries this beside the findings it
+#: just listed; ``theurian doctor`` carries it hours later beside a count and no
+#: items, because a ``--report`` is pasted into public issues. So it *names* the
+#: command that lists them rather than telling the reader to run it -- which read
+#: as an instruction to re-run what had just been run, measured against the real
+#: CLI on 2026-09-03.
+#:
+#: **"up to its reporting limit" is not hedging.** The scan stops at
+#: :data:`~theurian.security.content_secrets.MAX_FINDINGS` across the whole build,
+#: so a corpus carrying more than that is reported by a count and named only as
+#: far as the budget reached -- and a remedy promising the list names *the* items
+#: would send an operator who fixed every named one back to a build that finds
+#: more. The next build re-scans and names the next batch, which is why the loop
+#: terminates without the number ever being published.
+#:
+#: **``removeRelation`` is named because two of the three channels do not live in
+#: a revision.** ``supersede the revision`` clears a body, a title and a source
+#: anchor, because all three are revision metadata that a new ``upsertRevision``
+#: replaces. A relation ``note`` is on the *edge*, not on either item -- measured
+#: 2026-09-03 (round 2): after superseding the named item's revision the build
+#: reported the same finding and ``knowledge.get`` went on serving the note. Naming
+#: only the two routes that cannot work would be a remedy that leaves the
+#: credential live, which is the failure the whole string is written against.
+#: Still one constant for two readers: the finding's channel tag says which route
+#: applies, and ``doctor``'s copy names all three because it publishes no channel.
+LANDED_SECRET_REMEDY: Final = (
+    "Treat the value as exposed and rotate it: it is in this project's canonical state and "  # noqa: S105 - prose about a secret, not one
+    "in Git history, and `knowledge.search` and `knowledge.get` already serve it whatever "
+    "this index holds. Then get it out of the corpus -- supersede the revision with a new "
+    "`upsertRevision` for a finding in a body, a title or a source anchor, or drop the edge "
+    "with `removeRelation` for one in a relation note, which superseding does not touch; "
+    "retiring the item with `deprecateItem` withholds all of them -- and run `theurian "
+    "migrate apply` followed by `theurian index build`, which names the items it reported, "
+    "up to its reporting limit; rebuild again after fixing them, in case more were found "
+    "than it listed. If it is not a secret, set security.secretScan to warn or off in "
+    ".theurian/config.yaml (block, warn, off; block is what an absent key selects)."
+)
+
+
+class IndexSecretScanStatus(StrEnum):
+    """What can be said about the published index's secret scan.
+
+    Six answers rather than a boolean, because "no finding" is four different
+    facts and an operator acts differently on each: the scan ran and found
+    nothing, the scan was turned off, no scan has ever been recorded for the build
+    that is published, and there is no published build to say anything about. A
+    verdict that collapsed them would report a project nobody has scanned as
+    clean.
+    """
+
+    #: No project here, or no published index build to describe.
+    NOT_APPLICABLE = "not-applicable"
+    #: An index is published and no scan record names it: it predates this
+    #: control, the record names some other build, or this installation did not
+    #: build the published index at all. Honest ignorance, not a clean bill.
+    UNRECORDED = "unrecorded"
+    #: ``security.secretScan`` is ``off``, so nothing was read.
+    UNSCANNED = "unscanned"
+    #: Scanned, nothing found.
+    CLEAN = "clean"
+    #: Findings, under ``warn``. The operator asked to be told, not stopped.
+    WARNED = "warned"
+    #: Findings, under ``block``. The health verdict this control exists to raise.
+    DEGRADED = "degraded"
+
+
+@dataclass(frozen=True, slots=True)
+class IndexSecretScanVerdict:
+    """The published build's scan, in the form ``theurian doctor`` publishes it."""
+
+    status: IndexSecretScanStatus
+    #: The policy the recorded scan ran under, or ``None`` when there is no record.
+    policy: SecretScanPolicy | None = None
+    #: How many findings that scan reported, bounded by the detector's own
+    #: ``MAX_FINDINGS``. Zero whenever :attr:`policy` is ``None``.
+    findings: int = 0
+
+    def __post_init__(self) -> None:
+        if self.policy is None and self.findings:
+            # A count with no policy beside it cannot say whether it means
+            # "scanned and found" or "not scanned at all", which is the exact
+            # confusion `SecretScanResult` carries its policy to prevent.
+            #
+            # **No construction in this package reaches it**, said here rather
+            # than left for a reader to discover -- the same annotation
+            # `_read_record`'s blank-id arm carries, for the same reason. Every
+            # policy-less verdict is built from a literal with no `findings=` at
+            # all (`NOT_APPLICABLE`, `UNRECORDED`), and every verdict that
+            # carries a count is built from a record whose policy parsed. It is a
+            # constructor invariant rather than a branch a test can drive, and a
+            # row over it would be a row that cannot fail; the reason to keep it
+            # is that this class is a published shape and the next caller is not
+            # in this file.
+            msg = "a scan verdict with no policy cannot carry findings"
+            raise ValueError(msg)
+
+    @property
+    def degraded(self) -> bool:
+        """Whether ``theurian doctor`` must count this as a problem."""
+        return self.status is IndexSecretScanStatus.DEGRADED
+
+    @property
+    def payload(self) -> dict[str, Any]:
+        """The published block, whose shape does not vary with what was found.
+
+        ``policy`` and ``findings`` are always present, for the reason
+        ``propose accept``'s ``secretFindings`` is: a field that only appears when
+        something is wrong is a field a caller learns not to read. ``remedy``
+        appears only when there is something to do, which is the shape
+        ``AcceptedProposal.cleanup_remedy`` already has.
+        """
+        published: dict[str, Any] = {
+            "status": self.status.value,
+            "policy": self.policy.value if self.policy is not None else None,
+            "findings": self.findings,
+        }
+        if self.findings:
+            published["remedy"] = LANDED_SECRET_REMEDY
+        return published
+
+
+def write_index_secret_scan(
+    paths: ProjectPaths, *, index_build_id: str, policy: SecretScanPolicy, findings: int
+) -> None:
+    """Record what this build's scan did, atomically.
+
+    Written on **every** publish, including a clean one, and that is the whole of
+    what clears a previous ``degraded``. A record written only on trouble would
+    leave the last bad verdict standing over a corpus somebody had already fixed.
+
+    Write-to-temp then ``os.replace``, the discipline
+    :func:`~theurian.application.project_service.write_active_index_pointer` holds
+    for the pointer beside it: a reader must never see half a record and conclude
+    the wrong thing about a security control.
+
+    **A failure between the two leaves the ``.json.tmp`` behind, deliberately.**
+    Unlinking it in a handler would mean a second failing syscall on the path that
+    already failed, and there is nothing to protect: the temporary is not the
+    record's name, so no reader opens it -- ``published_index_secret_scan`` reads
+    exactly ``index-secret-scan.json`` -- and the next successful write truncates
+    it under the same fixed name. It is derived, git-ignored and one file.
+
+    ``off`` is recorded with a count of zero whatever the caller passes, because
+    the two fields would otherwise contradict each other in the published block:
+    :func:`_status_of` reports ``off`` as ``unscanned`` and refuses to interpret a
+    count under it, so a record stating both is one no reader can act on. Zeroed
+    rather than refused -- this runs after the index is published, and raising
+    here is the traceback-with-empty-stdout the caller's own guard exists to
+    prevent.
+
+    **That zeroing is defensive and is unreachable through this package**, said
+    here rather than left for a reader to discover -- the same annotation
+    :func:`_read_record`'s blank-``indexBuildId`` arm carries, for the same
+    reason. ``IndexBuilder`` reads the policy once before it touches a body and
+    returns no findings at all under ``off``, so the only caller always passes
+    zero with it and deleting the ternary moves nothing (measured 2026-09-03). It
+    stays because this is the writer of a *published* record and the next caller
+    is not in this file; it is **not** covered by a test row, because a row over
+    it could not fail.
+
+    Raises:
+        OSError: If the record cannot be written. The caller decides what that
+            means: ``index build`` degrades it to a ``recordWarning`` beside the
+            findings, because by then the index is published and the findings are
+            the only account of what it holds.
+    """
+    record = paths.index_secret_scan
+    record.parent.mkdir(parents=True, exist_ok=True)
+    temporary = record.with_suffix(".json.tmp")
+    counted = 0 if policy is SecretScanPolicy.OFF else findings
+    temporary.write_text(
+        json.dumps(
+            {"indexBuildId": index_build_id, "policy": policy.value, "findings": counted},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    os.replace(temporary, record)  # noqa: PTH105 - os.replace is the atomic primitive
+
+
+def carry_index_secret_scan_forward(
+    paths: ProjectPaths, *, from_build_id: str, to_build_id: str
+) -> None:
+    """Re-record the scan under a build derived from the one it already names.
+
+    A withdrawal-triggered purge is the second writer of ``active-index.json``
+    (``publish_purge_for_withdrawal``): it copies the published build, removes the
+    withdrawn revisions from the copy, and republishes the pointer at a fresh
+    ULID. Nothing was re-scanned, and nothing was *added* -- so the verdict the
+    source build carried is still the verdict for the copy, and leaving it behind
+    made an unrelated ``theurian migrate apply`` clear a ``degraded`` doctor with
+    no rebuild in between (round 1, all three reviewers).
+
+    **Carrying it forward can only over-report, which is the safe direction.** A
+    purge removes rows and never writes one, so the copy holds a subset of what
+    was scanned: the count is an upper bound on what the new build carries, and
+    the item that no longer carries it is the one the operator just withdrew. The
+    next ``theurian index build`` re-scans and rewrites the record, so an
+    over-report lasts exactly until the rebuild the remedy already asks for.
+    Under-reporting is what must not happen, and reporting ``clean`` for a build
+    nobody scanned is exactly that.
+
+    **Only when the record names ``from_build_id``.** A record naming any other
+    build is somebody else's -- a hand edit, a restored file, a build this control
+    never saw -- and restamping it would be inventing a verdict, which is the one
+    thing :func:`published_index_secret_scan` refuses to do.
+
+    Never raises. The write is the same atomic temp-then-replace
+    :func:`write_index_secret_scan` performs, and a failure here degrades to
+    ``UNRECORDED`` -- honest ignorance, never a clean bill -- on a path whose
+    caller has already committed the withdrawal and republished the pointer.
+    """
+    recorded = _read_record(paths.index_secret_scan)
+    if recorded is None or recorded[0] != from_build_id:
+        return
+    _, policy, findings = recorded
+    try:
+        write_index_secret_scan(paths, index_build_id=to_build_id, policy=policy, findings=findings)
+    except OSError:
+        return
+
+
+def published_index_secret_scan(
+    paths: ProjectPaths, *, provenance: BuildProvenance
+) -> IndexSecretScanVerdict:
+    """What the *published* build's scan found, or why nothing can be said.
+
+    Never raises. Every failure here means the same thing -- nothing is known
+    about the published build -- and reporting ignorance is the honest answer for
+    a record that is derived, git-ignored, and rewritten by the next build.
+
+    **A record for another build is not this build's verdict.** The id is compared
+    rather than trusted: reading a record that names some other build would report
+    a verdict about an index nobody is being served. The one derived build that
+    legitimately inherits a verdict says so explicitly --
+    :func:`carry_index_secret_scan_forward` re-records under the purged copy's id,
+    rather than this reader guessing that an unfamiliar id is close enough.
+
+    **The record vouches for nothing on its own** (ADR-0004, SEC-7, T-19). Both
+    files this reads live under `.theurian/state/`, which is git-ignored and
+    therefore force-addable: a repository that ships an ``active-index.json`` and
+    a matching ``index-secret-scan.json`` past that ignore makes a machine which
+    has never run ``index build`` report ``clean`` -- the exact laundering
+    :class:`~theurian.application.project_service.BuildProvenance` closes, and
+    which ``index build``'s own ``has_state`` gate already refuses one step
+    earlier. So the published build id is checked against this installation's
+    build record first, and a build this install did not produce is ``UNRECORDED``
+    whatever the record beside it says. ``provenance`` is injected rather than
+    resolved here, because every provenance check in this codebase belongs to a
+    composition root or a serve entry point, never to the layer that reads.
+    """
+    published = read_active_index_pointer(paths).payload
+    if published is None:
+        return IndexSecretScanVerdict(status=IndexSecretScanStatus.NOT_APPLICABLE)
+
+    build_id = str(published.get("indexBuildId", ""))
+    if not provenance.has_index(paths.root, build_id):
+        return IndexSecretScanVerdict(status=IndexSecretScanStatus.UNRECORDED)
+
+    recorded = _read_record(paths.index_secret_scan)
+    if recorded is None or recorded[0] != build_id:
+        return IndexSecretScanVerdict(status=IndexSecretScanStatus.UNRECORDED)
+
+    _, policy, findings = recorded
+    return IndexSecretScanVerdict(
+        status=_status_of(policy, findings), policy=policy, findings=findings
+    )
+
+
+def _status_of(policy: SecretScanPolicy, findings: int) -> IndexSecretScanStatus:
+    """The verdict a recorded scan carries.
+
+    ``off`` is reported as unscanned whatever the count says, because under ``off``
+    there is no count to report -- and a record claiming otherwise has been edited.
+    """
+    if policy is SecretScanPolicy.OFF:
+        return IndexSecretScanStatus.UNSCANNED
+    if not findings:
+        return IndexSecretScanStatus.CLEAN
+    return (
+        IndexSecretScanStatus.DEGRADED
+        if policy is SecretScanPolicy.BLOCK
+        else IndexSecretScanStatus.WARNED
+    )
+
+
+def _read_record(record: Path) -> tuple[str, SecretScanPolicy, int] | None:
+    """The record's three fields, or ``None`` when it cannot be trusted whole.
+
+    Every field is checked rather than coerced. A record whose ``policy`` is not
+    one of the three, or whose ``findings`` is not a non-negative integer, is a
+    file something else wrote -- and reading a policy out of it would be inventing
+    one, the rule ``read_secret_scan_policy`` holds for the configuration file.
+    ``bool`` is excluded explicitly: ``isinstance(True, int)`` is ``True``, and a
+    ``findings: true`` would otherwise count as one finding.
+
+    **The blank-``indexBuildId`` arm is defensive parity and is unreachable**,
+    said here rather than left for a reader to discover. It mirrors
+    :func:`~theurian.application.project_service.read_active_index_pointer`'s rule
+    for the file beside this one, but a blank id can never equal a published one,
+    so :func:`published_index_secret_scan` answers ``UNRECORDED`` from its own
+    comparison whatever this decides. Measured 2026-09-03 by deleting the
+    ``.strip()``: nothing moved. It stays because the two readers of adjacent
+    derived files should refuse the same shapes, and it is *not* covered by a
+    test row -- a row over it could not fail.
+    """
+    loaded = _loaded_mapping(record)
+    if loaded is None:
+        return None
+
+    build_id = loaded.get("indexBuildId")
+    findings = loaded.get("findings")
+    policy = _policy_named(loaded.get("policy"))
+    if policy is None or not isinstance(build_id, str) or not build_id.strip():
+        return None
+    if isinstance(findings, bool) or not isinstance(findings, int) or findings < 0:
+        return None
+    return build_id, policy, findings
+
+
+def _loaded_mapping(record: Path) -> dict[str, Any] | None:
+    """The record parsed as a JSON object, or ``None`` on any way of failing.
+
+    ``UnicodeDecodeError`` is a ``ValueError`` and not a ``JSONDecodeError``, so a
+    record holding arbitrary bytes -- a partially overwritten file, a restored
+    binary -- escapes a handler that lists only the latter. The same three-way
+    catch ``read_active_index_pointer`` carries, for the same file shape.
+    """
+    if not record.is_file():
+        return None
+    try:
+        loaded = json.loads(record.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def _policy_named(stated: object) -> SecretScanPolicy | None:
+    """The policy this record states, or ``None`` when it states none of the three.
+
+    The ``isinstance`` is not only for the type checker. ``SecretScanPolicy`` is a
+    ``StrEnum``, so a JSON ``true`` reaches its constructor as a value it does not
+    hold and raises -- but a *bare* ``off`` in a hand-edited record would be a
+    boolean too, and refusing here keeps this file's reading of the policy exactly
+    as strict as ``read_secret_scan_policy``'s reading of the configuration.
+    """
+    if not isinstance(stated, str):
+        return None
+    try:
+        return SecretScanPolicy(stated)
+    except ValueError:
+        return None
+
+
+__all__ = [
+    "LANDED_SECRET_REMEDY",
+    "IndexSecretScanStatus",
+    "IndexSecretScanVerdict",
+    "carry_index_secret_scan_forward",
+    "published_index_secret_scan",
+    "write_index_secret_scan",
+]

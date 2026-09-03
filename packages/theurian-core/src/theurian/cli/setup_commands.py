@@ -35,8 +35,17 @@ from typing import Annotated, Any
 import typer
 
 from theurian import __version__
+from theurian.application.index_secret_scan import (
+    IndexSecretScanStatus,
+    IndexSecretScanVerdict,
+    published_index_secret_scan,
+)
 from theurian.application.migration_engine import run_static_migration_guards
-from theurian.application.project_service import ProjectPaths, resolve_state_hash
+from theurian.application.project_service import (
+    BuildProvenance,
+    ProjectPaths,
+    resolve_state_hash,
+)
 from theurian.application.setup_context import MigrationsCheck, SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.cli.context import schema_root
@@ -336,11 +345,19 @@ def doctor_command(
     broken from what it just fixed.
 
     A problem is something setup would change, or something it would ask you to
-    approve. A step can also be satisfied and still carry a reservation -- a
+    approve -- or, since #329, a secret in the retrieval index this project has
+    published, which is the one problem here that no `theurian setup` can fix.
+    A step can also be satisfied and still carry a reservation -- a
     line below Theurian's block in your env file that appears to assign the same
     variable, say, which setup will not touch because it is yours. Those are
     listed under warnings and are not counted as problems, so a machine can be
     healthy and still have something worth reading.
+
+    `indexSecretScan` reports what the *published* build's SEC-11 scan found, not
+    a fresh one: this command is read-only, and re-scanning would report on rows
+    that are not in the file being served. It is `degraded` only under a `block`
+    policy, because `warn` is an operator saying they want to be told rather than
+    stopped.
     """
     context = build_context(port=port, for_publication=report_mode)
     report = SetupService(context).run(SetupRequest(dry_run=True))
@@ -352,15 +369,60 @@ def doctor_command(
     # there is nothing for `theurian setup` to do about it. It reaches the reader
     # through `warnings`, which this payload carries verbatim.
     problems = [step for step in report.steps if step.would_change or step.needs_consent]
-    payload["healthy"] = not problems
-    payload["problemCount"] = len(problems)
+    scan = _published_secret_scan(context)
+    payload["indexSecretScan"] = scan.payload
+    # Counted, not merely reported. `healthy` and `problemCount` are published
+    # side by side and a reader computes one from the other, so a verdict that
+    # made the machine unhealthy without moving the count would break the only
+    # relation between them. It is a problem of a different kind -- no step
+    # applies it, and `theurian setup` cannot -- which is why the docstring above
+    # names it rather than letting the number carry the whole meaning.
+    problem_count = len(problems) + int(scan.degraded)
+    payload["healthy"] = not problem_count
+    payload["problemCount"] = problem_count
 
     if report_mode:
         payload = _redacted(payload, context)
 
     _write(payload, as_json=as_json)
-    if problems:
+    if problem_count:
         raise typer.Exit(1)
+
+
+def _published_secret_scan(context: SetupContext) -> IndexSecretScanVerdict:
+    """What the published index's SEC-11 scan found, or why nothing can be said.
+
+    ``project_root`` is ``None`` whenever ``doctor`` runs outside a repository,
+    which is ordinary -- the machine-wide half of setup is a reasonable thing to
+    check from anywhere -- so that answers ``NOT_APPLICABLE`` rather than failing.
+
+    **The whole call is guarded, not only ``ProjectPaths.of``, and that
+    distinction is a measurement rather than caution.**
+    :func:`~theurian.application.index_secret_scan.published_index_secret_scan`
+    absorbs every way a *record* can be wrong, and ``read_active_index_pointer``'s
+    docstring says it never raises -- but both reach ``ProjectPaths`` helpers, and
+    a helper refuses a path that leaves the working tree through a committed
+    symlink (#237, SEC-7, T-5). Measured 2026-09-03 with ``.theurian/state``
+    symlinked outside a repository: guarding ``of`` alone let a ``ProjectError``
+    out of ``active_index_pointer`` and ended ``theurian doctor --json`` in a Rich
+    traceback with **empty stdout**, where the same tree on the previous build
+    produced a complete payload at exit 1. A diagnostic has to come back with a
+    verdict; a broken tree is precisely when somebody runs it.
+
+    The installation's build record is resolved **here**, at the composition root,
+    beside every other provenance check in this codebase (``migrate apply``'s
+    ``has_state``, ``index build``'s ``_require_buildable_state``, the serve path's
+    ``_published_index``). The reader it is handed to says why a verdict about an
+    unprovenanced build is ``UNRECORDED``.
+    """
+    if context.project_root is None:
+        return IndexSecretScanVerdict(status=IndexSecretScanStatus.NOT_APPLICABLE)
+    try:
+        return published_index_secret_scan(
+            ProjectPaths.of(context.project_root), provenance=BuildProvenance.default()
+        )
+    except TheurianError:
+        return IndexSecretScanVerdict(status=IndexSecretScanStatus.NOT_APPLICABLE)
 
 
 def _redaction_anchors(context: SetupContext) -> tuple[tuple[str, str], ...]:

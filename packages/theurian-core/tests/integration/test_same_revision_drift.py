@@ -58,6 +58,7 @@ from theurian.domain.identifiers import ProjectId
 from theurian.infrastructure.sqlite.index_schema import INDEX_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
+from theurian.security.project_config import SecretScanPolicy
 
 pytestmark = pytest.mark.integration
 
@@ -222,6 +223,7 @@ def _build_index(project: Path) -> Path:
             state_hash="test-state",
             index_build_id="01K1DXAAAA01234567890ABCDE",
             visible_sensitivities=EVERY_SENSITIVITY,
+            secret_scan=SecretScanPolicy.BLOCK,
         )
     )
     return index_path

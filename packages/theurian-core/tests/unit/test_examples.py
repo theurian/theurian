@@ -86,13 +86,14 @@ def test_the_example_does_not_switch_the_raptor_forest_on() -> None:
 # blocks; the rows below are the positive half and cannot see a sentence coming
 # back beside them.
 #
-# `security.secretScan` (SEC-11's policy, #198) is the mirror image since
-# ADR-0027 decision 3: it now selects real behaviour, and the trap is
-# *over*-reading it. `secretScan: block` covers `theurian propose accept` and
-# nothing else -- `theurian ingest` and index building run no scan -- with a
-# best-effort detector that is not a repository secret scanner. A reader who
-# copies `block` and concludes that secrets cannot reach their knowledge base is
-# as wrong as the reader who used to conclude it blocked anything at all.
+# `security.secretScan` (SEC-11's policy, #198 and #329) is the mirror image
+# since ADR-0027 decision 3: it now selects real behaviour, and the trap is
+# *over*-reading it. `secretScan: block` covers `theurian propose accept`, where
+# it refuses, and `theurian index build`, where it only signals -- `theurian
+# ingest` runs no scan of its own -- with a best-effort detector that is not a
+# repository secret scanner. A reader who copies `block` and concludes that
+# secrets cannot reach their knowledge base is as wrong as the reader who used
+# to conclude it blocked anything at all.
 #
 # What makes the example honest is the comment above each key, and a comment is
 # exactly the kind of thing a later edit drops without noticing, because nothing
@@ -156,16 +157,19 @@ _ISSUE_CITE: Final = re.compile(r"^#\d+$")
 #: name closed issues on purpose, as the history that explains the live owner.
 #:
 #: The window stops at a full stop or a semicolon, which is what keeps the shipped
-#: text legal: ``#329 owns those two; #198 is closed`` puts the semicolon between
-#: the required cite and the word, and ``#429 owns it; #129 was closed`` does the
-#: same one row down. Measured 2026-09-01 -- both rows green as written, and the
-#: defect shape (``#500 owns those two; #198 is closed``, with ``#198`` still
-#: required) RED.
+#: text legal: ``#330 owns it; the ... half shipped under #198`` puts the semicolon
+#: between the required cite and the word, and ``#429 owns it; #129 was closed``
+#: does the same one row down. Measured 2026-09-01 against the wording then
+#: shipped (``#329 owns those two; #198 is closed``) -- both rows green as
+#: written, and the defect shape (``#500 owns those two; #198 is closed``, with
+#: ``#198`` still required) RED. #329 moved the ``secretScan`` row's live owner to
+#: ``#330`` and reflowed its clause; the rule the measurement established is
+#: unchanged.
 #:
 #: **Escapes measured in both directions, recorded rather than chased.** A closure
-#: written past the window -- ``#329 owns those two, and after a long paragraph of
+#: written past the window -- ``#330 owns it, and after a long paragraph of
 #: qualification it is closed`` -- is not caught, and a live owner whose clause
-#: happens to carry the word as an adjective -- ``#329 owns the closed-loop pass``
+#: happens to carry the word as an adjective -- ``#330 owns the closed-loop pass``
 #: -- is caught although it is correct. Neither shape is in the file today. The
 #: rule is a cheap second signal beside the substring test, not a classifier.
 _CITE_SAID_TO_BE_CLOSED: Final = r"{cite}\b[^.;]{{0,30}}?\bclosed\b"
@@ -207,7 +211,8 @@ def _cites_said_to_be_closed(annotation: str, required: tuple[str, ...]) -> dict
 #: The two rows require different sentences because the two keys are wrong in
 #: opposite directions. ``repositories`` still reads nowhere, so its annotation
 #: has to say so. ``secretScan`` now reads somewhere, so its annotation has to
-#: say *how far* -- the approval gate, and not ``theurian ingest``.
+#: say *how far* -- the approval gate, where it refuses, and the index build,
+#: where it only signals.
 #:
 #: ``repositories``' four sentences are one claim in four parts, and the first two
 #: are there because the annotation used to get this wrong (#426). It said
@@ -221,18 +226,25 @@ def _cites_said_to_be_closed(annotation: str, required: tuple[str, ...]) -> dict
 #: which is why naming it is no longer enough to make the annotation somebody's.
 #:
 #: ``secretScan``'s third sentence is the same requirement on the other key, and
-#: it moved for the same reason (#428). It used to require ``#198``, which closed
-#: by *shipping* the ``propose accept`` half the annotation's first sentence
-#: describes -- so on the gap the third sentence states, ingest-time and
-#: index-time scanning, #198 is history and owns nothing. #329 owns those two.
-#: A live owner is what this row is for, and a closed one satisfied it.
+#: it has now moved twice for the same reason (#428, then #329). It required
+#: ``#198`` until that issue closed by *shipping* the ``propose accept`` half the
+#: annotation's first sentence describes; it then required ``#329``, which owned
+#: the ingest- and index-time gap until #329 closed by shipping the index-build
+#: half -- so both are history here and own nothing. What the annotation still
+#: states as owed is the **draft-time advisory**, and ``#330`` owns it. A live
+#: owner is what this row is for, and each time a closed one satisfied it.
+#:
+#: The row therefore moves whenever the *gap the annotation states* changes, not
+#: whenever an issue closes: a rewrite that dropped the draft-time sentence would
+#: leave nothing for ``#330`` to own and this row would be pinning a cite to
+#: prose that no longer makes a claim.
 #:
 #: The module fragment is required *as well as* the key because the two are
 #: different facts and the annotation's job is to carry both. A rewrite naming
 #: only ``security.secretScan`` says what the file is read *for* and leaves a
 #: reader with nowhere to check it; it passed this row until round one.
 ANNOTATED_KEYS: tuple[tuple[str, Any, tuple[str, ...]], ...] = (
-    ("secretScan", "block", ("propose accept", "best effort", "#329")),
+    ("secretScan", "block", ("propose accept", "best effort", "#330")),
     (
         "repositories",
         ["acme/order-service"],
@@ -273,10 +285,11 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
 
     `secretScan: block` is the other error. Until ADR-0027 decision 3 it selected
     nothing either, and this test required the annotation to say so. It now
-    selects real behaviour at `theurian propose accept` (#198) -- and a reader who
-    concludes from `block` that secrets cannot reach their knowledge base is as
-    wrong as the reader who used to conclude the opposite. The detector is best
-    effort and covers one gate; `theurian ingest` and index building run no scan.
+    selects real behaviour at `theurian propose accept` (#198) and at `theurian
+    index build` (#329) -- and a reader who concludes from `block` that secrets
+    cannot reach their knowledge base is as wrong as the reader who used to
+    conclude the opposite. The detector is best effort, it gates at one point
+    and only signals at the other, and `theurian ingest` runs no scan of its own.
     So the required sentences flipped from "nothing reads this" to what it
     reaches, rather than being dropped.
 
@@ -377,11 +390,12 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
 #: not have, and every row here exists because one shape of mutation has to die
 #: on it.
 #:
-#: **The annotations are fabricated, and one of them is false on purpose.** #329
-#: is live; the first row writes *"#329 is closed"* as **input** to the guard, in
-#: the wording the round-one measurement used, and says so here so that a search
-#: for that sentence lands on this note rather than on a claim the repository
-#: appears to be making. Nothing in this table is read off disk: a driver keyed on
+#: **The annotations are fabricated, and one of them is false on purpose.** #330
+#: is live; the first row writes *"#330 is closed"* as **input** to the guard, and
+#: says so here so that a search for that sentence lands on this note rather than
+#: on a claim the repository appears to be making. The cite moved from #329 to
+#: #330 when #329 shipped the index-build control and stopped being the live
+#: owner. Nothing in this table is read off disk: a driver keyed on
 #: the real annotations would go green the day somebody rewords one, which is the
 #: hole the shipped rows already have and the reason for these.
 #:
@@ -401,16 +415,16 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
 CLOSED_CITE_CASES: tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...] = (
     (
         "the required cite, called closed in its own clause",
-        "`theurian ingest` and index building run no scan (#500 owns those two; "
-        "#329 is closed, having shipped the `propose accept` half above).",
-        ("#329",),
-        ("#329",),
+        "a draft-time advisory is still owed (#330 is closed, having shipped the "
+        "`index build` half above; #500 owns it now).",
+        ("#330",),
+        ("#330",),
     ),
     (
         "the shipped shape, the closure past a semicolon",
-        "`theurian ingest` and index building run no scan (#329 owns those two; "
-        "#198 is closed, having shipped the `propose accept` half above).",
-        ("#329",),
+        "a draft-time advisory is still owed (#330 owns it; the `index build` half "
+        "shipped under #329, which is closed).",
+        ("#330",),
         (),
     ),
     (

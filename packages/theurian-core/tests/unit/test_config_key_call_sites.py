@@ -218,7 +218,7 @@ _ALL_SPELLINGS = frozenset().union(*WATCHED_SPELLINGS.values())
 #: Every place in the shipped package that names one of the keys above, as
 #: ``(module path under theurian/, the spelling it names)``.
 #:
-#: **Five entries, and exactly one of them reads the file.** The scan matches
+#: **Seven entries, and exactly one of them reads the file.** The scan matches
 #: whole names and not semantics -- deliberately, see the population key above --
 #: so it cannot tell a reader from a field named after one, and this list is
 #: therefore the honest output of the scan rather than a curated set of readers:
@@ -230,6 +230,13 @@ _ALL_SPELLINGS = frozenset().union(*WATCHED_SPELLINGS.values())
 #:   ``cli/propose_commands.py :: secret_scan`` are the ``AcceptedProposal``
 #:   field carrying what the scan did, and the local the accept path binds it to.
 #:   They name the *outcome*, never the file.
+#: * ``application/index_builder.py :: secret_scan`` and
+#:   ``cli/index_commands.py :: secret_scan`` are the build-time control's pair of
+#:   the same shape (#329): the non-defaulted ``IndexRequest`` field carrying the
+#:   policy in force, and the local the composition root binds
+#:   ``read_secret_scan_policy``'s answer to before it fills that field. Neither
+#:   opens the file -- ``cli/index_commands.py`` calls the reader above, which is
+#:   what :func:`test_the_secret_scan_policy_is_read_at_the_recorded_call_sites_only` counts.
 #: * ``application/forest_builder.py :: max_levels`` and
 #:   ``:: min_children_per_summary`` are ``ForestOptions`` fields. They are named
 #:   after ``raptor.maxLevels`` and ``raptor.minChildrenPerSummary`` and carry the
@@ -238,7 +245,7 @@ _ALL_SPELLINGS = frozenset().union(*WATCHED_SPELLINGS.values())
 #:   -- which is the opposite of reading the file: a default is what applies
 #:   *because* nothing read a value.
 #:
-#: Adding a sixth entry is not a bookkeeping edit. For ``repositories`` it says a
+#: Adding an eighth entry is not a bookkeeping edit. For ``repositories`` it says a
 #: key the published schema still calls inert is now read, which makes the schema
 #: description and the prose surfaces in this module's docstring false until they
 #: are corrected in the same change. For anything under ``raptor.`` it says
@@ -250,7 +257,9 @@ CONFIG_KEY_READER_SITES: frozenset[tuple[str, str]] = frozenset(
     {
         ("application/forest_builder.py", "max_levels"),
         ("application/forest_builder.py", "min_children_per_summary"),
+        ("application/index_builder.py", "secret_scan"),
         ("application/proposal_service.py", "secret_scan"),
+        ("cli/index_commands.py", "secret_scan"),
         ("cli/propose_commands.py", "secret_scan"),
         ("security/project_config.py", "secretScan"),
     }
@@ -668,17 +677,23 @@ def _described_node(pointer: tuple[str, ...]) -> str:
 #: false claim about a shipped control, in the built wheel, and both plants were
 #: green.
 SECRET_SCAN_DESCRIPTION: Final = (
-    "In force. What `theurian propose accept` does when a body it would land appears to "  # noqa: S105 - a published schema description, not a credential
-    "contain a secret (SEC-11, ADR-0027 decision 3): `block` refuses the acceptance and "
-    "consumes nothing, `warn` accepts and reports every finding on the result, `off` "
-    "skips the scan. The default is the behaviour an absent key and an absent config "
-    "file both select, so it states what the product does rather than a policy nothing "
-    "applies. Write `off` **quoted** in YAML -- a bare `off` is the boolean false under "
-    "YAML 1.1 and is refused rather than guessed at. The detector is in-house and best "
-    "effort -- known credential shapes plus an entropy heuristic -- and is not a "
-    "replacement for a repository secret scanner. It covers the approval gate only: "
-    "`theurian ingest` and index building run no scan "
-    "(https://github.com/theurian/theurian/issues/198)."
+    "In force. What Theurian does when content appears to contain a secret (SEC-11, ADR-0027 "  # noqa: S105 - a published schema description, not a credential
+    "decision 3). At `theurian propose accept`, which runs before anything is written: "
+    "`block` refuses the acceptance and consumes nothing, `warn` accepts and reports every "
+    "finding on the result, `off` skips the scan. At `theurian index build`, which runs over "
+    "content already in the canonical store and already served, the same three values are "
+    "signal severity and not a gate: the index is published either way, `block` makes the "
+    "build exit non-zero and `theurian doctor` report it until a rebuild is clean, `warn` "
+    "reports and exits zero, `off` scans nothing. The default is the behaviour an absent key "
+    "and an absent config file both select, so it states what the product does rather than a "
+    "policy nothing applies. Write `off` **quoted** in YAML -- a bare `off` is the boolean "
+    "false under YAML 1.1 and is refused rather than guessed at. The detector is in-house and "
+    "best effort -- known credential shapes plus an entropy heuristic -- and is not a "
+    "replacement for a repository secret scanner. It covers the approval gate and the index "
+    "build: `theurian ingest` runs no scan of its own, and `theurian index build` scans every "
+    "body it indexes, with the source anchors and relation notes served beside them, and "
+    "reports rather than refusing "
+    "(https://github.com/theurian/theurian/issues/329)."
 )
 
 #: The JSON pointer to that description, so the pin and the fragment row read one
@@ -698,7 +713,7 @@ SECRET_SCAN_POINTER: Final[tuple[str, ...]] = (
 #: reword between them moves the derived string and reddens the surface that did
 #: not follow; a reword outside them is not part of the shared clause and is free.
 _SCAN_BOUND_OPENS: Final = "`theurian ingest`"
-_SCAN_BOUND_CLOSES: Final = "run no scan"
+_SCAN_BOUND_CLOSES: Final = "reports rather than refusing"
 
 #: The document that says it quotes the schema here.
 INGEST_COMMAND_DOC: Final = REPO_ROOT / "plugins" / "claude-code" / "commands" / "ingest.md"
@@ -728,11 +743,14 @@ INGEST_CONFIG_BULLET: Final = (
     "in `.theurian/config.yaml` before Theurian contacts it. That file is read today, but "
     "for one key only: `security/project_config.py` takes `security.secretScan` from it "
     "and nothing else (ADR-0027 decision 3). That key selects a control this command never "
-    "reaches: it covers the approval gate only — `theurian ingest` and index building run "
-    "no scan (SEC-11, [#198](https://github.com/theurian/theurian/issues/198) shipped that "
-    "half and is closed; the ingest-time and index-time control is a separate one and is "
-    "owed by [#329](https://github.com/theurian/theurian/issues/329)), the schema's own "
-    "wording. Nothing reads the `providers.review.repositories` allowlist, so "
+    "reaches: it covers the approval gate and the index build — `theurian ingest` runs no "
+    "scan of its own, and `theurian index build` scans every body it indexes, with the "
+    "source anchors and relation notes served beside them, and reports rather than "
+    "refusing (SEC-11, "
+    "[#198](https://github.com/theurian/theurian/issues/198) shipped the approval-gate "
+    "half and [#329](https://github.com/theurian/theurian/issues/329) the index-build "
+    "half), the schema's own wording. Nothing reads the "
+    "`providers.review.repositories` allowlist, so "
     "do not tell the user the allowlist is protecting them."
 )
 
@@ -1047,8 +1065,10 @@ def test_the_secret_scan_description_is_exactly_what_this_file_records() -> None
     """RED means the wheel's ``security.secretScan`` description moved, in either direction.
 
     The fragment rows below catch a **deletion or a reword**: drop "`theurian
-    ingest` and index building run no scan" and the row goes RED, which
-    adversarial review reproduced. They cannot catch an **addition**, and an
+    index build` scans every body it indexes" and the row goes RED, which
+    adversarial review reproduced against the clause this one replaced (#329
+    moved the bound; the direction the rows hold did not). They cannot catch an
+    **addition**, and an
     addition is the shape that ships a false control claim here -- a sentence
     asserting that ingested content is screened keeps all five fragments and is
     published in the built wheel.
@@ -1079,9 +1099,11 @@ def test_the_secret_scan_description_is_exactly_what_this_file_records() -> None
 def test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it() -> None:
     """``ingest.md`` says it quotes the schema; this is that claim, run.
 
-    The paragraph reads "it covers the approval gate only -- `theurian ingest`
-    and index building run no scan (SEC-11, [#198]), **the schema's own
-    wording**". Two surfaces carrying one clause is how a bound drifts into two
+    The paragraph reads "it covers the approval gate and the index build --
+    `theurian ingest` runs no scan of its own, and `theurian index build` scans
+    every body it indexes and reports rather than refusing (SEC-11, [#198],
+    [#329]), **the schema's own wording**". Two surfaces carrying one clause is
+    how a bound drifts into two
     bounds: one of them gets tightened, a reader trusts whichever they opened,
     and both look maintained.
 
@@ -1457,7 +1479,18 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
                 "detector's class gate cannot fire on"
             ),
             "`evidence.json` is not scanned",
-            "Theurian does not scan ingested content for secrets",
+            # The build-time control (#329), and the two halves of its posture. The
+            # first says the scan exists and where; the second says it reports
+            # rather than refusing, which is the claim an operator acts on -- a
+            # surface that named the scan without it would read as a gate, and
+            # would tell an operator a landed secret is not being served. The
+            # boundary sentence is what makes the posture checkable rather than
+            # asserted: `migrate apply`, not `index build`, is where the content
+            # becomes readable.
+            "`theurian index build` scans every body it indexes",
+            "That build-time scan reports and does not refuse",
+            ("a build that refused to publish would deny ranking without hiding anything"),
+            "`theurian ingest` runs no scan of its own",
             "Theurian is not one and is not a replacement for one",
         ),
     ),
@@ -1503,7 +1536,12 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "`contentType` and the date fields",
             "What it does not reach: the document's derived fields",
             "each barred by a mechanism rather than by choice",
-            "Ingest-time and index-time scanning are separate controls and do not ship",
+            # The build-time control (#329), on the row that enumerates what SEC-11
+            # reaches. Both halves, for the reason the SECURITY.md row above gives:
+            # naming the scan without its posture reads as a second gate.
+            ("`theurian index build` is SEC-11's second control and scans every body it indexes"),
+            "it reports and never refuses",
+            "`theurian ingest` runs no scan of its own",
         ),
     ),
     (
@@ -1541,17 +1579,19 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # thing that says otherwise, so every clause of it is load-bearing:
             # which gate it covers, and the two entry points that run no scan.
             # Its fact side is
-            # `test_the_secret_scan_policy_is_read_at_one_call_site_only`, which
+            # `test_the_secret_scan_policy_is_read_at_the_recorded_call_sites_only`, which
             # goes RED the day a second call site makes "the approval gate only"
             # false while this pin -- spelling, and only spelling -- stays green.
             (
                 "That key selects a control this command never reaches: it covers the "
-                "approval gate only — `theurian ingest` and index building run no scan "
-                "(SEC-11, [#198](https://github.com/theurian/theurian/issues/198) shipped "
-                "that half and is closed; the ingest-time and index-time control is a "
-                "separate one and is owed by "
-                "[#329](https://github.com/theurian/theurian/issues/329)), the schema's "
-                "own wording."
+                "approval gate and the index build — `theurian ingest` runs no scan of "
+                "its own, and `theurian index build` scans every body it indexes, with "
+                "the source anchors and relation notes served beside them, and reports "
+                "rather than refusing (SEC-11, "
+                "[#198](https://github.com/theurian/theurian/issues/198) shipped the "
+                "approval-gate half and "
+                "[#329](https://github.com/theurian/theurian/issues/329) the index-build "
+                "half), the schema's own wording."
             ),
             "Nothing reads the `providers.review.repositories` allowlist",
             "do not tell the user the allowlist is protecting them",
@@ -1608,11 +1648,12 @@ def test_each_secret_scan_prose_surface_states_the_control_and_its_bound(
 #: Where the core changelog's account of this module's pins lives.
 CORE_CHANGELOG = REPO_ROOT / "packages" / "theurian-core" / "CHANGELOG.md"
 
-#: The reader whose *reach* four documents describe, and the one module that calls it.
+#: The reader whose *reach* four documents describe, and the modules that call it.
 #:
 #: The function is defined in ``security/project_config.py`` and called from the
-#: accept path. A grep for the name therefore returns two hits and only one of
-#: them is a call, which is why this is an AST count and not a text count.
+#: accept path and, since #329, from the index build's composition root. A grep for
+#: the name therefore returns more hits than there are calls, which is why this is
+#: an AST count and not a text count.
 SECRET_SCAN_POLICY_READER = "read_secret_scan_policy"  # noqa: S105 - a function name, not a secret
 
 #: The module that defines it, so the count below resolves a *binding* rather than
@@ -1623,7 +1664,18 @@ SECRET_SCAN_POLICY_MODULE: Final = "theurian.security.project_config"  # noqa: S
 #: package. A count and not a set: a second call inside a module already on the
 #: list is a second place the policy is consulted, and a membership test cannot
 #: see it.
-SECRET_SCAN_POLICY_CALL_SITES: dict[str, int] = {"application/proposal_service.py": 1}
+#:
+#: **Two sites since #329**, and they sit at different layers on purpose.
+#: ``ProposalService`` holds a ``ProjectPaths`` and reads the policy itself, so no
+#: composition root can omit the control by forgetting to wire it. A build is
+#: addressed by a database path and has no project root, so ``theurian index
+#: build`` reads the policy at the CLI and hands it to a non-defaulted
+#: ``IndexRequest.secret_scan`` -- the same "cannot be omitted" property, moved
+#: onto the type.
+SECRET_SCAN_POLICY_CALL_SITES: dict[str, int] = {
+    "application/proposal_service.py": 1,
+    "cli/index_commands.py": 1,
+}
 
 #: The detector itself, and the reason it is pinned beside the policy reader.
 #:
@@ -1645,7 +1697,24 @@ SECRET_SCANNER = "scan_text"  # noqa: S105 - a function name, not a secret
 SECRET_SCANNER_MODULE: Final = "theurian.security.content_secrets"  # noqa: S105 - a module path, not a credential
 
 #: Where the detector runs, on the same terms as the reader's count above.
-SECRET_SCANNER_CALL_SITES: dict[str, int] = {"application/proposal_service.py": 1}
+#:
+#: **Two modules since #329**: the approval gate, and the index build. The second
+#: is SEC-11's other control -- the build reads every text channel it serves on
+#: every rebuild, so it reaches content that entered before the scanner shipped or
+#: through a hand-placed migration that never met ``accept``. It reports and never
+#: refuses, because by then the content is already in the canonical store and
+#: already served.
+#:
+#: The build's **three** calls are its three served channels, one helper each: the
+#: document (``served_content_text(title, body)``), each source anchor's
+#: author-written fields, and each published relation ``note`` (round 1). The
+#: number is a per-module count rather than a set for exactly this reason -- a
+#: fourth call is a fourth channel, and the sentence above stops being an
+#: enumeration the moment one lands without moving this.
+SECRET_SCANNER_CALL_SITES: dict[str, int] = {
+    "application/index_builder.py": 3,
+    "application/proposal_service.py": 1,
+}
 
 #: Each module of the shipped package that reaches :data:`SECRET_SCANNER_MODULE`
 #: by one of the import spellings :func:`_importers_of` counts.
@@ -1656,9 +1725,13 @@ SECRET_SCANNER_CALL_SITES: dict[str, int] = {"application/proposal_service.py": 
 #: however it renames them; this one reddens on the routes that introduce no such
 #: binding at all -- ``import theurian.security.content_secrets``,
 #: ``from theurian.security import content_secrets``, and a call through the
-#: module object. One importer today, and a second is a module that has reached
-#: for the detector whatever it then does with it.
-SECRET_SCANNER_IMPORTERS: tuple[str, ...] = ("application/proposal_service.py",)
+#: module object. Two importers today -- the accept path and the index build, one
+#: per shipped SEC-11 control (#198, #329) -- and a third is a module that has
+#: reached for the detector whatever it then does with it.
+SECRET_SCANNER_IMPORTERS: tuple[str, ...] = (
+    "application/index_builder.py",
+    "application/proposal_service.py",
+)
 
 #: Each module of the shipped package that reaches
 #: :data:`SECRET_SCAN_POLICY_MODULE` by one of the import spellings
@@ -1671,15 +1744,25 @@ SECRET_SCANNER_IMPORTERS: tuple[str, ...] = ("application/proposal_service.py",)
 #: while ``ingest.md``, the schema description, ``SECURITY.md`` and T-15 all say
 #: the policy is consulted at the approval gate.
 #:
-#: **Two entries, and the second is not a defect.**
-#: ``application/project_service.py`` takes ``PROJECT_CONFIG_FILE`` from this
-#: module -- the file name, not the policy -- so it is an importer that reads no
-#: policy. The membership is what this pin holds; what each importer *does* with
-#: the module is held by the call count beside it, and the pair is what makes a
-#: third importer a change somebody has to explain.
+#: **Five entries, and only two of them read a policy.** The membership is what
+#: this pin holds; what each importer *does* with the module is held by the call
+#: count beside it, and the pair is what makes a sixth importer a change somebody
+#: has to explain. What each of the five takes:
+#:
+#: * ``application/project_service.py`` takes ``PROJECT_CONFIG_FILE`` -- the file
+#:   name, not the policy -- and reads nothing.
+#: * ``application/proposal_service.py`` and ``cli/index_commands.py`` are the two
+#:   that call ``read_secret_scan_policy``, one per shipped control.
+#: * ``application/index_builder.py`` takes ``SecretScanPolicy`` as the *type* of
+#:   ``IndexRequest.secret_scan``, and ``application/index_secret_scan.py`` takes
+#:   it as the type it records and reads back. Neither opens the file: a build is
+#:   handed the policy its composition root read (#329).
 SECRET_SCAN_POLICY_IMPORTERS: tuple[str, ...] = (
+    "application/index_builder.py",
+    "application/index_secret_scan.py",
     "application/project_service.py",
     "application/proposal_service.py",
+    "cli/index_commands.py",
 )
 
 #: Number words as the changelog spells them, index = value.
@@ -1911,25 +1994,26 @@ def _importers_of(defining_module: str, modules: Parsed) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
-def test_the_secret_scan_policy_is_read_at_one_call_site_only() -> None:
-    """SEC-11: where the *policy* is consulted, one of the two symbols held (#198, #461).
+def test_the_secret_scan_policy_is_read_at_the_recorded_call_sites_only() -> None:
+    """SEC-11: where the *policy* is consulted, one of the two symbols held (#198, #461, #329).
 
     ``plugins/claude-code/commands/ingest.md`` names ``security.secretScan`` as
     the one key ``.theurian/config.yaml`` has in force, which announces a
     scanning control inside a document about ``theurian ingest``. The clause that
-    keeps that from misleading a reader -- *"it covers the approval gate only --
-    `theurian ingest` and index building run no scan"* -- is pinned in
+    keeps that from misleading a reader -- *"it covers the approval gate and the
+    index build -- `theurian ingest` runs no scan of its own"* -- is pinned in
     :data:`SECRET_SCAN_PROSE_SURFACES`, and that pin holds **spelling**: it would
     stay green word for word against a build that had started reading the policy
     on the ingest path.
 
     This is the fact side, and it holds **exactly two symbols and no more**:
     ``read_secret_scan_policy`` here, and ``scan_text`` in
-    :func:`test_the_secret_scanner_runs_at_one_call_site_only`. Each is asserted
-    to be called exactly once, in the accept path. Round two's R2-C is why the
-    second exists: this test alone pinned the *reader* and read as though it
-    pinned the control, so a scan added on the ingest path that never consults the
-    policy left it green.
+    :func:`test_the_secret_scanner_runs_at_the_recorded_call_sites_only`. Each is
+    asserted against a recorded map of module to call count -- two sites each
+    since #329 shipped the index-build control, where it was one when only the
+    accept path scanned. Round two's R2-C is why the second exists: this test
+    alone pinned the *reader* and read as though it pinned the control, so a scan
+    added on the ingest path that never consults the policy left it green.
 
     **The count is per module and the name is resolved through the import**, which
     is round three's security HIGH-1 on both of these tests: a spelled-name key
@@ -1941,11 +2025,14 @@ def test_the_secret_scan_policy_is_read_at_one_call_site_only() -> None:
     the scan at that site is *gated* by the policy, and that no third symbol
     screens content by some other route. Both are outside an AST call-site count.
 
-    The direction that matters is the *addition*: an ingest-time or index-time
-    call would make four documents over-claim by omission the moment it landed,
-    and this is what makes that change carry them. A removal reddens too, and
-    means the opposite -- the control the schema publishes ``default: "block"``
-    for has gone, and every surface describing a shipped control is now false.
+    The direction that matters is the *addition*: a call at a point those four
+    documents do not describe makes every one of them wrong by omission the moment
+    it lands, and this is what makes that change carry them. #329 is the worked
+    example -- adding the index-build read reddened this pin, and the schema
+    description, ``ingest.md``'s bullet, ``SECURITY.md`` and both T-15 rows moved
+    in the same commit. A removal reddens too, and means the opposite -- the
+    control the schema publishes ``default: "block"`` for has gone, and every
+    surface describing a shipped control is now false.
     """
     calls = _binding_resolved_calls(
         SECRET_SCAN_POLICY_MODULE, SECRET_SCAN_POLICY_READER, tuple(_shipped_modules())
@@ -1955,32 +2042,34 @@ def test_the_secret_scan_policy_is_read_at_one_call_site_only() -> None:
         f"`{SECRET_SCAN_POLICY_READER}` is called {calls}, and the "
         f"recorded call sites are {SECRET_SCAN_POLICY_CALL_SITES}.\n\n"
         "A NEW call site: SEC-11's scan now runs somewhere besides `theurian "
-        "propose accept`, so `plugins/claude-code/commands/ingest.md`'s \"it "
-        "covers the approval gate only -- `theurian ingest` and index building "
-        "run no scan\", the identical clause in the schema's `security.secretScan` "
-        "description, SECURITY.md and the threat model's T-15 controls are all "
-        "narrower than the product. Correct them in the same change, then record "
-        "the site here.\n\n"
-        "A MISSING call site: the control is gone while the schema still "
-        'publishes `default: "block"` and four documents still describe a '
-        "shipped gate. Do not simply drop the entry."
+        "propose accept` and `theurian index build`, so "
+        "`plugins/claude-code/commands/ingest.md`'s \"it covers the approval gate "
+        'and the index build -- `theurian ingest` runs no scan of its own", the '
+        "identical clause in the schema's `security.secretScan` description, "
+        "SECURITY.md and the threat model's T-15 controls are all narrower than "
+        "the product. Correct them in the same change, then record the site "
+        "here.\n\n"
+        "A MISSING call site: a control is gone while the schema still "
+        'publishes `default: "block"` and four documents still describe two '
+        "shipped points. Do not simply drop the entry."
     )
 
 
-def test_the_secret_scanner_runs_at_one_call_site_only() -> None:
+def test_the_secret_scanner_runs_at_the_recorded_call_sites_only() -> None:
     """SEC-11: where the *detector* runs, the second of the two symbols held (R2-C).
 
     The sibling above pins ``read_secret_scan_policy``, which answers what to do
     when a secret is found. It cannot see a scan that never asks: an ingest-time
     call to ``scan_text`` -- planted in round two as a ``_planted_ingest_scan``
     in ``application/ingestion_service.py`` -- adds no call site to the reader,
-    so the reader's pin stayed green while ``ingest.md``'s "`theurian ingest` and
-    index building run no scan", the identical clause in the schema's
+    so the reader's pin stayed green while ``ingest.md``'s "`theurian ingest`
+    runs no scan of its own", the identical clause in the schema's
     ``security.secretScan`` description, ``SECURITY.md`` and the threat model's
     T-15 controls were all false.
 
     So the claim those four documents make is about the *detector*, and the
-    detector is what this counts. One call, in the accept path.
+    detector is what this counts. Two modules: the accept path, and the index
+    build (#329), the latter calling once per served text channel it reads.
 
     **What this half holds, exactly.** Every local binding of
     ``theurian.security.content_secrets.scan_text`` is resolved out of each
@@ -1991,7 +2080,7 @@ def test_the_secret_scanner_runs_at_one_call_site_only() -> None:
 
     **What it does not hold is what the import-graph pin beside it does**:
     a call reached through the module object rather than through an imported name.
-    :func:`test_the_detector_module_is_imported_by_one_module_only` is that half,
+    :func:`test_the_detector_module_is_imported_by_the_recorded_modules_only` is that half,
     and neither is sufficient alone -- this one cannot see
     ``content_secrets.scan_text(body)``, and that one cannot see a second call in
     the module that is already allowed to import it.
@@ -2008,11 +2097,11 @@ def test_the_secret_scanner_runs_at_one_call_site_only() -> None:
         f"`{SECRET_SCANNER}` is called {calls}, and the recorded "
         f"call sites are {SECRET_SCANNER_CALL_SITES}.\n\n"
         "A NEW call site: content is screened for secrets somewhere besides "
-        "`theurian propose accept`. Four documents say it is not -- "
-        "`plugins/claude-code/commands/ingest.md`, the schema's "
+        "`theurian propose accept` and `theurian index build`. Four documents say "
+        "it is not -- `plugins/claude-code/commands/ingest.md`, the schema's "
         "`security.secretScan` description, `SECURITY.md` and the threat model's "
-        "T-15 controls all state that `theurian ingest` and index building run no "
-        "scan. Correct them in the same change, then record the site here. Note "
+        "T-15 controls all state that `theurian ingest` runs no scan of its own. "
+        "Correct them in the same change, then record the site here. Note "
         "that this is true whether or not the new call consults "
         f"`{SECRET_SCAN_POLICY_READER}`: a scan that ignores the policy still "
         "screens content, and it is the screening those documents deny.\n\n"
@@ -2021,7 +2110,7 @@ def test_the_secret_scanner_runs_at_one_call_site_only() -> None:
     )
 
 
-def test_the_detector_module_is_imported_by_one_module_only() -> None:
+def test_the_detector_module_is_imported_by_the_recorded_modules_only() -> None:
     """SEC-11: the other half of the pair, keyed on the import graph (round three).
 
     The count beside this one resolves the *bindings* a module introduces for
@@ -2053,19 +2142,20 @@ def test_the_detector_module_is_imported_by_one_module_only() -> None:
     assert importers == SECRET_SCANNER_IMPORTERS, (
         f"`{SECRET_SCANNER_MODULE}` is imported by {list(importers)}, and the "
         f"recorded importers are {list(SECRET_SCANNER_IMPORTERS)}.\n\n"
-        "A NEW importer: a second module of the shipped package has reached for "
+        "A NEW importer: a third module of the shipped package has reached for "
         "SEC-11's detector. Four documents say the scan runs at `theurian propose "
-        "accept` and nowhere else -- `plugins/claude-code/commands/ingest.md`, the "
-        "schema's `security.secretScan` description, `SECURITY.md` and the threat "
-        "model's T-15 controls. Check what the new module does with it before "
-        "recording anything: an import with no call still needs saying, and a call "
-        "makes those four documents narrower than the product.\n\n"
-        "A MISSING importer: the accept path no longer imports the detector, so "
-        "SEC-11's gate is gone while every surface still describes it."
+        "accept` and `theurian index build` and nowhere else -- "
+        "`plugins/claude-code/commands/ingest.md`, the schema's "
+        "`security.secretScan` description, `SECURITY.md` and the threat model's "
+        "T-15 controls. Check what the new module does with it before recording "
+        "anything: an import with no call still needs saying, and a call makes "
+        "those four documents narrower than the product.\n\n"
+        "A MISSING importer: one of the two shipped controls no longer imports the "
+        "detector, so it is gone while every surface still describes it."
     )
 
 
-def test_the_policy_module_is_imported_by_the_two_modules_this_file_records() -> None:
+def test_the_policy_module_is_imported_by_the_modules_this_file_records() -> None:
     """SEC-11: the reader's import graph, the half the call count cannot see (round four).
 
     ``read_secret_scan_policy`` has the shape ``scan_text`` had before round three
@@ -2082,16 +2172,18 @@ def test_the_policy_module_is_imported_by_the_two_modules_this_file_records() ->
     T-15 controls each say where the policy is consulted. The reader half now has
     the same two-key pair the detector half has had since round three.
 
-    **Two importers, and the difference between them is the point of having both
-    keys.** ``application/project_service.py`` takes ``PROJECT_CONFIG_FILE`` -- the
-    file name -- and reads no policy, which is why the call count beside this one
-    lists ``application/proposal_service.py`` alone. A third importer is a module
-    that has reached for the policy module, and what it then does with it is a
-    question somebody has to answer in the same change.
+    **Five importers, and the difference between them is the point of having both
+    keys.** Three of them read no policy: ``application/project_service.py`` takes
+    ``PROJECT_CONFIG_FILE`` -- the file name -- while ``application/index_builder.py``
+    and ``application/index_secret_scan.py`` take ``SecretScanPolicy`` as a *type*
+    they carry and record. That is why the call count beside this one lists only
+    ``application/proposal_service.py`` and ``cli/index_commands.py``. A sixth
+    importer is a module that has reached for the policy module, and what it then
+    does with it is a question somebody has to answer in the same change.
 
     The direction that matters is again the *addition*. A removal reddens too, and
-    means the accept path no longer reaches the module the schema publishes
-    ``default: "block"`` for.
+    means one of the two shipped controls no longer reaches the module the schema
+    publishes ``default: "block"`` for.
     """
     importers = _importers_of(SECRET_SCAN_POLICY_MODULE, tuple(_shipped_modules()))
 

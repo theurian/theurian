@@ -58,9 +58,14 @@ security:
   # like it holds a secret (SEC-11). `block` refuses the acceptance and consumes
   # nothing, `warn` accepts and reports, `"off"` skips the scan; `block` is also
   # what an absent key selects, so this line states the default rather than
-  # changing it. The detector is best effort and covers the approval gate only --
-  # `theurian ingest` and index building run no scan (#329 owns those two; #198
-  # is closed, having shipped the `propose accept` half above).
+  # changing it. The same key also governs `theurian index build`, where the
+  # three values are signal severity and not a gate -- the index is published
+  # either way, because by then the content is already served -- so `block`
+  # exits non-zero and `theurian doctor` reports it. The detector is best effort
+  # and is not a repository secret scanner; `theurian ingest` runs no scan of its
+  # own, and a draft-time advisory is still owed (#330 owns it; the `propose
+  # accept` half shipped under #198 and the `index build` half under #329, both
+  # of which are history here and own nothing).
   #
   # `off` needs the quotes. YAML reads a bare `off` as the boolean false, and the
   # acceptance is refused rather than guessing which policy that meant.
