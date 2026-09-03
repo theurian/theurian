@@ -93,6 +93,7 @@ from theurian.infrastructure.sqlite.connection import (
     StateDatabaseUnreadableError,
     WriteLock,
     WriteLockTimeoutError,
+    WriteTransactionBusyError,
     create_database,
     write_transaction,
 )
@@ -360,7 +361,18 @@ def _applied_migration_ids(paths: ProjectPaths, project_id: ProjectId) -> frozen
         try:
             with SqliteCanonicalStore(database) as store:
                 ids.update(migration_id for migration_id, _ in store.applied_migrations(project_id))
-        except (SchemaVersionMismatchError, StateDatabaseUnreadableError):
+        except (
+            SchemaVersionMismatchError,
+            StateDatabaseUnreadableError,
+            WriteTransactionBusyError,
+        ):
+            # `WriteTransactionBusyError` joins the two above because the store
+            # stopped re-wrapping it (#484 round three): without it, a database
+            # another process happens to hold would escape this loop and crash a
+            # helper whose only job is choosing a remedy string -- exactly the
+            # "unrelated crash" the docstring above refuses. Skipping the held
+            # database is the same safe over-correction as skipping an unreadable
+            # one, and for the same reason.
             continue
     return frozenset(ids)
 
@@ -2195,6 +2207,28 @@ def _verify_history(context: CommandContext, as_json: bool) -> None:
     except SchemaVersionMismatchError:
         # A previous state written by another schema version tells us nothing
         # about this one. Not an error: it is simply not evidence (ADR-0017).
+        return
+    except WriteTransactionBusyError as exc:
+        # Caught ahead of the unreadable arm, and the two must never share it
+        # (#484 round three). Both mean "FR-K5 could not be confirmed", and
+        # there the resemblance stops: a database this build cannot *read* may
+        # really be unusable, so the cure below discards the history and says so.
+        # A database another process merely *holds* is intact -- measured, the
+        # retry succeeds with the file byte-identical -- and handing it that same
+        # cure tells an operator to destroy tamper evidence to clear a fault that
+        # clears itself. This arm therefore names no deletion at all.
+        #
+        # `.remedy` rather than a literal: the type is the one that knows this is
+        # transient, and it already words the wait-and-retry cure for every other
+        # surface that publishes it.
+        _fail(
+            f"Theurian cannot confirm that no applied migration has been edited "
+            f"(FR-K5) right now: the previously active state database is held by "
+            f"another process. {exc}",
+            remedy=exc.remedy,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
         return
     except StateDatabaseUnreadableError as exc:
         # Caught apart from the mismatch above rather than sharing one `except

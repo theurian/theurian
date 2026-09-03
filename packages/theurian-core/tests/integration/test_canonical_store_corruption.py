@@ -3051,20 +3051,96 @@ def _a_rollback_journal_holder(corpus: Corpus) -> Iterator[None]:
         yield
 
 
+#: The id of the pulled-but-unapplied migration, ordered after
+#: :data:`MIGRATION_ID` so the set's application order is unambiguous.
+PULLED_MIGRATION_ID: Final = "01K1CCCCCC01234567890ABCDE"
+
+
+@contextmanager
+def _a_holder_on_the_previously_active_database(corpus: Corpus) -> Iterator[None]:
+    """The everyday shape: a migration pulled but not yet applied, previous db held.
+
+    The three arms above all leave ``active.state_hash == context.state_hash``,
+    which is precisely the case :func:`_verify_history` returns early from. Adding
+    one unapplied migration -- a colleague's commit, freshly pulled -- moves the
+    computed state hash, so every command routed through ``_require_project``
+    opens the *previously active* database to check FR-K5 tamper evidence against
+    it. That read goes through ``SqliteCanonicalStore``, a third conversion layer
+    above the two the arms above reach.
+
+    **The holder must block a reader, and that is the whole reason this arm needs
+    its own shape.** The store opens a *read* connection, and a WAL reader is not
+    blocked by a writer -- measured: with a plain `BEGIN IMMEDIATE` holder this
+    configuration publishes nothing at all and every command exits 0. Only a
+    reader-blocking holder reaches the layer, so this reuses the exclusive shape
+    and changes the corpus instead.
+
+    Its arrival point is the furthest out of the four: the contention is already
+    converted correctly by `_prepare`, and then **re-wrapped** by the store's
+    ``except Exception`` into ``StateDatabaseUnreadableError`` -- published as
+    ``cannot be read (WriteTransactionBusyError)``, under the FR-K5 remedy, which
+    instructs discarding the very tamper evidence the check exists to hold
+    (#484 round three).
+    """
+    body = "# Pulled\n\nA migration a colleague pushed and this checkout has not applied.\n"
+    (corpus.root / ".theurian/knowledge/architecture/pulled.md").write_text(body)
+    (corpus.root / f".theurian/migrations/{PULLED_MIGRATION_ID}-pulled.yaml").write_text(
+        f"""apiVersion: theurian.dev/v1
+id: {PULLED_MIGRATION_ID}
+createdAt: 2026-09-03T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.pulled
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.pulled
+    revisionId: 01K1CCCREV01234567890ABCDE
+    contentFile: ../knowledge/architecture/pulled.md
+    contentSha256: {body_pin(body)}
+    metadata:
+      title: Pulled
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/pulled.md
+"""
+    )
+    with _hold(
+        corpus,
+        before=("PRAGMA locking_mode = EXCLUSIVE",),
+        after=("SELECT COUNT(*) FROM schema_metadata",),
+    ):
+        yield
+
+
 #: Every holder shape whose conflict was demonstrated reaching the CLI, with the
 #: production site that converts it.
 #:
-#: Three shapes rather than one because the *arrival point* differs and the
-#: conversion lives in two places: the plain writer is converted in
-#: `_execute_own`, and both of the others are converted in `_prepare` -- which
-#: had no conversion at all until #484 round two, and answered them with the cure
-#: that deletes the state. Reverting that classification takes the second and
-#: third arms RED and leaves the first green, which is what makes them separate
-#: cases rather than three spellings of one.
+#: Four shapes rather than one because the *arrival point* differs and the
+#: conversion layers are three deep: the plain writer is converted in
+#: `_execute_own`; the exclusive and rollback-journal holders are converted in
+#: `_prepare` -- which had no conversion at all until #484 round two, and answered
+#: them with the cure that deletes the state; and the fourth reaches
+#: `SqliteCanonicalStore`, which **re-wrapped** the correct conversion back into
+#: the unreadable-database class one layer further out (#484 round three).
+#:
+#: Each arm is separable, which is what makes them four cases and not four
+#: spellings of one: reverting the `_prepare` classification takes arms two and
+#: three RED while one and four stay green, and reverting the store passthrough
+#: takes only arm four RED.
 _HOLDERS: Final = (
     ("a plain writer", _a_plain_writer),
     ("an exclusive locker", _an_exclusive_locker),
     ("a rollback-journal holder", _a_rollback_journal_holder),
+    ("a holder on the previously active database", _a_holder_on_the_previously_active_database),
 )
 
 

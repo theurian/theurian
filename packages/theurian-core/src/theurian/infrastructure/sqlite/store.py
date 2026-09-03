@@ -75,6 +75,7 @@ from theurian.domain.values import (
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
     StateDatabaseUnreadableError,
+    WriteTransactionBusyError,
     open_read_connection,
 )
 
@@ -107,10 +108,26 @@ from theurian.infrastructure.sqlite.connection import (
 #: `TheurianError` and would have escaped a guard written over `ValueError` alone.
 #: That is precisely how the `content_type` face of the measurement above got
 #: out.
+#: ``WriteTransactionBusyError`` joined this tuple in #484 round three, and its
+#: absence is the sharpest illustration of why the key is a boundary rather than
+#: a hierarchy. ``_prepare`` classifies contention correctly one layer down --
+#: "another process holds this file, wait and retry" -- and the ``except
+#: Exception`` below then **re-wrapped that correct answer** into
+#: ``StateDatabaseUnreadableError``, which a caller reads as "this file is
+#: unusable" and whose cure deletes the state. Measured through
+#: ``_verify_history``: the published error read ``cannot be read
+#: (WriteTransactionBusyError)`` and the remedy told the operator to discard the
+#: FR-K5 tamper evidence the check exists to hold, over a fault that cleared on
+#: the next run with the database byte-identical.
+#:
+#: A conversion undone one layer up is still the defect the conversion was
+#: written to prevent, which is why the closure argument for that class is stated
+#: over conversion *layers* rather than over any single site.
 _ALREADY_ANSWERED: Final = (
     FileNotFoundError,
     SchemaVersionMismatchError,
     StateDatabaseUnreadableError,
+    WriteTransactionBusyError,
 )
 
 
