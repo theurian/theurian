@@ -80,7 +80,15 @@ class SetupContext:
     #: The state hash the migration set on disk resolves to (ADR-0016), given the
     #: repository root -- the value ``theurian project status`` publishes as
     #: ``stateHash``, and the one that names the database file for the state a
-    #: project is *at*. ``None`` when the set could not be loaded at all.
+    #: project is *at*.
+    #:
+    #: ``None`` means **the load was attempted and refused**, which is narrower
+    #: than "something went wrong": the composition root's implementation resolves
+    #: the project's paths *before* the load, so a ``.theurian`` that escapes the
+    #: working tree raises out of this call rather than answering ``None`` (#237,
+    #: T-5; measured -- the step is reported ``conflicting``, "Could not check
+    #: initial-index."). A caller that reads ``None`` as "every failure is
+    #: contained here" is reading more than this returns.
     #:
     #: Injected from the CLI composition root for the same reason as
     #: :attr:`check_migrations`: resolving it means loading YAML off disk against

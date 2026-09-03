@@ -111,13 +111,17 @@ def _current_state_hash(root: Path) -> StateHash | None:
     """The state this project is at, resolved the way every other command does.
 
     ``load_migrations`` then ``resolve_state_hash(loaded, SCHEMA_VERSION)`` --
-    the two calls ``cli/context.resolve_context`` makes, in that order and with
-    nothing else between them -- so `doctor` and ``theurian project status``
-    address the same database file for the same working tree. Deriving it any
-    other way is how the two commands came to publish opposite answers about one
-    project (#451), and there is no cheaper source: the hash covers the migration
-    ids, the bytes their ``contentFile``s point at, and the schema version
-    (ADR-0016), so it cannot be read off a directory listing.
+    the two calls ``cli/context.resolve_context`` makes, with the same inputs and
+    in the same order -- so `doctor` and ``theurian project status`` address the
+    same database file for the same working tree. Not *adjacent* there: the
+    registry lookup that names the project is evaluated between them, in
+    ``CommandContext``'s argument list. It reaches nothing the hash is computed
+    from, which takes ``loaded`` and the schema version and nothing else.
+
+    Deriving it any other way is how the two commands came to publish opposite
+    answers about one project (#451), and there is no cheaper source: the hash
+    covers the migration ids, the bytes their ``contentFile``s point at, and the
+    schema version (ADR-0016), so it cannot be read off a directory listing.
 
     **The static guards are deliberately not run here.** ``_check_migrations``
     runs them because it answers `migrate validate`'s question; this answers
@@ -126,11 +130,28 @@ def _current_state_hash(root: Path) -> StateHash | None:
     set the loader accepts and a guard rejects -- the same divergence in a new
     place.
 
-    ``None`` rather than a raise, for the reason ``_check_migrations`` returns a
-    verdict: a probe has to come back with an answer, and a step that let the
-    failure escape would reach the reader as ``SetupService._probe``'s generic
-    "Could not check initial-index". The refusal is ``migrations-valid``'s to
-    publish, in the same report, so nothing from the file travels with this one.
+    **``None`` for a refused load only, and the resolve is deliberately outside
+    the ``try``.** ``ProjectPaths.of`` refuses a ``.theurian`` that resolves
+    outside the working tree (#237, T-5), and that refusal still escapes to
+    ``SetupService._probe``'s generic net -- ``conflicting``, "Could not check
+    initial-index.", measured end to end -- which is correct: a containment
+    refusal is not a verdict about the migration set, and catching it here would
+    publish it as one. Moving the call inside would make this function total and
+    pay for it in exactly that misattribution. What the ``try`` covers is the
+    load, for the reason ``_check_migrations`` returns a verdict: a step has to
+    come back with an answer about the files it was asked about.
+
+    **The catch is wider than the migrations, and the caller's sentence must
+    not be.** ``schema_root()`` runs inside it and raises ``ProjectError`` --
+    "This build is incomplete; reinstall theurian" -- and the loader raises
+    ``SchemaUnreadableError`` for a schema it cannot read; both are
+    install-integrity rather than migration content, and both arrive here as
+    ``None``. They are *not* hoisted out: ``_check_migrations`` calls
+    ``schema_root()`` inside its own ``try``, and two readers of the same call
+    catching different sets is #91's divergence in a new place. So the split is
+    left where it is and ``probe_initial_index`` states no cause -- the refusal
+    itself is ``migrations-valid``'s to publish, in the same report, so nothing
+    read from the file travels with this one.
     """
     paths = ProjectPaths.of(root)
     try:

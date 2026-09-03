@@ -1417,12 +1417,33 @@ def probe_initial_index(context: SetupContext) -> SetupStep:
     because resolving it means loading YAML off disk (ADR-0003) -- the same
     reasoning, and the same shape, as :attr:`SetupContext.check_migrations`.
 
-    **A set that will not load gets its own answer rather than a raise.** The
+    **A set the loader refuses gets its own answer rather than a raise.** The
     resolver returns ``None`` there, and answering "not built" would be the #451
-    defect pointing the other way: an unreadable set is not a state anyone can
-    say anything about. The refusal itself belongs to ``migrations-valid``, which
-    publishes it in the same report; this step says only that it could not tell
-    and names the command that prints why.
+    defect pointing the other way: a set nothing could read is not a state anyone
+    can say anything about. The refusal itself belongs to ``migrations-valid``,
+    which publishes it in the same report; this step says only that it could not
+    tell and names the command that prints why.
+
+    **And that answer names no culprit**, which is a requirement rather than a
+    style. Two install-integrity failures reach ``None`` here: ``schema_root()``
+    finding neither candidate location -- "This build is incomplete; reinstall
+    theurian" -- and :class:`~theurian.domain.errors.SchemaUnreadableError`, a
+    schema that is there and cannot be read. Both are recorded across this tree
+    as install-integrity and *not* migration content, and both were measured
+    landing on this arm. A sentence saying the project's migrations do not load
+    sends the reader to their own YAML for a broken install, so what this one
+    says is that the read did not happen and where the reason is printed.
+
+    **What does not come back as an answer at all** is a ``.theurian`` resolving
+    outside the working tree. ``ProjectPaths.of`` refuses that (#237, T-5) and it
+    is the *first* call the resolver makes, outside its ``try``, so the refusal
+    raises through this probe and is reported by :meth:`SetupService._probe` as
+    ``conflicting``, "Could not check initial-index." -- measured end to end, and
+    the same bytes ``main`` produces. Correct rather than a gap: a containment
+    refusal says nothing about the migration set, and answering it above would
+    publish it as though it did. The ``ProjectPaths.of`` on the line below is the
+    second call on the same root, so it can refuse only for a reason the resolver
+    did not already hit -- which means the tree changed between the two.
 
     **NOT_APPLICABLE on every arm, deliberately.** ``MISSING`` is
     :attr:`SetupStep.would_change` -- what `doctor` counts as a problem and
@@ -1440,15 +1461,23 @@ def probe_initial_index(context: SetupContext) -> SetupStep:
         )
     state_hash = context.current_state_hash(root)
     if state_hash is None:
-        # Returned before `ProjectPaths.of`, which refuses an escaping
-        # `.theurian` symlink by raising: the arm reached when the project's
-        # migrations cannot be read is not the arm to discover that in.
+        # `could not be read`, never "your migrations do not load": a build whose
+        # published JSON Schemas are missing or unreadable arrives here too
+        # (measured, both faces). Only one of those faces has a type of its own
+        # -- `SchemaUnreadableError`; `schema_root()`'s is a `ProjectError` like
+        # any other -- so a split on the exception would name the install for one
+        # face and blame the operator's YAML for the other, which is a guard over
+        # half its class. The one claim that holds for all three is that the read
+        # did not happen. `theurian migrate validate` prints which it was, and in
+        # a `doctor` run `migrations-valid` probes the same load and publishes
+        # what refused it.
         return SetupStep(
             step_id=StepId.INITIAL_INDEX,
             status=StepStatus.NOT_APPLICABLE,
             summary=(
-                "Cannot tell what state this project is at: its migrations do "
-                "not load. Run `theurian migrate validate`."
+                "Cannot tell what state this project is at: its migration set "
+                "could not be read. Run `theurian migrate validate`, which "
+                "prints why."
             ),
         )
     built = ProjectPaths.of(root).database_for(state_hash).exists()
