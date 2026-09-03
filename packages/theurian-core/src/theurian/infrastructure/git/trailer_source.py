@@ -338,44 +338,15 @@ class GitTrailerFindingSource:
         accepted: list[tuple[tuple[datetime, str, int], ReviewFinding]] = []
         rejected: list[tuple[tuple[str, int], RejectedTrailer]] = []
         for record in records:
-            committed_at = record.committed_at
-            # A record earns at most ONE record-level rejection, and the decode is
-            # asked first: a message whose bytes are not UTF-8 has no candidate
-            # lines at all, so naming the decode locates the failure where naming
-            # the date would only say which record it was on. (A record failing
-            # both is one entry either way -- the accounting is what must not
-            # double-count.)
-            if record.message is None:
-                rejected.append(
-                    (
-                        (record.sha, 0),
-                        RejectedTrailer(
-                            record.sha, record.undecodable_excerpt, record.undecodable_reason
-                        ),
-                    )
-                )
+            outcome = _record_level_rejection(record)
+            if isinstance(outcome, RejectedTrailer):
+                rejected.append(((record.sha, 0), outcome))
                 continue
-            if committed_at is None:
-                # A committer date this runtime cannot hold as a UTC instant -- a
-                # year >= 10000, or (unreachable from `%cI`) a value with no offset
-                # at all -- cannot become a valid ReviewFinding, and its parse runs
-                # before any trailer, so letting it escape would abort the whole
-                # load, even for a trailer-less commit (D3). Account the record as
-                # one rejected entry and keep loading its siblings; its sha is git's
-                # own %H (D4), never author-forgeable.
-                reason = (
-                    f"unusable committer date {record.date_iso!r} "
-                    "(not an offset-bearing instant datetime can hold, so the record "
-                    "cannot be a finding)"
-                )
-                rejected.append(
-                    ((record.sha, 0), RejectedTrailer(record.sha, record.date_iso, reason))
-                )
-                continue
+            message, committed_at = outcome
             # The extraction rule is `keyed_lines` in the domain, not a `startswith`
             # written out here: which lines are candidates is grammar, and grammar
             # the adapter owned privately was unreachable to PARSER_STAMP (#406).
-            for position, line in keyed_lines(record.message):
+            for position, line in keyed_lines(message):
                 try:
                     finding = finding_from_trailer(
                         line, commit_sha=record.sha, committed_at=committed_at
@@ -447,6 +418,40 @@ class GitTrailerFindingSource:
         }
         env["GIT_NO_REPLACE_OBJECTS"] = "1"
         return env
+
+
+def _record_level_rejection(record: _Record) -> RejectedTrailer | tuple[str, datetime]:
+    """One record's fate before any trailer is read: rejected whole, or loadable.
+
+    Returns the single :class:`RejectedTrailer` the record earns, or the
+    ``(message, committer instant)`` pair whose non-``None``-ness the caller's
+    trailer loop depends on. The union is what lets the caller narrow both fields
+    at once: a record that is *not* rejected has, by construction, both of them.
+
+    **A record earns at most ONE record-level rejection, and the decode is asked
+    first.** A message whose bytes are not UTF-8 has no candidate lines at all, so
+    naming the decode locates the failure, where naming the date would only say
+    which record it was on. A record failing both is one entry either way -- the
+    accounting is what must not double-count (AC-1).
+
+    Both refusals exist to keep one crafted commit from aborting the load (D3). An
+    unrepresentable committer date -- a year >= 10000 from a crafted
+    ``GIT_COMMITTER_DATE``, or (unreachable from ``%cI``) a value with no offset --
+    cannot become a valid :class:`ReviewFinding`, and its parse runs before any
+    trailer, so letting it escape would take the whole load down even for a
+    trailer-less commit. Each rejection's sha is git's own ``%H`` (D4), never
+    author-forgeable.
+    """
+    if record.message is None:
+        return RejectedTrailer(record.sha, record.undecodable_excerpt, record.undecodable_reason)
+    if record.committed_at is None:
+        reason = (
+            f"unusable committer date {record.date_iso!r} "
+            "(not an offset-bearing instant datetime can hold, so the record "
+            "cannot be a finding)"
+        )
+        return RejectedTrailer(record.sha, record.date_iso, reason)
+    return record.message, record.committed_at
 
 
 def _decode_metadata(raw: bytes, *, field: str, repo_root: Path) -> str:
