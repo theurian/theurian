@@ -52,13 +52,21 @@ from theurian.security.project_config import SecretScanPolicy
 #: The escape hatch is named second and names the key, because ``block`` is the
 #: default policy and a false positive is otherwise a dead end -- the same
 #: reasoning, and deliberately the same three values, as the accept path's remedy.
+#:
+#: **One string for two readers**, which is what decides how the pointer to the
+#: item list is worded. The build's own report carries this beside the findings it
+#: just listed; ``theurian doctor`` carries it hours later beside a count and no
+#: items, because a ``--report`` is pasted into public issues. So it *names* the
+#: command that lists them rather than telling the reader to run it -- which read
+#: as an instruction to re-run what had just been run, measured against the real
+#: CLI on 2026-09-03.
 LANDED_SECRET_REMEDY: Final = (
     "Treat the value as exposed and rotate it: it is in this project's canonical state and "  # noqa: S105 - prose about a secret, not one
     "in Git history, and `knowledge.search` and `knowledge.get` already serve it whatever "
     "this index holds. Then get it out of the corpus -- supersede the revision with a new "
     "`upsertRevision`, or retire the item with `deprecateItem` -- and run `theurian migrate "
-    "apply` followed by `theurian index build`. Run `theurian index build` to see which "
-    "items were reported. If it is not a secret, set security.secretScan to warn or off in "
+    "apply` followed by `theurian index build`, which names the items it reported. If it is "
+    "not a secret, set security.secretScan to warn or off in "
     ".theurian/config.yaml (block, warn, off; block is what an absent key selects)."
 )
 

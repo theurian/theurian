@@ -620,3 +620,166 @@ def test_a_row_the_build_withheld_is_never_scanned_and_never_counted(bare: Path)
     assert any(DRAFT_ITEM in line for line in _findings(opted_in)), (
         f"the control is blind rather than the row being absent: {opted_in}"
     )
+
+
+# -- The signal has to clear, and it has to say so when it cannot -------------
+
+#: The migration that runs the remedy the refusal names: a new ``upsertRevision``
+#: superseding the body that carried the credential.
+#:
+#: ``expectedRevision`` is not decoration here. An ``upsertRevision`` against an
+#: item that already has one raises ``RevisionConflictError`` without it
+#: (ADR-0006), which is how the first attempt at this fixture failed against the
+#: real CLI -- so a remedy naming "supersede the revision" is only followed
+#: correctly with it, and the fixture follows the remedy rather than a shortcut.
+_ROTATED_BODY = (
+    "# Legacy key rotation\n\nThe staging key was rotated out of band. Nothing here is a key.\n"
+)
+_ROTATION_MIGRATION_ID = "01K1DDDDDD01234567890ABCDE"
+
+
+def _supersede_the_dirty_body(root: Path) -> None:
+    """Land a clean revision over the one carrying :data:`PLANTED`."""
+    (root / ".theurian/knowledge/architecture/legacy-keys-v2.md").write_text(
+        _ROTATED_BODY, encoding="utf-8"
+    )
+    (root / f".theurian/migrations/{_ROTATION_MIGRATION_ID}-rotate.yaml").write_text(
+        f"""apiVersion: theurian.dev/v1
+id: {_ROTATION_MIGRATION_ID}
+createdAt: 2026-09-03T11:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: upsertRevision
+    itemId: {DIRTY_ITEM}
+    revisionId: 01K1DREVDD01234567890ABCDE
+    expectedRevision: 01K1BREVBB01234567890ABCDE
+    contentFile: ../knowledge/architecture/legacy-keys-v2.md
+    contentSha256: {body_pin(_ROTATED_BODY)}
+    metadata:
+      title: Legacy key rotation
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/legacy-keys-v2.md
+""",
+        encoding="utf-8",
+    )
+    _must(root, "migrate", "apply")
+
+
+def test_following_the_remedy_clears_the_degraded_verdict(planted: Path) -> None:
+    """A signal that never clears is worse than no signal.
+
+    ``block`` publishes the index and leaves ``doctor`` unhealthy, so the operator
+    needs the state to come back on its own once the corpus is fixed. Nothing
+    clears it but a build that finds nothing: the record is rewritten on every
+    publish, including a clean one, which is the whole reason it is written then
+    rather than only on trouble.
+
+    The corpus is fixed by *running the remedy the refusal prints* -- superseding
+    the revision -- rather than by editing the applied migration, which the
+    checksum guard refuses. So this is also the check that the remedy names a
+    route that exists.
+    """
+    assert _in(planted, "index", "build")[0] != 0
+    assert _in(planted, "doctor")[1]["indexSecretScan"]["status"] == "degraded"
+
+    _supersede_the_dirty_body(planted)
+    code, rebuilt = _in(planted, "index", "build")
+
+    assert code == 0, rebuilt
+    assert _findings(rebuilt) == [], rebuilt
+    assert "remedy" not in rebuilt, (
+        f"a clean build still carries a remedy, so there is nothing to act on: {rebuilt}"
+    )
+    assert _in(planted, "doctor")[1]["indexSecretScan"] == {
+        "status": "clean",
+        "policy": "block",
+        "findings": 0,
+    }
+
+
+def test_a_record_that_names_another_build_is_read_as_unrecorded(planted: Path) -> None:
+    """Honest ignorance, not a clean bill.
+
+    A withdrawal-triggered purge republishes the pointer at a build this control
+    never wrote a record for, and a reader that took the record at face value
+    would report a verdict about a build that is no longer served. The id is
+    compared rather than trusted, so the answer is "nothing is known" -- which is
+    not counted as a problem, because it is not evidence of one.
+    """
+    assert _in(planted, "index", "build")[0] != 0
+    record = ProjectPaths.of(planted).index_secret_scan
+    stale = json.loads(record.read_text(encoding="utf-8"))
+    stale["indexBuildId"] = "01K1ZZZZZZ01234567890ABCDE"
+    record.write_text(json.dumps(stale), encoding="utf-8")
+
+    _, payload = _in(planted, "doctor")
+
+    assert payload["indexSecretScan"] == {
+        "status": "unrecorded",
+        "policy": None,
+        "findings": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("label", "contents"),
+    [
+        ("not JSON at all", "{{{"),
+        ("a JSON array", "[]"),
+        ("a policy this build does not recognise", '{"indexBuildId": "x", "policy": "warm"}'),
+        ("a boolean findings count", '{"indexBuildId": "x", "policy": "block", "findings": true}'),
+        ("a negative findings count", '{"indexBuildId": "x", "policy": "block", "findings": -1}'),
+        ("no build id", '{"policy": "block", "findings": 1}'),
+    ],
+    ids=lambda value: value if isinstance(value, str) and " " in value else "",
+)
+def test_a_record_that_cannot_be_trusted_whole_reports_nothing_known(
+    planted: Path, label: str, contents: str
+) -> None:
+    """Every field is checked rather than coerced, and a bad one costs the record.
+
+    The file is derived, git-ignored and local, so this is not a security
+    boundary -- anything that can rewrite it can delete the index. What it is is
+    the rule ``read_secret_scan_policy`` holds one layer up: a value the enum does
+    not contain is a mistake somebody made about a security control, and reading a
+    policy out of it would be inventing one. ``findings: true`` is listed because
+    ``isinstance(True, int)`` is ``True`` in Python and would otherwise count as
+    one finding.
+    """
+    assert _in(planted, "index", "build")[0] != 0
+    ProjectPaths.of(planted).index_secret_scan.write_text(contents, encoding="utf-8")
+
+    _, payload = _in(planted, "doctor")
+
+    assert payload["indexSecretScan"]["status"] == "unrecorded", (
+        f"{label} was read as a verdict: {payload['indexSecretScan']}"
+    )
+
+
+def test_doctor_outside_a_project_says_there_is_nothing_to_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``doctor`` runs from anywhere, and the machine-wide half is the point.
+
+    A verdict of ``clean`` here would be a claim about an index that does not
+    exist, and a raise would take out a diagnostic whose whole job is to report on
+    a broken machine.
+    """
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    _, payload = _in(elsewhere, "doctor")
+
+    assert payload["indexSecretScan"] == {
+        "status": "not-applicable",
+        "policy": None,
+        "findings": 0,
+    }
