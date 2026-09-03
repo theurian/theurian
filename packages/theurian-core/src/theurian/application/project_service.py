@@ -147,6 +147,44 @@ KNOWLEDGE_DIR_ESCAPE_REMEDY: Final = (
 _MIN_PARTS_UNDER_A_DERIVED_SUBDIRECTORY: Final = 2
 
 
+#: What a reader has to run *after* removing each derived subdirectory, keyed on
+#: the subdirectory and not on the refused leaf -- the leaf is not what gets
+#: removed, and two artifact families share ``state/``.
+#:
+#: ``state`` names three rebuilds because it holds three things: the canonical
+#: database (``theurian-state-*``), the retrieval index (``theurian-index-*``)
+#: and the review-findings store (``theurian-findings-*``), plus both pointers.
+#: ``migrate apply`` rebuilds the first and republishes its pointer and is
+#: therefore unconditional; the other two are named conditionally because a
+#: project that never built them has nothing to rebuild. Keying on the
+#: subdirectory cannot tell those three apart -- ``findings_for`` resolves under
+#: ``state`` too -- so the tail covers the union rather than guessing which
+#: artifact the refused leaf was.
+#:
+#: ``runtime`` names none, because nothing there needs rebuilding: it holds the
+#: advisory lock file and nothing else, and the next command recreates it.
+#: Saying "run `theurian migrate apply` to rebuild the state" there -- which the
+#: first cut of this remedy did for every subdirectory alike -- sends a reader to
+#: rebuild something that was never lost.
+#:
+#: ``cache`` and ``generated`` are members of ``DERIVED_SUBDIRECTORIES`` that no
+#: ``ProjectPaths`` helper resolves under today, so no refusal can reach this
+#: mapping for them. They fall through to no tail, which is the safe direction:
+#: an absent sentence tells a reader nothing false, and a wrong rebuild command
+#: would.
+_REBUILD_AFTER_REMOVING: Final[dict[str, str]] = {
+    "state": (
+        " Then run `theurian migrate apply` to rebuild the canonical state. If this "
+        "project had also built a retrieval index or a review-findings store, "
+        "`theurian index build` and `theurian findings build` rebuild those."
+    ),
+    "runtime": (
+        " Nothing needs rebuilding afterwards: the only thing Theurian keeps there is "
+        "the advisory lock file, and the next command recreates it."
+    ),
+}
+
+
 def derived_escape_remedy(knowledge_directory_name: str, subdirectory: str) -> str:
     """The cure for a containment refusal on something under a derived directory.
 
@@ -170,21 +208,55 @@ def derived_escape_remedy(knowledge_directory_name: str, subdirectory: str) -> s
     What this code *can* prove is the range the culprit lies in:
     :meth:`ProjectPaths.of` has already refused an escaping ``.theurian``, so the
     link is at the derived subdirectory or below it, and removing that
-    subdirectory removes it wherever it sits. ``rm`` on a symbolic link removes
-    the link and not what it points at, so the instruction cannot destroy
-    whatever the link reached.
+    subdirectory removes it wherever it sits.
 
-    **Deleting is safe to instruct here and is not elsewhere.** Everything under
-    a member of ``DERIVED_SUBDIRECTORIES`` is rebuildable by definition
-    (ADR-0004), which is exactly what :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`'s own
-    subject is not.
+    **The path is rendered without a trailing slash, and that is a safety
+    property rather than a formatting choice.** The first cut of this remedy read
+    ``Delete `.theurian/runtime/` `` -- and BSD ``rm -rf`` on a trailing-slash
+    symlink *follows the link*. Measured end to end: following that instruction
+    literally destroyed the entire directory the link pointed at, outside the
+    working tree, **and left the link in place**, so the retry met the identical
+    refusal. Every claim about ``rm``'s safety here is therefore scoped to the
+    no-slash form, which is the only form measured safe:
+
+    ==========================================  ==========================
+    form                                        measured outcome
+    ==========================================  ==========================
+    ``rm -rf .theurian/runtime/`` (link)        target destroyed, link kept
+    ``rm -rf .theurian/runtime`` (link)         link removed, target intact
+    ``rm .theurian/runtime`` (link)             link removed, target intact
+    ``rm -rf .theurian/runtime`` (real dir)     directory removed
+    ==========================================  ==========================
+
+    So the instruction is given in **both forms**, because one command does not
+    honestly cover both shapes: plain ``rm`` cannot remove a real directory, and
+    ``rm -rf`` is more force than a link needs. The trailing slash is called out
+    explicitly rather than merely omitted -- a reader who "tidies" the path by
+    adding one gets the destructive form back.
+
+    **What the removal costs, stated without the sentence that was false.** This
+    text used to promise "nothing authored is lost", which is not this function's
+    to promise: when the culprit is a link, its *target* is arbitrary and need not
+    be derived at all -- the measured case pointed at a directory outside the
+    tree. What is true, and is what the text says now, is narrower and enough:
+    removing a link costs nothing, and removing a real directory here costs only
+    artifacts Theurian rebuilds, because everything under a member of
+    ``DERIVED_SUBDIRECTORIES`` is rebuildable by definition (ADR-0004) -- exactly
+    what :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`'s own subject is not.
+
+    The rebuild tail is keyed per subdirectory by
+    :data:`_REBUILD_AFTER_REMOVING`, which records why ``state`` names three
+    commands and ``runtime`` names none.
     """
+    path = f"{knowledge_directory_name}/{subdirectory}"
     return (
-        f"Delete `{knowledge_directory_name}/{subdirectory}/` and retry. Everything under "
-        f"it is derived (ADR-0004) and rebuilt, so nothing authored is lost -- and a clone "
-        f"may have delivered part of that path as a symbolic link force-added past the "
-        f"ignore, which deleting the directory removes. Run `theurian migrate apply` to "
-        f"rebuild the state."
+        f"Remove `{path}` -- run `rm {path}` if it is a symbolic link, or "
+        f"`rm -rf {path}` if it is a real directory. Do not add a trailing slash: with "
+        f"one, `rm -rf` follows the link and deletes what it points at while leaving the "
+        f"link in place. A clone may have delivered part of that path as a symbolic link "
+        f"force-added past the ADR-0004 ignore; removing a link costs nothing, and "
+        f"removing a real directory here costs only artifacts Theurian rebuilds."
+        f"{_REBUILD_AFTER_REMOVING.get(subdirectory, '')}"
     )
 
 
@@ -497,10 +569,24 @@ class ProjectPaths:
         Falls back to :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY` for everything else,
         which is the population it was written for: ``knowledge``,
         ``specifications``, ``proposals``, ``config``, and the derived
-        subdirectories themselves. A refusal on ``.theurian/state`` rather than
-        on something *under* it still carries the older text -- recorded, not
-        overlooked: it is the same wrong-artifact shape one level up, and it
-        belongs to #525's population rather than to this fix's.
+        subdirectories themselves.
+
+        **That last group survives only at the helper level, and an earlier note
+        here described it as though a user could meet it.** Asking this class for
+        ``state`` or ``runtime`` *itself* does still return the older text -- but
+        planting an escaping ``.theurian/state`` and running the CLI does not
+        produce it, because a helper resolving something *under* ``state``
+        (``database_for``, ``active_pointer``) raises first and its refusal is
+        what gets published. Measured, and the branch's own CLI tests assert it:
+        ``test_apply_refuses_an_escaping_state_symlink_and_writes_nothing_outside_the_tree``
+        and its ``status`` sibling both expect
+        :func:`derived_escape_remedy`. So the CLI-reachable face of that plant is
+        the derived remedy, and the older text is reachable only by calling the
+        directory helper directly.
+
+        Unifying the two texts, and the exit-code grading that differs beside
+        them, is #525's -- which is where the population is recorded, rather than
+        here where only this one seam is visible.
         """
         if not path.is_relative_to(self.knowledge_dir):  # pragma: no cover - see docstring
             # No helper builds such a path; `initialize_project` calls `_contain`
