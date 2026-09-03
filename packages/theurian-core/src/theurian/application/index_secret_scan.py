@@ -38,7 +38,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final
 
-from theurian.application.project_service import ProjectPaths, read_active_index_pointer
+from theurian.application.project_service import (
+    BuildProvenance,
+    ProjectPaths,
+    read_active_index_pointer,
+)
 from theurian.security.project_config import SecretScanPolicy
 
 #: What to do about a secret that has already landed in the canonical store.
@@ -211,7 +215,9 @@ def carry_index_secret_scan_forward(
         return
 
 
-def published_index_secret_scan(paths: ProjectPaths) -> IndexSecretScanVerdict:
+def published_index_secret_scan(
+    paths: ProjectPaths, *, provenance: BuildProvenance
+) -> IndexSecretScanVerdict:
     """What the *published* build's scan found, or why nothing can be said.
 
     Never raises. Every failure here means the same thing -- nothing is known
@@ -224,13 +230,30 @@ def published_index_secret_scan(paths: ProjectPaths) -> IndexSecretScanVerdict:
     legitimately inherits a verdict says so explicitly --
     :func:`carry_index_secret_scan_forward` re-records under the purged copy's id,
     rather than this reader guessing that an unfamiliar id is close enough.
+
+    **The record vouches for nothing on its own** (ADR-0004, SEC-7, T-19). Both
+    files this reads live under `.theurian/state/`, which is git-ignored and
+    therefore force-addable: a repository that ships an ``active-index.json`` and
+    a matching ``index-secret-scan.json`` past that ignore makes a machine which
+    has never run ``index build`` report ``clean`` -- the exact laundering
+    :class:`~theurian.application.project_service.BuildProvenance` closes, and
+    which ``index build``'s own ``has_state`` gate already refuses one step
+    earlier. So the published build id is checked against this installation's
+    build record first, and a build this install did not produce is ``UNRECORDED``
+    whatever the record beside it says. ``provenance`` is injected rather than
+    resolved here, because every provenance check in this codebase belongs to a
+    composition root or a serve entry point, never to the layer that reads.
     """
     published = read_active_index_pointer(paths).payload
     if published is None:
         return IndexSecretScanVerdict(status=IndexSecretScanStatus.NOT_APPLICABLE)
 
+    build_id = str(published.get("indexBuildId", ""))
+    if not provenance.has_index(paths.root, build_id):
+        return IndexSecretScanVerdict(status=IndexSecretScanStatus.UNRECORDED)
+
     recorded = _read_record(paths.index_secret_scan)
-    if recorded is None or recorded[0] != str(published.get("indexBuildId", "")):
+    if recorded is None or recorded[0] != build_id:
         return IndexSecretScanVerdict(status=IndexSecretScanStatus.UNRECORDED)
 
     _, policy, findings = recorded

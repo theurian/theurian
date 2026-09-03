@@ -899,13 +899,17 @@ def test_a_record_that_cannot_be_trusted_whole_reports_nothing_known(
 ) -> None:
     """Every field is checked rather than coerced, and a bad one costs the record.
 
-    The file is derived, git-ignored and local, so this is not a security
-    boundary -- anything that can rewrite it can delete the index. What it is is
-    the rule ``read_secret_scan_policy`` holds one layer up: a value the enum does
-    not contain is a mistake somebody made about a security control, and reading a
-    policy out of it would be inventing one. ``findings: true`` is listed because
-    ``isinstance(True, int)`` is ``True`` in Python and would otherwise count as
-    one finding.
+    These rows are about *malformedness*, not about who wrote the file. The
+    security boundary is one layer earlier and is a different check: the file is
+    git-ignored and therefore force-addable, so a shipped record is refused by
+    ``BuildProvenance`` before a field of it is read
+    (``test_a_shipped_state_directory_cannot_report_a_build_nobody_here_made``) --
+    which is why each row here runs on a project whose build this installation
+    really produced. What the rows hold is the rule ``read_secret_scan_policy``
+    holds one layer up: a value the enum does not contain is a mistake somebody
+    made about a security control, and reading a policy out of it would be
+    inventing one. ``findings: true`` is listed because ``isinstance(True, int)``
+    is ``True`` in Python and would otherwise count as one finding.
 
     Each row names the **published** build, so the field under test is the only
     thing wrong with it; :data:`_UNTRUSTWORTHY_RECORDS` records the mutation that
@@ -924,6 +928,49 @@ def test_a_record_that_cannot_be_trusted_whole_reports_nothing_known(
     assert payload["indexSecretScan"]["status"] == "unrecorded", (
         f"{label} was read as a verdict: {payload['indexSecretScan']}"
     )
+
+
+def test_a_shipped_state_directory_cannot_report_a_build_nobody_here_made(bare: Path) -> None:
+    """A clean bill has to rest on a build this installation produced (T-19, SEC-7).
+
+    Everything under ``.theurian/state/`` is derived and git-ignored (ADR-0004),
+    and a repository can ship it anyway with ``git add -f``. A clone that carries
+    an ``active-index.json`` and a matching ``index-secret-scan.json`` therefore
+    reaches a machine that has never run ``theurian index build`` -- and the
+    verdict is read off two files the repository wrote. Reproduced by the security
+    reviewer on 2026-09-03: ``doctor`` reported ``clean`` on a never-built project.
+
+    ``BuildProvenance`` is the discriminator the rest of this codebase already
+    uses for exactly this laundering, and ``index build`` applies it one step
+    earlier to canonical state. The answer is ``unrecorded`` -- nothing is known --
+    rather than ``clean``.
+    """
+    forged = "01K1FFFFFF01234567890ABCDE"
+    state = bare / ".theurian/state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "active-index.json").write_text(
+        json.dumps(
+            {
+                "indexBuildId": forged,
+                "stateHash": "sha256:" + "a" * 64,
+                "projectId": "demo",
+                "indexesUnapproved": False,
+                "indexedSensitivities": ["public", "internal"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (state / "index-secret-scan.json").write_text(
+        json.dumps({"indexBuildId": forged, "policy": "block", "findings": 0}), encoding="utf-8"
+    )
+
+    _, payload = _in(bare, "doctor")
+
+    assert payload["indexSecretScan"] == {
+        "status": "unrecorded",
+        "policy": None,
+        "findings": 0,
+    }, f"a shipped state directory was read as a scan this machine ran: {payload}"
 
 
 def test_doctor_outside_a_project_says_there_is_nothing_to_report(

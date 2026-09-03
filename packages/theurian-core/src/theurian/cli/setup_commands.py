@@ -41,7 +41,11 @@ from theurian.application.index_secret_scan import (
     published_index_secret_scan,
 )
 from theurian.application.migration_engine import run_static_migration_guards
-from theurian.application.project_service import ProjectPaths, resolve_state_hash
+from theurian.application.project_service import (
+    BuildProvenance,
+    ProjectPaths,
+    resolve_state_hash,
+)
 from theurian.application.setup_context import MigrationsCheck, SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.cli.context import schema_root
@@ -404,11 +408,19 @@ def _published_secret_scan(context: SetupContext) -> IndexSecretScanVerdict:
     traceback with **empty stdout**, where the same tree on the previous build
     produced a complete payload at exit 1. A diagnostic has to come back with a
     verdict; a broken tree is precisely when somebody runs it.
+
+    The installation's build record is resolved **here**, at the composition root,
+    beside every other provenance check in this codebase (``migrate apply``'s
+    ``has_state``, ``index build``'s ``_require_buildable_state``, the serve path's
+    ``_published_index``). The reader it is handed to says why a verdict about an
+    unprovenanced build is ``UNRECORDED``.
     """
     if context.project_root is None:
         return IndexSecretScanVerdict(status=IndexSecretScanStatus.NOT_APPLICABLE)
     try:
-        return published_index_secret_scan(ProjectPaths.of(context.project_root))
+        return published_index_secret_scan(
+            ProjectPaths.of(context.project_root), provenance=BuildProvenance.default()
+        )
     except TheurianError:
         return IndexSecretScanVerdict(status=IndexSecretScanStatus.NOT_APPLICABLE)
 
