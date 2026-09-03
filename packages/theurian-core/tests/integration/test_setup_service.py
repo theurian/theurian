@@ -25,6 +25,7 @@ from theurian.application.project_service import (
     ProjectPaths,
     ProjectRegistry,
     ensure_gitignore,
+    read_active_index_pointer,
     resolve_state_hash,
     write_active_state,
 )
@@ -1484,6 +1485,81 @@ def test_the_initial_index_step_does_not_publish_indexes_as_future_work(
     published = " ".join((step.summary, step.action, step.detail))
     assert not [clause for clause in _CLAIMS_INDEXES_ARE_FUTURE_WORK if clause in published], (
         f"a shipped feature is still published as future work: {published!r}"
+    )
+
+
+#: A build id for the index the rule below publishes. Crockford base32 like
+#: every other identifier in this file.
+_AN_INDEX_BUILD = "01K451CCCC01234567890ABCDE"
+
+
+def _publish_a_retrieval_index(root: Path) -> None:
+    """Put a retrieval index on disk: a pointer naming a build, and that build.
+
+    What the product's own reader requires and no more. ``read_active_index_
+    pointer`` returns a payload for a pointer carrying a non-empty
+    ``indexBuildId`` and ``ActiveIndexPointer()`` for a tree with none, so these
+    two trees are distinguishable by the code that answers the index half --
+    which is the whole property the rule below needs, and it is asserted rather
+    than assumed.
+
+    Freshness is deliberately not fixtured. ``index_staleness`` weighs a state
+    hash, a project id, a schema version and a serving profile, and nothing here
+    claims anything about *which* verdict an index-side answer would reach --
+    only that `initial-index` reaches none.
+    """
+    paths = ProjectPaths.of(root)
+    index = paths.index_for(_AN_INDEX_BUILD)
+    index.parent.mkdir(parents=True, exist_ok=True)
+    index.touch()
+    paths.active_index_pointer.write_text(
+        json.dumps({"indexBuildId": _AN_INDEX_BUILD}), encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize("state", [pytest.param(s.build, id=s.name) for s in _SHAPES])
+def test_no_shape_changes_its_answer_when_a_retrieval_index_appears(
+    tmp_path: Path, state: Callable[[Path], SetupContext]
+) -> None:
+    """§6.2 row 17 names two artefacts and `initial-index` answers the first
+    (#451). The second one it must not answer at all, and this is what says so.
+
+    Row 17's predicate -- "an ``active_index`` exists for the current
+    ``state_hash``" -- is two questions. `theurian index status` owns the index
+    half, and `requirements-analysis.md` records `doctor`'s silence about it as
+    a requirement. A record like that is worth what holds it: one query against
+    two corpora, the shape this project's closure arguments settle on. A tree
+    with a published index and the same tree without one must produce the *same*
+    step, field for field, on every shape a project can be in.
+
+    Stronger than reading the source for an index symbol, and deliberately kept
+    beside that rule rather than instead of it: this one does not care how an
+    index answer would have been reached -- a helper, a ``getattr``, or a new
+    injected ``SetupContext`` port, which is the shape #451's own fix took and
+    the shape a name scan cannot see. It only cares that the published answer
+    did not move.
+
+    **It goes RED when #528 lands as an extension of this step**, which is its
+    purpose: `test_setup_domain.py`'s ``len(StepId) == 19`` moves when #528 adds
+    a *step* and does not move when #528 extends this one. When this fails,
+    §6.2's paragraph is the thing to change first.
+    """
+    context = state(tmp_path)
+    root = context.project_root
+    assert root is not None
+    paths = ProjectPaths.of(root)
+    assert read_active_index_pointer(paths).payload is None, "no index has been built here yet"
+    without_an_index = probe_initial_index(context)
+
+    _publish_a_retrieval_index(root)
+
+    assert read_active_index_pointer(paths).payload is not None, (
+        "the fixture has to leave an index the product's own reader can see"
+    )
+    assert probe_initial_index(context) == without_an_index, (
+        "the step's answer moved when a retrieval index appeared, so `doctor` now "
+        "reports on row 17's second artefact; §6.2's record that no step does is "
+        "no longer true"
     )
 
 

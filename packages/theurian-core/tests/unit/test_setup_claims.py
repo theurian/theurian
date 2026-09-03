@@ -71,8 +71,10 @@ tree and fails on any string that does not arrive intact.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
+from collections.abc import Iterator
 from typing import Final
 
 import pytest
@@ -80,10 +82,12 @@ from fakes.setup import FakeMcpConfig, FakeService
 from setup_migrations import state_hash_from_the_loader, unchecked_migrations
 from typer.testing import CliRunner
 
-from theurian.application import setup_steps
+from theurian.application import project_service, setup_steps
+from theurian.application.project_service import ProjectPaths
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.application.setup_steps import STEPS
+from theurian.cli import index_status_report, setup_commands
 from theurian.cli.main import app
 from theurian.cli.setup_commands import setup_command
 from theurian.domain.setup import SetupReport, SetupState, StepId, StepStatus
@@ -1015,4 +1019,193 @@ def test_the_plugin_document_relays_only_the_actions_that_name_a_command(
     assert quoted, (
         f"step 6 quotes none of the actions that name no command, so nothing stops it "
         f"from calling them instructions again: {describing}"
+    )
+
+
+# -- §6.2 row 17's second artefact: no step answers it (#451, #528) ----------
+#
+# Row 17's predicate -- "an `active_index` exists for the current `state_hash`"
+# -- is two questions, and since #451 `initial-index` answers the first one
+# truthfully and the second one not at all. `requirements-analysis.md` records
+# that divergence as a requirement rather than a defect, and the record rests on
+# a fact: no step reads the retrieval index. `test_setup_domain.py::test_every_
+# step_of_the_specification_has_an_identifier` holds `len(StepId) == 19`, which
+# moves when #528 adds a *step* -- and does not move when #528 instead extends
+# `initial-index` to answer both halves. The two rules below cover the shape
+# that count cannot see, one at the source and one at the published answer.
+
+#: The names a step would have to reach to answer the ``active_index`` half,
+#: each with the object that defines it. Paired rather than listed so that
+#: :func:`test_the_index_side_scan_looks_for_names_the_product_has` can check
+#: every one of them still exists: a scan expecting *zero* hits passes loudest
+#: when it is looking for a name nothing has any more, and that is the failure
+#: mode a bare tuple of strings would hide.
+INDEX_SIDE_READERS: Final = (
+    (project_service, "read_active_index_pointer"),
+    (project_service, "ActiveIndexPointer"),
+    (ProjectPaths, "active_index_pointer"),
+    (ProjectPaths, "index_for"),
+    (index_status_report, "index_staleness"),
+)
+
+_INDEX_SIDE_NAMES: Final = tuple(name for _, name in INDEX_SIDE_READERS)
+
+#: Where a step's answer is assembled: the probes themselves, and the
+#: composition root that hands them their readers. Both, because #451's own fix
+#: put the new reader in the second file and injected it -- so a scan of the
+#: probes alone would miss an index reader wired the same way.
+SETUP_SURFACE: Final = (
+    pathlib.Path(str(setup_steps.__file__)),
+    pathlib.Path(str(setup_commands.__file__)),
+)
+
+
+def _names_used(path: pathlib.Path) -> Iterator[tuple[str, str]]:
+    """Every identifier ``path`` uses, as ``(name, enclosing function)``.
+
+    ``ast`` rather than a text search, and that is the whole reason this can be
+    written as an expectation of zero: `probe_initial_index` *talks* about the
+    retrieval index on purpose -- its ``detail`` names ``theurian index build``
+    and ``theurian index status``, and its docstring says the two artefacts are
+    separate. A grep would report those and would have to be taught to ignore
+    them; a scan over ``Name`` and ``Attribute`` nodes never sees a string or a
+    comment in the first place.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    def walk(node: ast.AST, scope: tuple[str, ...]) -> Iterator[tuple[str, str]]:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                yield from walk(child, (*scope, child.name))
+                continue
+            if isinstance(child, ast.Name):
+                yield child.id, ".".join(scope) or "<module>"
+            elif isinstance(child, ast.Attribute):
+                yield child.attr, ".".join(scope) or "<module>"
+            yield from walk(child, scope)
+
+    yield from walk(tree, ())
+
+
+def test_the_index_side_scan_looks_for_names_the_product_has() -> None:
+    """Guards the guard: a zero-hit scan is only worth its zero if it can hit.
+
+    Every name in :data:`INDEX_SIDE_READERS` is checked against the object that
+    defines it, so a rename makes *this* fail -- naming the symbol that moved --
+    rather than leaving the scan below quietly green about a word the product
+    stopped using.
+    """
+    missing = [
+        f"{owner!r}.{name}" for owner, name in INDEX_SIDE_READERS if not hasattr(owner, name)
+    ]
+
+    assert not missing, (
+        f"the index-side scan is looking for names nothing defines: {missing}. "
+        f"Rename them here, or the zero it asserts stops meaning anything"
+    )
+
+
+def test_no_setup_step_reads_the_retrieval_index() -> None:
+    """§6.2 row 17's second artefact is answered by no step, and this is the fact
+    half of that record (#451, #528).
+
+    `doctor` says whether the canonical state for the migrations on disk is
+    built. It says nothing about whether a retrieval index exists over it --
+    `theurian index status` owns that -- and the requirements record calls the
+    gap a silence rather than a false sentence on exactly that basis.
+
+    **This is the pin #528's other shape needs.** Adding a step for the index
+    half moves ``len(StepId)``, which ``test_setup_domain.py`` already holds.
+    *Extending* ``initial-index`` to answer both halves moves no count at all,
+    and it is the shape the count cannot see. When that lands, this test goes
+    RED, and §6.2's paragraph has to move with it -- which is the point of it,
+    not an accident to be worked around by widening the scan.
+
+    **What it cannot see**, in the tradition of ``test_gate_call_sites.py``: it
+    reads names, so ``getattr(paths, "active_index_" + "pointer")``, a helper in
+    a third module, or an index answer arriving through a new injected
+    ``SetupContext`` port under a name of its own all pass here. The port shape
+    is the near one -- #451's own fix took it -- which is why the composition
+    root is scanned too, and why the behavioural rule in
+    ``test_setup_service.py::test_no_shape_changes_its_answer_when_a_retrieval_index_appears``
+    exists beside this one: that one watches the published answer and does not
+    care how it was reached.
+    """
+    reached = sorted(
+        {
+            (path.name, name, scope)
+            for path in SETUP_SURFACE
+            for name, scope in _names_used(path)
+            if name in _INDEX_SIDE_NAMES
+        }
+    )
+
+    assert not reached, (
+        "a setup step now reads the retrieval index:\n"
+        + "\n".join(f"  {file} :: {scope} uses {name}" for file, name, scope in reached)
+        + "\n\n§6.2 row 17 records that the `active_index` half is answered by no "
+        "step at all, and `theurian index status` is named there as the surface "
+        "that does answer it. If this is #528 landing as an extension of "
+        "`initial-index` rather than as a new step, that record is now wrong: "
+        "move the paragraph in docs/architecture/requirements-analysis.md, then "
+        "widen this rule to whatever remains true."
+    )
+
+
+# -- §6.2 row 17's prose, held against drifting back ------------------------
+
+#: The paragraph that records the divergence, keyed on its opening claim. A key
+#: rather than the whole block: what is load-bearing is the pair of sentences
+#: below, and a byte-for-byte pin would fail on a comma and be updated without
+#: being read.
+_ROW_17_KEY: Final = "the `active_index` half is answered by no step at all"
+
+#: The two things that paragraph must keep saying. The first is the claim
+#: itself; the second is the surface a reader is sent to instead, without which
+#: the record documents a silence and offers no way out of it.
+_ROW_17_MUST_SAY: Final = (
+    "a `doctor` run says nothing about whether an index exists",
+    "`theurian index status`",
+)
+
+
+def _sole_paragraph(document: pathlib.Path, key: str) -> str:
+    """The one paragraph of ``document`` containing ``key``, collapsed.
+
+    Asserted unique, for the reason :func:`_sole_edge` asserts it: a key that
+    matches two paragraphs -- or none -- leaves the rule below asserting over
+    the wrong text, or over nothing, while still passing or failing for reasons
+    that have nothing to do with the claim.
+    """
+    paragraphs = [p for p in _paragraphs(document.read_text(encoding="utf-8")) if key in p]
+
+    assert len(paragraphs) == 1, (
+        f"{key!r} matches {len(paragraphs)} paragraphs of {document.name}, expected one; "
+        f"the rule below would be reading the wrong block"
+    )
+    return paragraphs[0]
+
+
+def test_the_row_17_record_still_names_the_surface_that_answers_the_index_half() -> None:
+    """The prose half of the same record, held so it cannot drift back (#451).
+
+    The paragraph states a divergence between a specified predicate and shipped
+    behaviour, and it is only honest while it says both halves: that `doctor`
+    answers nothing about the index, and which command does. A rewrite that drops
+    the second leaves a reader told they have no answer and not where to get one;
+    one that drops the first has `doctor` quietly re-acquiring an answer it does
+    not compute, which is #451's own defect stated in prose instead of in code.
+
+    Pinned by sentence rather than by block, and the fact half is not restated
+    here: :func:`test_no_setup_step_reads_the_retrieval_index` holds the source,
+    and this holds what the document says about it.
+    """
+    paragraph = _sole_paragraph(COMPATIBILITY_FLOWCHART, _ROW_17_KEY)
+
+    missing = [sentence for sentence in _ROW_17_MUST_SAY if sentence not in paragraph]
+    assert not missing, (
+        f"§6.2's row-17 record no longer says {missing}. It documents a predicate "
+        f"the shipped step answers half of; without the first sentence it stops "
+        f"recording the gap, and without the second it records a gap with no "
+        f"surface to send a reader to:\n\n{paragraph}"
     )
