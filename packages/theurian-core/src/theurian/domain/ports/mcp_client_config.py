@@ -1,9 +1,24 @@
-"""McpClientConfig port: an MCP client's server list (ADR-0012, §24.2).
+"""McpClientConfig: an MCP client's server list (ADR-0012, §24.2).
 
 Claude Code is the first implementation, not the only possible one. Theurian
 serves any MCP client, and the setup step that installs a connection should not
 have to know which one it is talking to — so the step depends on this, and the
 composition root names the adapter.
+
+**Injected like a port, but not a member of the port register.** This docstring
+used to open "McpClientConfig port", and that overstated its standing. ADR-0003
+point 5's Milestone 7 amendment settles the register as
+``theurian.domain.ports.ALL_PORTS``; this Protocol is not in it, and
+``ports/__init__.py`` does not import it, so ``test_port_set_is_closed`` and
+the nine per-port checks beside it have never run against it -- not failing
+against it, *unreached* by it.
+
+It is wired like a port all the same: ``SetupContext.mcp_config`` is
+constructor-injected and ``cli/setup_commands.py``, a composition root, names
+``ClaudeCodeMcpConfig`` as the adapter. Whether it should therefore *join* the
+register is a decision ADR-0003 says requires an ADR. That decision is open and
+is deliberately not taken here; the trail is
+https://github.com/theurian/theurian/issues/140.
 """
 
 from __future__ import annotations

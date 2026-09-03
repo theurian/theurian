@@ -34,6 +34,9 @@ Architecture and OSS foundation.
   stable identifiers referenced from ADRs and tests.
 - Fifteen ADRs, each with rejected alternatives and an enforcement mechanism.
 - Domain model with ten enforced invariants; fourteen ports as `Protocol`s.
+  *(What Milestone 0 shipped. The set has grown since;
+  [ADR-0003](docs/adr/0003-ports-and-adapters.md) point 5's Milestone 7
+  amendment names `ALL_PORTS` as the register and carries the current count.)*
 - Public JSON Schemas as the Core/plugin contract, co-owned in CODEOWNERS.
 - Claude Code plugin skeleton: twelve commands, a bounded `SessionStart` hook,
   and a connection template that setup installs rather than the plugin

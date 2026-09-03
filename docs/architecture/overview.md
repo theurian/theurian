@@ -30,7 +30,7 @@ flowchart TB
 
     subgraph Domain["domain/ — entities, invariants, ports"]
         ENT["Entities and value objects"]
-        PORT["14 ports (Protocols)"]
+        PORT["Ports (Protocols) — the ALL_PORTS closed set"]
     end
 
     subgraph Infra["infrastructure/ — adapters"]

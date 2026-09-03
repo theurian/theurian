@@ -4,9 +4,12 @@ Deliberately exposes no method that updates a revision. Immutability (ADR-0006)
 is expressed in the type signature, not only in prose -- an adapter cannot offer
 an update path without violating the Protocol.
 
-Three Protocols live here, not three ports. :class:`CanonicalReadSession` is a
-narrowing of :class:`CanonicalStore` and :class:`IndexBuildSession` is a widening
-of *that* by one method, so the port set ADR-0003 fixes is unchanged.
+Three Protocols live here, not three ports. Only :class:`CanonicalStore` is in
+``ALL_PORTS``, the register ADR-0003 point 5 is closed over;
+:class:`CanonicalReadSession` is mostly a narrowing of it and
+:class:`IndexBuildSession` is a widening of *that* by one method, so both sit
+outside the register on purpose, for the reasons their own docstrings give, and
+the port set ADR-0003 fixes is unchanged.
 """
 
 from __future__ import annotations
@@ -416,10 +419,21 @@ class CanonicalStore(Protocol):
 class CanonicalReadSession(Protocol):
     """One pass over canonical state, opened and closed by the caller.
 
-    **Not a fifteenth port.** This is the read subset of :class:`CanonicalStore`
-    that a derived-artifact builder needs, plus the one thing that port
-    deliberately does not express: when the underlying handle is released. The
-    port set ADR-0003 fixes is unchanged.
+    **Not a port, and deliberately outside the register.** ADR-0003's closed set
+    is :data:`theurian.domain.ports.ALL_PORTS` -- see point 5's Milestone 7
+    amendment -- and this is not in it. Of its six members, ``list_items``,
+    ``get_item`` and ``get_revision`` are :class:`CanonicalStore`'s own narrowed
+    in; ``get_item_exact`` is the alias-free read T-21 needs and that port does
+    not offer; ``__enter__`` and ``__exit__`` add the handle lifetime it
+    deliberately does not express. No :class:`CanonicalStore` method returns one
+    -- a builder is handed one by an injected
+    ``store_factory: Callable[[Path], CanonicalReadSession]`` -- but what an
+    operator substitutes is still a :class:`CanonicalStore` adapter, so this
+    opens no boundary the register does not already govern.
+
+    Stated without an ordinal on purpose. This paragraph read "not a fifteenth
+    port" while ``ALL_PORTS`` held seventeen: an ordinal pinned to a count drifts
+    every time the count does, and says nothing the register does not say better.
 
     The lifetime belongs in the contract because index building is the use case
     that has to get it right. It walks the whole store once and must then let
