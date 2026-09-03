@@ -566,10 +566,28 @@ half — so this row stands as a requirement, the way rows 2 and 3 above do.
 Wiring an index-side answer into the steps is owned by
 [#528](https://github.com/theurian/theurian/issues/528), which is backlog with a
 pull-forward condition: it re-enters scheduling when `doctor` gains its next
-index-side arm, or at the stable-rc review. Adding a step for it moves the count
+index-side arm, or at the stable-rc review. Both shapes that wiring could take
+are held. Adding a step moves the count
 `tests/unit/test_setup_domain.py::test_every_step_of_the_specification_has_an_identifier`
-holds; extending `initial-index` to answer both halves would not, so that pin
-covers one of the two shapes #528 may take.
+asserts; extending an existing step instead moves nothing there, so two further
+rules cover it — `tests/unit/test_setup_claims.py::test_no_setup_step_reads_the_retrieval_index`
+scans the setup surface for an index read spelled by name, and
+`tests/integration/test_setup_service.py::test_no_step_changes_its_answer_when_a_retrieval_index_appears`
+runs a whole `doctor` against a tree with a published index and the same tree
+without one and requires the two reports to match, step for step and field for
+field. What neither of them sees is a step branching only on a pointer that is
+present and *broken*, which those tests record rather than chase.
+
+**Row 17's action columns describe work no run performs.** The step has no
+`Missing` or `Conflicting` arm and no apply function: `STEPS` pairs
+`probe_initial_index` with `None`, all three of its arms return
+`NotApplicable`, and the only `Conflicting` it can reach is
+`SetupService._probe`'s net for a probe that raised — "Could not check
+initial-index.", which a `.theurian` resolving outside the working tree produces
+(#237, T-5). Setup builds nothing here; `theurian migrate apply` writes the state
+database. So this row's `build` and `reuse` columns are the requirement and not a
+description, the same standing rows 2 and 3 have — §6.4 says it once more from
+the journal's side, about rows 16–17 together.
 
 ### 6.3 Idempotence contract
 

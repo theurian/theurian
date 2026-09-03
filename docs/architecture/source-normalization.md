@@ -249,6 +249,14 @@ can check that #80 is still the live owner; a same-number check across them is
 as makeable, and as absent, as the one above.
 
 Both are recorded rather than built, because a new mechanism mid-review is a new
-claim to attack. A same-number check across carriers belongs with
-[#199](https://github.com/theurian/theurian/issues/199) unit B's object-keyed
-census, which already walks the sites either one would.
+claim to attack. A same-number check across carriers belongs with the
+object-keyed census that
+[#199](https://github.com/theurian/theurian/issues/199) unit B landed in
+`tools/audit/`, which already walks the sites either one would — the instrument,
+not the issue, which closed on 2026-09-02. The two nearest live candidates were
+read and neither carries this check:
+[#512](https://github.com/theurian/theurian/issues/512) hardens how those
+instruments *match* and enumerates the members it took from PR #501, and
+[#506](https://github.com/theurian/theurian/issues/506) decides which files the
+owner-cite audit reads. So this check has no owner as of 2026-09-03, and that is
+said here rather than assigned to an issue whose own scope does not admit it.
