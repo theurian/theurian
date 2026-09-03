@@ -172,17 +172,33 @@ STATE_REBUILD_REMEDY: Final = (
 
 #: Cure for an OS or driver fault met *at* the state database -- the class
 #: ``(OSError, sqlite3.Error)`` names and ``StateDatabaseUnreadableError`` does
-#: not, because nothing was interpreted: the file was never opened (#484). A
-#: directory sitting at the path an ADR-0004 doctored `.theurian/state/` can
-#: deliver, an unwritable state area, a filesystem whose locking the driver
-#: refuses.
+#: not (#484).
+#:
+#: **What reaches it, measured rather than reasoned.** The two clauses that
+#: publish this wrap a whole ``write_transaction`` call, so their reach is every
+#: statement inside it and not the open alone -- an earlier draft of this comment
+#: said "the file was never opened", and the contention fault below arrived after
+#: the open, after ``_prepare`` and after ``BEGIN IMMEDIATE``, which is what
+#: falsified it. The members measured on this branch are open-time: a directory
+#: sitting at the path an ADR-0004 doctored `.theurian/state/` can deliver, and a
+#: state directory the process cannot write, both of which fail in
+#: ``sqlite3.connect`` itself -- outside ``_prepare``'s conversion, which is why
+#: they arrive as the driver's own ``SQLITE_CANTOPEN`` rather than as
+#: ``StateDatabaseUnreadableError``.
+#:
+#: **What must never reach it is a transient fault**, and that is now structural
+#: rather than a matter of wording here: a write conflict is converted at its
+#: source into ``WriteTransactionBusyError``, a ``TheurianError`` caught by the
+#: clause *above* each of these, carrying a wait-and-retry cure. This constant
+#: instructs deleting derived state, so every fault that keeps it has to be one
+#: that leaves the state genuinely unusable.
 #:
 #: Composed from :data:`STATE_REBUILD_REMEDY` rather than restating it, so the
 #: sentence that deletes something has one spelling in this module. The
 #: precondition leads and the rebuild trails, the shape
 #: ``FindingsStoreError``'s write remedy and ``_LOCK_ACQUIRE_REMEDY`` both take:
-#: a cure that opens with "delete your state" for what may be a read-only
-#: permissions problem sends the reader past the thing that is actually wrong.
+#: a cure that opens with "delete your state" for what is really a permissions
+#: problem sends the reader past the thing that is actually wrong.
 _STATE_DATABASE_FAULT_REMEDY: Final = (
     "Check that `.theurian/state/` is writable, on a supported filesystem (not NFS; "
     f"ADR-0018), and holds a state database rather than something else. {STATE_REBUILD_REMEDY}"

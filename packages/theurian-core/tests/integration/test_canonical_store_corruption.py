@@ -46,6 +46,7 @@ import sqlite3
 import subprocess
 import textwrap
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -58,7 +59,7 @@ from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.project_service import BuildProvenance, ProjectRegistry
-from theurian.cli.commands import EXIT_STATE_ERROR
+from theurian.cli.commands import EXIT_STATE_ERROR, STATE_REBUILD_REMEDY
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.context import RequestContext
@@ -2529,20 +2530,73 @@ def _publish(*args: str) -> Published:
 def _error_envelope(published: Published) -> dict[str, Any] | None:
     """The ``{"error", "remedy"}`` document a failing ``--json`` command owes.
 
-    Read over stdout **and** stderr together rather than over one of them, the
-    same way :func:`_published_remedy` is. ``_fail`` writes the envelope to
-    stderr and keeps stdout a clean machine channel, and that split is a
-    decision this property has no business re-litigating: what it asserts is
-    that a caller who reads the command's output gets one parseable document
-    and not a traceback. A command that published the envelope on stdout
-    instead would still satisfy this; one that published nothing anywhere, or
-    published prose, would not.
+    Read from **stderr alone**, because which stream carries what is the
+    contract and not an implementation detail: ``_fail``'s own docstring says it
+    reports on stderr "keeping stdout a clean machine channel", and a caller
+    that pipes stdout into a parser is relying on exactly that. This read was
+    over ``stdout + stderr`` concatenated, which is channel-agnostic by
+    construction -- an implementation that started writing the envelope to
+    stdout, or that split one document across both streams, would have gone on
+    satisfying every property built on it (round one, adversarial MEDIUM).
+    ``test_migrate_apply_lock_confinement.py`` already pins the split this way;
+    this makes the two files agree.
+
+    Each caller asserts the other half -- that stdout is empty -- separately, so
+    a failure says which of the two broke rather than reporting "no envelope".
     """
     try:
-        payload = json.loads(published.stdout + published.stderr)
+        payload = json.loads(published.stderr)
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _refusal_envelope(published: Published, *, command: str) -> dict[str, Any]:
+    """Assert the whole ``--json`` refusal contract, and hand back the envelope.
+
+    The four halves a caller depends on, asserted one at a time because they
+    fail for four different reasons and a compound assertion would report the
+    first and hide the rest: nothing escaped, stdout stayed a clean machine
+    channel, stderr carries one parseable ``{error, remedy}`` document, and the
+    exit code is the state-error one this CLI publishes for a state problem.
+
+    **The remedy is read through :func:`names_a_remedy`, not for truthiness**,
+    and that is the whole reason this helper exists rather than four inline
+    asserts per arm. Round one's adversarial mutations replaced two remedy
+    constants wholesale with "Something went wrong." and the full suite stayed
+    green: every check on the field asked whether it was non-empty, which a
+    sentence that names no next action satisfies perfectly. An agent that
+    receives one re-issues the identical command.
+
+    The envelope is returned rather than re-parsed by the caller so an arm can
+    assert on *which* cure was named -- the thing that distinguishes the two
+    fault classes below, and the thing this helper deliberately does not decide.
+    """
+    assert published.traceback == "", (
+        f"`{command}` answered with an uncaught exception, which reaches an "
+        f"operator as a Rich traceback carrying absolute source paths and a "
+        f"caller as an empty document: {published.traceback}"
+    )
+    assert published.stdout == "", (
+        f"`{command}` wrote to stdout while failing; `_fail` keeps stdout a clean "
+        f"machine channel, so a caller piping it into a parser gets this: "
+        f"{published.stdout!r}"
+    )
+    envelope = _error_envelope(published)
+    assert envelope is not None, (
+        f"`{command}` published no JSON envelope on stderr: {published.stderr!r}"
+    )
+    assert published.code == EXIT_STATE_ERROR, (
+        f"`{command}` graded a state problem as exit {published.code} rather than "
+        f"{EXIT_STATE_ERROR}; the code is a published contract, and 'non-zero' is "
+        f"not it. Envelope: {envelope}"
+    )
+    assert str(envelope.get("error", "")), f"`{command}` published an empty `error`: {envelope}"
+    remedy = str(envelope.get("remedy", ""))
+    assert names_a_remedy(remedy, commands=_command_paths(), tools=frozenset()), (
+        f"`{command}` published a remedy naming nothing the caller can run: {remedy!r}"
+    )
+    return envelope
 
 
 #: The two swept commands that resolve no state-database path at all, exactly.
@@ -2568,9 +2622,19 @@ def _escape_the_state_database_path(corpus: Corpus) -> Path:
     The target is a byte copy of the corpus's own database, so the escape is the
     *only* thing wrong with it: a build that followed the link would find a
     perfectly readable state and answer from it, which is precisely the outcome
-    containment exists to prevent (T-5, #237). A dangling link would be refused
-    by an `open()` that never got as far as the containment check, and would
-    leave this property measuring `FileNotFoundError` instead.
+    containment exists to prevent (T-5, #237).
+
+    **A dangling link would reach the same refusal, and the earlier note here
+    saying otherwise was wrong** (round one, adversarial MEDIUM). It claimed a
+    dangling link would be caught by an `open()` before the containment check
+    ever ran. `_contain` calls `Path.resolve()` non-strict, which normalises a
+    missing tail rather than raising and never opens anything, so a dangling
+    *escaping* link resolves outside the root and is refused identically -- as
+    `_contain`'s own docstring records, for both an existing and a dangling
+    parent. The existing target is kept for the reason in the paragraph above,
+    which is a statement about what the damage models rather than about what
+    would break: a link this sweep refuses must be one that would otherwise have
+    *worked*, or the refusal cannot be attributed to the escape.
     """
     outside = corpus.pristine.with_name("outside-the-working-tree.sqlite")
     shutil.copy2(corpus.database, outside)
@@ -2586,16 +2650,17 @@ def test_no_swept_command_answers_an_escaping_state_database_path_with_a_traceba
 
     `ProjectPaths.database_for` routes through `_contained` -> `_contain`, which
     raises `ProjectError` -- a `TheurianError` -- when the state-database path
-    resolves outside the project root. `_require_project` wraps only
-    `resolve_context()` in its `try`; the `database_for` call is the last
-    statement of the function and sits *outside* it, so that refusal escapes
-    every one of its callers.
+    resolves outside the project root. RED before the fix, GREEN after: the
+    `database_for` call was the last statement of `_require_project`, outside the
+    `try` that wraps `resolve_context()`, so the refusal escaped every one of its
+    callers at once; `project status` reached the same refusal through its own
+    direct call and needed its own handler.
 
     Three observable families in one input, which is why this is one test rather
     than three:
 
     - **an error that fires for one input and not another** -- the same command
-      answers cleanly over an honest path and escapes over this one;
+      answers cleanly over an honest path and escaped over this one;
     - **a state artefact planted at a governed path** -- `.theurian/state/` is
       derived and git-ignored (ADR-0004), so a repository contributor can
       force-add a symlink past the ignore, the delivery `BuildProvenance`'s
@@ -2613,20 +2678,29 @@ def test_no_swept_command_answers_an_escaping_state_database_path_with_a_traceba
     Asserted on observables and not on a mechanism: which exception type is
     caught, and where the `try` is widened to, is the fix's business. What is
     pinned is that no command lets one out, that the seven which resolve the path
-    refuse, and that each refusal is a parseable envelope naming a next action.
+    refuse *at the state-error code*, that the envelope arrives on stderr with
+    stdout left clean, and that each refusal names something the caller can run.
+
+    **Three of those four were added because a mutation survived without them**
+    (round one, adversarial MEDIUM-1). Regrading this refusal from
+    `EXIT_STATE_ERROR` to 1 left the whole suite green, because `code != 0` is
+    true of both -- an exit code is a published contract, and "non-zero" is not
+    the contract. `names_a_remedy` replaces a truthiness check on the field for
+    the same reason: a remedy replaced wholesale by "Something went wrong." is
+    still truthy.
     """
     outside = _escape_the_state_database_path(corpus)
 
     published = {" ".join(command): _publish(*command) for command in CLI_SWEEP}
 
     swept = frozenset(published)
+    must_refuse = swept - COMMANDS_THAT_RESOLVE_NO_STATE_DATABASE_PATH
     refusing = frozenset(name for name, one in published.items() if one.code != 0)
-    assert refusing == swept - COMMANDS_THAT_RESOLVE_NO_STATE_DATABASE_PATH, (
+    assert refusing == must_refuse, (
         "which commands resolve the state-database path has moved, so this "
         "property no longer measures what it claims to. Newly refusing: "
-        f"{sorted(refusing - (swept - COMMANDS_THAT_RESOLVE_NO_STATE_DATABASE_PATH))}; "
-        f"no longer refusing: "
-        f"{sorted((swept - COMMANDS_THAT_RESOLVE_NO_STATE_DATABASE_PATH) - refusing)}"
+        f"{sorted(refusing - must_refuse)}; "
+        f"no longer refusing: {sorted(must_refuse - refusing)}"
     )
     assert outside.read_bytes() == corpus.pristine.read_bytes(), (
         "a swept command wrote through the escaping link into the file outside "
@@ -2642,25 +2716,40 @@ def test_no_swept_command_answers_an_escaping_state_database_path_with_a_traceba
         f"contract receives an empty document: {escaped}"
     )
 
-    unparseable = {
-        name: (one.stdout + one.stderr)
-        for name, one in published.items()
-        if one.code != 0 and _error_envelope(one) is None
-    }
-    assert unparseable == {}, (
-        f"{len(unparseable)} refusals published no JSON envelope at all: {unparseable}"
+    misgraded = {name: published[name].code for name in must_refuse}
+    assert misgraded == dict.fromkeys(must_refuse, EXIT_STATE_ERROR), (
+        "a state-database path that resolves outside the project root is a "
+        "knowledge-state problem, which this CLI grades EXIT_STATE_ERROR; a "
+        f"command reporting anything else has changed a published contract: "
+        f"{misgraded}"
     )
 
-    without_a_remedy = {
-        name: envelope
-        for name, one in published.items()
-        if one.code != 0 and (envelope := _error_envelope(one)) is not None
-        if not str(envelope.get("error", "")) or not str(envelope.get("remedy", ""))
+    dirty_stdout = {name: published[name].stdout for name in must_refuse if published[name].stdout}
+    assert dirty_stdout == {}, (
+        f"a refusal wrote to stdout, which `_fail` keeps as a clean machine "
+        f"channel; a caller piping stdout into a parser receives this: {dirty_stdout}"
+    )
+
+    unparseable = {name: published[name].stderr for name in must_refuse}
+    unparseable = {
+        name: text for name, text in unparseable.items() if _error_envelope(published[name]) is None
     }
-    assert without_a_remedy == {}, (
-        f"{len(without_a_remedy)} refusals published an envelope with an empty "
-        f"`error` or `remedy`, so a caller is told something went wrong and given "
-        f"no next action: {without_a_remedy}"
+    assert unparseable == {}, (
+        f"{len(unparseable)} refusals published no JSON envelope on stderr: {unparseable}"
+    )
+
+    commands = _command_paths()
+    unactionable = {
+        name: envelope
+        for name in must_refuse
+        if (envelope := _error_envelope(published[name])) is not None
+        if not str(envelope.get("error", ""))
+        or not names_a_remedy(str(envelope.get("remedy", "")), commands=commands, tools=frozenset())
+    }
+    assert unactionable == {}, (
+        f"{len(unactionable)} refusals published an empty `error`, or a `remedy` "
+        f"naming nothing the caller can actually run, so an agent that receives "
+        f"one re-issues the identical command: {unactionable}"
     )
 
 
@@ -2702,13 +2791,13 @@ def test_migrate_status_answers_a_directory_at_the_state_database_path_with_an_e
 ) -> None:
     """Issue #484. `migrate status`'s `except` list omits the filesystem/driver class.
 
-    The `try` around `write_transaction` catches `MigrationChecksumMismatchError`
-    and `TheurianError`. `sqlite3.connect` raises `sqlite3.OperationalError`,
-    which is neither, so a fault opening the file -- a directory at the path here,
-    a permission or a filesystem fault in the field -- escapes as a traceback and
-    leaves stdout empty under `--json`. `migrate apply` already carries the
-    backstop this one lacks (#478); the sibling below is that precedent, measured
-    on the same input.
+    RED before the fix, GREEN after. The `try` around `write_transaction` caught
+    `MigrationChecksumMismatchError` and `TheurianError` only; `sqlite3.connect`
+    raises `sqlite3.OperationalError`, which is neither, so a fault opening the
+    file -- a directory at the path here, a permission or a filesystem fault in
+    the field -- escaped as a traceback and left stdout empty under `--json`.
+    `migrate apply`'s section A already carried the backstop this command lacked
+    (#478); the first arm below is that precedent, measured on the same input.
 
     The families: **an error that fires for one input and not another**, since the
     same command answers `stateBuilt: true` over a real database; **a state
@@ -2716,31 +2805,16 @@ def test_migrate_status_answers_a_directory_at_the_state_database_path_with_an_e
     ADR-0004 doctored delivery can populate; and **a published field**, the
     absolute source paths a Rich traceback prints in place of the envelope.
 
-    Asserted on the exit code as well as the envelope, because
-    "did not crash" is not the contract: a filesystem fault under the state
-    database is a state error, and `EXIT_STATE_ERROR` is what every other refusal
-    on this path already reports. The constant is imported rather than written as
-    `4`, so a renamed code moves this assertion with it while still asserting the
-    *observed* code equals the *published* one.
+    The whole refusal contract is asserted, not merely "did not crash": see
+    :func:`_refusal_envelope`, which holds the exit code, the stream split and
+    the remedy's actionability together, each of which survived a round-one
+    mutation while this arm checked something weaker.
     """
     _plant_a_directory_at_the_state_database_path(corpus)
 
     published = _publish("migrate", "status")
 
-    assert published.traceback == "", (
-        "`migrate status` answered a directory at the state-database path with an "
-        "uncaught exception, which reaches an operator as a Rich traceback and a "
-        f"caller as an empty document: {published.traceback}"
-    )
-    envelope = _error_envelope(published)
-    assert envelope is not None, (
-        f"`migrate status` published no JSON envelope: stdout={published.stdout!r} "
-        f"stderr={published.stderr!r}"
-    )
-    assert (published.code, bool(envelope.get("remedy"))) == (EXIT_STATE_ERROR, True), (
-        f"a filesystem fault under the state database must be reported as a state "
-        f"error carrying a next action; got exit {published.code} and {envelope}"
-    )
+    _refusal_envelope(published, command="migrate status")
 
 
 def test_migrate_apply_answers_the_same_directory_with_an_envelope_when_it_built_no_state(
@@ -2778,44 +2852,34 @@ def test_migrate_apply_answers_the_same_directory_with_an_envelope_when_it_built
 
     published = _publish("migrate", "apply")
 
-    assert published.traceback == "", (
-        f"the #478 backstop no longer catches the filesystem fault it was written "
-        f"for: {published.traceback}"
-    )
-    envelope = _error_envelope(published)
-    assert envelope is not None, (
-        f"`migrate apply` published no JSON envelope: stdout={published.stdout!r} "
-        f"stderr={published.stderr!r}"
-    )
-    assert (published.code, bool(envelope.get("remedy"))) == (EXIT_STATE_ERROR, True), (
-        f"got exit {published.code} and {envelope}"
-    )
+    _refusal_envelope(published, command="migrate apply (unprovenanced)")
 
 
 def test_migrate_apply_answers_the_same_directory_with_an_envelope_when_it_built_the_state(
     corpus: Corpus,
 ) -> None:
-    """Issue #484's second face: the transaction section carries no such backstop.
+    """Issue #484's second face: the transaction section carried no such backstop.
 
-    The same command, the same planted directory, one bit of state different --
-    and a different `except` chain meets it. `migrate apply` re-asks
-    `provenance.has_state` once it holds the lock: with **no** record it takes
-    the discard/create section, whose `except (OSError, sqlite3.Error)` (#478)
-    answers cleanly, which is the arm above. With a record -- an ordinary
-    project that has applied before, which is every project after its first run
-    -- both `_discard_untrusted_state` and `create_database` are skipped, and the
-    directory is met by `sqlite3.connect` inside `apply_migration_set`. The `try`
-    around it catches `MigrationChecksumMismatchError`, `RevisionConflictError`,
+    RED before the fix, GREEN after. The same command, the same planted
+    directory, one bit of state different -- and a different `except` chain meets
+    it. `migrate apply` re-asks `provenance.has_state` once it holds the lock:
+    with **no** record it takes the discard/create section, whose `except
+    (OSError, sqlite3.Error)` (#478) answers cleanly, which is the arm above.
+    With a record -- an ordinary project that has applied before, which is every
+    project after its first run -- both `_discard_untrusted_state` and
+    `create_database` are skipped, and the directory is met by `sqlite3.connect`
+    inside `apply_migration_set`. The `try` around it caught
+    `MigrationChecksumMismatchError`, `RevisionConflictError`,
     `UnenforceableScopeError`, `MigrationError` and `TheurianError`; a
-    `sqlite3.OperationalError` is none of them, so it escapes as a traceback with
+    `sqlite3.OperationalError` is none of them, so it escaped as a traceback with
     nothing on the machine channel.
 
     **Same root cause as the `migrate status` case, not a lookalike.** Both are a
-    lock-held write in a `--json` command whose `except` list omits the
-    filesystem/driver class, so a fix that closes one by widening the chain
-    around a `write_transaction` closes the other the same way. Sections A and B
-    of this command already carry that backstop; the transaction section between
-    them does not.
+    lock-held write in a `--json` command whose `except` list omitted the
+    filesystem/driver class, so the fix that closed one by widening the chain
+    around a `write_transaction` closed the other the same way. Sections A and B
+    of this command already carried that backstop; the transaction section
+    between them did not.
 
     **The precondition is asserted, not assumed.** Whether this test reaches the
     transaction section at all depends entirely on the provenance record, and if
@@ -2835,18 +2899,149 @@ def test_migrate_apply_answers_the_same_directory_with_an_envelope_when_it_built
 
     published = _publish("migrate", "apply")
 
-    assert published.traceback == "", (
-        "`migrate apply` answered a directory at the state-database path with an "
-        "uncaught exception once the state was already on the provenance record, "
-        "so the transaction section has no backstop where sections A and B do: "
-        f"{published.traceback}"
+    _refusal_envelope(published, command="migrate apply (provenanced)")
+
+
+# -- The other half of the backstop: a fault a retry clears ------------------
+#
+# The two properties above ask whether the backstop *fires*. This one asks what
+# it says when it does, and the answer had to differ by fault: `(OSError,
+# sqlite3.Error)` is a wide net thrown around a whole `write_transaction`, and
+# the states it catches are not one class. A directory at the database path is
+# permanent and the file is not a database; a second writer inside `BEGIN
+# IMMEDIATE` is transient and the file is perfectly good. One remedy for both
+# tells the operator of the second to delete their state.
+
+
+#: A destructive instruction aimed at the state directory, in the imperative.
+#:
+#: Anchored to a clause start (`\A`, or after a sentence-ending `.`/`;`) so a
+#: remedy that says "do **not** delete `.theurian/state/`" is not read as one
+#: that says to. The window between the verb and the path admits the markup a
+#: published remedy uses (`` `.theurian/state/` ``) and excludes a full stop, so
+#: it cannot span two sentences and match a verb in one against a path in the
+#: next.
+#:
+#: The pattern is checked against a **known positive** before it is trusted --
+#: :data:`STATE_REBUILD_REMEDY`, the shipped sentence it is written to
+#: recognise -- because a key that matches nothing reports every remedy as
+#: clean, and a zero from a key that cannot fire is not a measurement.
+_INSTRUCTS_DELETING_THE_STATE: Final = re.compile(
+    r"(?:\A|[.;]\s+)(?:delete|remove|rm)\b[^.]{0,40}\.theurian/state", re.IGNORECASE
+)
+
+#: The vocabulary any honest report of a write conflict uses, so the test can
+#: tell it apart from the *other* fault the same backstop catches.
+#:
+#: A family rather than SQLite's exact sentence. ``database is locked`` is what
+#: the driver says today and what the defect publishes verbatim, but the fix may
+#: reword it, and a test pinned to the driver's string would then fail for a
+#: change it has no opinion about. What it must keep out is the directory case's
+#: ``unable to open database file``, which shares none of these words.
+#:
+#: This is the *weaker* of the two discriminators here, and it is not what makes
+#: the test attributable: the control run at the end is -- the same command
+#: succeeding at exit 0 once the holder lets go, which no permanently damaged
+#: state database does.
+_REPORTS_A_WRITE_CONFLICT: Final = re.compile(r"\b(?:locked|busy|conflict|contention)\b", re.I)
+
+
+@contextmanager
+def _another_writer_inside_a_transaction(corpus: Corpus) -> Iterator[None]:
+    """Hold a write transaction on the state database from a second connection.
+
+    A plain `sqlite3` connection in this same interpreter, and deliberately
+    **without** the advisory lock: this models a writer the write lock does not
+    know about -- another tool, an operator's `sqlite3` shell, a Theurian build
+    that crashed with a transaction open -- so the CLI takes its own `flock`
+    normally and then meets `SQLITE_BUSY` at `BEGIN IMMEDIATE`. Taking the lock
+    here instead would produce `WriteLockTimeoutError`, which already has its own
+    branch and its own non-destructive cure, and would measure nothing new.
+
+    The hold is bounded by this context manager and by
+    `PRAGMA busy_timeout = 5000`, so a command under it returns in about five
+    seconds rather than blocking: nothing here can hang the suite, and the two
+    invocations below are why this test is the slowest in the file.
+    """
+    holder = sqlite3.connect(corpus.database, isolation_level=None)
+    try:
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        finally:
+            holder.execute("ROLLBACK")
+    finally:
+        holder.close()
+
+
+@pytest.mark.parametrize("command", [("migrate", "status"), ("migrate", "apply")])
+def test_a_transient_write_conflict_is_never_answered_by_deleting_the_state(
+    corpus: Corpus, command: tuple[str, ...]
+) -> None:
+    """A remedy that deletes derived state must not be handed to a fault a retry clears.
+
+    `_prepare`'s docstring draws this line itself and gives the reason: its own
+    conversion "stops short of ``BEGIN IMMEDIATE`` on purpose", because past that
+    point a failure is the caller's statement against the caller's data, and
+    "reporting one of those as a damaged database would name the wrong cause and
+    hand out a remedy that deletes the state".
+    `test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state`
+    holds that boundary for the writer's own reads.
+
+    The `(OSError, sqlite3.Error)` backstops #484 added sit *outside*
+    `write_transaction` rather than inside `_prepare`, so they catch what
+    `_prepare` deliberately declined to convert -- and answer it with the same
+    cure as a directory at the database path. Measured on a provenanced corpus
+    with a second connection holding `BEGIN IMMEDIATE`: both commands publish
+    ``"error": "database is locked"`` with a remedy whose tail is
+    :data:`STATE_REBUILD_REMEDY`, and both exit 0 on the retry once the holder
+    lets go. An operator who follows the remedy deletes a state database that
+    was never damaged, and a scripted agent does it without reading.
+
+    **Transience is measured here, not assumed.** The last act is to release the
+    holder and re-run, and the property means nothing without it: a remedy that
+    deletes state is the *right* answer for a database that really is unusable,
+    so the whole claim rests on this same input succeeding a moment later
+    untouched.
+
+    **What is asserted about the replacement is only what it must not be.** The
+    fix chooses its own wording, and pinning a sentence here would make every
+    later improvement a test failure; what is pinned is that the caller is not
+    told to delete `.theurian/state/`, by two independent keys -- the shipped
+    constant, and an imperative pattern that catches a reworded sibling.
+    """
+    assert _INSTRUCTS_DELETING_THE_STATE.search(STATE_REBUILD_REMEDY), (
+        "the destructive-instruction key no longer recognises the shipped "
+        "sentence it was written for, so every 'clean' verdict below is a key "
+        f"that cannot fire rather than a measurement: {STATE_REBUILD_REMEDY!r}"
     )
-    envelope = _error_envelope(published)
-    assert envelope is not None, (
-        f"`migrate apply` published no JSON envelope: stdout={published.stdout!r} "
-        f"stderr={published.stderr!r}"
+    name = " ".join(command)
+
+    with _another_writer_inside_a_transaction(corpus):
+        published = _publish(*command)
+
+    envelope = _refusal_envelope(published, command=name)
+    remedy = str(envelope["remedy"])
+    assert _REPORTS_A_WRITE_CONFLICT.search(str(envelope["error"])), (
+        f"`{name}` did not report the write conflict this test planted -- it may "
+        f"have met the *other* fault this backstop catches -- so what its remedy "
+        f"says is about something this test has not established: {envelope}"
     )
-    assert (published.code, bool(envelope.get("remedy"))) == (EXIT_STATE_ERROR, True), (
-        f"a filesystem fault under the state database must be reported as a state "
-        f"error carrying a next action; got exit {published.code} and {envelope}"
+    assert STATE_REBUILD_REMEDY not in remedy, (
+        f"`{name}` answered a transient write conflict with the cure for a "
+        f"damaged state database. Following it deletes derived state that is not "
+        f"damaged, over a fault that clears when the other writer commits: {remedy!r}"
+    )
+    assert not _INSTRUCTS_DELETING_THE_STATE.search(remedy), (
+        f"`{name}`'s remedy still instructs deleting `.theurian/state/`, in "
+        f"wording the shipped-constant check above does not recognise: {remedy!r}"
+    )
+
+    after = _publish(*command)
+
+    assert (after.code, after.traceback) == (0, ""), (
+        f"the control failed: `{name}` did not succeed once the other writer let "
+        f"go, so the fault above was not the transient one this test is about "
+        f"and the remedy it deserves is not settled here. "
+        f"code={after.code} stderr={after.stderr!r}"
     )

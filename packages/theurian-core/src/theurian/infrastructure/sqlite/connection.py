@@ -95,6 +95,70 @@ class WriteLockTimeoutError(TheurianError):
         )
 
 
+#: SQLite's two primary result codes for "someone else is holding it": a lock
+#: this connection could not take (``SQLITE_BUSY``) and one it could not take
+#: without deadlocking (``SQLITE_LOCKED``). Compared against the **primary** code
+#: -- ``sqlite_errorcode & 0xFF`` -- because SQLite reports the extended forms
+#: (``SQLITE_BUSY_SNAPSHOT`` and friends) in the high bits, and a set of exact
+#: values would let the extended spelling of the same condition fall through to
+#: the damaged-file class.
+_CONTENTION_RESULT_CODES: Final = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
+
+
+def _is_contention(exc: sqlite3.Error) -> bool:
+    """Whether SQLite is reporting another writer rather than an unusable file.
+
+    ``sqlite_errorcode`` exists only on errors SQLite itself raised; a
+    module-raised ``sqlite3.Error`` -- a `ProgrammingError` for the wrong number
+    of bind parameters, say -- carries no such attribute at all (measured on
+    CPython 3.13). So its absence is read as "not contention" rather than
+    assumed away, and the ``isinstance`` narrowing is what keeps that decision
+    from resting on a value whose type nothing checked.
+    """
+    code = getattr(exc, "sqlite_errorcode", None)
+    return isinstance(code, int) and code & 0xFF in _CONTENTION_RESULT_CODES
+
+
+class WriteTransactionBusyError(TheurianError):
+    """Another writer held the database, so this transaction never started.
+
+    **The state database is intact. That is the whole point of this type.**
+    Before it existed, the two ``(OSError, sqlite3.Error)`` backstops #484 added
+    to ``migrate status`` and ``migrate apply`` caught a write conflict in the
+    same net as a directory sitting at the database path, and answered both with
+    the cure for the second: delete ``.theurian/state/`` and rebuild. Measured
+    with a second connection holding ``BEGIN IMMEDIATE`` -- an operator's
+    ``sqlite3`` shell, another tool, a process that exited with a transaction
+    open -- both commands published ``database is locked`` beside an instruction
+    to delete a state database that was in perfect condition, and both exited 0
+    on the retry once the holder let go. An operator who follows that remedy
+    destroys derived state for nothing; a scripted agent does it without reading.
+
+    **The sibling of :class:`WriteLockTimeoutError`, one layer down.** That type
+    reports contention for Theurian's *own* advisory lock and says to wait; this
+    one reports contention for the database itself, which the advisory lock
+    cannot mediate because a writer outside Theurian never takes it. Same family,
+    same shape of cure, and neither one damages anything.
+
+    Raised only for statements :func:`_open_transaction` issues on its own
+    behalf. The boundary and the reason are recorded there.
+    """
+
+    def __init__(self, path: Path, statement: str) -> None:
+        self.remedy = (
+            "Wait for the other writer to finish, then run the command again. "
+            "`theurian migrate status` reports what is still pending once it has. "
+            "Nothing is damaged and nothing needs rebuilding: a write conflict leaves "
+            "the database exactly as it found it."
+        )
+        super().__init__(
+            f"Another writer holds {path.name}, so it is locked for writing and this "
+            f"command's `{statement}` could not proceed. Theurian's own write lock does "
+            f"not mediate this: a writer outside Theurian -- another tool, an open "
+            f"`sqlite3` shell, a process that exited mid-transaction -- never takes it."
+        )
+
+
 class WriteLockUnusableError(TheurianError):
     """The write-lock path is a symbolic link, so taking the lock would write elsewhere.
 
@@ -407,23 +471,58 @@ def _open_transaction(database_path: Path) -> Iterator[sqlite3.Connection]:
     acquisition of the same lock file. A process re-``open()``-ing and
     ``flock``-ing a lock file it is already holding self-blocks for the full
     timeout: ``flock`` locks an *open file description*, not a process or a
-    path, so two separate ``Path.open()`` calls from the same process are two
+    path, so two separate ``os.open()`` calls from the same process are two
     separate descriptions that contend with each other exactly as two
     processes would.
+
+    **Contention on the two statements this function issues itself is
+    converted; the caller's own statements are not.** ``BEGIN IMMEDIATE`` and
+    ``COMMIT`` are this function's, made on its own behalf, and a
+    ``SQLITE_BUSY`` on either says one thing only: another writer holds the
+    database. That is a transient condition over an undamaged file, and left as
+    a raw ``sqlite3.OperationalError`` it reached the CLI's ``(OSError,
+    sqlite3.Error)`` backstops in the same net as a directory at the database
+    path -- and was answered with the same delete-your-state cure (#484 round
+    two).
+
+    The boundary is exactly the one :func:`_prepare` records for itself and for
+    the same reason, read from the other side: past ``BEGIN IMMEDIATE`` a
+    failure is "the caller's statement against the caller's data", which this
+    function must not reinterpret. So the conversion wraps the two statements
+    and not the ``yield`` between them -- a busy arriving from the caller's own
+    write keeps travelling as the driver raised it. Under this shape that
+    residue is not reachable anyway: a connection that has completed ``BEGIN
+    IMMEDIATE`` owns the database's write lock, so no later statement of the
+    caller's can be refused for contention.
     """
     connection = sqlite3.connect(database_path, isolation_level=None)
     try:
         _prepare(connection, database_path)
-        connection.execute("BEGIN IMMEDIATE")
+        _execute_own(connection, "BEGIN IMMEDIATE", database_path)
         try:
             yield connection
         except BaseException:
             connection.execute("ROLLBACK")
             raise
         else:
-            connection.execute("COMMIT")
+            _execute_own(connection, "COMMIT", database_path)
     finally:
         connection.close()
+
+
+def _execute_own(connection: sqlite3.Connection, statement: str, database_path: Path) -> None:
+    """Run one of :func:`_open_transaction`'s own statements, naming contention.
+
+    ``ROLLBACK`` deliberately does not come through here. It runs only while an
+    exception is already travelling, and replacing that exception with a report
+    about the rollback would hide the failure the caller actually needs.
+    """
+    try:
+        connection.execute(statement)
+    except sqlite3.Error as exc:
+        if not _is_contention(exc):
+            raise
+        raise WriteTransactionBusyError(database_path, statement) from exc
 
 
 @contextmanager
@@ -468,6 +567,10 @@ def write_transaction(
             the lock would otherwise write through (#481). Raised in the same
             place and never when ``already_locked`` is ``True``, for the same
             reason -- see :meth:`WriteLock._open`.
+        WriteTransactionBusyError: If another writer holds the database itself,
+            which the advisory lock cannot mediate. Raised whatever
+            ``already_locked`` says, since it comes from the transaction and not
+            from the lock -- see :func:`_open_transaction`.
     """
     if already_locked:
         yield from _open_transaction(database_path)
