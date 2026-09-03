@@ -25,6 +25,7 @@ from theurian.domain.migration import LoadedMigrations
 from theurian.domain.ports import Clock
 from theurian.domain.project import (
     DEFAULT_KNOWLEDGE_DIRECTORY,
+    DERIVED_SUBDIRECTORIES,
     GITIGNORE_BLOCK_END,
     GITIGNORE_BLOCK_START,
     GITIGNORE_SECTIONS,
@@ -140,6 +141,51 @@ KNOWLEDGE_DIR_ESCAPE_REMEDY: Final = (
     "clone may have delivered it as a symbolic link pointing outside the working tree; "
     "remove the link, run `theurian init` to recreate the directory, then retry."
 )
+
+#: A path must name a derived subdirectory *and* something inside it before this
+#: module can say the escape happened under a rebuildable artifact.
+_MIN_PARTS_UNDER_A_DERIVED_SUBDIRECTORY: Final = 2
+
+
+def derived_escape_remedy(knowledge_directory_name: str, subdirectory: str) -> str:
+    """The cure for a containment refusal on something under a derived directory.
+
+    :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY` was published for these too, and it is
+    wrong twice over (#483 round one). It names *the knowledge directory* -- the
+    operator's authored source -- for a refusal that is about
+    ``.theurian/state/`` or ``.theurian/runtime/``, and it sends the reader to
+    ``theurian init``, which meets the identical refusal: measured on a
+    ``.theurian/runtime`` symlink out of the tree, ``migrate apply`` exits 4
+    naming ``write.lock``, the remedy says to run ``init``, ``init`` exits 1 with
+    the same containment error, and ``migrate apply`` still exits 4. A remedy
+    whose instruction returns the reader to where they started is worse than
+    none: it costs a round trip to learn nothing.
+
+    **Names the directory, never the leaf, and that is the** :class:`EscapeSite`
+    **rule applied here.** The refused path is the *leaf* Theurian asked for, but
+    a link anywhere between the derived subdirectory and that leaf produces the
+    same refusal -- in the measured case the culprit is ``runtime`` while the
+    refused path is ``runtime/write.lock``, so telling the reader to remove the
+    refused path would name a file inside the link's target and cure nothing.
+    What this code *can* prove is the range the culprit lies in:
+    :meth:`ProjectPaths.of` has already refused an escaping ``.theurian``, so the
+    link is at the derived subdirectory or below it, and removing that
+    subdirectory removes it wherever it sits. ``rm`` on a symbolic link removes
+    the link and not what it points at, so the instruction cannot destroy
+    whatever the link reached.
+
+    **Deleting is safe to instruct here and is not elsewhere.** Everything under
+    a member of ``DERIVED_SUBDIRECTORIES`` is rebuildable by definition
+    (ADR-0004), which is exactly what :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`'s own
+    subject is not.
+    """
+    return (
+        f"Delete `{knowledge_directory_name}/{subdirectory}/` and retry. Everything under "
+        f"it is derived (ADR-0004) and rebuilt, so nothing authored is lost -- and a clone "
+        f"may have delivered part of that path as a symbolic link force-added past the "
+        f"ignore, which deleting the directory removes. Run `theurian migrate apply` to "
+        f"rebuild the state."
+    )
 
 
 def _registry_reset_remedy(path: Path) -> str:
@@ -334,7 +380,7 @@ class ProjectError(TheurianError):
         super().__init__(message)
 
 
-def _contain(root: Path, path: Path) -> Path:
+def _contain(root: Path, path: Path, *, remedy: str = KNOWLEDGE_DIR_ESCAPE_REMEDY) -> Path:
     """Prove ``path`` stays inside ``root``, or refuse with the escape remedy.
 
     The one containment chokepoint under a project's ``.theurian``:
@@ -395,13 +441,13 @@ def _contain(root: Path, path: Path) -> Path:
         # guarantee, not a branch real data drives.
         raise ProjectError(
             f"{path} does not resolve to a location inside {resolved_root}: {exc}",
-            remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+            remedy=remedy,
         ) from exc
     if not resolved.is_relative_to(resolved_root):
         raise ProjectError(
             f"{path} resolves outside the project root {resolved_root}, so a read or write "
             f"through it would land outside the working tree.",
-            remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+            remedy=remedy,
         )
     return path
 
@@ -429,7 +475,46 @@ class ProjectPaths:
         authored-symlink #237/T-5 class, not the derived-cache #394 face) are all
         recorded on :func:`_contain`.
         """
-        return _contain(self.root, path)
+        return _contain(self.root, path, remedy=self._escape_remedy(path))
+
+    def _escape_remedy(self, path: Path) -> str:
+        """Which cure a refusal of ``path`` should publish (#483 round one, H-1).
+
+        Keyed on the refused path rather than fixed per raise site, so the
+        remedy is chosen once for every helper that routes through
+        :meth:`_contained` -- including helpers added later, and including the
+        call sites #525 will widen the *handling* of. That issue re-keys which
+        refusals reach a caller as an envelope; this decides what the envelope
+        says, so the two compose rather than collide.
+
+        Lexical, deliberately. ``path`` is the requested location, always built
+        here as ``knowledge_dir / <child> / ...``, and reading its shape is a
+        question about which artifact was asked for -- not about what is on
+        disk, which is what the resolution inside :func:`_contain` is for. It
+        cannot raise, and it answers the same before and after the escape it
+        describes.
+
+        Falls back to :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY` for everything else,
+        which is the population it was written for: ``knowledge``,
+        ``specifications``, ``proposals``, ``config``, and the derived
+        subdirectories themselves. A refusal on ``.theurian/state`` rather than
+        on something *under* it still carries the older text -- recorded, not
+        overlooked: it is the same wrong-artifact shape one level up, and it
+        belongs to #525's population rather than to this fix's.
+        """
+        if not path.is_relative_to(self.knowledge_dir):  # pragma: no cover - see docstring
+            # No helper builds such a path; `initialize_project` calls `_contain`
+            # directly rather than coming through here. Kept as the contract
+            # guarantee the rest of this method's reasoning rests on.
+            return KNOWLEDGE_DIR_ESCAPE_REMEDY
+        parts = path.relative_to(self.knowledge_dir).parts
+        under_a_derived_subdirectory = (
+            len(parts) >= _MIN_PARTS_UNDER_A_DERIVED_SUBDIRECTORY
+            and parts[0] in DERIVED_SUBDIRECTORIES
+        )
+        if not under_a_derived_subdirectory:
+            return KNOWLEDGE_DIR_ESCAPE_REMEDY
+        return derived_escape_remedy(self.knowledge_dir.name, parts[0])
 
     @property
     def migrations(self) -> Path:

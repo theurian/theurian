@@ -29,6 +29,7 @@ from theurian.application.project_service import (
     ProjectError,
     ProjectPaths,
     ProjectRegistry,
+    derived_escape_remedy,
 )
 from theurian.cli.index_status_report import index_staleness
 from theurian.cli.main import app
@@ -2431,6 +2432,12 @@ def test_apply_refuses_an_escaping_state_symlink_and_writes_nothing_outside_the_
     state database and active pointer in ``shared_state``, outside the clone.
     ``ProjectPaths._contained`` refuses the moment ``paths.state`` is derived, so
     nothing escapes.
+
+    The refused path is a leaf *under* ``state``, so the remedy is the
+    derived-artifact one rather than ``KNOWLEDGE_DIR_ESCAPE_REMEDY`` (#483 round
+    one, H-1): the older text named the operator's knowledge directory for a
+    refusal about ``.theurian/state/`` and sent them to ``theurian init``, which
+    meets the identical refusal.
     """
     _invoke("init")
     shared_state = _escape_the_state_directory(project)
@@ -2438,7 +2445,7 @@ def test_apply_refuses_an_escaping_state_symlink_and_writes_nothing_outside_the_
     code, payload = _invoke("migrate", "apply")
 
     assert code == 1
-    assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
+    assert payload["remedy"] == derived_escape_remedy(".theurian", "state")
     assert _escaped_state_artefacts(shared_state) == [], (
         "migrate apply wrote state outside the tree"
     )
@@ -2467,7 +2474,7 @@ def test_status_over_an_escaping_state_symlink_reads_nothing_from_outside_the_tr
     code, payload = _invoke("migrate", "status")
 
     assert code == 1
-    assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
+    assert payload["remedy"] == derived_escape_remedy(".theurian", "state")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
