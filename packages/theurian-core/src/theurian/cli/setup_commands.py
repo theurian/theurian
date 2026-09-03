@@ -392,21 +392,25 @@ def _published_secret_scan(context: SetupContext) -> IndexSecretScanVerdict:
     which is ordinary -- the machine-wide half of setup is a reasonable thing to
     check from anywhere -- so that answers ``NOT_APPLICABLE`` rather than failing.
 
-    Every other failure is already absorbed by
-    :func:`~theurian.application.index_secret_scan.published_index_secret_scan`,
-    which never raises. What is caught here is the one thing upstream of it that
-    can: ``ProjectPaths.of`` refuses a ``.theurian`` that is a symlink out of the
-    working tree (#237, SEC-7). A diagnostic must come back with a verdict, so an
-    escaping tree reports "nothing can be said" rather than terminating a command
-    whose entire job is to report on a broken machine.
+    **The whole call is guarded, not only ``ProjectPaths.of``, and that
+    distinction is a measurement rather than caution.**
+    :func:`~theurian.application.index_secret_scan.published_index_secret_scan`
+    absorbs every way a *record* can be wrong, and ``read_active_index_pointer``'s
+    docstring says it never raises -- but both reach ``ProjectPaths`` helpers, and
+    a helper refuses a path that leaves the working tree through a committed
+    symlink (#237, SEC-7, T-5). Measured 2026-09-03 with ``.theurian/state``
+    symlinked outside a repository: guarding ``of`` alone let a ``ProjectError``
+    out of ``active_index_pointer`` and ended ``theurian doctor --json`` in a Rich
+    traceback with **empty stdout**, where the same tree on the previous build
+    produced a complete payload at exit 1. A diagnostic has to come back with a
+    verdict; a broken tree is precisely when somebody runs it.
     """
     if context.project_root is None:
         return IndexSecretScanVerdict(status=IndexSecretScanStatus.NOT_APPLICABLE)
     try:
-        paths = ProjectPaths.of(context.project_root)
+        return published_index_secret_scan(ProjectPaths.of(context.project_root))
     except TheurianError:
         return IndexSecretScanVerdict(status=IndexSecretScanStatus.NOT_APPLICABLE)
-    return published_index_secret_scan(paths)
 
 
 def _redaction_anchors(context: SetupContext) -> tuple[tuple[str, str], ...]:

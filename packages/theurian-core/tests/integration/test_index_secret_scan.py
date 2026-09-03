@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -880,3 +882,40 @@ def test_doctor_outside_a_project_says_there_is_nothing_to_report(
         "policy": None,
         "findings": 0,
     }
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_doctor_still_answers_when_the_state_directory_escapes_the_project(
+    planted: Path,
+) -> None:
+    """A diagnostic must come back with a verdict, and a broken tree is when it is run.
+
+    A clone can deliver ``.theurian/state`` as a symbolic link pointing out of
+    the working tree (#237, T-5), and every ``ProjectPaths`` helper under it then
+    refuses. The scan arm reaches two of those helpers, so guarding only
+    ``ProjectPaths.of`` let a ``ProjectError`` out of ``active_index_pointer`` --
+    a Rich traceback and **empty stdout under ``--json``**, for a tree the
+    previous build reported on completely (measured 2026-09-03, and the reason
+    this test exists rather than the docstring's "never raises" being taken at
+    its word).
+
+    The verdict is ``not-applicable``: nothing can be said about a published
+    build that cannot be located. It is not counted as a problem, because the
+    problem is the symlink and other surfaces are what name it.
+    """
+    assert _in(planted, "index", "build")[0] != 0
+    state = planted / ".theurian/state"
+    outside = planted.parent / "outside-the-tree"
+    outside.mkdir()
+    shutil.rmtree(state)
+    state.symlink_to(outside, target_is_directory=True)
+
+    code, payload = _in(planted, "doctor")
+
+    assert payload, "doctor produced no payload at all, which is the CP-2 escape"
+    assert payload["indexSecretScan"] == {
+        "status": "not-applicable",
+        "policy": None,
+        "findings": 0,
+    }
+    assert code == 1, "an escaping tree is still an unhealthy machine"
