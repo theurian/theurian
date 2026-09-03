@@ -1768,9 +1768,11 @@ and the product says so** — Theurian is not a repository secret scanner and is
 not a replacement for one, which is the stance SECURITY.md published before this
 control existed and still publishes.
 
-**The scan covers the author-written *bytes* the acceptance moves into the
-canonical tree, and the artifacts it lands them as**
-([#349](https://github.com/theurian/theurian/issues/349)). Five channels. A body
+**The scan covers what the acceptance puts into the pull request: the
+author-written *bytes* it moves into the canonical tree, the artifacts it lands
+them as ([#349](https://github.com/theurian/theurian/issues/349)), and the one
+input it lands nowhere — the proposal's `evidence.json`
+([#361](https://github.com/theurian/theurian/issues/361)).** Six channels. A body
 is scanned whole. The migration document is scanned field by field, over an
 allowlist of its author-written string *values*: the migration's own `author`,
 `createdAt` and `description`; on every operation the free text and the names an
@@ -1835,6 +1837,57 @@ revision: a committed secret in one was reproduced verbatim by the rehearsal's
 RFC 3339 parse, so scanning pre-empts that with a redacted refusal under
 `block`.
 
+**The sixth channel is the proposal's `evidence.json`, which `accept` scans
+without landing** ([#361](https://github.com/theurian/theurian/issues/361)).
+`accept` moves neither the file nor the proposal directory's name, and the
+conclusion once drawn from that — neither is an artifact this scan can be about —
+does not follow for the first of the two. Three facts of this command put the
+file into Git history without moving it: `_remove_proposal_sources` deletes the
+migration and every body and leaves the evidence behind; `accept`'s own first
+next step tells the author to open a pull request *with the proposal directory
+in it*, because the merge is the approval (ADR-0013 point 7); and
+`.theurian/proposals/` is not git-ignored. So an agent's free-text `reasoning`
+carrying a credential becomes a commit — the outcome this entry names, reached
+through the evidence file rather than through the migration. It is scanned
+**whole-text, never by a field walk**: what lands in a revision is a parsed value
+the loader reads, but what travels here is the file byte for byte, so the bytes
+are the artifact and the bytes are what is scanned — and `reasoning` is free text
+under no schema constraint, so an enumeration would gain an unscanned channel the
+next time the record gained a field. Under `block` the refusal arrives **before**
+any next step is printed, which is the property that matters: the credential is
+already on the author's disk, and what turns it into history is following step
+one. A `--local` proposal is scanned the same way even though its directory is
+git-ignored (ADR-0028), because git-ignored keeps the bytes out of a commit and
+not off the disk. A present record that cannot be read — symlinked, or past the
+source-file cap — refuses under `block` and is skipped under `warn`: `block`
+promises that nothing it cannot clear gets past, while `warn` already proceeds
+past a finding, so proceeding past a channel it could not read takes nothing
+away. An absent record is not a failure; `draft` writes the body, then the
+evidence, then the migration, so an interrupted draft legitimately has none.
+**The residual, stated:** a credential spelled with JSON `\uNNNN` escapes sits in
+the parsed value and not in the bytes, so scanning the bytes misses it. It is not
+reachable through the record `propose draft` writes — `json.dumps` escapes
+non-ASCII and never ASCII, and a credential is ASCII — so reaching it takes a
+hand-edited evidence file written to hide one, which is the adversary the
+detector already disclaims completeness against. Driven by
+`tests/integration/test_proposal_evidence_scan.py`, whose
+`::test_the_refusal_arrives_before_the_author_is_told_to_commit_the_directory`
+holds the ordering through the real CLI and
+`::test_the_planted_value_is_one_the_detector_reports` is the positive control
+the rest rests on.
+
+**The two SEC-11 controls sit at opposite postures, and each posture is the
+answer to who is standing there.** At accept time a human operator is present to
+act on a refusal — the proposal survives, the author corrects it — so refusing is
+the correct action and `block` is the default. At build time nobody is there, and
+the content is already readable through `knowledge.search` and `knowledge.get`,
+so a build that refused to publish would deny ranking without un-disclosing
+anything: it would self-DoS retrieval over knowledge the project has already
+merged ([#329](https://github.com/theurian/theurian/issues/329)'s recorded
+ground). Same control class, opposite posture, each for a stated reason. The
+evidence channel added by #361 belongs to the first, which is why its default is
+a refusal and not a warning.
+
 **Measured, because a `block` default that fires on real documents is a control
 projects switch off.** Over the migration corpus this repository tracks — the 26
 documents under `.theurian/migrations/` and the 2 under
@@ -1872,24 +1925,49 @@ trigger now closes in the same `migrate apply` (#15).
 *What the shipped control does not reach, each of which is a separate control at
 a separate point:*
 
-- **A proposal's `evidence.json` is not scanned.** `accept` moves the migration
-  document and the bodies it names, and leaves the rest of the proposal
-  directory where it is (ADR-0013 point 7), so `evidence.json` travels into the
-  pull request unscanned and never becomes part of an approved revision. That it
-  rides into the PR this way is tracked as
-  [#361](https://github.com/theurian/theurian/issues/361); scanning it at draft
-  time is a separate control, tracked with the draft-time advisory
-  ([#330](https://github.com/theurian/theurian/issues/330)).
-- **Refusal *messages* on the accept path still echo an author's name.** The
-  artifact level [#349](https://github.com/theurian/theurian/issues/349) opened
-  — a YAML comment, the migration filename, and each landed body path — is now
-  scanned, so the scan itself no longer leaves that face open. What remains is a
-  different root cause: several refusal messages on the accept path, and the
-  `accept --json` `bodyFiles` success field, print an author's migration
-  filename, id, `contentFile` or landed path verbatim rather than by a fixed
-  literal. It is general name hygiene, pre-existing, and discloses no content the
-  caller may not already read — tracked in
-  [#360](https://github.com/theurian/theurian/issues/360).
+- **Draft-time scanning is still owed; `evidence.json` at accept is not.** A
+  refusal at `draft` would tell an author sooner and is tracked as
+  [#330](https://github.com/theurian/theurian/issues/330). The claim that stood
+  here until #361 — that `evidence.json` is not scanned — is no longer true:
+  `accept` reads it whole-text under the same policy (above), and the reason the
+  old bullet gave for leaving it out ("`accept` never lands it") was true and did
+  not settle the question, because the command tells the author to commit the
+  directory it sits in.
+- **Refusal *messages* on the accept path no longer echo an author's name, and
+  the boundary of that is one module's.** Every author-controlled string
+  interpolated into a message by
+  `application/proposal_service.py` passes one gate: it is cut to what may be
+  printed (200 characters for a name, the same bound
+  `security/yaml_loading.MAX_RENDERED_SCALAR_CHARS` already sets for an
+  untrusted scalar; 2,000 for another component's own report) and *then* scanned,
+  so the guard is keyed on exactly the text that will be printed. A string the
+  detector reports is replaced by a fixed literal of the module's own — *a name
+  that appears to carry a secret* — and never partially echoed, because the
+  detector publishes no match length and a "clean" remainder around a redacted
+  span is a partial copy besides
+  ([#360](https://github.com/theurian/theurian/issues/360),
+  [#339](https://github.com/theurian/theurian/issues/339)). The population is
+  proved by reflection over the module's syntax tree rather than by a site list —
+  `tests/integration/test_proposal_refusal_names.py::test_every_interpolation_in_a_message_is_gated_or_recorded`
+  reddens on a new raw `{name}`, with
+  `::test_the_reflection_finds_the_interpolations_it_claims_to_range_over` as its
+  positive control. Two channels the issue's own table did not list are closed
+  with it: PyYAML's parse error, which quotes the offending source line before
+  any scan runs, and `jsonschema`'s message, which quotes the offending instance
+  in full. **Three residuals, each named rather than folded in:** the gate's reach
+  is the *detector's* reach, so a fragment a third party truncated can escape it —
+  PyYAML's `Mark.get_snippet` cut the `sk-` prefix off a 43-character token,
+  leaving 32 lower-case hex characters no family matches, and they were printed
+  (measured 2026-09-04 through the real CLI, recorded at `_bounded`);
+  `migration_loader.py` prefixes a landed migration's filename onto every
+  `MigrationError`, and the CLI reaches it through `resolve_context`
+  (`cli/context.py`) rather than through `accept` alone, so that message arrives
+  before `accept` runs at all and is a different producer's population
+  ([#537](https://github.com/theurian/theurian/issues/537)); and `accept --json`'s
+  `migrationFile` and `bodyFiles` *success* fields still name landed paths at full
+  length, which is a recorded decision — a success payload whose job is to say
+  what was written reports nothing if it is redacted, and reaching it needs
+  `warn`, under which the same string is already published redacted beside it.
 - **Inside the migration document, the derived half is not read**, each field
   excluded by a mechanism rather than by choice: the ULID- and
   `^[0-9a-f]{64}$`-shaped identifiers (`id`, `revisionId`,
@@ -6240,7 +6318,7 @@ fix.
 | T-12 | Agent rewrites approved knowledge | T | High | SEC-17 |
 | T-13 | Concurrent daemon corruption | T | High | NFR-1 |
 | T-14 | Setup overwrites configuration — the MCP entry, and `~/.theurian/env` since #128 | T | Medium | SEC-18 |
-| T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — `theurian propose accept` scans every body it would land **and the migration document's author-written fields** ([#336](https://github.com/theurian/theurian/issues/336)), `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it. The document's derived fields and a proposal's `evidence.json` are not read ([#330](https://github.com/theurian/theurian/issues/330)). `theurian index build` is SEC-11's second control and scans every body it indexes, with the source anchors and relation notes served beside it — every text channel of the approved, in-ceiling corpus this deployment serves by default, on every rebuild — and it reports and never refuses, because by then the content is already served whatever the index holds; an unapproved body reachable through `includeUnapproved` and a superseded revision in the store are outside that population and are recorded as residuals in the threat model and `SECURITY.md` ([#329](https://github.com/theurian/theurian/issues/329); #198 is closed, having shipped the `propose accept` half). `theurian ingest` runs no scan of its own |
+| T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — `theurian propose accept` scans every body it would land **and the migration document's author-written fields** ([#336](https://github.com/theurian/theurian/issues/336)), `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it, and a proposal's `evidence.json` is scanned whole-text at accept even though the command lands it nowhere, because the command tells the author to commit the directory it sits in ([#361](https://github.com/theurian/theurian/issues/361)). Refusals on the accept path bound and redact every author-controlled name they print, within `proposal_service.py` ([#360](https://github.com/theurian/theurian/issues/360), [#339](https://github.com/theurian/theurian/issues/339); `migration_loader.py`'s own echo is a different producer's population, [#537](https://github.com/theurian/theurian/issues/537)). The document's derived fields are not read, each barred by a mechanism rather than by choice, and draft-time advisory scanning remains owed ([#330](https://github.com/theurian/theurian/issues/330)). `theurian index build` is SEC-11's second control and scans every body it indexes, with the source anchors and relation notes served beside it — every text channel of the approved, in-ceiling corpus this deployment serves by default, on every rebuild — and it reports and never refuses, because by then the content is already served whatever the index holds; an unapproved body reachable through `includeUnapproved` and a superseded revision in the store are outside that population and are recorded as residuals in the threat model and `SECURITY.md` ([#329](https://github.com/theurian/theurian/issues/329); #198 is closed, having shipped the `propose accept` half). `theurian ingest` runs no scan of its own |
 | T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet ([#80](https://github.com/theurian/theurian/issues/80); #39 is closed, on its documentation half only) |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
 | T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15); closed for the sensitivity axis in #119 by exclusion at build plus a `changeSensitivity` purge trigger (ADR-0025 parts 1–2). The unpurged-build (purge-failed) cell — including its verbatim `--raptor` `raptorPath` face — is closed by GHSA-97q9-xxfg-33r6, which refuses to serve a purge-failed build (graded High: two non-default operator conditions), leaving only an in-flight request, a double disk fault, and a concurrent clean build reverted by the non-atomic taint write (all SAFE-direction, the last deferred to the derived index's single-writer contract, ADR-0022/ADR-0018, owned by [#439](https://github.com/theurian/theurian/issues/439) — merged PR #113 stood here until #427's sweep); the byte residue ([#344](https://github.com/theurian/theurian/issues/344)) is recorded — **and it is not mostly free-list, and not only a disk surface**: FTS5 `'delete'` tombstones the postings and nothing in the shipped purge merges them, so about three quarters of a purged build's growth is live segment blocks (587 free pages of 2,372) and query duration on the trigram path is monotone in the withdrawn count — at 5,950 withdrawn, **+27.4 ms** end to end (the round-one measurement, +27.36 ms; six later re-runs give +27.59…+28.18 ms, so the delta is stable across runs), which is 5.08–5.67× the baseline depending on the run, median 5.41×, crossing TB-1's 1.40 ms floor between 500 and 1,000 withdrawn rows, with the withdrawn **count** readable off the clock at 3 of 5 and **no content recovered** (responses byte-identical, because `'delete'` does decrement the averages record). A new face of this entry's own root cause at the FTS5 segment level rather than a new class; open, graded High, labelled pre-1.0, owned by [#499](https://github.com/theurian/theurian/issues/499), whose closure is the merge inside the purge or a recorded acceptance carrying the measured bound |

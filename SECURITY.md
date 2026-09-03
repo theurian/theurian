@@ -481,10 +481,22 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   other enums). The
   date fields land nothing themselves, but a committed secret in one was
   reproduced verbatim by the rehearsal's date parse, so scanning pre-empts that
-  with a redacted refusal under `block`. A proposal's
-  `evidence.json` is not scanned: `accept` never moves it into the canonical
-  tree, and scanning it is tracked with the draft-time advisory
-  ([#330](https://github.com/theurian/theurian/issues/330)). `theurian ingest`
+  with a redacted refusal under `block`. Since
+  [#361](https://github.com/theurian/theurian/issues/361) a proposal's
+  `evidence.json` is scanned too — whole-text, not field by field — even though
+  `accept` never moves it: the command deletes the migration and the bodies and
+  leaves the record behind, then tells you to open a pull request with the
+  proposal directory in it, so an agent's free-text `reasoning` reaches Git
+  history without being landed. Under `block` that refusal arrives *before* you
+  are told to commit the directory. A record that is present but unreadable
+  refuses under `block` and is skipped under `warn`; an absent one is allowed,
+  because an interrupted draft legitimately has none. A credential spelled with
+  JSON `\uNNNN` escapes is in the parsed value and not in the bytes, so this
+  misses it — unreachable through the record `propose draft` writes, and a
+  hand-edited file written to hide one is the adversary this detector already
+  disclaims completeness against. Scanning at *draft* time is still a separate,
+  owed control ([#330](https://github.com/theurian/theurian/issues/330)).
+  `theurian ingest`
   runs no scan of its own, and needs none for a reason about *storage* rather
   than about coverage: **it stores no content at all** — it writes a manifest and
   holds what it read in memory — so there is nothing at that point for a scan to

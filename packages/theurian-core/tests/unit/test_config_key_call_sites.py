@@ -1478,7 +1478,17 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
                 "the ULID- and `contentSha256`-shaped identifiers, which the "
                 "detector's class gate cannot fire on"
             ),
-            "`evidence.json` is not scanned",
+            # The evidence channel (#361), and the direction this row now holds
+            # is the *opposite* of the one it held until this change. The
+            # fragment here was "`evidence.json` is not scanned" from #198 until
+            # #361 landed the scan, and it went RED on the docs commit that
+            # corrected the sentence -- which is the pin doing its job rather
+            # than the pin being wrong. Two fragments, because the claim has two
+            # halves that fail differently: dropping the first under-claims a
+            # shipped control, and dropping the second promises that *draft*
+            # time is covered when only accept is.
+            "`evidence.json` is scanned too — whole-text, not field by field",
+            "Scanning at *draft* time is still a separate, owed control",
             # The build-time control (#329), and the two halves of its posture. The
             # first says the scan exists and where; the second says it reports
             # rather than refusing, which is the claim an operator acts on -- a

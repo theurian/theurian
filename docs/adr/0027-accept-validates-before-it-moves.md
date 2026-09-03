@@ -510,6 +510,107 @@ one of its recorded residuals.
 > spelled and caught in one. T-15 stays High: this widens the one gate
 > of three that was already covered.
 
+> **Further amended in Milestone 7, by the accept-disclosure CL
+> ([#360](https://github.com/theurian/theurian/issues/360),
+> [#361](https://github.com/theurian/theurian/issues/361),
+> [#339](https://github.com/theurian/theurian/issues/339); PR
+> [#536](https://github.com/theurian/theurian/pull/536)). Both amendments above
+> close by naming two residuals, and this CL discharges both of them. The
+> sentences that no longer hold are the metadata amendment's "a proposal's
+> `evidence.json` is still unscanned — `accept` never moves it into the canonical
+> tree" and the artifact amendment's pair, "refusal messages elsewhere on the
+> accept path… still echo an author's filename, id or `contentFile` verbatim"
+> and "`evidence.json`, which `accept` still leaves in the directory it tells the
+> author to commit".**
+>
+> **What implementing them revealed about the `evidence.json` reasoning: the
+> premise was true and the conclusion did not follow.** `accept` does move
+> neither the evidence record nor the proposal directory's name — that much was
+> right — but "so neither is an artifact this scan can be about" reads *lands it*
+> for *puts it into the pull request*, and this command separates the two. Three
+> of its own facts do so: `_remove_proposal_sources` deletes the migration and
+> every body and leaves the evidence behind; `accept`'s first next step tells the
+> author to open a pull request with the proposal directory in it, because the
+> merge is the approval (ADR-0013 point 7); and `.theurian/proposals/` is not
+> git-ignored. Measured on `63e3851`, a proposal whose `evidence.reasoning`
+> carried a detectable token was accepted under the shipped `block` default with
+> `findings=0`, and the token-bearing file was still on disk in the directory the
+> command had just told the author to commit. The scan's population is therefore
+> restated: **what an acceptance puts into the pull request**, not what it lands.
+> Six inputs, the evidence record being the one that is not an artifact of the
+> move.
+>
+> **Scanned rather than removed or ignored, and the alternatives are not open.**
+> `_read_evidence_record` reads the file to answer whether a proposal has already
+> been accepted, so deleting it destroys the diagnosis whose wrong answer tells an
+> author to mint a second migration for a change already in history; and
+> git-ignoring the proposal directory contradicts ADR-0013 point 7, under which
+> the directory is the committed input a human reviews. It is scanned **whole-text
+> rather than by a field walk**, unlike the migration document: what lands in a
+> revision is a parsed value the loader reads, but what travels here is the file
+> byte for byte, so the bytes are the artifact — and `reasoning` is free text
+> under no schema constraint, so an enumeration would gain an unscanned channel
+> the next time the record gained a field. The stated residual is the mirror of
+> that choice: a credential spelled with JSON `\uNNNN` escapes sits in the parsed
+> value and not in the bytes. It is unreachable through the record `draft` writes,
+> since `json.dumps` escapes non-ASCII and never ASCII.
+>
+> **What implementing #360 revealed: the refusal messages were not merely
+> untidy — several of them beat the scan to the terminal.** The artifact
+> amendment graded this "general name hygiene, pre-existing, and disclosing no
+> content the caller may not already read". The first half stands; the ordering
+> does not. Measured on `63e3851` under the shipped `block` default, a credential
+> placed in a migration filename, in a `contentFile` or in a migration's inner
+> `id` was echoed at full length into the terminal and into `accept --json` — the
+> same string the scan would have redacted to four characters, printed whole by a
+> refusal that fires *before* the scan runs. It is closed as a class rather than
+> site by site: one gate, `_bounded`, cuts an untrusted string to what may be
+> printed and then scans exactly that cut text, so the guard is keyed on what will
+> actually be printed rather than on a superset of it (GHSA-3f65's shape). A
+> string the detector reports is replaced by a literal of the module's own and
+> never partially echoed, because the detector publishes no match length and a
+> "clean" remainder around a redacted span is a partial copy besides. Two channels
+> the issue's own table did not list are in the class and close with it: PyYAML's
+> parse error, which quotes the offending source line before anything is scanned,
+> and `jsonschema`'s message, which quotes the offending instance in full.
+>
+> **Why this is the better answer: the population is proved rather than
+> enumerated.** A hand-written list of refusal sites is exactly the artifact that
+> drifts — the issue's table listed seven, and reading for them found seven, which
+> is the failure mode. `test_proposal_refusal_names.py` reflects over
+> `proposal_service.py`'s own syntax tree instead, so a refusal added next year
+> with a raw `{path.name}` in it goes RED without any reviewer having read the
+> file. An addition is either routed through a gate or recorded in the allowlist
+> with the reason it needs none, and writing that reason down *is* the review,
+> because it is the sentence that is false when the value is in fact the author's.
+>
+> **Three residuals, recorded rather than folded in.** The gate's reach is the
+> *detector's* reach: it withholds a string the detector reports and does not
+> promise no credential is printed. Measured 2026-09-04 through the real CLI,
+> PyYAML's `Mark.get_snippet` cut the front off a long line, so a 43-character
+> `sk-` token reached the refusal with its prefix already gone — 32 lower-case hex
+> characters that no family matches — and was printed; a third party's truncation
+> rather than something this module chose to quote, and the residual every caller
+> of this best-effort detector carries. The population is also **one module's**:
+> `infrastructure/filesystem/migration_loader.py` prefixes a landed migration's
+> filename onto every `MigrationError`, and the CLI loads the migration set during
+> context resolution, so that message arrives before `accept` runs at all — a
+> different producer, reached through `cli/context.py`'s `resolve_context` and so
+> by every command that resolves a project context, recorded and reported as
+> [#537](https://github.com/theurian/theurian/issues/537) rather than closed from
+> here. And `accept --json`'s `migrationFile` and `bodyFiles` **success** fields
+> still name landed paths at full length by decision recorded at the site: a
+> success payload whose job is to say what was written reports nothing if it is
+> redacted, and reaching one needs `warn`, under which the same string is already
+> published redacted beside it in `secretFindings`.
+>
+> **What does not change is the grade or the disclaimer.** T-15 stays High: the
+> count that decides it is over the three points content enters the canonical
+> store, and this widens the one already covered. The detector is still best
+> effort, and there is still no per-finding suppression. Draft-time advisory
+> scanning ([#330](https://github.com/theurian/theurian/issues/330)) is still
+> owed, and is now the whole of what that issue carries.
+
 **This is the first code in `src/` that reads `.theurian/config.yaml`.** Nothing
 reads it today — `infrastructure/github/__init__.py` mentions the filename in a
 docstring and that is the whole of it, which is the state
@@ -897,24 +998,60 @@ Still owed, with the issue that will satisfy it:
   through `includeUnapproved`, unscanned because reading a withheld row into a
   published count is the T-17 shape; and a superseded revision, unscanned while
   it remains in the store, which is why the remedy rotates before it supersedes.
-- **Name hygiene in refusal messages**
-  ([#360](https://github.com/theurian/theurian/issues/360)). The scan's own
-  finding locations never reproduce the value (the `#349` entry above), but
-  several refusal messages elsewhere on the accept path — and the `accept --json`
-  `bodyFiles` success field — still echo an author's migration filename, id,
-  `contentFile` or landed path verbatim. A different root cause from the scan,
-  pre-existing, and disclosing no content the caller may not already read.
-- **Draft-time scanning as an advisory, and `evidence.json` with it**
-  ([#330](https://github.com/theurian/theurian/issues/330);
-  [#361](https://github.com/theurian/theurian/issues/361) for the accept-lands-it
-  face). Refusing at `draft` would tell an author sooner, but `accept` is the
-  gate, so a draft-time scan is a convenience rather than a control.
-  `evidence.json` belongs to the same item and not to the one above: `accept`
-  moves the migration document and the bodies it names and leaves the rest of the
-  proposal directory alone (ADR-0013 point 7), so the evidence file is committed
-  with the pull request and never becomes part of an approved revision — a control
-  over it is a control over something this gate does not land, which is the face
-  #361 tracks specifically.
+- ~~**Name hygiene in refusal messages**~~
+  ([#360](https://github.com/theurian/theurian/issues/360),
+  [#339](https://github.com/theurian/theurian/issues/339)) — **shipped in PR
+  [#536](https://github.com/theurian/theurian/pull/536)**, and it was not only
+  hygiene: several of those refusals fire *before* the scan, so the string the
+  scan would have redacted to four characters was printed whole by the refusal
+  that beat it there. Every author-controlled string
+  `application/proposal_service.py` interpolates into a message now passes
+  `_bounded`, which cuts it to what may be printed and scans exactly that cut
+  text. The population is proved rather than enumerated:
+  `tests/integration/test_proposal_refusal_names.py::test_every_interpolation_in_a_message_is_gated_or_recorded`
+  reflects over the module's own syntax tree and reddens on a new raw
+  interpolation that is neither routed through a gate nor recorded in the
+  allowlist with its reason, with
+  `::test_the_reflection_finds_the_interpolations_it_claims_to_range_over` as the
+  positive control that the walk reaches anything at all. The gate itself is held
+  by `::test_a_name_the_detector_reports_is_withheld_whole_and_not_in_part`,
+  `::test_the_scan_reads_exactly_the_string_that_will_be_printed` and
+  `::test_a_name_past_the_bound_is_cut_and_says_so_without_publishing_its_length`;
+  representative members are driven through the real `ProposalService` by
+  `::test_a_migration_the_parser_refuses_withholds_the_name_and_the_quoted_token`
+  and `::test_a_document_the_schema_rejects_prints_neither_the_value_nor_the_name`,
+  because a gate the refusal path does not call passes its own unit test. Three
+  residuals stay open and are named in the amendment above: the detector's own
+  reach, `migration_loader.py`'s out-of-module echo
+  ([#537](https://github.com/theurian/theurian/issues/537)), and `accept --json`'s
+  full-length `migrationFile`/`bodyFiles` **success** fields, which are a recorded
+  decision at the site rather than a gap.
+- **Draft-time scanning as an advisory**
+  ([#330](https://github.com/theurian/theurian/issues/330)). Refusing at `draft`
+  would tell an author sooner, but `accept` is the gate, so a draft-time scan is a
+  convenience rather than a control. ~~`evidence.json` belongs to the same
+  item~~ — **the `evidence.json` half shipped in PR
+  [#536](https://github.com/theurian/theurian/pull/536)**
+  ([#361](https://github.com/theurian/theurian/issues/361)) and this item is now
+  draft-time alone. The reason it was filed here — "a control over it is a control
+  over something this gate does not land" — was the conclusion the amendment above
+  corrects: `accept` deletes the migration and the bodies, leaves the record
+  behind and then tells the author to commit that directory, so the file reaches
+  Git history without being landed. It is scanned whole-text under the same
+  `security.secretScan` policy, driven by
+  `tests/integration/test_proposal_evidence_scan.py`:
+  `::test_a_secret_in_the_evidence_reasoning_is_refused_under_the_default` and
+  `::test_the_refusal_consumes_nothing_and_the_evidence_is_still_there` for
+  `block`, `::test_warn_accepts_and_reports_the_evidence_finding_with_the_value_withheld`
+  and `::test_off_scans_the_evidence_record_no_more_than_anything_else` for the
+  other two policies,
+  `::test_an_unreadable_evidence_record_is_refused_under_block` with
+  `::test_an_unreadable_evidence_record_does_not_stop_a_warn_acceptance` for the
+  one place the two postures differ, and
+  `::test_the_refusal_arrives_before_the_author_is_told_to_commit_the_directory`
+  for the ordering that is the whole point — all resting on
+  `::test_the_planted_value_is_one_the_detector_reports`, without which each of
+  them would pass against the unfixed build.
 - **Concurrency between two `accept` invocations** (decision 2's third
   residue), which belongs with the write path's single-writer work
   ([ADR-0018](0018-single-writer-synchronous-in-m1.md)). The accept path's file

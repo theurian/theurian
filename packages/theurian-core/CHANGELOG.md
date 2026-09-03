@@ -289,6 +289,78 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   breaking change: the new exception types are internal, and the envelopes
   replace tracebacks that were never a contract.
 
+- **`theurian propose accept` no longer prints a credential that its own scan
+  would have withheld, and it now reads the proposal's `evidence.json`**
+  ([#360](https://github.com/theurian/theurian/issues/360),
+  [#361](https://github.com/theurian/theurian/issues/361),
+  [#339](https://github.com/theurian/theurian/issues/339), SEC-11, T-15,
+  ADR-0027 decision 3). Two disclosure surfaces on one command, fixed together
+  because they share one file.
+
+  **Refusals echoed the author's own names, and several of them fire before the
+  scan runs.** Measured on `63e3851` under the shipped `block` default, a
+  credential placed in a migration filename, in a `contentFile` or in a
+  migration's inner `id` was printed at full length into the terminal and into
+  `accept --json` — by refusals about a name collision or a missing file, which
+  beat the scan to the output. Every author-controlled string
+  `propose accept` interpolates into a message is now cut to what may be printed
+  (200 characters for a name, the bound this codebase already uses for an
+  untrusted YAML scalar; 2,000 for another component's own report) and *then*
+  scanned, so the guard is keyed on exactly the text that will be printed. A
+  string the detector reports is replaced whole by a fixed literal — *a name that
+  appears to carry a secret* — and never partially echoed, because the detector
+  publishes no match length and a "clean" remainder around a redacted span is a
+  partial copy besides. Two channels beyond the reported ones close with it:
+  PyYAML's parse error, which quotes the offending source line before anything
+  is scanned, and `jsonschema`'s message, which quotes the offending instance in
+  full. **This changes what a refusal prints**, so a script that parsed a name
+  back out of an error string will not find it there; the `{error, remedy}`
+  shape and every exit code are unchanged.
+
+  **`evidence.json` travelled into the pull request unscanned.** The scan covered
+  everything the command *lands*, and the record is not landed — but `accept`
+  deletes the migration and the bodies, leaves the record behind, and then tells
+  the author to open a pull request with the proposal directory in it, and
+  `.theurian/proposals/` is not git-ignored. So an agent's free-text `reasoning`
+  reached Git history under the default `block` with `findings=0`. It is scanned
+  now under the same `security.secretScan` policy, **whole-text rather than field
+  by field**: what travels is the file byte for byte, and `reasoning` is under no
+  schema constraint, so an enumeration would gain an unscanned channel the next
+  time the record gained a field. Under `block` the refusal arrives **before** any
+  next step is printed, which is the property that matters. A record that is
+  present but unreadable — symlinked, or past the source-file cap — refuses under
+  `block` and is skipped under `warn`: `block` promises that nothing it cannot
+  clear gets past, and `warn` already proceeds past a finding. An absent record is
+  still fine, because an interrupted `draft` legitimately has none.
+
+  **The two SEC-11 controls sit at opposite postures on purpose.** At accept time
+  a human operator is present to act on a refusal, so refusing is the correct
+  action and `block` is the default. At build time nobody is there and the content
+  is already readable, so refusing would deny ranking over knowledge the project
+  has already merged — it would self-DoS retrieval
+  ([#329](https://github.com/theurian/theurian/issues/329)). Same control class,
+  opposite posture, each for a stated reason; the evidence channel belongs to the
+  first.
+
+  **What this does not reach, stated rather than implied.** The gate's reach is
+  the *detector's* reach: it withholds a string the detector reports and does not
+  promise no credential is printed — PyYAML's `Mark.get_snippet` cut the `sk-`
+  prefix off a 43-character token before the gate saw it, leaving 32 lower-case
+  hex characters no family matches, and they were printed (measured 2026-09-04
+  through the real CLI). A credential spelled with JSON `\uNNNN` escapes is in the
+  parsed evidence value and not in its bytes, so the whole-text scan misses it;
+  that is unreachable through the record `propose draft` writes. The
+  migration loader still prefixes a landed migration's filename onto every error
+  it raises — a different producer, reached by every command that resolves a
+  project context, so its message arrives before `accept` runs at all
+  ([#537](https://github.com/theurian/theurian/issues/537)). And `accept --json`'s
+  `migrationFile` and `bodyFiles` **success** fields still name landed paths at
+  full length by decision: a payload whose job is to say what was written reports
+  nothing if it is redacted, and reaching one needs `warn`, under which the same
+  string is already published redacted beside it. Draft-time advisory scanning
+  remains owed ([#330](https://github.com/theurian/theurian/issues/330)), which is
+  now the whole of what that issue carries.
+
 ## [0.1.0.dev18] - 2026-09-03
 
 ### Added
