@@ -1239,11 +1239,21 @@ def test_a_spent_budget_buys_no_finding_at_all(spent: int) -> None:
     twenty-one (measured 2026-09-03, #329 round 1). Zero means zero, and a
     negative budget -- which only arithmetic that has already overrun can
     produce -- means the same rather than something worse.
+
+    **The fixture takes the outer pass's ``append`` branch, and that is the whole
+    point.** A body whose credential sits inside a *refused* candidate run is
+    handed to ``_families_inside``, which bounds itself on ``room`` and answers
+    nothing for a spent budget whatever this entry does -- so such a body reports
+    the right answer for the wrong reason, and a row built on it stays green with
+    the guard deleted (measured 2026-09-03). ``AKIA`` is matched by a specific
+    family in the outer pass, so it is appended before any ceiling is consulted.
     """
-    body = f"config:\n  key: {_CROWDED_REFUSED_RUN}\n"
-    assert scan_text(body, max_findings=1), (
-        "the fixture carries nothing the detector reports, so a bounded answer of "
-        "none below would hold against a scanner that had stopped working"
+    credential = _FAMILY_CREDENTIALS["aws-access-key-id"]
+    body = f"config:\n  key: {credential}\n"
+    reported = scan_text(body, max_findings=1)
+    assert [f.family for f in reported] == ["aws-access-key-id"], (
+        f"the fixture is not reported by the outer pass's append branch, so a bounded "
+        f"answer of none below would hold for a reason this row is not about: {reported}"
     )
 
     assert scan_text(body, max_findings=spent) == ()
