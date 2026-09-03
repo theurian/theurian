@@ -739,10 +739,12 @@ def test_rs_and_us_bytes_in_a_body_do_not_fabricate_a_record(tmp_path: Path) -> 
 
 
 #: The plant for the bound below: a commit message carrying a NUL, with a
-#: well-formed keyed line **behind** it. Hand-built, because both porcelain routes
-#: refuse a NUL outright (``error: a NUL byte in commit log message not allowed``,
-#: measured 2026-09-03 on git 2.47.1 -- ``commit -F`` exit 128, ``commit-tree``
-#: exit 1), while ``hash-object --literally`` writes it verbatim.
+#: well-formed keyed line **behind** it. Hand-built, because every porcelain route
+#: refuses a NUL outright -- ``error: a NUL byte in commit log message not
+#: allowed``, measured 2026-09-03 on git 2.47.1 for ``commit -F`` (exit 128),
+#: ``commit-tree`` (exit 1), and the declared-encoding form
+#: :func:`_commit_under_declared_encoding` uses, which the check precedes -- while
+#: ``hash-object --literally`` writes it verbatim.
 _NUL_IN_MESSAGE: Final = (
     b"chore: a hand-built commit with a NUL \x00 byte\n\n"
     b"Review-Finding: adversarial CRITICAL \xe2\x80\x94 behind the NUL, never read\n"

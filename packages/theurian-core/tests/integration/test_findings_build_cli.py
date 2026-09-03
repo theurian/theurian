@@ -168,11 +168,18 @@ def _commit_with_raw_message(root: Path, message: bytes) -> str:
 
     Hand-builds the commit object and writes it with ``git hash-object -t commit -w
     --stdin --literally``, then moves ``main`` onto it, so :func:`_publish` pushes
-    it like any other commit. The hand-build is load-bearing: measured 2026-09-03
-    on git 2.47.1, both ``git commit -F`` and ``git commit-tree`` re-encode a
-    non-UTF-8 message to valid UTF-8 (a lone ``0x80`` stored as ``0xc2 0x80``) and
-    warn while doing it, so a plant built with either would exercise a corpus with
-    nothing wrong in it.
+    it like any other commit. The hand-build is load-bearing *here*: measured
+    2026-09-03 on git 2.47.1, ``git commit -F`` and ``git commit-tree`` in their
+    **default** form re-encode a non-UTF-8 message to valid UTF-8 (a lone ``0x80``
+    stored as ``0xc2 0x80``) and warn while doing it, so a plant built with either
+    would exercise a corpus with nothing wrong in it.
+
+    Porcelain is not uniformly safe, though, which is why the claim is scoped to
+    the default form: ``git -c i18n.commitEncoding=<enc> commit -F`` stores the
+    bytes verbatim and silently, and a *mis*-declared encoding reaches this same
+    containment (#496 R1-3). That route is driven in
+    ``test_git_trailer_source.py``; this file keeps the hand-built plant, which is
+    the only way to reach a commit carrying no ``encoding`` header at all.
     """
     tree = _git(root, "rev-parse", "HEAD^{tree}").strip()
     parent = _git(root, "rev-parse", "HEAD").strip()
@@ -883,9 +890,9 @@ def test_a_non_utf8_commit_message_is_counted_as_rejected_not_a_bricked_build(
     is where an operator sees it.
 
     The premise is asserted first because the plant is easy to build wrong:
-    measured 2026-09-03 on git 2.47.1, both porcelain routes re-encode the message
-    to valid UTF-8, so a fixture using either would pass here over a corpus with
-    nothing wrong in it.
+    measured 2026-09-03 on git 2.47.1, ``git commit -F`` and ``git commit-tree`` in
+    their default form re-encode the message to valid UTF-8, so a fixture using
+    either would pass here over a corpus with nothing wrong in it.
     """
     _commit(project, "fix: a valid one (#1)", "Review-Finding: security HIGH — a valid finding")
     undecodable = _commit_with_raw_message(project, _UNDECODABLE_MESSAGE)
