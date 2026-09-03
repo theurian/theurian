@@ -1568,23 +1568,36 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "**Draft-time scanning is still owed; `evidence.json` at accept is not.**",
             # The refusal-name gate (#360, #339), the second claim group this row
             # carries; the table's header says why it is not SEC-11's reach. Three
-            # fragments: the population and the bound, the ordering, and the
-            # boundary. The first names the module whose interpolations pass the
-            # gate and says the cut comes first; the second says the scan reads
-            # exactly the bounded text, which is what
-            # `test_the_scan_reads_exactly_the_string_that_will_be_printed` holds on
-            # the fact side, and a reword that scans the raw string and prints the
-            # cut one is a different control. The third is the over-claim guard,
-            # and it is the direction that has already gone wrong once: "elsewhere
-            # on the accept path" was the phrasing this branch had to narrow in
-            # three places, because `migration_loader.py` prefixes a landed
-            # migration's filename onto every `MigrationError` and `resolve_context`
-            # reaches it before `accept` runs at all (#537).
+            # fragments: the population, the ordering, and the boundary.
+            #
+            # The first names the module whose strings pass the gate, and says
+            # "author-derived" and "whatever its type" rather than "name": the
+            # gate selected on value type until round one found a `!!binary`
+            # migration id printing a credential in full, so a version of this
+            # sentence that says *name* describes the control that had the defect.
+            #
+            # The second is the ordering, and this pin previously held the
+            # *inverse* of what ships -- "cut to what may be printed ... and then
+            # scanned, so the guard is keyed on exactly the text that will be
+            # printed". That reading is what a reword must not drift back to: it
+            # leaves a credential straddling the bound publishing a sub-floor head
+            # (31 of 43 characters, measured), which is why the fragment now
+            # carries the direction and the reason together.
+            # `test_the_scan_reads_the_whole_string_and_the_cut_happens_after_it`
+            # and the straddle sweep beside it are the fact side.
+            #
+            # The third is the over-claim guard, and it is the direction that has
+            # already gone wrong once: "elsewhere on the accept path" was the
+            # phrasing this branch had to narrow in three places, because
+            # `migration_loader.py` prefixes a landed migration's filename onto
+            # every `MigrationError` and `resolve_context` reaches it before
+            # `accept` runs at all (#537).
             (
-                "interpolated into a message by `application/proposal_service.py` "
-                "passes one gate: it is cut to what may be printed"
+                "Every author-derived string `application/proposal_service.py` puts "
+                "into a message passes one gate"
             ),
-            "and *then* scanned, so the guard is keyed on exactly the text that will be printed",
+            "It is scanned *whole* and then cut to what may be printed",
+            "Scan-then-cut and not the reverse",
             "and the boundary of that is one module's",
             "`theurian ingest` runs no scan",
         ),
@@ -1633,9 +1646,10 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # onto every `MigrationError` and `resolve_context` reaches it before
             # `accept` runs (#537).
             (
-                "Refusals on this path bound every author-controlled name to 200 "
-                "characters and drop it whole if the detector reports it"
+                "Refusals on this path scan every author-derived string they would "
+                "print, whole and whatever its type"
             ),
+            "either print it cut to 200 characters or drop it whole when the detector reports it",
             "over a population proved by reflection over `proposal_service.py`'s own syntax tree",
             "`migration_loader.py`'s `MigrationError` prefix, a different producer's population",
             # The build-time control (#329), on the row that enumerates what SEC-11
