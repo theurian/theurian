@@ -78,9 +78,19 @@ def _child_env(env: dict[str, str] | None, *, hermetic: bool) -> dict[str, str]:
     global config, and a checkout owned by another user -- the offline CI job runs
     as root -- is refused without it. Pinning it away there would turn the live
     canary into a silent skip (its ``origin/main`` probe answering "absent") or a
-    hard error, which is a guard that stops guarding. Five other modules in this
-    suite pass ``-c safe.directory=`` for exactly that reason. Only the two calls
-    that address the checkout these tests live in pass it.
+    hard error, which is a guard that stops guarding. Only the two calls that
+    address the checkout these tests live in take ``hermetic=False``.
+
+    Other modules pass ``-c safe.directory=<root>`` for the same reason, and the
+    count is stated with the key that reproduces it (measured 2026-09-03):
+    ``git grep -nF 'f"safe.directory=' -- packages tools
+    ':!*test_git_trailer_source.py'`` -> **3**:
+    ``tests/unit/test_dogfood_corpus_governance.py``,
+    ``tests/integration/test_root_corpus_applies.py``, and
+    ``tools/corpus_drift.py`` -- the last outside this suite. The exclusion is what
+    keeps the key reproducing its own number, since this sentence quotes it. The
+    earlier "five other modules" counted files that merely *mention*
+    ``safe.directory`` in prose, which is not the population the sentence is about.
     """
     base = env if env is not None else dict(os.environ)
     if not hermetic:
@@ -173,11 +183,14 @@ def _commit_split_date(
 def _commit_body_file(clone: Path, body_bytes: bytes, when: str = "2026-03-01T12:00:00") -> str:
     """Commit a message authored as raw bytes via ``-F`` (for RS/US byte bodies).
 
-    "Raw" reaches as far as bytes git will *keep*: measured 2026-09-03 on git
-    2.47.1, ``-F`` re-encodes a message that is not valid UTF-8 (a lone ``0x80``
-    stored as ``0xc2 0x80``) and warns. The RS/US and lone-CR bodies below are
-    ASCII, so they survive; a non-UTF-8 plant needs
-    :func:`_commit_with_raw_message` instead.
+    "Raw" reaches as far as bytes git will *keep* **under this helper's default
+    config**: measured 2026-09-03 on git 2.47.1, a plain ``-F`` re-encodes a
+    message that is not valid UTF-8 (a lone ``0x80`` stored as ``0xc2 0x80``) and
+    warns. The RS/US and lone-CR bodies below are ASCII, so they survive. A
+    non-UTF-8 plant needs either :func:`_commit_with_raw_message` (no ``encoding``
+    header at all) or :func:`_commit_under_declared_encoding`, which reaches the
+    same containment through ordinary porcelain by declaring an encoding the bytes
+    do not match.
     """
     message_file = clone / "_msg.bin"
     message_file.write_bytes(body_bytes)
@@ -186,17 +199,22 @@ def _commit_body_file(clone: Path, body_bytes: bytes, when: str = "2026-03-01T12
     return _git(clone, "rev-parse", "HEAD").strip()
 
 
-def _git_bytes(root: Path, *args: str, stdin: bytes | None = None) -> bytes:
+def _git_bytes(
+    root: Path, *args: str, stdin: bytes | None = None, env: dict[str, str] | None = None
+) -> bytes:
     """``git *args`` with its stdout left as raw bytes, optionally fed on stdin.
 
-    The text-returning :func:`_git` cannot serve the #496 fixtures at either end: a
+    The text-returning :func:`_git` cannot serve the #496 fixtures at any end: a
     hand-built commit object is written by feeding its raw bytes to ``git
-    hash-object``, and the premise that git kept those bytes verbatim is read back
-    with ``cat-file``/``log``, where decoding is the very thing under test.
+    hash-object``; the premise that git kept those bytes verbatim is read back with
+    ``cat-file``/``log``, where decoding is the very thing under test; and ``git
+    commit`` **echoes the subject it just wrote**, so committing a non-UTF-8 message
+    through :func:`_git` raises in the fixture rather than in the code under test.
 
     Always hermetic, with no opt-out: every caller addresses a repository this file
     built, so the live-checkout exemption :func:`_child_env` documents has nobody
-    to serve here.
+    to serve here. ``env`` supplies an identity or a date on top of that pinning,
+    never instead of it.
     """
     result = subprocess.run(  # noqa: S603
         ["git", *args],  # noqa: S607 - git resolved via PATH, args are test-controlled
@@ -204,7 +222,7 @@ def _git_bytes(root: Path, *args: str, stdin: bytes | None = None) -> bytes:
         check=True,
         capture_output=True,
         input=stdin,
-        env=_child_env(None, hermetic=True),
+        env=_child_env(env, hermetic=True),
     )
     return result.stdout
 
@@ -224,15 +242,21 @@ def _commit_with_raw_message(clone: Path, message: bytes, *, epoch: int = _RAW_C
     usual :func:`_publish` pushes it like any other commit (measured 2026-09-03: a
     non-UTF-8-message object pushes and fetches without complaint).
 
-    **The hand-build is the point, not an economy.** Measured on git 2.47.1
-    (2026-09-03), both ``git commit -F`` and ``git commit-tree`` RE-ENCODE a message
-    that is not UTF-8 -- a lone ``0x80`` is stored as ``0xc2 0x80`` -- and warn
-    while doing it. So the file's own :func:`_commit_body_file`, and every other
-    porcelain route, would produce a commit whose message is *valid* UTF-8 and a
-    test that proves nothing about the containment it claims to drive. Each caller
-    still asserts the premise against the object git actually stored, because a
-    fixture that quietly stops exercising the case is exactly what this helper
-    exists to prevent.
+    **The hand-build buys the no-``encoding``-header case, not the only case**
+    (#496 R1-3). Measured on git 2.47.1 (2026-09-03), the *default* ``git commit
+    -F`` and ``git commit-tree`` RE-ENCODE a message that is not UTF-8 -- a lone
+    ``0x80`` stored as ``0xc2 0x80`` -- and warn while doing it, so
+    :func:`_commit_body_file` would produce a commit whose message is *valid* UTF-8
+    and a test that proves nothing. That is not true of *every* porcelain route:
+    ``git -c i18n.commitEncoding=<enc> commit -F`` stores the bytes verbatim and
+    silently, which :func:`_commit_under_declared_encoding` uses to drive the same
+    containment from the other end. This helper stays because it is the only way to
+    plant a commit carrying **no** ``encoding`` header -- the shape an ``%B``
+    conversion has no chance to rescue.
+
+    Each caller still asserts the premise against the object git actually stored,
+    because a fixture that quietly stops exercising the case is exactly what this
+    helper exists to prevent.
     """
     tree = _git(clone, "rev-parse", "HEAD^{tree}").strip()
     parent = _git(clone, "rev-parse", "HEAD").strip()
@@ -247,6 +271,47 @@ def _commit_with_raw_message(clone: Path, message: bytes, *, epoch: int = _RAW_C
     )
     _git(clone, "update-ref", "refs/heads/main", sha)
     return sha
+
+
+def _commit_under_declared_encoding(
+    clone: Path, message: bytes, *, encoding: str, when: str = "2026-02-01T00:00:00"
+) -> str:
+    """Commit raw bytes through **ordinary porcelain**, under a declared encoding.
+
+    ``git -c i18n.commitEncoding=<enc> commit -F`` is the second route to a public
+    commit whose ``%B`` is not UTF-8, and it is the realistic one (#496 R1-3).
+    Measured 2026-09-03 on git 2.47.1, and each half matters:
+
+    - it stores the message **verbatim** under an ``encoding <enc>`` header and
+      writes **nothing to stderr** -- unlike the default ``-F``, which re-encodes
+      and warns, so nothing tells the author their bytes went in raw;
+    - on the way out git converts from that header. A declaration that *matches*
+      the bytes round-trips to UTF-8 and never reaches this adapter's containment;
+      a declaration that does **not** match fails the conversion and ``%B`` hands
+      back the stored bytes.
+
+    So the caller must pass bytes the declared encoding cannot represent -- the
+    ordinary shape of a Shift-JIS project meeting a UTF-8 contributor. Callers
+    assert that premise against what ``%B`` actually emits, exactly as the
+    hand-built plants do.
+    """
+    message_file = clone / "_declared_msg.bin"
+    message_file.write_bytes(message)
+    # `_git_bytes`, not `_git`: `git commit` echoes the subject it just wrote, so a
+    # text-decoding call would raise on the fixture's own bytes before the adapter
+    # ever saw them.
+    _git_bytes(
+        clone,
+        "-c",
+        f"i18n.commitEncoding={encoding}",
+        "commit",
+        "--allow-empty",
+        "-F",
+        str(message_file),
+        env=_date_env(when),
+    )
+    message_file.unlink()
+    return _git(clone, "rev-parse", "HEAD").strip()
 
 
 def _stored_message_of(clone: Path, sha: str) -> bytes:
@@ -983,6 +1048,71 @@ def test_a_non_utf8_commit_message_is_one_rejection_and_its_siblings_still_load(
     assert "not valid UTF-8" in rejected.reason
     assert "0x80" in rejected.reason  # the offending byte is named, so it locates
     assert "�" in rejected.raw_line  # replacement-decoded, never the raw byte
+
+
+#: The porcelain plant: CP932 (Shift-JIS) Japanese text, with the trailer's em
+#: dash left as its raw UTF-8 bytes -- U+2014 has no CP932 encoding at all, which
+#: is precisely the mixture a Shift-JIS project gets from a UTF-8 contributor. The
+#: whole message is therefore valid in *neither* encoding, so git's conversion out
+#: of the declared ``encoding CP932`` header fails and ``%B`` arrives raw.
+_MISDECLARED_CP932_MESSAGE: Final = (
+    "chore: 署名付きトークン under a declared CP932\n\n".encode("cp932")
+    + b"Review-Finding: adversarial CRITICAL \xe2\x80\x94 mis-declared, never accepted\n"
+)
+
+
+def test_a_mis_declared_commit_encoding_reaches_the_same_containment(tmp_path: Path) -> None:
+    """The containment's population includes ordinary porcelain (#496 R1-3).
+
+    The hand-built plant above proves the containment over a commit with no
+    ``encoding`` header. It also stood behind a claim that "the ordinary porcelain
+    does not produce one", and that claim is false in a way no warning surfaces:
+    ``git -c i18n.commitEncoding=CP932 commit -F`` stores the bytes **verbatim**
+    with an empty stderr, and when the declaration does not match the bytes -- a
+    Shift-JIS project taking a UTF-8 contributor's em dash -- git's conversion out
+    of the header fails and ``%B`` hands this adapter the raw bytes.
+
+    That makes the fix worth more than the narrow population said, so the route is
+    driven rather than described: the same one-rejection containment, reached
+    without a single plumbing command. The premise is asserted at both ends --
+    verbatim in the object, undecodable out of ``%B`` -- because a git that
+    converted successfully would leave this test passing over a corpus with nothing
+    wrong in it.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(
+        clone,
+        "fix: valid one (#1)",
+        "Review-Finding: security HIGH — first valid",
+        when="2026-01-01T00:00:00",
+    )
+    mis_declared = _commit_under_declared_encoding(
+        clone, _MISDECLARED_CP932_MESSAGE, encoding="CP932"
+    )
+    _commit(
+        clone,
+        "fix: valid two (#2)",
+        "Review-Finding: adversarial LOW — second valid",
+        when="2026-03-01T00:00:00",
+    )
+    _publish(clone)
+
+    stored_object = _git_bytes(clone, "cat-file", "commit", mis_declared)
+    assert b"\nencoding CP932\n" in stored_object, "the premise: git recorded the declaration"
+    assert stored_object.endswith(_MISDECLARED_CP932_MESSAGE), (
+        "the premise: porcelain stored the bytes verbatim rather than re-encoding them"
+    )
+    with pytest.raises(UnicodeDecodeError):  # the premise: %B hands them back raw
+        _stored_message_of(clone, mis_declared).decode("utf-8")
+
+    load = GitTrailerFindingSource(clone).load_findings()  # must not raise
+
+    assert [f.finding_text for f in load.accepted] == ["first valid", "second valid"]
+    assert "mis-declared, never accepted" not in [f.finding_text for f in load.accepted]
+    (rejected,) = load.rejected
+    assert rejected.commit_sha == mis_declared
+    assert "not valid UTF-8" in rejected.reason
+    assert "�" in rejected.raw_line
 
 
 def test_a_non_utf8_commit_message_is_not_reported_as_unreachable_history(

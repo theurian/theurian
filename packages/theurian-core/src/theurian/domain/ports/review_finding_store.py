@@ -135,13 +135,19 @@ class StoredRejection:
     each stated with the population it ranges over, since neither count means
     anything without one:
 
-    - ``git grep -n "RejectedTrailer(" -- packages/theurian-core/src`` -> **3**
-      construction sites, all in the git adapter, which is this column's only
-      writer. One passes a parser reason straight through; the other two build
-      their own.
-    - ``git grep -n "MalformedTrailerError(" -- packages/theurian-core/src`` ->
-      **6** sites, all in the parser, every one of them reachable through that
-      pass-through.
+    Every key below excludes this file, because a docstring that quotes a key is
+    matched by it -- which is exactly how the previous pair came to state 3 and 6
+    while returning 4 and 8.
+
+    - ``git grep -nF "RejectedTrailer(" -- packages/theurian-core/src
+      ':!*review_finding_store.py'`` -> **3** construction sites, all in the git
+      adapter, which is therefore this column's only writer. One passes a parser
+      reason straight through; the other two build their own.
+    - ``git grep -nF "raise MalformedTrailerError(" -- packages/theurian-core/src
+      ':!*review_finding_store.py'`` -> **6** raise sites, all in the parser, every
+      one of them reachable through that pass-through. Dropping the ``raise`` from
+      the key returns **7** -- the extra is the class's own definition, not a
+      seventh site.
 
     So **8 reason-producing sites**, of which **3 interpolate the offending token
     straight from the line** (``f"unknown reviewer {token!r}"``,
@@ -152,8 +158,11 @@ class StoredRejection:
     space-separated words. None of the three is otherwise bounded or sanitized.
     The other five are product-generated: three constant parser reasons, and the
     adapter's two record-level ones, which interpolate git's own ``%cI`` and a
-    ``UnicodeDecodeError``'s render (a codec name, one byte value, a position) --
-    never anything an author wrote.
+    ``UnicodeDecodeError``'s render -- a codec name, a position, and the offending
+    byte as its **hexadecimal value** (``0x80``: four ASCII characters, and the map
+    from byte to text is not injective, since every byte with that value renders
+    the same four). The byte itself never reaches the string, so what an author
+    controls here is which of 256 renders appears, not any text they wrote.
 
     A serving-slice implementer must not conclude this field is safe to render or
     index without the same untrusted-content discipline ``raw_line`` already

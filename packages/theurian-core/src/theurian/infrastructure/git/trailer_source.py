@@ -489,20 +489,31 @@ def _decode_message(raw: bytes) -> tuple[str | None, str, str]:
     forbids.
 
     **How such a commit arises**, since a passing familiarity with git suggests it
-    cannot. The causes named for the decode before #496 -- a repo-level
-    ``i18n.logOutputEncoding``, or a commit ``encoding`` header git cannot convert
-    -- are real but were not the whole set, and they left out the simplest one: a
-    message whose bytes are just not UTF-8. git stores a commit message verbatim
-    and validates nothing, so ``git hash-object -t commit --stdin --literally``
-    writes one directly, and it pushes and fetches like any other object (measured
-    2026-09-03). The ordinary porcelain does *not* produce one on git 2.47.1:
-    both ``git commit-tree`` and ``git commit -F`` re-encode a non-UTF-8 message to
-    UTF-8 -- a lone ``0x80`` was stored as ``0xc2 0x80`` -- and warn while doing it
-    (both measured 2026-09-03), which is why a fixture built with either silently
-    exercises valid UTF-8 and proves nothing. So the population is hand-built
-    objects, older or differently-configured gits, and the ``encoding``-header
-    paths -- narrow, but every one of them is a *public commit* the corpus must
-    survive.
+    cannot. git validates a commit message's *encoding* not at all -- it validates
+    other things, notably a NUL byte (see :data:`_NUL`) -- so the bytes it stores
+    are the bytes it is given, and ``git hash-object -t commit --stdin --literally``
+    writes such an object directly; it pushes and fetches like any other (measured
+    2026-09-03, git 2.47.1).
+
+    **The porcelain is in the population too, by a route that is silent** (#496
+    R1-3). The *default* porcelain is not: ``git commit -F`` and ``git commit-tree``
+    re-encode a non-UTF-8 message to UTF-8 -- a lone ``0x80`` stored as
+    ``0xc2 0x80`` -- and warn while doing it (``Warning: commit message did not
+    conform to UTF-8``), which is why a fixture built that way silently exercises
+    valid UTF-8 and proves nothing. But a **declared** encoding switches that off:
+    ``git -c i18n.commitEncoding=CP932 commit -F`` stores the bytes **verbatim**
+    under an ``encoding CP932`` header and emits **no warning at all** (measured
+    2026-09-03: stderr empty, stored message byte-identical to the input). When
+    the declaration is *right* for the bytes, git converts them back on the way out
+    and this adapter sees UTF-8. When it is **wrong** -- CP932 declared over UTF-8
+    or mixed bytes, the ordinary shape of a Shift-JIS Windows checkout that meets a
+    UTF-8 contributor -- the conversion fails and ``%B`` hands back the stored bytes
+    (both measured; the mis-declared case is what the CP932 fixture drives).
+
+    So the population is wider than "hand-built": hand-built objects, older or
+    differently-configured gits, the ``encoding``-header paths, **and a
+    mis-declared ``i18n.commitEncoding`` on ordinary porcelain** -- every one of
+    them a *public commit* the corpus must survive.
 
     The excerpt is untrusted and bounded (:data:`_UNDECODABLE_EXCERPT_BYTES`): the
     raw bytes are sliced *before* decoding and then decoded with
