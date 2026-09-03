@@ -277,9 +277,19 @@ _READER_CONTAINED: set[str] = {"migrations"}
 #: ``INDEX_POINTER_REMEDY``, and the ``self.state`` access it makes first refuses
 #: as the *directory* case. Its presence here would have passed for the wrong
 #: reason, which is why the assertion below is an equality in both directions.
+#:
+#: ``index_secret_scan`` joined on #329's merge, and the seam is worth naming: it
+#: is a hand-written classification of the helper list *as it stood*, so a helper
+#: landing from another branch is classified by whichever assertion runs rather
+#: than by a judgement. It is the same shape as ``active_index_pointer`` -- a leaf
+#: under ``state``, refused by ``_contained`` after ``self.knowledge_dir`` has
+#: been composed -- so it publishes :func:`derived_escape_remedy` and belongs
+#: here. Neither side changed production: #483's fix already answered this way for
+#: it, and only this set had not been told.
 _NAMES_A_DERIVED_ARTIFACT: set[str] = {
     "active_pointer",
     "active_index_pointer",
+    "index_secret_scan",
     "write_lock",
     "database_for",
     "findings_for",
