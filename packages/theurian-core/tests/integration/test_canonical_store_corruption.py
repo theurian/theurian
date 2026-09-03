@@ -57,7 +57,8 @@ from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
-from theurian.application.project_service import ProjectRegistry
+from theurian.application.project_service import BuildProvenance, ProjectRegistry
+from theurian.cli.commands import EXIT_STATE_ERROR
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.context import RequestContext
@@ -2468,4 +2469,264 @@ def test_a_non_iso_valid_to_refuses_rather_than_being_read_as_open_ended(
         f"Newly refusing: {sorted(refused - REFUSED_OVER_A_NON_ISO_VALID_TO)}; "
         f"no longer refusing: {sorted(REFUSED_OVER_A_NON_ISO_VALID_TO - refused)} -- a position "
         "that stopped refusing is reading a corrupt validity window as open-ended (#18)"
+    )
+
+
+# -- A second damage model: an artefact at the path, not a cell in the file ----
+#
+# Everything above damages a *cell*: the file at the state-database path is a
+# readable SQLite database, and what is wrong is a value inside it. The
+# properties below damage the **path itself** -- a directory where the database
+# should be (#484) -- which is a different failure entirely: nothing is
+# interpreted, because nothing is opened. It arrives through the same delivery
+# the cell model assumes, `.theurian/state/` being derived and git-ignored
+# (ADR-0004) and therefore force-addable past the ignore by a repository
+# contributor -- the vector `BuildProvenance`'s own docstring records -- and it
+# is met *before* the converters this file otherwise sweeps.
+#
+# They belong here rather than in a new file because the observable is the one
+# this file already measures: what a `--json` caller receives. An exception that
+# escapes a `--json` command publishes a Rich traceback carrying absolute source
+# paths and leaves the machine channel empty, which
+# `test_every_cli_failure_over_a_damaged_database_carries_a_remedy` states as the
+# hardest case for the remedy contract -- it just could not reach this one,
+# because its sweep damages cells and a directory is not a cell.
+
+
+@dataclass(frozen=True, slots=True)
+class Published:
+    """Everything one ``--json`` invocation put in front of a caller.
+
+    ``traceback`` is empty when the command returned through its own exit path
+    and holds :func:`_rendered_traceback`'s text when an exception escaped --
+    the same device :func:`_invoke` uses, kept as a separate field here because
+    these properties assert on *whether* one escaped, not only on what it said.
+    ``typer.Exit`` arrives as ``SystemExit`` and is a normal return, not an
+    escape.
+    """
+
+    code: int
+    stdout: str
+    stderr: str
+    traceback: str
+
+
+def _publish(*args: str) -> Published:
+    """Run one ``--json`` command and record every channel it wrote to."""
+    result = runner.invoke(app, [*args, "--json"])
+    escaped = result.exception
+    if isinstance(escaped, SystemExit):
+        escaped = None
+    return Published(
+        code=result.exit_code,
+        stdout=result.stdout or "",
+        stderr=result.stderr or "",
+        traceback="" if escaped is None else _rendered_traceback(escaped),
+    )
+
+
+def _error_envelope(published: Published) -> dict[str, Any] | None:
+    """The ``{"error", "remedy"}`` document a failing ``--json`` command owes.
+
+    Read over stdout **and** stderr together rather than over one of them, the
+    same way :func:`_published_remedy` is. ``_fail`` writes the envelope to
+    stderr and keeps stdout a clean machine channel, and that split is a
+    decision this property has no business re-litigating: what it asserts is
+    that a caller who reads the command's output gets one parseable document
+    and not a traceback. A command that published the envelope on stdout
+    instead would still satisfy this; one that published nothing anywhere, or
+    published prose, would not.
+    """
+    try:
+        payload = json.loads(published.stdout + published.stderr)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _plant_a_directory_at_the_state_database_path(corpus: Corpus) -> None:
+    """The other artefact-at-the-path damage: a directory, inside the root.
+
+    Deliberately *not* an escape. It sits at exactly the path
+    `database_for` computes, so containment passes and `database.exists()` is
+    true -- the command gets all the way to `sqlite3.connect`, which refuses a
+    directory with `OperationalError: unable to open database file`. That is the
+    filesystem/driver fault class, reached without any of the containment
+    machinery #483 is about.
+    """
+    corpus.database.unlink()
+    corpus.database.mkdir()
+
+
+def _state_hash_of(corpus: Corpus) -> str:
+    """The state hash the corpus was built at, read out of its own file.
+
+    From `schema_metadata` through a plain `sqlite3` connection, and from the
+    *pristine* copy so it answers the same after the live path has been replaced
+    by a directory. Deliberately not asked of the CLI or of the active pointer:
+    it is read as a **precondition** on the branch a test is about to take, and a
+    precondition that asks the code under test where it thinks it is would be
+    satisfied by the same defect it guards against.
+    """
+    connection = sqlite3.connect(corpus.pristine)
+    try:
+        row = connection.execute("SELECT state_hash FROM schema_metadata WHERE id = 1").fetchone()
+    finally:
+        connection.close()
+    assert row is not None, "the corpus database holds no schema_metadata row to read"
+    return str(row[0])
+
+
+def test_migrate_status_answers_a_directory_at_the_state_database_path_with_an_envelope(
+    corpus: Corpus,
+) -> None:
+    """Issue #484. `migrate status`'s `except` list omits the filesystem/driver class.
+
+    The `try` around `write_transaction` catches `MigrationChecksumMismatchError`
+    and `TheurianError`. `sqlite3.connect` raises `sqlite3.OperationalError`,
+    which is neither, so a fault opening the file -- a directory at the path here,
+    a permission or a filesystem fault in the field -- escapes as a traceback and
+    leaves stdout empty under `--json`. `migrate apply` already carries the
+    backstop this one lacks (#478); the sibling below is that precedent, measured
+    on the same input.
+
+    The families: **an error that fires for one input and not another**, since the
+    same command answers `stateBuilt: true` over a real database; **a state
+    artefact planted at a governed path**, the git-ignored `.theurian/state/` an
+    ADR-0004 doctored delivery can populate; and **a published field**, the
+    absolute source paths a Rich traceback prints in place of the envelope.
+
+    Asserted on the exit code as well as the envelope, because
+    "did not crash" is not the contract: a filesystem fault under the state
+    database is a state error, and `EXIT_STATE_ERROR` is what every other refusal
+    on this path already reports. The constant is imported rather than written as
+    `4`, so a renamed code moves this assertion with it while still asserting the
+    *observed* code equals the *published* one.
+    """
+    _plant_a_directory_at_the_state_database_path(corpus)
+
+    published = _publish("migrate", "status")
+
+    assert published.traceback == "", (
+        "`migrate status` answered a directory at the state-database path with an "
+        "uncaught exception, which reaches an operator as a Rich traceback and a "
+        f"caller as an empty document: {published.traceback}"
+    )
+    envelope = _error_envelope(published)
+    assert envelope is not None, (
+        f"`migrate status` published no JSON envelope: stdout={published.stdout!r} "
+        f"stderr={published.stderr!r}"
+    )
+    assert (published.code, bool(envelope.get("remedy"))) == (EXIT_STATE_ERROR, True), (
+        f"a filesystem fault under the state database must be reported as a state "
+        f"error carrying a next action; got exit {published.code} and {envelope}"
+    )
+
+
+def test_migrate_apply_answers_the_same_directory_with_an_envelope_when_it_built_no_state(
+    corpus: Corpus,
+) -> None:
+    """Issue #478's backstop, the precedent #484's fix mirrors. GREEN before and after.
+
+    `migrate apply` wraps its discard/create section in `except (OSError,
+    sqlite3.Error)`, so the identical planted directory is answered with a clean
+    envelope instead of a traceback. Pinned here beside the `migrate status` case
+    so the two are read together: one command in this pair already honours the
+    `--json` contract over a filesystem fault, and the difference between them is
+    an `except` list.
+
+    **The configuration is load-bearing and is the reason this is not a copy of
+    `test_migrate_apply_lock_confinement.py`'s directory case.** That file plants
+    the directory in a project that has never applied, where the section-A
+    backstop is reached through `_discard_untrusted_state`. Here the corpus *has*
+    applied, so the provenance record is removed first to put the command back on
+    the same branch -- which is not a contrivance but the ADR-0004 doctored-state
+    vector itself: an artefact under git-ignored `.theurian/state/` that this
+    installation did not build.
+
+    **One of a pair, and the pair is what states the class.** Which section of
+    `migrate apply` meets the planted directory is decided by the provenance
+    record, so a test at one setting of it measures one branch and says nothing
+    about the other -- and the two branches had different answers. The
+    provenanced setting is
+    :func:`test_migrate_apply_answers_the_same_directory_with_an_envelope_when_it_built_the_state`
+    below; together they quantify over both configurations a shipped `migrate
+    apply` can be in when it meets this input.
+    """
+    BuildProvenance.for_registry(corpus.registry).path.unlink()
+    _plant_a_directory_at_the_state_database_path(corpus)
+
+    published = _publish("migrate", "apply")
+
+    assert published.traceback == "", (
+        f"the #478 backstop no longer catches the filesystem fault it was written "
+        f"for: {published.traceback}"
+    )
+    envelope = _error_envelope(published)
+    assert envelope is not None, (
+        f"`migrate apply` published no JSON envelope: stdout={published.stdout!r} "
+        f"stderr={published.stderr!r}"
+    )
+    assert (published.code, bool(envelope.get("remedy"))) == (EXIT_STATE_ERROR, True), (
+        f"got exit {published.code} and {envelope}"
+    )
+
+
+def test_migrate_apply_answers_the_same_directory_with_an_envelope_when_it_built_the_state(
+    corpus: Corpus,
+) -> None:
+    """Issue #484's second face: the transaction section carries no such backstop.
+
+    The same command, the same planted directory, one bit of state different --
+    and a different `except` chain meets it. `migrate apply` re-asks
+    `provenance.has_state` once it holds the lock: with **no** record it takes
+    the discard/create section, whose `except (OSError, sqlite3.Error)` (#478)
+    answers cleanly, which is the arm above. With a record -- an ordinary
+    project that has applied before, which is every project after its first run
+    -- both `_discard_untrusted_state` and `create_database` are skipped, and the
+    directory is met by `sqlite3.connect` inside `apply_migration_set`. The `try`
+    around it catches `MigrationChecksumMismatchError`, `RevisionConflictError`,
+    `UnenforceableScopeError`, `MigrationError` and `TheurianError`; a
+    `sqlite3.OperationalError` is none of them, so it escapes as a traceback with
+    nothing on the machine channel.
+
+    **Same root cause as the `migrate status` case, not a lookalike.** Both are a
+    lock-held write in a `--json` command whose `except` list omits the
+    filesystem/driver class, so a fix that closes one by widening the chain
+    around a `write_transaction` closes the other the same way. Sections A and B
+    of this command already carry that backstop; the transaction section between
+    them does not.
+
+    **The precondition is asserted, not assumed.** Whether this test reaches the
+    transaction section at all depends entirely on the provenance record, and if
+    it did not, the command would take the discard branch and this test would
+    pass for the wrong reason -- a second copy of the arm above wearing a
+    different name. So `has_state` is read before the damage is planted and
+    required to be true.
+    """
+    provenance = BuildProvenance.for_registry(corpus.registry)
+    assert provenance.has_state(corpus.root, str(_state_hash_of(corpus))), (
+        "this corpus's state is not on the provenance record, so `migrate apply` "
+        "would take the discard/create branch and this test would measure #478's "
+        "backstop a second time rather than the transaction section"
+    )
+
+    _plant_a_directory_at_the_state_database_path(corpus)
+
+    published = _publish("migrate", "apply")
+
+    assert published.traceback == "", (
+        "`migrate apply` answered a directory at the state-database path with an "
+        "uncaught exception once the state was already on the provenance record, "
+        "so the transaction section has no backstop where sections A and B do: "
+        f"{published.traceback}"
+    )
+    envelope = _error_envelope(published)
+    assert envelope is not None, (
+        f"`migrate apply` published no JSON envelope: stdout={published.stdout!r} "
+        f"stderr={published.stderr!r}"
+    )
+    assert (published.code, bool(envelope.get("remedy"))) == (EXIT_STATE_ERROR, True), (
+        f"a filesystem fault under the state database must be reported as a state "
+        f"error carrying a next action; got exit {published.code} and {envelope}"
     )

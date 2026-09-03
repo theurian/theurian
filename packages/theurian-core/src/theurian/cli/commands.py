@@ -170,6 +170,24 @@ STATE_REBUILD_REMEDY: Final = (
     "Git-tracked migrations. Nothing authored is lost."
 )
 
+#: Cure for an OS or driver fault met *at* the state database -- the class
+#: ``(OSError, sqlite3.Error)`` names and ``StateDatabaseUnreadableError`` does
+#: not, because nothing was interpreted: the file was never opened (#484). A
+#: directory sitting at the path an ADR-0004 doctored `.theurian/state/` can
+#: deliver, an unwritable state area, a filesystem whose locking the driver
+#: refuses.
+#:
+#: Composed from :data:`STATE_REBUILD_REMEDY` rather than restating it, so the
+#: sentence that deletes something has one spelling in this module. The
+#: precondition leads and the rebuild trails, the shape
+#: ``FindingsStoreError``'s write remedy and ``_LOCK_ACQUIRE_REMEDY`` both take:
+#: a cure that opens with "delete your state" for what may be a read-only
+#: permissions problem sends the reader past the thing that is actually wrong.
+_STATE_DATABASE_FAULT_REMEDY: Final = (
+    "Check that `.theurian/state/` is writable, on a supported filesystem (not NFS; "
+    f"ADR-0018), and holds a state database rather than something else. {STATE_REBUILD_REMEDY}"
+)
+
 #: Cure for `UnenforceableScopeError` when the offending revision has not yet
 #: been applied (issue #63). Editing the migration file is unconditionally
 #: safe here: nothing has recorded a checksum for it, so nothing can trip
@@ -1268,6 +1286,25 @@ def migrate_status(as_json: JsonOption = False) -> None:
     except TheurianError as exc:
         _fail(str(exc), remedy=_state_remedy(exc), as_json=as_json, code=EXIT_STATE_ERROR)
         return
+    except (OSError, sqlite3.Error) as exc:
+        # The backstop `migrate apply`'s section A has carried since #478 and
+        # this command did not (#484). `_prepare` converts what it can, but it
+        # only runs once `sqlite3.connect` has *returned* -- a fault opening the
+        # file at all is a bare `sqlite3.OperationalError` or `OSError`, neither
+        # of which is a `TheurianError`, so it escaped `--json` as a Rich
+        # traceback carrying absolute source paths with nothing on the machine
+        # channel. Measured with a directory planted at the state-database path,
+        # which is the artefact an ADR-0004 doctored `.theurian/state/` delivers.
+        #
+        # Nothing is cleaned up here, unlike section A: this command creates no
+        # database and never owns the file it failed to open.
+        _fail(
+            str(exc),
+            remedy=_STATE_DATABASE_FAULT_REMEDY,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
 
     _emit(
         {
@@ -1535,6 +1572,37 @@ def migrate_apply(  # noqa: PLR0911 -- one early return per distinguishable fail
                 return
             except TheurianError as exc:
                 _fail(str(exc), remedy=_state_remedy(exc), as_json=as_json, code=EXIT_STATE_ERROR)
+                return
+            except (OSError, sqlite3.Error) as exc:
+                # The backstop sections A and B carry and the section between
+                # them did not (#484). Which section meets a filesystem fault at
+                # the database is decided by the provenance record: with none,
+                # `_discard_untrusted_state`/`create_database` meet it in section
+                # A; with one -- every project after its first apply -- both are
+                # skipped and `sqlite3.connect` inside `apply_migration_set` meets
+                # it here, where a `sqlite3.OperationalError` is none of the five
+                # clauses above and escaped `--json` as a Rich traceback.
+                #
+                # **No cleanup, deliberately, and that is the difference from
+                # section A.** Section A unlinks because `create_database` may
+                # have left a file it wrote part of. Here the database is very
+                # often one that already existed and that this installation built
+                # and provenanced -- `created` is False for it -- and deleting a
+                # live state because an unrelated fault interrupted a write would
+                # turn a failed command into data loss, with `active.json` still
+                # naming the hash it removed. The `created is True` residue needs
+                # no branch of its own either: `_open_transaction` has already
+                # rolled the transaction back and closed the connection, so what
+                # survives is exactly what `create_database` wrote -- a valid,
+                # empty database, unprovenanced (section B never ran) and
+                # unpublished, which the serve-side gate stands aside and the
+                # next apply's own discard branch removes.
+                _fail(
+                    str(exc),
+                    remedy=_STATE_DATABASE_FAULT_REMEDY,
+                    as_json=as_json,
+                    code=EXIT_STATE_ERROR,
+                )
                 return
 
             # -- Section B: record BEFORE publish -----------------------------
