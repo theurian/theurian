@@ -531,9 +531,12 @@ class WriteLock:
         and ``mkdir`` and ``open`` are two calls: an attacker who rewrites a
         prefix component between them defeats the ordering above, and two writers
         racing that rewrite take locks on two different files rather than
-        contending for one. Closing it needs ``openat`` against a directory
-        descriptor opened with ``O_NOFOLLOW`` at every level, which this class
-        does not do.
+        contending for one. The refusal also misdescribes itself in that race: an
+        ``ELOOP`` produced by the rewritten *prefix* is translated below as a
+        symbolic link at the final component, so the error names the lock file
+        while the culprit is a directory above it. Closing both needs ``openat``
+        against a directory descriptor opened with ``O_NOFOLLOW`` at every level,
+        which this class does not do.
 
         **A contained prefix link relocates the lock, and that is allowed.** With
         ``.theurian/runtime`` a symlink to another directory *inside* the tree,

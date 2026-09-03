@@ -174,24 +174,42 @@ STATE_REBUILD_REMEDY: Final = (
 #: ``(OSError, sqlite3.Error)`` names and ``StateDatabaseUnreadableError`` does
 #: not (#484).
 #:
-#: **What reaches it, measured rather than reasoned.** The two clauses that
+#: **What reaches it, measured rather than reasoned -- and this paragraph has now
+#: been wrong twice, so it names its configurations.** The two clauses that
 #: publish this wrap a whole ``write_transaction`` call, so their reach is every
-#: statement inside it and not the open alone -- an earlier draft of this comment
-#: said "the file was never opened", and the contention fault below arrived after
-#: the open, after ``_prepare`` and after ``BEGIN IMMEDIATE``, which is what
-#: falsified it. The members measured on this branch are open-time: a directory
-#: sitting at the path an ADR-0004 doctored `.theurian/state/` can deliver, and a
-#: state directory the process cannot write, both of which fail in
-#: ``sqlite3.connect`` itself -- outside ``_prepare``'s conversion, which is why
-#: they arrive as the driver's own ``SQLITE_CANTOPEN`` rather than as
-#: ``StateDatabaseUnreadableError``.
+#: statement inside it and not the open alone; an earlier draft said "the file was
+#: never opened", which the contention fault falsified by arriving after the open.
+#: The draft that replaced it then offered *an unwritable state directory* as a
+#: measured member, and that is false in every configuration. Measured
+#: 2026-09-03 against the real CLI, one row per configuration of
+#: `.theurian/state/`:
+#:
+#: * **directory 0555, database present** -- the connect succeeds and ``PRAGMA
+#:   journal_mode = WAL`` fails trying to create the sidecars, so ``_prepare``
+#:   converts it and ``STATE_REBUILD_REMEDY`` is published, not this constant.
+#: * **directory 0555, never applied** -- ``migrate status`` exits 0 (there is no
+#:   database to open) and ``migrate apply`` is answered by section A's
+#:   ``_LOCKED_WRITE_FAULT_REMEDY``.
+#: * **database file 0000** -- ``sqlite3.connect`` itself fails, outside
+#:   ``_prepare``'s conversion, and *this* constant is published. This is the
+#:   honest second member: a state database **file** the process cannot open.
+#: * **a directory at the database path** -- the same, and the arm the suite
+#:   drives.
+#:
+#: So both measured members are open-time failures of ``sqlite3.connect`` that
+#: arrive as the driver's own ``SQLITE_CANTOPEN``. The unwritable-*directory*
+#: cases land in the three other places above; that they are graded three
+#: different ways is recorded on #530, not settled here.
 #:
 #: **What must never reach it is a transient fault**, and that is now structural
 #: rather than a matter of wording here: a write conflict is converted at its
 #: source into ``WriteTransactionBusyError``, a ``TheurianError`` caught by the
-#: clause *above* each of these, carrying a wait-and-retry cure. This constant
-#: instructs deleting derived state, so every fault that keeps it has to be one
-#: that leaves the state genuinely unusable.
+#: clause *above* each of these, carrying a wait-and-retry cure. Both places a
+#: conflict can surface before a caller's own statements are covered -- the
+#: pragmas and schema read inside ``_prepare``, and ``BEGIN IMMEDIATE``/``COMMIT``
+#: in ``_open_transaction``. This constant instructs deleting derived state, so
+#: every fault that keeps it has to be one that leaves the state genuinely
+#: unusable.
 #:
 #: Composed from :data:`STATE_REBUILD_REMEDY` rather than restating it, so the
 #: sentence that deletes something has one spelling in this module. The
