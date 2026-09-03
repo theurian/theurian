@@ -66,6 +66,7 @@ from theurian.domain.enums import Sensitivity, may_disclose, may_surface
 from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import ItemId, ProjectId
 from theurian.domain.knowledge import (
+    KnowledgeRelation,
     SourceAnchor,
     authored_anchor_strings,
     served_content_hash,
@@ -630,6 +631,21 @@ def _anchor_secrets(
     return tuple(findings)
 
 
+def _both_ends_visible(relation: KnowledgeRelation, visible: Container[str]) -> bool:
+    """Whether this deployment would publish ``relation`` at all.
+
+    The rule ``mcp.tools._relation_is_visible`` enforces on the serve side, asked
+    of the set the build's own walk produced rather than of a second read: an
+    endpoint that cleared ``may_surface`` and ``may_disclose`` is in ``visible``,
+    and one the corpus does not hold is not. **Both** ends, because
+    ``list_relations`` answers in the stored orientation for every
+    non-invertible type -- so an incoming edge from a withheld item arrives with
+    the *fetched* item as its target, and a gate on the target alone would look
+    up the item the caller already holds and publish the row.
+    """
+    return relation.source_item_id.value in visible and relation.target_item_id.value in visible
+
+
 def _relation_secrets(
     store: IndexBuildSession,
     context: RequestContext,
@@ -655,20 +671,46 @@ def _relation_secrets(
     costs no second read; an endpoint absent from the corpus is absent from the
     set, so a dangling edge is withheld rather than scanned.
 
+    **The index is a position in the published list, so the gate runs before the
+    ``enumerate`` and not inside it.** ``knowledge.get`` emits the gate-cleared
+    subsequence; a build that numbered the *store's* sequence and skipped as it
+    went reported an index one too high for every withheld edge sorting earlier --
+    which is not an overrun but a *misdirection*, because there is usually a
+    published row at that index. Measured 2026-09-03 (round 2, adversarial): with
+    one gated edge sorting first, the finding named ``relations[1]`` while the
+    credential sat at published ``relations[0]`` and ``relations[1]`` was a benign
+    note. A reader following the location read the wrong edge and concluded the
+    report was wrong. A note-less edge is published too, so it takes a position
+    here even though it is never scanned.
+
     **Each authored edge is scanned once.** ``list_relations`` answers from both
     ends and mirrors the four invertible types, so an edge between two indexed
     items arrives twice under two orientations. Keyed on the unordered pair and
     the note, the second sighting is the same author's string in the same place;
     reporting it again would spend the build's budget on one value twice and read
     as two credentials. First sighting wins, and the walk order is the corpus's.
+
+    That key is coarser than "the same edge", and the difference is recorded
+    rather than closed: two *different* edges between one pair of items carrying
+    the identical note -- ``a --depends_on--> b`` and ``a --related_to--> b``, say
+    -- are one finding, naming whichever the walk reached first. Both carry the
+    same credential in the same words, so nothing is unreported; what a reader
+    does not learn is that a second edge also has to go. Widening the key to the
+    relation type would report the value twice, which the paragraph above rejects
+    for the mirrored case; the remedy's "remove the relation" applies to each.
     """
     findings: list[IndexedSecretFinding] = []
     seen: set[tuple[str, str, str]] = set()
     for item_id in indexed:
-        for index, relation in enumerate(store.list_relations(context, ItemId(item_id))):
-            source, target = relation.source_item_id.value, relation.target_item_id.value
-            if relation.note is None or source not in visible or target not in visible:
+        published = [
+            relation
+            for relation in store.list_relations(context, ItemId(item_id))
+            if _both_ends_visible(relation, visible)
+        ]
+        for index, relation in enumerate(published):
+            if relation.note is None:
                 continue
+            source, target = relation.source_item_id.value, relation.target_item_id.value
             key = (min(source, target), max(source, target), relation.note)
             if key in seen:
                 continue

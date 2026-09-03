@@ -114,14 +114,27 @@ _VAULT_MIGRATION_ID = "01K1GGGGGG01234567890ABCDE"
 
 
 def _migration(  # noqa: PLR0913, PLR0917 -- one argument per migration field
-    migration_id: str, item: str, revision: str, title: str, status: str, body: str
+    migration_id: str,
+    item: str,
+    revision: str,
+    title: str,
+    status: str,
+    body: str,
+    anchors: tuple[str, ...] = (),
 ) -> str:
     """One item, one revision, written by hand into the migrations directory.
 
     Deliberately not produced by ``propose accept``: the population this file is
     about is content the approval gate never saw.
+
+    ``anchors`` replaces the single default anchor with one entry per given
+    ``sourceUri``, which is how a case pins the *index* in
+    ``sourceAnchors[n].sourceUri`` rather than only the field name -- a location
+    that is always ``[0]`` is a location no fixture can catch pinned to zero.
     """
     filename = f"{item.split('.', 1)[1]}.md"
+    uris = anchors or (f"git://demo/{filename}",)
+    published = "\n".join(f"        - provider: git\n          sourceUri: {uri}" for uri in uris)
     return f"""apiVersion: theurian.dev/v1
 id: {migration_id}
 createdAt: 2026-09-03T10:00:00+09:00
@@ -146,8 +159,7 @@ operations:
       owner: platform-team
       trustLevel: reviewed
       sourceAnchors:
-        - provider: git
-          sourceUri: git://demo/{filename}
+{published}
 """
 
 
@@ -443,6 +455,168 @@ def test_a_credential_in_a_relation_note_is_caught_and_never_echoed(bare: Path) 
     ):
         assert PLANTED not in text, f"{name} echoed the credential from the relation note"
         assert quoted not in text, f"{name} quotes past the published redaction bound"
+
+
+#: Three edges from one item, ordered by ``list_relations``'s
+#: ``(source_item_id, relation_type, target_item_id)``: ``contradicts`` first,
+#: then ``depends_on``, then ``related_to``. The **first** is withheld -- its far
+#: end is a draft -- and the credential is on the **last**, so the store's index
+#: for it is 2 and the published one is 1.
+#:
+#: **Both numbers are wrong answers, and they are wrong in different ways**, which
+#: is why the fixture needs all three edges:
+#:
+#: * a build numbering the store's own sequence answers 2, which is past the end
+#:   of the two-row list ``knowledge.get`` publishes -- and with one more
+#:   published edge after it, that same off-by-one lands on a real, benign row
+#:   instead, which is the misdirection round 2 measured;
+#: * a build that pinned the channel to ``relations[0]`` answers 0, which is the
+#:   benign ``depends_on`` row. Every one-edge fixture is green against that.
+_ORDERED_EDGES_MIGRATION_ID = "01K1JJJJJJ01234567890ABCDE"
+_BENIGN_NOTE = "a benign note on a published edge, carrying no credential at all"
+_ORDERED_EDGES = f"""apiVersion: theurian.dev/v1
+id: {_ORDERED_EDGES_MIGRATION_ID}
+createdAt: 2026-09-03T12:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: addRelation
+    sourceItemId: {CLEAN_ITEM}
+    relationType: contradicts
+    targetItemId: {DRAFT_ITEM}
+    note: "gated: the far end is a draft, so knowledge.get withholds this row"
+  - op: addRelation
+    sourceItemId: {CLEAN_ITEM}
+    relationType: depends_on
+    targetItemId: {DIRTY_ITEM}
+    note: "{_BENIGN_NOTE}"
+  - op: addRelation
+    sourceItemId: {CLEAN_ITEM}
+    relationType: related_to
+    targetItemId: {_VAULT_ITEM}
+    note: "rotation runbook lives behind {PLANTED}"
+"""
+
+
+async def _relations_of(data_dir: Path, item_id: str) -> list[dict[str, Any]]:
+    """What ``knowledge.get`` publishes under ``relations`` -- the reader's list.
+
+    Unwrapped the way every other MCP-touching case here does: the structured
+    payload when the server produced one, and the text block parsed when it did
+    not. ``result`` is deliberately ``Any`` -- the SDK's return is a union whose
+    other arms carry neither ``content`` nor ``text``, and narrowing it here would
+    be a type assertion about a library rather than about this test.
+    """
+    server = build_server(ProjectRegistry.default(data_dir), None)
+    result: Any = await server.call_tool("knowledge.get", {"projectId": "demo", "itemId": item_id})
+    structured = getattr(result, "structuredContent", None)
+    payload = dict(structured) if structured is not None else json.loads(result.content[0].text)
+    return [dict(row) for row in payload["relations"]]
+
+
+def test_a_relation_findings_index_names_the_row_the_reader_will_open(
+    bare: Path, tmp_path: Path
+) -> None:
+    """The location is a position in the *published* list, or it is a wrong answer.
+
+    ``IndexedSecretFinding`` promises the index resolves against what the serving
+    surface publishes. ``list_relations`` returns the store's own sequence and
+    ``knowledge.get`` publishes the gate-cleared subsequence of it, so a build
+    that numbered the former handed the reader an index into a list they cannot
+    see -- and with a withheld edge sorting first, that index landed on a real
+    published row carrying nothing (:data:`_ORDERED_EDGES`).
+
+    This asserts the finding's own number *and* what the reader finds by
+    following it, because the number alone is green against a fixture whose two
+    numberings happen to agree. :data:`_ORDERED_EDGES` records why the answer has
+    to be neither 0 nor the store's own 2.
+    """
+    _corpus(bare, dirty=CLEAN_BODY.replace("Authentication", "Rotation"))
+    for filename, item, migration_id, revision, status in (
+        (
+            "unreleased-keys.md",
+            DRAFT_ITEM,
+            _DRAFT_MIGRATION_ID,
+            "01K1CREVCC01234567890ABCDE",
+            "draft",
+        ),
+        (
+            "vault-keys.md",
+            _VAULT_ITEM,
+            _VAULT_MIGRATION_ID,
+            "01K1GREVGG01234567890ABCDE",
+            "approved",
+        ),
+    ):
+        (bare / ".theurian/knowledge/architecture" / filename).write_text(
+            CLEAN_BODY, encoding="utf-8"
+        )
+        (bare / f".theurian/migrations/{migration_id}-extra.yaml").write_text(
+            _migration(migration_id, item, revision, f"Extra {item[-3:]}", status, CLEAN_BODY),
+            encoding="utf-8",
+        )
+    (bare / f".theurian/migrations/{_ORDERED_EDGES_MIGRATION_ID}-edges.yaml").write_text(
+        _ORDERED_EDGES, encoding="utf-8"
+    )
+    _must(bare, "migrate", "apply")
+
+    code, payload = _in(bare, "index", "build")
+
+    assert code == 6, payload
+    note_lines = [line for line in _findings(payload) if ":relations[" in line]
+    assert len(note_lines) == 1, f"expected exactly one relation-note finding: {note_lines}"
+    reported = int(note_lines[0].split("relations[", 1)[1].split("]", 1)[0])
+
+    published = asyncio.run(_relations_of(tmp_path / "datadir", CLEAN_ITEM))
+    assert len(published) == 2, (
+        f"the withheld edge is not being withheld, so the two numberings agree and "
+        f"this case cannot fail: {published}"
+    )
+    assert reported < len(published), (
+        f"the reported index {reported} is past the end of the {len(published)}-row list "
+        f"`knowledge.get` publishes"
+    )
+    assert PLANTED in (published[reported]["note"] or ""), (
+        f"a reader following relations[{reported}] lands on {published[reported]!r}, "
+        f"which is not the note that was reported -- the misdirection this pins"
+    )
+    assert reported != 0, (
+        "the fixture no longer puts the credential past the first published row, so a "
+        "channel pinned to `relations[0]` would satisfy the assertion above"
+    )
+
+
+def test_an_anchor_findings_index_names_the_anchor_that_carries_it(bare: Path) -> None:
+    """The same claim on the other channel, where a one-anchor fixture proves nothing.
+
+    Every other fixture here carries a single source anchor, so a build that
+    published ``sourceAnchors[0]`` unconditionally satisfies all of them. The
+    credential goes on the **second** of two, which is the only shape that tells
+    the enumeration apart from a constant.
+    """
+    _corpus(bare, dirty=CLEAN_BODY.replace("Authentication", "Rotation"))
+    (bare / f".theurian/migrations/{_DIRTY_MIGRATION_ID}-legacy.yaml").write_text(
+        _migration(
+            _DIRTY_MIGRATION_ID,
+            DIRTY_ITEM,
+            "01K1BREVBB01234567890ABCDE",
+            "Legacy key rotation",
+            "approved",
+            CLEAN_BODY.replace("Authentication", "Rotation"),
+            anchors=(
+                "git://demo/legacy-keys.md",
+                f"https://oauth2:{PLANTED}@github.example/org/repo.git",
+            ),
+        ),
+        encoding="utf-8",
+    )
+    _must(bare, "migrate", "apply")
+
+    code, payload = _in(bare, "index", "build")
+
+    assert code == 6, payload
+    assert [line.split(": ", 1)[0] for line in _findings(payload)] == [
+        f"{DIRTY_ITEM}:sourceAnchors[1].sourceUri:1:16"
+    ], f"the anchor index does not name the anchor the credential is on: {_findings(payload)}"
 
 
 def test_a_note_on_an_edge_to_a_withheld_item_is_neither_scanned_nor_counted(bare: Path) -> None:
