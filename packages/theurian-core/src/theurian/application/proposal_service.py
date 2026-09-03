@@ -2363,21 +2363,34 @@ class ProposalService:
         that *a* file is a FIFO and never which one. Reproduced through the real
         CLI as a ``propose accept --json`` payload naming no path at all.
 
-        What is attached is ``path`` made project-relative -- and ``path`` is
-        Theurian's own construction, never an authored string: a ULID proposal
-        directory joined with either a name ``iterdir()`` returned, the constant
-        ``evidence.json``, or the normalized ``knowledge/`` tail
-        :meth:`_body_moves` obtained from :meth:`_destination_of`, which resolved
-        it and proved containment first. It is the identical string
-        :meth:`_reject_symlink_in_chain` already prints for this same file, so it
-        opens no echo the accept path did not already have.
+        What is attached is ``path`` made project-relative, and **that is
+        Theurian's own construction only down to the leaf** -- the sentence here
+        used to say "never an authored string", which round one falsified. A
+        ULID proposal directory joined with a name ``iterdir()`` returned, or
+        with the constant ``evidence.json``, is entirely ours; the third case is
+        not. The ``knowledge/`` tail :meth:`_body_moves` obtains from
+        :meth:`_destination_of` has been *resolved* and proved contained, and
+        resolution normalizes a path without renaming its components: an author's
+        ``contentFile: ../knowledge/<credential>.md`` arrives here with the
+        credential intact, and a FIFO at that path published it
+        character-for-character in both halves of the CP-2 payload. Containment
+        is not provenance, and a check that proves where a string points says
+        nothing about who chose its characters.
+
+        So the leaf goes through the gate every other author-derived string in
+        this module goes through (#360), and what is attached is the gated form.
+        ``IrregularSourceFileError`` quotes what it is given, so :func:`_plain`
+        rather than :func:`_one_name`: the constructor's own ``{referrer!r}`` is
+        the quoting.
         """
         self._reject_symlink_in_chain(path)
         relative = PurePosixPath(path.relative_to(self._paths.root))
         try:
             return read_source_file(self._paths.root, relative)
         except IrregularSourceFileError as exc:
-            raise IrregularSourceFileError(exc.shape, referrer=relative.as_posix()) from exc
+            raise IrregularSourceFileError(
+                exc.shape, referrer=_plain(relative.as_posix(), _MAX_NAME_CHARS, _REDACTED_NAME)
+            ) from exc
 
     def _reject_symlink_in_chain(self, path: Path) -> None:
         """Refuse ``path`` if any component below the project root is a symlink.
@@ -2691,10 +2704,12 @@ class ProposalService:
         ``referrer`` at all, so ``accept`` published "The referenced file is a
         named pipe (FIFO), not a regular file" naming no path -- the identical
         CP-2 shape :meth:`_read_within_project` was fixed to stop. ``relative``
-        is safe to attach: it is Theurian's own project-relative construction
-        from ``move.destination``, resolved and proved contained by
-        :meth:`_destination_of` before ``_commit`` ever runs, never an
-        author-controlled string. :class:`~theurian.domain.errors.InputTooLargeError`
+        is attached **through the gate**, for the reason
+        :meth:`_read_within_project` now records at length: it is built from
+        ``move.destination``, which :meth:`_destination_of` resolved and proved
+        contained, and containment is not provenance -- the leaf is still the
+        spelling the author's ``contentFile`` chose.
+        :class:`~theurian.domain.errors.InputTooLargeError`
         needs no matching clause -- its constructor takes no path at all, the
         same as every other size-cap raise on this path -- and an unattached
         :class:`~theurian.domain.errors.PathEscapeError` here stays generic
@@ -2713,7 +2728,8 @@ class ProposalService:
                         restored_bytes = read_source_file(self._paths.root, relative)
                     except IrregularSourceFileError as exc:
                         raise IrregularSourceFileError(
-                            exc.shape, referrer=relative.as_posix()
+                            exc.shape,
+                            referrer=_plain(relative.as_posix(), _MAX_NAME_CHARS, _REDACTED_NAME),
                         ) from exc
                     restored.append((move.destination, restored_bytes))
                 else:
@@ -3082,6 +3098,24 @@ def _bounded(text: str, limit: int) -> str | None:
     return text[:limit]
 
 
+def _plain(text: str, limit: int, withheld: str) -> str:
+    """One untrusted string, gated, for a caller that does its own quoting.
+
+    :func:`_one_name`'s sibling and the *unquoted* half of one gate. The two
+    differ in exactly one thing -- whether the result is wrapped in ``repr`` and
+    where the truncation marker then sits -- and share :func:`_bounded`, so a
+    change to what may be printed cannot reach one form and miss the other.
+
+    ``withheld`` is the caller's literal for a string the detector reported,
+    because a name and another component's report deserve different words for
+    the same fact. It is never a prefix of ``text``: see :func:`_bounded`.
+    """
+    head = _bounded(text, limit)
+    if head is None:
+        return withheld
+    return head if len(head) == len(text) else f"{head}{_TRUNCATED}"
+
+
 def _one_name(name: str) -> str:
     """One untrusted name, quoted, bounded and redacted, for an *error message*.
 
@@ -3132,23 +3166,39 @@ def _their_words(reported: object) -> str:
     the name bound, which cut two legitimate diagnoses mid-sentence when both
     shared one number.
     """
-    text = str(reported)
-    head = _bounded(text, _MAX_REPORT_CHARS)
-    if head is None:
-        return _REDACTED_REPORT
-    return head if len(head) == len(text) else f"{head}{_TRUNCATED}"
+    return _plain(str(reported), _MAX_REPORT_CHARS, _REDACTED_REPORT)
 
 
 def _rendered_scalar(value: object) -> str:
     """One untrusted *parsed* scalar -- a raw YAML value -- for a refusal.
 
-    A string goes through :func:`_one_name`, which is where the credential and
-    the terminal-control questions are answered. Anything else has already been
-    proved renderable by :func:`~theurian.security.yaml_loading.is_bounded_scalar`
-    -- a bool, a number, ``None`` or a timestamp -- and none of those can spell a
-    credential, so ``repr`` is the whole of it.
+    **One exit, and the type does not choose it** (#360 round 1, R1-A). This had
+    two: a ``str`` went through :func:`_one_name` and everything else returned
+    bare ``repr``, on the argument that ``is_bounded_scalar`` admits only "a
+    bool, a number, ``None`` or a timestamp" and none of those can spell a
+    credential. The enumeration was wrong, and the shape of the error is the one
+    worth remembering -- it selected the gate by *value type* where the question
+    is *provenance*. ``_StrictLoader`` is a ``SafeLoader``, so ``!!binary``
+    constructs ``bytes``; ``is_bounded_scalar`` admits ``bytes`` under 200
+    characters explicitly; and a migration whose ``id`` is
+    ``!!binary c2stZTNj...`` printed its decoded credential in full in an
+    ``accept --json`` payload, at a refusal that fires before the scan, under the
+    shipped ``block`` default, through the committed-proposal channel ADR-0013
+    point 7 documents. Reproduced by two reviewers independently.
+
+    So the render is built first and gated second, whatever the type. ``repr`` is
+    still what turns a non-``str`` into text -- that part was never the defect --
+    but its *result* is the untrusted string, and it goes through the same
+    :func:`_bounded` as a name. ``bytes``' ``repr`` spells the credential
+    verbatim inside ``b'...'``, which is exactly what the detector reads.
     """
-    return _one_name(value) if isinstance(value, str) else repr(value)
+    if isinstance(value, str):
+        return _one_name(value)
+    # Not `repr` and return: the rendered text is the untrusted string here, so
+    # it passes the same gate a name does. `_plain` and not `_one_name`, because
+    # `repr` has already quoted it (`b'...'`) and quoting it twice reads as a
+    # mistake -- the bound and the redaction are identical either way.
+    return _plain(repr(value), _MAX_NAME_CHARS, _REDACTED_NAME)
 
 
 def _names(names: Sequence[str]) -> str:

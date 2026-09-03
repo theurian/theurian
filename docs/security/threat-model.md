@@ -1934,24 +1934,30 @@ a separate point:*
   not settle the question, because the command tells the author to commit the
   directory it sits in.
 - **Refusal *messages* on the accept path no longer echo an author's name, and
-  the boundary of that is one module's.** Every author-controlled string
-  interpolated into a message by
-  `application/proposal_service.py` passes one gate: it is cut to what may be
-  printed (200 characters for a name, the same bound
-  `security/yaml_loading.MAX_RENDERED_SCALAR_CHARS` already sets for an
-  untrusted scalar; 2,000 for another component's own report) and *then* scanned,
-  so the guard is keyed on exactly the text that will be printed. A string the
-  detector reports is replaced by a fixed literal of the module's own — *a name
-  that appears to carry a secret* — and never partially echoed, because the
-  detector publishes no match length and a "clean" remainder around a redacted
-  span is a partial copy besides
+  the boundary of that is one module's.** Every author-derived string
+  `application/proposal_service.py` puts into a message passes one gate —
+  whatever its type, and whether the interpolation happens here or inside an
+  error class this module hands the value to. It is scanned *whole* and then cut
+  to what may be printed (200 characters for a name, the same bound
+  `security/yaml_loading.MAX_RENDERED_SCALAR_CHARS` already sets for an untrusted
+  scalar; 2,000 for another component's own report). Scan-then-cut and not the
+  reverse: cutting first leaves a sub-floor fragment of a *straddling* credential
+  in the head, the head scans clean, and 31 of 43 characters print. What is
+  printed is therefore always a substring of something that scanned clean, which
+  is a superset of the printed text rather than the subset GHSA-3f65 punished. A
+  string the detector reports is replaced by a fixed literal of the module's own
+  — *a name that appears to carry a secret* — and never partially echoed, because
+  the detector publishes no match length and a "clean" remainder around a
+  redacted span is a partial copy besides
   ([#360](https://github.com/theurian/theurian/issues/360),
   [#339](https://github.com/theurian/theurian/issues/339)). The population is
   proved by reflection over the module's syntax tree rather than by a site list —
   `tests/integration/test_proposal_refusal_names.py::test_every_interpolation_in_a_message_is_gated_or_recorded`
-  reddens on a new raw `{name}`, with
-  `::test_the_reflection_finds_the_interpolations_it_claims_to_range_over` as its
-  positive control. Two channels the issue's own table did not list are closed
+  reddens on a new raw `{name}` *at a site that has not recorded one*, because it
+  is keyed on the enclosing function and not on the expression alone: keyed on the
+  expression, a bare identifier was a module-wide wildcard and #360's own defect
+  spelled `name = path.name` survived it. `::test_the_reflection_finds_the_interpolations_it_claims_to_range_over`
+  is its positive control and also holds the error-argument walk open by name. Two channels the issue's own table did not list are closed
   with it: PyYAML's parse error, which quotes the offending source line before
   any scan runs, and `jsonschema`'s message, which quotes the offending instance
   in full. **Three residuals, each named rather than folded in:** the gate's reach
@@ -1966,8 +1972,10 @@ a separate point:*
   ([#537](https://github.com/theurian/theurian/issues/537)); and `accept --json`'s
   `migrationFile` and `bodyFiles` *success* fields still name landed paths at full
   length, which is a recorded decision — a success payload whose job is to say
-  what was written reports nothing if it is redacted, and reaching it needs
-  `warn`, under which the same string is already published redacted beside it.
+  what was written reports nothing if it is redacted. A secret-shaped landed path
+  reaches that field under `warn`, under `off`, or under `block` when the detector
+  misses it, and only the first of the three publishes the same string redacted
+  beside it.
 - **Inside the migration document, the derived half is not read**, each field
   excluded by a mechanism rather than by choice: the ULID- and
   `^[0-9a-f]{64}$`-shaped identifiers (`id`, `revisionId`,

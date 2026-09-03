@@ -39,6 +39,8 @@ import ast
 import base64
 import hashlib
 import inspect
+import os
+import re
 from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path
 from typing import Final
@@ -65,6 +67,7 @@ from theurian.application.proposal_service import (
 )
 from theurian.cli.migration_pipeline import rehearse_migration_set
 from theurian.domain.enums import KnowledgeKind
+from theurian.domain.errors import IrregularSourceFileError
 from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId, RevisionId, TaskId
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.migration import Migration, current_revision_in
@@ -197,78 +200,226 @@ def _published(error: ProposalError) -> str:
 #: *expression text* rather than by resolving the call, so the reflection below
 #: needs no import graph: a new gate has to be named here to be recognised, which
 #: is the point -- a helper that quietly stops scanning would not be a gate.
-_GATES: Final = ("_names(", "_their_words(", "_rendered_scalar(", "_one_name(")
+_GATES: Final = (
+    "_names(",
+    "_one_name(",
+    "_plain(",
+    "_rendered_scalar(",
+    "_their_words(",
+)
 
-#: Every interpolation in ``proposal_service.py`` that is *not* routed through a
-#: gate, with why it needs no gate. This is an allowlist and not a description:
-#: an interpolation absent from it is a failure, so a new raw ``{name}`` reddens
+#: Every string reaching a message in ``proposal_service.py`` that is *not*
+#: routed through a gate, with why that particular one needs none. This is an
+#: allowlist and not a description: an entry absent from it is a failure, so a
+#: new raw ``{name}`` reddens
 #: :func:`test_every_interpolation_in_a_message_is_gated_or_recorded` whether or
 #: not anyone remembers this file.
 #:
-#: Keyed on ``ast.unparse`` output, which normalises whitespace and quoting, so a
-#: reformat does not redden it and a change of *expression* does.
-_UNGATED_BY_CONSTRUCTION: Final[Mapping[str, str]] = {
-    # Identifiers, validated on construction against anchored patterns, and the
-    # messages built from them. A `ProposalId` is a ULID, so nothing a caller
-    # typed survives into `location.relative` or a searched-directory list.
-    "proposal_id.value": "ProposalId, an anchored ULID",
-    "migration_id.value": "MigrationId, an anchored ULID",
-    "recorded.value": "MigrationId, an anchored ULID",
-    "current.value": "RevisionId, an anchored ULID",
-    "expected.value": "RevisionId, an anchored ULID",
-    "request.item_id.value": "ItemId, an anchored pattern",
-    "location.relative": "a project-relative path built from a validated ULID",
-    "self._within_project(parent)": "a project-relative path of this module's own parents",
-    "' or '.join(searched)": "the two proposal parents, project-relative",
-    "' and '.join(searched)": "the two proposal parents, project-relative",
-    # The OS's own category for a failure, never `str(exc)`, whose text carries
-    # the absolute filename and with it the machine's home directory.
-    "error.strerror or 'it could not be read'": "OSError.strerror, or a literal",
-    "exc.strerror or 'the write failed'": "OSError.strerror, or a literal",
-    "reason": "OSError.strerror, or a literal (_ensure_local_is_ignored)",
-    "_evidence_failure_reason(error)": "a fixed table keyed on the exception type",
-    # Already gated where they were built, and interpolated a second time into a
-    # remedy: `_unreadable` wraps both in `_names` before `_read_failure_remedy`
-    # and `_permission_remedy` ever see them.
-    "named": "a name already through _names in _unreadable",
-    "named_parent": "a name already through _names in _permission_remedy",
-    "leftover": "a name already through _names in _remove_proposal_sources",
-    "self._permission_remedy(error, named)": "a remedy built from the gated name above",
-    "self._MIGRATIONS_TAIL": "this module's own literal",
-    # This module's own literals and integers.
-    "AUTHORED_IN_THEURIAN": "a domain literal",
-    "MIGRATION_API_VERSION": "a domain literal",
-    "MAX_UPSERT_OPERATIONS": "this module's own constant",
-    "EVIDENCE_FILE": "this module's own constant",
-    "_AT_BODY_CONTENT": "a finding-location literal (#349)",
-    "_AT_BODY_PATH": "a finding-location literal (#349)",
-    "_AT_EVIDENCE": "a finding-location literal (#361)",
-    "_TRUNCATED": "this module's own constant",
-    "name": "a field name from a fixed tuple, never a key read out of a document",
-    "at": "a finding location built from this module's literals (#349)",
-    "index": "an integer position",
-    "count": "an integer the caller is deliberately told",
-    # The gate's own internals: `head` is what `_bounded` already returned.
-    "head": "the output of _bounded, inside _one_name/_their_words",
-    "shown": "names already through _one_name, inside _names",
-    "remaining": "an integer count, inside _names",
+#: **Keyed on (enclosing function, expression), and the pair is load-bearing.**
+#: Keyed on the expression alone, eleven of its rows were bare identifiers --
+#: ``name``, ``named``, ``head``, ``at``, ``index`` -- and a bare identifier is a
+#: module-wide wildcard: round one reintroduced #360's exact defect, spelled
+#: ``name = path.name`` at a real refusal site, and it SURVIVED the full suite
+#: with this reflection green, because some *other* function's ``name`` had
+#: earned the row. The pair confines each reason to the site it was written
+#: about. ``ast.unparse`` normalises whitespace and quoting, so a reformat does
+#: not redden it and a change of expression does.
+#:
+#: **A reason that is true by a different argument is a different row.** Two of
+#: these were false as written before round one attacked them, and both were
+#: false in the same way: a true sentence about one site, copied to another where
+#: something else is what makes it safe.
+_UNGATED_BY_CONSTRUCTION: Final[Mapping[tuple[str, str], str]] = {
+    # -- validated identifiers, and the messages built out of them -----------
+    # A `ProposalId` is a ULID, so nothing a caller typed survives into
+    # `location.relative` or a searched-directory list.
+    ("_ambiguous_locations", "proposal_id.value"): "ProposalId, an anchored ULID",
+    ("_evidence_indeterminate", "proposal_id.value"): "ProposalId, an anchored ULID",
+    ("_inferred_answer", "proposal_id.value"): "ProposalId, an anchored ULID",
+    ("_no_migration_error", "proposal_id.value"): "ProposalId, an anchored ULID",
+    ("_require_directory", "proposal_id.value"): "ProposalId, an anchored ULID",
+    ("_require_migration", "proposal_id.value"): "ProposalId, an anchored ULID",
+    ("_unreadable", "proposal_id.value"): "ProposalId, an anchored ULID",
+    ("refuse", "proposal_id.value"): "ProposalId, an anchored ULID",
+    ("_refuse_if_migration_present", "migration_id.value"): "MigrationId, an anchored ULID",
+    ("_no_migration_error", "recorded.value"): "MigrationId, an anchored ULID",
+    ("_check_expected_revision", "current.value"): "RevisionId, an anchored ULID",
+    ("_check_expected_revision", "expected.value"): "RevisionId, an anchored ULID",
+    # NOT "an anchored pattern", which was the reason here and is false:
+    # `_DOTTED_PATTERN` is lower-case kebab with dots, and `sk-<40 hex>` matches
+    # it exactly (measured). What makes this one safe is provenance, not shape --
+    # `_check_expected_revision` runs only from `draft`, so the value is the
+    # caller's own `--item-id` on this very invocation, not content arriving
+    # through a committed proposal directory. It is the caller's to read back.
+    ("_check_expected_revision", "request.item_id.value"): (
+        "the caller's own --item-id on this invocation, not third-party content"
+    ),
+    ("_ambiguous_locations", "location.relative"): "built from a validated ULID",
+    ("_evidence_indeterminate", "location.relative"): "built from a validated ULID",
+    ("_evidence_unscannable", "location.relative"): "built from a validated ULID",
+    ("_require_directory", "location.relative"): "built from a validated ULID",
+    ("_secret_refusal", "location.relative"): "built from a validated ULID",
+    ("_union_refusal", "location.relative"): "built from a validated ULID",
+    ("_require_directory", "self._within_project(parent)"): (
+        "a project-relative path of this module's own parent directories"
+    ),
+    ("_require_directory", "' or '.join(searched)"): "the two proposal parents, ULID-free",
+    ("_require_directory", "' and '.join(searched)"): "the two proposal parents, ULID-free",
+    # -- the OS's own words, never `str(exc)` --------------------------------
+    # `str(OSError)` carries the absolute filename and with it the machine's
+    # home directory; `strerror` is the OS's category for the failure.
+    ("_unreadable", "error.strerror or 'it could not be read'"): "OSError.strerror, or a literal",
+    ("refuse", "error.strerror or 'it could not be read'"): "OSError.strerror, or a literal",
+    ("_commit", "exc.strerror or 'the write failed'"): "OSError.strerror, or a literal",
+    ("_ensure_local_is_ignored", "reason"): "OSError.strerror, or a literal",
+    ("_evidence_indeterminate", "_evidence_failure_reason(error)"): (
+        "a fixed table keyed on the exception's type, never its text"
+    ),
+    ("_evidence_unscannable", "_evidence_failure_reason(error)"): (
+        "a fixed table keyed on the exception's type, never its text"
+    ),
+    # -- gated where they were built, interpolated again here ----------------
+    # One hop, and the hop is named. Splitting these is what round one asked
+    # for: as a single `named` row, the reason below was *false* at the
+    # `_ambiguous_locations` site, which never calls `_names` at all.
+    ("_unreadable", "named"): "assigned from _names two lines above",
+    ("_read_failure_remedy", "named"): "the gated name _unreadable passed in",
+    ("_permission_remedy", "named"): "the gated name _unreadable passed in",
+    ("_permission_remedy", "named_parent"): "assigned from _names two lines above",
+    ("_remove_proposal_sources", "leftover"): "assigned from _names two lines above",
+    ("_read_failure_remedy", "self._permission_remedy(error, named)"): (
+        "a remedy built from the gated name above"
+    ),
+    # A different `named` entirely, and safe for a different reason: it is
+    # `" and ".join(location.relative)`, so it is ULID-derived like every other
+    # `location.relative` row and reaches `_names` nowhere.
+    ("_ambiguous_locations", "named"): "the two locations joined, each built from a ULID",
+    ("_read_failure_remedy", "self._MIGRATIONS_TAIL"): "this module's own literal",
+    # -- this module's own literals, and integers ----------------------------
+    ("__post_init__", "AUTHORED_IN_THEURIAN"): "a domain literal",
+    ("_refuse_a_document_the_schema_rejects", "MIGRATION_API_VERSION"): "a domain literal",
+    ("_refuse_past_the_operation_cap", "MAX_UPSERT_OPERATIONS"): "this module's own constant",
+    ("_evidence_indeterminate", "EVIDENCE_FILE"): "this module's own constant",
+    ("_evidence_unscannable", "EVIDENCE_FILE"): "this module's own constant",
+    ("_inferred_answer", "EVIDENCE_FILE"): "this module's own constant",
+    ("_landed_text", "_AT_BODY_CONTENT"): "a finding-location literal (#349)",
+    ("_landed_text", "_AT_BODY_PATH"): "a finding-location literal (#349)",
+    ("__post_init__", "name"): "a field name from a fixed tuple in the loop above",
+    ("_fields", "name"): "a field name from an allowlist tuple, never a document key",
+    ("_authored_strings", "at"): "a finding location built from this module's literals (#349)",
+    ("_fields", "at"): "a finding location built from this module's literals (#349)",
+    ("_list_strings", "at"): "a finding location built from this module's literals (#349)",
+    ("_metadata_strings", "at"): "a finding location built from this module's literals (#349)",
+    ("_authored_strings", "index"): "an integer position",
+    ("_landed_text", "index"): "an integer position",
+    ("_list_strings", "index"): "an integer position",
+    ("_metadata_strings", "index"): "an integer position",
+    ("_refuse_past_the_operation_cap", "count"): "an integer the caller is deliberately told",
+    # -- the gate's own internals --------------------------------------------
+    ("_one_name", "head"): "what _bounded returned, inside the gate itself",
+    ("_one_name", "_TRUNCATED"): "this module's own constant",
+    ("_plain", "head"): "what _bounded returned, inside the gate itself",
+    ("_plain", "_TRUNCATED"): "this module's own constant",
+    ("_names", "shown"): "names already through _one_name, inside _names",
+    ("_names", "remaining"): "an integer count, inside _names",
+    # -- arguments to an error type that renders them itself -----------------
+    # `IrregularSourceFileError` interpolates `shape` and `referrer`; the
+    # `referrer` at both sites is gated, and `shape` is a literal from the fixed
+    # vocabulary `read_source_file` chooses from (never a path).
+    ("_read_within_project", "exc.shape"): "a fixed shape literal from the security layer",
+    ("_commit", "exc.shape"): "a fixed shape literal from the security layer",
+    # `PathEscapeError` renders NEITHER positional argument: with `entry=None`
+    # -- which is every construction in this module -- its message is the fixed
+    # "Path escapes the permitted root" and its remedy names no path.
+    # `tests/unit/test_path_security.py::
+    # test_no_reachable_refusal_branch_echoes_the_attacker_supplied_path` is what
+    # holds that. These rows exist so that passing `entry=` from here, which IS
+    # rendered, reddens the reflection.
+    ("_within_project", "str(path)"): "PathEscapeError renders no positional argument",
+    ("_within_project", "str(self._paths.root)"): "PathEscapeError renders no positional argument",
+    ("_reject_symlink_in_chain", "str(path)"): "PathEscapeError renders no positional argument",
+    ("_reject_symlink_in_chain", "str(root)"): "PathEscapeError renders no positional argument",
+    ("_destination_of", "content_file"): "PathEscapeError renders no positional argument",
+    ("_destination_of", "str(knowledge)"): "PathEscapeError renders no positional argument",
 }
 
 
-def _interpolations() -> list[tuple[int, str]]:
-    """Every f-string interpolation in ``proposal_service.py``, with its line.
+#: Error types this module constructs whose *arguments* become message text
+#: somewhere else. An f-string walk cannot see these: the value is handed over as
+#: an argument and the interpolation happens in the other module's
+#: ``__init__`` -- which is exactly how ``IrregularSourceFileError``'s
+#: ``referrer`` carried an author's ``contentFile`` character-for-character into
+#: both halves of a CP-2 payload while the reflection stayed green (round 1,
+#: R1-A face ii).
+#:
+#: Only the types whose constructor *renders* what it is given belong here.
+#: ``ProposalError`` and its subclasses build their own text from f-strings in
+#: this module, so the walk already sees their arguments as interpolations;
+#: listing them again would double-count without adding a check.
+_RENDERING_ERROR_TYPES: Final = frozenset({"IrregularSourceFileError", "PathEscapeError"})
 
-    The whole module and not only the error constructions: a remedy is assembled
-    by :meth:`ProposalService._read_failure_remedy` *outside* the
-    ``ProposalError(...)`` call that publishes it, so a walk scoped to error
-    constructions would call that remedy unreachable and miss it.
+
+def _callee(node: ast.expr) -> str:
+    """The bare name a call's callee ends in, for ``Name`` and ``Attribute`` alike."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def _interpolations() -> list[tuple[int, str, str]]:
+    """Every string this module hands to a message, with its line.
+
+    Two shapes, because one of them is invisible to the other's walk:
+
+    * **f-string interpolations**, over the whole module and not only the error
+      constructions -- a remedy is assembled by
+      :meth:`ProposalService._read_failure_remedy` *outside* the
+      ``ProposalError(...)`` call that publishes it, so a walk scoped to error
+      constructions would call that remedy unreachable and miss it.
+    * **arguments to an error type that renders them itself**
+      (:data:`_RENDERING_ERROR_TYPES`). A value handed to another module's
+      constructor never becomes an ``ast.FormattedValue`` here, so the f-string
+      walk is structurally blind to it. That blindness was not theoretical: it
+      is where round one's second R1-A face lived.
+
+    An argument that needs no gate is not special-cased here: it goes in the same
+    allowlist every f-string uses, so the two shapes are judged by one rule and
+    not by two.
+
+    Each is returned with the function that encloses it, because the allowlist is
+    keyed on the pair -- see :data:`_UNGATED_BY_CONSTRUCTION` for what a
+    bare-identifier key let through.
     """
     tree = ast.parse(inspect.getsource(proposal_service))
-    return [
-        (node.lineno, ast.unparse(node.value))
+    scopes = [
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    ]
+
+    def enclosing(lineno: int) -> str:
+        # Innermost wins: a nested `def` inside a method -- `refuse` inside
+        # `_unmoved_generated_bodies` is the live one -- owns its own rows, and
+        # taking the outermost would merge them with its parent's.
+        names = [
+            node.name
+            for node in scopes
+            if node.lineno <= lineno <= (node.end_lineno or node.lineno)
+        ]
+        return names[-1] if names else "<module>"
+
+    found = [
+        (node.lineno, enclosing(node.lineno), ast.unparse(node.value))
         for node in ast.walk(tree)
         if isinstance(node, ast.FormattedValue)
     ]
+    found.extend(
+        (argument.lineno, enclosing(argument.lineno), ast.unparse(argument))
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _callee(node.func) in _RENDERING_ERROR_TYPES
+        for argument in [*node.args, *(keyword.value for keyword in node.keywords)]
+    )
+    return found
 
 
 def test_the_reflection_finds_the_interpolations_it_claims_to_range_over() -> None:
@@ -282,13 +433,20 @@ def test_the_reflection_finds_the_interpolations_it_claims_to_range_over() -> No
     found = _interpolations()
 
     assert len(found) > 50, f"the walk found only {len(found)} interpolations; it is not reaching"
-    expressions = {expression for _, expression in found}
-    assert any(expression.startswith(_GATES) for expression in expressions), (
+    assert any(expression.startswith(_GATES) for _, _, expression in found), (
         "the walk found no gated interpolation, so the gate set matches nothing"
     )
-    assert expressions & set(_UNGATED_BY_CONSTRUCTION), (
-        "the walk found none of the allowlisted interpolations, so the allowlist matches nothing"
+    keys = {(function, expression) for _, function, expression in found}
+    assert keys & set(_UNGATED_BY_CONSTRUCTION), (
+        "the walk found none of the allowlisted rows, so the allowlist matches nothing"
     )
+    # The blind spot R1-A face (ii) lived in, held open by name: an f-string-only
+    # walk returns nothing for this line, so a green reflection would say nothing
+    # about it.
+    assert any(
+        function == "_read_within_project" and expression.startswith("_plain(")
+        for _, function, expression in found
+    ), "the walk no longer reaches an error constructor's arguments"
 
 
 def test_every_interpolation_in_a_message_is_gated_or_recorded() -> None:
@@ -305,9 +463,10 @@ def test_every_interpolation_in_a_message_is_gated_or_recorded() -> None:
     false when the value is in fact the author's.
     """
     raw = sorted(
-        (lineno, expression)
-        for lineno, expression in _interpolations()
-        if not expression.startswith(_GATES) and expression not in _UNGATED_BY_CONSTRUCTION
+        (lineno, function, expression)
+        for lineno, function, expression in _interpolations()
+        if not expression.startswith(_GATES)
+        and (function, expression) not in _UNGATED_BY_CONSTRUCTION
     )
 
     assert raw == [], (
@@ -566,6 +725,89 @@ def test_a_mismatched_id_is_refused_without_printing_the_id(service: ProposalSer
     published = _published(caught.value)
     assert "filename ULID must equal" in published, "a different refusal fired"
     assert ID_SECRET not in published, f"the authored id was echoed whole: {published}"
+
+
+def test_a_binary_id_is_refused_without_printing_what_it_decodes_to(
+    service: ProposalService,
+) -> None:
+    """The same refusal, reached with a value that is not a ``str`` (round 1, R1-A).
+
+    ``_rendered_scalar`` used to select its gate by *type*: a ``str`` went through
+    the gate and everything else took a bare ``repr``, on the recorded ground that
+    ``is_bounded_scalar`` admits only "a bool, a number, ``None`` or a timestamp".
+    The enumeration was wrong. ``_StrictLoader`` is a ``SafeLoader``, so
+    ``!!binary`` constructs ``bytes``; ``is_bounded_scalar`` admits ``bytes``
+    under the render cap explicitly; and ``repr(bytes)`` spells the decoded
+    credential verbatim. Both reviewers reproduced it through the real CLI under
+    the shipped ``block`` default, at a refusal that fires before the scan.
+
+    No real corpus produces a ``!!binary`` id -- ``draft`` writes a ULID string --
+    which is exactly why this test has to plant one: the arm it drives is
+    unreachable from every fixture the suite otherwise builds, so it survived its
+    own deletion until now.
+    """
+    drafted = service.draft(_request())
+    document = drafted.migration_file.read_text(encoding="utf-8")
+    encoded = base64.b64encode(ID_SECRET.encode()).decode()
+    document = re.sub(r"^id: .*$", f"id: !!binary {encoded}", document, count=1, flags=re.MULTILINE)
+    drafted.migration_file.write_text(document, encoding="utf-8")
+
+    parsed = yaml.safe_load(document)["id"]
+    assert isinstance(parsed, bytes), (
+        f"the fixture did not produce bytes but {type(parsed).__name__}; the non-str arm this "
+        f"test exists for would not be reached"
+    )
+    assert ID_SECRET in repr(parsed), "the plant does not survive repr, so nothing could leak it"
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    published = _published(caught.value)
+    assert "filename ULID must equal" in published, "a different refusal fired"
+    assert ID_SECRET not in published, f"the decoded bytes were echoed whole: {published}"
+
+
+#: A FIFO is the shape whose ``st_size`` bounds nothing, and it is what makes the
+#: irregular-file refusal fire at all. POSIX-only, so the one test that needs it
+#: skips where it cannot be made -- the same guard ``test_propose_cli.py`` carries.
+_CAN_MAKE_A_BLOCKING_FILE: Final = hasattr(os, "mkfifo")
+
+
+@pytest.mark.skipif(not _CAN_MAKE_A_BLOCKING_FILE, reason="os.mkfifo is POSIX-only")
+def test_an_irregular_body_is_refused_without_printing_the_path_the_author_chose(
+    service: ProposalService,
+) -> None:
+    """The referrer, which no f-string in this module interpolates (round 1, R1-A).
+
+    ``IrregularSourceFileError`` builds its own message and remedy from the
+    ``referrer`` it is handed, so the value never becomes an ``ast.FormattedValue``
+    here and the reflection was structurally blind to it. What was handed over was
+    ``relative``, described in the source as "Theurian's own construction, never
+    an authored string" -- true of the prefix and false of the leaf, because
+    ``_destination_of`` *resolves* the author's ``contentFile`` and resolution
+    normalizes a path without renaming its components. Containment is not
+    provenance.
+
+    A FIFO is what makes the refusal fire, so this needs local write access at
+    accept time; the echo is what it publishes once it does.
+    """
+    drafted = service.draft(_request())
+    body = drafted.body_file
+    tail = body.relative_to(drafted.directory).with_name(f"{NAME_SECRET}.md")
+    document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
+    for operation in document["operations"]:
+        if operation["op"] == "upsertRevision":
+            operation["contentFile"] = f"../knowledge/{tail.as_posix()}"
+    drafted.migration_file.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    body.unlink()
+    os.mkfifo(drafted.directory / tail)
+
+    with pytest.raises(IrregularSourceFileError) as caught:
+        service.accept(drafted.proposal_id)
+
+    published = f"{caught.value}\n{caught.value.remedy}"
+    assert "not a regular file" in published, "a different refusal fired"
+    assert NAME_SECRET not in published, f"the authored path was echoed whole: {published}"
 
 
 def test_a_migration_the_parser_refuses_withholds_the_name_and_the_quoted_token(

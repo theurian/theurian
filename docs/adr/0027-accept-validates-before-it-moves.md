@@ -564,12 +564,18 @@ one of its recorded residuals.
 > `id` was echoed at full length into the terminal and into `accept --json` — the
 > same string the scan would have redacted to four characters, printed whole by a
 > refusal that fires *before* the scan runs. It is closed as a class rather than
-> site by site: one gate, `_bounded`, cuts an untrusted string to what may be
-> printed and then scans exactly that cut text, so the guard is keyed on what will
-> actually be printed rather than on a superset of it (GHSA-3f65's shape). A
-> string the detector reports is replaced by a literal of the module's own and
-> never partially echoed, because the detector publishes no match length and a
-> "clean" remainder around a redacted span is a partial copy besides. Two channels
+> site by site: one gate, `_bounded`, scans an untrusted string *whole* and then
+> cuts it to what may be printed. That order was inverted at first, on the
+> argument that a gate must key on exactly what it prints — right about
+> GHSA-3f65's lesson and wrong about its direction. Cutting first makes the
+> boundary itself a leak: a credential straddling it leaves a sub-floor fragment
+> in the head, the head scans clean, and 31 of 43 characters print. Scanning the
+> whole keeps what the advisory taught, because the scanned set is then a
+> *superset* of the printed set and nothing can drift in between; what it costs
+> is a false redaction, which is the right way to be wrong. A string the detector
+> reports is replaced by a literal of the module's own and never partially
+> echoed, because the detector publishes no match length and a "clean" remainder
+> around a redacted span is a partial copy besides. Two channels
 > the issue's own table did not list are in the class and close with it: PyYAML's
 > parse error, which quotes the offending source line before anything is scanned,
 > and `jsonschema`'s message, which quotes the offending instance in full.
@@ -601,8 +607,10 @@ one of its recorded residuals.
 > here. And `accept --json`'s `migrationFile` and `bodyFiles` **success** fields
 > still name landed paths at full length by decision recorded at the site: a
 > success payload whose job is to say what was written reports nothing if it is
-> redacted, and reaching one needs `warn`, under which the same string is already
-> published redacted beside it in `secretFindings`.
+> redacted. A secret-shaped landed path reaches that field three ways -- under
+> `warn`, under `off`, and under `block` when the detector misses it -- and only
+> the first of the three publishes the same string redacted beside it in
+> `secretFindings`.
 >
 > **What does not change is the grade or the disclaimer.** T-15 stays High: the
 > count that decides it is over the three points content enters the canonical

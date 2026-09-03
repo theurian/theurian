@@ -302,15 +302,18 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   credential placed in a migration filename, in a `contentFile` or in a
   migration's inner `id` was printed at full length into the terminal and into
   `accept --json` — by refusals about a name collision or a missing file, which
-  beat the scan to the output. Every author-controlled string
-  `propose accept` interpolates into a message is now cut to what may be printed
-  (200 characters for a name, the bound this codebase already uses for an
-  untrusted YAML scalar; 2,000 for another component's own report) and *then*
-  scanned, so the guard is keyed on exactly the text that will be printed. A
-  string the detector reports is replaced whole by a fixed literal — *a name that
-  appears to carry a secret* — and never partially echoed, because the detector
-  publishes no match length and a "clean" remainder around a redacted span is a
-  partial copy besides. Two channels beyond the reported ones close with it:
+  beat the scan to the output. Every author-derived string `propose accept` puts
+  into a message is now scanned *whole* and then cut to what may be printed (200
+  characters for a name, the bound this codebase already uses for an untrusted
+  YAML scalar; 2,000 for another component's own report) — whatever its type, and
+  whether this command does the interpolation or hands the value to an error
+  class that does. Scanned whole and not merely up to the cut: a credential
+  *straddling* the bound leaves a fragment in the head that the detector cannot
+  see on its own, so cutting first published 31 of 43 characters. A string the
+  detector reports is replaced whole by a fixed literal — *a name that appears to
+  carry a secret* — and never partially echoed, because the detector publishes no
+  match length and a "clean" remainder around a redacted span is a partial copy
+  besides. Two channels beyond the reported ones close with it:
   PyYAML's parse error, which quotes the offending source line before anything
   is scanned, and `jsonschema`'s message, which quotes the offending instance in
   full. **This changes what a refusal prints**, so a script that parsed a name
@@ -356,8 +359,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ([#537](https://github.com/theurian/theurian/issues/537)). And `accept --json`'s
   `migrationFile` and `bodyFiles` **success** fields still name landed paths at
   full length by decision: a payload whose job is to say what was written reports
-  nothing if it is redacted, and reaching one needs `warn`, under which the same
-  string is already published redacted beside it. Draft-time advisory scanning
+  nothing if it is redacted. A secret-shaped landed path reaches that field under
+  `warn`, under `off`, or under `block` when the detector misses it, and only the
+  first of the three publishes the same string redacted beside it. Draft-time advisory scanning
   remains owed ([#330](https://github.com/theurian/theurian/issues/330)), which is
   now the whole of what that issue carries.
 

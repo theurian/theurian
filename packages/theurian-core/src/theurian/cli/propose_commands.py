@@ -529,11 +529,17 @@ def propose_accept(
     # collision or a missing file and reprints a credential on its way out. This
     # is a success payload whose entire job is to say what was written, and a
     # redacted path reports nothing -- the author cannot find the file they were
-    # just told about. Reaching it needs `warn`, because `block` refuses a
-    # secret-shaped landed path before anything moves (`_AT_BODY_PATH`), and
-    # under `warn` the same string is already published beside it in
-    # `secretFindings` with the rotate step above it. Non-disclosing either way:
-    # the caller is the maintainer who wrote the path.
+    # just told about.
+    #
+    # A secret-shaped landed path reaches this field three ways, not one: under
+    # `warn`, under `off`, and under `block` when the detector misses it -- the
+    # comment said "reaching it needs `warn`", which is the same over-claim the
+    # note twelve lines below already contradicts by observing that the findings
+    # list is empty under `off` too. Only the first of the three publishes the
+    # same string redacted beside it in `secretFindings` with the rotate step
+    # above it; under the other two the path is simply reported, which is what
+    # the field is for. Non-disclosing in all three: the caller is the maintainer
+    # who wrote the path.
     payload: dict[str, object] = {
         "proposalId": accepted.proposal_id.value,
         "migrationFile": _relative(accepted.migration.destination, root),
