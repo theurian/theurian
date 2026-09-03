@@ -3023,12 +3023,26 @@ def _bounded(text: str, limit: int) -> str | None:
     there is no argument for that, so no site can opt out of the redaction while
     keeping the cut.
 
-    **The cut happens first, and the scan runs on what will actually be
-    printed.** Scanning the whole and printing a prefix keys the guard on a
-    superset of what it protects, which is how a truncated run that scans as a
-    credential on its own gets past a scan of the untruncated string
-    (GHSA-3f65's shape: the gate hashed the body while the index served title
-    plus body).
+    **The scan runs on the whole string, and the cut happens after it.** The
+    order was the other way round until round one attacked it, and cutting first
+    is what makes a boundary a leak: a credential *straddling* ``limit`` leaves a
+    sub-floor fragment in the head, the head scans clean, and the fragment
+    prints. Measured on this build at the name bound -- 31 of a 43-character
+    high-entropy token and 22 of a 43-character ``sk-`` token, in the shipped
+    ``block`` default, in the same message whose other arm redacted the same
+    author string correctly. Token starts from 160 to 200 each published 13 to 30
+    characters; the report bound published 31 of 43. This is first-party
+    truncation, not the third-party residual the last paragraph records.
+
+    Scanning the whole and printing a cut is the strictly conservative direction,
+    and it does not give up what GHSA-3f65 taught. That advisory's lesson is that
+    a gate must not key on a *subset* of what it protects -- the serve gate hashed
+    the revision body while the index served title plus body, so a title drift
+    walked past it. Here the scanned set is a *superset* of the printed set:
+    everything printed was inside something that scanned clean, so no drift can
+    enter between the two. The cost of the conservative direction is a false
+    redaction -- a name whose far tail carries a credential is withheld whole
+    rather than cut down to a clean head -- which is the right way to be wrong.
 
     **A dirty string is dropped whole, never partially echoed.** ``scan_text``
     reports a finding's line, column and family but not the match's *length*, so
@@ -3037,6 +3051,17 @@ def _bounded(text: str, limit: int) -> str | None:
     partial copy of the credential besides, which is the walk-around
     :class:`~theurian.security.content_secrets.SecretFinding`'s four-character
     bound exists to prevent.
+
+    **The scan is paid on the whole input, which is what moved.** The strings
+    reaching here are bounded by what a *committed proposal* can carry -- a
+    ``contentFile`` is a scalar of a migration ``_parse_migration`` has already
+    held under ``MAX_YAML_BYTES`` -- and the accept path already pays a full pass
+    over those same bytes in :meth:`ProposalService._scan_for_secrets`. What is
+    new is that a *pre-scan* refusal now pays one too. Measured 2026-09-04 on
+    CPython 3.13 (Apple silicon), one call on the worst-case ``sk-`` shape
+    :mod:`theurian.security.content_secrets` prices: see that module's table for
+    the per-MiB constant. A refusal is a one-shot local interaction, and the
+    alternative is publishing 31 characters of a credential.
 
     **This gate's reach is the detector's reach, and that is a bound worth
     stating rather than one to read past.** What it promises is that a string
@@ -3052,8 +3077,9 @@ def _bounded(text: str, limit: int) -> str | None:
     something this module chose to quote, and it is the same residual every
     caller of this detector carries.
     """
-    head = text[:limit]
-    return None if scan_text(head, max_findings=1) else head
+    if scan_text(text, max_findings=1):
+        return None
+    return text[:limit]
 
 
 def _one_name(name: str) -> str:

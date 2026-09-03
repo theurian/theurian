@@ -36,6 +36,7 @@ the reason it records -- a fixture shared across files would have to move to a
 from __future__ import annotations
 
 import ast
+import base64
 import hashlib
 import inspect
 from collections.abc import Collection, Iterator, Mapping
@@ -115,6 +116,18 @@ ID_SECRET: Final = "sk-" + hashlib.sha256(b"theurian refusal-id fixture (#360)")
 #: enough to survive PyYAML's own snippet window whole, which is what makes the
 #: parser-error channel a full-length echo rather than a truncated one.
 REPORT_SECRET: Final = "sk-" + "a" * 20
+
+#: The *generic* family, for the straddle sweep, because the two families fail
+#: the boundary differently: a prefix family loses its anchor as soon as the cut
+#: passes ``sk-``, while ``high-entropy-token`` keeps matching every shortened
+#: run that still clears the 32-character floor -- which is why it published 31
+#: of its 43 characters where ``sk-`` published 22. Base64url of a digest, so it
+#: carries the mixed case and the digit the class gate wants without being drawn.
+HIGH_ENTROPY_SECRET: Final = (
+    base64.urlsafe_b64encode(hashlib.sha256(b"theurian straddle fixture (#360 R1-B)").digest())
+    .decode()
+    .rstrip("=")
+)
 
 
 @pytest.fixture
@@ -382,28 +395,72 @@ def test_a_name_past_the_bound_is_cut_and_says_so_without_publishing_its_length(
     assert str(len(long_name)) not in rendered, "the refusal published the name's own length"
 
 
-def test_the_scan_reads_exactly_the_string_that_will_be_printed() -> None:
-    """Cut first, then scan -- the guard keys on its own output.
+def test_the_scan_reads_the_whole_string_and_the_cut_happens_after_it() -> None:
+    """Three directions, and the third is the one that was wrong (round 1, R1-B).
 
-    Scanning the whole and printing a prefix keys the guard on a superset of what
-    it protects; scanning a prefix and printing the whole keys it on a subset,
-    which is GHSA-3f65's shape. Both directions are pinned here: a credential
-    *past* the cut is gone from the output and so does not force a redaction of
-    the readable head, and a credential *inside* the cut redacts.
+    A credential wholly inside the cut has to redact, and a credential wholly
+    past it has to redact too: the scanned set is the *whole* string, so the
+    printed cut is always a substring of something that scanned clean. Cutting
+    first inverted the second case -- the head scanned clean and printed -- and
+    the straddle below is what made that a leak rather than a preference.
+
+    GHSA-3f65's lesson survives the inversion. That advisory is about keying a
+    gate on a *subset* of what it protects; here the scanned set is a superset of
+    the printed set, so nothing can drift in between. What the conservative
+    direction costs is a false redaction -- a name whose far tail is dirty is
+    withheld whole -- which is the right way to be wrong.
     """
     # A path separator either side of the plant: `openai-api-key` anchors on
     # `\bsk-`, and a run of `b` immediately before it is a word character that
     # denies the boundary -- the plant would then be reported by nothing and the
-    # first assertion below would be the only thing that noticed.
+    # assertions below would be the only thing that noticed.
     past_the_cut = "b" * _MAX_NAME_CHARS + f"/{NAME_SECRET}"
     inside_the_cut = f"{NAME_SECRET}/" + "b" * _MAX_NAME_CHARS
 
     assert scan_text(past_the_cut), "the fixture plants nothing the detector reports"
-    assert _bounded(past_the_cut, _MAX_NAME_CHARS) == "b" * _MAX_NAME_CHARS, (
-        "a credential the cut removes still forced a redaction, so the scan ran on the uncut text"
-    )
+    assert scan_text(inside_the_cut), "the fixture plants nothing the detector reports"
     assert _bounded(inside_the_cut, _MAX_NAME_CHARS) is None, (
         "a credential inside the cut was not caught"
+    )
+    assert _bounded(past_the_cut, _MAX_NAME_CHARS) is None, (
+        "a credential past the cut was not caught, so the scan ran on the cut text and a "
+        "credential straddling the boundary would publish its head"
+    )
+
+
+@pytest.mark.parametrize("limit_name", ["name", "report"])
+def test_no_start_offset_lets_a_credential_publish_a_fragment_of_itself(limit_name: str) -> None:
+    """The straddle sweep, which is what R1-B actually measured (adversarial e14).
+
+    A single boundary case is a point; the defect was a curve. The token is slid
+    across the bound one character at a time and *every* offset has to withhold
+    it whole. Against the cut-first order this went red across the whole sweep --
+    13 to 30 characters published at the name bound, 31 of 43 at the report bound
+    -- and the single-offset assertion above passed throughout, which is why the
+    sweep is here and not one more literal.
+
+    Padded with ``/`` and not with a candidate character. A run of ``z`` before
+    the token confounds two mechanisms -- entropy dilution and the cut -- so a
+    green sweep would not say which one held. A separator is outside
+    ``_CANDIDATE_CLASS``, so each segment is its own candidate run and the cut is
+    the only thing under test.
+    """
+    limit = _MAX_NAME_CHARS if limit_name == "name" else _MAX_REPORT_CHARS
+    token = NAME_SECRET if limit_name == "name" else HIGH_ENTROPY_SECRET
+    assert scan_text(token), "the fixture plants nothing the detector reports"
+
+    published = {}
+    for start in range(limit - len(token), limit + 1):
+        rendered = _bounded("/" * start + token, limit)
+        if rendered is None:
+            continue
+        longest = max((n for n in range(len(token) + 1) if token[:n] in rendered), default=0)
+        if longest:
+            published[start] = longest
+
+    assert published == {}, (
+        f"a credential straddling the {limit_name} bound published a fragment of itself at these "
+        f"start offsets (offset: characters published): {published}"
     )
 
 
