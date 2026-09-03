@@ -140,8 +140,17 @@ def _is_contention(exc: sqlite3.Error) -> bool:
     return isinstance(code, int) and code & 0xFF in _CONTENTION_RESULT_CODES
 
 
+#: How :func:`_prepare` names what it was doing, for the one message both the
+#: read and the write opener can publish. A phrase rather than a SQL statement
+#: because ``_prepare`` catches around four pragmas *and* a ``SELECT`` and cannot
+#: say which of them met the holder -- and because "preparing a connection" is
+#: true of ``open_read_connection`` as well, which is the caller the write-shaped
+#: wording used to misdescribe.
+_PREPARING_A_CONNECTION: Final = "preparing a connection to it"
+
+
 class WriteTransactionBusyError(TheurianError):
-    """Another writer held the database, so this transaction never started.
+    """Another process holds the database, so this command could not use it.
 
     **The state database is intact. That is the whole point of this type.**
     Before it existed, the two ``(OSError, sqlite3.Error)`` backstops #484 added
@@ -161,11 +170,22 @@ class WriteTransactionBusyError(TheurianError):
     cannot mediate because a writer outside Theurian never takes it. Same family,
     same shape of cure, and neither one damages anything.
 
-    Raised only for statements :func:`_open_transaction` issues on its own
-    behalf. The boundary and the reason are recorded there.
+    Raised for the statements :func:`_open_transaction` issues on its own behalf
+    and, since #484 round two, for contention met while :func:`_prepare` makes a
+    connection usable. Each boundary is recorded where it is drawn.
+
+    **The wording has to hold in a read context as well as a write one**, because
+    :func:`_prepare` serves :func:`open_read_connection` too. Two earlier
+    sentences did not. "Another *writer* holds it, so it is locked for writing"
+    describes what a reader met only by accident, and "a writer outside Theurian
+    never takes Theurian's lock" is plainly false on the read path: nothing there
+    takes the advisory lock, so the holder blocking a reader can perfectly well be
+    another Theurian command. What is true on both paths, and is what the message
+    says, is that the holder is one *this command's* advisory write lock does not
+    mediate -- which is the whole reason the conflict is visible at all.
     """
 
-    def __init__(self, path: Path, statement: str) -> None:
+    def __init__(self, path: Path, during: str) -> None:
         self.remedy = (
             "Wait for the other writer to finish, then run the command again. "
             "`theurian migrate status` reports what is still pending once it has. "
@@ -173,10 +193,10 @@ class WriteTransactionBusyError(TheurianError):
             "the database exactly as it found it."
         )
         super().__init__(
-            f"Another writer holds {path.name}, so it is locked for writing and this "
-            f"command's `{statement}` could not proceed. Theurian's own write lock does "
-            f"not mediate this: a writer outside Theurian -- another tool, an open "
-            f"`sqlite3` shell, a process that exited mid-transaction -- never takes it."
+            f"{path.name} is locked by another process, so {during} could not proceed. "
+            f"The holder is one this command's advisory write lock does not mediate -- "
+            f"another tool, an open `sqlite3` shell, a Theurian command reading the same "
+            f"file, or a process that exited with a transaction open."
         )
 
 
@@ -333,6 +353,27 @@ def _prepare(connection: sqlite3.Connection, database_path: Path) -> None:
     violation, a conflicting write -- and reporting one of those as a damaged
     database would name the wrong cause and hand out a remedy that deletes the
     state.
+
+    **The boundary this function draws is interpretation versus contention, not
+    before-versus-after ``BEGIN IMMEDIATE``** (#484 round two). Reading it as the
+    latter is what left contention converted here into a damaged-database
+    verdict: both statements below run on the connection *before* the transaction
+    opens, and both can meet another process holding the file. Two members were
+    reproduced against the real CLI, each publishing the delete-your-state cure
+    for a database in perfect condition:
+
+    * a holder in ``PRAGMA locking_mode = EXCLUSIVE``, which the ``_configure``
+      loop meets as ``database is locked``;
+    * a database left in a rollback journal, where ``PRAGMA journal_mode = WAL``
+      has to *change* the mode and takes the conflict itself.
+
+    The predicate was already right -- :func:`_is_contention` returns ``True``
+    for both -- and only its placement was wrong, so the classification moved
+    ahead of the broad catch rather than being widened. What still reaches
+    :class:`StateDatabaseUnreadableError` is what this function is actually for:
+    bytes that cannot be interpreted, plus the permissions face (an unreadable
+    file or an unwritable state directory), which is a different class and is
+    filed as #530 rather than folded in here.
     """
     try:
         _configure(connection)
@@ -344,6 +385,13 @@ def _prepare(connection: sqlite3.Connection, database_path: Path) -> None:
         # one.
         raise
     except Exception as exc:
+        # Ahead of the conversion, never inside it: a file another process is
+        # holding is not a file this build cannot interpret, and the two have
+        # opposite cures. Kept as one arm rather than a separate `except
+        # sqlite3.Error` so there is still exactly one place that decides a
+        # database is unreadable.
+        if isinstance(exc, sqlite3.Error) and _is_contention(exc):
+            raise WriteTransactionBusyError(database_path, _PREPARING_A_CONNECTION) from exc
         raise StateDatabaseUnreadableError(type(exc).__name__) from exc
 
 
@@ -548,7 +596,9 @@ def _open_transaction(database_path: Path) -> Iterator[sqlite3.Connection]:
     processes would.
 
     **Contention on the two statements this function issues itself is
-    converted; the caller's own statements are not.** ``BEGIN IMMEDIATE`` and
+    converted; the caller's own statements are not.** (Contention met *earlier*,
+    while :func:`_prepare` makes the connection usable, is converted there --
+    #484 round two; this paragraph is about the statements below it.) ``BEGIN IMMEDIATE`` and
     ``COMMIT`` are this function's, made on its own behalf, so a ``SQLITE_BUSY``
     arriving from either can say one thing only: another writer holds the
     database. That is a transient condition over an undamaged file, and left as
@@ -574,13 +624,21 @@ def _open_transaction(database_path: Path) -> Iterator[sqlite3.Connection]:
     failure is "the caller's statement against the caller's data", which this
     function must not reinterpret. So the conversion wraps the two statements
     and not the ``yield`` between them -- a busy arriving from the caller's own
-    write keeps travelling as the driver raised it. Under this shape that
-    residue is not reachable anyway: a connection that has completed ``BEGIN
-    IMMEDIATE`` owns the database's write lock, so no later statement of the
-    caller's can be refused for contention. The one contention code that *does*
-    arise past that point in general -- ``SQLITE_BUSY_SNAPSHOT``, from a deferred
-    read upgrading to a write -- needs the deferred open this function never
-    makes; :data:`_CONTENTION_RESULT_CODES` records the measurement.
+    write keeps travelling as the driver raised it.
+
+    **That residue is believed unreachable under WAL, and the claim is scoped the
+    same way the ``COMMIT`` arm's is.** Under ``journal_mode = WAL`` a connection
+    that has completed ``BEGIN IMMEDIATE`` owns the database's write lock, so no
+    later statement of the caller's can be refused for contention; and
+    ``SQLITE_BUSY_SNAPSHOT``, the one contention code that arises past that point
+    in general, needs a *deferred* read upgrading to a write, which this function
+    never opens (:data:`_CONTENTION_RESULT_CODES` records that measurement).
+    Under a rollback journal the argument is weaker and is **not** claimed
+    closed: ``BEGIN IMMEDIATE`` takes only ``RESERVED`` there, and a
+    mid-transaction cache spill has to upgrade to ``EXCLUSIVE``, which a live
+    reader can refuse. That neighbour is unproven in both directions -- nothing
+    here has produced it and nothing here rules it out -- and it is stated rather
+    than folded into the WAL claim.
     """
     connection = sqlite3.connect(database_path, isolation_level=None)
     try:
@@ -616,7 +674,7 @@ def _execute_own(connection: sqlite3.Connection, statement: str, database_path: 
     except sqlite3.Error as exc:
         if not _is_contention(exc):
             raise
-        raise WriteTransactionBusyError(database_path, statement) from exc
+        raise WriteTransactionBusyError(database_path, f"this transaction's `{statement}`") from exc
 
 
 @contextmanager
