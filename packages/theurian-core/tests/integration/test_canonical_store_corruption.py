@@ -46,7 +46,7 @@ import sqlite3
 import subprocess
 import textwrap
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -2947,26 +2947,37 @@ _REPORTS_A_WRITE_CONFLICT: Final = re.compile(r"\b(?:locked|busy|conflict|conten
 
 
 @contextmanager
-def _another_writer_inside_a_transaction(corpus: Corpus) -> Iterator[None]:
-    """Hold a write transaction on the state database from a second connection.
+def _hold(
+    corpus: Corpus, *, before: tuple[str, ...] = (), after: tuple[str, ...] = ()
+) -> Iterator[None]:
+    """Hold a transaction on the state database from a second connection.
 
     A plain `sqlite3` connection in this same interpreter, and deliberately
-    **without** the advisory lock: this models a writer the write lock does not
-    know about -- another tool, an operator's `sqlite3` shell, a Theurian build
-    that crashed with a transaction open -- so the CLI takes its own `flock`
-    normally and then meets `SQLITE_BUSY` at `BEGIN IMMEDIATE`. Taking the lock
-    here instead would produce `WriteLockTimeoutError`, which already has its own
-    branch and its own non-destructive cure, and would measure nothing new.
+    **without** the advisory lock: every shape below models a writer the write
+    lock does not know about -- another tool, an operator's `sqlite3` shell, a
+    Theurian build that crashed with a transaction open -- so the CLI takes its
+    own `flock` normally and then meets the conflict at the database. Taking the
+    lock here instead would produce `WriteLockTimeoutError`, which already has
+    its own branch and its own non-destructive cure, and would measure nothing
+    new.
+
+    ``before`` runs on the holder ahead of `BEGIN IMMEDIATE` and ``after`` runs
+    inside the transaction, which is what lets one helper produce three
+    different *arrival points* in the code under test.
 
     The hold is bounded by this context manager and by
     `PRAGMA busy_timeout = 5000`, so a command under it returns in about five
-    seconds rather than blocking: nothing here can hang the suite, and the two
-    invocations below are why this test is the slowest in the file.
+    seconds rather than blocking: nothing here can hang the suite, and the six
+    invocations these arms make are why this is the slowest test in the file.
     """
     holder = sqlite3.connect(corpus.database, isolation_level=None)
     try:
+        for statement in before:
+            holder.execute(statement)
         holder.execute("BEGIN IMMEDIATE")
         try:
+            for statement in after:
+                holder.execute(statement)
             yield
         finally:
             holder.execute("ROLLBACK")
@@ -2974,29 +2985,121 @@ def _another_writer_inside_a_transaction(corpus: Corpus) -> Iterator[None]:
         holder.close()
 
 
+@contextmanager
+def _a_plain_writer(corpus: Corpus) -> Iterator[None]:
+    """The ordinary conflict: another `BEGIN IMMEDIATE` on a WAL database.
+
+    Converted where the conversion was first written -- `_execute_own`, around
+    the transaction's own `BEGIN IMMEDIATE`. Measured 2026-09-03: the published
+    error names ``this transaction's `BEGIN IMMEDIATE```.
+    """
+    with _hold(corpus):
+        yield
+
+
+@contextmanager
+def _an_exclusive_locker(corpus: Corpus) -> Iterator[None]:
+    """A holder in ``PRAGMA locking_mode = EXCLUSIVE``, which locks the file itself.
+
+    The statement inside the transaction is what actually takes the exclusive
+    lock -- `locking_mode` is a promise the connection keeps from its next read
+    onward, not something the pragma alone acquires -- so without it the holder
+    conflicts no differently from :func:`_a_plain_writer` and this arm would be a
+    duplicate of it.
+
+    Its arrival point is earlier than the plain shape's: the victim's
+    `_configure` loop meets the lock while making its connection usable, before
+    any transaction opens. Measured 2026-09-03: the error names ``preparing a
+    connection to it``.
+    """
+    with _hold(
+        corpus,
+        before=("PRAGMA locking_mode = EXCLUSIVE",),
+        after=("SELECT COUNT(*) FROM schema_metadata",),
+    ):
+        yield
+
+
+@contextmanager
+def _a_rollback_journal_holder(corpus: Corpus) -> Iterator[None]:
+    """A holder on a database left in a rollback journal rather than in WAL.
+
+    The flip is committed and the connection closed before the holder opens, so
+    what the victim finds on disk is a `journal_mode=delete` database -- the
+    state a crash under an older build, or any tool that changed the mode, can
+    leave. The victim's own `PRAGMA journal_mode = WAL` then has to *change* the
+    mode, which needs a lock the holder is sitting on, so the conflict is taken
+    by that pragma. Measured 2026-09-03: the error names ``preparing a connection
+    to it``, like the exclusive arm and unlike the plain one.
+
+    This is the member that made the class visible. A reader looking only at
+    `_open_transaction` sees a conversion around `BEGIN IMMEDIATE` and concludes
+    contention is handled; this arm never reaches that statement.
+    """
+    flip = sqlite3.connect(corpus.database, isolation_level=None)
+    try:
+        flip.execute("PRAGMA journal_mode = delete")
+        mode = flip.execute("PRAGMA journal_mode").fetchone()[0]
+    finally:
+        flip.close()
+    assert mode == "delete", (
+        f"the state database is still in {mode!r}, so this arm is a second copy "
+        f"of the plain one rather than the rollback-journal member"
+    )
+
+    with _hold(corpus):
+        yield
+
+
+#: Every holder shape whose conflict was demonstrated reaching the CLI, with the
+#: production site that converts it.
+#:
+#: Three shapes rather than one because the *arrival point* differs and the
+#: conversion lives in two places: the plain writer is converted in
+#: `_execute_own`, and both of the others are converted in `_prepare` -- which
+#: had no conversion at all until #484 round two, and answered them with the cure
+#: that deletes the state. Reverting that classification takes the second and
+#: third arms RED and leaves the first green, which is what makes them separate
+#: cases rather than three spellings of one.
+_HOLDERS: Final = (
+    ("a plain writer", _a_plain_writer),
+    ("an exclusive locker", _an_exclusive_locker),
+    ("a rollback-journal holder", _a_rollback_journal_holder),
+)
+
+
+@pytest.mark.parametrize(("shape", "holder"), _HOLDERS, ids=[name for name, _ in _HOLDERS])
 @pytest.mark.parametrize("command", [("migrate", "status"), ("migrate", "apply")])
 def test_a_transient_write_conflict_is_never_answered_by_deleting_the_state(
-    corpus: Corpus, command: tuple[str, ...]
+    corpus: Corpus,
+    command: tuple[str, ...],
+    shape: str,
+    holder: Callable[[Corpus], AbstractContextManager[None]],
 ) -> None:
     """A remedy that deletes derived state must not be handed to a fault a retry clears.
 
-    `_prepare`'s docstring draws this line itself and gives the reason: its own
-    conversion "stops short of ``BEGIN IMMEDIATE`` on purpose", because past that
-    point a failure is the caller's statement against the caller's data, and
-    "reporting one of those as a damaged database would name the wrong cause and
-    hand out a remedy that deletes the state".
+    `_prepare`'s docstring draws a boundary and #484 round two corrected which
+    boundary it is: **interpretation versus contention**, not before-versus-after
+    `BEGIN IMMEDIATE`. Reading it as the latter is what left a locked database
+    reported as a damaged one --
     `test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state`
-    holds that boundary for the writer's own reads.
+    holds the interpretation side of the same line for the writer's own reads.
 
-    The `(OSError, sqlite3.Error)` backstops #484 added sit *outside*
-    `write_transaction` rather than inside `_prepare`, so they catch what
-    `_prepare` deliberately declined to convert -- and answer it with the same
-    cure as a directory at the database path. Measured on a provenanced corpus
-    with a second connection holding `BEGIN IMMEDIATE`: both commands publish
-    ``"error": "database is locked"`` with a remedy whose tail is
-    :data:`STATE_REBUILD_REMEDY`, and both exit 0 on the retry once the holder
-    lets go. An operator who follows the remedy deletes a state database that
-    was never damaged, and a scripted agent does it without reading.
+    RED before the fix, GREEN after. Measured on a provenanced corpus: both
+    commands published ``"error": "database is locked"`` with a remedy whose tail
+    is :data:`STATE_REBUILD_REMEDY`, and both exited 0 on the retry once the
+    holder let go. An operator who follows that remedy deletes a state database
+    that was never damaged, and a scripted agent does it without reading.
+
+    **Three holder shapes, because the arrival point is what the fix moved.**
+    A single shape measures a single site, and the round-one version of this test
+    had only the first -- which is why the second and third walked out unnoticed
+    (:data:`_HOLDERS` records the split, and each holder's own docstring records
+    where its conflict lands). The plain writer is converted around the
+    transaction's own `BEGIN IMMEDIATE`; the other two never reach that statement
+    and are converted while the connection is being made usable. Reverting the
+    `_prepare` classification takes arms two and three RED and leaves arm one
+    green -- that asymmetry is the whole reason these are three cases.
 
     **Transience is measured here, not assumed.** The last act is to release the
     holder and re-run, and the property means nothing without it: a remedy that
@@ -3008,16 +3111,18 @@ def test_a_transient_write_conflict_is_never_answered_by_deleting_the_state(
     fix chooses its own wording, and pinning a sentence here would make every
     later improvement a test failure; what is pinned is that the caller is not
     told to delete `.theurian/state/`, by two independent keys -- the shipped
-    constant, and an imperative pattern that catches a reworded sibling.
+    constant, and an imperative pattern that catches a reworded sibling -- and,
+    through :func:`_refusal_envelope`, that the remedy still names something the
+    caller can run.
     """
     assert _INSTRUCTS_DELETING_THE_STATE.search(STATE_REBUILD_REMEDY), (
         "the destructive-instruction key no longer recognises the shipped "
         "sentence it was written for, so every 'clean' verdict below is a key "
         f"that cannot fire rather than a measurement: {STATE_REBUILD_REMEDY!r}"
     )
-    name = " ".join(command)
+    name = f"{' '.join(command)} against {shape}"
 
-    with _another_writer_inside_a_transaction(corpus):
+    with holder(corpus):
         published = _publish(*command)
 
     envelope = _refusal_envelope(published, command=name)

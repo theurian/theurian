@@ -36,9 +36,13 @@ from __future__ import annotations
 
 import fcntl
 import json
+import re
+import shlex
+import shutil
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Final
 
 import pytest
 from migration_fixtures import body_pin
@@ -433,6 +437,198 @@ def test_an_ordinary_lock_file_is_still_taken_and_the_apply_succeeds(
     second = runner.invoke(app, ["migrate", "apply", "--json"])
 
     assert second.exit_code == 0, second.stderr
+
+
+# -- The remedy is executed, not read -----------------------------------------
+#
+# `.theurian/runtime` replaced by a symbolic link out of the tree is refused by
+# containment, and the refusal publishes an instruction to remove that path. The
+# instruction is a shell command, so the only test that can say whether it is
+# safe is one that *runs* it: round two's finding was a remedy that read
+# perfectly and destroyed the link's target when followed, because `rm -rf` on a
+# trailing-slash symlink follows the link. Measured here on `/bin/rm` before this
+# test was written -- `rm -rf link/` left the link in place and took the target
+# directory and its files with it, while `rm -rf link` and `rm link` both removed
+# the link and left the target byte-identical.
+
+
+#: A backquoted `rm` invocation with a real path argument.
+#:
+#: The final argument may not begin with `-`, which is the whole reason this is
+#: not the obvious pattern: the remedy also contains the bare words ``rm -rf``
+#: inside the sentence warning about the trailing slash, and a pattern that
+#: allowed a flag as the last token matched that too (measured while writing
+#: this) -- handing the runner a command with no operand.
+_AN_RM_COMMAND: Final = re.compile(r"`(rm(?:\s+-[A-Za-z]+)*\s+[^\s`-][^\s`]*)`")
+
+#: Anything backquoted that ends in a slash -- the destructive rendering.
+_A_TRAILING_SLASH_PATH: Final = re.compile(r"`[^`]*/`")
+
+
+def _plant_an_escaping_runtime_link(runtime: Path, outside: Path) -> None:
+    """Replace ``runtime`` with a symbolic link to ``outside``, from any prior state.
+
+    Both branches are load-bearing: the first plant replaces the real directory
+    ``theurian init`` created, and a re-plant may find a link the command under
+    test failed to remove -- and ``shutil.rmtree`` does not remove a symbolic
+    link, it declines (silently, under ``ignore_errors``), so a single-branch
+    helper leaves the old link and the next ``symlink_to`` raises ``FileExists``.
+    """
+    if runtime.is_symlink():
+        runtime.unlink()
+    else:
+        shutil.rmtree(runtime, ignore_errors=True)
+    runtime.symlink_to(outside)
+
+
+def _rm_commands(remedy: str) -> list[list[str]]:
+    """Every `rm` the remedy offers, split into argv exactly as written.
+
+    ``shlex.split`` and no shell: the point is to run what the reader is told to
+    run, and a shell would add its own word-splitting to a string this test is
+    supposed to be reproducing faithfully.
+    """
+    return [shlex.split(found) for found in _AN_RM_COMMAND.findall(remedy)]
+
+
+def test_the_published_remedy_for_an_escaping_runtime_link_is_safe_when_executed(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#483 round two. The remedy is run, and the link's target has to survive it.
+
+    RED before the fix, GREEN after. The remedy read ``Delete
+    `.theurian/runtime/` `` -- with the trailing slash -- and BSD ``rm -rf``
+    follows a link spelled that way. Measured end to end: the whole directory the
+    link pointed at, outside the working tree, was destroyed, **and the link was
+    left in place**, so the retry met the identical refusal and the reader had
+    lost data and gained nothing.
+
+    **This executes the instruction rather than matching its text**, which is the
+    only way the property can be checked at all: no string assertion distinguishes
+    a command that removes a link from one that removes what the link points at.
+    Each offered command is run against its own fresh plant, because a reader
+    picks *one* of the two by looking at the path -- running them in sequence
+    would test only the first against the link and leave the second measured
+    against an already-empty path.
+
+    **The target is a directory holding files, which is where the severity is.**
+    A link to a single file loses one file; the measured case was a whole tree.
+    The bytes are compared rather than the existence of the directory, so a
+    command that emptied it without removing it would still fail here.
+
+    **The structural pin rides beside this, and does not replace it.** The
+    destructive asymmetry is BSD's: GNU ``rm`` refuses a trailing-slash symlink
+    outright, so on a GNU box the execution below passes even for the old
+    wording. :func:`test_the_remedy_never_renders_a_path_with_a_trailing_slash`
+    is what catches a re-introduction there.
+
+    ``names_a_remedy`` is deliberately not applied. The ``runtime`` remedy names
+    no Theurian command on purpose -- nothing under that directory needs
+    rebuilding -- so the actionable instruction *is* the ``rm``, and requiring a
+    command would push a false rebuild into it.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _write_migration(project)
+
+    outside = tmp_path / "outside-the-working-tree"
+    outside.mkdir()
+    (outside / "notes.md").write_text("a file the reader has not backed up\n")
+    (outside / "nested").mkdir()
+    (outside / "nested" / "deeper.md").write_text("and one further down\n")
+    before = {
+        path.relative_to(outside).as_posix(): path.read_bytes()
+        for path in sorted(outside.rglob("*"))
+        if path.is_file()
+    }
+    assert before, "the target must hold files, or 'the files survived' asserts nothing"
+
+    runtime = _lock_path(project).parent
+    _plant_an_escaping_runtime_link(runtime, outside)
+
+    refused = runner.invoke(app, ["migrate", "apply", "--json"])
+
+    assert refused.exit_code == EXIT_STATE_ERROR, refused.stdout + (refused.stderr or "")
+    remedy = str(json.loads(refused.stderr)["remedy"])
+    commands = _rm_commands(remedy)
+    assert commands, (
+        f"the remedy offers no runnable `rm`, so there is nothing for a reader to "
+        f"execute and nothing for this test to check: {remedy!r}"
+    )
+
+    for command in commands:
+        target = command[-1]
+        assert not Path(target).is_absolute() and ".." not in Path(target).parts, (
+            f"the remedy instructs removing {target!r}, which is not a path inside "
+            f"the project; this test will not run it"
+        )
+        _plant_an_escaping_runtime_link(runtime, outside)
+
+        completed = subprocess.run(  # noqa: S603 - argv from the remedy, checked above
+            command, cwd=project, capture_output=True, text=True, check=False
+        )
+
+        assert completed.returncode == 0, (
+            f"a command the remedy tells the reader to run failed: "
+            f"{command} -> {completed.stderr.strip()!r}"
+        )
+        assert not runtime.is_symlink() and not runtime.exists(), (
+            f"{command} left the escaping link in place, so the retry meets the "
+            f"identical refusal -- which is exactly what the trailing-slash form did"
+        )
+        assert outside.is_dir(), f"{command} removed the directory the link pointed at"
+        after = {
+            path.relative_to(outside).as_posix(): path.read_bytes()
+            for path in sorted(outside.rglob("*"))
+            if path.is_file()
+        }
+        assert after == before, (
+            f"{command} changed what the link pointed at, outside the working tree. "
+            f"Before: {sorted(before)}; after: {sorted(after)}"
+        )
+
+    retried = runner.invoke(app, ["migrate", "apply", "--json"])
+
+    assert retried.exit_code == 0, (
+        f"following the remedy did not clear the refusal: {retried.stderr}"
+    )
+    assert runtime.is_dir() and not runtime.is_symlink(), (
+        "the retry did not recreate `runtime` as a real directory, so the remedy's "
+        "claim that the next command recreates it is false"
+    )
+
+
+def test_the_remedy_never_renders_a_path_with_a_trailing_slash(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cheap structural guard against re-introducing the destructive form.
+
+    The execution test above is the real property, and it cannot see this one
+    everywhere: BSD ``rm`` destroys through a trailing-slash symlink and GNU
+    ``rm`` refuses outright, so on a GNU runner the old wording would execute
+    harmlessly and pass. What is platform-independent is that the remedy must
+    never *render* the path with a trailing slash -- neither as the standalone
+    `` `.theurian/runtime/` `` the first cut published nor inside an ``rm``
+    invocation -- because a reader on macOS following it loses the target.
+
+    Applied to every backquoted span rather than to the known bad string, so a
+    reworded remedy that reintroduces the shape somewhere else fails here too.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _write_migration(project)
+    outside = tmp_path / "outside-the-working-tree"
+    outside.mkdir()
+    _plant_an_escaping_runtime_link(_lock_path(project).parent, outside)
+
+    refused = runner.invoke(app, ["migrate", "apply", "--json"])
+
+    assert refused.exit_code == EXIT_STATE_ERROR, refused.stdout + (refused.stderr or "")
+    remedy = str(json.loads(refused.stderr)["remedy"])
+    rendered_with_a_slash = _A_TRAILING_SLASH_PATH.findall(remedy)
+    assert rendered_with_a_slash == [], (
+        f"the remedy renders a path with a trailing slash: {rendered_with_a_slash}. "
+        f"`rm -rf` follows a symbolic link spelled that way and deletes what it "
+        f"points at while leaving the link in place (measured on /bin/rm)"
+    )
 
 
 def test_a_directory_at_the_active_pointer_temp_path_fails_cleanly(project: Path) -> None:

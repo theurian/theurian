@@ -38,27 +38,43 @@ from theurian.infrastructure.sqlite.connection import _is_contention
 
 pytestmark = pytest.mark.unit
 
-#: An error SQLite raised, carrying the primary result code for "another writer
-#: holds it". The positive control, and it is not optional: every other case
-#: below asserts ``False``, which a predicate that had stopped looking at
-#: anything would satisfy perfectly.
-_A_RESULT_CODE_SQLITE_SET = sqlite3.OperationalError("database is locked")
-_A_RESULT_CODE_SQLITE_SET.sqlite_errorcode = sqlite3.SQLITE_BUSY
 
-#: The three attribute-less shapes, labelled by what each one is a stand-in for.
-#:
-#: The second is the one that matters most. Its *message* is the exact text a
-#: real conflict carries, so a predicate that matched on the string rather than
-#: on the result code would call it contention -- and the commit that introduced
-#: it claims to be "structural, not a string match". This is where that claim is
-#: checked.
-_WITHOUT_A_RESULT_CODE = {
-    "a bare OperationalError": sqlite3.OperationalError(),
-    "an OperationalError whose message says it": sqlite3.OperationalError("database is locked"),
-    "a module-raised ProgrammingError": sqlite3.ProgrammingError(
-        "Incorrect number of bindings supplied"
-    ),
-}
+def _a_result_code_sqlite_set() -> sqlite3.Error:
+    """An error SQLite raised, carrying the primary code for "another writer holds it".
+
+    The positive control, and it is not optional: every other case below asserts
+    ``False``, which a predicate that had stopped looking at anything would
+    satisfy perfectly.
+
+    A factory rather than a module-level object (round two, code review LOW-4).
+    Exception instances are mutable and ``sqlite_errorcode`` is set here by
+    assignment, so a module-level one is shared state a test could edit for the
+    next test to inherit -- the shape that makes a suite order-dependent under
+    `pytest-randomly`, which this repository runs.
+    """
+    error = sqlite3.OperationalError("database is locked")
+    error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    return error
+
+
+def _without_a_result_code() -> dict[str, sqlite3.Error]:
+    """The three attribute-less shapes, labelled by what each is a stand-in for.
+
+    The second matters most. Its *message* is the exact text a real conflict
+    carries, so a predicate that matched on the string rather than on the result
+    code would call it contention -- and the commit that introduced the predicate
+    claims to be "structural, not a string match". This is where that claim is
+    checked.
+
+    A factory for the same reason as above.
+    """
+    return {
+        "a bare OperationalError": sqlite3.OperationalError(),
+        "an OperationalError whose message says it": sqlite3.OperationalError("database is locked"),
+        "a module-raised ProgrammingError": sqlite3.ProgrammingError(
+            "Incorrect number of bindings supplied"
+        ),
+    }
 
 
 def test_the_shapes_this_module_feeds_really_lack_a_result_code() -> None:
@@ -72,7 +88,7 @@ def test_the_shapes_this_module_feeds_really_lack_a_result_code() -> None:
     """
     carrying = {
         label: getattr(exc, "sqlite_errorcode", None)
-        for label, exc in _WITHOUT_A_RESULT_CODE.items()
+        for label, exc in _without_a_result_code().items()
         if hasattr(exc, "sqlite_errorcode")
     }
 
@@ -80,7 +96,7 @@ def test_the_shapes_this_module_feeds_really_lack_a_result_code() -> None:
         f"a shape this module feeds as attribute-less now carries a result code, "
         f"so the cases below no longer test the absence branch: {carrying}"
     )
-    assert getattr(_A_RESULT_CODE_SQLITE_SET, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY, (
+    assert getattr(_a_result_code_sqlite_set(), "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY, (
         "the positive control lost its result code, so 'the predicate still says "
         "True for something' is no longer being asked"
     )
@@ -101,8 +117,10 @@ def test_an_error_without_a_result_code_is_not_read_as_another_writer() -> None:
     holds the file. Reading it as contention would tell an operator to wait for a
     writer that does not exist, forever.
     """
-    verdicts = {label: _is_contention(exc) for label, exc in _WITHOUT_A_RESULT_CODE.items()}
-    verdicts["an error SQLite raised with SQLITE_BUSY"] = _is_contention(_A_RESULT_CODE_SQLITE_SET)
+    verdicts = {label: _is_contention(exc) for label, exc in _without_a_result_code().items()}
+    verdicts["an error SQLite raised with SQLITE_BUSY"] = _is_contention(
+        _a_result_code_sqlite_set()
+    )
 
     assert verdicts == {
         "a bare OperationalError": False,
