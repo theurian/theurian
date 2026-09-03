@@ -306,35 +306,49 @@ def test_a_lock_file_symlinked_onto_a_file_in_the_tree_never_truncates_that_file
 ) -> None:
     """Issue #481. Taking the lock must not become a destructive write somewhere else.
 
-    ADR-0002 chooses a lock *file* over a PID file because the kernel releases an
-    advisory lock however the holder exits. The file is a synchronisation
-    artefact and nothing else: its bytes are never read, and no caller asks for
-    it to be emptied. `held()` nevertheless opens it with `"w"`, and `open("w")`
-    follows a symbolic link and truncates its target -- so a link at the lock
-    path turns every writer's first act into an `O_TRUNC` on whatever the link
-    names. All three production sites reach that one open (`migrate apply`'s
+    RED before the fix, GREEN after. ADR-0002 chooses a lock *file* over a PID
+    file because the kernel releases an advisory lock however the holder exits.
+    The file is a synchronisation artefact and nothing else: its bytes are never
+    read, and no caller asks for it to be emptied. Acquiring it nevertheless
+    opened it in a mode that follows a symbolic link and truncates its target --
+    so a link at the lock path turned every writer's first act into an `O_TRUNC`
+    on whatever the link named, and the victim file here went to zero bytes at
+    exit 0. All three production sites reach that one open (`migrate apply`'s
     critical section, `findings build`, and `write_transaction`'s own
     acquisition), so the command chosen here is a consumer, not the surface.
 
     **The link is in-tree, and that is the whole finding.** `ProjectPaths.
     write_lock` routes through `_contain`, which resolves the path and refuses it
     when it lands outside the project root -- measured: a lock symlinked to a
-    file outside the tree already exits 4 with a clean envelope and leaves its
-    target intact. A link whose target is *inside* the root resolves inside it,
-    passes containment untouched, and is truncated.
+    file outside the tree already exited 4 with a clean envelope and left its
+    target intact, before any of this. A link whose target is *inside* the root
+    resolves inside it and passed containment untouched.
 
     **How it gets there** is the ADR-0004 delivery `BuildProvenance`'s docstring
     records for the state database: `.theurian/runtime/` is derived and
     git-ignored, and a repository contributor can force-add past the ignore, so a
     clone carries the link and the victim's first write truncates a file in their
-    own working tree. Nothing warns them -- the command exits 0 and reports
+    own working tree. Nothing warned them -- the command exited 0 and reported
     success.
 
-    **The assertions are observables, not the mechanism.** The fix refuses inside
-    the lock class, and which exception subtype it raises is its business; what
-    is pinned is that the target keeps its bytes, that the command refuses rather
-    than reporting success, and that the refusal reaches a `--json` caller as one
-    parseable envelope rather than as a traceback.
+    **The assertions are observables, not the mechanism.** Which exception
+    subtype the refusal raises, and whether it decides by `O_NOFOLLOW` or by a
+    pre-check, is the implementation's business; what is pinned is that the
+    target keeps its bytes, that the command refuses rather than reporting
+    success, and that the refusal reaches a `--json` caller as one parseable
+    envelope on stderr rather than as a traceback.
+
+    **The remedy has to name the file to remove, and that is not decoration.**
+    Round one's adversarial mutations replaced `WriteLockUnusableError.remedy`
+    with "Something went wrong.", and separately dropped `_state_remedy`'s
+    `exc.remedy or ...` so a self-describing subtype fell through to the generic
+    migration-set advice -- both survived the whole suite, because every check on
+    the field asked whether it was non-empty. The generic fallback is worse than
+    empty here: it *does* name a runnable command (`theurian migrate validate`),
+    so even the file's own `names_a_remedy` standard passes it while sending the
+    operator to look at their migration set over a symlink in
+    `.theurian/runtime/`. What kills both is asking that the remedy name the
+    thing to act on.
     """
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     _write_migration(project)
@@ -365,7 +379,17 @@ def test_a_lock_file_symlinked_onto_a_file_in_the_tree_never_truncates_that_file
     assert result.stdout == ""
     error_payload = json.loads(result.stderr)
     assert error_payload.get("error"), error_payload
-    assert error_payload.get("remedy"), error_payload
+    remedy = str(error_payload.get("remedy", ""))
+    # The project-relative spelling, which the absolute path the remedy prints
+    # ends with -- so this admits either spelling while still requiring the
+    # remedy to name the file rather than merely to be a non-empty sentence.
+    names_the_lock_file = lock.relative_to(project).as_posix()
+    assert names_the_lock_file in remedy, (
+        f"the remedy does not name {names_the_lock_file}, the file the operator "
+        f"has to remove, so it is a sentence rather than a cure -- and the "
+        f"generic fallback that lands here when a self-describing subtype's own "
+        f"remedy is dropped sends them to their migration set instead: {remedy!r}"
+    )
 
 
 def test_an_ordinary_lock_file_is_still_taken_and_the_apply_succeeds(
@@ -379,6 +403,11 @@ def test_an_ordinary_lock_file_is_still_taken_and_the_apply_succeeds(
     fresh project, and a regular file already at the path, which is every apply
     after it -- so a fix that refuses either one fails here rather than in the
     field.
+
+    Also the one place the created file's **mode** is observable. The open that
+    stopped following links stopped taking its mode from the umask at the same
+    time, and a lock file nothing reads has no reason to be world-readable
+    (round one, code review M-4).
     """
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     _write_migration(project)
@@ -389,6 +418,17 @@ def test_an_ordinary_lock_file_is_still_taken_and_the_apply_succeeds(
 
     assert first.exit_code == 0, first.stderr
     assert lock.is_file() and not lock.is_symlink()
+    # Binds the file this run *created*, and only that. `os.open`'s mode
+    # argument applies at creation, so a lock file that already existed keeps
+    # whatever mode it had -- a project that ran an earlier build still carries
+    # the umask-derived 0o644 it was created with, and nothing here or in the
+    # product changes it. That gap is recorded rather than asserted: closing it
+    # means chmod-ing a file this code did not create.
+    assert lock.stat().st_mode & 0o777 == 0o600, (
+        f"a newly created lock file is readable beyond its owner "
+        f"({lock.stat().st_mode & 0o777:o}); nothing reads this file's bytes, "
+        f"including its own holder"
+    )
 
     second = runner.invoke(app, ["migrate", "apply", "--json"])
 

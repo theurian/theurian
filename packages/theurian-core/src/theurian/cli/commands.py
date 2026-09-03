@@ -1666,12 +1666,26 @@ def migrate_apply(  # noqa: PLR0911 -- one early return per distinguishable fail
                 )
                 return
     except TheurianError as exc:
-        # Reached only by the lock acquisition itself, above every section:
-        # `WriteLockTimeoutError` when another holder keeps `write_lock` past
-        # `WRITE_LOCK_TIMEOUT_SECONDS`. Nothing inside the `with` block can
-        # raise this -- `already_locked=True` means the transaction never
-        # attempts its own acquisition -- so this is the one place a lock
-        # timeout for this whole critical section is ever caught.
+        # Reached by the `with` statement itself, above every section, and by
+        # three arrivals rather than the one this comment used to name:
+        #
+        # 1. `ProjectError`, from resolving `context.paths.write_lock` -- that
+        #    expression is evaluated here, inside the `try`, and goes through
+        #    `ProjectPaths._contained`, which refuses a lock path that leaves
+        #    the tree (#237, T-5).
+        # 2. `WriteLockUnusableError`, when the lock path is a symbolic link the
+        #    open refuses rather than writing through (#481).
+        # 3. `WriteLockTimeoutError`, when another holder keeps `write_lock` past
+        #    `WRITE_LOCK_TIMEOUT_SECONDS`.
+        #
+        # Nothing *inside* the `with` block adds a fourth: `already_locked=True`
+        # means the transaction never attempts its own acquisition, so this is
+        # still the one place a lock failure for the whole critical section is
+        # caught. Each of the three describes itself, and the branch leans on
+        # that: `_state_remedy` falls through to `exc.remedy` for the first two,
+        # and answers the third from its own `isinstance` arm with text that is
+        # byte-identical to that type's `.remedy` (#404 R1-5). So a fourth
+        # arrival that sets its own remedy needs no new branch there.
         _fail(str(exc), remedy=_state_remedy(exc), as_json=as_json, code=EXIT_STATE_ERROR)
         return
 

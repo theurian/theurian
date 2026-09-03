@@ -167,8 +167,11 @@ class WriteLockUnusableError(TheurianError):
     nevertheless opened it with ``"w"``, and that mode follows a symbolic link and
     ``O_TRUNC``s whatever the link names -- so a link at the lock path turned
     every writer's first act into a destructive write somewhere else, at exit 0
-    with a success report (#481). Measured: a tracked file in the working tree
-    went from 57 bytes to 0.
+    with a success report (#481). Measured with a real CLI run: the tracked file
+    ``test_migrate_apply_lock_confinement.py`` plants at the link's target went
+    from its 49 bytes to 0. The number is that file's ``LOCK_LINK_VICTIM_BODY``
+    and moves with it; what does not move is that the count was nonzero before
+    and zero after.
 
     ``.theurian/runtime/`` is derived and git-ignored (ADR-0004), which is the
     same delivery :class:`~theurian.application.project_service.BuildProvenance`
@@ -428,9 +431,48 @@ class WriteLock:
 
         POSIX mandates ``ELOOP`` when ``O_NOFOLLOW`` is set and the final
         component is a symbolic link, and that is what this platform returns
-        (measured on macOS 26.6: errno 62). A symlink *chain* higher up the path
-        cannot arrive here wearing the same errno: the ``mkdir`` in
-        :meth:`held` walks that prefix first and fails there.
+        (measured on macOS 26.6: errno 62).
+
+        **Why an ``ELOOP`` reaching the translation below is the final component,
+        stated the way the measurements actually came out.** An earlier version
+        of this paragraph said the ``mkdir`` in :meth:`held` "walks that prefix
+        first and fails there", which is false as an unqualified claim
+        (round one, three independent measurements):
+
+        * An **ordinary prefix link** is not refused by either call.
+          ``Path.mkdir(parents=True, exist_ok=True)`` succeeds through a
+          directory symlink -- ``exist_ok`` consults ``is_dir()``, which follows
+          it -- and ``O_NOFOLLOW`` constrains the *final component only*, so the
+          open follows the prefix too and no ``ELOOP`` arises at all. Measured
+          both ways.
+        * A **chain long enough to exhaust ``SYMLOOP_MAX``** does produce
+          ``ELOOP`` at this open, from the prefix -- measured, so the guard is
+          not what the old sentence claimed. It never gets here: ``mkdir`` runs
+          first over that same prefix and fails, with ``EEXIST`` when the lock's
+          own parent is the chain head (measured on a 64-link chain and on a
+          two-link cycle, both ``EEXIST``, not ``ELOOP``) and with ``ELOOP``
+          deeper in.
+        * So the inference holds by *ordering* rather than by errno: ``mkdir``
+          resolves exactly this open's prefix and returns first, leaving only the
+          final component able to raise ``ELOOP`` here -- and ``O_NOFOLLOW``
+          makes that one refuse without following.
+
+        **The bound on that argument, recorded rather than closed.**
+        ``O_NOFOLLOW``'s atomicity covers the final component, not the prefix,
+        and ``mkdir`` and ``open`` are two calls: an attacker who rewrites a
+        prefix component between them defeats the ordering above, and two writers
+        racing that rewrite take locks on two different files rather than
+        contending for one. Closing it needs ``openat`` against a directory
+        descriptor opened with ``O_NOFOLLOW`` at every level, which this class
+        does not do.
+
+        **A contained prefix link relocates the lock, and that is allowed.** With
+        ``.theurian/runtime`` a symlink to another directory *inside* the tree,
+        containment passes -- it is not an escape -- and the lock file is created
+        at the link's target: measured, ``migrate apply`` exits 0 with a
+        zero-byte ``write.lock`` there. Nothing is destroyed, and mutual
+        exclusion survives because every process follows the same link to the
+        same file. It is a relocation, not the truncation #481 is about.
 
         Every other ``OSError`` is left exactly as it was -- an unwritable
         ``.theurian/`` and a directory at the lock path both still raise the same
@@ -438,9 +480,18 @@ class WriteLock:
         this class's cure.
         """
         try:
-            # 0o600, not the umask-derived 0o644 `open("w")` created: a lock file
-            # is read by nobody, including its own holder.
-            return os.open(self._path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            # `O_WRONLY`, not `O_RDWR`: `flock` locks the open file description
+            # whatever its access mode, and nothing reads these bytes -- while
+            # `O_RDWR` would refuse a lock file left at mode 0200, which
+            # `Path.open("w")` opened without complaint (measured: EACCES against
+            # a success). Keeping the request no wider than the old one is what
+            # makes the sentence above about every other `OSError` true.
+            #
+            # 0o600 applies **only when this call creates the file**; a lock file
+            # that already exists keeps the mode it was created with, including
+            # the umask-derived 0o644 an earlier build left behind. Nothing here
+            # chmods a file it did not create.
+            return os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         except OSError as exc:
             if exc.errno != errno.ELOOP:
                 raise

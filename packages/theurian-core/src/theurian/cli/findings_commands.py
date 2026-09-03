@@ -45,9 +45,13 @@ findings_app = typer.Typer(help="Rebuild the review-finding store.", no_args_is_
 JsonOption = Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")]
 
 #: The remedy for an OS refusal *acquiring* the write lock (#404 R1-2). Entering
-#: ``WriteLock.held`` runs ``mkdir`` + ``open("w")`` on ``.theurian/runtime/``,
+#: ``WriteLock.held`` runs ``mkdir`` + ``os.open`` on ``.theurian/runtime/``,
 #: which raise a bare ``OSError`` -- not a ``TheurianError`` -- so on a first build
 #: whose state area is unwritable the raw traceback escaped the command's handler.
+#: One shape of that refusal is no longer bare: a symbolic link at the lock path
+#: is refused by ``O_NOFOLLOW`` and arrives as ``WriteLockUnusableError``, a
+#: ``TheurianError`` carrying its own cure, so it reaches the command's
+#: ``except TheurianError`` below rather than this constant (#481).
 #: Names the precondition to fix first (a writable ``.theurian``), with the retry
 #: as the trailing clause, the same shape ``FindingsStoreError``'s write remedy
 #: takes.
@@ -72,7 +76,7 @@ def _lock_write_section(lock_path: Path) -> WriteSection:
     """A write-section factory whose lock-acquisition ``OSError`` arrives graded.
 
     ``WriteLock(lock_path).held`` is the real section, but its ``__enter__``
-    ``mkdir``/``open`` raise a bare ``OSError`` the command's ``except
+    ``mkdir``/``os.open`` raise a bare ``OSError`` the command's ``except
     TheurianError`` cannot see (#404 R1-2). The ``except OSError`` below spans the
     whole ``with`` -- acquisition, body **and** release -- and converts any bare
     ``OSError`` from it into a :class:`FindingsStoreError` a ``TheurianError``
@@ -84,13 +88,13 @@ def _lock_write_section(lock_path: Path) -> WriteSection:
       ``WriteLockTimeoutError`` is a ``TheurianError``, not an ``OSError``, so it
       passes straight through with the lock-specific remedy #404 R1-5 gave it.
     - **Release.** ``held``'s ``finally`` clauses (``flock(LOCK_UN)`` then
-      ``handle.close()``) run *after* ``replace_all``'s ``os.replace`` has already
-      published the artifact. A bare ``OSError`` there would be mislabelled
-      "acquiring the write lock" with a make-writable remedy -- accepted, not
-      overlooked: closing a lock file nothing was written to on a still-held
-      descriptor does not raise on a local filesystem, and the rebuild is durable
-      by then, so retrying re-derives the identical store and the remedy is
-      harmless. The broad scope is kept -- narrowing it to ``__enter__`` alone
+      ``os.close(fileno)``) run *after* ``replace_all``'s ``os.replace`` has
+      already published the artifact. A bare ``OSError`` there would be
+      mislabelled "acquiring the write lock" with a make-writable remedy --
+      accepted, not overlooked: closing a lock file nothing was written to on a
+      still-held descriptor does not raise on a local filesystem, and the rebuild
+      is durable by then, so retrying re-derives the identical store and the
+      remedy is harmless. The broad scope is kept -- narrowing it to ``__enter__`` alone
       means driving the context manager by hand, more machinery than an
       unreachable, already-durable residue earns -- and the residue is recorded
       here instead.
