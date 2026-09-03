@@ -84,9 +84,9 @@ class IndexSecretScanStatus(StrEnum):
 
     #: No project here, or no published index build to describe.
     NOT_APPLICABLE = "not-applicable"
-    #: An index is published and no scan record names it. Either it predates this
-    #: control, or a withdrawal purge republished the pointer at a build this
-    #: never saw. Honest ignorance, not a clean bill.
+    #: An index is published and no scan record names it: it predates this
+    #: control, the record names some other build, or this installation did not
+    #: build the published index at all. Honest ignorance, not a clean bill.
     UNRECORDED = "unrecorded"
     #: ``security.secretScan`` is ``off``, so nothing was read.
     UNSCANNED = "unscanned"
@@ -169,6 +169,48 @@ def write_index_secret_scan(
     os.replace(temporary, record)  # noqa: PTH105 - os.replace is the atomic primitive
 
 
+def carry_index_secret_scan_forward(
+    paths: ProjectPaths, *, from_build_id: str, to_build_id: str
+) -> None:
+    """Re-record the scan under a build derived from the one it already names.
+
+    A withdrawal-triggered purge is the second writer of ``active-index.json``
+    (``publish_purge_for_withdrawal``): it copies the published build, removes the
+    withdrawn revisions from the copy, and republishes the pointer at a fresh
+    ULID. Nothing was re-scanned, and nothing was *added* -- so the verdict the
+    source build carried is still the verdict for the copy, and leaving it behind
+    made an unrelated ``theurian migrate apply`` clear a ``degraded`` doctor with
+    no rebuild in between (round 1, all three reviewers).
+
+    **Carrying it forward can only over-report, which is the safe direction.** A
+    purge removes rows and never writes one, so the copy holds a subset of what
+    was scanned: the count is an upper bound on what the new build carries, and
+    the item that no longer carries it is the one the operator just withdrew. The
+    next ``theurian index build`` re-scans and rewrites the record, so an
+    over-report lasts exactly until the rebuild the remedy already asks for.
+    Under-reporting is what must not happen, and reporting ``clean`` for a build
+    nobody scanned is exactly that.
+
+    **Only when the record names ``from_build_id``.** A record naming any other
+    build is somebody else's -- a hand edit, a restored file, a build this control
+    never saw -- and restamping it would be inventing a verdict, which is the one
+    thing :func:`published_index_secret_scan` refuses to do.
+
+    Never raises. The write is the same atomic temp-then-replace
+    :func:`write_index_secret_scan` performs, and a failure here degrades to
+    ``UNRECORDED`` -- honest ignorance, never a clean bill -- on a path whose
+    caller has already committed the withdrawal and republished the pointer.
+    """
+    recorded = _read_record(paths.index_secret_scan)
+    if recorded is None or recorded[0] != from_build_id:
+        return
+    _, policy, findings = recorded
+    try:
+        write_index_secret_scan(paths, index_build_id=to_build_id, policy=policy, findings=findings)
+    except OSError:
+        return
+
+
 def published_index_secret_scan(paths: ProjectPaths) -> IndexSecretScanVerdict:
     """What the *published* build's scan found, or why nothing can be said.
 
@@ -177,9 +219,11 @@ def published_index_secret_scan(paths: ProjectPaths) -> IndexSecretScanVerdict:
     a record that is derived, git-ignored, and rewritten by the next build.
 
     **A record for another build is not this build's verdict.** The id is compared
-    rather than trusted, because a withdrawal-triggered purge republishes the
-    pointer at a build this never wrote a record for; reading the stale one would
-    report a verdict about a build that is no longer served.
+    rather than trusted: reading a record that names some other build would report
+    a verdict about an index nobody is being served. The one derived build that
+    legitimately inherits a verdict says so explicitly --
+    :func:`carry_index_secret_scan_forward` re-records under the purged copy's id,
+    rather than this reader guessing that an unfamiliar id is close enough.
     """
     published = read_active_index_pointer(paths).payload
     if published is None:
@@ -284,6 +328,7 @@ __all__ = [
     "LANDED_SECRET_REMEDY",
     "IndexSecretScanStatus",
     "IndexSecretScanVerdict",
+    "carry_index_secret_scan_forward",
     "published_index_secret_scan",
     "write_index_secret_scan",
 ]

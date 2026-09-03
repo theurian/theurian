@@ -755,14 +755,78 @@ def test_following_the_remedy_clears_the_degraded_verdict(planted: Path) -> None
     }
 
 
+#: Retire the *clean* item, which is a withdrawal and therefore triggers the
+#: index purge -- while touching nothing that carries :data:`PLANTED`.
+_DEPRECATION_MIGRATION_ID = "01K1EEEEEE01234567890ABCDE"
+_DEPRECATION = f"""apiVersion: theurian.dev/v1
+id: {_DEPRECATION_MIGRATION_ID}
+createdAt: 2026-09-03T12:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: deprecateItem
+    itemId: {CLEAN_ITEM}
+    reason: superseded by the new rotation runbook
+"""
+
+
+def test_an_unrelated_withdrawal_does_not_clear_the_degraded_verdict(planted: Path) -> None:
+    """The purge is the pointer's second writer, and it carries the verdict along.
+
+    ``publish_purge_for_withdrawal`` mints a fresh build id and republishes the
+    pointer at a *copy* of the published build with the withdrawn revisions
+    removed. Nothing is re-scanned, and nothing is added -- so a record left
+    naming the source build reads as ``unrecorded``, ``problemCount`` drops, and
+    ``theurian doctor`` stops reporting a credential that is still indexed and
+    still served. Measured that way by all three reviewers on 2026-09-03.
+
+    The withdrawal here touches :data:`CLEAN_ITEM` and nothing else, so no route
+    from the operator's action to the secret exists: it is an ordinary governance
+    act, and the verdict about the *other* item has to survive it.
+    """
+    assert _in(planted, "index", "build")[0] != 0
+    _, before = _in(planted, "doctor")
+    assert before["indexSecretScan"]["status"] == "degraded", before["indexSecretScan"]
+    source_build = read_active_index_pointer(ProjectPaths.of(planted)).payload
+    assert source_build is not None
+
+    (planted / f".theurian/migrations/{_DEPRECATION_MIGRATION_ID}-retire.yaml").write_text(
+        _DEPRECATION, encoding="utf-8"
+    )
+    applied = _must(planted, "migrate", "apply")
+
+    assert applied["indexPurge"]["published"] is True, (
+        f"the withdrawal published no purged build, so this asserts nothing: {applied}"
+    )
+    purged = read_active_index_pointer(ProjectPaths.of(planted)).payload
+    assert purged is not None
+    assert purged["indexBuildId"] != source_build["indexBuildId"], (
+        "the pointer still names the build the record was written for"
+    )
+
+    _, after = _in(planted, "doctor")
+
+    assert after["indexSecretScan"] == before["indexSecretScan"], (
+        f"an unrelated withdrawal moved the published verdict: "
+        f"{before['indexSecretScan']} -> {after['indexSecretScan']}"
+    )
+    assert after["problemCount"] == before["problemCount"], (
+        f"an unrelated withdrawal changed doctor's problem count: "
+        f"{before['problemCount']} -> {after['problemCount']}"
+    )
+
+
 def test_a_record_that_names_another_build_is_read_as_unrecorded(planted: Path) -> None:
     """Honest ignorance, not a clean bill.
 
-    A withdrawal-triggered purge republishes the pointer at a build this control
-    never wrote a record for, and a reader that took the record at face value
-    would report a verdict about a build that is no longer served. The id is
-    compared rather than trusted, so the answer is "nothing is known" -- which is
-    not counted as a problem, because it is not evidence of one.
+    A record naming a build the pointer does not is somebody else's -- a hand
+    edit, a restored file, a build this control never saw -- and a reader that
+    took it at face value would report a verdict about an index nobody is being
+    served. The id is compared rather than trusted, so the answer is "nothing is
+    known", which is not counted as a problem because it is not evidence of one.
+
+    The one derived build that legitimately inherits a verdict is the withdrawal
+    purge's copy, and it is re-recorded under its own id rather than admitted
+    here (``test_an_unrelated_withdrawal_does_not_clear_the_degraded_verdict``).
     """
     assert _in(planted, "index", "build")[0] != 0
     record = ProjectPaths.of(planted).index_secret_scan
