@@ -432,12 +432,22 @@ def _state_remedy(exc: TheurianError) -> str:
     refused. One cure for all three would send two of the three callers to the
     wrong file -- and :data:`STATE_REBUILD_REMEDY` is the one that deletes
     something, so it is the one that must never be the default.
+
+    A fourth arrived with #481 -- a symbolic link at the lock path, whose cure is
+    to remove that link -- and it is answered by ``exc.remedy`` rather than by a
+    fifth ``isinstance``, which is the #205 rule ``_context_remedy`` already
+    applies: a self-describing subtype carries its own cure, including subtypes
+    this function has never heard of. It sits at the tail, below the two branches
+    above, so the recorded decision that ``STATE_REBUILD_REMEDY`` is never a
+    default is untouched -- and it changes nothing for the types named above,
+    neither of which sets a remedy. ``WriteLockTimeoutError`` does set one, and
+    it is byte-identical to its branch here (#404 R1-5).
     """
     if isinstance(exc, StateDatabaseUnreadableError | SchemaVersionMismatchError):
         return STATE_REBUILD_REMEDY
     if isinstance(exc, WriteLockTimeoutError):
         return "Wait for the other `theurian` process to finish, then retry."
-    return (
+    return exc.remedy or (
         "Fix the migration set, then retry. `theurian migrate validate` reports what can "
         "be checked without touching state."
     )

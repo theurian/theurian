@@ -288,6 +288,113 @@ def test_a_directory_at_the_database_path_fails_cleanly_and_cleans_up(project: P
     assert not paths.active_pointer.exists()
 
 
+#: What the victim file holds before the lock is taken, and after.
+#:
+#: Content rather than an empty file, because the damage is a truncation: a
+#: guard that refused the link *and* an implementation that never opened
+#: anything are indistinguishable over a file that was empty to begin with.
+LOCK_LINK_VICTIM_BODY = "# Runbook\n\nRotate the signing key every 90 days.\n"
+
+
+def _lock_path(root: Path) -> Path:
+    """Where the advisory lock file lives, from the project root (ADR-0002)."""
+    return root / ".theurian/runtime/write.lock"
+
+
+def test_a_lock_file_symlinked_onto_a_file_in_the_tree_never_truncates_that_file(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #481. Taking the lock must not become a destructive write somewhere else.
+
+    ADR-0002 chooses a lock *file* over a PID file because the kernel releases an
+    advisory lock however the holder exits. The file is a synchronisation
+    artefact and nothing else: its bytes are never read, and no caller asks for
+    it to be emptied. `held()` nevertheless opens it with `"w"`, and `open("w")`
+    follows a symbolic link and truncates its target -- so a link at the lock
+    path turns every writer's first act into an `O_TRUNC` on whatever the link
+    names. All three production sites reach that one open (`migrate apply`'s
+    critical section, `findings build`, and `write_transaction`'s own
+    acquisition), so the command chosen here is a consumer, not the surface.
+
+    **The link is in-tree, and that is the whole finding.** `ProjectPaths.
+    write_lock` routes through `_contain`, which resolves the path and refuses it
+    when it lands outside the project root -- measured: a lock symlinked to a
+    file outside the tree already exits 4 with a clean envelope and leaves its
+    target intact. A link whose target is *inside* the root resolves inside it,
+    passes containment untouched, and is truncated.
+
+    **How it gets there** is the ADR-0004 delivery `BuildProvenance`'s docstring
+    records for the state database: `.theurian/runtime/` is derived and
+    git-ignored, and a repository contributor can force-add past the ignore, so a
+    clone carries the link and the victim's first write truncates a file in their
+    own working tree. Nothing warns them -- the command exits 0 and reports
+    success.
+
+    **The assertions are observables, not the mechanism.** The fix refuses inside
+    the lock class, and which exception subtype it raises is its business; what
+    is pinned is that the target keeps its bytes, that the command refuses rather
+    than reporting success, and that the refusal reaches a `--json` caller as one
+    parseable envelope rather than as a traceback.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _write_migration(project)
+    victim = project / "runbook.md"
+    victim.write_text(LOCK_LINK_VICTIM_BODY)
+    before = victim.read_bytes()
+
+    lock = _lock_path(project)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.unlink(missing_ok=True)
+    lock.symlink_to(Path("../../runbook.md"))
+
+    result = runner.invoke(app, ["migrate", "apply", "--json"])
+
+    assert victim.read_bytes() == before, (
+        f"taking the write lock truncated {victim.name}, a file in the working "
+        f"tree that has nothing to do with locking: {before!r} -> "
+        f"{victim.read_bytes()!r}"
+    )
+    escaped = None if isinstance(result.exception, SystemExit) else result.exception
+    assert escaped is None, (
+        f"the refusal escaped `--json` as a traceback rather than an envelope: {escaped!r}"
+    )
+    assert result.exit_code != 0, (
+        "the command reported success over a lock file it could not honestly "
+        "take, so nothing tells the operator their tree was written through"
+    )
+    assert result.stdout == ""
+    error_payload = json.loads(result.stderr)
+    assert error_payload.get("error"), error_payload
+    assert error_payload.get("remedy"), error_payload
+
+
+def test_an_ordinary_lock_file_is_still_taken_and_the_apply_succeeds(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control for the case above. GREEN before the fix and after.
+
+    A refusal that fired on every lock file would satisfy the property above
+    perfectly and break every write in the product. Both shapes the real world
+    delivers are run here -- the lock file absent, which is the first apply in a
+    fresh project, and a regular file already at the path, which is every apply
+    after it -- so a fix that refuses either one fails here rather than in the
+    field.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _write_migration(project)
+    lock = _lock_path(project)
+    assert not lock.exists(), "the absent-lock arm needs the lock not to exist yet"
+
+    first = runner.invoke(app, ["migrate", "apply", "--json"])
+
+    assert first.exit_code == 0, first.stderr
+    assert lock.is_file() and not lock.is_symlink()
+
+    second = runner.invoke(app, ["migrate", "apply", "--json"])
+
+    assert second.exit_code == 0, second.stderr
+
+
 def test_a_directory_at_the_active_pointer_temp_path_fails_cleanly(project: Path) -> None:
     """#468 section B backstop: `OSError` around `record_state`/`write_active_state`.
 

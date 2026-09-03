@@ -20,6 +20,8 @@ process that a queue inside the daemon cannot reach.
 
 from __future__ import annotations
 
+import errno
+import os
 import sqlite3
 import sys
 import time
@@ -27,7 +29,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO, Final
+from typing import Final
 
 if sys.platform == "win32":  # pragma: no cover - Windows is not a 1.0 target
     # Checked before the import, or `import fcntl` raises first with a message
@@ -90,6 +92,51 @@ class WriteLockTimeoutError(TheurianError):
         super().__init__(
             f"Could not acquire the write lock on {path.name} within {seconds:.0f}s. "
             f"Another Theurian process is writing. If none is running, remove {path}."
+        )
+
+
+class WriteLockUnusableError(TheurianError):
+    """The write-lock path is a symbolic link, so taking the lock would write elsewhere.
+
+    A lock file is a synchronisation artefact and nothing else: its bytes are
+    never read, and no caller asks for it to be emptied. Acquiring the lock
+    nevertheless opened it with ``"w"``, and that mode follows a symbolic link and
+    ``O_TRUNC``s whatever the link names -- so a link at the lock path turned
+    every writer's first act into a destructive write somewhere else, at exit 0
+    with a success report (#481). Measured: a tracked file in the working tree
+    went from 57 bytes to 0.
+
+    ``.theurian/runtime/`` is derived and git-ignored (ADR-0004), which is the
+    same delivery :class:`~theurian.application.project_service.BuildProvenance`
+    records for a doctored state database: a repository contributor can force-add
+    past the ignore, so a clone carries the link and the first write through it
+    truncates a file in the user's own tree.
+
+    **Containment does not cover this and could not.**
+    ``ProjectPaths.write_lock`` routes through ``_contain``, which refuses a path
+    resolving *outside* the project root -- a link pointing at a file *inside* the
+    root resolves inside it and passes untouched, which is exactly the shape that
+    does the damage to a working tree.
+
+    **Sets its own remedy** (the #205 rule): the cure is to remove a file, and no
+    caller can infer that from the exception's type. It is a ``TheurianError``
+    rather than the raw ``OSError`` the refusal arrives as, because
+    ``migrate apply`` wraps its whole critical section in an ``except
+    TheurianError`` -- a bare ``OSError`` there escapes ``--json`` as a Rich
+    traceback with an empty machine channel, which is the reporting failure #483
+    and #484 close on the state-database path.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.remedy = (
+            f"Remove the symbolic link at {path} and retry. It is derived state "
+            f"(ADR-0004) that Theurian recreates, so nothing authored is lost -- and "
+            f"a repository that carries one has committed it past that ignore."
+        )
+        super().__init__(
+            f"The write lock at {path.name} is a symbolic link, not a lock file. Opening "
+            f"it would write through the link to whatever it names, so Theurian refuses "
+            f"to take the lock rather than touching that file."
         )
 
 
@@ -275,6 +322,10 @@ class WriteLock:
     A lock file rather than a PID file, for the reason in ADR-0002: PIDs are
     recycled, so a stale PID file can name a live unrelated process. An advisory
     lock is released by the kernel when the holder exits, however it exits.
+
+    The file carries no content in either direction -- nothing writes bytes into
+    it and nothing reads them out -- which is why :meth:`_open` neither truncates
+    it nor follows a link at its path (#481).
     """
 
     def __init__(self, lock_path: Path, timeout: float = WRITE_LOCK_TIMEOUT_SECONDS) -> None:
@@ -284,19 +335,55 @@ class WriteLock:
     @contextmanager
     def held(self) -> Iterator[None]:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self._path.open("w")
+        fileno = self._open()
         try:
-            self._acquire(handle)
+            self._acquire(fileno)
             try:
                 yield
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(fileno, fcntl.LOCK_UN)
         finally:
-            handle.close()
+            os.close(fileno)
 
-    def _acquire(self, handle: IO[str]) -> None:
+    def _open(self) -> int:
+        """Open the lock file without following a link and without emptying it.
+
+        ``os.open`` rather than ``Path.open("w")``, for two independent reasons
+        that the mode string got wrong at once (#481):
+
+        * **No ``O_TRUNC``.** The lock file's bytes carry no meaning to anything
+          here, so clearing them was never a step this class needed -- and
+          truncation is what turns a mis-aimed open into data loss rather than
+          into a harmless one.
+        * **``O_NOFOLLOW``, and the refusal is the ``open`` itself.** A
+          ``Path.is_symlink()`` check ahead of the open would be a decision about
+          a path taken before the open acts on it, and the window between the two
+          is a window an attacker with write access to ``.theurian/runtime/``
+          picks. ``O_NOFOLLOW`` moves the decision into the kernel's own
+          resolution of this call, where there is no window to pick.
+
+        POSIX mandates ``ELOOP`` when ``O_NOFOLLOW`` is set and the final
+        component is a symbolic link, and that is what this platform returns
+        (measured on macOS 26.6: errno 62). A symlink *chain* higher up the path
+        cannot arrive here wearing the same errno: the ``mkdir`` in
+        :meth:`held` walks that prefix first and fails there.
+
+        Every other ``OSError`` is left exactly as it was -- an unwritable
+        ``.theurian/`` and a directory at the lock path both still raise the same
+        errno to the same handlers, since neither is this class and neither has
+        this class's cure.
+        """
+        try:
+            # 0o600, not the umask-derived 0o644 `open("w")` created: a lock file
+            # is read by nobody, including its own holder.
+            return os.open(self._path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        except OSError as exc:
+            if exc.errno != errno.ELOOP:
+                raise
+            raise WriteLockUnusableError(self._path) from exc
+
+    def _acquire(self, fileno: int) -> None:
         deadline = time.monotonic() + self._timeout
-        fileno = handle.fileno()
         while True:
             try:
                 fcntl.flock(fileno, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -377,6 +464,10 @@ def write_transaction(
             path takes. Raised before the database is opened, so no transaction
             has begun -- see :meth:`WriteLock._acquire`. Never raised when
             ``already_locked`` is ``True``, since no acquisition happens here.
+        WriteLockUnusableError: If ``lock_path`` is a symbolic link, which taking
+            the lock would otherwise write through (#481). Raised in the same
+            place and never when ``already_locked`` is ``True``, for the same
+            reason -- see :meth:`WriteLock._open`.
     """
     if already_locked:
         yield from _open_transaction(database_path)
