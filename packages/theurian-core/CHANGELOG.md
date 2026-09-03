@@ -49,7 +49,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   here rather than a gate: under **`block`** the index is published, `theurian
   index build` exits **6** — distinct from 1, so a pipeline can tell "published
   with a finding" from "nothing was published" — and `theurian doctor` reports
-  `indexSecretScan: degraded` with the supersede/retire remedy until a rebuild
+  `indexSecretScan: degraded` with the get-it-out-of-the-corpus remedy until a rebuild
   comes back clean; under **`warn`** the finding is reported and the exit stays
   0; under **`off`** nothing is read. Nothing is ever retired automatically: the
   detector is best effort, and acting on a false positive would be silent data
@@ -66,9 +66,17 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   is a function of the rows the build wrote and cannot carry the existence of one
   it withheld. `theurian doctor` publishes only the status, the policy and the
   count: a `--report` is pasted into public issues, and the build's own output is
-  where items are named. If the record cannot be written after the index has
-  published, the report still lists what was found and carries a named
-  `recordWarning` saying the verdict will not reach `doctor`.
+  where items are named. The channel index is a position in the list the serving
+  surface publishes, not in the store's own — `knowledge.get` withholds an edge
+  whose far end the caller may not see, so numbering the unfiltered list would
+  send a reader to a different, benign row. If the record cannot be written after
+  the index has published, the report still lists what was found and carries a
+  named `recordWarning` saying the verdict will not reach `doctor`.
+
+  The remedy names three routes rather than two, because two of the channels do
+  not live in a revision: a new `upsertRevision` replaces a body, a title and a
+  source anchor, a relation note needs `removeRelation` and survives superseding,
+  and `deprecateItem` withholds all of them.
 
   `theurian ingest` still runs no scan of its own and needs none, for a reason
   about **storage**: it stores no content at all — a manifest and an in-memory

@@ -132,7 +132,9 @@ def index_build(
     the index is published and the command exits 6, and `theurian doctor` goes on
     reporting it until a build finds nothing; under `warn` it is reported and the
     exit stays 0; under `off` nothing is scanned. Getting a landed secret out
-    means rotating it and then superseding the revision or retiring the item.
+    means rotating it and then removing it from the corpus by the route its
+    channel needs: a new `upsertRevision` for a body, a title or a source anchor,
+    `removeRelation` for a note on an edge, `deprecateItem` for any of them.
     """
     from theurian.cli.commands import _emit, _require_project  # noqa: PLC0415 - cycle
 

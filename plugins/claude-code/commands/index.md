@@ -32,8 +32,10 @@ say the index is live. Only exit 1 means nothing was published.
   keep reporting it until a build comes back clean. Never report 6 as a failed
   build, and never re-run the build in response to it — the finding is in the
   content, so it comes back. Getting a landed secret out means rotating the value
-  and then superseding the revision or retiring the item, which is what the
-  `remedy` field says.
+  and then removing it from the corpus by the route its channel needs — a new
+  `upsertRevision` for a body, a title or a source anchor, `removeRelation` for a
+  note on an edge, `deprecateItem` for any of them — which is what the `remedy`
+  field says.
 - `secretFindings` names the item and the channel the string sits in and quotes
   at most four characters of the match. It is the only account of what was found
   — the record `doctor` reads afterwards carries a count and no items — so relay

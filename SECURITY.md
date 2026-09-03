@@ -513,8 +513,10 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   degraded` until a rebuild comes back clean; under `warn` it is reported and
   the exit stays 0. Nothing is ever retired automatically: the detector is
   best effort, and retiring an item on a false positive is silent data loss.
-  Getting one out afterwards means superseding the revision or retiring the
-  item. Run a repository secret scanner — Theurian is not one and is not a
+  Getting one out afterwards depends on which channel it is in: a new
+  `upsertRevision` replaces a body, a title and a source anchor, a relation note
+  needs `removeRelation` and survives superseding, and `deprecateItem` withholds
+  all of them. Run a repository secret scanner — Theurian is not one and is not a
   replacement for one.
 - **Network-level attackers.** The OSS Core is loopback-only by design. Exposing
   it to a network is unsupported. A hosted deployment requires TLS, OAuth 2.1,
