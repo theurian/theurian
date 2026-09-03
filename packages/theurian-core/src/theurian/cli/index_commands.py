@@ -206,20 +206,7 @@ def index_build(
     # ranked path use the build that was just published.
     BuildProvenance.default().record_index(paths.root, index_build_id)
     findings: list[str] = list(report["secretFindings"])
-    # Written on every publish, clean ones included: this is what clears a
-    # previous `degraded` as well as what raises a new one, and a record kept only
-    # on trouble would leave the last bad verdict standing over a fixed corpus.
-    #
-    # Unguarded, and that is not an oversight: nothing reaches this line without
-    # the same directory having been written twice already. A read-only
-    # `.theurian/state/` fails much earlier than `_publish` -- measured
-    # 2026-09-03 with the directory at 0o500, where SQLite cannot create the
-    # build at all and `_run_build` converts it to `{error, remedy}` at exit 1
-    # ("unable to open database file"). A `state` symlink escaping the tree is
-    # refused at `paths.index_for` before the build starts, by the same
-    # `_contained` chokepoint this helper's path routes through. So it opens no
-    # CP-2 escape that the two writes above it do not already own.
-    write_index_secret_scan(
+    warning = _record_the_scan(
         paths, index_build_id=index_build_id, policy=policy, findings=len(findings)
     )
     if findings:
@@ -227,6 +214,8 @@ def index_build(
         # .cleanup_remedy` already has: the build did publish, and telling the
         # operator otherwise would send them to rebuild something that is fine.
         report = {**report, "remedy": LANDED_SECRET_REMEDY}
+    if warning is not None:
+        report = {**report, "recordWarning": warning}
     # Publishing does not reclaim (ADR-0024 point 6). Reaping the previous build
     # here is what made ADR-0022's "the previous build is not deleted" false, and
     # measured against a reader it cost 2,627 errors against 40 answered searches
@@ -241,6 +230,44 @@ def index_build(
         # canonical store already serves, so `block` is loud rather than
         # obstructive.
         raise typer.Exit(EXIT_SECRET_FOUND)
+
+
+def _record_the_scan(
+    paths: ProjectPaths, *, index_build_id: str, policy: SecretScanPolicy, findings: int
+) -> str | None:
+    """Write this build's scan record, or say why the report is its only account.
+
+    Written on every publish, clean ones included: this is what clears a previous
+    ``degraded`` as well as what raises a new one, and a record kept only on
+    trouble would leave the last bad verdict standing over a fixed corpus.
+
+    **A failure here degrades to a warning and never to a traceback**, because of
+    where in the command it sits. The index is already published and the pointer
+    already swapped; the findings the caller is about to read are the only account
+    of what was found, and an unhandled ``OSError`` in this window replaced them
+    with a Rich traceback and *empty stdout* -- reproduced round 1 with the record
+    path replaced by a directory, and reachable in the field through ENOSPC. So
+    the build reports what it found, says the signal will not survive the
+    terminal, and still exits on the policy.
+
+    The exception's type name, never its message: an ``OSError``'s ``strerror``
+    carries the operator's absolute paths, which no payload here puts in (the rule
+    ``_purge_fields``' failure reason already holds). ``theurian doctor`` answers
+    ``unrecorded`` for this build afterwards -- honest ignorance, and never a clean
+    bill -- which is what makes degrading safe rather than convenient.
+    """
+    try:
+        write_index_secret_scan(
+            paths, index_build_id=index_build_id, policy=policy, findings=findings
+        )
+    except OSError as exc:
+        return (
+            f"The index published, but this build's secret-scan record could not be written "
+            f"({type(exc).__name__}), so `theurian doctor` will report `unrecorded` for it "
+            f"rather than what is listed above. Make `.theurian/state/` writable and run "
+            f"`theurian index build` again to record the verdict."
+        )
+    return None
 
 
 def _require_buildable_state(paths: ProjectPaths, as_json: bool) -> ActiveState | None:

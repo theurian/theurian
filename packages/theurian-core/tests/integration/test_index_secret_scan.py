@@ -988,6 +988,43 @@ def test_an_unrelated_withdrawal_does_not_clear_the_degraded_verdict(planted: Pa
     )
 
 
+def test_a_record_that_cannot_be_written_still_reports_what_the_build_found(
+    planted: Path,
+) -> None:
+    """The findings are the only account of the secret, so nothing may replace them.
+
+    ``write_index_secret_scan`` runs *after* the pointer swap, so by the time it
+    can fail the index is published and the caller is owed the list. An unhandled
+    ``OSError`` in that window ended the command in a Rich traceback with **empty
+    stdout** -- reproduced round 1 by leaving a directory where the record file
+    goes, and reachable in the field through ENOSPC.
+
+    The arm degrades to a named warning: the build still reports, still exits 6
+    under ``block``, and says the verdict will not survive this terminal. The
+    warning names no path and no ``strerror``, both of which carry the operator's
+    absolute paths.
+    """
+    record = ProjectPaths.of(planted).index_secret_scan
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.mkdir()
+
+    code, payload = _in(planted, "index", "build")
+
+    assert payload, "the command produced no payload at all, which is the escape"
+    assert code == 6, f"a failed record write changed the policy's exit: {code}"
+    assert payload["published"] is True, payload
+    assert any(DIRTY_ITEM in line for line in _findings(payload)), (
+        f"the findings were lost with the record: {payload}"
+    )
+    warning = str(payload["recordWarning"])
+    assert "unrecorded" in warning and "theurian index build" in warning, warning
+    assert str(planted) not in warning, f"the warning published an absolute path: {warning}"
+    assert PLANTED not in json.dumps(payload), "the failed-record arm echoed the credential"
+
+    _, doctor = _in(planted, "doctor")
+    assert doctor["indexSecretScan"]["status"] == "unrecorded", doctor["indexSecretScan"]
+
+
 def test_a_record_that_names_another_build_is_read_as_unrecorded(planted: Path) -> None:
     """Honest ignorance, not a clean bill.
 
