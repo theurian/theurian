@@ -35,6 +35,46 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   forced — and no store written under the old behaviour can exist, because a
   history carrying such a commit produced no store at all.
 
+- **`theurian doctor`'s initial-index step answers whether the *current*
+  knowledge state is built, so a pulled-but-not-applied checkout is no longer
+  reported as built** ([#451](https://github.com/theurian/theurian/issues/451),
+  [#519](https://github.com/theurian/theurian/pull/519)). The step asked whether
+  an active-state pointer existed at all, and that pointer is never removed once
+  a first `theurian migrate apply` has written it — so from that moment the step
+  printed "Knowledge state is built." for every later migration set, and the arm
+  that names `theurian migrate apply` as the remedy could not be reached. That is
+  exactly the state a `git pull` leaves a deployment in, which is when someone is
+  most likely to run `doctor` to find out what to do, and `theurian project
+  status` answered `stateBuilt: false` about the same tree in the same minute.
+  The predicate is now `project status`' own — the state database for the hash
+  the *loaded* migration set resolves to — so the two commands address one file
+  and answer alike.
+
+  **A migration set the loader refuses gets its own sentence** instead of being
+  folded into "not built": "Cannot tell what state this project is at: its
+  migration set could not be read. Run `theurian migrate validate`, which prints
+  why." It names no culprit on purpose. An incomplete install — published JSON
+  Schemas missing, or a schema that cannot be read — arrives on the same arm as a
+  malformed migration file, and a sentence blaming the operator's YAML would send
+  the reader to their own files for a broken installation. The refusal itself is
+  `migrations-valid`'s to publish, in the same report.
+
+  **The step's `detail` no longer announces retrieval indexes as future work.**
+  It read "Retrieval indexes arrive in Milestone 5; there is nothing to build
+  yet." while `theurian index build` was a shipped command; it now names which
+  artefact the step is about and where the other one is reported: "This is the
+  canonical state `theurian migrate apply` writes. The retrieval index over it is
+  separate: `theurian index build` builds it and `theurian index status` reports
+  it." **`doctor` still has no step for the retrieval index itself** — `theurian
+  index status` is the surface that answers `built`, and §6.2 row 17 of
+  [the requirements analysis](../../docs/architecture/requirements-analysis.md)
+  now records that divergence and its owner,
+  [#528](https://github.com/theurian/theurian/issues/528).
+
+  Not a breaking change: every arm of the step is still `not-applicable`, and no
+  JSON key, step id or exit code moves. What changed is which sentences a report
+  carries.
+
 ## [0.1.0.dev18] - 2026-09-03
 
 ### Added
