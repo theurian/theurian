@@ -72,14 +72,27 @@ from theurian.security.project_config import SecretScanPolicy
 #: would send an operator who fixed every named one back to a build that finds
 #: more. The next build re-scans and names the next batch, which is why the loop
 #: terminates without the number ever being published.
+#:
+#: **``removeRelation`` is named because two of the three channels do not live in
+#: a revision.** ``supersede the revision`` clears a body, a title and a source
+#: anchor, because all three are revision metadata that a new ``upsertRevision``
+#: replaces. A relation ``note`` is on the *edge*, not on either item -- measured
+#: 2026-09-03 (round 2): after superseding the named item's revision the build
+#: reported the same finding and ``knowledge.get`` went on serving the note. Naming
+#: only the two routes that cannot work would be a remedy that leaves the
+#: credential live, which is the failure the whole string is written against.
+#: Still one constant for two readers: the finding's channel tag says which route
+#: applies, and ``doctor``'s copy names all three because it publishes no channel.
 LANDED_SECRET_REMEDY: Final = (
     "Treat the value as exposed and rotate it: it is in this project's canonical state and "  # noqa: S105 - prose about a secret, not one
     "in Git history, and `knowledge.search` and `knowledge.get` already serve it whatever "
     "this index holds. Then get it out of the corpus -- supersede the revision with a new "
-    "`upsertRevision`, or retire the item with `deprecateItem` -- and run `theurian migrate "
-    "apply` followed by `theurian index build`, which names the items it reported, up to its "
-    "reporting limit; rebuild again after fixing them, in case more were found than it "
-    "listed. If it is not a secret, set security.secretScan to warn or off in "
+    "`upsertRevision` for a finding in a body, a title or a source anchor, or drop the edge "
+    "with `removeRelation` for one in a relation note, which superseding does not touch; "
+    "retiring the item with `deprecateItem` withholds all of them -- and run `theurian "
+    "migrate apply` followed by `theurian index build`, which names the items it reported, "
+    "up to its reporting limit; rebuild again after fixing them, in case more were found "
+    "than it listed. If it is not a secret, set security.secretScan to warn or off in "
     ".theurian/config.yaml (block, warn, off; block is what an absent key selects)."
 )
 
@@ -194,6 +207,16 @@ def write_index_secret_scan(
     rather than refused -- this runs after the index is published, and raising
     here is the traceback-with-empty-stdout the caller's own guard exists to
     prevent.
+
+    **That zeroing is defensive and is unreachable through this package**, said
+    here rather than left for a reader to discover -- the same annotation
+    :func:`_read_record`'s blank-``indexBuildId`` arm carries, for the same
+    reason. ``IndexBuilder`` reads the policy once before it touches a body and
+    returns no findings at all under ``off``, so the only caller always passes
+    zero with it and deleting the ternary moves nothing (measured 2026-09-03). It
+    stays because this is the writer of a *published* record and the next caller
+    is not in this file; it is **not** covered by a test row, because a row over
+    it could not fail.
 
     Raises:
         OSError: If the record cannot be written. The caller decides what that

@@ -251,11 +251,15 @@ def _in_project(
 def test_a_published_index_carrying_a_secret_exits_six_not_one(tmp_path: pathlib.Path) -> None:
     """Exit 6 is the plugin's signal that a build **succeeded** and needs attention.
 
-    A row here rather than only in Core's own suite because the number crosses a
-    process boundary: the plugin runs `theurian index build` and reads
-    ``returncode``, so a change that collapsed 6 into 1 would be invisible to
-    every in-process test while turning "published, rotate this" into "the build
-    failed" at the consumer. Mutating the constant to 1 reddens exactly here.
+    A row here rather than only in Core's own suite because this is the **only
+    place the number is read the way the plugin reads it**: out of a process's
+    exit status, from the installed console script, with Core's own Typer runner
+    nowhere in the call. Ten rows in
+    ``packages/theurian-core/tests/integration/test_index_secret_scan.py`` assert
+    the same 6 and would redden with it (measured 2026-09-03), so this is not the
+    only guard against the constant moving; what those rows cannot see is the
+    packaging and the entry point between the constant and the consumer, which is
+    what a contract test exists for (this module's own opening paragraph).
 
     The payload is asserted with it: a caller that branches on 6 has to find the
     findings on **stdout**, because they are the only account of what was found.

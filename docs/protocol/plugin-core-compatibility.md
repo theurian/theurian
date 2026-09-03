@@ -216,9 +216,11 @@ branch on — are covered by neither.
 `theurian index build`'s exit **6** ([#329](https://github.com/theurian/theurian/issues/329))
 needs no exemption, and the distinction is worth stating because the row above
 is easy to read too widely. The row is *changing an exit code's meaning*: a
-number a client already branches on coming to mean something else. 6 is a **new**
-code on a command that had two, 0 and 1, and both keep exactly the meanings they
-had — 0 published and clean, 1 published nothing. What is new is an outcome the
+number a client already branches on coming to mean something else. 6 is a code
+this command **did not previously emit**, and every code it did emit keeps
+exactly the meaning it had — 0 published and clean, 1 published nothing, and the
+shared codes any command can reach for a malformed invocation or a state error
+(2 from Typer, 4 from `EXIT_STATE_ERROR`) unchanged. What is new is an outcome the
 command could not previously report at all: a complete index published whose
 content carries a secret-shaped string (SEC-11). A client that has never seen 6
 treats it as "non-zero" and reports a failure, which is wrong but not silently

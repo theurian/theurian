@@ -98,6 +98,21 @@ DIRTY_BODY = (
 #: control on the exact served string, never a subset of it).
 TITLED_BODY = "# Placeholder\n\nNothing in this body is credential-shaped.\n"
 
+#: Every migration operation that actually gets a reported credential out of the
+#: served corpus, as the remedy has to spell them.
+#:
+#: **Three, not two, and the third is the one a channel can need on its own.**
+#: A new ``upsertRevision`` replaces a body, a title and a source anchor, because
+#: all three are revision metadata; a relation ``note`` is on the edge and
+#: survives it -- measured round 2, where superseding the named item's revision
+#: left the same finding standing and ``knowledge.get`` still served the note. A
+#: remedy naming only the routes that cannot work is a remedy that leaves the
+#: credential live.
+#:
+#: Matched against ``remedy.split()`` rather than by substring, so a wording that
+#: mentions "supersede" in prose without naming the operation does not satisfy it.
+_ROUTES_OUT = {"`upsertRevision`", "`removeRelation`", "`deprecateItem`"}
+
 CLEAN_ITEM = "architecture.auth-policy"
 DIRTY_ITEM = "architecture.legacy-keys"
 DRAFT_ITEM = "architecture.unreleased-keys"
@@ -817,9 +832,10 @@ def test_doctor_reports_the_published_builds_secret_as_degraded(planted: Path) -
     assert scan["status"] == "degraded", f"doctor did not report the landed secret: {scan}"
     assert scan["findings"] == 1, scan
     assert scan["policy"] == "block", scan
-    remedy = str(scan["remedy"]).lower()
-    assert "supersede" in remedy and "retire" in remedy, (
-        f"the remedy for a landed secret must name supersede/retire: {scan['remedy']}"
+    remedy = str(scan["remedy"])
+    assert _ROUTES_OUT.issubset(remedy.split()), (
+        f"the remedy for a landed secret does not name every route out of the corpus "
+        f"({sorted(_ROUTES_OUT)}): {scan['remedy']}"
     )
 
 
@@ -883,10 +899,10 @@ def test_a_build_that_found_something_carries_the_remedy_under_either_policy(
 
     assert code == exit_code, payload
     assert _findings(payload), "no finding, so the remedy assertion below says nothing"
-    remedy = str(payload["remedy"]).lower()
-    assert "rotate" in remedy, f"the remedy does not tell the operator to rotate: {remedy}"
-    assert "supersede" in remedy and "retire" in remedy, (
-        f"the remedy names no route out of the corpus: {payload['remedy']}"
+    remedy = str(payload["remedy"])
+    assert "rotate" in remedy.lower(), f"the remedy does not tell the operator to rotate: {remedy}"
+    assert _ROUTES_OUT.issubset(remedy.split()), (
+        f"the remedy names no route out of the corpus ({sorted(_ROUTES_OUT)}): {remedy}"
     )
 
 
