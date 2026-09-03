@@ -101,6 +101,41 @@ follow from that and are deliberate:
   (``MAX_SOURCE_FILE_BYTES`` for a body, ``MAX_YAML_BYTES`` for the migration)
   rather than a bound on their number.
 
+  **``theurian index build`` multiplies it differently, and pays it on every
+  rebuild** (#329). ``index_builder`` calls this once per served document, once
+  per author-written field of each of that revision's source anchors, and once
+  per relation ``note`` this deployment would publish -- so the corpus is walked
+  whole, not as a delta, every time an index is built. There is no equivalent of
+  the accept path's per-file cap: a document is bounded at authoring time by
+  ``MAX_SOURCE_FILE_BYTES``, but nothing bounds how many documents a project
+  holds, so the total is linear in the corpus and is paid by a command a CI job
+  can run on every merge.
+
+  Measured 2026-09-03 at ``7887c078`` on an M-series laptop, ``off`` against the
+  shipped ``block`` over the same corpus, ``--no-embeddings``, median of three:
+
+  ============================================ ========== ========== =========
+  Corpus                                       ``off``    ``block``  ratio
+  ============================================ ========== ========== =========
+  6 x 1 MiB, worst-case ``sk-`` runs, 0 found     6.705 s   12.697 s   1.894x
+  6 x 1 MiB, benign prose                         7.043 s    7.565 s   1.074x
+  200 x 2 KiB, benign prose                       0.653 s    0.700 s   1.071x
+  ============================================ ========== ========== =========
+
+  Which is **0.999 s per MiB** on the adversarial shape -- the same constant the
+  per-body table above prices, arriving here once per document -- and 0.087 s per
+  MiB on prose. The last row is the axis the byte figures cannot show: it prices
+  the *per-item* work, one ``list_relations`` query and each anchor's fields, at
+  **0.23 ms per indexed item** whether or not the item has an edge or an anchor
+  string worth scanning. On a 10,000-item corpus that is ~2.3 s of fixed cost on
+  every rebuild before a single byte of body is considered.
+
+  Recorded rather than bounded, for the reason the accept path's figures are: the
+  worst-case row needs a body written to provoke it, and a build is a local
+  command whose input is the operator's own approved corpus. What would change
+  the reckoning is a corpus large enough for the per-item term to dominate, which
+  is a limit this module does not impose and the builder does not either.
+
 **A finding never carries the secret.** It names the family, where the match
 starts, and at most :data:`REDACTED_PREFIX_CHARS` leading characters. A refusal
 is printed to a terminal and, under ``warn``, published into an ``accept
