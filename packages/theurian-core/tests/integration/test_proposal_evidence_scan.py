@@ -53,7 +53,12 @@ from theurian.application.proposal_service import (
 )
 from theurian.cli.main import app
 from theurian.cli.migration_pipeline import rehearse_migration_set
-from theurian.cli.propose_commands import _ACCEPT_STEPS
+from theurian.cli.propose_commands import (
+    _ACCEPT_STEPS,
+    _ROTATE_ADVICE_STEP,
+    _SKIPPED_CHANNEL_STEP,
+    _accept_steps,
+)
 from theurian.domain.enums import KnowledgeKind
 from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId, RevisionId, TaskId
 from theurian.domain.knowledge import SourceAnchor
@@ -167,7 +172,9 @@ def _configure(paths: ProjectPaths, policy: str) -> None:
     paths.config.write_text(f'security:\n  secretScan: "{policy}"\n', encoding="utf-8")
 
 
-def _with_a_secret_in_the_reasoning(service: ProposalService) -> DraftedProposal:
+def _with_a_secret_in_the_reasoning(
+    service: ProposalService, *, local: bool = False
+) -> DraftedProposal:
     """The ordinary proposal, with a credential pasted into ``evidence.reasoning``.
 
     Written after the draft rather than passed through :class:`Evidence`, because
@@ -177,8 +184,13 @@ def _with_a_secret_in_the_reasoning(service: ProposalService) -> DraftedProposal
     migration stay clean on purpose -- a proposal that leaked through both would
     be refused by the channels that already existed, and every test here would
     pass with the evidence channel absent.
+
+    ``local`` drafts into the git-ignored ``.theurian/proposals-local/`` instead
+    (ADR-0028), which is the case the scan's own docstring argues at length and
+    which no test held: the skip mutation -- returning before the yield when
+    ``location.local`` -- survived the suite.
     """
-    drafted = service.draft(_request())
+    drafted = service.draft(_request(), local=local)
     evidence = drafted.directory / EVIDENCE_FILE
     document = json.loads(evidence.read_text(encoding="utf-8"))
     document["reasoning"] = f"Verified against staging with THEURIAN_TOKEN={PLANTED_TOKEN}"
@@ -269,6 +281,77 @@ def test_warn_accepts_and_reports_the_evidence_finding_with_the_value_withheld(
     assert PLANTED_TOKEN not in rendered, f"the finding quoted the credential: {rendered}"
 
 
+@pytest.mark.parametrize("local", [False, True], ids=["tracked", "local"])
+def test_the_rotate_step_asserts_no_destination_for_an_evidence_only_finding(
+    service: ProposalService, paths: ProjectPaths, local: bool
+) -> None:
+    """The step a ``warn`` acceptance prints must hold for the channel it is about.
+
+    ``_ROTATE_ADVICE_STEP`` used to say the flagged value was "in the working
+    tree, and in Git history once this is committed". That is true of the five
+    channels an acceptance *lands* and false of the sixth: nothing lands the
+    evidence record, and under ``--local`` it enters no commit at all -- so the
+    step asserted a commit that :data:`_LOCAL_ACCEPT_FIRST_STEP`, printed
+    directly below it, says will not happen. The service-side sibling was
+    rewritten when the sixth channel landed; this one was missed.
+
+    Both proposal locations, because the contradiction is only visible in one of
+    them and the correction has to hold in both. The finding is evidence-only by
+    construction -- the body and the migration are clean -- so a step that
+    happens to be true about a landed body cannot stand in for it.
+    """
+    _configure(paths, "warn")
+    drafted = _with_a_secret_in_the_reasoning(service, local=local)
+
+    accepted = service.accept(drafted.proposal_id)
+
+    locations = {finding.location for finding in accepted.secret_scan.findings}
+    assert locations == {_AT_EVIDENCE}, (
+        f"the finding is not evidence-only ({locations}), so this test would pass on a step "
+        f"that is true about some other channel"
+    )
+    steps = _accept_steps(accepted)
+    assert steps[0] is _ROTATE_ADVICE_STEP, "the rotate step is not the first thing said"
+    for claim in ("Git history", "committed", "landed"):
+        assert claim not in _ROTATE_ADVICE_STEP, (
+            f"the rotate step still asserts {claim!r}, which is false for the evidence channel "
+            f"and, under --local, contradicts the step printed directly below it: {steps[1]}"
+        )
+    assert "rotate" in _ROTATE_ADVICE_STEP, "the step no longer says the one thing it is for"
+
+
+def test_a_local_proposals_evidence_record_is_scanned_the_same_way(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The ``--local`` case the scan argues at length and no test held (round 1, M-5).
+
+    ``_evidence_text``'s docstring devotes a paragraph to why a ``--local``
+    proposal is scanned even though its record travels nowhere -- git-ignored
+    keeps the bytes out of a *commit* and not off the disk, which is why
+    ``_secret_refusal``'s rotate advice is already unconditional. Nothing
+    exercised it: the skip mutation, returning early when ``location.local``,
+    survived the suite with every other test green. Two reviewers measured that
+    independently.
+
+    The locality is asserted rather than assumed, because a fixture that quietly
+    drafted into the tracked directory would make this test a duplicate of the
+    one above while reading as the local case.
+    """
+    drafted = _with_a_secret_in_the_reasoning(service, local=True)
+    assert drafted.directory.parent == paths.proposals_local, (
+        f"the fixture drafted into {drafted.directory.parent}, not the git-ignored location, so "
+        f"this is the tracked case under another name"
+    )
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    published = f"{caught.value}\n{caught.value.remedy}"
+    assert _AT_EVIDENCE in published, f"the local record was not scanned: {published}"
+    assert PLANTED_TOKEN not in published, f"the refusal quoted the credential: {published}"
+    assert "proposals-local" in published, "the remedy sends the author to the wrong directory"
+
+
 def test_off_scans_the_evidence_record_no_more_than_anything_else(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
@@ -332,6 +415,56 @@ def test_an_unreadable_evidence_record_does_not_stop_a_warn_acceptance(
     accepted = service.accept(drafted.proposal_id)
 
     assert accepted.secret_scan.findings == (), "an unreadable record produced a finding"
+
+
+def test_warn_says_which_channel_it_could_not_read_instead_of_looking_clean(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """An unreadable channel under ``warn`` is reported, not silently stepped over.
+
+    ``warn`` proceeds past a record it cannot read, which is right -- ``warn``
+    never stops an acceptance. What was wrong is that the result of proceeding
+    was indistinguishable from a clean scan: no finding, no indicator, and an
+    operator who chose ``warn`` had silently been given ``off`` for that channel
+    with no way to find out (round 1, M-3). Reporting is the whole of what
+    ``warn`` produces.
+
+    The clean case is asserted beside it, because "the field is populated" is
+    also satisfied by a field that is always populated.
+    """
+    _configure(paths, "warn")
+    drafted = service.draft(_request())
+    evidence = drafted.directory / EVIDENCE_FILE
+    evidence.unlink()
+    evidence.symlink_to(paths.root.parent / "elsewhere.json")
+
+    accepted = service.accept(drafted.proposal_id)
+
+    assert accepted.secret_scan.findings == (), "the fixture planted a finding as well as a skip"
+    assert accepted.secret_scan.skipped == (_AT_EVIDENCE,), (
+        f"an unreadable evidence record reports {accepted.secret_scan.skipped}, so under warn it "
+        f"is indistinguishable from a clean scan"
+    )
+    steps = _accept_steps(accepted)
+    assert steps[0] is _SKIPPED_CHANNEL_STEP, f"the author is not told, first: {steps[0]}"
+    assert "secretScanSkipped" in steps[0], "the step does not name the field that says what"
+
+
+def test_a_clean_warn_acceptance_reports_no_skipped_channel(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The negative control for the field above, and for the step it prepends."""
+    _configure(paths, "warn")
+    drafted = service.draft(_request())
+
+    accepted = service.accept(drafted.proposal_id)
+
+    assert accepted.secret_scan.skipped == (), (
+        f"a readable record was reported as skipped: {accepted.secret_scan.skipped}"
+    )
+    assert _accept_steps(accepted)[0] is not _SKIPPED_CHANNEL_STEP, (
+        "the skipped-channel step fires when nothing was skipped"
+    )
 
 
 def test_a_proposal_with_no_evidence_record_at_all_is_still_accepted(

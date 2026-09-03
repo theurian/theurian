@@ -53,6 +53,7 @@ from fakes.ids import SeededIdGenerator
 from theurian.application import proposal_service
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
+    _AT_EVIDENCE,
     _MAX_NAME_CHARS,
     _MAX_REPORT_CHARS,
     _REDACTED_NAME,
@@ -79,6 +80,7 @@ from theurian.infrastructure.filesystem.migration_loader import (
     validate_migration_document,
 )
 from theurian.security.content_secrets import scan_text
+from theurian.security.yaml_loading import MAX_RENDERED_SCALAR_CHARS
 
 pytestmark = pytest.mark.integration
 
@@ -272,12 +274,17 @@ _UNGATED_BY_CONSTRUCTION: Final[Mapping[tuple[str, str], str]] = {
     ("refuse", "error.strerror or 'it could not be read'"): "OSError.strerror, or a literal",
     ("_commit", "exc.strerror or 'the write failed'"): "OSError.strerror, or a literal",
     ("_ensure_local_is_ignored", "reason"): "OSError.strerror, or a literal",
-    ("_evidence_indeterminate", "_evidence_failure_reason(error)"): (
-        "a fixed table keyed on the exception's type, never its text"
-    ),
-    ("_evidence_unscannable", "_evidence_failure_reason(error)"): (
-        "a fixed table keyed on the exception's type, never its text"
-    ),
+    # The `fallthrough` is each caller's own literal, and it is part of the key:
+    # one shared default was right for the indeterminate diagnosis and a false
+    # statement for the scan, which never parses anything (round 1, M-6).
+    (
+        "_evidence_indeterminate",
+        "_evidence_failure_reason(error, fallthrough='it is not a JSON object')",
+    ): "a fixed table keyed on the exception's type, never its text",
+    (
+        "_evidence_unscannable",
+        "_evidence_failure_reason(error, fallthrough='the security layer refused it')",
+    ): "a fixed table keyed on the exception's type, never its text",
     # -- gated where they were built, interpolated again here ----------------
     # One hop, and the hop is named. Splitting these is what round one asked
     # for: as a single `named` row, the reason below was *false* at the
@@ -511,6 +518,57 @@ def test_a_name_the_detector_reports_is_withheld_whole_and_not_in_part() -> None
     assert rendered == _REDACTED_NAME, f"a dirty name was rendered as {rendered!r}"
     longest = max(NAME_SECRET.split("-"), key=len)
     assert longest not in rendered, f"{longest!r} survived into {rendered!r}"
+
+
+def test_both_bounds_hold_the_values_their_reasons_were_written_about() -> None:
+    """The two constants are pinned by their *values*, not by fixtures built from them.
+
+    Every other test here sizes its fixture off the constant -- ``"a" *
+    (_MAX_NAME_CHARS + 500)`` -- so all of them move with it and none of them
+    holds it. Setting ``_MAX_NAME_CHARS = 10_000_000`` survived the full suite,
+    which restores #339's own defect (an unbounded ``contentFile`` echoed into a
+    terminal) with everything green (round 1, M-1).
+
+    Derived and not literal: ``_MAX_NAME_CHARS`` is *defined* as
+    ``MAX_RENDERED_SCALAR_CHARS`` on the recorded ground that a second number
+    beside it would be two answers to one question, so recomputing that identity
+    is what pins it. ``_MAX_REPORT_CHARS`` has no such source and is asserted
+    outright, against the two measurements its own comment records: 779 and 763
+    characters, which it must clear, and a ceiling that keeps it a bound at all.
+    """
+    assert _MAX_NAME_CHARS == MAX_RENDERED_SCALAR_CHARS == 200, (
+        "the name bound has drifted from the codebase's own answer to how much of an untrusted "
+        "scalar may be interpolated; #339's echo is bounded by this number and nothing else"
+    )
+    assert _MAX_REPORT_CHARS == 2000, "the report bound moved without its reason moving"
+    longest_legitimate_report = 779
+    assert longest_legitimate_report < _MAX_REPORT_CHARS, (
+        "the report bound now cuts the longest legitimate diagnosis this gate was measured "
+        "against, which is the failure that made it a second constant"
+    )
+
+
+def test_every_withheld_literal_says_something() -> None:
+    """Three of the four redaction literals emptied out green (round 1, M-2).
+
+    ``endswith("")``, ``x == ""`` after an empty return, and ``"" in message``
+    are all vacuously true, so ``_TRUNCATED``, ``_REDACTED_REPORT`` and
+    ``_AT_EVIDENCE`` could each be blanked with the suite still passing --
+    publishing a cut with no marker, a withheld report as the empty string, and a
+    finding located by nothing. ``_REDACTED_NAME`` was held, by an equality
+    against a non-empty value; the asymmetry is the whole finding.
+
+    Content and not only non-emptiness: a literal reduced to ``"x"`` is non-empty
+    and says nothing, so each is checked for the word that carries its meaning.
+    """
+    for literal, word in (
+        (_TRUNCATED, "truncated"),
+        (_REDACTED_NAME, "secret"),
+        (_REDACTED_REPORT, "secret"),
+        (_AT_EVIDENCE, "evidence"),
+    ):
+        assert literal.strip(), "a redaction literal is empty, so every assertion on it is vacuous"
+        assert word in literal, f"{literal!r} no longer says {word!r}, so it explains nothing"
 
 
 def test_a_clean_name_is_still_quoted_and_whole() -> None:

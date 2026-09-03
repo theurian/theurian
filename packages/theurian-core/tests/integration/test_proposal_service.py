@@ -8,6 +8,7 @@ it directly, so a defect is located in the packaging rather than in Typer.
 from __future__ import annotations
 
 import errno
+import functools
 import json
 import os
 import shutil
@@ -2359,29 +2360,34 @@ def test_an_evidence_file_that_is_a_fifo_says_it_is_not_a_regular_file(
 def test_every_read_failure_the_evidence_read_can_raise_has_its_own_reason() -> None:
     """The correspondence the closed table rests on, checked rather than assumed.
 
-    ``_evidence_failure_reason``'s fallthrough is a *verdict* -- "it is not a
-    JSON object" -- not an "unknown" label, so a refusal type with no entry is
-    reported as a fact about a document nobody managed to parse. Each type
-    ``read_source_file`` documents itself as raising is therefore driven here,
-    directly rather than through a fixture: a filesystem cannot produce every
-    one of them on demand, and the mapping is what is under test.
+    ``_evidence_failure_reason``'s fallthrough is a *verdict* and not an
+    "unknown" label, so a refusal type with no entry is reported as a fact that
+    was never established. Each type ``read_source_file`` documents itself as
+    raising is therefore driven here, directly rather than through a fixture: a
+    filesystem cannot produce every one of them on demand, and the mapping is
+    what is under test.
+
+    The verdict is the *caller's* since round one (M-6): the indeterminate
+    diagnosis reaches the table with ``error=None`` and means "it parsed and was
+    not an object", while the scan never parses anything at all, so one shared
+    default was right for one caller and a false statement for the other. A
+    sentinel is passed here, so a type that stops being in the table is visible
+    as itself rather than wearing either caller's words.
 
     Dies if any entry is removed from ``_EVIDENCE_FAILURE_REASONS``: each
     assertion below is the entry's own text, and every one of these types falls
-    through to the same wrong sentence without it.
+    through to the sentinel without it.
     """
-    assert _evidence_failure_reason(IrregularSourceFileError("a socket")) == (
-        "it is not a regular file"
+    unmapped = "FELL THROUGH THE TABLE"
+    reason = functools.partial(_evidence_failure_reason, fallthrough=unmapped)
+
+    assert reason(IrregularSourceFileError("a socket")) == "it is not a regular file"
+    assert reason(InputTooLargeError("source file size", 1, 2)) == "it is larger than the size cap"
+    assert reason(PathEscapeError("x", "/root")) == "its path escapes the project"
+    assert reason(FileNotFoundError(errno.ENOENT, "No such file")) == "no such file", (
+        "an OSError still answers with its own strerror, and is not in the table"
     )
-    assert _evidence_failure_reason(InputTooLargeError("source file size", 1, 2)) == (
-        "it is larger than the size cap"
-    )
-    assert _evidence_failure_reason(PathEscapeError("x", "/root")) == (
-        "its path escapes the project"
-    )
-    assert _evidence_failure_reason(FileNotFoundError(errno.ENOENT, "No such file")) == (
-        "no such file"
-    ), "an OSError still answers with its own strerror, and is not in the table"
+    assert reason(None) == unmapped, "the fallthrough is no longer the caller's to choose"
 
 
 def test_a_dangling_symlink_evidence_file_is_indeterminate_not_absent(
