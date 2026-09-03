@@ -1149,7 +1149,26 @@ def project_status(as_json: JsonOption = False) -> None:
     except TheurianError as exc:
         pointer_failure = exc
 
-    database = context.paths.database_for(context.state_hash)
+    # The one place outside `_require_project` that asks where the state
+    # database is, and so the one place its containment refusal has to be graded
+    # separately (#483). This command does not go through `_require_project` at
+    # all -- it answers at exit 0 for a directory that is not a project -- so the
+    # fix there could not reach it, and it published the same Rich traceback with
+    # an empty stdout.
+    #
+    # A refusal, not a degradation, and that is the difference from
+    # `pointer_failure` above. An unreadable pointer costs this payload one
+    # field, so the command answers with the rest and says which field is
+    # missing. A state-database path that resolves outside the project root is
+    # `.theurian/state/` doctored past ADR-0004's ignore, and no partial answer
+    # about a project in that condition is worth publishing: it takes
+    # `_require_project`'s grading for the same exception, `EXIT_STATE_ERROR`
+    # with the error's own remedy.
+    try:
+        database = context.paths.database_for(context.state_hash)
+    except TheurianError as exc:
+        _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
+        return
 
     _emit(
         {
@@ -2252,7 +2271,30 @@ def _require_project(as_json: bool) -> tuple[CommandContext, Path]:
         raise
 
     _verify_history(context, as_json)
-    return context, context.paths.database_for(context.state_hash)
+    # Outside the `try` above, because `resolve_context` is not what raises here
+    # -- and outside every handler in it, which is the defect (#483).
+    # `database_for` routes through `ProjectPaths._contained` -> `_contain`,
+    # which raises `ProjectError` when the state-database path resolves outside
+    # the project root: a symlink under the git-ignored `.theurian/state/` that a
+    # repository contributor force-added past ADR-0004's ignore. Being the last
+    # statement of this function, that refusal escaped every caller of it at
+    # once and reached a `--json` caller as a Rich traceback carrying absolute
+    # source paths, with nothing on the machine channel. Measured over
+    # `CLI_SWEEP`: six of the seven swept commands that resolve the path,
+    # `project status` being the seventh through its own direct call.
+    #
+    # Graded exactly as the `PathEscapeError` branch above grades the same kind
+    # of thing -- `EXIT_STATE_ERROR` and the error's own remedy -- because it is
+    # the same kind of thing: a knowledge-state problem the user must fix, not a
+    # broken command. `exc.remedy` bare rather than with a default, for that
+    # branch's reason: `_contain` is the only raiser reachable from here and it
+    # sets `KNOWLEDGE_DIR_ESCAPE_REMEDY` on both of its raise sites.
+    try:
+        database = context.paths.database_for(context.state_hash)
+    except TheurianError as exc:
+        _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
+        raise
+    return context, database
 
 
 __all__ = [

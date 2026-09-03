@@ -2475,22 +2475,23 @@ def test_a_non_iso_valid_to_refuses_rather_than_being_read_as_open_ended(
 # -- A second damage model: an artefact at the path, not a cell in the file ----
 #
 # Everything above damages a *cell*: the file at the state-database path is a
-# readable SQLite database, and what is wrong is a value inside it. The
-# properties below damage the **path itself** -- a directory where the database
-# should be (#484) -- which is a different failure entirely: nothing is
-# interpreted, because nothing is opened. It arrives through the same delivery
-# the cell model assumes, `.theurian/state/` being derived and git-ignored
-# (ADR-0004) and therefore force-addable past the ignore by a repository
-# contributor -- the vector `BuildProvenance`'s own docstring records -- and it
-# is met *before* the converters this file otherwise sweeps.
+# readable SQLite database, and what is wrong is a value inside it. The two
+# properties below damage the **path itself** -- a symbolic link where the
+# database should be (#483), and a directory where it should be (#484) -- which
+# is a different failure entirely: nothing is interpreted, because nothing is
+# opened. Both arrive through the same delivery the cell model assumes,
+# `.theurian/state/` being derived and git-ignored (ADR-0004) and therefore
+# force-addable past the ignore by a repository contributor -- the vector
+# `BuildProvenance`'s own docstring records -- and both are met *before* the
+# converters this file otherwise sweeps.
 #
 # They belong here rather than in a new file because the observable is the one
 # this file already measures: what a `--json` caller receives. An exception that
 # escapes a `--json` command publishes a Rich traceback carrying absolute source
 # paths and leaves the machine channel empty, which
 # `test_every_cli_failure_over_a_damaged_database_carries_a_remedy` states as the
-# hardest case for the remedy contract -- it just could not reach this one,
-# because its sweep damages cells and a directory is not a cell.
+# hardest case for the remedy contract -- it just could not reach these two,
+# because its sweep damages cells and neither of these is a cell.
 
 
 @dataclass(frozen=True, slots=True)
@@ -2542,6 +2543,125 @@ def _error_envelope(published: Published) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+#: The two swept commands that resolve no state-database path at all, exactly.
+#:
+#: Written as the *exemption* rather than as the seven that do refuse, so the
+#: refusing population stays derived from :data:`CLI_SWEEP` and a command added
+#: to the sweep in a later milestone is classified by measurement rather than by
+#: whoever remembers to extend a second list. `project list` answers from the
+#: registry and `version` from the running build; neither calls
+#: `_require_project`, so neither ever asks `ProjectPaths.database_for` where the
+#: database is.
+#:
+#: An exact set in both directions. A command that *stopped* resolving the state
+#: path would join it and fail here -- which is the vacuity failure that matters,
+#: since "no swept command published a traceback" is satisfied perfectly by a
+#: sweep in which no command reaches the path at all.
+COMMANDS_THAT_RESOLVE_NO_STATE_DATABASE_PATH: Final = frozenset({"project list", "version"})
+
+
+def _escape_the_state_database_path(corpus: Corpus) -> Path:
+    """Replace the state database with a symlink to an equivalent file outside the root.
+
+    The target is a byte copy of the corpus's own database, so the escape is the
+    *only* thing wrong with it: a build that followed the link would find a
+    perfectly readable state and answer from it, which is precisely the outcome
+    containment exists to prevent (T-5, #237). A dangling link would be refused
+    by an `open()` that never got as far as the containment check, and would
+    leave this property measuring `FileNotFoundError` instead.
+    """
+    outside = corpus.pristine.with_name("outside-the-working-tree.sqlite")
+    shutil.copy2(corpus.database, outside)
+    corpus.database.unlink()
+    corpus.database.symlink_to(outside)
+    return outside
+
+
+def test_no_swept_command_answers_an_escaping_state_database_path_with_a_traceback(
+    corpus: Corpus,
+) -> None:
+    """Issue #483. A containment refusal must reach a `--json` caller as the contract.
+
+    `ProjectPaths.database_for` routes through `_contained` -> `_contain`, which
+    raises `ProjectError` -- a `TheurianError` -- when the state-database path
+    resolves outside the project root. `_require_project` wraps only
+    `resolve_context()` in its `try`; the `database_for` call is the last
+    statement of the function and sits *outside* it, so that refusal escapes
+    every one of its callers.
+
+    Three observable families in one input, which is why this is one test rather
+    than three:
+
+    - **an error that fires for one input and not another** -- the same command
+      answers cleanly over an honest path and escapes over this one;
+    - **a state artefact planted at a governed path** -- `.theurian/state/` is
+      derived and git-ignored (ADR-0004), so a repository contributor can
+      force-add a symlink past the ignore, the delivery `BuildProvenance`'s
+      docstring records for a doctored database;
+    - **a published field** -- an uncaught exception under `--json` prints a Rich
+      traceback whose frames carry absolute paths into the installed source tree,
+      and leaves the machine channel with nothing to parse.
+
+    Quantified over :data:`CLI_SWEEP`, the file's existing exact partition of the
+    shipped Typer app, so a command added in a later milestone is swept here the
+    moment it is swept anywhere. The set that must refuse is *derived* from it by
+    subtracting :data:`COMMANDS_THAT_RESOLVE_NO_STATE_DATABASE_PATH`, so nothing
+    here is a second list to keep in step.
+
+    Asserted on observables and not on a mechanism: which exception type is
+    caught, and where the `try` is widened to, is the fix's business. What is
+    pinned is that no command lets one out, that the seven which resolve the path
+    refuse, and that each refusal is a parseable envelope naming a next action.
+    """
+    outside = _escape_the_state_database_path(corpus)
+
+    published = {" ".join(command): _publish(*command) for command in CLI_SWEEP}
+
+    swept = frozenset(published)
+    refusing = frozenset(name for name, one in published.items() if one.code != 0)
+    assert refusing == swept - COMMANDS_THAT_RESOLVE_NO_STATE_DATABASE_PATH, (
+        "which commands resolve the state-database path has moved, so this "
+        "property no longer measures what it claims to. Newly refusing: "
+        f"{sorted(refusing - (swept - COMMANDS_THAT_RESOLVE_NO_STATE_DATABASE_PATH))}; "
+        f"no longer refusing: "
+        f"{sorted((swept - COMMANDS_THAT_RESOLVE_NO_STATE_DATABASE_PATH) - refusing)}"
+    )
+    assert outside.read_bytes() == corpus.pristine.read_bytes(), (
+        "a swept command wrote through the escaping link into the file outside "
+        "the working tree, which is the containment failure itself rather than "
+        "the reporting one this property is about"
+    )
+
+    escaped = {name: one.traceback for name, one in published.items() if one.traceback}
+    assert escaped == {}, (
+        f"{len(escaped)} commands answered an escaping state-database path with an "
+        f"uncaught exception. Under `--json` that reaches an operator as a Rich "
+        f"traceback carrying absolute source paths, and a caller parsing the "
+        f"contract receives an empty document: {escaped}"
+    )
+
+    unparseable = {
+        name: (one.stdout + one.stderr)
+        for name, one in published.items()
+        if one.code != 0 and _error_envelope(one) is None
+    }
+    assert unparseable == {}, (
+        f"{len(unparseable)} refusals published no JSON envelope at all: {unparseable}"
+    )
+
+    without_a_remedy = {
+        name: envelope
+        for name, one in published.items()
+        if one.code != 0 and (envelope := _error_envelope(one)) is not None
+        if not str(envelope.get("error", "")) or not str(envelope.get("remedy", ""))
+    }
+    assert without_a_remedy == {}, (
+        f"{len(without_a_remedy)} refusals published an envelope with an empty "
+        f"`error` or `remedy`, so a caller is told something went wrong and given "
+        f"no next action: {without_a_remedy}"
+    )
 
 
 def _plant_a_directory_at_the_state_database_path(corpus: Corpus) -> None:
