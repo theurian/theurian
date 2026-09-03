@@ -12,7 +12,28 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **One commit whose message is not valid UTF-8 no longer costs the whole
+  review-finding corpus**
+  ([#496](https://github.com/theurian/theurian/issues/496), ADR-0029 decision 3).
+  `theurian findings build` decoded the whole `git log` output in a single call,
+  so a public commit carrying bytes that are not UTF-8 — git validates nothing
+  about a commit message's *encoding* — failed the build with *"Cannot read
+  refs/remotes/origin/main history"* and a remedy naming a `git fetch` that
+  cannot help a history that is already local and readable. Every well-formed
+  trailer beside that commit was lost with it, and public history is signed and
+  append-only, so there was no forward fix.
+
+  The stream is framed before it is decoded now, and each record is decoded on
+  its own. A message that will not decode costs its own record's trailers and
+  nothing else: the commit is counted in the build report's `rejected` total and
+  recorded with a bounded, replacement-decoded excerpt of its message, so the
+  loss is visible to whoever ran the build and never silent. Nothing on the
+  rejected side reaches a `review.findings` response, that excerpt included. The
+  trailer grammar is untouched, so `parserStamp` does not move and no rebuild is
+  forced — and no store written under the old behaviour can exist, because a
+  history carrying such a commit produced no store at all.
 
 ## [0.1.0.dev18] - 2026-09-03
 
@@ -179,27 +200,6 @@ Nothing yet.
 
 
 ### Fixed
-
-- **One commit whose message is not valid UTF-8 no longer costs the whole
-  review-finding corpus**
-  ([#496](https://github.com/theurian/theurian/issues/496), ADR-0029 decision 3).
-  `theurian findings build` decoded the whole `git log` output in a single call,
-  so a public commit carrying bytes that are not UTF-8 — git validates nothing
-  about a commit message's *encoding* — failed the build with *"Cannot read
-  refs/remotes/origin/main history"* and a remedy naming a `git fetch` that
-  cannot help a history that is already local and readable. Every well-formed
-  trailer beside that commit was lost with it, and public history is signed and
-  append-only, so there was no forward fix.
-
-  The stream is framed before it is decoded now, and each record is decoded on
-  its own. A message that will not decode costs its own record's trailers and
-  nothing else: the commit is counted in the build report's `rejected` total and
-  recorded with a bounded, replacement-decoded excerpt of its message, so the
-  loss is visible to whoever ran the build and never silent. Nothing on the
-  rejected side reaches a `review.findings` response, that excerpt included. The
-  trailer grammar is untouched, so `parserStamp` does not move and no rebuild is
-  forced — and no store written under the old behaviour can exist, because a
-  history carrying such a commit produced no store at all.
 
 - **Two `theurian findings build` runs at once no longer tear each other's
   store, and a reader never observes a half-built one**
