@@ -12,13 +12,20 @@ echoed at full length into the terminal and into ``accept --json``.
 Two kinds of test live here, and the first is the one that closes the class:
 
 * :func:`test_every_interpolation_in_a_message_is_gated_or_recorded` reflects
-  over the module's own syntax tree, so the population is *every* interpolation
-  that can reach a caller rather than the ones a reader thought to enumerate. A
-  new raw ``{name}`` in a new refusal reddens it without anyone remembering this
-  file exists.
+  over ``proposal_service.py``'s own syntax tree, so the population is *every*
+  interpolation in that module rather than the ones a reader thought to
+  enumerate. A new raw ``{name}`` in a new refusal reddens it without anyone
+  remembering this file exists.
 * The end-to-end tests drive representative members of that population through
   the real :class:`ProposalService`, because a gate the refusal path does not
   actually call is a gate that passes its own unit test.
+
+**The population is one module's, and the boundary is deliberate.** The accept
+path also reaches ``migration_loader.py``, which prefixes a landed migration's
+filename onto every error it raises and is read by four other commands besides;
+``_names``' own docstring records that as an out-of-module population, measured
+and not closed. A reader who takes the reflection below for a whole-codebase
+claim will be wrong about that one.
 
 Its own module rather than an addition to ``test_proposal_secret_scan.py``,
 which is already 3,500 lines: the fixtures below are that module's, copied for
@@ -504,16 +511,24 @@ def test_a_mismatched_id_is_refused_without_printing_the_id(service: ProposalSer
     assert ID_SECRET not in published, f"the authored id was echoed whole: {published}"
 
 
-def test_a_migration_the_parser_refuses_prints_neither_its_name_nor_the_snippet(
+def test_a_migration_the_parser_refuses_withholds_the_name_and_the_quoted_token(
     service: ProposalService,
 ) -> None:
     """``_parse_migration``: two channels in one message, and both pre-scan.
 
     The filename is one. The other is PyYAML's own text, which quotes the
-    offending source line through ``Mark.get_snippet`` -- bounded to a window
-    around the mark, which cuts a 43-character token and echoes a 23-character one
-    whole. The positive control below is the raw parser error, so this test knows
-    the snippet really did carry the credential before the gate saw it.
+    offending source line through ``Mark.get_snippet``. The positive control
+    below is the raw parser error, so this test knows the snippet really did
+    carry the whole token before the gate saw it.
+
+    **What it holds is that a token the detector reports is withheld, not that
+    the snippet carries nothing.** ``get_snippet`` is bounded to a window around
+    the mark, so a *longer* token arrives already cut -- and a 43-character
+    ``sk-`` token cut past its prefix is lower-case hex, which no family matches.
+    That fragment is printed, it is the detector's recorded best-effort residual
+    rather than this gate's, and ``_bounded`` names it with the measurement.
+    :data:`REPORT_SECRET` sits at the family's 20-character floor precisely so it
+    survives the window whole and the gate is what withholds it.
     """
     drafted = service.draft(_request())
     renamed = _renamed_to(drafted.directory, NAME_SECRET)

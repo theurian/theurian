@@ -284,9 +284,9 @@ _AT_BODY_PATH: Final = "the landed path of body"
 #: echo: when the path is itself the credential, locating a body-content finding
 #: by it republished the value, walking around the same four-character bound the
 #: two name channels do -- and it was the last finding-location channel still
-#: built from scanned text. The broader class of author-supplied names echoed in
-#: *refusal messages* elsewhere on the accept path is closed by :func:`_bounded`
-#: and the two renderings over it (#360).
+#: built from scanned text. The sibling class of author-supplied names echoed in
+#: *refusal messages* elsewhere in this module is closed by :func:`_bounded` and
+#: the two renderings over it (#360), whose boundary :func:`_names` records.
 _AT_BODY_CONTENT: Final = "the content of body"
 
 #: The evidence record's own text, whole (#361). The one channel here that names
@@ -1272,10 +1272,11 @@ class ProposalService:
         channels never name what they found. Bringing it under the literal rule
         is what makes *no* finding location author-controlled or scanned text.
 
-        The broader class -- author-supplied names echoed in refusal *messages*
-        elsewhere on the accept path, several of them fired *before* this scan
-        runs -- is closed by :func:`_bounded` and the two renderings over it
-        (#360).
+        The sibling class -- author-supplied names echoed in refusal *messages*
+        elsewhere in this module, several of them fired *before* this scan runs --
+        is closed by :func:`_bounded` and the two renderings over it (#360). Its
+        boundary is this module: :func:`_names` records the population that lies
+        outside it and is not closed.
         """
         knowledge = self._paths.knowledge.resolve()
         landed = tuple(move.destination.relative_to(knowledge).as_posix() for move in moves)
@@ -3036,6 +3037,20 @@ def _bounded(text: str, limit: int) -> str | None:
     partial copy of the credential besides, which is the walk-around
     :class:`~theurian.security.content_secrets.SecretFinding`'s four-character
     bound exists to prevent.
+
+    **This gate's reach is the detector's reach, and that is a bound worth
+    stating rather than one to read past.** What it promises is that a string
+    the detector reports is not printed; it does not promise that no credential
+    is. :mod:`theurian.security.content_secrets` is best effort by recorded
+    design, and one shape of the residual is visible right here, measured
+    2026-09-04 through the real CLI: PyYAML's ``Mark.get_snippet`` cuts the front
+    off a long line, so a 43-character ``sk-`` token in a malformed migration
+    reached :func:`_their_words` with its prefix already gone, leaving 32
+    lower-case hex characters that no family matches -- no upper-case letter for
+    the generic family's class gate, no ``sk-`` for the specific one -- and they
+    were printed. The fragment is what a *third party's* truncation left, not
+    something this module chose to quote, and it is the same residual every
+    caller of this detector carries.
     """
     head = text[:limit]
     return None if scan_text(head, max_findings=1) else head
@@ -3133,6 +3148,19 @@ def _names(names: Sequence[str]) -> str:
     * this module's own literals -- ``AUTHORED_IN_THEURIAN``,
       ``MIGRATION_API_VERSION``, ``MAX_UPSERT_OPERATIONS``, the field names in
       :meth:`ProposalRequest.__post_init__` -- and integer counts.
+
+    **What lies outside this population, and is not closed.** The gate's boundary
+    is this module, and one *other* module reached on the accept path holds the
+    same shape:
+    ``infrastructure/filesystem/migration_loader.py`` prefixes ``{path.name}`` --
+    a landed migration's filename -- onto every ``MigrationError`` it raises, and
+    the CLI loads the migration set during context resolution, so that message
+    arrives *before* ``accept`` runs at all. Measured 2026-09-04 through the real
+    CLI: a landed migration named for a credential printed it at full length in
+    an ``accept --json`` payload while every refusal in this module withheld the
+    same string. It is a different producer with a different population and four
+    other commands reading it (``migrate validate``/``apply``/``status``,
+    ``index build``), so it is recorded here rather than closed from here.
     """
     shown = ", ".join(_one_name(name) for name in names[:_MAX_NAMES_LISTED])
     remaining = len(names) - _MAX_NAMES_LISTED
