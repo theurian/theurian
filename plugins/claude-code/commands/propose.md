@@ -198,6 +198,17 @@ cannot approve knowledge"** rule below, not the front-matter
 
       `migrate apply` does not index what it applied.
 
+      **Exit 6 means the index published and something in it looks like a
+      credential** (SEC-11). The knowledge just merged is searchable; say so, and
+      relay every `secretFindings` line and the `remedy` with it. This is the one
+      to read carefully here, because a proposal that has just been accepted and
+      merged is exactly how a credential reaches the corpus without a scan having
+      refused it — a migration written by hand into `.theurian/migrations/` never
+      passes `theurian propose accept`. Do not re-run the build; the value has to
+      be rotated and the revision superseded or the item retired. Exit 1 is the
+      other case entirely: nothing was published and the knowledge is not
+      searchable yet.
+
 ## Rules
 
 - **You cannot approve knowledge.** No CLI or MCP surface offers an approval call

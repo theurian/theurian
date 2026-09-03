@@ -213,6 +213,22 @@ of the same shape, recorded in the same place. Both are scoped to the one
 field and the one code they name; the codes above — which a plugin script does
 branch on — are covered by neither.
 
+`theurian index build`'s exit **6** ([#329](https://github.com/theurian/theurian/issues/329))
+needs no exemption, and the distinction is worth stating because the row above
+is easy to read too widely. The row is *changing an exit code's meaning*: a
+number a client already branches on coming to mean something else. 6 is a **new**
+code on a command that had two, 0 and 1, and both keep exactly the meanings they
+had — 0 published and clean, 1 published nothing. What is new is an outcome the
+command could not previously report at all: a complete index published whose
+content carries a secret-shaped string (SEC-11). A client that has never seen 6
+treats it as "non-zero" and reports a failure, which is wrong but not silently
+wrong — the same class as any new field a client does not read — where reusing 1
+would have made a successful publish indistinguishable from a failed one for
+every client, including the ones that *are* updated. The three plugin commands
+that read this code (`index.md`, `reindex.md`, `propose.md`) state the branch in
+the same change, which is the condition on taking this reading rather than the
+exemption route.
+
 On a bump: raise `CURRENT_PROTOCOL_VERSION` in Core, release Core, then update
 every client's `protocolVersion` and `coreCompatibility`, and release the
 clients. In that order — clients that stop working loudly are recoverable;

@@ -10,7 +10,9 @@ Both artifacts consume ``schemas/``; neither owns the other (ADR-0001).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -172,3 +174,121 @@ def test_cli_runs_on_the_supported_python() -> None:
     major, minor, _ = payload["python"].split(".")
     assert (int(major), int(minor)) >= (3, 13)
     assert sys.version_info >= (3, 13)
+
+
+# -- Exit codes the plugin branches on ------------------------------------
+
+#: ``theurian index build``'s exit when it **published** an index and something
+#: in it is credential-shaped under a ``block`` policy (SEC-11, #329).
+#:
+#: Pinned here because this is the boundary the plugin reads. Its three commands
+#: -- ``index.md``, ``reindex.md``, ``propose.md`` -- branch on the number, and
+#: the two outcomes it separates are opposite: 1 means nothing was published and
+#: retrieval still uses the previous build, 6 means a *complete* index was
+#: published and something in it needs rotating. Collapsing them makes a job that
+#: stops on a secret also stop on a corrupt state database.
+EXIT_SECRET_FOUND = 6
+
+_SECRET = "AKIA" + "EXAMPLE012345678"
+_BODY = f"# Legacy keys\n\nThe retired staging account used {_SECRET}. Rotate it.\n"
+_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: 01K1AAAAAA01234567890ABCDE
+createdAt: 2026-09-03T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.legacy-keys
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.legacy-keys
+    revisionId: 01K1BREVBB01234567890ABCDE
+    contentFile: ../knowledge/architecture/legacy-keys.md
+    contentSha256: {hashlib.sha256(_BODY.encode("utf-8")).hexdigest()}
+    metadata:
+      title: Legacy key rotation
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/legacy-keys.md
+"""
+
+
+def _in_project(
+    root: pathlib.Path, home: pathlib.Path, *args: str
+) -> subprocess.CompletedProcess[str]:
+    """Invoke the installed CLI **in** ``root``, with the machine state redirected.
+
+    The working directory and the environment are set on this call and never
+    inherited from an earlier one: every project command resolves the project
+    from ``Path.cwd()``, and a leaked ``chdir`` initialises Theurian into
+    whichever tree the test runner started in.
+    """
+    if THEURIAN is None:  # pragma: no cover - guarded by the module-level skip
+        pytest.skip("theurian is not installed on PATH")
+    environment = {
+        **os.environ,
+        "HOME": str(home),
+        "THEURIAN_DATA_DIR": str(home / "datadir"),
+    }
+    return subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [THEURIAN, *args],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def test_a_published_index_carrying_a_secret_exits_six_not_one(tmp_path: pathlib.Path) -> None:
+    """Exit 6 is the plugin's signal that a build **succeeded** and needs attention.
+
+    A row here rather than only in Core's own suite because the number crosses a
+    process boundary: the plugin runs `theurian index build` and reads
+    ``returncode``, so a change that collapsed 6 into 1 would be invisible to
+    every in-process test while turning "published, rotate this" into "the build
+    failed" at the consumer. Mutating the constant to 1 reddens exactly here.
+
+    The payload is asserted with it: a caller that branches on 6 has to find the
+    findings on **stdout**, because they are the only account of what was found.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    root = tmp_path / "demo"
+    root.mkdir()
+    for argv in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "contract@example.com"],
+        ["git", "config", "user.name", "Contract"],
+    ):
+        subprocess.run(argv, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    assert _in_project(root, home, "init").returncode == 0
+    assert _in_project(root, home, "project", "register").returncode == 0
+    (root / ".theurian/knowledge/architecture/legacy-keys.md").write_text(_BODY, encoding="utf-8")
+    (root / ".theurian/migrations/01K1AAAAAA01234567890ABCDE-legacy.yaml").write_text(
+        _MIGRATION, encoding="utf-8"
+    )
+    applied = _in_project(root, home, "migrate", "apply", "--json")
+    assert applied.returncode == 0, applied.stderr
+
+    result = _in_project(root, home, "index", "build", "--json")
+
+    assert result.returncode == EXIT_SECRET_FOUND, (
+        f"a published index carrying a secret exited {result.returncode}; the plugin reads "
+        f"1 as 'nothing was published' and would report a complete build as a failure. "
+        f"{result.stdout}{result.stderr}"
+    )
+    payload = json.loads(result.stdout)
+    assert payload["published"] is True, payload
+    assert payload["secretScanPolicy"] == "block", payload
+    assert any("architecture.legacy-keys" in line for line in payload["secretFindings"]), payload
+    assert _SECRET not in result.stdout + result.stderr, "the exit-6 surface echoed the credential"
