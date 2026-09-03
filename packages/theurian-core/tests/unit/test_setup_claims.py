@@ -1149,13 +1149,24 @@ def test_no_setup_step_reads_the_retrieval_index() -> None:
     exists beside this one: it watches the published report and is indifferent to
     how a read was spelled.
 
-    **And what neither of them sees.** The behavioural rule compares a `doctor`
-    run across the corpora it can build -- no index, an index at the state the
-    project is at, and an index at a state it is not. A step branching only on a
-    pointer that is present and **broken** (unparseable, or naming no build)
-    moves nothing between those and is invisible to both rules. Recorded, not
-    chased: the decision taken in review was that a fourth corpus costs more than
-    the silence it would protect.
+    **The two rules fail on different axes, and only their overlap is residue.**
+    This one is about *spelling*: a read by name is caught here whatever it
+    branches on -- ``read_active_index`` is in the list above precisely because
+    it is public, has a live consumer in ``cli/commands.py``, and reaches the
+    pointer without touching any of the others. The behavioural rule is about
+    the *branch condition*: it catches a read, however spelled, whose value
+    differs across the corpora it builds -- no index, an index at the state the
+    project is at, an index at a state it is not, and one carrying the flags a
+    failed purge and an unapproved build leave.
+
+    So the residue is neither axis alone but the **combination**: a read spelled
+    past this scan *and* branching on a condition constant across all of those.
+    Measured -- ``purgeFailed`` read through a hand-assembled path passed the
+    whole suite until the fourth standing existed. What is left is a condition
+    keyed to a value no corpus produces: a pointer present and broken, or a
+    comparison against another project's id. Recorded, not chased; the decision
+    taken in review was that a corpus per unmatched value costs more than the
+    silence it would protect.
     """
     reached = sorted(
         {

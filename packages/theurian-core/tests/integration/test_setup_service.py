@@ -1521,8 +1521,62 @@ def _a_hash_the_project_is_at(root: Path) -> str:
     return str(resolve_state_hash(loaded, SCHEMA_VERSION))
 
 
-def _publish_a_retrieval_index(root: Path, state_hash: str) -> None:
-    """Publish an index the way the product publishes one, at ``state_hash``.
+class _Standing(NamedTuple):
+    """One way a published index can stand to the project it was built for.
+
+    Every field `write_active_index_pointer` publishes that a step could branch
+    on, except the two whose *presence* already differs between a tree with a
+    pointer and a tree without one (``indexBuildId`` and ``projectId``). A field
+    this record holds at one value across every standing is a field a step can
+    read without moving anything -- see the rule below on what that leaves.
+    """
+
+    name: str
+    state_hash: Callable[[Path], str]
+    purge_failed: bool
+    indexes_unapproved: bool
+    indexed_sensitivities: frozenset[Sensitivity]
+
+
+#: The three standings the corpora are built at. The first two differ in
+#: ``stateHash`` alone, because a step publishing "an index exists for the
+#: current state" moves only in the first and one publishing "an index exists and
+#: is behind" moves only in the second.
+#:
+#: The third exists because a field held constant is a field a step reads for
+#: free. Measured: a probe branching on ``purgeFailed``, reached by a
+#: hand-assembled path, passed the whole suite while both standings wrote
+#: ``false`` -- absent pointer and published pointer agreeing, so nothing moved.
+#: It flips all three of the remaining branchable fields at once rather than
+#: adding a standing each: five shapes times five standings is a parametrisation
+#: nobody reads, and a step branching on any one of the three moves here.
+_STANDINGS: tuple[_Standing, ...] = (
+    _Standing(
+        "current",
+        _a_hash_the_project_is_at,
+        purge_failed=False,
+        indexes_unapproved=False,
+        indexed_sensitivities=frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL}),
+    ),
+    _Standing(
+        "stale",
+        lambda _root: _A_HASH_NO_TREE_HERE_IS_AT,
+        purge_failed=False,
+        indexes_unapproved=False,
+        indexed_sensitivities=frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL}),
+    ),
+    _Standing(
+        "flagged",
+        _a_hash_the_project_is_at,
+        purge_failed=True,
+        indexes_unapproved=True,
+        indexed_sensitivities=frozenset(Sensitivity),
+    ),
+)
+
+
+def _publish_a_retrieval_index(root: Path, standing: _Standing) -> None:
+    """Publish an index the way the product publishes one, at ``standing``.
 
     Through `write_active_index_pointer` -- the function `theurian index build`
     and the withdrawal purge both call -- rather than a hand-written key. That
@@ -1531,8 +1585,8 @@ def _publish_a_retrieval_index(root: Path, state_hash: str) -> None:
     actual predicate**, which compares ``stateHash`` against the state the
     project is at. Against a one-key pointer a step answering that predicate
     reads ``False`` in both corpora and the rule below stays green over it. Six
-    keys, written by the product, is what makes the two corpora differ in the way
-    a real index differs from no index.
+    keys, written by the product, is what makes the corpora differ in the way a
+    real index differs from no index.
     """
     paths = ProjectPaths.of(root)
     index = paths.index_for(_AN_INDEX_BUILD)
@@ -1541,34 +1595,24 @@ def _publish_a_retrieval_index(root: Path, state_hash: str) -> None:
     write_active_index_pointer(
         paths,
         index_build_id=_AN_INDEX_BUILD,
-        state_hash=state_hash,
+        state_hash=standing.state_hash(root),
         project_id=derive_project_id(root).value,
-        indexes_unapproved=False,
-        indexed_sensitivities=frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL}),
+        indexes_unapproved=standing.indexes_unapproved,
+        indexed_sensitivities=standing.indexed_sensitivities,
+        purge_failed=standing.purge_failed,
     )
 
 
-#: The two ways a published index can stand to the project it was built for. Both
-#: are exercised, because an index-side answer can be shaped either way and the
-#: two are invisible to each other: a step publishing "an index exists for the
-#: current state" moves only in the first, and one publishing "an index exists,
-#: and it is behind" moves only in the second.
-_INDEX_AT: tuple[tuple[str, Callable[[Path], str]], ...] = (
-    ("current", _a_hash_the_project_is_at),
-    ("stale", lambda _root: _A_HASH_NO_TREE_HERE_IS_AT),
-)
-
-
 @pytest.mark.parametrize(
-    ("state", "index_at"),
+    ("state", "standing"),
     [
-        pytest.param(shape.build, at, id=f"{shape.name}-index-{label}")
+        pytest.param(shape.build, standing, id=f"{shape.name}-index-{standing.name}")
         for shape in _SHAPES
-        for label, at in _INDEX_AT
+        for standing in _STANDINGS
     ],
 )
 def test_no_step_changes_its_answer_when_a_retrieval_index_appears(
-    tmp_path: Path, state: Callable[[Path], SetupContext], index_at: Callable[[Path], str]
+    tmp_path: Path, state: Callable[[Path], SetupContext], standing: _Standing
 ) -> None:
     """§6.2 row 17 names two artefacts and `initial-index` answers the first
     (#451). **No step** may answer the second, and this is what says so.
@@ -1588,15 +1632,25 @@ def test_no_step_changes_its_answer_when_a_retrieval_index_appears(
     `project-layout` published a pointer read in its own ``detail`` -- measured,
     which is why the subject here is `SetupService.run`.
 
-    **What both this and the source scan can see, exactly.** They see a read that
-    *moves a published field between the corpora this test builds*: no index at
-    all, an index published at the state the project is at, and an index
-    published at a state it is not. A step branching only on a pointer that is
-    present and **broken** -- unparseable, or naming no build -- moves nothing
-    between these three and is visible to neither rule. That gap is recorded
-    rather than chased: the honest fixture for it is a fourth corpus, and the
-    decision taken in review was that a pin at that depth costs more than the
-    silence it would protect.
+    **What this and the source scan see, on two separate axes.** The scan reads
+    *how a read is spelled*: by name it is caught, and a hand-assembled path
+    (``root / ".theurian" / "state" / "active-index.json"``), a ``getattr``, a
+    helper in a third module or a new injected port are not. This rule reads
+    *what a read branches on*: a condition whose value differs across the corpora
+    below is caught however it was spelled, and a condition that reads the same
+    in all of them is not. **The residue is the combination** -- a read spelled
+    so the scan misses it, branching on a condition constant across the corpora.
+
+    So which conditions are constant matters, and it is smaller than it was.
+    Measured: a probe branching on ``purgeFailed`` through a hand-assembled path
+    passed the whole suite while every standing wrote ``false``, because an
+    absent pointer and a published one agreed. :data:`_STANDINGS` now varies all
+    three branchable pointer fields, so what is left is narrower than a *field*
+    -- it is a condition keyed to a **value** none of the corpora produce: a
+    pointer that is present and broken (unparseable, or naming no build), or a
+    comparison against some other project's id. Recorded rather than chased, and
+    that was the decision taken in review: a corpus per unmatched value costs
+    more than the silence it would protect.
 
     **It goes RED when #528 lands as an extension of an existing step**, which
     is its purpose: `test_setup_domain.py`'s ``len(StepId) == 19`` moves when
@@ -1618,11 +1672,15 @@ def test_no_step_changes_its_answer_when_a_retrieval_index_appears(
     assert read_active_index_pointer(paths).payload is None, "no index has been built here yet"
     without_an_index = _service(context).run(SetupRequest(dry_run=True))
 
-    _publish_a_retrieval_index(root, index_at(root))
+    _publish_a_retrieval_index(root, standing)
 
     published = read_active_index_pointer(paths).payload
     assert published is not None, "the fixture has to leave an index the product's reader can see"
-    assert published["stateHash"] == index_at(root), "and one standing where this case says"
+    assert (published["stateHash"], published["purgeFailed"], published["indexesUnapproved"]) == (
+        standing.state_hash(root),
+        standing.purge_failed,
+        standing.indexes_unapproved,
+    ), "and one standing where this case says: a field that never varies is one a step reads free"
     assert _service(context).run(SetupRequest(dry_run=True)) == without_an_index, (
         "a step's answer moved when a retrieval index appeared, so `doctor` now "
         "reports on row 17's second artefact; §6.2's record that no step does is "
