@@ -221,6 +221,16 @@ def _read_record(record: Path) -> tuple[str, SecretScanPolicy, int] | None:
     one, the rule ``read_secret_scan_policy`` holds for the configuration file.
     ``bool`` is excluded explicitly: ``isinstance(True, int)`` is ``True``, and a
     ``findings: true`` would otherwise count as one finding.
+
+    **The blank-``indexBuildId`` arm is defensive parity and is unreachable**,
+    said here rather than left for a reader to discover. It mirrors
+    :func:`~theurian.application.project_service.read_active_index_pointer`'s rule
+    for the file beside this one, but a blank id can never equal a published one,
+    so :func:`published_index_secret_scan` answers ``UNRECORDED`` from its own
+    comparison whatever this decides. Measured 2026-09-03 by deleting the
+    ``.strip()``: nothing moved. It stays because the two readers of adjacent
+    derived files should refuse the same shapes, and it is *not* covered by a
+    test row -- a row over it could not fail.
     """
     loaded = _loaded_mapping(record)
     if loaded is None:

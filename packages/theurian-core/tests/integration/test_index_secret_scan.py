@@ -558,25 +558,74 @@ def test_doctor_names_no_item_and_no_path_in_the_scan_it_reports(planted: Path) 
     assert str(planted) not in rendered, f"doctor published an absolute path: {rendered}"
 
 
-def test_the_report_is_bounded_by_the_detectors_own_ceiling(bare: Path) -> None:
-    """The published count is bounded by the scanner, not by the corpus's choosing.
+#: How many credentials each of the two crowded bodies carries.
+#:
+#: **Neither body may reach :data:`MAX_FINDINGS` on its own**, and that is what
+#: makes the ceiling's *scope* testable rather than only its value. With one body
+#: carrying forty, a per-body budget and a per-build budget both answer twenty --
+#: the outer ``len(found) < MAX_FINDINGS`` guard stops the walk either way -- so
+#: the mutation that widens ``room`` from the remaining budget to the whole
+#: ceiling survived (measured 2026-09-03). Twelve and twelve separates them: the
+#: build's budget answers 20, and a per-body one answers 24.
+_CROWDED_PER_BODY = 12
 
-    A body can carry any number of credential-shaped strings; the report lists at
-    most :data:`MAX_FINDINGS` of them across every body, which is the ceiling the
-    accept path applies to its own five channels.
+
+def _crowded(marker: str) -> str:
+    """A body carrying :data:`_CROWDED_PER_BODY` distinct credential-shaped strings.
+
+    Each is ``AKIA`` plus **exactly** sixteen upper-case characters, joined at run
+    time for the reason :data:`PLANTED` records, and each is distinct so the
+    detector reports one per line rather than folding them together.
+
+    The tail's length is padded and asserted rather than counted by hand. A
+    fifteen-character tail matches no family at all, so the body would be clean
+    and the ceiling assertion below would pass against a build that had stopped
+    scanning entirely -- which is what a first draft of this fixture did (0
+    findings, measured 2026-09-03).
     """
-    crowded = "# Crowded\n\n" + "".join(
-        f"Retired key AKIA{'ABCDEFGHIJKLMNOP'[:14]}{index:02d}.\n"
-        for index in range(MAX_FINDINGS * 2)
+    lines = []
+    for index in range(_CROWDED_PER_BODY):
+        tail = f"{marker}EXAMPLE{index:02d}".ljust(16, "Z")
+        assert len(tail) == 16, f"the fixture's tail is {len(tail)} characters, not sixteen"
+        lines.append(f"Retired key {'AKIA'}{tail}.\n")
+    return f"# Crowded {marker}\n\n" + "".join(lines)
+
+
+def test_the_report_is_bounded_across_every_body_by_the_detectors_ceiling(bare: Path) -> None:
+    """One budget for the build, not one per document.
+
+    A corpus can carry any number of credential-shaped strings; the report lists
+    at most :data:`MAX_FINDINGS` of them **across every body**, which is the
+    ceiling the accept path applies to its own five channels rather than to each.
+    Two bodies of twelve is what tells the two readings apart -- see
+    :data:`_CROWDED_PER_BODY`.
+    """
+    _corpus(bare, dirty=_crowded("A"))
+    (bare / ".theurian/knowledge/architecture/unreleased-keys.md").write_text(
+        _crowded("B"), encoding="utf-8"
     )
-    _corpus(bare, dirty=crowded)
+    (bare / f".theurian/migrations/{_DRAFT_MIGRATION_ID}-second.yaml").write_text(
+        _migration(
+            _DRAFT_MIGRATION_ID,
+            DRAFT_ITEM,
+            "01K1CREVCC01234567890ABCDE",
+            "Second crowded body",
+            "approved",
+            _crowded("B"),
+        ),
+        encoding="utf-8",
+    )
     _must(bare, "migrate", "apply")
 
     _, payload = _in(bare, "index", "build")
 
     lines = _findings(payload)
+    assert 2 * _CROWDED_PER_BODY > MAX_FINDINGS, (
+        "the fixture no longer plants more than the ceiling, so the assertion below "
+        "would hold against a build that applied no ceiling at all"
+    )
     assert len(lines) == MAX_FINDINGS, (
-        f"the report is not bounded by the detector's ceiling: {len(lines)} findings"
+        f"the report is not bounded by the detector's ceiling across bodies: {len(lines)} findings"
     )
 
 
@@ -728,20 +777,59 @@ def test_a_record_that_names_another_build_is_read_as_unrecorded(planted: Path) 
     }
 
 
+#: One row per field of the record that can be wrong, with the shape that makes
+#: it wrong. ``{build}`` is filled in with the id the pointer actually names.
+#:
+#: **Every row is wrong about exactly one thing, and that took two measurements.**
+#: A record has several guards in sequence, so a row wrong about two fields is
+#: rejected by whichever guard runs first and asserts nothing about the other:
+#:
+#: * written with a *placeholder* build id, every row was rejected by the build-id
+#:   comparison before its own field was read -- deleting the ``bool`` guard left
+#:   the boolean row green (2026-09-03, mutation M3 SURVIVED);
+#: * with the id fixed but ``findings`` *omitted* from the bad-policy row, the
+#:   findings guard rejected it first -- coercing an unrecognised policy to
+#:   ``block`` left that row green too (2026-09-03, M3b SURVIVED).
+#:
+#: So each row names the published build **and** carries a well-formed value for
+#: every field except the one it is about.
+_UNTRUSTWORTHY_RECORDS: tuple[tuple[str, str], ...] = (
+    # No braces in this one: the contents go through `str.format`, and a literal
+    # `{` there is a format field the row cannot express.
+    ("not JSON at all", "not json, just prose"),
+    ("a JSON array", "[]"),
+    (
+        "a policy this build does not recognise",
+        '{{"indexBuildId": "{build}", "policy": "warm", "findings": 1}}',
+    ),
+    (
+        "a boolean findings count",
+        '{{"indexBuildId": "{build}", "policy": "block", "findings": true}}',
+    ),
+    (
+        "a negative findings count",
+        '{{"indexBuildId": "{build}", "policy": "block", "findings": -1}}',
+    ),
+    ("no build id", '{{"policy": "block", "findings": 1}}'),
+)
+
+# A row this table deliberately does not carry, recorded because it was written
+# and then removed rather than never considered. `{"indexBuildId": " ", ...}` is
+# refused by `_read_record`'s own `.strip()` -- defensive parity with
+# `read_active_index_pointer` -- but that guard is *unreachable*: a blank id can
+# never equal the published one, so `published_index_secret_scan` answers
+# `unrecorded` from the comparison whatever `_read_record` decided. Measured
+# 2026-09-03: deleting the `.strip()` left the row green, which makes it a row
+# that cannot fail rather than a guard that is held. The behaviour it looked like
+# it covered is covered by
+# `test_a_record_that_names_another_build_is_read_as_unrecorded`.
+
+
 @pytest.mark.parametrize(
-    ("label", "contents"),
-    [
-        ("not JSON at all", "{{{"),
-        ("a JSON array", "[]"),
-        ("a policy this build does not recognise", '{"indexBuildId": "x", "policy": "warm"}'),
-        ("a boolean findings count", '{"indexBuildId": "x", "policy": "block", "findings": true}'),
-        ("a negative findings count", '{"indexBuildId": "x", "policy": "block", "findings": -1}'),
-        ("no build id", '{"policy": "block", "findings": 1}'),
-    ],
-    ids=lambda value: value if isinstance(value, str) and " " in value else "",
+    ("label", "template"), _UNTRUSTWORTHY_RECORDS, ids=[row[0] for row in _UNTRUSTWORTHY_RECORDS]
 )
 def test_a_record_that_cannot_be_trusted_whole_reports_nothing_known(
-    planted: Path, label: str, contents: str
+    planted: Path, label: str, template: str
 ) -> None:
     """Every field is checked rather than coerced, and a bad one costs the record.
 
@@ -752,9 +840,18 @@ def test_a_record_that_cannot_be_trusted_whole_reports_nothing_known(
     policy out of it would be inventing one. ``findings: true`` is listed because
     ``isinstance(True, int)`` is ``True`` in Python and would otherwise count as
     one finding.
+
+    Each row names the **published** build, so the field under test is the only
+    thing wrong with it; :data:`_UNTRUSTWORTHY_RECORDS` records the mutation that
+    proved a placeholder id made most of these rows assert nothing.
     """
     assert _in(planted, "index", "build")[0] != 0
-    ProjectPaths.of(planted).index_secret_scan.write_text(contents, encoding="utf-8")
+    paths = ProjectPaths.of(planted)
+    pointer = read_active_index_pointer(paths).payload
+    assert pointer is not None, "the build published no pointer for the record to name"
+    paths.index_secret_scan.write_text(
+        template.format(build=pointer["indexBuildId"]), encoding="utf-8"
+    )
 
     _, payload = _in(planted, "doctor")
 
