@@ -35,8 +35,9 @@ Report what was ingested by source type and how many documents changed.
   takes `security.secretScan` from it and nothing else (ADR-0027 decision 3).
   That key selects a control this command never reaches: it covers the approval
   gate and the index build — `theurian ingest` runs no scan of its own, and
-  `theurian index build` scans every body it indexes and reports rather than
-  refusing (SEC-11,
+  `theurian index build` scans every body it indexes, with the source anchors
+  and relation notes served beside them, and reports rather than refusing
+  (SEC-11,
   [#198](https://github.com/theurian/theurian/issues/198) shipped the
   approval-gate half and
   [#329](https://github.com/theurian/theurian/issues/329) the index-build half),

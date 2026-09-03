@@ -484,14 +484,26 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   with a redacted refusal under `block`. A proposal's
   `evidence.json` is not scanned: `accept` never moves it into the canonical
   tree, and scanning it is tracked with the draft-time advisory
-  ([#330](https://github.com/theurian/theurian/issues/330)). Theurian scans
-  ingested content for secrets at one point and one only: `theurian ingest` runs
-  no scan of its own, and `theurian index build` scans every body it indexes
-  ([#329](https://github.com/theurian/theurian/issues/329)) — the whole served
-  corpus on every rebuild, so it reaches a body that entered before the scanner
-  shipped or through a migration written straight into `.theurian/migrations/`
-  by hand, which never passes through `accept`. **That build-time scan reports
-  and does not refuse, and the reason is a boundary rather than a preference.** A
+  ([#330](https://github.com/theurian/theurian/issues/330)). `theurian ingest`
+  runs no scan of its own, and needs none for a reason about *storage* rather
+  than about coverage: **it stores no content at all** — it writes a manifest and
+  holds what it read in memory — so there is nothing at that point for a scan to
+  reach. What the canonical store holds is covered by the two controls that write
+  to it and read from it. `theurian index build` scans every body it indexes
+  ([#329](https://github.com/theurian/theurian/issues/329)), and with each body
+  the source anchors and relation notes served beside it — every text channel of
+  the **approved, in-ceiling corpus this deployment serves by default**, on every
+  rebuild, so it reaches content that entered before the scanner shipped or
+  through a migration written straight into `.theurian/migrations/` by hand,
+  which never passes through `accept`. Two parts of the store are outside that
+  population and are stated rather than implied: a `draft` or `rejected` body,
+  reachable by a caller who passes `includeUnapproved`, is deliberately unscanned
+  — the build never indexes it, and reading it into a published count would put
+  the existence of withheld content into a number; and a **superseded revision**
+  is unscanned for the same reason, while remaining in the canonical store, which
+  is why rotating the value comes before superseding the revision and not after.
+  **That build-time scan reports and does not refuse, and the reason is a
+  boundary rather than a preference.** A
   secret that gets past `accept` becomes readable through `knowledge.search` and
   `knowledge.get` the moment `theurian migrate apply` writes it into the
   canonical store — before any `index build`, since search degrades to a

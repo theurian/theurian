@@ -691,7 +691,8 @@ SECRET_SCAN_DESCRIPTION: Final = (
     "best effort -- known credential shapes plus an entropy heuristic -- and is not a "
     "replacement for a repository secret scanner. It covers the approval gate and the index "
     "build: `theurian ingest` runs no scan of its own, and `theurian index build` scans every "
-    "body it indexes and reports rather than refusing "
+    "body it indexes, with the source anchors and relation notes served beside them, and "
+    "reports rather than refusing "
     "(https://github.com/theurian/theurian/issues/329)."
 )
 
@@ -743,8 +744,9 @@ INGEST_CONFIG_BULLET: Final = (
     "for one key only: `security/project_config.py` takes `security.secretScan` from it "
     "and nothing else (ADR-0027 decision 3). That key selects a control this command never "
     "reaches: it covers the approval gate and the index build — `theurian ingest` runs no "
-    "scan of its own, and `theurian index build` scans every body it indexes and reports "
-    "rather than refusing (SEC-11, "
+    "scan of its own, and `theurian index build` scans every body it indexes, with the "
+    "source anchors and relation notes served beside them, and reports rather than "
+    "refusing (SEC-11, "
     "[#198](https://github.com/theurian/theurian/issues/198) shipped the approval-gate "
     "half and [#329](https://github.com/theurian/theurian/issues/329) the index-build "
     "half), the schema's own wording. Nothing reads the "
@@ -1583,8 +1585,9 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             (
                 "That key selects a control this command never reaches: it covers the "
                 "approval gate and the index build — `theurian ingest` runs no scan of "
-                "its own, and `theurian index build` scans every body it indexes and "
-                "reports rather than refusing (SEC-11, "
+                "its own, and `theurian index build` scans every body it indexes, with "
+                "the source anchors and relation notes served beside them, and reports "
+                "rather than refusing (SEC-11, "
                 "[#198](https://github.com/theurian/theurian/issues/198) shipped the "
                 "approval-gate half and "
                 "[#329](https://github.com/theurian/theurian/issues/329) the index-build "

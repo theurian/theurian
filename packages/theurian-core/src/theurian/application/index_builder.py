@@ -34,9 +34,14 @@ build's own output, which ADR-0008 decision 9's two-corpus equality rests on.
 
 **The build is also SEC-11's second control** (#329, ADR-0027 decision 3's "still
 owed"). Every served body passes through this loop on every rebuild, so a scan
-here covers the whole served population rather than the delta since the last one
--- which is what reaches a secret that entered the corpus before the scanner
+here covers every text channel of the approved, in-ceiling corpus this deployment
+serves by default -- the whole of it rather than the delta since the last build,
+which is what reaches a secret that entered the corpus before the scanner
 shipped, or through a migration placed by hand that never met ``propose accept``.
+It is *not* the whole canonical store: a row this build refuses to index is
+never read into a published count (T-17), and a superseded revision stays in the
+store unscanned. The threat model and ``SECURITY.md`` record both.
+
 It reports and never refuses: by the time a build runs, the content is already in
 the canonical store and already served, so halting would deny ranking without
 un-disclosing anything (:mod:`theurian.application.index_secret_scan` carries that
@@ -334,9 +339,10 @@ class IndexBuilder:
                 # SEC-11 at the choke point, and *after* both filters (#329,
                 # ADR-0027 decision 3's "still owed"). Every body this deployment
                 # serves passes through here on every rebuild, so the control
-                # covers the whole served population rather than a delta -- which
-                # is what reaches a secret that entered before the scanner shipped
-                # or through a hand-placed migration that never met `accept`.
+                # covers the approved, in-ceiling population whole rather than a
+                # delta -- which is what reaches a secret that entered before the
+                # scanner shipped or through a hand-placed migration that never
+                # met `accept`.
                 #
                 # The position in the loop is load-bearing twice over. Below
                 # `may_surface` and `may_disclose`, the count this publishes is a

@@ -35,6 +35,21 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Three commands read `theurian index build`'s exit 6 as a failed build.**
+  `/theurian:index`, `/theurian:reindex` and `/theurian:propose` all run that
+  build and treat any non-zero exit as failure, so SEC-11's build-time signal
+  died at its principal consumer: exit 6 means a *complete* index was published
+  and something in it looks like a credential, and the agent reported a
+  successful publish as a failure and would re-run a build whose finding is in
+  the content and comes back. Each command now states the branch — report the
+  build id, relay every `secretFindings` line and the `remedy` with it, relay a
+  `recordWarning` if one is present, and read only exit 1 as "nothing was
+  published" ([#329](https://github.com/theurian/theurian/issues/329)). The code
+  is pinned against the installed binary in `tests/contract/test_cli_contract.py`,
+  and the compatibility decision — a new code rather than a changed meaning — is
+  recorded in `docs/protocol/plugin-core-compatibility.md` beside the #206 and
+  #254 exemptions.
+
 - **`/theurian:ingest` told the agent nothing reads `.theurian/config.yaml`.**
   The allowlist paragraph said a repository will have to be listed in that file
   before Theurian contacts it, then "nothing reads that file today, so do not
@@ -53,7 +68,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ingest`, with nothing saying where it runs. The paragraph now carries the
   bound — the scan covers the approval gate and the index build, `theurian
   ingest` runs no scan of its own, and `theurian index build` scans every body it
-  indexes and reports rather than refusing — worded verbatim from the schema's
+  indexes, with the source anchors and relation notes served beside them, and
+  reports rather than refusing — worded verbatim from the schema's
   own `security.secretScan` description (SEC-11,
   [#198](https://github.com/theurian/theurian/issues/198),
   [#329](https://github.com/theurian/theurian/issues/329)). The bound widened

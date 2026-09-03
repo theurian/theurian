@@ -3,7 +3,7 @@
 ``test_content_secrets.py`` proves the detector detects, ``test_project_config.py``
 proves the policy reader reads, and ``test_proposal_secret_scan.py`` proves the two
 are wired together on the **approval** path. This is the fourth thing, and none of
-those can say it: that a body already in the corpus -- one that entered before the
+those can say it: that content already in the corpus -- that entered before the
 scanner shipped, or through a hand-placed migration that never passed ``propose
 accept`` -- is scanned when the index that serves it is built.
 
@@ -12,7 +12,13 @@ are written straight into ``.theurian/`` and applied; nothing goes through
 ``propose accept``, so no approval-time scan has ever seen them. The build is the
 first control that meets this content, which is exactly the population #329 exists
 for -- and the build re-derives it from the whole canonical state on every run, so
-this is the whole served population rather than a delta.
+this is every text channel of the approved, in-ceiling corpus this deployment
+serves by default, whole rather than a delta. Two members of the *store* sit
+outside that population by design, and each has its own case here: a row the
+build refuses to index is never read into the published count
+(``test_a_row_the_build_withheld_is_never_scanned_and_never_counted``), and an
+edge to such a row moves nothing either
+(``test_a_note_on_an_edge_to_a_withheld_item_is_neither_scanned_nor_counted``).
 
 **The scan is a signal, not a gate (the issue's Option B).** ``block`` publishes
 the index and exits non-zero; it does not withhold retrieval, because the content
