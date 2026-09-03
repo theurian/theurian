@@ -738,12 +738,22 @@ def test_the_cli_docstring_names_the_commands_those_steps_defer_to(
     got its two previous false sentences, so it is probed: every ``theurian``
     subcommand a report-only step offers has to appear in ``--help``.
 
-    **Only ``action`` is read, and ``initial-index`` names its command
-    ``theurian migrate apply`` in ``summary`` instead** -- and that command is not
-    in ``--help``, so it is the remaining known omission. Widening this to
-    ``summary`` means deciding what a summary that merely mentions a command is
-    promising, and that is a question about the step table rather than about the
-    docstring; recorded here so the omission is a known one.
+    **Only ``action`` is read, and ``initial-index`` carries none** -- it names
+    its commands in ``summary`` and ``detail`` instead, so none of them reaches
+    the set below. There are four of them, measured with this test's own
+    :data:`_SUBCOMMAND` pattern over the probe's body: ``theurian migrate
+    apply`` (the not-built summary), ``theurian migrate validate`` (the
+    cannot-tell summary), and ``theurian index build`` and ``theurian index
+    status`` (the detail). Of the four, ``--help`` names ``theurian migrate
+    validate`` and not the other three, so that is the size of the omission --
+    one command when this note was written, three since #451 gave the step a
+    third summary and a detail that sends its reader on.
+
+    Widening this to ``summary`` and ``detail`` means deciding what a sentence
+    that merely mentions a command is promising, and that is a question about
+    the step table rather than about the docstring; recorded here so the
+    omission is a known one, and re-counted rather than restated so the record
+    does not quietly describe an older step.
 
     ``migrations-valid`` used to be the second such case. As of #91 it no longer
     names a command in its ``summary``; it offers ``theurian migrate validate`` in

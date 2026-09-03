@@ -13,7 +13,7 @@ import json
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, override
+from typing import Any, NamedTuple, override
 
 import pytest
 from fakes.clock import FrozenClock
@@ -1091,11 +1091,11 @@ def test_setup_still_reports_what_it_declined_to_do(in_a_repository: SetupContex
 # while `theurian project status` publishes ``"stateBuilt": database.exists()``
 # for the ``database_for(context.state_hash)`` it resolved a few lines earlier
 # -- whether the database for the migration set *on disk right now* is there
-# (``project_status`` in ``cli/commands.py``). Those two agree until a migration
-# lands, and
-# then they parted for good: the pointer a first `migrate apply` writes is never
-# removed, so from that moment `doctor` answered "Knowledge state is built." for
-# every later state, and the arm naming the remedy was unreachable.
+# (``project_status`` in ``cli/commands.py``). Those two agreed until a
+# migration landed, and then they parted for good: the pointer a first `migrate
+# apply` writes is never removed, so from that moment `doctor` answered
+# "Knowledge state is built." for every later state, and the arm naming the
+# remedy was unreachable.
 #
 # That is the state a pull puts a deployment into -- migrations fetched,
 # `migrate apply` not yet run -- so the step published its false claim exactly
@@ -1108,12 +1108,24 @@ def test_setup_still_reports_what_it_declined_to_do(in_a_repository: SetupContex
 # operator acts on, and the sentence *is* the whole output of a step that has no
 # action -- there is nothing else in it that could carry the answer.
 
-#: The two claims `probe_initial_index` chooses between. Quoted from
+#: The claims `probe_initial_index` chooses between. Quoted from
 #: ``setup_steps.py`` rather than paraphrased, because #451 is entirely about
 #: *which* of them a given project is handed: an assertion naming only one of
-#: the two would be satisfied by a summary that says both, or neither.
+#: them would be satisfied by a summary that says two, or none.
 _STATE_IS_BUILT = "Knowledge state is built."
 _APPLY_REMEDY = "Run `theurian migrate apply`."
+
+#: The third one, pinned **verbatim** where the two above are not. It is the
+#: answer for a set the resolver could not read, and it is the arm with the
+#: least holding it down: a state whose migrations stopped loading still has a
+#: database and a pointer on disk, so rewriting this sentence back to "Knowledge
+#: state is built." is #451's own lie in the one place the fixtures cannot
+#: contradict by arithmetic. Wording that must be typed out is wording a rewrite
+#: has to come here to change.
+_CANNOT_TELL = (
+    "Cannot tell what state this project is at: its migration set could not be "
+    "read. Run `theurian migrate validate`, which prints why."
+)
 
 #: The clauses of the published ``detail`` that #451's second half is about.
 #: `theurian index build` shipped in Milestone 5, so a detail promising
@@ -1125,6 +1137,16 @@ _APPLY_REMEDY = "Run `theurian migrate apply`."
 #: Milestone 5 would be true, and a test that refused it would be holding the
 #: wording rather than the claim -- which is how a fossil survives its rewrite.
 _CLAIMS_INDEXES_ARE_FUTURE_WORK = ("Retrieval indexes arrive in", "there is nothing to build yet")
+
+#: What the ``detail`` has to *say*, as opposed to what it must not. Forbidding
+#: phrases alone is satisfied by a field carrying nothing at all: ``detail=""``
+#: was caught by nothing in this file (measured) and by nothing in the suite
+#: when round one measured it, and an empty field is how the reader stops being
+#: told that the canonical state this step reports and the retrieval index it is
+#: named for are two artefacts. Both commands are registered in
+#: ``cli/index_commands.py`` -- ``build``, ``gc``, ``status``, measured off
+#: ``index_app`` -- so the field sends its reader somewhere that exists.
+_DETAIL_NAMES_THE_INDEX_COMMANDS = ("`theurian index build`", "`theurian index status`")
 
 #: Crockford base32, as every ULID in this repository is: no ``I``, ``L``, ``O``
 #: or ``U``, and a first character in ``0-7``. The migration schema's own pattern
@@ -1247,22 +1269,86 @@ def _migrations_pulled_but_not_applied(base: Path) -> SetupContext:
     return _with(base, project_root=root)
 
 
-#: Each shape a project can be in when this step probes it, with what `project
-#: status` publishes as ``stateBuilt`` for it. Two of the three are *not* built,
-#: and they differ in the thing #451 confused with built-ness -- one has no
-#: pointer, the other has one -- which is what makes the pair a class statement
-#: rather than two spellings of one case.
-_SHAPES: tuple[tuple[str, Callable[[Path], SetupContext], bool], ...] = (
-    ("never-applied", _never_applied, False),
-    ("applied-and-current", _applied_and_current, True),
-    ("migrations-pulled-not-applied", _migrations_pulled_but_not_applied, False),
-)
+def _the_pointer_deleted_but_the_database_kept(base: Path) -> SetupContext:
+    """Applied, then the derived pointer went missing. The old predicate's own face.
+
+    ``.theurian/state/`` is git-ignored, derived and routinely wiped; the
+    database for the current hash surviving without its pointer is what a
+    half-cleaned state directory looks like. The old question -- does a pointer
+    exist -- answered "not built" here while `project status` answered
+    ``stateBuilt: true``, so this is #451 pointing the other way, and it is the
+    shape that proves the new predicate reads the *database* rather than having
+    swapped one proxy for another.
+    """
+    root = _repository(base)
+    _write_a_migration(root, _FIRST_MIGRATION, _FIRST_REVISION, "auth-policy")
+    _apply_the_current_set(root)
+    ProjectPaths.of(root).active_pointer.unlink()
+    return _with(base, project_root=root)
 
 
-@pytest.mark.parametrize(
-    ("state", "is_built"),
-    [pytest.param(builder, built, id=name) for name, builder, built in _SHAPES],
+def _an_applied_project_whose_migrations_stopped_loading(base: Path) -> SetupContext:
+    """Applied, then the set stopped loading. There is no current state to name.
+
+    Applied *first*, deliberately: this leaves a database and an active pointer
+    on disk, so every proxy for built-ness that #451 was about is present and
+    saying yes while the one question that matters -- which state is this
+    project at -- has no answer at all. A step that reached for either would say
+    "Knowledge state is built." here, about a project whose migrations nothing
+    can read.
+
+    The break is a second, empty ``*.yaml``: an empty document is not a mapping,
+    and the loader refuses the whole set on it, which is the same shape
+    `_converged_repository` reaches by accident.
+    """
+    root = _repository(base)
+    _write_a_migration(root, _FIRST_MIGRATION, _FIRST_REVISION, "auth-policy")
+    _apply_the_current_set(root)
+    (ProjectPaths.of(root).migrations / "0002-broken.yaml").touch()
+    return _with(base, project_root=root)
+
+
+class _Shape(NamedTuple):
+    """One state a project can be in when `initial-index` probes it.
+
+    ``is_built`` is what `theurian project status` publishes as ``stateBuilt``
+    for this shape, and ``None`` means the question has no answer because the
+    migration set does not load. It stays a plain bool everywhere else on
+    purpose: whether a pointer exists is not part of the predicate any more, so
+    a shape that varies the pointer varies nothing this field records.
+    """
+
+    name: str
+    build: Callable[[Path], SetupContext]
+    is_built: bool | None
+
+
+#: Every shape, and the population the tests below select from. Three of the
+#: five are *not* the plain built case, and they differ in exactly the things
+#: #451 confused with built-ness: no pointer and no database, a pointer with the
+#: database behind it, a database with no pointer at all. The last has no
+#: ``stateBuilt`` to publish, which is why it is answered separately rather than
+#: folded in as a third truth value.
+_SHAPES: tuple[_Shape, ...] = (
+    _Shape("never-applied", _never_applied, False),
+    _Shape("applied-and-current", _applied_and_current, True),
+    _Shape("migrations-pulled-not-applied", _migrations_pulled_but_not_applied, False),
+    _Shape("pointer-deleted-database-kept", _the_pointer_deleted_but_the_database_kept, True),
+    _Shape("set-stopped-loading", _an_applied_project_whose_migrations_stopped_loading, None),
 )
+
+#: The shapes whose state hash resolves, so `project status` has a ``stateBuilt``
+#: to publish and the step reaches the built / not-built return. Selected rather
+#: than hardcoded, so a shape added above joins these tests by being added once.
+_DECIDABLE = [
+    pytest.param(s.build, s.is_built, id=s.name) for s in _SHAPES if s.is_built is not None
+]
+
+#: Its complement: the shapes with no state to name at all.
+_UNDECIDABLE = [pytest.param(s.build, id=s.name) for s in _SHAPES if s.is_built is None]
+
+
+@pytest.mark.parametrize(("state", "is_built"), _DECIDABLE)
 def test_the_initial_index_step_answers_whether_the_current_state_is_built(
     tmp_path: Path, state: Callable[[Path], SetupContext], is_built: bool
 ) -> None:
@@ -1279,10 +1365,11 @@ def test_the_initial_index_step_answers_whether_the_current_state_is_built(
 
     Both directions are asserted per shape -- the claim that must appear and the
     claim that must not -- because a summary carrying both would satisfy either
-    half alone. The three shapes are the class: pointer absent, pointer and
-    current database present, pointer present with the database behind it. The
-    middle one is what keeps the other two from being satisfiable by a step that
-    simply never says anything is built.
+    half alone. The four decidable shapes are the class: pointer and database
+    both absent, both present and current, pointer present with the database
+    behind it, and database present with no pointer at all. The last pair are
+    #451's two faces, and the second keeps the others from being satisfiable by
+    a step that simply never says anything is built.
 
     Deliberately silent about `status`: nothing here fixes NOT_APPLICABLE in
     place, so a later change may make an unbuilt state MISSING with an action.
@@ -1305,9 +1392,68 @@ def test_the_initial_index_step_answers_whether_the_current_state_is_built(
     assert refused not in step.summary, f"the summary must not say {refused!r}: {step.summary!r}"
 
 
-@pytest.mark.parametrize("state", [pytest.param(b, id=name) for name, b, _ in _SHAPES])
-def test_the_initial_index_step_does_not_publish_indexes_as_future_work(
+@pytest.mark.parametrize("state", _UNDECIDABLE)
+def test_the_step_says_it_cannot_tell_when_the_migration_set_will_not_load(
     tmp_path: Path, state: Callable[[Path], SetupContext]
+) -> None:
+    """A project whose migrations stopped loading is not a project that is built.
+
+    The sharpest place #451 can come back. A database and an active pointer are
+    both on disk here, so every proxy the old predicate could reach for says
+    yes, while the question the step publishes an answer to -- which state is
+    this project at -- has no answer: the set the hash is computed from does not
+    load. Answering "Knowledge state is built." would be the original defect,
+    and answering "no knowledge state built yet" would be it pointing the other
+    way, because a set nobody can read is not a set anyone can say that about.
+
+    Pinned verbatim, unlike the two decidable arms. This wording is what a
+    reader is sent to `theurian migrate validate` by, and it is the arm with no
+    arithmetic behind it: the fixtures cannot contradict a rewrite here the way
+    a moved state hash contradicts one there. Both other claims are pinned
+    absent in the same breath -- the assertion that would have failed on `main`.
+    """
+    context = state(tmp_path)
+    root = context.project_root
+    assert root is not None
+    paths = ProjectPaths.of(root)
+    assert paths.active_pointer.exists(), "the pointer is present, and must not decide the answer"
+    assert list(paths.state.glob("*.sqlite")), "so is a database; also not the question"
+
+    step = probe_initial_index(context)
+
+    assert step.summary == _CANNOT_TELL
+    assert _STATE_IS_BUILT not in step.summary
+    assert _APPLY_REMEDY not in step.summary
+
+
+@pytest.mark.parametrize(("state", "is_built"), _DECIDABLE)
+def test_the_initial_index_detail_names_the_commands_that_build_and_report_the_index(
+    tmp_path: Path, state: Callable[[Path], SetupContext], is_built: bool
+) -> None:
+    """The step is named for the retrieval index and reports the canonical state,
+    and the ``detail`` is the only place that difference is said (#451).
+
+    The affirmative half, and the reason the negative one below can mean
+    anything: with only forbidden phrases pinned, emptying the field satisfied
+    every one of them trivially, and nothing else in this file looked at it
+    (measured; round one measured the same across the suite). A reader whose
+    state is built and whose index is not would be left with no sentence at all.
+
+    ``is_built`` is taken and unused on purpose: it is what selects this
+    parametrization to the shapes that reach the return carrying a ``detail``.
+    The cannot-tell arm publishes none, which the test above is about.
+    """
+    context = state(tmp_path)
+
+    step = probe_initial_index(context)
+
+    missing = [c for c in _DETAIL_NAMES_THE_INDEX_COMMANDS if c not in step.detail]
+    assert not missing, f"the detail no longer names {missing}: {step.detail!r}"
+
+
+@pytest.mark.parametrize(("state", "is_built"), _DECIDABLE)
+def test_the_initial_index_step_does_not_publish_indexes_as_future_work(
+    tmp_path: Path, state: Callable[[Path], SetupContext], is_built: bool
 ) -> None:
     """The step's ``detail`` is a published claim, and it named a shipped feature
     as work that had not started (#451).
@@ -1319,9 +1465,15 @@ def test_the_initial_index_step_does_not_publish_indexes_as_future_work(
     already pins three other summaries to the locations they would otherwise have
     lost, for the same reason.
 
-    Asserted over every shape rather than one, so that a rewrite reaching only
-    the arm someone was looking at is caught by the arm they were not. What is
-    pinned is the *absence of the false clauses* -- see
+    **What the sweep across shapes actually buys, stated honestly.** All four
+    decidable shapes land on *one* ``return``, and two of them produce a
+    byte-identical ``detail``, so this is one string checked against several
+    inputs -- not several arms watched at once. It would not catch a rewrite
+    confined to an arm no shape here reaches. What holds the content is the
+    affirmative test above; this one holds that a *particular* false claim, the
+    one #451 was filed over, does not come back in any of them.
+
+    What is pinned is the absence of the false clauses -- see
     `_CLAIMS_INDEXES_ARE_FUTURE_WORK` for why the milestone number itself is
     fair game, and why no replacement wording is required here.
     """
