@@ -32,6 +32,16 @@ than on what the canonical store holds. Deriving it from ``indexable`` rather
 than reading the rows back is what keeps the derivation a pure function of this
 build's own output, which ADR-0008 decision 9's two-corpus equality rests on.
 
+**The build is also SEC-11's second control** (#329, ADR-0027 decision 3's "still
+owed"). Every served body passes through this loop on every rebuild, so a scan
+here covers the whole served population rather than the delta since the last one
+-- which is what reaches a secret that entered the corpus before the scanner
+shipped, or through a migration placed by hand that never met ``propose accept``.
+It reports and never refuses: by the time a build runs, the content is already in
+the canonical store and already served, so halting would deny ranking without
+un-disclosing anything (:mod:`theurian.application.index_secret_scan` carries that
+reasoning and the record the signal survives in).
+
 Takes its collaborators by injection, so a build is testable without a database,
 without an embedding provider, and without a summariser.
 """
@@ -55,11 +65,46 @@ from theurian.domain.ports.canonical_store import CanonicalReadSession
 from theurian.domain.ports.embedding import EmbeddingProvider
 from theurian.domain.ports.index_store import IndexStore
 from theurian.domain.raptor import IndexableNode
+from theurian.security.content_secrets import MAX_FINDINGS, SecretFinding, scan_text
+from theurian.security.project_config import SecretScanPolicy
 
 #: Chunks per embedding request. An API-backed provider caps request size, and a
 #: local one gains nothing from an unbounded batch -- while an unbounded batch
 #: holds the whole corpus and all its vectors in memory at once.
 EMBED_BATCH: Final = 128
+
+
+@dataclass(frozen=True, slots=True)
+class IndexedSecretFinding:
+    """One secret-shaped string in what this build indexed, and which item carried it.
+
+    ``item_id``, not the text that was scanned. A location derived from the match
+    would republish it and walk around the four-character bound
+    :class:`~theurian.security.content_secrets.SecretFinding` holds -- the echo
+    review found on the accept path (#349), where every location is now a literal
+    this layer chose.
+
+    An item id is not a literal, and it is admitted here on its own terms rather
+    than by inheriting that argument. It is the operator's own identifier, bounded
+    at construction to ``MAX_IDENTIFIER_LENGTH`` characters of lower-case
+    dot-separated kebab-case (``domain.identifiers._DottedId``) -- so it carries no
+    newline, no control character and no upper case -- and it is a *different*
+    string from the ``title + body`` this scans. It is also the only thing a
+    reader can act on: the remedy for a landed secret is to supersede the revision
+    or retire the item, and both take this id.
+
+    ``finding.line``/``finding.column`` are positions within the **served text** --
+    ``served_content_text(title, body)``, the exact string the index chunks -- so a
+    finding in a title sits on line 1 and one in the body is offset by the two
+    lines the title occupies.
+    """
+
+    item_id: str
+    finding: SecretFinding
+
+    def describe(self) -> str:
+        """One line naming the item, the position, the family, and nothing else."""
+        return self.finding.describe(at=self.item_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +127,18 @@ class IndexRequest:
     #: default parameter is how it would come back. Every caller states it, which
     #: is four lines in the composition roots and a keyword in each test.
     visible_sensitivities: frozenset[Sensitivity]
+    #: What to do about a secret in what this build would serve (SEC-11, #329).
+    #:
+    #: **No default, for the reason :attr:`visible_sensitivities` has none.** The
+    #: value that would have to be the default is ``BLOCK``, and a defaulted
+    #: security control is one a composition root can select by forgetting -- the
+    #: failure ``ProposalService._scan_for_secrets`` records when it reads the
+    #: policy itself rather than taking it injected. Here the policy cannot be
+    #: read at this layer: a build is addressed by a *database path* and has no
+    #: project root to find ``.theurian/config.yaml`` under. So the requirement is
+    #: pushed onto the type instead, which is four lines in the composition root
+    #: and a keyword in each test, and no caller can omit it silently.
+    secret_scan: SecretScanPolicy
     #: Whether unapproved revisions are written at all. Off by default, so an
     #: operator who never opts in has a hard guarantee that no draft is in the
     #: file — not merely that a query filter is expected to hold.
@@ -162,6 +219,14 @@ class IndexBuilder:
 
         context = RequestContext(project_id=ProjectId(request.project_id))
         indexable: list[IndexableChunk] = []
+        # Accumulated across every body under one budget, the way the accept path
+        # accumulates across its five channels: `MAX_FINDINGS` bounds the total,
+        # not each document, so a corpus cannot choose how long this list is.
+        found: list[IndexedSecretFinding] = []
+        # Read once, before a single body is touched, which is what makes `off`
+        # mean what it says -- the ordering `ProposalService._scan_for_secrets`
+        # records for the same control.
+        scanning = request.secret_scan is not SecretScanPolicy.OFF
 
         with self._store_factory(request.database) as store:
             for item in store.list_items(context):
@@ -232,6 +297,25 @@ class IndexBuilder:
                 # gate so the text the index chunks and the text the gate re-hashes
                 # cannot drift apart (GHSA-3f65).
                 served = served_content_text(revision.title, revision.body)
+                # SEC-11 at the choke point, and *after* both filters (#329,
+                # ADR-0027 decision 3's "still owed"). Every body this deployment
+                # serves passes through here on every rebuild, so the control
+                # covers the whole served population rather than a delta -- which
+                # is what reaches a secret that entered before the scanner shipped
+                # or through a hand-placed migration that never met `accept`.
+                #
+                # The position in the loop is load-bearing twice over. Below
+                # `may_surface` and `may_disclose`, the count this publishes is a
+                # function of the rows this build *wrote*: a withheld row moves
+                # nothing, so the number cannot carry the existence of content the
+                # reader may not see (the shape T-17 took). And it scans `served`
+                # -- the exact `title + body` string the chunker receives, not the
+                # body alone -- so a credential in a title is caught, which is the
+                # subset-keying GHSA-3f65 was.
+                if scanning and len(found) < MAX_FINDINGS:
+                    found.extend(
+                        _secrets_in(served, at=item.item_id.value, room=MAX_FINDINGS - len(found))
+                    )
                 for chunk in chunk_document(revision.revision_id.value, served):
                     indexable.append(
                         IndexableChunk(
@@ -299,6 +383,19 @@ class IndexBuilder:
             # confusion `indexesUnapproved` exists to prevent for drafts.
             "raptor": request.raptor,
             "nodes": len(nodes),
+            # Part of the shape rather than a pair that appears on trouble, the
+            # discipline `propose accept --json` already holds: an empty list says
+            # the scan ran and found nothing, and it says something different
+            # under `off`, where nothing was read at all -- which is exactly what
+            # the policy beside it distinguishes. A caller that only ever sees a
+            # key when something is wrong learns not to read it.
+            "secretScanPolicy": request.secret_scan.value,
+            # Rendered lines, not mappings, for the reason `propose_commands`
+            # measured: `_render` stringifies a mapping in a list with `repr`, and
+            # this is output whose whole purpose is that a person reads it. The
+            # line is `<item>:<line>:<column>: <family> (<prefix>)`, the shape
+            # every compiler and linter emits.
+            "secretFindings": [finding.describe() for finding in found],
         }
 
     def _derive_forest(
@@ -406,4 +503,25 @@ class IndexBuilder:
             )
 
 
-__all__ = ["EMBED_BATCH", "IndexBuilder", "IndexRequest"]
+def _secrets_in(served: str, *, at: str, room: int) -> tuple[IndexedSecretFinding, ...]:
+    """Secret-shaped strings in one served document, at most ``room`` of them.
+
+    ``room`` is how many findings the build may still take, so the detector's
+    ceiling bounds the *total* across every body rather than each body on its own
+    -- the shape ``proposal_service._findings_in`` gives the same ceiling across
+    its channels. Truncation is silent for the reason
+    :func:`~theurian.security.content_secrets.scan_text` records: a report is
+    actionable on the first finding, and "and N more" would publish a count of the
+    corpus's choosing.
+
+    A module-level function rather than a method, and it returns rather than
+    appends: a helper handed the accumulator would be mutating its caller's list,
+    and the ceiling arithmetic would then live in two places that have to agree.
+    """
+    return tuple(
+        IndexedSecretFinding(item_id=at, finding=finding)
+        for finding in scan_text(served, max_findings=room)
+    )
+
+
+__all__ = ["EMBED_BATCH", "IndexBuilder", "IndexRequest", "IndexedSecretFinding"]

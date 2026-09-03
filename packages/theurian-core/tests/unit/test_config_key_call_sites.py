@@ -218,7 +218,7 @@ _ALL_SPELLINGS = frozenset().union(*WATCHED_SPELLINGS.values())
 #: Every place in the shipped package that names one of the keys above, as
 #: ``(module path under theurian/, the spelling it names)``.
 #:
-#: **Five entries, and exactly one of them reads the file.** The scan matches
+#: **Seven entries, and exactly one of them reads the file.** The scan matches
 #: whole names and not semantics -- deliberately, see the population key above --
 #: so it cannot tell a reader from a field named after one, and this list is
 #: therefore the honest output of the scan rather than a curated set of readers:
@@ -230,6 +230,13 @@ _ALL_SPELLINGS = frozenset().union(*WATCHED_SPELLINGS.values())
 #:   ``cli/propose_commands.py :: secret_scan`` are the ``AcceptedProposal``
 #:   field carrying what the scan did, and the local the accept path binds it to.
 #:   They name the *outcome*, never the file.
+#: * ``application/index_builder.py :: secret_scan`` and
+#:   ``cli/index_commands.py :: secret_scan`` are the build-time control's pair of
+#:   the same shape (#329): the non-defaulted ``IndexRequest`` field carrying the
+#:   policy in force, and the local the composition root binds
+#:   ``read_secret_scan_policy``'s answer to before it fills that field. Neither
+#:   opens the file -- ``cli/index_commands.py`` calls the reader above, which is
+#:   what :func:`test_the_secret_scan_policy_is_read_at_one_call_site_only` counts.
 #: * ``application/forest_builder.py :: max_levels`` and
 #:   ``:: min_children_per_summary`` are ``ForestOptions`` fields. They are named
 #:   after ``raptor.maxLevels`` and ``raptor.minChildrenPerSummary`` and carry the
@@ -238,7 +245,7 @@ _ALL_SPELLINGS = frozenset().union(*WATCHED_SPELLINGS.values())
 #:   -- which is the opposite of reading the file: a default is what applies
 #:   *because* nothing read a value.
 #:
-#: Adding a sixth entry is not a bookkeeping edit. For ``repositories`` it says a
+#: Adding an eighth entry is not a bookkeeping edit. For ``repositories`` it says a
 #: key the published schema still calls inert is now read, which makes the schema
 #: description and the prose surfaces in this module's docstring false until they
 #: are corrected in the same change. For anything under ``raptor.`` it says
@@ -250,7 +257,9 @@ CONFIG_KEY_READER_SITES: frozenset[tuple[str, str]] = frozenset(
     {
         ("application/forest_builder.py", "max_levels"),
         ("application/forest_builder.py", "min_children_per_summary"),
+        ("application/index_builder.py", "secret_scan"),
         ("application/proposal_service.py", "secret_scan"),
+        ("cli/index_commands.py", "secret_scan"),
         ("cli/propose_commands.py", "secret_scan"),
         ("security/project_config.py", "secretScan"),
     }
@@ -1608,11 +1617,12 @@ def test_each_secret_scan_prose_surface_states_the_control_and_its_bound(
 #: Where the core changelog's account of this module's pins lives.
 CORE_CHANGELOG = REPO_ROOT / "packages" / "theurian-core" / "CHANGELOG.md"
 
-#: The reader whose *reach* four documents describe, and the one module that calls it.
+#: The reader whose *reach* four documents describe, and the modules that call it.
 #:
 #: The function is defined in ``security/project_config.py`` and called from the
-#: accept path. A grep for the name therefore returns two hits and only one of
-#: them is a call, which is why this is an AST count and not a text count.
+#: accept path and, since #329, from the index build's composition root. A grep for
+#: the name therefore returns more hits than there are calls, which is why this is
+#: an AST count and not a text count.
 SECRET_SCAN_POLICY_READER = "read_secret_scan_policy"  # noqa: S105 - a function name, not a secret
 
 #: The module that defines it, so the count below resolves a *binding* rather than
@@ -1623,7 +1633,18 @@ SECRET_SCAN_POLICY_MODULE: Final = "theurian.security.project_config"  # noqa: S
 #: package. A count and not a set: a second call inside a module already on the
 #: list is a second place the policy is consulted, and a membership test cannot
 #: see it.
-SECRET_SCAN_POLICY_CALL_SITES: dict[str, int] = {"application/proposal_service.py": 1}
+#:
+#: **Two sites since #329**, and they sit at different layers on purpose.
+#: ``ProposalService`` holds a ``ProjectPaths`` and reads the policy itself, so no
+#: composition root can omit the control by forgetting to wire it. A build is
+#: addressed by a database path and has no project root, so ``theurian index
+#: build`` reads the policy at the CLI and hands it to a non-defaulted
+#: ``IndexRequest.secret_scan`` -- the same "cannot be omitted" property, moved
+#: onto the type.
+SECRET_SCAN_POLICY_CALL_SITES: dict[str, int] = {
+    "application/proposal_service.py": 1,
+    "cli/index_commands.py": 1,
+}
 
 #: The detector itself, and the reason it is pinned beside the policy reader.
 #:
@@ -1645,7 +1666,16 @@ SECRET_SCANNER = "scan_text"  # noqa: S105 - a function name, not a secret
 SECRET_SCANNER_MODULE: Final = "theurian.security.content_secrets"  # noqa: S105 - a module path, not a credential
 
 #: Where the detector runs, on the same terms as the reader's count above.
-SECRET_SCANNER_CALL_SITES: dict[str, int] = {"application/proposal_service.py": 1}
+#:
+#: **Two sites since #329**: the approval gate, and the index build. The second is
+#: SEC-11's other control -- the build reads every served body on every rebuild, so
+#: it reaches content that entered before the scanner shipped or through a
+#: hand-placed migration that never met ``accept``. It reports and never refuses,
+#: because by then the body is already in the canonical store and already served.
+SECRET_SCANNER_CALL_SITES: dict[str, int] = {
+    "application/index_builder.py": 1,
+    "application/proposal_service.py": 1,
+}
 
 #: Each module of the shipped package that reaches :data:`SECRET_SCANNER_MODULE`
 #: by one of the import spellings :func:`_importers_of` counts.
@@ -1656,9 +1686,13 @@ SECRET_SCANNER_CALL_SITES: dict[str, int] = {"application/proposal_service.py": 
 #: however it renames them; this one reddens on the routes that introduce no such
 #: binding at all -- ``import theurian.security.content_secrets``,
 #: ``from theurian.security import content_secrets``, and a call through the
-#: module object. One importer today, and a second is a module that has reached
-#: for the detector whatever it then does with it.
-SECRET_SCANNER_IMPORTERS: tuple[str, ...] = ("application/proposal_service.py",)
+#: module object. Two importers today -- the accept path and the index build, one
+#: per shipped SEC-11 control (#198, #329) -- and a third is a module that has
+#: reached for the detector whatever it then does with it.
+SECRET_SCANNER_IMPORTERS: tuple[str, ...] = (
+    "application/index_builder.py",
+    "application/proposal_service.py",
+)
 
 #: Each module of the shipped package that reaches
 #: :data:`SECRET_SCAN_POLICY_MODULE` by one of the import spellings
@@ -1671,15 +1705,25 @@ SECRET_SCANNER_IMPORTERS: tuple[str, ...] = ("application/proposal_service.py",)
 #: while ``ingest.md``, the schema description, ``SECURITY.md`` and T-15 all say
 #: the policy is consulted at the approval gate.
 #:
-#: **Two entries, and the second is not a defect.**
-#: ``application/project_service.py`` takes ``PROJECT_CONFIG_FILE`` from this
-#: module -- the file name, not the policy -- so it is an importer that reads no
-#: policy. The membership is what this pin holds; what each importer *does* with
-#: the module is held by the call count beside it, and the pair is what makes a
-#: third importer a change somebody has to explain.
+#: **Five entries, and only two of them read a policy.** The membership is what
+#: this pin holds; what each importer *does* with the module is held by the call
+#: count beside it, and the pair is what makes a sixth importer a change somebody
+#: has to explain. What each of the five takes:
+#:
+#: * ``application/project_service.py`` takes ``PROJECT_CONFIG_FILE`` -- the file
+#:   name, not the policy -- and reads nothing.
+#: * ``application/proposal_service.py`` and ``cli/index_commands.py`` are the two
+#:   that call ``read_secret_scan_policy``, one per shipped control.
+#: * ``application/index_builder.py`` takes ``SecretScanPolicy`` as the *type* of
+#:   ``IndexRequest.secret_scan``, and ``application/index_secret_scan.py`` takes
+#:   it as the type it records and reads back. Neither opens the file: a build is
+#:   handed the policy its composition root read (#329).
 SECRET_SCAN_POLICY_IMPORTERS: tuple[str, ...] = (
+    "application/index_builder.py",
+    "application/index_secret_scan.py",
     "application/project_service.py",
     "application/proposal_service.py",
+    "cli/index_commands.py",
 )
 
 #: Number words as the changelog spells them, index = value.

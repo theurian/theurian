@@ -692,6 +692,22 @@ class ProjectPaths:
         """
         return self._contained(self.knowledge_dir / "state" / "active-index.json")
 
+    @property
+    def index_secret_scan(self) -> Path:
+        """What the published build's SEC-11 scan found (#329).
+
+        Beside ``active-index.json`` and derived exactly like it: one record per
+        project, rewritten by every publish, naming the build it describes.
+        Composed from ``knowledge_dir`` rather than from :attr:`state` for the
+        reason :attr:`active_pointer` is -- one ``_contained`` over the whole path
+        catches an escaping ``state`` symlink *and* an escaping leaf, where two
+        checks would run the same resolve twice.
+
+        The record's shape and why it is a count rather than a list of findings
+        live in :mod:`theurian.application.index_secret_scan`.
+        """
+        return self._contained(self.knowledge_dir / "state" / "index-secret-scan.json")
+
     def index_for(self, index_build_id: str) -> Path:
         """Where one index build lives.
 

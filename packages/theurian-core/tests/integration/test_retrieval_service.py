@@ -48,6 +48,7 @@ from theurian.domain.retrieval import RaptorPathSegment
 from theurian.infrastructure.embedding import HashingEmbedding
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
+from theurian.security.project_config import SecretScanPolicy
 
 pytestmark = pytest.mark.integration
 
@@ -264,6 +265,7 @@ def _build(project: Path, *, embedder: EmbeddingProvider | None) -> Path:
             state_hash="test-state",
             index_build_id="01K1DXAAAA01234567890ABCDE",
             visible_sensitivities=EVERY_SENSITIVITY,
+            secret_scan=SecretScanPolicy.BLOCK,
         )
     )
     return index_path
@@ -1171,6 +1173,7 @@ operations:
             state_hash="test-state",
             index_build_id="01K1DXAAAA",
             visible_sensitivities=EVERY_SENSITIVITY,
+            secret_scan=SecretScanPolicy.BLOCK,
             include_unapproved=True,  # asked for explicitly, and still refused
         )
     )
@@ -1230,6 +1233,7 @@ def test_a_build_that_is_refused_the_path_does_not_delete_what_is_there(
                 state_hash="another-state",
                 index_build_id="01K1DXBBBB01234567890ABCDE",
                 visible_sensitivities=EVERY_SENSITIVITY,
+                secret_scan=SecretScanPolicy.BLOCK,
             )
         )
 
@@ -1966,6 +1970,7 @@ def _build_probe_index(project: Path, name: str, build_id: str) -> Path:
             state_hash="probe-state",
             index_build_id=build_id,
             visible_sensitivities=EVERY_SENSITIVITY,
+            secret_scan=SecretScanPolicy.BLOCK,
         )
     )
     return index_path
