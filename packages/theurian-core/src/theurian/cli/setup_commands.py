@@ -36,17 +36,19 @@ import typer
 
 from theurian import __version__
 from theurian.application.migration_engine import run_static_migration_guards
-from theurian.application.project_service import ProjectPaths
+from theurian.application.project_service import ProjectPaths, resolve_state_hash
 from theurian.application.setup_context import MigrationsCheck, SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.cli.context import schema_root
 from theurian.daemon.instance import DEFAULT_PORT, probe_health
 from theurian.domain.errors import TheurianError
 from theurian.domain.setup import SetupError, SetupState
+from theurian.domain.state import StateHash
 from theurian.infrastructure.claude.mcp_config import ClaudeCodeMcpConfig, ConnectionSpec
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
 from theurian.infrastructure.secrets.file_store import FileSecretStore, default_data_dir
 from theurian.infrastructure.services import detect_manager
+from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.security.env_file import TOKEN_KEY
 
 #: A setup that could not converge. Distinct from 1 so a caller can tell "you
@@ -100,8 +102,45 @@ def build_context(
         service=detect_manager(executable=_executable(), home=home),
         executable=_executable(),
         check_migrations=_check_migrations,
+        current_state_hash=_current_state_hash,
         for_publication=for_publication,
     )
+
+
+def _current_state_hash(root: Path) -> StateHash | None:
+    """The state this project is at, resolved the way every other command does.
+
+    ``load_migrations`` then ``resolve_state_hash(loaded, SCHEMA_VERSION)`` --
+    the two calls ``cli/context.resolve_context`` makes, in that order and with
+    nothing else between them -- so `doctor` and ``theurian project status``
+    address the same database file for the same working tree. Deriving it any
+    other way is how the two commands came to publish opposite answers about one
+    project (#451), and there is no cheaper source: the hash covers the migration
+    ids, the bytes their ``contentFile``s point at, and the schema version
+    (ADR-0016), so it cannot be read off a directory listing.
+
+    **The static guards are deliberately not run here.** ``_check_migrations``
+    runs them because it answers `migrate validate`'s question; this answers
+    `project status`', and ``resolve_context`` loads without them. Adding them
+    would make `doctor` name a different state hash than `project status` for a
+    set the loader accepts and a guard rejects -- the same divergence in a new
+    place.
+
+    ``None`` rather than a raise, for the reason ``_check_migrations`` returns a
+    verdict: a probe has to come back with an answer, and a step that let the
+    failure escape would reach the reader as ``SetupService._probe``'s generic
+    "Could not check initial-index". The refusal is ``migrations-valid``'s to
+    publish, in the same report, so nothing from the file travels with this one.
+    """
+    paths = ProjectPaths.of(root)
+    try:
+        loaded = load_migrations(paths.root, paths.migrations, schema_root())
+    # The whole `TheurianError` family, matching `_check_migrations`' catch set
+    # and for the reasons recorded there: the narrower hand-listed tuple is what
+    # let an `InvalidIdentifierError` escape a sibling of this call.
+    except TheurianError:
+        return None
+    return resolve_state_hash(loaded, SCHEMA_VERSION)
 
 
 def _check_migrations(root: Path) -> MigrationsCheck:

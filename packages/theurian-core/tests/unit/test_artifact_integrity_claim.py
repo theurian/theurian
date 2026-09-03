@@ -109,7 +109,7 @@ import re
 from typing import Final
 
 from fakes.setup import FakeMcpConfig, FakeService
-from setup_migrations import unchecked_migrations
+from setup_migrations import state_hash_from_the_loader, unchecked_migrations
 
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
@@ -304,6 +304,7 @@ def _context(
         service=FakeService(),
         executable=str(root / "theurian"),
         check_migrations=unchecked_migrations,
+        current_state_hash=state_hash_from_the_loader,
         for_publication=for_publication,
     )
 

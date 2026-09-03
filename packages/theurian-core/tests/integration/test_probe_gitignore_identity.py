@@ -37,7 +37,7 @@ from pathlib import Path
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
-from setup_migrations import unchecked_migrations
+from setup_migrations import state_hash_from_the_loader, unchecked_migrations
 
 from theurian.application.project_service import ProjectError, ensure_gitignore
 from theurian.application.setup_context import SetupContext
@@ -79,6 +79,7 @@ def _context(tmp_path: Path, project_root: Path | None) -> SetupContext:
         # This step is the subject; the migrations step is not. A checker that
         # reads nothing keeps the fixture from failing for a reason next door.
         check_migrations=unchecked_migrations,
+        current_state_hash=state_hash_from_the_loader,
     )
 
 

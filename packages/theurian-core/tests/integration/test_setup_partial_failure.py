@@ -64,7 +64,7 @@ from typing import Any, override
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
-from setup_migrations import unchecked_migrations
+from setup_migrations import state_hash_from_the_loader, unchecked_migrations
 
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
@@ -126,6 +126,7 @@ def _context(tmp_path: Path, **overrides: Any) -> SetupContext:
         "service": service,
         "executable": str(executable),
         "check_migrations": unchecked_migrations,
+        "current_state_hash": state_hash_from_the_loader,
     }
     return SetupContext(**{**defaults, **overrides})
 

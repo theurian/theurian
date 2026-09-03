@@ -34,7 +34,7 @@ from theurian.application.project_service import ProjectPaths
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_steps import probe_migrations
 from theurian.cli.context import schema_root
-from theurian.cli.setup_commands import _check_migrations
+from theurian.cli.setup_commands import _check_migrations, _current_state_hash
 from theurian.domain.errors import (
     AliasItemCollisionError,
     DuplicateContentFileError,
@@ -76,7 +76,12 @@ def _loaded_count(root: Path) -> int:
 
 
 def _context(tmp_path: Path, root: Path) -> SetupContext:
-    """A context wired to the real checker, which is what these tests are about."""
+    """A context wired to the real readers, which is what these tests are about.
+
+    Both of the composition root's migration readers, not only the checker: they
+    load the same set through the same call, and a context holding one real and
+    one stubbed would let the two answer about different files.
+    """
     data_dir = tmp_path / "home" / ".theurian"
     return SetupContext(
         home=tmp_path / "home",
@@ -90,6 +95,7 @@ def _context(tmp_path: Path, root: Path) -> SetupContext:
         service=FakeService(),
         executable="",
         check_migrations=_check_migrations,
+        current_state_hash=_current_state_hash,
     )
 
 

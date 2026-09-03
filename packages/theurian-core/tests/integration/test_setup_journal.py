@@ -53,7 +53,7 @@ from typing import Any, Final
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
-from setup_migrations import unchecked_migrations
+from setup_migrations import state_hash_from_the_loader, unchecked_migrations
 
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import JOURNAL_FILENAME, SetupRequest, SetupService
@@ -104,6 +104,7 @@ def _context(tmp_path: Path) -> SetupContext:
         service=FakeService(),
         executable=str(executable),
         check_migrations=unchecked_migrations,
+        current_state_hash=state_hash_from_the_loader,
     )
 
 

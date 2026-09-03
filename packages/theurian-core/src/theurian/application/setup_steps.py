@@ -45,7 +45,6 @@ from theurian.application.project_service import (
     ProjectPaths,
     ProjectRegistry,
     locate_gitignore_block,
-    read_active_state,
     render_gitignore_block,
 )
 from theurian.application.setup_context import SetupContext
@@ -1394,10 +1393,43 @@ def probe_migrations(context: SetupContext) -> SetupStep:
 
 
 def probe_initial_index(context: SetupContext) -> SetupStep:
-    """Building a retrieval index. Not applicable until Milestone 5.
+    """Whether the knowledge state for the migrations on disk *right now* is built.
 
     Reported rather than omitted, so that a report never silently lacks a step
-    the specification lists.
+    the specification lists. Setup builds nothing here: `theurian migrate apply`
+    writes the state database, which is why this step has no apply function and
+    why its summary names that command instead.
+
+    **The question is which state, not whether any state was ever built** (#451).
+    This asked ``read_active_state(...) is not None`` -- does an active-state
+    pointer exist at all -- and the pointer a first `migrate apply` writes is
+    never removed, so from that moment the step answered "Knowledge state is
+    built." for every later migration set and the arm naming the remedy was
+    unreachable. That is exactly the state a `git pull` leaves a deployment in --
+    migrations fetched, `migrate apply` not yet run -- so the false claim was
+    published precisely when someone was running `doctor` to find out what to do,
+    and ``theurian project status`` said ``stateBuilt: false`` about the same
+    tree in the same minute.
+
+    So the predicate is `project status`' own: ``database_for(state_hash)``
+    exists, for the hash the *loaded* set resolves to. The hash arrives through
+    :attr:`SetupContext.current_state_hash` rather than being computed here,
+    because resolving it means loading YAML off disk (ADR-0003) -- the same
+    reasoning, and the same shape, as :attr:`SetupContext.check_migrations`.
+
+    **A set that will not load gets its own answer rather than a raise.** The
+    resolver returns ``None`` there, and answering "not built" would be the #451
+    defect pointing the other way: an unreadable set is not a state anyone can
+    say anything about. The refusal itself belongs to ``migrations-valid``, which
+    publishes it in the same report; this step says only that it could not tell
+    and names the command that prints why.
+
+    **NOT_APPLICABLE on every arm, deliberately.** ``MISSING`` is
+    :attr:`SetupStep.would_change` -- what `doctor` counts as a problem and
+    `setup` re-probes, warns about and ends DEGRADED over -- and setup neither
+    runs `migrate apply` nor could. Grading an unapplied migration set as work
+    *setup* would do is a claim about the run, and a separate decision from the
+    truth of the sentence.
     """
     root = context.project_root
     if root is None:
@@ -1406,7 +1438,20 @@ def probe_initial_index(context: SetupContext) -> SetupStep:
             status=StepStatus.NOT_APPLICABLE,
             summary="Not inside a Git repository.",
         )
-    built = read_active_state(ProjectPaths.of(root)) is not None
+    state_hash = context.current_state_hash(root)
+    if state_hash is None:
+        # Returned before `ProjectPaths.of`, which refuses an escaping
+        # `.theurian` symlink by raising: the arm reached when the project's
+        # migrations cannot be read is not the arm to discover that in.
+        return SetupStep(
+            step_id=StepId.INITIAL_INDEX,
+            status=StepStatus.NOT_APPLICABLE,
+            summary=(
+                "Cannot tell what state this project is at: its migrations do "
+                "not load. Run `theurian migrate validate`."
+            ),
+        )
+    built = ProjectPaths.of(root).database_for(state_hash).exists()
     return SetupStep(
         step_id=StepId.INITIAL_INDEX,
         status=StepStatus.NOT_APPLICABLE,
@@ -1415,7 +1460,18 @@ def probe_initial_index(context: SetupContext) -> SetupStep:
             if built
             else "No knowledge state built yet. Run `theurian migrate apply`."
         ),
-        detail="Retrieval indexes arrive in Milestone 5; there is nothing to build yet.",
+        # The canonical state and the retrieval index over it are two artefacts,
+        # and this step reports the first. Said here because the step is *named*
+        # for the second, and because the sentence that stood in this field
+        # announced retrieval indexes as unstarted work and told the reader there
+        # was nothing to build -- while `theurian index build` was a shipped
+        # command in `cli/index_commands.py`, which is where the reader was being
+        # sent away from.
+        detail=(
+            "This is the canonical state `theurian migrate apply` writes. The "
+            "retrieval index over it is separate: `theurian index build` builds "
+            "it and `theurian index status` reports it."
+        ),
     )
 
 

@@ -16,14 +16,28 @@ from pathlib import Path
 from typing import Any, override
 
 import pytest
+from fakes.clock import FrozenClock
 from fakes.setup import FakeMcpConfig, FakeService
-from setup_migrations import unchecked_migrations
+from migration_fixtures import body_pin
+from setup_migrations import state_hash_from_the_loader, unchecked_migrations
 
-from theurian.application.project_service import ProjectRegistry, ensure_gitignore
+from theurian.application.project_service import (
+    ProjectPaths,
+    ProjectRegistry,
+    ensure_gitignore,
+    resolve_state_hash,
+    write_active_state,
+)
 from theurian.application.setup_context import MigrationsCheck, SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
-from theurian.application.setup_steps import STEPS, Step, probe_project_registered
+from theurian.application.setup_steps import (
+    STEPS,
+    Step,
+    probe_initial_index,
+    probe_project_registered,
+)
 from theurian.cli.commands import _emit
+from theurian.cli.context import schema_root
 from theurian.domain.errors import MigrationError
 from theurian.domain.setup import (
     SetupReport,
@@ -33,8 +47,11 @@ from theurian.domain.setup import (
     StepOutcome,
     StepStatus,
 )
+from theurian.domain.state import StateHash
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
+from theurian.infrastructure.filesystem.migration_loader import load_migrations
 from theurian.infrastructure.secrets.file_store import FileSecretStore
+from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.security.env_file import TOKEN_KEY
 from theurian.security.tokens import MIN_TOKEN_LENGTH
 
@@ -712,8 +729,8 @@ def test_the_summaries_carry_the_locations_that_removing_paths_took_out(
 #: returns, two of them CONFLICTING), artifact-integrity 1, serving-profile 1
 #: (three returns, one reachable here), single-instance 3, project-registered 4,
 #: project-layout 3, gitignore 3, mcp-health 2, migrations-valid 3 (four arms,
-#: two of them NOT_APPLICABLE), initial-index 1 (two summaries, one status),
-#: serena-detection 2. Those twelve add to 27.
+#: two of them NOT_APPLICABLE), initial-index 1 (three of its four summaries
+#: reached here, all one status), serena-detection 2. Those twelve add to 27.
 #:
 #: This comment used to carry a second, independent count -- "31 ``return
 #: SetupStep(...)`` statements collapsing onto 26 pairs". It is gone rather than
@@ -723,17 +740,22 @@ def test_the_summaries_carry_the_locations_that_removing_paths_took_out(
 #: The per-step tally above is the derivation, and the assertion below prints
 #: the observed set when it disagrees.
 #:
-#: Two steps have returns no state here can walk, and both are walked elsewhere.
-#: `core-present`'s third -- Core installed without its ``daemon`` extra (#78) --
-#: is unreachable because the test process is a development environment that
-#: always has the extra; ``tests/integration/test_bare_install.py`` blocks the
-#: modules instead of varying the context. `serving-profile`'s SATISFIED and
-#: CONFLICTING arms need a profile file in the data directory, which no context
-#: here writes; ``tests/integration/test_setup_cli.py`` declares one and asserts
-#: all three statuses through `doctor`. The count above is what those arms cost
+#: Three steps have returns no state here can walk, and all three are walked
+#: elsewhere. `core-present`'s third -- Core installed without its ``daemon``
+#: extra (#78) -- is unreachable because the test process is a development
+#: environment that always has the extra;
+#: ``tests/integration/test_bare_install.py`` blocks the modules instead of
+#: varying the context. `serving-profile`'s SATISFIED and CONFLICTING arms need
+#: a profile file in the data directory, which no context here writes;
+#: ``tests/integration/test_setup_cli.py`` declares one and asserts all three
+#: statuses through `doctor`. `initial-index`'s built arm needs a state database
+#: at the hash the migrations on disk resolve to, which means a migration set
+#: the real loader accepts; this module's #451 section builds one and asserts
+#: both that arm and the one beside it. The count above is what those arms cost
 #: this number: nothing for `core-present`, whose other CONFLICTING arm already
-#: supplies the pair, and two pairs for `serving-profile` that simply never
-#: appear here.
+#: supplies the pair, nothing for `initial-index`, whose other arms supply its
+#: only status, and two pairs for `serving-profile` that simply never appear
+#: here.
 #:
 #: **What the assertion holds, exactly.** A fall means a state stopped reaching
 #: a status it used to. A rise means a step began emitting a status it did not
@@ -757,28 +779,26 @@ def _under(tmp_path: Path, name: str) -> Path:
 
 
 def _converged_repository(base: Path) -> SetupContext:
-    """Rows 11-13 satisfied, Serena present, a migration and a built state on disk.
+    """Rows 11-13 satisfied, Serena present, and a migration file on disk.
 
-    The built state is the point of the ``active.json``: `probe_initial_index`
-    branches on `read_active_state`, and with no state ever built no context
-    reached the built side of it. A mutation naming a path only there survived
-    the whole suite.
+    Its ``0001-initial.yaml`` is empty, which the real loader refuses -- an empty
+    document is not a mapping at the root -- so this is the state that walks
+    `probe_initial_index`'s cannot-tell arm. That arm is the one with a raise
+    behind it: `_with` hands every context here the real state-hash resolver, and
+    the loop below calls each probe *directly*, with no `SetupService._probe` net
+    under it, so a resolver or a probe that let the refusal escape ends this test
+    in an error rather than a comparison.
+
+    It used to carry a hand-written ``active.json`` instead, for a question
+    `probe_initial_index` no longer asks: whether a pointer exists at all was the
+    #451 defect, and nothing in ``STEPS`` reads that file now. The built and
+    not-built arms are held where they can be stated against a real state hash,
+    in this module's #451 section.
     """
     root = _repository(base)
     for name in ("migrations", "knowledge", "state"):
         (root / ".theurian" / name).mkdir(parents=True, exist_ok=True)
     (root / ".theurian" / "migrations" / "0001-initial.yaml").touch()
-    (root / ".theurian" / "state" / "active.json").write_text(
-        json.dumps(
-            {
-                "stateHash": "b" * 64,
-                "databaseFilename": "knowledge-bbbb.sqlite",
-                "migrationCount": 1,
-                "updatedAt": "2026-01-01T00:00:00Z",
-            }
-        ),
-        encoding="utf-8",
-    )
     # Written by the function `theurian init` calls, rather than by joining the
     # entries: since #87 `probe_gitignore` reports `satisfied` only for the
     # managed block itself, and the bare entries with no markers around them are
@@ -1063,6 +1083,256 @@ def test_setup_still_reports_what_it_declined_to_do(in_a_repository: SetupContex
         assert any(step_id.value in warning for warning in report.warnings)
     registered = report.step(StepId.PROJECT_REGISTERED)
     assert registered is not None and "theurian project register" in registered.action
+
+
+# -- initial-index answers about the *current* state hash (#451) -------------
+#
+# `probe_initial_index` asked whether an active-state pointer exists at all,
+# while `theurian project status` publishes ``"stateBuilt": database.exists()``
+# for the ``database_for(context.state_hash)`` it resolved a few lines earlier
+# -- whether the database for the migration set *on disk right now* is there
+# (``project_status`` in ``cli/commands.py``). Those two agree until a migration
+# lands, and
+# then they parted for good: the pointer a first `migrate apply` writes is never
+# removed, so from that moment `doctor` answered "Knowledge state is built." for
+# every later state, and the arm naming the remedy was unreachable.
+#
+# That is the state a pull puts a deployment into -- migrations fetched,
+# `migrate apply` not yet run -- so the step published its false claim exactly
+# when a person was asking `doctor` what to do. #451 records the pair, measured
+# on f2279e1: one migration added to an applied project, `project status --json`
+# reporting ``stateBuilt: false`` and ``migrationCount: 1`` on the same tree
+# whose `doctor --json` reported initial-index "Knowledge state is built.".
+#
+# Observable family: **a published field**. A `doctor` summary is a claim an
+# operator acts on, and the sentence *is* the whole output of a step that has no
+# action -- there is nothing else in it that could carry the answer.
+
+#: The two claims `probe_initial_index` chooses between. Quoted from
+#: ``setup_steps.py`` rather than paraphrased, because #451 is entirely about
+#: *which* of them a given project is handed: an assertion naming only one of
+#: the two would be satisfied by a summary that says both, or neither.
+_STATE_IS_BUILT = "Knowledge state is built."
+_APPLY_REMEDY = "Run `theurian migrate apply`."
+
+#: The clauses of the published ``detail`` that #451's second half is about.
+#: `theurian index build` shipped in Milestone 5, so a detail promising
+#: retrieval indexes as future work and telling the reader there is nothing to
+#: build is false twice over on every project that has one to build.
+#:
+#: The token "Milestone 5" is deliberately *not* forbidden here, and neither is
+#: any replacement wording pinned: a detail saying the indexes *shipped* in
+#: Milestone 5 would be true, and a test that refused it would be holding the
+#: wording rather than the claim -- which is how a fossil survives its rewrite.
+_CLAIMS_INDEXES_ARE_FUTURE_WORK = ("Retrieval indexes arrive in", "there is nothing to build yet")
+
+#: Crockford base32, as every ULID in this repository is: no ``I``, ``L``, ``O``
+#: or ``U``, and a first character in ``0-7``. The migration schema's own pattern
+#: is ``^[0-7][0-9A-HJKMNP-TV-Z]{25}$``, and a fixture that fails it is refused
+#: by the loader rather than by the behaviour under test.
+_FIRST_MIGRATION = "01K451AAAA01234567890ABCDE"
+_FIRST_REVISION = "01K451AAAREV01234567890ABC"
+_SECOND_MIGRATION = "01K451BBBB01234567890ABCDE"
+_SECOND_REVISION = "01K451BBBREV01234567890ABC"
+
+
+def _loadable_migration(migration_id: str, revision_id: str, slug: str, body: str) -> str:
+    """A migration the real loader accepts, over its own item.
+
+    Real rather than a stub file, because the state hash these fixtures pivot on
+    is computed from the *loaded* set: `_converged_repository`'s empty
+    ``0001-initial.yaml`` is refused by the loader, so it can stand in for a
+    migration only where nothing asks what the set hashes to.
+    """
+    return f"""apiVersion: theurian.dev/v1
+id: {migration_id}
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.{slug}
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.{slug}
+    revisionId: {revision_id}
+    contentFile: ../knowledge/architecture/{slug}.md
+    contentSha256: {body_pin(body)}
+    metadata:
+      title: {slug}
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/{slug}.md
+"""
+
+
+def _write_a_migration(root: Path, migration_id: str, revision_id: str, slug: str) -> None:
+    """Author one migration and the body it pins, the way a person would."""
+    body = f"# {slug}\n\nEvery call carries a signed token.\n"
+    paths = ProjectPaths.of(root)
+    (paths.knowledge / "architecture").mkdir(parents=True, exist_ok=True)
+    (paths.knowledge / "architecture" / f"{slug}.md").write_text(body, encoding="utf-8")
+    paths.migrations.mkdir(parents=True, exist_ok=True)
+    (paths.migrations / f"{migration_id}-{slug}.yaml").write_text(
+        _loadable_migration(migration_id, revision_id, slug, body), encoding="utf-8"
+    )
+
+
+def _current_state(root: Path) -> tuple[StateHash, int]:
+    """What ``theurian project status`` would publish as ``stateHash`` here.
+
+    The same two calls `cli/context.resolve_context` makes -- `load_migrations`
+    then `resolve_state_hash(loaded, SCHEMA_VERSION)` -- so these fixtures
+    cannot come to disagree with the product about which database is the current
+    one. Deriving the hash any other way would let the test and `project status`
+    address different files while both looked right.
+    """
+    paths = ProjectPaths.of(root)
+    loaded = load_migrations(paths.root, paths.migrations, schema_root())
+    return resolve_state_hash(loaded, SCHEMA_VERSION), len(loaded.migration_set)
+
+
+def _apply_the_current_set(root: Path) -> StateHash:
+    """Leave behind what a successful `theurian migrate apply` leaves behind.
+
+    The database is created empty on purpose: "built" is `database.exists()` --
+    that is the predicate `project status` publishes as ``stateBuilt`` -- so a
+    file at the right path is the whole of the state being fixtured. The pointer
+    goes through the product's own `write_active_state`, so a fixture cannot
+    quietly write a shape the reader would refuse.
+    """
+    paths = ProjectPaths.of(root)
+    state_hash, count = _current_state(root)
+    database = paths.database_for(state_hash)
+    database.parent.mkdir(parents=True, exist_ok=True)
+    database.touch()
+    write_active_state(paths, state_hash, count, FrozenClock())
+    return state_hash
+
+
+def _never_applied(base: Path) -> SetupContext:
+    """Migrations authored, `migrate apply` never run. No pointer, no database."""
+    root = _repository(base)
+    _write_a_migration(root, _FIRST_MIGRATION, _FIRST_REVISION, "auth-policy")
+    return _with(base, project_root=root)
+
+
+def _applied_and_current(base: Path) -> SetupContext:
+    """Applied, and nothing has changed since. The one state that *is* built."""
+    root = _repository(base)
+    _write_a_migration(root, _FIRST_MIGRATION, _FIRST_REVISION, "auth-policy")
+    _apply_the_current_set(root)
+    return _with(base, project_root=root)
+
+
+def _migrations_pulled_but_not_applied(base: Path) -> SetupContext:
+    """Applied once, then a migration landed: #451's state, and the common one.
+
+    Every corpus change puts a deployment here between `git pull` and `theurian
+    migrate apply`. The pointer and the earlier database both survive on disk --
+    they are what made the pointer-existence question answer "built" -- while the
+    migration set has moved and no database exists for what it now hashes to.
+    """
+    root = _repository(base)
+    _write_a_migration(root, _FIRST_MIGRATION, _FIRST_REVISION, "auth-policy")
+    _apply_the_current_set(root)
+    _write_a_migration(root, _SECOND_MIGRATION, _SECOND_REVISION, "rate-limit")
+    return _with(base, project_root=root)
+
+
+#: Each shape a project can be in when this step probes it, with what `project
+#: status` publishes as ``stateBuilt`` for it. Two of the three are *not* built,
+#: and they differ in the thing #451 confused with built-ness -- one has no
+#: pointer, the other has one -- which is what makes the pair a class statement
+#: rather than two spellings of one case.
+_SHAPES: tuple[tuple[str, Callable[[Path], SetupContext], bool], ...] = (
+    ("never-applied", _never_applied, False),
+    ("applied-and-current", _applied_and_current, True),
+    ("migrations-pulled-not-applied", _migrations_pulled_but_not_applied, False),
+)
+
+
+@pytest.mark.parametrize(
+    ("state", "is_built"),
+    [pytest.param(builder, built, id=name) for name, builder, built in _SHAPES],
+)
+def test_the_initial_index_step_answers_whether_the_current_state_is_built(
+    tmp_path: Path, state: Callable[[Path], SetupContext], is_built: bool
+) -> None:
+    """`doctor` must not tell a deployment its knowledge state is built when the
+    database for the migration set on disk does not exist (#451).
+
+    The claim is about *which* state, not about whether any state was ever
+    built: a project applied last week and pulled this morning has a pointer, a
+    database, and no database for what its migrations now hash to. `project
+    status` says ``stateBuilt: false`` there and `doctor` said "Knowledge state
+    is built.", so the two commands disagreed about one project on the same
+    machine, and the one a person runs when something looks wrong was the one
+    that was wrong.
+
+    Both directions are asserted per shape -- the claim that must appear and the
+    claim that must not -- because a summary carrying both would satisfy either
+    half alone. The three shapes are the class: pointer absent, pointer and
+    current database present, pointer present with the database behind it. The
+    middle one is what keeps the other two from being satisfiable by a step that
+    simply never says anything is built.
+
+    Deliberately silent about `status`: nothing here fixes NOT_APPLICABLE in
+    place, so a later change may make an unbuilt state MISSING with an action.
+    The sentence an operator reads is the requirement.
+    """
+    context = state(tmp_path)
+    root = context.project_root
+    assert root is not None
+    state_hash, _ = _current_state(root)
+    assert ProjectPaths.of(root).database_for(state_hash).exists() is is_built, (
+        "the fixture has to put on disk the state it claims to be fixturing"
+    )
+    expected, refused = (
+        (_STATE_IS_BUILT, _APPLY_REMEDY) if is_built else (_APPLY_REMEDY, _STATE_IS_BUILT)
+    )
+
+    step = probe_initial_index(context)
+
+    assert expected in step.summary, f"the summary has to say {expected!r}: {step.summary!r}"
+    assert refused not in step.summary, f"the summary must not say {refused!r}: {step.summary!r}"
+
+
+@pytest.mark.parametrize("state", [pytest.param(b, id=name) for name, b, _ in _SHAPES])
+def test_the_initial_index_step_does_not_publish_indexes_as_future_work(
+    tmp_path: Path, state: Callable[[Path], SetupContext]
+) -> None:
+    """The step's ``detail`` is a published claim, and it named a shipped feature
+    as work that had not started (#451).
+
+    "Retrieval indexes arrive in Milestone 5; there is nothing to build yet" is
+    read by someone deciding what to do next, and `theurian index build` shipped
+    in Milestone 5 -- so the reader was told to skip the command the same report
+    exists to send them to. Prose in a report is not decoration: this file
+    already pins three other summaries to the locations they would otherwise have
+    lost, for the same reason.
+
+    Asserted over every shape rather than one, so that a rewrite reaching only
+    the arm someone was looking at is caught by the arm they were not. What is
+    pinned is the *absence of the false clauses* -- see
+    `_CLAIMS_INDEXES_ARE_FUTURE_WORK` for why the milestone number itself is
+    fair game, and why no replacement wording is required here.
+    """
+    context = state(tmp_path)
+
+    step = probe_initial_index(context)
+
+    published = " ".join((step.summary, step.action, step.detail))
+    assert not [clause for clause in _CLAIMS_INDEXES_ARE_FUTURE_WORK if clause in published], (
+        f"a shipped feature is still published as future work: {published!r}"
+    )
 
 
 # -- Degrading rather than failing (§6.1) ------------------------------------
@@ -1519,5 +1789,6 @@ def _with(tmp_path: Path, **overrides: Any) -> SetupContext:
         # where the arm is wanted; the loader itself is wired in
         # `tests/integration/test_probe_migrations_validate.py`.
         "check_migrations": unchecked_migrations,
+        "current_state_hash": state_hash_from_the_loader,
     }
     return SetupContext(**{**defaults, **overrides})
