@@ -1960,8 +1960,17 @@ a separate point:*
   is its positive control and also holds the error-argument walk open by name. Two channels the issue's own table did not list are closed
   with it: PyYAML's parse error, which quotes the offending source line before
   any scan runs, and `jsonschema`'s message, which quotes the offending instance
-  in full. **Three residuals, each named rather than folded in:** the gate's reach
-  is the *detector's* reach, so a fragment a third party truncated can escape it —
+  in full. **Four residuals, each named rather than folded in:** the gate judges
+  one string at a time, so a credential *split across two author names* is
+  recovered whole from one refusal — each half is below the detector's
+  32-character floor, both print, and concatenating them reconstructs the value
+  (measured 2026-09-04: a 43-character token cut at 20 and at 22 characters into
+  two migration filenames, both echoed by the "holds two or more migration files"
+  refusal). Deliberate-adversary reachable and not an accident of authorship,
+  since it needs the value cut on purpose; a per-message rather than per-string
+  scan would close it and would also redact every refusal that happens to name
+  two clean paths whose concatenation clears the floor. The gate's reach is also
+  the *detector's* reach, so a fragment a third party truncated can escape it —
   PyYAML's `Mark.get_snippet` cut the `sk-` prefix off a 43-character token,
   leaving 32 lower-case hex characters no family matches, and they were printed
   (measured 2026-09-04 through the real CLI, recorded at `_bounded`);

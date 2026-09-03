@@ -620,12 +620,15 @@ class ProposalSecretFinding:
       is a literal this module chose (:func:`_authored_strings`), never a key read
       back out of the document, so an untrusted key cannot ride into the message
       this renders.
-    * **An artifact the acceptance lands** -- a body's content or its landed
-      path, the migration's own bytes, or its filename -- named by a fixed
-      literal for the channel it came from (:data:`_AT_BODY_CONTENT`,
-      :data:`_AT_BODY_PATH`, :data:`_AT_MIGRATION_BYTES`,
-      :data:`_AT_MIGRATION_NAME`), the two body channels each carrying an integer
-      index so two bodies stay tellable apart. None is built from what was
+    * **A file the acceptance puts in front of a reviewer** -- a body's content
+      or its landed path, the migration's own bytes, its filename, or the
+      evidence record (#361), which the command lands nowhere and leaves in the
+      directory it tells the author to commit -- named by a fixed literal for the
+      channel it came from (:data:`_AT_BODY_CONTENT`, :data:`_AT_BODY_PATH`,
+      :data:`_AT_MIGRATION_BYTES`, :data:`_AT_MIGRATION_NAME`,
+      :data:`_AT_EVIDENCE`), the two body channels each carrying an integer index
+      so two bodies stay tellable apart and the evidence channel carrying none
+      because there is exactly one. None is built from what was
       scanned: on the two name channels, and on a body whose content is itself
       credential-shaped, a location derived from the match would republish it, so
       the literal is what keeps the finding from being a second copy of what it
@@ -1317,9 +1320,13 @@ class ProposalService:
     ) -> Iterable[tuple[str, str]]:
         """Every text this acceptance would land, each with where it sits.
 
-        The five channels :meth:`_scan_for_secrets` enumerates, in the order it
-        states. Lazy, so a run that fills the budget in the first channel never
-        decodes the migration a second time.
+        Five of the six channels :meth:`_scan_for_secrets` enumerates, in the
+        order it states; the sixth is :meth:`_evidence_text`, which is separate
+        because it is the one input the acceptance does not land. Lazy, so a run
+        that fills the budget in the first channel never decodes the migration a
+        second time -- and, chained rather than listed, never opens
+        ``evidence.json`` either (pinned by
+        ``test_proposal_evidence_scan.py::test_a_run_whose_budget_fills_first_never_opens_the_evidence_record``).
 
         **Every location is a fixed literal of this module's own, never the text
         that was scanned.** A body's *content* and a body's *path* are two
@@ -3209,6 +3216,25 @@ def _one_name(name: str) -> str:
     ``cli.commands._render`` and ``_fail`` escape control characters in every
     value they print, so a name that skips this helper (the exit-0 success
     payload did, before #233's round three) still cannot rewrite a line.
+
+    **The gate runs before ``repr``, and that ordering is safe in the direction
+    that matters.** What is printed is ``repr(head)`` while what was scanned is
+    ``head``, so the two are not the same string -- but ``repr`` cannot
+    manufacture a match the scan did not see. Every escape it introduces begins
+    with a backslash, which is outside
+    :data:`~theurian.security.content_secrets._CANDIDATE_CLASS`, so it *ends* a
+    candidate run rather than extending one: every run in the repr is a substring
+    of a run in the raw. The transform can only split what the detector judged,
+    never join or lengthen it.
+
+    Its other effect is on *length*, and that one is real: ``repr`` of an astral
+    character is a ten-character ``\\U0001f600`` escape, so a name at the
+    200-character bound can print as 2,002. The bound is on the name and not on
+    its rendering, deliberately -- bounding the rendering would make the cut
+    depend on how the terminal spells a character -- and 2 KB is not the flood
+    :data:`_MAX_NAMES_LISTED` exists to stop. Both boundaries were checked: a
+    name of exactly the bound and one of the bound plus one behave as this
+    function's two arms say.
     """
     head = _bounded(name, _MAX_NAME_CHARS)
     if head is None:
@@ -3302,6 +3328,8 @@ def _names(names: Sequence[str]) -> str:
     same shape:
     ``infrastructure/filesystem/migration_loader.py`` prefixes ``{path.name}`` --
     a landed migration's filename -- onto every ``MigrationError`` it raises, and
+    interpolates more than that besides: an operation's ``contentFile`` as
+    written, and raw scalars from the document it is refusing. And
     the CLI loads the migration set during context resolution, so that message
     arrives *before* ``accept`` runs at all. Measured 2026-09-04 through the real
     CLI: a landed migration named for a credential printed it at full length in

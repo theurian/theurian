@@ -395,6 +395,16 @@ def _interpolations() -> list[tuple[int, str, str]]:
     allowlist every f-string uses, so the two shapes are judged by one rule and
     not by two.
 
+    **What is still invisible, measured rather than assumed.** This sees f-string
+    interpolation and the two error constructors above, so seven other ways to
+    put a value into a string would pass it: ``%``-formatting, ``str.format``,
+    ``str.join``, ``+`` concatenation, ``string.Template``, ``textwrap`` over a
+    built value, and a message assembled in a list and joined at the end. None is
+    live in ``proposal_service.py`` today -- checked by grep at this commit, zero
+    occurrences reaching a message -- so the gap is a shape a future edit could
+    take rather than one it has. The end-to-end tests below are what would catch
+    that edit if the reflection did not; neither alone is the whole guard.
+
     Each is returned with the function that encloses it, because the allowlist is
     keyed on the pair -- see :data:`_UNGATED_BY_CONSTRUCTION` for what a
     bare-identifier key let through.

@@ -70,7 +70,7 @@ from theurian.infrastructure.filesystem.migration_loader import (
     load_migrations,
     validate_migration_document,
 )
-from theurian.security.content_secrets import HIGH_ENTROPY, scan_text
+from theurian.security.content_secrets import HIGH_ENTROPY, MAX_FINDINGS, scan_text
 from theurian.security.project_config import SecretScanPolicy
 
 pytestmark = pytest.mark.integration
@@ -448,6 +448,44 @@ def test_warn_says_which_channel_it_could_not_read_instead_of_looking_clean(
     steps = _accept_steps(accepted)
     assert steps[0] is _SKIPPED_CHANNEL_STEP, f"the author is not told, first: {steps[0]}"
     assert "secretScanSkipped" in steps[0], "the step does not name the field that says what"
+
+
+def test_a_run_whose_budget_fills_first_never_opens_the_evidence_record(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The laziness the chain order buys, which was measured true and pinned by nothing.
+
+    ``_scan_for_secrets`` chains the evidence channel after the five landed ones
+    rather than appending it to a list, so a run whose finding budget fills in the
+    bodies never reads ``evidence.json`` at all -- the file is not opened by an
+    acceptance that was going to be refused anyway. Swapping the chain for a
+    ``[*landed, *evidence]`` list is behaviour-identical everywhere the suite
+    otherwise looks, and costs a read on every refusal.
+
+    Counted at the read rather than timed: an I/O count is the property, and a
+    duration would make this a flaky test about a fast disk.
+    """
+    reads: list[str] = []
+    original = ProposalService._read_within_project
+
+    def counting(self: ProposalService, path: Path) -> bytes:
+        reads.append(path.name)
+        return original(self, path)
+
+    monkeypatch.setattr(ProposalService, "_read_within_project", counting)
+    body = "# Retry policy\n\n" + "".join(
+        f"    TOKEN_{index}={PLANTED_TOKEN}\n" for index in range(MAX_FINDINGS + 2)
+    )
+    drafted = _with_a_secret_in_the_reasoning(service)
+    drafted.body_file.write_text(body, encoding="utf-8")
+
+    with pytest.raises(ProposalError):
+        service.accept(drafted.proposal_id)
+
+    assert EVIDENCE_FILE not in reads, (
+        f"the evidence record was read by a run whose budget was already full ({reads}), so the "
+        f"channels are no longer consumed lazily"
+    )
 
 
 def test_a_clean_warn_acceptance_reports_no_skipped_channel(

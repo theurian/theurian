@@ -590,7 +590,14 @@ one of its recorded residuals.
 > with the reason it needs none, and writing that reason down *is* the review,
 > because it is the sentence that is false when the value is in fact the author's.
 >
-> **Three residuals, recorded rather than folded in.** The gate's reach is the
+> **Four residuals, recorded rather than folded in.** The gate judges one string
+> at a time, so a credential *split across two author names* is recovered whole
+> from one refusal: each half falls below the detector's 32-character floor, both
+> print, and concatenating them reconstructs the value (measured 2026-09-04, a
+> 43-character token cut into two migration filenames). It takes an adversary who
+> cuts the value on purpose, and the alternative — scanning the assembled message
+> rather than each string — would redact every refusal naming two clean paths
+> whose concatenation happens to clear the floor. The gate's reach is also the
 > *detector's* reach: it withholds a string the detector reports and does not
 > promise no credential is printed. Measured 2026-09-04 through the real CLI,
 > PyYAML's `Mark.get_snippet` cut the front off a long line, so a 43-character
