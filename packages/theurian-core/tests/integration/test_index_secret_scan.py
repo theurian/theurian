@@ -94,9 +94,15 @@ CLEAN_ITEM = "architecture.auth-policy"
 DIRTY_ITEM = "architecture.legacy-keys"
 DRAFT_ITEM = "architecture.unreleased-keys"
 
+#: The third crowded body's item, and it sorts **last** of the four on purpose:
+#: ``list_items`` walks in item-id order, so this is the body the build reaches
+#: with its finding budget already spent (see :data:`_CROWDED_PER_BODY`).
+_VAULT_ITEM = "architecture.vault-keys"
+
 _CLEAN_MIGRATION_ID = "01K1AAAAAA01234567890ABCDE"
 _DIRTY_MIGRATION_ID = "01K1BBBBBB01234567890ABCDE"
 _DRAFT_MIGRATION_ID = "01K1CCCCCC01234567890ABCDE"
+_VAULT_MIGRATION_ID = "01K1GGGGGG01234567890ABCDE"
 
 
 def _migration(  # noqa: PLR0913, PLR0917 -- one argument per migration field
@@ -560,15 +566,21 @@ def test_doctor_names_no_item_and_no_path_in_the_scan_it_reports(planted: Path) 
     assert str(planted) not in rendered, f"doctor published an absolute path: {rendered}"
 
 
-#: How many credentials each of the two crowded bodies carries.
+#: How many credentials each of the three crowded bodies carries.
 #:
-#: **Neither body may reach :data:`MAX_FINDINGS` on its own**, and that is what
-#: makes the ceiling's *scope* testable rather than only its value. With one body
+#: **No body may reach :data:`MAX_FINDINGS` on its own**, and that is what makes
+#: the ceiling's *scope* testable rather than only its value. With one body
 #: carrying forty, a per-body budget and a per-build budget both answer twenty --
 #: the outer ``len(found) < MAX_FINDINGS`` guard stops the walk either way -- so
 #: the mutation that widens ``room`` from the remaining budget to the whole
-#: ceiling survived (measured 2026-09-03). Twelve and twelve separates them: the
-#: build's budget answers 20, and a per-body one answers 24.
+#: ceiling survived (measured 2026-09-03). Twelve apiece separates them: the
+#: build's budget answers 20, and a per-body one answers 24 over two bodies.
+#:
+#: **Three bodies, not two, so the guard itself runs.** Two of twelve fill the
+#: budget exactly at the second body (12 then 8) and the loop then ends, so
+#: ``len(found) < MAX_FINDINGS`` is never once false and a build that dropped it
+#: answered 20 all the same. The third body is the first one the guard actually
+#: turns away.
 _CROWDED_PER_BODY = 12
 
 
@@ -599,24 +611,34 @@ def test_the_report_is_bounded_across_every_body_by_the_detectors_ceiling(bare: 
     A corpus can carry any number of credential-shaped strings; the report lists
     at most :data:`MAX_FINDINGS` of them **across every body**, which is the
     ceiling the accept path applies to its own five channels rather than to each.
-    Two bodies of twelve is what tells the two readings apart -- see
+    Three bodies of twelve is what tells the two readings apart *and* drives the
+    guard that skips a body once the budget is spent -- see
     :data:`_CROWDED_PER_BODY`.
+
+    The third body sorts last by item id, so it is the one the walk reaches with
+    nothing left to spend. Under a per-body budget it would carry the total to 36;
+    under a build that scanned it anyway with a spent budget it would carry it to
+    21, which is the arithmetic ``scan_text`` refuses at its own entry.
     """
     _corpus(bare, dirty=_crowded("A"))
-    (bare / ".theurian/knowledge/architecture/unreleased-keys.md").write_text(
-        _crowded("B"), encoding="utf-8"
-    )
-    (bare / f".theurian/migrations/{_DRAFT_MIGRATION_ID}-second.yaml").write_text(
-        _migration(
-            _DRAFT_MIGRATION_ID,
-            DRAFT_ITEM,
-            "01K1CREVCC01234567890ABCDE",
-            "Second crowded body",
-            "approved",
-            _crowded("B"),
-        ),
-        encoding="utf-8",
-    )
+    for filename, item, migration_id, revision, marker in (
+        ("unreleased-keys.md", DRAFT_ITEM, _DRAFT_MIGRATION_ID, "01K1CREVCC01234567890ABCDE", "B"),
+        ("vault-keys.md", _VAULT_ITEM, _VAULT_MIGRATION_ID, "01K1GREVGG01234567890ABCDE", "C"),
+    ):
+        (bare / ".theurian/knowledge/architecture" / filename).write_text(
+            _crowded(marker), encoding="utf-8"
+        )
+        (bare / f".theurian/migrations/{migration_id}-crowded.yaml").write_text(
+            _migration(
+                migration_id,
+                item,
+                revision,
+                f"Crowded body {marker}",
+                "approved",
+                _crowded(marker),
+            ),
+            encoding="utf-8",
+        )
     _must(bare, "migrate", "apply")
 
     _, payload = _in(bare, "index", "build")
@@ -628,6 +650,10 @@ def test_the_report_is_bounded_across_every_body_by_the_detectors_ceiling(bare: 
     )
     assert len(lines) == MAX_FINDINGS, (
         f"the report is not bounded by the detector's ceiling across bodies: {len(lines)} findings"
+    )
+    assert not any(_VAULT_ITEM in line for line in lines), (
+        "the last body was scanned after the budget was spent, so the ceiling is "
+        f"a per-body one or one finding wide: {lines}"
     )
 
 

@@ -312,7 +312,15 @@ class IndexBuilder:
                 # -- the exact `title + body` string the chunker receives, not the
                 # body alone -- so a credential in a title is caught, which is the
                 # subset-keying GHSA-3f65 was.
-                if scanning and len(found) < MAX_FINDINGS:
+                #
+                # No second "have we room left" test beside the subtraction. One
+                # stood here and was measured to be equivalent (#329 round 1):
+                # `scan_text` refuses a budget of zero or below at its own entry,
+                # so a spent budget already costs a call and no regex pass, and
+                # the ceiling arithmetic stays in the one place that owns it. A
+                # guard whose deletion no corpus can observe is a row that cannot
+                # fail rather than a rule that is held.
+                if scanning:
                     found.extend(
                         _secrets_in(served, at=item.item_id.value, room=MAX_FINDINGS - len(found))
                     )
@@ -513,6 +521,11 @@ def _secrets_in(served: str, *, at: str, room: int) -> tuple[IndexedSecretFindin
     :func:`~theurian.security.content_secrets.scan_text` records: a report is
     actionable on the first finding, and "and N more" would publish a count of the
     corpus's choosing.
+
+    ``room`` at zero or below is a spent budget and returns nothing, which is
+    :func:`~theurian.security.content_secrets.scan_text`'s own rule rather than a
+    second one here -- so this may be called for every body in the corpus and the
+    caller needs no "have we room left" test of its own.
 
     A module-level function rather than a method, and it returns rather than
     appends: a helper handed the accumulator would be mutating its caller's list,

@@ -3224,8 +3224,9 @@ def _findings_in(scanned: Iterable[tuple[str, str]]) -> tuple[ProposalSecretFind
         # of a list this statement is about to append to, so computing it in the
         # generator expression would tie its value to when that expression is
         # first advanced. It is never zero, because the loop breaks at the
-        # ceiling -- and `scan_text` with `max_findings=0` appends before it
-        # checks, so it would report one finding anyway.
+        # ceiling; `scan_text` refuses a spent budget on its own besides, so the
+        # break is what keeps this loop from walking channels it cannot pay for
+        # rather than what keeps the ceiling honest.
         remaining = MAX_FINDINGS - len(findings)
         findings.extend(
             ProposalSecretFinding(location=at, finding=finding)

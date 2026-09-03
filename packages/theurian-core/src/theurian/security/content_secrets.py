@@ -339,7 +339,10 @@ def scan_text(text: str, *, max_findings: int = MAX_FINDINGS) -> tuple[SecretFin
         max_findings: Stop after this many. Truncation is silent by design --
             a refusal is actionable on the first finding, and a caller that
             reported "and N more" would be publishing a count of the input's
-            choosing.
+            choosing. **Zero or below returns nothing**: a caller passing a
+            spent budget is asking for no findings, and the loop below would
+            otherwise append one before testing the ceiling and hand back a
+            finding a budget of zero had refused to pay for.
 
     Returns:
         Findings in document order, which is a total order: the outer pass is
@@ -370,6 +373,13 @@ def scan_text(text: str, *, max_findings: int = MAX_FINDINGS) -> tuple[SecretFin
     comparing two findings has no other way to learn that one of them cleared a
     gate the other never faced.
     """
+    # Checked before the walk, not inside it. The loop appends and *then* tests
+    # the ceiling, so a spent budget reaching here would buy one more finding than
+    # the caller had left -- which is how a per-build budget could be exceeded by
+    # exactly one body (#329 round 1).
+    if max_findings <= 0:
+        return ()
+
     findings: list[SecretFinding] = []
     for match in _SCANNER.finditer(text):
         family = _matched_family(match)
