@@ -1,4 +1,10 @@
-"""The composition root's half of `migrations-valid` (#91).
+"""The composition root's half of the two steps that read a migration set.
+
+``migrations-valid`` (#91) is the older half and most of this file;
+``initial-index`` (#451) is the second, at the bottom. Both are here for one
+reason: ``cli/setup_commands.build_context`` wires a reader into the context,
+and no test that *injects* its own reader can see that wiring being wrong --
+the injected reader is the thing that would be wrong.
 
 ``tests/integration/test_probe_migrations_validate.py`` holds the probe to the
 verdict it publishes, and injects a checker to do it. That leaves one thing
@@ -25,28 +31,32 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
 
-from theurian.application.project_service import ProjectPaths
+from theurian.application.project_service import ProjectPaths, resolve_state_hash
 from theurian.application.setup_context import SetupContext
-from theurian.application.setup_steps import probe_migrations
-from theurian.cli.context import schema_root
+from theurian.application.setup_steps import probe_initial_index, probe_migrations
+from theurian.cli.context import resolve_context, schema_root
 from theurian.cli.setup_commands import _check_migrations, _current_state_hash
 from theurian.domain.errors import (
     AliasItemCollisionError,
     DuplicateContentFileError,
     InvalidIdentifierError,
     IrregularSourceFileError,
+    MigrationError,
     TheurianError,
     UnenforceableScopeError,
 )
 from theurian.domain.setup import StepStatus
+from theurian.domain.state import StateHash
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
 from theurian.infrastructure.secrets.file_store import FileSecretStore
+from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 
 pytestmark = pytest.mark.integration
 
@@ -361,3 +371,141 @@ def test_a_repository_reached_through_a_symlink_is_checked_rather_than_crashing(
         f"the wrapper mixed a resolved path with an unresolved one: {check.failure}"
     )
     assert check.count == _loaded_count(root)
+
+
+# -- The composition root's other reader: which state is this at (#451) ------
+#
+# ``_current_state_hash`` is the second thing ``build_context`` wires, and it
+# decides `initial-index`'s whole sentence. Round one measured that no test
+# called it: a ``raise`` on its first line, an unconditional ``return None``, a
+# ``SCHEMA_VERSION + 1``, and a catch narrowed to ``FileNotFoundError`` each
+# left the full suite green, and reintroducing #451's own predicate into it
+# passed 5132 tests while the real CLI reproduced the defect. Every driving test
+# reached `initial-index` through ``setup_migrations.state_hash_from_the_loader``
+# -- the hand-written double -- so what was measured was the copy.
+#
+# That is the same gap this file was opened for, one field over: an
+# injection-based test cannot see a wrong wrapper, because the injected wrapper
+# *is* the thing that would be wrong. So these four drive the real one, and the
+# expectations come from somewhere other than the function under test.
+
+
+def _state_hash_the_loader_resolves(root: Path) -> StateHash:
+    """A second, independent resolve -- what :func:`_loaded_count` is to the count.
+
+    Deliberately not ``setup_migrations.state_hash_from_the_loader``: that double
+    is what stood in for production everywhere, and a test proving production
+    right must not take its expectation from the stand-in.
+    """
+    paths = ProjectPaths.of(root)
+    loaded = load_migrations(paths.root, paths.migrations, schema_root())
+    return resolve_state_hash(loaded, SCHEMA_VERSION)
+
+
+def _a_repository(root: Path) -> Path:
+    """Make ``root`` a Git working tree, which is what scopes a project."""
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+    return root
+
+
+def test_the_wired_resolver_names_the_state_hash_project_status_addresses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`doctor` and `theurian project status` must address one database (#451).
+
+    The two commands disagreed about one working tree because they answered
+    different questions, and the fix is only worth anything if they now resolve
+    the *same* hash. So the expectation is `project status`' own resolver --
+    ``resolve_context``, which is where ``state_hash`` comes from in
+    ``project_status`` -- rather than a second copy of the arithmetic written
+    here. A copy would agree with a wrapper that had drifted; the other command
+    cannot.
+
+    That is what makes a schema version bumped in one place and not the other
+    visible: both readers hash the same loaded set, so nothing but the wiring
+    can separate them.
+
+    ``HOME`` and ``THEURIAN_DATA_DIR`` are redirected because ``resolve_context``
+    consults the per-user project registry, which lives under the second and
+    falls back to the first.
+    """
+    root = _a_repository(_sample(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "home" / ".theurian"))
+
+    resolved = _current_state_hash(root)
+
+    assert resolved is not None, "the fixture's set loads, so there is a hash to compare"
+    assert resolved == resolve_context(root).state_hash
+
+
+def test_the_step_reports_the_state_built_through_the_resolver_the_cli_wires(
+    tmp_path: Path,
+) -> None:
+    """The built arm, reached through the composition root rather than a double.
+
+    The database is placed at the path an *independent* load resolves, so a
+    resolver that hashed a different schema version, or answered ``None``, sends
+    the step to a file this test never created and the sentence changes.
+    """
+    root = _sample(tmp_path)
+    database = ProjectPaths.of(root).database_for(_state_hash_the_loader_resolves(root))
+    database.parent.mkdir(parents=True, exist_ok=True)
+    database.touch()
+
+    step = probe_initial_index(_context(tmp_path, root))
+
+    assert step.status is StepStatus.NOT_APPLICABLE
+    assert step.summary == "Knowledge state is built."
+
+
+def test_the_step_names_the_apply_remedy_through_the_resolver_the_cli_wires(
+    tmp_path: Path,
+) -> None:
+    """The remedy arm: a set that loads, with nothing applied for it yet.
+
+    The arm #451 made unreachable, driven here through the real resolver. The
+    guard is not decoration -- with the database present this state is the test
+    above, and the two would report the same sentence for opposite reasons.
+    """
+    root = _sample(tmp_path)
+    database = ProjectPaths.of(root).database_for(_state_hash_the_loader_resolves(root))
+    assert not database.exists(), "nothing has been applied here; that is the state under test"
+
+    step = probe_initial_index(_context(tmp_path, root))
+
+    assert step.status is StepStatus.NOT_APPLICABLE
+    assert step.summary == "No knowledge state built yet. Run `theurian migrate apply`."
+
+
+def test_a_set_the_wired_resolver_cannot_read_makes_the_step_say_so(tmp_path: Path) -> None:
+    """A refused load is an answer here, not an escape and not "not built".
+
+    ``_current_state_hash`` catches the whole ``TheurianError`` family for the
+    reason ``_check_migrations`` does, and narrowing that catch is the mistake
+    #91 made twice: the exception escapes to ``SetupService._probe``, which
+    publishes CONFLICTING "Could not check initial-index." and stops setup to ask
+    for consent -- on a directory `theurian migrate validate` simply refuses.
+    Probed directly here, with no net underneath, so an escape fails the test
+    rather than being reworded by the runner.
+
+    The load is asserted to refuse first, so a fixture whose broken file never
+    reached the parser would pass this for the wrong reason.
+    """
+    root = _sample(tmp_path)
+    (ProjectPaths.of(root).migrations / "0002-broken.yaml").touch()
+    with pytest.raises(MigrationError):
+        _loaded_count(root)
+
+    step = probe_initial_index(_context(tmp_path, root))
+
+    assert step.status is StepStatus.NOT_APPLICABLE
+    assert step.summary == (
+        "Cannot tell what state this project is at: its migration set could not "
+        "be read. Run `theurian migrate validate`, which prints why."
+    )

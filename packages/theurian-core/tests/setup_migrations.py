@@ -94,8 +94,21 @@ def state_hash_from_the_loader(root: Path) -> StateHash | None:
     :func:`checked_by_the_loader` is a copy of ``_check_migrations``: what a test
     hands the context has to be a double a test can vary, and importing the
     composition root's private helper into every fixture would make the wiring
-    untestable from the outside. ``tests/integration/test_setup_migrations_checker.py``
-    exercises the real one directly, which is the other half of that split.
+    untestable from the outside.
+
+    **The other half of that split is four named tests, and it was missing.**
+    ``tests/integration/test_setup_migrations_checker.py`` now drives the real
+    ``_current_state_hash`` --
+    ``test_the_wired_resolver_names_the_state_hash_project_status_addresses``
+    holds it to ``resolve_context``'s own answer, and the three
+    ``..._through_the_resolver_the_cli_wires`` /
+    ``test_a_set_the_wired_resolver_cannot_read_makes_the_step_say_so`` tests
+    drive ``initial-index``'s three arms through it. Until they existed this
+    sentence was false, and the cost was measured: a ``raise`` on the real
+    function's first line, an unconditional ``return None``, a
+    ``SCHEMA_VERSION + 1`` and a catch narrowed to ``FileNotFoundError`` each
+    left the whole suite green, because everything reached the step through this
+    double instead.
 
     ``None`` for a set that does not load, which is what ``_converged_repository``
     in ``test_setup_service.py`` reaches: its ``0001-initial.yaml`` is an empty
