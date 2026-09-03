@@ -1187,6 +1187,130 @@ def test_an_undecodable_message_excerpt_is_bounded_and_replacement_decoded(
     assert rejected.raw_line == head.decode("ascii") + "�" * 20
 
 
+def test_the_excerpt_slices_bytes_before_decoding_them(tmp_path: Path) -> None:
+    """The excerpt is ``raw[:cap]`` decoded, not ``raw`` decoded then cut (#496 R1 M-1).
+
+    The two orders agree on almost every input, which is why a mutation swapping
+    them survived the suite. They disagree exactly where a **multi-byte character
+    straddles the cap**, and that is what this plants: 118 ASCII bytes, then a
+    three-byte ``U+2192`` occupying bytes 118-120, then a tail whose lone ``0x80``
+    is far past the cap and is what makes the whole-message decode fail at all.
+
+    Slicing first cuts that character in half, so the excerpt is **119** characters
+    ending in one ``U+FFFD``. Decoding first would carry the whole character across
+    the boundary and hand out **120** clean characters with the arrow intact. Both
+    respect the cap, so a length-only assertion cannot tell them apart; the
+    assertions below name the character count *and* the boundary character *and*
+    the arrow's absence, which no single re-derivation of the adapter's own
+    expression could satisfy by construction.
+
+    Why the order is the one worth pinning: the excerpt is written to the store and
+    shown in a build report, and "the first N bytes, replacement-decoded" is what
+    :data:`_UNDECODABLE_EXCERPT_BYTES` records. Decoding first would make the cap a
+    *character* count over a string the message's own bytes decide the length of.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(clone, "fix: valid (#1)", "Review-Finding: security HIGH — a valid finding")
+    straddling = b"x" * 118 + "→".encode() + b"y" * 40 + b"\x80" + b"z" * 20
+    assert straddling[118:121] == "→".encode(), "the premise: the character straddles byte 120"
+    assert _UNDECODABLE_EXCERPT_BYTES == 120, (
+        "the recorded cap moved; the plant is built to straddle byte 120 and has to move with it"
+    )
+    sha = _commit_with_raw_message(clone, straddling)
+    _publish(clone)
+    with pytest.raises(UnicodeDecodeError):  # the premise: git kept the raw bytes
+        _stored_message_of(clone, sha).decode("utf-8")
+
+    (rejected,) = GitTrailerFindingSource(clone).load_findings().rejected
+
+    assert rejected.commit_sha == sha
+    assert len(rejected.raw_line) == 119, (
+        "120 characters means the message was decoded before it was sliced, so the "
+        "straddling character survived a cut that should have halved it"
+    )
+    assert rejected.raw_line.endswith("�")
+    assert "→" not in rejected.raw_line
+
+
+def test_a_commit_with_an_empty_message_is_not_a_rejection(tmp_path: Path) -> None:
+    """An empty message is a readable message, not an undecodable one (#496 R1 M-2).
+
+    ``git commit --allow-empty-message`` produces a public commit whose ``%B`` is
+    zero bytes, and such a commit is *fine*: it carries no keyed line, so it
+    contributes nothing to either tuple and nothing at all should be recorded
+    against it. The containment must therefore key on ``message is None`` -- the
+    marker :func:`_decode_message` sets -- and not on the message being falsy,
+    which an empty string also is. A mutation weakening that test to ``not
+    record.message`` survived the suite, because no fixture had ever committed an
+    empty message; under it this commit is reported to an operator as an unreadable
+    one, with an empty excerpt and a reason describing a decode that never failed.
+
+    The zero-byte premise is asserted, since a git that stored a lone newline
+    instead would leave the message truthy and quietly stop exercising the case.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(clone, "fix: valid (#1)", "Review-Finding: security HIGH — a valid finding")
+    _git(
+        clone,
+        "commit",
+        "--allow-empty",
+        "--allow-empty-message",
+        "-m",
+        "",
+        env=_date_env("2026-03-02T00:00:00"),
+    )
+    empty = _git(clone, "rev-parse", "HEAD").strip()
+    _publish(clone)
+    assert _stored_message_of(clone, empty) == b"", "the premise: %B is zero bytes"
+
+    load = GitTrailerFindingSource(clone).load_findings()
+
+    assert [f.finding_text for f in load.accepted] == ["a valid finding"]
+    assert load.rejected == (), (
+        f"an empty commit message was reported as unreadable: {load.rejected}"
+    )
+
+
+def test_a_bad_byte_past_the_cap_is_located_by_the_reason_not_the_excerpt(
+    tmp_path: Path,
+) -> None:
+    """The excerpt shows nothing when the fault is past it; ``reason`` locates it (M-3).
+
+    A rejection has to be *actionable*: an operator reading a build report must be
+    able to find the commit and the byte. When the offending byte lies beyond
+    :data:`_UNDECODABLE_EXCERPT_BYTES` the excerpt is a clean, unremarkable prefix
+    -- no replacement character, nothing to see -- so everything that locates the
+    fault has to be in ``reason``, which carries the ``UnicodeDecodeError``'s byte
+    value and its **position** in the whole message.
+
+    The plant puts the bad byte at offset 300, well past the 120-byte cap, and the
+    assertions are two-sided: the excerpt must be *clean* (otherwise this is just
+    another copy of the bounded-excerpt test) and the position must be *present*
+    (otherwise a reader given a clean excerpt has nothing at all).
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(clone, "fix: valid (#1)", "Review-Finding: security HIGH — a valid finding")
+    bad_offset = 300
+    assert bad_offset > _UNDECODABLE_EXCERPT_BYTES, "the premise: the fault is past the cap"
+    message = b"chore: an ordinary ASCII head" + b"." * (bad_offset - 29) + b"\x80" + b" tail\n"
+    assert message.index(b"\x80") == bad_offset
+    sha = _commit_with_raw_message(clone, message)
+    _publish(clone)
+    with pytest.raises(UnicodeDecodeError):  # the premise: git kept the raw byte
+        _stored_message_of(clone, sha).decode("utf-8")
+
+    (rejected,) = GitTrailerFindingSource(clone).load_findings().rejected
+
+    assert rejected.commit_sha == sha
+    assert "�" not in rejected.raw_line, (
+        "the excerpt ends before the bad byte, so it cannot carry a mark for it"
+    )
+    assert str(bad_offset) in rejected.reason, (
+        f"nothing locates the fault: excerpt is clean and reason is {rejected.reason!r}"
+    )
+    assert "0x80" in rejected.reason
+
+
 def test_split_records_marks_an_undecodable_message_and_still_decodes_the_metadata(
     tmp_path: Path,
 ) -> None:

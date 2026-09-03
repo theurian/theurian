@@ -177,9 +177,24 @@ _FIELDS_PER_RECORD: Final = 3
 #: build report, so the excerpt that locates the failure is capped rather than
 #: copied: 120 bytes is a subject line's worth -- enough to recognise which commit
 #: it is -- and replacement-decoding at most this many bytes yields at most this
-#: many characters, so the bound holds on both sides of the decode. The slice is
-#: taken *before* decoding, so a multi-megabyte message is never materialised as a
-#: ``str`` at all.
+#: many characters, so the bound holds on both sides of the decode.
+#:
+#: **The slice bounds the excerpt, not the decode attempt** (#496 R1 M-1). The
+#: strict whole-message decode in :func:`_decode_message` runs first and is what
+#: *fails*, so a multi-megabyte message is materialised as bytes and attempted as a
+#: ``str`` before this cap is reached: measured 2026-09-03 with ``tracemalloc``,
+#: an 8,000,001-byte message peaks ~16.0 MB above baseline -- about twice its own
+#: size -- whether the offending byte is its first or its last, because CPython
+#: sizes the output buffer up front. That is the price of deciding validity over
+#: the whole message rather than over a prefix, and it is stated rather than
+#: hidden; what the cap prevents is the unbounded *row*, not the transient.
+#:
+#: Taking the slice **before** the replacement-decode rather than after is still
+#: load-bearing, and observably so: a multi-byte character straddling the cap is
+#: cut, so slicing first yields one U+FFFD at the boundary and one character fewer,
+#: where decoding first would carry the whole character across the cap and hand out
+#: 120 clean characters instead
+#: (``test_the_excerpt_slices_bytes_before_decoding_them`` pins the difference).
 _UNDECODABLE_EXCERPT_BYTES: Final = 120
 
 
@@ -517,9 +532,17 @@ def _decode_message(raw: bytes) -> tuple[str | None, str, str]:
 
     The excerpt is untrusted and bounded (:data:`_UNDECODABLE_EXCERPT_BYTES`): the
     raw bytes are sliced *before* decoding and then decoded with
-    ``errors="replace"``, so no undecodable byte is ever stored, the replacement
-    characters show where the message went wrong, and an unbounded message cannot
-    inflate the row that reports it.
+    ``errors="replace"``, so no undecodable byte is ever stored and an unbounded
+    message cannot inflate the row that reports it.
+
+    **What a replacement character in the excerpt does and does not mean** (#496 R1
+    M-3). Within the excerpt it marks a byte that could not be decoded -- or a valid
+    multi-byte character the cap itself cut in half, which is a mark the *slice*
+    manufactured and not a fault in the message. A bad byte lying **past** the cap
+    leaves no mark at all; it is located by the position in ``reason``, which
+    carries the ``UnicodeDecodeError``'s own byte value and offset. So the two
+    together locate the failure, and neither alone does -- the same reading
+    :class:`_Record` states for the pair it carries.
     """
     try:
         return raw.decode("utf-8"), "", ""
