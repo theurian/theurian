@@ -209,6 +209,16 @@ def index_build(
     # Written on every publish, clean ones included: this is what clears a
     # previous `degraded` as well as what raises a new one, and a record kept only
     # on trouble would leave the last bad verdict standing over a fixed corpus.
+    #
+    # Unguarded, and that is not an oversight: nothing reaches this line without
+    # the same directory having been written twice already. A read-only
+    # `.theurian/state/` fails much earlier than `_publish` -- measured
+    # 2026-09-03 with the directory at 0o500, where SQLite cannot create the
+    # build at all and `_run_build` converts it to `{error, remedy}` at exit 1
+    # ("unable to open database file"). A `state` symlink escaping the tree is
+    # refused at `paths.index_for` before the build starts, by the same
+    # `_contained` chokepoint this helper's path routes through. So it opens no
+    # CP-2 escape that the two writes above it do not already own.
     write_index_secret_scan(
         paths, index_build_id=index_build_id, policy=policy, findings=len(findings)
     )
