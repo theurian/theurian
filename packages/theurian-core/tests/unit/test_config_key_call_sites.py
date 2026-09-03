@@ -1711,9 +1711,24 @@ SECRET_SCANNER_MODULE: Final = "theurian.security.content_secrets"  # noqa: S105
 #: number is a per-module count rather than a set for exactly this reason -- a
 #: fourth call is a fourth channel, and the sentence above stops being an
 #: enumeration the moment one lands without moving this.
+#:
+#: The accept path's **two** calls answer two different questions, and only the
+#: first is the SEC-11 gate. ``_findings_in`` screens what an acceptance would
+#: put into the pull request and the policy decides what happens next.
+#: ``_bounded`` screens a string this module is about to *print* into a refusal
+#: and takes no policy at all: it is output hygiene rather than a gate on
+#: content, so a project that chose ``off`` still does not get a credential
+#: echoed into its CI log (#360). It screens nothing that was not already about
+#: to be published, and it screens it on its way *out* rather than deciding
+#: anything about the proposal -- so the four documents this test protects
+#: (``ingest.md``, the schema's ``security.secretScan`` description,
+#: ``SECURITY.md`` and the threat model's T-15 controls, all saying ``theurian
+#: ingest`` runs no scan of its own) are untouched by it: this module is
+#: ``theurian propose`` and ``theurian propose accept``, and neither is
+#: ``ingest``.
 SECRET_SCANNER_CALL_SITES: dict[str, int] = {
     "application/index_builder.py": 3,
-    "application/proposal_service.py": 1,
+    "application/proposal_service.py": 2,
 }
 
 #: Each module of the shipped package that reaches :data:`SECRET_SCANNER_MODULE`
