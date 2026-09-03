@@ -34,6 +34,7 @@ from theurian.domain.review_finding import (
     ReviewerToken,
 )
 from theurian.infrastructure.git.trailer_source import (
+    _FIELDS_PER_RECORD,
     _NUL,
     _UNDECODABLE_EXCERPT_BYTES,
     GitHistoryUnavailableError,
@@ -569,9 +570,11 @@ def test_rs_and_us_bytes_in_a_body_do_not_fabricate_a_record(tmp_path: Path) -> 
 
     An earlier design framed ``git log`` records with RS/US, which git *permits* in
     a commit body -- so an author could embed them to inject a fabricated finding
-    carrying an attacker-chosen sha and date. The adapter frames with NUL, which
-    git forbids in a message, so a body full of RS/US yields exactly the one real
-    trailer, anchored to the real 40-hex sha, and nothing else.
+    carrying an attacker-chosen sha and date. The adapter frames with NUL, which no
+    commit content can place in a field -- ``%B`` truncates a message at its first
+    NUL rather than emitting it (D4, and the test below) -- so a body full of RS/US
+    yields exactly the one real trailer, anchored to the real 40-hex sha, and
+    nothing else.
     """
     _origin, clone = _origin_and_clone(tmp_path)
     body = (
@@ -587,6 +590,93 @@ def test_rs_and_us_bytes_in_a_body_do_not_fabricate_a_record(tmp_path: Path) -> 
     assert load.accepted[0].commit_sha == sha
     assert re.fullmatch(r"[0-9a-f]{40}", load.accepted[0].commit_sha)
     assert load.rejected == ()
+
+
+#: The plant for the bound below: a commit message carrying a NUL, with a
+#: well-formed keyed line **behind** it. Hand-built, because both porcelain routes
+#: refuse a NUL outright (``error: a NUL byte in commit log message not allowed``,
+#: measured 2026-09-03 on git 2.47.1 -- ``commit -F`` exit 128, ``commit-tree``
+#: exit 1), while ``hash-object --literally`` writes it verbatim.
+_NUL_IN_MESSAGE: Final = (
+    b"chore: a hand-built commit with a NUL \x00 byte\n\n"
+    b"Review-Finding: adversarial CRITICAL \xe2\x80\x94 behind the NUL, never read\n"
+)
+
+
+def test_a_nul_in_a_commit_object_truncates_the_message_git_emits(tmp_path: Path) -> None:
+    """D4's framing survives an object-level NUL, and the cost is the recorded bound.
+
+    **What the framing rests on, measured** (#496 R1-1). D4 justified NUL framing
+    by "git rejects a NUL byte in a commit message"; that holds for porcelain and
+    not for the object store, so this pins the ground that does hold for both:
+    ``git log --format=%B`` **truncates** the message at the first NUL. The record
+    partition therefore stays exact -- the adapter's own ``-z`` stream is still a
+    multiple of :data:`_FIELDS_PER_RECORD` tokens -- and ``%H``/``%cI`` arrive
+    untouched, so nothing an author writes into an object can reshape a record or
+    forge a provenance anchor.
+
+    **The cost is stated as the bound, not discovered as a bug.** The keyed line
+    sits behind the NUL, so git never emits it and it reaches neither tuple: not
+    accepted, and not rejected either. That is
+    :class:`~theurian.domain.review_finding.FindingLoad`'s **third** population
+    bound -- the load's population is what git emits, not what the object store
+    holds -- and ADR-0029 D4 records why it is bounded rather than detected by a
+    second ``cat-file`` read of every commit (porcelain cannot write such a commit,
+    and a ``receive.fsckObjects`` origin refuses to take one). This test is what
+    that bound is pinned by: if a future git stopped truncating, the framing
+    assertion below is what would redden.
+
+    The plant is byte-verified at the object store first, because the whole
+    measurement is about the difference between what git *stores* and what it
+    *emits* -- a plant that lost the NUL on the way in would make every assertion
+    below vacuous.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(
+        clone,
+        "fix: valid one (#1)",
+        "Review-Finding: security HIGH — first valid",
+        when="2026-01-01T00:00:00",
+    )
+    nul_sha = _commit_with_raw_message(clone, _NUL_IN_MESSAGE)
+    _commit(
+        clone,
+        "fix: valid two (#2)",
+        "Review-Finding: adversarial LOW — second valid",
+        when="2026-03-01T00:00:00",
+    )
+    _publish(clone)
+
+    # The premise, at the object store: git kept the NUL and every byte behind it.
+    stored_object = _git_bytes(clone, "cat-file", "commit", nul_sha)
+    assert stored_object.endswith(_NUL_IN_MESSAGE), "the plant lost its NUL on the way in"
+    assert b"behind the NUL, never read" in stored_object
+
+    source = GitTrailerFindingSource(clone)
+    stdout = source._git_log()
+    load = source.load_findings()
+
+    # 1. The framing holds: the emitted stream still partitions into whole records.
+    assert len(stdout.split(_NUL)) % _FIELDS_PER_RECORD == 0, (
+        "an object-level NUL reshaped the record partition"
+    )
+    # 2. What git emits for that commit is the message truncated at the NUL.
+    head, _sep, tail = _NUL_IN_MESSAGE.partition(_NUL)
+    assert _stored_message_of(clone, nul_sha) == head
+    assert tail, "the plant must have bytes behind the NUL for the truncation to bite"
+    # 3. Its metadata is intact, so the record is still anchored and ordered.
+    (record,) = [r for r in _split_records(stdout, clone) if r.sha == nul_sha]
+    assert re.fullmatch(r"[0-9a-f]{40}", record.sha)
+    assert record.committed_at == datetime(2026, 2, 1, tzinfo=UTC)
+    assert record.message == head.decode("utf-8")
+    # 4. The bound itself: the line behind the NUL is in NEITHER tuple, and the
+    #    siblings around it load untouched.
+    assert [f.finding_text for f in load.accepted] == ["first valid", "second valid"]
+    assert "behind the NUL, never read" not in [f.finding_text for f in load.accepted]
+    assert load.rejected == (), (
+        "the truncated tail is outside the load's population (FindingLoad bound 3), "
+        "so it is not accounted as a rejection either"
+    )
 
 
 # --- D3: a malformed keyed line is rejected, not fatal ----------------------

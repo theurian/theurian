@@ -117,21 +117,31 @@ _INHERITED_GIT_OVERRIDES: Final = frozenset(
 #: is generous for a full-history read that is still local and I/O-cheap.
 GIT_TIMEOUT_SECONDS: Final = 30.0
 
-#: The field/record separator (ADR-0029 Amendment 1, D4). NUL is the one byte
-#: git **forbids** in a commit message (verified 2026-08-26:
-#: ``error: a NUL byte in commit log message not allowed``), so an author cannot
-#: place it in a subject or body -- which is exactly why the framing bytes must be
-#: NUL and not RS (0x1e)/US (0x1f). RS/US are *permitted* in a commit body
-#: (round-trip verified), so an RS/US framing is **forgeable**: an author could
-#: embed those bytes to inject a fabricated record carrying an attacker-chosen sha,
-#: date, subject and PR number, forging the FR-S3 provenance anchor. With ``git
-#: log -z`` and the explicit ``format:`` prefix (:data:`_FORMAT`) the fields of
-#: each record are joined by NUL and records are NUL-*separated* -- ``format:`` is
-#: *separator* semantics, not the *terminator* semantics of ``tformat:`` or a bare
-#: format string, so there is no trailing NUL after the last record and a
-#: well-formed stream is exactly ``_FIELDS_PER_RECORD * n`` tokens (verified
-#: 2026-08-27). Either way NUL cannot occur in a field, so the stream partitions
-#: unambiguously into fixed-width records that no commit content can reshape.
+#: The field/record separator (ADR-0029 Amendment 1, D4). The framing bytes must
+#: be NUL and not RS (0x1e)/US (0x1f) because RS/US are *permitted* in a commit
+#: body (round-trip verified 2026-08-26), which makes an RS/US framing
+#: **forgeable**: an author could embed those bytes to inject a fabricated record
+#: carrying an attacker-chosen sha, date, subject and PR number, forging the FR-S3
+#: provenance anchor. With ``git log -z`` and the explicit ``format:`` prefix
+#: (:data:`_FORMAT`) the fields of each record are joined by NUL and records are
+#: NUL-*separated* -- ``format:`` is *separator* semantics, not the *terminator*
+#: semantics of ``tformat:`` or a bare format string, so there is no trailing NUL
+#: after the last record and a well-formed stream is exactly
+#: ``_FIELDS_PER_RECORD * n`` tokens (verified 2026-08-27).
+#:
+#: **NUL cannot occur in a field of what git emits, which is not the same as
+#: "cannot exist in a commit object"** (#496 R1-1). Porcelain refuses one -- ``git
+#: commit -F`` and ``git commit-tree`` both fail with ``error: a NUL byte in commit
+#: log message not allowed`` -- but ``git hash-object -t commit -w --stdin
+#: --literally`` writes one verbatim, and only a ``receive.fsckObjects`` origin
+#: rejects the push. What keeps the partition exact is that ``git log --format=%B``
+#: **truncates** the message at the first NUL (measured 2026-09-03, git 2.47.1:
+#: 19 bytes emitted of a 79-byte message, the ``-z`` stream still ``3n`` tokens),
+#: so no author-placed byte reaches a field and none can reshape the records. The
+#: cost of that truncation is loss, not corruption, and it is named as
+#: :class:`~theurian.domain.review_finding.FindingLoad`'s third population bound
+#: rather than detected; ADR-0029 D4 carries the reachability table and the
+#: recorded residual.
 #: The literal byte that separates records in ``git log -z`` output -- this is what
 #: the *stdout* is split on, as ``bytes``, **before** anything is decoded (#496).
 #: Distinct from :data:`_FORMAT`'s ``%x00`` placeholders, which are the text git
@@ -204,11 +214,17 @@ class GitOutputFramingError(TheurianError):
     Distinct from :class:`GitHistoryUnavailableError` (history unreachable) and
     from a malformed trailer (the grammar failed): here ``git`` ran and the ref
     resolved, but the byte stream is not the one this adapter is written against.
-    Two shapes reach it, and neither is author-forgeable:
+    Two shapes reach it, and neither is author-forgeable. The first is unforgeable
+    because ``%B`` **truncates** at a NUL rather than because the object store
+    refuses one: an author who can write objects directly can put a NUL in a commit
+    message, and only a ``receive.fsckObjects`` origin refuses to take it (#496
+    R1-1, :data:`_NUL`). What such an object costs is the truncated tail, not this
+    error.
 
     - the stream did not split into an exact multiple of
-      :data:`_FIELDS_PER_RECORD` NUL-delimited fields. NUL cannot occur in a commit
-      message (D4), so no commit content can reshape the partition;
+      :data:`_FIELDS_PER_RECORD` NUL-delimited fields. No NUL an author places in a
+      commit message reaches a field, because ``%B`` truncates the message at the
+      first one (D4), so no commit content can reshape the partition;
     - a record's **git-generated metadata** -- ``%H`` (40 hex characters) or ``%cI``
       (an ISO-8601 instant), both ASCII by construction -- was not valid UTF-8
       (#496). An author cannot reach those fields, so bytes that are not ASCII
@@ -280,6 +296,12 @@ class GitTrailerFindingSource:
         and a whole record with an unrepresentable date are all captured -- never
         silently dropped and never a fatal abort -- so no one quoted grammar
         example, raw byte, or crafted committer date can brick the corpus.
+
+        **"Never silently dropped" ranges over what git emits, not over the object
+        store** (#496 R1-1). ``%B`` truncates a message at an object-level NUL, so a
+        column-0 keyed line sitting behind one never arrives here to be accounted
+        either way; that is :class:`FindingLoad`'s third named population bound, and
+        ADR-0029 D4 records why it is bounded rather than detected.
 
         The accepted tuple is in total order ``(commit date, commit sha, position
         within the commit)`` -- the sha alone is already total (a position
@@ -597,11 +619,12 @@ def _split_records(stdout: bytes, repo_root: Path) -> list[_Record]:
     ``--format=format:`` gives *separator* semantics, not the *terminator*
     semantics of ``tformat:`` or a bare format string, so there is no trailing NUL
     after the last record and a well-formed stream is exactly
-    :data:`_FIELDS_PER_RECORD` * n tokens. Because NUL cannot occur in a commit
-    message, no field -- the multi-line ``%B`` message included -- can hold the
-    separator, so the split is exact and needs no rejoining; and because NUL is a
-    whole code point in UTF-8, splitting the bytes partitions the stream exactly
-    where decoding it first would have (see :data:`_NUL`).
+    :data:`_FIELDS_PER_RECORD` * n tokens. No field -- the multi-line ``%B`` message
+    included -- can hold the separator, because ``%B`` truncates a message at its
+    first NUL rather than emitting it (#496 R1-1, :data:`_NUL`), so the split is
+    exact and needs no rejoining; and because NUL is a whole code point in UTF-8,
+    splitting the bytes partitions the stream exactly where decoding it first would
+    have.
 
     Each field is then decoded on its own terms, which is the whole point of doing
     it here: the git-generated ``%H`` and ``%cI`` decode strictly and fatally

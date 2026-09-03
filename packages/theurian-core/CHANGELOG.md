@@ -184,8 +184,8 @@ Nothing yet.
   review-finding corpus**
   ([#496](https://github.com/theurian/theurian/issues/496), ADR-0029 decision 3).
   `theurian findings build` decoded the whole `git log` output in a single call,
-  so a public commit carrying bytes that are not UTF-8 — git stores a commit
-  message verbatim and validates nothing — failed the build with *"Cannot read
+  so a public commit carrying bytes that are not UTF-8 — git validates nothing
+  about a commit message's *encoding* — failed the build with *"Cannot read
   refs/remotes/origin/main history"* and a remedy naming a `git fetch` that
   cannot help a history that is already local and readable. Every well-formed
   trailer beside that commit was lost with it, and public history is signed and

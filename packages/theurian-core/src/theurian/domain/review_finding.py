@@ -228,30 +228,39 @@ class FindingLoad:
     """The total result of a load: accepted findings and rejected keyed lines (D3).
 
     **The accounting invariant (AC-1, loss-free):** the load never aborts, and no
-    record is silently dropped. Every column-0 ``Review-Finding:`` line on a record
-    with a readable message and a valid committer date appears in exactly one of
-    the two tuples; a record whose committer date is unrepresentable (a crafted
-    year >= 10000), or whose message git emitted as bytes that are not valid UTF-8
-    (#496), is accounted as a single record-level :class:`RejectedTrailer`, its
-    trailers skipped rather than lost -- once, whichever of the two skipped it. A
+    record git emits is silently dropped. Every column-0 ``Review-Finding:`` line on
+    a record with a readable message and a valid committer date appears in exactly
+    one of the two tuples; a record whose committer date is unrepresentable (a
+    crafted year >= 10000), or whose message git emitted as bytes that are not valid
+    UTF-8 (#496), is accounted as a single record-level :class:`RejectedTrailer`,
+    its trailers skipped rather than lost -- once, whichever of the two skipped it. A
     single malformed line, a single crafted date, and a single undecodable message
     each stay one :class:`RejectedTrailer` while every well-formed sibling still
     loads -- which is what makes "loss-free" hold under a corpus that cannot be
     edited.
 
     **The population the invariant ranges over is stated, because it was once
-    narrower than the sentence above implied** (#410). A "column-0 line" is a
-    ``\\n``-delimited line of the **whole commit message** -- subject included --
-    whose first character starts the key. It was the ``%b`` *body* until #410: git's
+    narrower than the sentence above implied** (#410). It is **what git emits for
+    the commit**, not what the commit object holds: a "column-0 line" is a
+    ``\\n``-delimited line of ``%B`` -- the whole message, subject included -- whose
+    first character starts the key. It was the ``%b`` *body* until #410: git's
     ``%b`` drops the first paragraph rather than the first line, so a trailer folded
     into an unseparated subject was in neither tuple and the invariant was false for
-    it. Two bounds remain, both consequences of "line" meaning ``\\n``-delimited:
-    a message separated by lone ``CR`` bytes is a **single** line, so at most its
-    first line is a candidate -- if that line is not keyed the message carries no
-    finding, and if it *is* keyed the CR-joined remainder (any further trailers, a
-    sign-off) is that one finding's opaque byte-preserved text (D2), never further
-    findings (#404 R1-4); and a line's *offset* in the message is not part of the
-    key, so a keyed subject is a finding.
+    it. **Three bounds remain**, named rather than left silent:
+
+    1. "line" means ``\\n``-delimited, so a message separated by lone ``CR`` bytes is
+       a **single** line -- at most its first line is a candidate. If that line is
+       not keyed the message carries no finding; if it *is* keyed, the CR-joined
+       remainder (any further trailers, a sign-off) is that one finding's opaque
+       byte-preserved text (D2), never further findings (#404 R1-4).
+    2. A line's *offset* in the message is not part of the key, so a keyed subject
+       is a finding.
+    3. ``%B`` **truncates the message at an object-level NUL**, so a keyed line
+       behind one is outside this population and appears in neither tuple (#496
+       R1-1). Porcelain cannot write such a commit and a ``receive.fsckObjects``
+       origin refuses to take one, so it is bounded here rather than detected by a
+       second read of every commit; ADR-0029 D4 carries the measurement, the
+       reachability table and that recorded decision.
     """
 
     accepted: tuple[ReviewFinding, ...]
