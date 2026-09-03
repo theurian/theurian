@@ -117,17 +117,27 @@ _INHERITED_GIT_OVERRIDES: Final = frozenset(
 #: is generous for a full-history read that is still local and I/O-cheap.
 GIT_TIMEOUT_SECONDS: Final = 30.0
 
-#: The field/record separator (ADR-0029 Amendment 1, D4). The framing bytes must
-#: be NUL and not RS (0x1e)/US (0x1f) because RS/US are *permitted* in a commit
-#: body (round-trip verified 2026-08-26), which makes an RS/US framing
-#: **forgeable**: an author could embed those bytes to inject a fabricated record
-#: carrying an attacker-chosen sha, date, subject and PR number, forging the FR-S3
-#: provenance anchor. With ``git log -z`` and the explicit ``format:`` prefix
-#: (:data:`_FORMAT`) the fields of each record are joined by NUL and records are
-#: NUL-*separated* -- ``format:`` is *separator* semantics, not the *terminator*
-#: semantics of ``tformat:`` or a bare format string, so there is no trailing NUL
-#: after the last record and a well-formed stream is exactly
-#: ``_FIELDS_PER_RECORD * n`` tokens (verified 2026-08-27).
+#: The field/record separator (ADR-0029 Amendment 1, D4): the literal byte that
+#: separates records in ``git log -z`` output -- what the *stdout* is split on, as
+#: ``bytes``, **before** anything is decoded (#496). Distinct from
+#: :data:`_FORMAT`'s ``%x00`` placeholders, which are the text git expands into
+#: these bytes: an actual NUL in the argv would be rejected by ``subprocess``
+#: ("embedded null byte"), so the format carries the escape and only the output
+#: carries the byte. Splitting the raw bytes loses nothing the decoded split had:
+#: U+0000 encodes to the single byte ``0x00`` and no continuation byte of a
+#: multi-byte sequence can be ``0x00``, so a byte-level occurrence of the separator
+#: is exactly a code-point-level one.
+#:
+#: **Why NUL and not RS (0x1e)/US (0x1f).** RS/US are *permitted* in a commit body
+#: (round-trip verified 2026-08-26), which makes an RS/US framing **forgeable**: an
+#: author could embed those bytes to inject a fabricated record carrying an
+#: attacker-chosen sha, date, subject and PR number, forging the FR-S3 provenance
+#: anchor. With ``git log -z`` and the explicit ``format:`` prefix the fields of
+#: each record are joined by NUL and records are NUL-*separated* -- ``format:`` is
+#: *separator* semantics, not the *terminator* semantics of ``tformat:`` or a bare
+#: format string, so there is no trailing NUL after the last record and a
+#: well-formed stream is exactly ``_FIELDS_PER_RECORD * n`` tokens (verified
+#: 2026-08-27).
 #:
 #: **NUL cannot occur in a field of what git emits, which is not the same as
 #: "cannot exist in a commit object"** (#496 R1-1). Porcelain refuses one -- ``git
@@ -135,22 +145,15 @@ GIT_TIMEOUT_SECONDS: Final = 30.0
 #: log message not allowed`` -- but ``git hash-object -t commit -w --stdin
 #: --literally`` writes one verbatim, and only a ``receive.fsckObjects`` origin
 #: rejects the push. What keeps the partition exact is that ``git log --format=%B``
-#: **truncates** the message at the first NUL (measured 2026-09-03, git 2.47.1:
-#: 19 bytes emitted of a 79-byte message, the ``-z`` stream still ``3n`` tokens),
-#: so no author-placed byte reaches a field and none can reshape the records. The
-#: cost of that truncation is loss, not corruption, and it is named as
+#: **truncates** the message at the first NUL. Measured on the plant
+#: ``test_a_nul_in_a_commit_object_truncates_the_message_git_emits`` runs, so the
+#: figures are the fixture's own and a reader can re-derive them: of its 114-byte
+#: message git emits the 38 bytes ahead of the NUL, and the ``-z`` stream is still
+#: ``3n`` tokens. So no author-placed byte reaches a field and none can reshape the
+#: records. The cost of that truncation is loss, not corruption, and it is named as
 #: :class:`~theurian.domain.review_finding.FindingLoad`'s third population bound
 #: rather than detected; ADR-0029 D4 carries the reachability table and the
 #: recorded residual.
-#: The literal byte that separates records in ``git log -z`` output -- this is what
-#: the *stdout* is split on, as ``bytes``, **before** anything is decoded (#496).
-#: Distinct from :data:`_FORMAT`'s ``%x00`` placeholders, which are the text git
-#: expands into these bytes: an actual NUL in the argv would be rejected by
-#: ``subprocess`` ("embedded null byte"), so the format carries the escape and only
-#: the output carries the byte. Splitting the raw bytes loses nothing the decoded
-#: split had: U+0000 encodes to the single byte ``0x00`` and no continuation byte
-#: of a multi-byte sequence can be ``0x00``, so a byte-level occurrence of the
-#: separator is exactly a code-point-level one.
 _NUL: Final = b"\x00"
 #: ``%B`` -- the **raw whole message**, subject included -- and deliberately not
 #: ``%b`` (#410). git's ``%b`` excludes the first *paragraph*, not the first line:
@@ -182,12 +185,16 @@ _FIELDS_PER_RECORD: Final = 3
 #: **The slice bounds the excerpt, not the decode attempt** (#496 R1 M-1). The
 #: strict whole-message decode in :func:`_decode_message` runs first and is what
 #: *fails*, so a multi-megabyte message is materialised as bytes and attempted as a
-#: ``str`` before this cap is reached: measured 2026-09-03 with ``tracemalloc``,
-#: an 8,000,001-byte message peaks ~16.0 MB above baseline -- about twice its own
-#: size -- whether the offending byte is its first or its last, because CPython
-#: sizes the output buffer up front. That is the price of deciding validity over
-#: the whole message rather than over a prefix, and it is stated rather than
-#: hidden; what the cap prevents is the unbounded *row*, not the transient.
+#: ``str`` before this cap is reached: measured 2026-09-03 with ``tracemalloc``, an
+#: 8,000,001-byte message peaks ~16.0 MB above baseline -- about twice its own size
+#: -- whether the offending byte is its first or its last. The doubling is **not**
+#: an up-front allocation: the same measurement's control, a valid ASCII message of
+#: the same size, peaks 1.00x. It appears once a byte >= 0x80 is met, when the
+#: decoder has to widen the string kind it was writing into and a second buffer is
+#: live alongside the first -- so any non-ASCII message pays it, and an undecodable
+#: one always does. That is the price of deciding validity over the whole message
+#: rather than over a prefix, and it is stated rather than hidden; what the cap
+#: prevents is the unbounded *row*, not the transient.
 #:
 #: Taking the slice **before** the replacement-decode rather than after is still
 #: load-bearing, and observably so: a multi-byte character straddling the cap is
@@ -620,13 +627,19 @@ def _parse_committer_date(date_iso: str) -> datetime | None:
     is byte-for-byte what it was -- aware datetimes already compared as instants --
     and only the recorded representation changes.
 
-    **A date without an offset is unrepresentable, not local time.** ``%cI`` always
-    carries one, so this is unreachable from git; it is refused rather than passed
-    through because ``astimezone`` on a naive value silently reads the *machine's*
-    own offset, which would make the load a function of where it ran. Without this
-    branch such a value also reached ``ReviewFinding.__post_init__``'s
-    timezone-aware check and raised a ``DomainError`` no caller catches -- a fatal
-    abort of the whole load, which is precisely what D3 forbids.
+    **A date without an offset is unrepresentable, not local time.** No ``%cI``
+    output reaches *this* branch: when git emits a timestamp at all it carries an
+    offset, and when it cannot it does not emit a timestamp -- a commit whose
+    committer ident git cannot parse (measured 2026-09-03: an ident whose timestamp
+    field holds raw ``0x80 0x81 0x82``, and one reading ``-1 -1400``) makes ``%cI``
+    expand to the **literal three bytes** ``%cI``, which fails ``fromisoformat``
+    below and takes the ``ValueError`` arm. So the naive case is refused here for
+    what it would do if it ever arrived, not for a path git is known to take:
+    ``astimezone`` on a naive value silently reads the *machine's* own offset, which
+    would make the load a function of where it ran. Without this branch such a value
+    also reached ``ReviewFinding.__post_init__``'s timezone-aware check and raised a
+    ``DomainError`` no caller catches -- a fatal abort of the whole load, which is
+    precisely what D3 forbids.
 
     **Two operations can raise, and they raise *different* exception types, which is
     why the guard names both** (#405 R1-1). ``fromisoformat`` raises ``ValueError``

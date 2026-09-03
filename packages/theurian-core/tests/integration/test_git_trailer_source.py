@@ -574,15 +574,16 @@ def test_git_config_parameters_is_stripped_so_the_output_stays_utf8(
     ``i18n.logOutputEncoding=UTF-16`` makes ``git log`` emit UTF-16, and a load
     that reads such a stream is refused whole -- as a :class:`GitOutputFramingError`
     either way, but **by whichever of its two arms the byte count lands on** (#496
-    R1-2). UTF-16 carries NUL bytes of its own, so whether the stream still splits
-    into a multiple of three tokens is a function of its length, not of the
-    encoding: measured 2026-09-03 on git 2.47.1 over 120 cells, 66 framed as ``3n``
-    -- refused by the **metadata decode**, since ``%H`` arrives as a byte-order mark
-    and UTF-16 code units -- and 54 did not, refused by the **field count**. The two
-    tests below drive one arm each. The adapter strips ``GIT_CONFIG_PARAMETERS``
-    with the rest of the ``GIT_*`` overrides, so the finding reads cleanly whatever
-    config the ambient environment tried to inject, and either refusal stays the
-    backstop rather than the behaviour.
+    R1-2). UTF-16 puts a NUL beside every ASCII character, so whether the stream
+    still splits into a multiple of three tokens is a function of the emitted
+    stream's *length* rather than of the encoding: it moves with the commit count
+    **and with the message text**, and both arms are reachable. No proportion is
+    stated here on purpose -- two measured grids differing only in their message
+    text gave different splits, so a ratio would be a property of the fixture's
+    prose and not of UTF-16. The two tests below drive one arm each. The adapter
+    strips ``GIT_CONFIG_PARAMETERS`` with the rest of the ``GIT_*`` overrides, so
+    the finding reads cleanly whatever config the ambient environment tried to
+    inject, and either refusal stays the backstop rather than the behaviour.
     """
     _origin, clone = _origin_and_clone(tmp_path)
     _commit(clone, "fix: utf8 (#1)", "Review-Finding: security HIGH — a public finding")
@@ -619,8 +620,8 @@ def test_a_utf16_git_log_stream_is_a_typed_framing_error_not_an_uncaught_decode(
     -- not a multiple of three -- so the **field-count** guard raises, and the
     four-token premise is asserted so this cannot pass because some other guard
     happened to fire. A *real* UTF-16 stream is not reliably that shape: whether it
-    still frames as whole records depends on its byte count (measured 2026-09-03,
-    git 2.47.1: 66 of 120 cells framed as ``3n``), and when it does, the
+    still frames as whole records depends on the emitted stream's byte count, which
+    the commit count and the message text both move, and when it does frame the
     **metadata decode** is what refuses it. That arm is driven end-to-end by
     ``test_a_real_utf16_log_stream_is_refused_by_the_metadata_decode``. Neither
     test alone covers a UTF-16 stream; what both pin is that either arm is a typed
@@ -635,10 +636,14 @@ def test_a_utf16_git_log_stream_is_a_typed_framing_error_not_an_uncaught_decode(
     assert "git version" in caught.value.remedy
 
 
-#: How many commits the search below may add before giving up. Measured
-#: 2026-09-03 (git 2.47.1) over 120 cells -- message padding 0-7 characters by 1-15
-#: commits -- 66 framed as ``3n``: at least one in every three consecutive commit
-#: counts did, so a run of this length cannot miss unless the shape changed.
+#: How many commits the search below may add before giving up. Justified by **this
+#: fixture's own message shape**, not by a rule about UTF-16 in general: replaying
+#: the search's exact walk (2026-09-03, git 2.47.1) hits ``3n`` framing at ``n=2``,
+#: and no run of non-framing counts within ``1..12`` exceeds two. A wider grid does
+#: show longer runs for *other* message texts, which is exactly why the limit is
+#: tied to the walk it bounds. Nothing about correctness rests on the number: the
+#: search **fails hard** when it finds nothing, so a message shape that outran the
+#: limit would redden this test rather than quietly skip the arm it exists to pin.
 _UTF16_FRAMING_SEARCH_LIMIT: Final = 12
 
 
@@ -650,12 +655,13 @@ def _utf16_repo_whose_stream_frames_as_whole_records(
     **The count is searched for, not assumed** (#496 R1-2). Whether a UTF-16 stream
     still frames as whole records is a function of its byte count rather than of the
     encoding -- UTF-16 puts a NUL beside every ASCII character, so the token count
-    tracks the message text. Measured 2026-09-03 on git 2.47.1 over 120 cells, 66
-    framed as ``3n`` and 54 did not. A fixture pinned to one commit count would
-    therefore stop exercising the metadata-decode arm the first time a git version
-    shifted a byte, and would pass through the field-count arm instead while its
-    name still said "decode". Commits are added until the stream frames, and the
-    search failing is a hard failure rather than a skip.
+    tracks the message text, and two grids differing only in that text disagree on
+    which commit counts frame. A fixture pinned to one count would therefore stop
+    exercising the metadata-decode arm the first time a git version, or an edit to
+    the subject below, shifted a byte -- and would pass through the field-count arm
+    instead while its name still said "decode". So commits are added until the
+    stream frames (for the shape written here, that is ``n=2``), and the search
+    failing is a hard failure rather than a skip.
     """
     _origin, clone = _origin_and_clone(tmp_path)
     tried: list[int] = []

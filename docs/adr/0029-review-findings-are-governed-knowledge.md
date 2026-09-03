@@ -1264,10 +1264,13 @@ separate grounds hold the framing up instead, each measured 2026-09-03 on git
    the framing, because it holds however the object was written. A hand-built
    object whose message carries a NUL keeps it verbatim in the object store
    (`git cat-file commit` shows the bytes past it), yet `%B` for that same commit
-   emits only the bytes *ahead* of it: 19, for a message of 79. The `-z` stream
-   still splits into exactly `3n` tokens, so no author-placed byte can reshape
-   the partition. The framing is safe over **what git emits**, not over what the
-   object store can hold.
+   emits only the bytes *ahead* of it. The figures are the pinning fixture's own,
+   so a reader can re-derive them by running it: the plant in
+   `test_a_nul_in_a_commit_object_truncates_the_message_git_emits` is a 114-byte
+   message whose NUL sits at offset 38, and `%B` emits exactly those 38 bytes.
+   The `-z` stream still splits into exactly `3n` tokens, so no author-placed byte
+   can reshape the partition. The framing is safe over **what git emits**, not over
+   what the object store can hold.
 3. **fsck posture bounds how far such an object travels**, and the two ends
    differ:
 
