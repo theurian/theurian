@@ -130,8 +130,8 @@ def _current_state_hash(root: Path) -> StateHash | None:
     set the loader accepts and a guard rejects -- the same divergence in a new
     place.
 
-    **``None`` for a refused load only, and the resolve is deliberately outside
-    the ``try``.** ``ProjectPaths.of`` refuses a ``.theurian`` that resolves
+    **``None`` is what the ``try`` answers with, and the resolve is deliberately
+    outside it.** ``ProjectPaths.of`` refuses a ``.theurian`` that resolves
     outside the working tree (#237, T-5), and that refusal still escapes to
     ``SetupService._probe``'s generic net -- ``conflicting``, "Could not check
     initial-index.", measured end to end -- which is correct: a containment
@@ -145,13 +145,24 @@ def _current_state_hash(root: Path) -> StateHash | None:
     not be.** ``schema_root()`` runs inside it and raises ``ProjectError`` --
     "This build is incomplete; reinstall theurian" -- and the loader raises
     ``SchemaUnreadableError`` for a schema it cannot read; both are
-    install-integrity rather than migration content, and both arrive here as
-    ``None``. They are *not* hoisted out: ``_check_migrations`` calls
-    ``schema_root()`` inside its own ``try``, and two readers of the same call
-    catching different sets is #91's divergence in a new place. So the split is
-    left where it is and ``probe_initial_index`` states no cause -- the refusal
-    itself is ``migrations-valid``'s to publish, in the same report, so nothing
-    read from the file travels with this one.
+    install-integrity rather than migration content, and both arrive at
+    ``probe_initial_index`` as ``None``.
+
+    Telling them apart is available and is deliberately not taken *here*.
+    ``except (SchemaUnreadableError, ProjectError)`` would name those two faces
+    and nothing else: ``ProjectError`` has no subclasses anywhere in this tree,
+    every ``raise ProjectError`` in it is in ``application/project_service.py``
+    or ``cli/context``, and ``infrastructure/`` -- where
+    ``load_migrations`` lives and which imports neither -- has none. So inside
+    this ``try`` the only ``ProjectError`` is ``schema_root()``'s. What rules the
+    split out here is the other reader: ``_check_migrations`` calls
+    ``schema_root()`` inside its own ``try`` and catches ``TheurianError``, and
+    two readers of one load catching different sets is #91's divergence in a new
+    place. Splitting both, with an honest "reinstall" arm, is #529's open design
+    space and worth more there -- ``migrations-valid`` is the step whose
+    misattribution survives ``doctor --report``. Until then the caller states no
+    cause, and the refusal itself stays ``migrations-valid``'s to publish, in the
+    same report, so nothing read from the file travels with this one.
     """
     paths = ProjectPaths.of(root)
     try:

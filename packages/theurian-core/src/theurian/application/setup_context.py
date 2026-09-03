@@ -82,13 +82,21 @@ class SetupContext:
     #: ``stateHash``, and the one that names the database file for the state a
     #: project is *at*.
     #:
-    #: ``None`` means **the load was attempted and refused**, which is narrower
-    #: than "something went wrong": the composition root's implementation resolves
-    #: the project's paths *before* the load, so a ``.theurian`` that escapes the
-    #: working tree raises out of this call rather than answering ``None`` (#237,
-    #: T-5; measured -- the step is reported ``conflicting``, "Could not check
-    #: initial-index."). A caller that reads ``None`` as "every failure is
-    #: contained here" is reading more than this returns.
+    #: ``None`` means **no hash could be produced for this tree**, and the three
+    #: ways that happens fail at three different points: the published JSON
+    #: Schemas cannot be located, so the load never starts; a schema is found and
+    #: cannot be read, so it stops before a migration is parsed; or a migration is
+    #: read and refused. "The load was attempted and refused" covers only the last
+    #: two, which is why the step publishing this says the set *could not be
+    #: read* rather than anything about when the reading stopped.
+    #:
+    #: It is also narrower than "something went wrong". The composition root's
+    #: implementation resolves the project's paths *before* the load, so a
+    #: ``.theurian`` that escapes the working tree raises out of this call rather
+    #: than answering ``None`` (#237, T-5; measured -- the step is reported
+    #: ``conflicting``, "Could not check initial-index."). A caller that reads
+    #: ``None`` as "every failure is contained here" is reading more than this
+    #: returns.
     #:
     #: Injected from the CLI composition root for the same reason as
     #: :attr:`check_migrations`: resolving it means loading YAML off disk against

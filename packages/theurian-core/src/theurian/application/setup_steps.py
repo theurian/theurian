@@ -1425,14 +1425,34 @@ def probe_initial_index(context: SetupContext) -> SetupStep:
     tell and names the command that prints why.
 
     **And that answer names no culprit**, which is a requirement rather than a
-    style. Two install-integrity failures reach ``None`` here: ``schema_root()``
-    finding neither candidate location -- "This build is incomplete; reinstall
-    theurian" -- and :class:`~theurian.domain.errors.SchemaUnreadableError`, a
-    schema that is there and cannot be read. Both are recorded across this tree
-    as install-integrity and *not* migration content, and both were measured
-    landing on this arm. A sentence saying the project's migrations do not load
-    sends the reader to their own YAML for a broken install, so what this one
-    says is that the read did not happen and where the reason is printed.
+    style. Two install-integrity failures reach ``None`` here besides a set the
+    loader refuses: ``schema_root()`` finding neither candidate location -- "This
+    build is incomplete; reinstall theurian" -- and
+    :class:`~theurian.domain.errors.SchemaUnreadableError`, a schema that is
+    there and cannot be read. Both are recorded across this tree as
+    install-integrity and *not* migration content, and both were measured landing
+    on this arm, where a sentence about the project's migrations sends the reader
+    to their own YAML for a broken install.
+
+    **The three fail at different points, so the published claim is the weakest
+    one true of all of them.** No candidate schema means the load never starts;
+    an unreadable schema stops it before a migration is parsed; a malformed
+    migration *is* read, and then refused. "Its migration set could not be read"
+    holds for each. "The read did not happen" does not, and neither does anything
+    naming YAML.
+
+    **Wording rather than a catch keyed on the exception -- and not because the
+    types are unavailable.** ``except (SchemaUnreadableError, ProjectError)``
+    would catch those two faces exactly: ``ProjectError`` has no subclasses
+    anywhere in this tree, and inside the resolver's ``try`` the only one raised
+    is ``schema_root()``'s. What rules it out *here* is that
+    ``_check_migrations`` catches ``TheurianError`` for the same load, so
+    splitting one reader and not the other leaves two verdicts about one call on
+    different footings -- #91's divergence in a new place. Doing it honestly
+    means doing it in both, with an arm of its own that says "reinstall", and
+    that is #529's open design space -- where it is worth more, because that
+    step's misattribution survives ``doctor --report`` and this one has no cause
+    to lose.
 
     **What does not come back as an answer at all** is a ``.theurian`` resolving
     outside the working tree. ``ProjectPaths.of`` refuses that (#237, T-5) and it
@@ -1463,14 +1483,14 @@ def probe_initial_index(context: SetupContext) -> SetupStep:
     if state_hash is None:
         # `could not be read`, never "your migrations do not load": a build whose
         # published JSON Schemas are missing or unreadable arrives here too
-        # (measured, both faces). Only one of those faces has a type of its own
-        # -- `SchemaUnreadableError`; `schema_root()`'s is a `ProjectError` like
-        # any other -- so a split on the exception would name the install for one
-        # face and blame the operator's YAML for the other, which is a guard over
-        # half its class. The one claim that holds for all three is that the read
-        # did not happen. `theurian migrate validate` prints which it was, and in
-        # a `doctor` run `migrations-valid` probes the same load and publishes
-        # what refused it.
+        # (measured, both faces), and the three causes fail at three different
+        # points -- one before the load starts, one during it, one after a
+        # migration has been read. This sentence is the weakest claim true of all
+        # three; the docstring above carries why it is a wording decision rather
+        # than a catch keyed on the exception, and #529 owns the split itself.
+        # `theurian migrate validate` prints which cause it was, and in a
+        # `doctor` run `migrations-valid` probes the same load and publishes what
+        # refused it.
         return SetupStep(
             step_id=StepId.INITIAL_INDEX,
             status=StepStatus.NOT_APPLICABLE,
