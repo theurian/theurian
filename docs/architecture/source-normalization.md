@@ -258,5 +258,6 @@ read and neither carries this check:
 [#512](https://github.com/theurian/theurian/issues/512) hardens how those
 instruments *match* and enumerates the members it took from PR #501, and
 [#506](https://github.com/theurian/theurian/issues/506) decides which files the
-owner-cite audit reads. So this check has no owner as of 2026-09-03, and that is
-said here rather than assigned to an issue whose own scope does not admit it.
+owner-cite audit reads. So this check is owned by
+[#531](https://github.com/theurian/theurian/issues/531). That issue was filed
+2026-09-03 out of the same reading, rather than folded into either candidate.
