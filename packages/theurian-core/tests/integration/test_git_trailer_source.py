@@ -507,13 +507,17 @@ def test_git_config_parameters_is_stripped_so_the_output_stays_utf8(
     ``GIT_CONFIG_PARAMETERS`` injects config as if by ``-c`` -- a vector the
     ``GIT_CONFIG{,_COUNT,_GLOBAL,_SYSTEM}`` strip did not cover. An inherited
     ``i18n.logOutputEncoding=UTF-16`` makes ``git log`` emit UTF-16, and a load
-    that reads such a stream is refused whole: UTF-16 carries NUL bytes of its own,
-    so the stream does not partition into records and the framing guard raises --
-    ``test_a_utf16_git_log_stream_is_a_typed_framing_error_not_an_uncaught_decode``
-    drives exactly that. The adapter strips ``GIT_CONFIG_PARAMETERS`` with the rest
-    of the ``GIT_*`` overrides, so the finding reads cleanly whatever config the
-    ambient environment tried to inject, and that refusal stays the backstop rather
-    than the behaviour.
+    that reads such a stream is refused whole -- as a :class:`GitOutputFramingError`
+    either way, but **by whichever of its two arms the byte count lands on** (#496
+    R1-2). UTF-16 carries NUL bytes of its own, so whether the stream still splits
+    into a multiple of three tokens is a function of its length, not of the
+    encoding: measured 2026-09-03 on git 2.47.1 over 120 cells, 66 framed as ``3n``
+    -- refused by the **metadata decode**, since ``%H`` arrives as a byte-order mark
+    and UTF-16 code units -- and 54 did not, refused by the **field count**. The two
+    tests below drive one arm each. The adapter strips ``GIT_CONFIG_PARAMETERS``
+    with the rest of the ``GIT_*`` overrides, so the finding reads cleanly whatever
+    config the ambient environment tried to inject, and either refusal stays the
+    backstop rather than the behaviour.
     """
     _origin, clone = _origin_and_clone(tmp_path)
     _commit(clone, "fix: utf8 (#1)", "Review-Finding: security HIGH — a public finding")
@@ -542,16 +546,20 @@ def test_a_utf16_git_log_stream_is_a_typed_framing_error_not_an_uncaught_decode(
     used to be a :class:`GitHistoryUnavailableError` whose remedy named ``git
     fetch``, because the adapter decoded the whole stdout in one call and any
     failure there meant "no readable history". Since the stream is framed *before*
-    it is decoded, a UTF-16 stream is refused as mis-framed: its UTF-16 code units
-    embed the NUL bytes the framing partitions on, so ``b"\\xff\\xfe\\x00R\\x00e
-    \\x00v"`` splits into four tokens -- not a multiple of three -- and the
-    framing guard raises before any decode is attempted. That is the honest answer
-    for a git whose output encoding is not the one this adapter asked for, and it
-    is why the fetch remedy is no longer offered for it. The remedy that *is*
-    offered names the installed git version.
+    it is decoded, both arms of :class:`GitOutputFramingError` answer instead, and
+    the remedy names the installed git version rather than a fetch.
 
-    The four-token premise is asserted, so this cannot pass merely because some
-    other guard happened to fire.
+    **Which arm fires here, and why that is not "the UTF-16 guard"** (#496 R1-2).
+    The input below is a synthetic seven-byte literal: it splits into four tokens
+    -- not a multiple of three -- so the **field-count** guard raises, and the
+    four-token premise is asserted so this cannot pass because some other guard
+    happened to fire. A *real* UTF-16 stream is not reliably that shape: whether it
+    still frames as whole records depends on its byte count (measured 2026-09-03,
+    git 2.47.1: 66 of 120 cells framed as ``3n``), and when it does, the
+    **metadata decode** is what refuses it. That arm is driven end-to-end by
+    ``test_a_real_utf16_log_stream_is_refused_by_the_metadata_decode``. Neither
+    test alone covers a UTF-16 stream; what both pin is that either arm is a typed
+    error with the same remedy.
     """
     utf16 = b"\xff\xfe\x00R\x00e\x00v"
     assert len(utf16.split(_NUL)) == 4, "the premise: UTF-16 output carries NUL bytes of its own"
@@ -560,6 +568,79 @@ def test_a_utf16_git_log_stream_is_a_typed_framing_error_not_an_uncaught_decode(
         _split_records(utf16, tmp_path)
     assert caught.value.remedy  # a non-empty remedy, not a bare stack trace
     assert "git version" in caught.value.remedy
+
+
+#: How many commits the search below may add before giving up. Measured
+#: 2026-09-03 (git 2.47.1) over 120 cells -- message padding 0-7 characters by 1-15
+#: commits -- 66 framed as ``3n``: at least one in every three consecutive commit
+#: counts did, so a run of this length cannot miss unless the shape changed.
+_UTF16_FRAMING_SEARCH_LIMIT: Final = 12
+
+
+def _utf16_repo_whose_stream_frames_as_whole_records(
+    tmp_path: Path,
+) -> tuple[GitTrailerFindingSource, bytes]:
+    """A published repo whose real UTF-16 ``git log`` stream splits into ``3n`` tokens.
+
+    **The count is searched for, not assumed** (#496 R1-2). Whether a UTF-16 stream
+    still frames as whole records is a function of its byte count rather than of the
+    encoding -- UTF-16 puts a NUL beside every ASCII character, so the token count
+    tracks the message text. Measured 2026-09-03 on git 2.47.1 over 120 cells, 66
+    framed as ``3n`` and 54 did not. A fixture pinned to one commit count would
+    therefore stop exercising the metadata-decode arm the first time a git version
+    shifted a byte, and would pass through the field-count arm instead while its
+    name still said "decode". Commits are added until the stream frames, and the
+    search failing is a hard failure rather than a skip.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    tried: list[int] = []
+    for n in range(1, _UTF16_FRAMING_SEARCH_LIMIT + 1):
+        _commit(clone, f"fix: a thing (#{n})", f"Review-Finding: security HIGH — finding {n}")
+        _publish(clone)
+        _git(clone, "config", "i18n.logOutputEncoding", "UTF-16")
+        stdout = GitTrailerFindingSource(clone)._git_log()
+        _git(clone, "config", "--unset", "i18n.logOutputEncoding")
+        tried.append(len(stdout.split(_NUL)))
+        if tried[-1] % _FIELDS_PER_RECORD == 0:
+            _git(clone, "config", "i18n.logOutputEncoding", "UTF-16")
+            return GitTrailerFindingSource(clone), stdout
+    pytest.fail(
+        f"no commit count up to {_UTF16_FRAMING_SEARCH_LIMIT} produced a UTF-16 stream "
+        f"framing as a multiple of {_FIELDS_PER_RECORD} tokens (token counts: {tried}); "
+        "the metadata-decode arm cannot be driven end-to-end as written"
+    )
+
+
+def test_a_real_utf16_log_stream_is_refused_by_the_metadata_decode(tmp_path: Path) -> None:
+    """A real UTF-16 stream that frames cleanly is refused by the decode (#496 R1-2).
+
+    The synthetic literal above is short enough to break the field count; a real
+    stream often is not. ``i18n.logOutputEncoding=UTF-16`` in the repository's own
+    config reaches the adapter's child ``git`` -- only the ``GIT_*`` *environment*
+    overrides are stripped -- and when the resulting stream splits into whole
+    records the field-count guard passes it, leaving ``%H`` (a byte-order mark and
+    UTF-16 code units) as the thing that cannot decode.
+
+    This is the arm the branch's two docstrings originally attributed to the
+    field-count guard, and it had no end-to-end test at all. The assertion names
+    the field, not just the remedy, so the two arms of
+    :class:`GitOutputFramingError` stay distinguishable; the remedy assertions hold
+    the shared property -- a typed error naming the installed git version, never an
+    uncaught ``UnicodeDecodeError`` and never the ``git fetch`` remedy of a history
+    that is perfectly reachable.
+    """
+    source, stdout = _utf16_repo_whose_stream_frames_as_whole_records(tmp_path)
+    assert stdout.startswith((b"\xff\xfe", b"\xfe\xff")), (
+        f"the premise: git must really emit UTF-16 here, got {stdout[:16]!r}"
+    )
+
+    with pytest.raises(GitOutputFramingError) as caught:
+        source.load_findings()
+
+    assert "commit sha (%H)" in str(caught.value)
+    assert "not valid UTF-8" in str(caught.value)
+    assert "git version" in caught.value.remedy
+    assert "fetch" not in caught.value.remedy
 
 
 # --- D4: NUL framing, not forgeable RS/US ----------------------------------
