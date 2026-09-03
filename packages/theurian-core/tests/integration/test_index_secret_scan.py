@@ -42,8 +42,10 @@ from theurian.application.project_service import (
     ProjectRegistry,
     read_active_index_pointer,
 )
+from theurian.application.setup_service import SetupService
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
+from theurian.domain.setup import SetupReport, SetupState
 from theurian.security.content_secrets import MAX_FINDINGS, REDACTED_PREFIX_CHARS
 
 pytestmark = pytest.mark.integration
@@ -608,6 +610,74 @@ def test_warn_publishes_the_finding_as_information_and_exits_zero(planted: Path)
     assert any(DIRTY_ITEM in line for line in _findings(payload)), payload
 
 
+@pytest.mark.parametrize(("policy", "exit_code"), [("block", 6), ("warn", 0)])
+def test_a_build_that_found_something_carries_the_remedy_under_either_policy(
+    planted: Path, policy: str, exit_code: int
+) -> None:
+    """A list of findings with nothing to do about them is a worse report than none.
+
+    The sibling that clears the verdict asserts the remedy is **absent** from a
+    clean build, which is green against a build that never attaches one at all --
+    deleting the attachment survived the suite (round 1, adversarial). Both
+    reporting policies are covered because they take different paths out of the
+    command: ``block`` raises after emitting and ``warn`` returns, and only the
+    emitted payload is common to them.
+    """
+    _write_policy(planted, policy)
+
+    code, payload = _in(planted, "index", "build")
+
+    assert code == exit_code, payload
+    assert _findings(payload), "no finding, so the remedy assertion below says nothing"
+    remedy = str(payload["remedy"]).lower()
+    assert "rotate" in remedy, f"the remedy does not tell the operator to rotate: {remedy}"
+    assert "supersede" in remedy and "retire" in remedy, (
+        f"the remedy names no route out of the corpus: {payload['remedy']}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected_problems", "expected_exit"), [("block", 1, 1), ("warn", 0, 0)]
+)
+def test_a_scan_verdict_is_the_only_thing_doctor_needs_to_call_a_machine_unhealthy(
+    planted: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    policy: str,
+    expected_problems: int,
+    expected_exit: int,
+) -> None:
+    """``healthy``, ``problemCount`` and the exit code all move off the same number.
+
+    Every sibling here runs against a temporary ``HOME`` where setup has never
+    run, so ``report.steps`` always carries MISSING steps and ``problemCount`` is
+    never zero -- which means the exit arm reads the same either way and
+    ``if problem_count:`` reduced to ``if problems:`` survived the whole suite
+    (round 1, adversarial). The setup half is stubbed to a converged run with no
+    steps so that the scan verdict is the *only* input, which is the state a real
+    machine reaches after `theurian setup` and this fixture cannot.
+
+    ``warn`` is the control in the same shape: an operator who chose to be told
+    rather than stopped gets a healthy machine and exit 0 from a build that
+    reported the identical finding.
+    """
+    monkeypatch.setattr(
+        SetupService,
+        "run",
+        lambda _self, _request: SetupReport(state=SetupState.CONVERGED, steps=(), dry_run=True),
+    )
+    _write_policy(planted, policy)
+    assert _in(planted, "index", "build")[1]["secretFindings"], "nothing was found to report"
+
+    code, payload = _in(planted, "doctor")
+
+    assert payload["problemCount"] == expected_problems, payload
+    assert payload["healthy"] is (expected_problems == 0), payload
+    assert code == expected_exit, (
+        f"doctor exited {code} for a machine whose only problem is the scan verdict "
+        f"({payload['indexSecretScan']})"
+    )
+
+
 def test_doctor_reports_a_warn_finding_without_counting_it_as_a_problem(
     planted: Path,
 ) -> None:
@@ -703,6 +773,14 @@ def test_doctor_names_no_item_and_no_path_in_the_scan_it_reports(planted: Path) 
     The count and the policy are what an operator needs to act; *which* item
     carries the credential varies with content the reader of a pasted report has
     no business learning, and it is the build's own terminal output that names it.
+
+    **Only the first assertion is load-bearing.** The absolute-path half passes
+    for a reason unrelated to redaction: this arm publishes a status, a policy, a
+    count and a fixed remedy, so there is no path-shaped field in it for
+    ``_redacted`` to reach and the assertion would hold against an arm that had
+    never been redacted at all. It is kept as a bound rather than as evidence --
+    a future field carrying a location reddens it -- and the redaction that is
+    actually exercised lives in ``test_setup_report_withholding.py``.
     """
     assert _in(planted, "index", "build")[0] != 0
 

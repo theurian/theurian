@@ -64,13 +64,22 @@ from theurian.security.project_config import SecretScanPolicy
 #: command that lists them rather than telling the reader to run it -- which read
 #: as an instruction to re-run what had just been run, measured against the real
 #: CLI on 2026-09-03.
+#:
+#: **"up to its reporting limit" is not hedging.** The scan stops at
+#: :data:`~theurian.security.content_secrets.MAX_FINDINGS` across the whole build,
+#: so a corpus carrying more than that is reported by a count and named only as
+#: far as the budget reached -- and a remedy promising the list names *the* items
+#: would send an operator who fixed every named one back to a build that finds
+#: more. The next build re-scans and names the next batch, which is why the loop
+#: terminates without the number ever being published.
 LANDED_SECRET_REMEDY: Final = (
     "Treat the value as exposed and rotate it: it is in this project's canonical state and "  # noqa: S105 - prose about a secret, not one
     "in Git history, and `knowledge.search` and `knowledge.get` already serve it whatever "
     "this index holds. Then get it out of the corpus -- supersede the revision with a new "
     "`upsertRevision`, or retire the item with `deprecateItem` -- and run `theurian migrate "
-    "apply` followed by `theurian index build`, which names the items it reported. If it is "
-    "not a secret, set security.secretScan to warn or off in "
+    "apply` followed by `theurian index build`, which names the items it reported, up to its "
+    "reporting limit; rebuild again after fixing them, in case more were found than it "
+    "listed. If it is not a secret, set security.secretScan to warn or off in "
     ".theurian/config.yaml (block, warn, off; block is what an absent key selects)."
 )
 
@@ -118,6 +127,17 @@ class IndexSecretScanVerdict:
             # A count with no policy beside it cannot say whether it means
             # "scanned and found" or "not scanned at all", which is the exact
             # confusion `SecretScanResult` carries its policy to prevent.
+            #
+            # **No construction in this package reaches it**, said here rather
+            # than left for a reader to discover -- the same annotation
+            # `_read_record`'s blank-id arm carries, for the same reason. Every
+            # policy-less verdict is built from a literal with no `findings=` at
+            # all (`NOT_APPLICABLE`, `UNRECORDED`), and every verdict that
+            # carries a count is built from a record whose policy parsed. It is a
+            # constructor invariant rather than a branch a test can drive, and a
+            # row over it would be a row that cannot fail; the reason to keep it
+            # is that this class is a published shape and the next caller is not
+            # in this file.
             msg = "a scan verdict with no policy cannot carry findings"
             raise ValueError(msg)
 
@@ -159,13 +179,35 @@ def write_index_secret_scan(
     :func:`~theurian.application.project_service.write_active_index_pointer` holds
     for the pointer beside it: a reader must never see half a record and conclude
     the wrong thing about a security control.
+
+    **A failure between the two leaves the ``.json.tmp`` behind, deliberately.**
+    Unlinking it in a handler would mean a second failing syscall on the path that
+    already failed, and there is nothing to protect: the temporary is not the
+    record's name, so no reader opens it -- ``published_index_secret_scan`` reads
+    exactly ``index-secret-scan.json`` -- and the next successful write truncates
+    it under the same fixed name. It is derived, git-ignored and one file.
+
+    ``off`` is recorded with a count of zero whatever the caller passes, because
+    the two fields would otherwise contradict each other in the published block:
+    :func:`_status_of` reports ``off`` as ``unscanned`` and refuses to interpret a
+    count under it, so a record stating both is one no reader can act on. Zeroed
+    rather than refused -- this runs after the index is published, and raising
+    here is the traceback-with-empty-stdout the caller's own guard exists to
+    prevent.
+
+    Raises:
+        OSError: If the record cannot be written. The caller decides what that
+            means: ``index build`` degrades it to a ``recordWarning`` beside the
+            findings, because by then the index is published and the findings are
+            the only account of what it holds.
     """
     record = paths.index_secret_scan
     record.parent.mkdir(parents=True, exist_ok=True)
     temporary = record.with_suffix(".json.tmp")
+    counted = 0 if policy is SecretScanPolicy.OFF else findings
     temporary.write_text(
         json.dumps(
-            {"indexBuildId": index_build_id, "policy": policy.value, "findings": findings},
+            {"indexBuildId": index_build_id, "policy": policy.value, "findings": counted},
             indent=2,
         ),
         encoding="utf-8",
