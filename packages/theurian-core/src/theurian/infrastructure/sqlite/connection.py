@@ -97,11 +97,32 @@ class WriteLockTimeoutError(TheurianError):
 
 #: SQLite's two primary result codes for "someone else is holding it": a lock
 #: this connection could not take (``SQLITE_BUSY``) and one it could not take
-#: without deadlocking (``SQLITE_LOCKED``). Compared against the **primary** code
-#: -- ``sqlite_errorcode & 0xFF`` -- because SQLite reports the extended forms
-#: (``SQLITE_BUSY_SNAPSHOT`` and friends) in the high bits, and a set of exact
-#: values would let the extended spelling of the same condition fall through to
-#: the damaged-file class.
+#: without deadlocking (``SQLITE_LOCKED``).
+#:
+#: **``SQLITE_BUSY`` is the only measured arrival at the two statements
+#: :func:`_execute_own` guards. The second member and the mask below are defense
+#: in depth, not something measurement reached** (pre-round-two sweep; measured
+#: 2026-09-03 on SQLite 3.47.1):
+#:
+#: * ``BEGIN IMMEDIATE`` under a held write lock reports the **primary** code 5,
+#:   and so does the only ``COMMIT`` contention reproducible at all -- see
+#:   :func:`_open_transaction`, which records that the ``COMMIT`` arm needs a
+#:   rollback journal to fire.
+#: * ``SQLITE_LOCKED`` is table-level contention within one connection or a
+#:   shared cache. It was not demonstrated reachable across the separate
+#:   connections this module opens, and no test drives it.
+#: * No extended spelling was demonstrated either. ``SQLITE_BUSY_SNAPSHOT``
+#:   (517) needs a *deferred* transaction upgrading a read to a write, which
+#:   cannot happen at either guarded statement: this function opens with ``BEGIN
+#:   IMMEDIATE``, so the write lock is already held by the time any caller
+#:   statement runs, and the upgrade path lives inside the ``yield`` that is
+#:   deliberately left unconverted.
+#:
+#: So the mask (``sqlite_errorcode & 0xFF``) guards a case nothing has reached
+#: rather than one measurement found. It is kept because it costs one bitwise
+#: ``and`` and it over-covers in the safe direction: an extended spelling of a
+#: condition this set *does* name would otherwise fall through to the
+#: damaged-file class and be answered with a cure that deletes state.
 _CONTENTION_RESULT_CODES: Final = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
 
 
@@ -528,13 +549,25 @@ def _open_transaction(database_path: Path) -> Iterator[sqlite3.Connection]:
 
     **Contention on the two statements this function issues itself is
     converted; the caller's own statements are not.** ``BEGIN IMMEDIATE`` and
-    ``COMMIT`` are this function's, made on its own behalf, and a
-    ``SQLITE_BUSY`` on either says one thing only: another writer holds the
+    ``COMMIT`` are this function's, made on its own behalf, so a ``SQLITE_BUSY``
+    arriving from either can say one thing only: another writer holds the
     database. That is a transient condition over an undamaged file, and left as
     a raw ``sqlite3.OperationalError`` it reached the CLI's ``(OSError,
     sqlite3.Error)`` backstops in the same net as a directory at the database
     path -- and was answered with the same delete-your-state cure (#484 round
     two).
+
+    **Only one of the two arms is reached by anything that has been measured,
+    and the other is kept deliberately** (pre-round-two sweep; measured
+    2026-09-03 on SQLite 3.47.1). ``BEGIN IMMEDIATE`` is the driven case: primary
+    ``SQLITE_BUSY``, reproduced across two OS processes and covered by
+    ``test_a_transient_write_conflict_is_never_answered_by_deleting_the_state``.
+    The ``COMMIT`` arm is believed **unreachable under this product's own
+    ``journal_mode = WAL``** -- an attempt to force COMMIT-time contention with a
+    live reader committed silently under WAL and reported ``SQLITE_BUSY`` only
+    under ``journal_mode = delete``. It is kept for that rollback-journal edge
+    and for robustness if the pragma ever changes, and it is recorded here as an
+    arm no test drives rather than presented as a second measured path.
 
     The boundary is exactly the one :func:`_prepare` records for itself and for
     the same reason, read from the other side: past ``BEGIN IMMEDIATE`` a
@@ -544,7 +577,10 @@ def _open_transaction(database_path: Path) -> Iterator[sqlite3.Connection]:
     write keeps travelling as the driver raised it. Under this shape that
     residue is not reachable anyway: a connection that has completed ``BEGIN
     IMMEDIATE`` owns the database's write lock, so no later statement of the
-    caller's can be refused for contention.
+    caller's can be refused for contention. The one contention code that *does*
+    arise past that point in general -- ``SQLITE_BUSY_SNAPSHOT``, from a deferred
+    read upgrading to a write -- needs the deferred open this function never
+    makes; :data:`_CONTENTION_RESULT_CODES` records the measurement.
     """
     connection = sqlite3.connect(database_path, isolation_level=None)
     try:
@@ -567,6 +603,13 @@ def _execute_own(connection: sqlite3.Connection, statement: str, database_path: 
     ``ROLLBACK`` deliberately does not come through here. It runs only while an
     exception is already travelling, and replacing that exception with a report
     about the rollback would hide the failure the caller actually needs.
+
+    **That exclusion is a recorded decision, not a pinned one.** Routing
+    ``ROLLBACK`` through here as well would be indistinguishable from this shape
+    under everything the suite and the pre-round-two sweep ran: no input was
+    found that makes ``ROLLBACK`` fail while a caller's exception is in flight,
+    so nothing goes RED on the difference. Stated so the next reader knows the
+    reasoning is argued rather than measured.
     """
     try:
         connection.execute(statement)
