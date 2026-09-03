@@ -619,6 +619,80 @@ def test_an_anchor_findings_index_names_the_anchor_that_carries_it(bare: Path) -
     ], f"the anchor index does not name the anchor the credential is on: {_findings(payload)}"
 
 
+#: An edge authored **from** the withheld item **to** an indexed one, of a
+#: non-invertible type.
+#:
+#: ``list_relations`` mirrors only the four types in ``INVERSE_RELATIONS``; for
+#: ``contradicts`` an *incoming* edge comes back in its stored orientation, so
+#: ``target_item_id`` is the item being fetched and only ``source_item_id`` names
+#: the withheld end. A gate that checked the target alone therefore looked up the
+#: item the build already holds, found it visible, and scanned the note --
+#: which is the exact defect ``_relation_is_visible`` records from a real project.
+#: The sibling case below authors its edge the other way round and is green
+#: against that half-gate (round 2, adversarial).
+#:
+#: The note's wording is that measurement's: a rejection rationale naming the
+#: thing it is a rationale about.
+_INCOMING_EDGE_MIGRATION_ID = "01K1KKKKKK01234567890ABCDE"
+_INCOMING_EDGE = f"""apiVersion: theurian.dev/v1
+id: {_INCOMING_EDGE_MIGRATION_ID}
+createdAt: 2026-09-03T12:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: addRelation
+    sourceItemId: {DRAFT_ITEM}
+    relationType: contradicts
+    targetItemId: {CLEAN_ITEM}
+    note: "REJECTED BECAUSE the runbook still quotes {PLANTED}"
+"""
+
+
+def test_a_note_on_an_incoming_edge_from_a_withheld_item_is_not_counted(bare: Path) -> None:
+    """Both ends, and the *source* end is the half a one-sided gate keeps passing.
+
+    See :data:`_INCOMING_EDGE`: for a non-invertible type an incoming edge arrives
+    in its stored orientation, so the item the build is walking is the *target*
+    and the withheld end is the source. Deleting the source half of the gate
+    survived the whole suite until this case existed.
+
+    The positive control is the same corpus under ``--include-unapproved``, where
+    the draft is indexed and the edge is therefore published and scanned.
+    """
+    _corpus(bare, dirty=CLEAN_BODY.replace("Authentication", "Rotation"))
+    (bare / ".theurian/knowledge/architecture/unreleased-keys.md").write_text(
+        CLEAN_BODY, encoding="utf-8"
+    )
+    (bare / f".theurian/migrations/{_DRAFT_MIGRATION_ID}-unreleased.yaml").write_text(
+        _migration(
+            _DRAFT_MIGRATION_ID,
+            DRAFT_ITEM,
+            "01K1CREVCC01234567890ABCDE",
+            "Unreleased keys",
+            "draft",
+            CLEAN_BODY,
+        ),
+        encoding="utf-8",
+    )
+    (bare / f".theurian/migrations/{_INCOMING_EDGE_MIGRATION_ID}-incoming.yaml").write_text(
+        _INCOMING_EDGE, encoding="utf-8"
+    )
+    _must(bare, "migrate", "apply")
+
+    code, default_build = _in(bare, "index", "build")
+
+    assert code == 0, default_build
+    assert _findings(default_build) == [], (
+        f"an incoming edge from a row this build withheld moved the count: {default_build}"
+    )
+
+    code, opted_in = _in(bare, "index", "build", "--include-unapproved")
+
+    assert code == 6, "the same edge is published under --include-unapproved, so it is scanned"
+    assert any(".note" in line for line in _findings(opted_in)), (
+        f"the control is blind rather than the edge being withheld: {opted_in}"
+    )
+
+
 def test_a_note_on_an_edge_to_a_withheld_item_is_neither_scanned_nor_counted(bare: Path) -> None:
     """The relation channel obeys the gate that publishes it, or the count leaks.
 
@@ -1243,6 +1317,120 @@ def test_an_unrelated_withdrawal_does_not_clear_the_degraded_verdict(planted: Pa
     assert after["problemCount"] == before["problemCount"], (
         f"an unrelated withdrawal changed doctor's problem count: "
         f"{before['problemCount']} -> {after['problemCount']}"
+    )
+
+
+def test_a_purge_does_not_restamp_a_record_written_for_some_other_build(
+    bare: Path,
+) -> None:
+    """Carrying forward means *this* build's verdict, or the class reopens the other way.
+
+    ``carry_index_secret_scan_forward`` re-records only when the record names the
+    build being purged, and that condition is reachable rather than defensive:
+    a clean build writes a record, the next build finds a credential but cannot
+    write its record (the ``recordWarning`` arm above), and the file left on disk
+    is now the *clean* verdict for a build the pointer no longer names. A purge
+    that restamped whatever it found would move that clean bill onto the served
+    build and `doctor` would report `clean` over an indexed credential --
+    the same downgrade the carry-forward exists to prevent, arriving from the
+    opposite direction.
+
+    ``unrecorded`` is the right answer here: nothing is known about the served
+    build, which is honest ignorance and is not counted as a problem.
+    """
+    _corpus(bare, dirty=CLEAN_BODY.replace("Authentication", "Rotation"))
+    _must(bare, "migrate", "apply")
+    assert _in(bare, "index", "build")[0] == 0
+    record = ProjectPaths.of(bare).index_secret_scan
+    clean_record = json.loads(record.read_text(encoding="utf-8"))
+    assert clean_record["findings"] == 0, clean_record
+
+    # A second build that finds a credential and cannot write its own record.
+    (bare / ".theurian/knowledge/architecture/unreleased-keys.md").write_text(
+        DIRTY_BODY, encoding="utf-8"
+    )
+    (bare / f".theurian/migrations/{_DRAFT_MIGRATION_ID}-late.yaml").write_text(
+        _migration(
+            _DRAFT_MIGRATION_ID,
+            DRAFT_ITEM,
+            "01K1CREVCC01234567890ABCDE",
+            "Late keys",
+            "approved",
+            DIRTY_BODY,
+        ),
+        encoding="utf-8",
+    )
+    _must(bare, "migrate", "apply")
+    record.with_suffix(".json.tmp").mkdir()
+    code, dirty_build = _in(bare, "index", "build")
+    assert code == 6, dirty_build
+    assert "recordWarning" in dirty_build, dirty_build
+    record.with_suffix(".json.tmp").rmdir()
+    assert json.loads(record.read_text(encoding="utf-8")) == clean_record, (
+        "the failed write moved the record, so it no longer names another build"
+    )
+
+    (bare / f".theurian/migrations/{_DEPRECATION_MIGRATION_ID}-retire.yaml").write_text(
+        _DEPRECATION, encoding="utf-8"
+    )
+    applied = _must(bare, "migrate", "apply")
+    assert applied["indexPurge"]["published"] is True, (
+        f"no purge ran, so this asserts nothing: {applied}"
+    )
+
+    _, payload = _in(bare, "doctor")
+
+    assert payload["indexSecretScan"]["status"] == "unrecorded", (
+        f"the purge restamped a record written for another build, so a stale clean "
+        f"bill now describes the served one: {payload['indexSecretScan']}"
+    )
+
+
+def test_a_purge_that_could_not_publish_leaves_the_record_on_the_served_build(
+    planted: Path,
+) -> None:
+    """The carry-forward runs *after* the pointer swap, and the ordering is the claim.
+
+    ``publish_purge_for_withdrawal`` derives the purged copy, swaps the pointer,
+    and only then re-records. Re-recording first would name a build that is not
+    being served whenever the swap fails -- and the swap can fail: the pointer is
+    written to a temporary name and ``os.replace``d, so a directory under that
+    name raises inside the purge's own ``try`` after a complete copy exists.
+
+    What must survive that is the verdict about the build still on the pointer.
+    The purge reports its failure with a remedy, the stale build goes on holding
+    the withdrawn rows, and `doctor` goes on reporting the credential in it.
+    """
+    assert _in(planted, "index", "build")[0] == 6
+    paths = ProjectPaths.of(planted)
+    served = read_active_index_pointer(paths).payload
+    assert served is not None
+    before = json.loads(paths.index_secret_scan.read_text(encoding="utf-8"))
+    assert before == {"indexBuildId": served["indexBuildId"], "policy": "block", "findings": 1}
+
+    pointer_temporary = paths.active_index_pointer.with_suffix(".json.tmp")
+    pointer_temporary.mkdir()
+    (pointer_temporary / "keeps-it-a-directory").write_text("x", encoding="utf-8")
+    (planted / f".theurian/migrations/{_DEPRECATION_MIGRATION_ID}-retire.yaml").write_text(
+        _DEPRECATION, encoding="utf-8"
+    )
+    applied = _must(planted, "migrate", "apply")
+
+    assert applied["indexPurge"]["failed"] is True, (
+        f"the pointer write did not fail, so the ordering is untested: {applied}"
+    )
+    still_served = read_active_index_pointer(paths).payload
+    assert still_served is not None
+    assert still_served["indexBuildId"] == served["indexBuildId"], "the swap landed after all"
+    assert json.loads(paths.index_secret_scan.read_text(encoding="utf-8")) == before, (
+        "the record was restamped for a build that was never published"
+    )
+
+    _, payload = _in(planted, "doctor")
+
+    assert payload["indexSecretScan"]["status"] == "degraded", (
+        f"the verdict about the build still being served was lost with the failed "
+        f"purge: {payload['indexSecretScan']}"
     )
 
 
