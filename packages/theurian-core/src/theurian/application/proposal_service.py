@@ -108,7 +108,11 @@ from theurian.security.paths import (
     resolve_within_root,
 )
 from theurian.security.project_config import SecretScanPolicy, read_secret_scan_policy
-from theurian.security.yaml_loading import is_bounded_scalar, load_yaml_mapping
+from theurian.security.yaml_loading import (
+    MAX_RENDERED_SCALAR_CHARS,
+    is_bounded_scalar,
+    load_yaml_mapping,
+)
 
 #: The evidence file's name. Fixed, unlike the migration's: nothing moves it, so
 #: it cannot collide with anything, and a reviewer looking for the reasoning
@@ -119,6 +123,50 @@ EVIDENCE_FILE: Final = "evidence.json"
 #: The directory is committed input, so its file count is the contributor's:
 #: 50,000 files produced a 600 KB error string in 1.5 s before this bound.
 _MAX_NAMES_LISTED: Final = 5
+
+#: How much of *one* untrusted name a refusal renders before it stops (#360).
+#: :data:`_MAX_NAMES_LISTED` bounds how many, and bounded nothing about how long
+#: each one is: a ``contentFile`` is a raw YAML scalar the schema has not seen
+#: yet, so ``_body_moves``' "not in the proposal directory" refusal echoed the
+#: whole of it into a terminal.
+#:
+#: Reused rather than minted: :data:`~theurian.security.yaml_loading
+#: .MAX_RENDERED_SCALAR_CHARS` is this codebase's existing answer to *how much of
+#: an untrusted scalar may be interpolated*, and a second number beside it would
+#: be two answers to one question.
+_MAX_NAME_CHARS: Final = MAX_RENDERED_SCALAR_CHARS
+
+#: The same for another component's *report* -- a parser's or a validator's own
+#: message -- which is a different question and needs a different number.
+#:
+#: A name is a token; a report is prose that has to survive being read. Measured
+#: 2026-09-04 across the three accept-path suites, the longest legitimate report
+#: this path composes is 779 characters (the rehearsal's revision-conflict
+#: diagnosis, which names two revisions, two migrations and two body paths) and
+#: the longest schema message 763 (a ``oneOf`` listing every operation shape).
+#: :data:`_MAX_NAME_CHARS` cut both mid-sentence, so this bounds the *flood*
+#: rather than the sentence: ``jsonschema`` puts ``repr(instance)`` in its
+#: message, and an instance from a 4 MiB migration is megabytes.
+_MAX_REPORT_CHARS: Final = 2000
+
+#: What follows a string this module cut, so a reader can tell a cut from a name
+#: that genuinely ends in an ellipsis. Outside the quotes, deliberately: inside
+#: them it would read as part of the name. It publishes no length -- how many
+#: characters were dropped is the contributor's number, the same reason
+#: :data:`_MAX_NAMES_LISTED`'s tail is suppressed in :meth:`
+#: ProposalService._secret_refusal`.
+_TRUNCATED: Final = " (truncated)"
+
+#: What a refusal prints in place of a name the detector reports (#360). A fixed
+#: literal and never a prefix of the name: a partial echo is the walk-around
+#: :class:`~theurian.security.content_secrets.SecretFinding`'s four-character
+#: bound exists to prevent, and the same rule
+#: :meth:`ProposalService._landed_text` applies to a finding's *location*.
+_REDACTED_NAME: Final = "a name that appears to carry a secret"
+
+#: The same, for another component's own words -- a parser's or a validator's
+#: message, which quotes the input it refused.
+_REDACTED_REPORT: Final = "a report whose own text appears to carry a secret"
 
 #: How many entries ``operations`` may hold before ``accept`` refuses the
 #: migration outright, checked against the raw parsed document -- before
@@ -1182,9 +1230,12 @@ class ProposalService:
         four-character bound :class:`~theurian.security.content_secrets
         .SecretFinding` holds on the match -- the same reason the two name
         channels never name what they found. Bringing it under the literal rule
-        is what makes *no* finding location author-controlled or scanned text;
-        the broader class of author-supplied names echoed in refusal *messages*
-        elsewhere on the accept path is tracked separately (#360).
+        is what makes *no* finding location author-controlled or scanned text.
+
+        The broader class -- author-supplied names echoed in refusal *messages*
+        elsewhere on the accept path, several of them fired *before* this scan
+        runs -- is closed by :func:`_bounded` and the two renderings over it
+        (#360).
         """
         knowledge = self._paths.knowledge.resolve()
         landed = tuple(move.destination.relative_to(knowledge).as_posix() for move in moves)
@@ -1344,7 +1395,7 @@ class ProposalService:
             raise
         except TheurianError as exc:
             raise ProposalError(
-                f"{_names([migration_file.name])} is not a valid migration: {exc}",
+                f"{_names([migration_file.name])} is not a valid migration: {_their_words(exc)}",
                 remedy=(
                     "Correct the migration in the proposal directory, then accept it again. "
                     "Nothing has moved."
@@ -1462,7 +1513,8 @@ class ProposalService:
         if landed_error is not None:
             return self._landed_set_refusal(landed_error)
         message = (
-            f"Accepting this proposal would leave .theurian/migrations/ unable to apply: {error}"
+            f"Accepting this proposal would leave .theurian/migrations/ unable to apply: "
+            f"{_their_words(error)}"
         )
         if isinstance(error, RevisionConflictError):
             # The racing face (#307): this proposal claimed a revision that was
@@ -1507,7 +1559,7 @@ class ProposalService:
         """
         return ApprovedSetUnusableError(
             f"The project's migration set cannot be applied as it stands, with or without "
-            f"this proposal: {error}",
+            f"this proposal: {_their_words(error)}",
             remedy=(
                 "This proposal is not the cause: nothing has moved and its directory is "
                 "intact. The fault is in .theurian/migrations/ -- read what the message "
@@ -2051,7 +2103,7 @@ class ProposalService:
         """
         if destination.exists() or destination.is_symlink():
             raise MigrationNameTakenError(
-                f"{destination.name} is already in .theurian/migrations/. The name "
+                f"{_names([destination.name])} is already in .theurian/migrations/. The name "
                 "carries the migration's id, so that migration is already in place.",
                 remedy=(
                     "Read the migration that is already there. If this proposal is a "
@@ -2524,9 +2576,9 @@ class ProposalService:
                 _write_file(migration_destination, migration_bytes, exclusive=True)
             except FileExistsError as exc:
                 raise MigrationNameTakenError(
-                    f"{migration_destination.name} appeared in .theurian/migrations/ while "
-                    "this proposal was being accepted, so accepting it would overwrite that "
-                    "migration.",
+                    f"{_names([migration_destination.name])} appeared in .theurian/migrations/ "
+                    "while this proposal was being accepted, so accepting it would overwrite "
+                    "that migration.",
                     remedy="Read what is there, then draft this proposal again for a new id.",
                 ) from exc
             created.append(migration_destination)
@@ -2727,8 +2779,14 @@ def _unmoved_generated_bodies(directory: Path, proposal_id: ProposalId) -> tuple
     """
 
     def refuse(error: OSError) -> NoReturn:
+        # `strerror` with a *literal* fallback, never `error` itself: an
+        # `OSError`'s own text carries the absolute filename, which is the
+        # machine's home directory (the discipline `_unreadable` and
+        # `_evidence_indeterminate` both record, and which this one call had
+        # walked around through its `or`).
         raise ProposalError(
-            f"Proposal {proposal_id.value} could not be examined: {error.strerror or error} at "
+            f"Proposal {proposal_id.value} could not be examined: "
+            f"{error.strerror or 'it could not be read'} at "
             f"{_names([_within(error.filename, directory)])}. Whether it has been accepted "
             "cannot be answered without reading it.",
             remedy="Make the path above readable -- chmod u+rx on the directory -- then run "
@@ -2793,45 +2851,135 @@ def _project_relative(filename: object, root: Path) -> str:
     return "a path outside the project"
 
 
-def _names(names: Sequence[str]) -> str:
-    """Untrusted names, quoted and bounded, for an *error message*.
+def _bounded(text: str, limit: int) -> str | None:
+    """``text`` cut to what a refusal may print, or ``None`` if it may not print it.
+
+    The one gate every author-derived string in this module passes through before
+    it reaches a message (#360), and the reason it is one gate rather than a
+    judgement per site: which producer is trustworthy is exactly the enumeration
+    that drifts. A caller renders what comes back; ``None`` means the detector
+    reported the cut text and the caller must name it by a literal of its own
+    instead.
+
+    ``limit`` is the caller's, because a name and a report are different
+    questions with different answers (:data:`_MAX_NAME_CHARS`,
+    :data:`_MAX_REPORT_CHARS`). What is *not* the caller's is whether to scan:
+    there is no argument for that, so no site can opt out of the redaction while
+    keeping the cut.
+
+    **The cut happens first, and the scan runs on what will actually be
+    printed.** Scanning the whole and printing a prefix keys the guard on a
+    superset of what it protects, which is how a truncated run that scans as a
+    credential on its own gets past a scan of the untruncated string
+    (GHSA-3f65's shape: the gate hashed the body while the index served title
+    plus body).
+
+    **A dirty string is dropped whole, never partially echoed.** ``scan_text``
+    reports a finding's line, column and family but not the match's *length*, so
+    substituting only the matched span is not reconstructible from what the
+    detector returns -- and a "clean" remainder around a redacted span is a
+    partial copy of the credential besides, which is the walk-around
+    :class:`~theurian.security.content_secrets.SecretFinding`'s four-character
+    bound exists to prevent.
+    """
+    head = text[:limit]
+    return None if scan_text(head, max_findings=1) else head
+
+
+def _one_name(name: str) -> str:
+    """One untrusted name, quoted, bounded and redacted, for an *error message*.
 
     ``repr`` and never the raw name. A proposal directory is committed input
     (ADR-0013 point 7), so its filenames are the contributor's: one carrying
     ``ESC [ 2 K CR`` erases the line a terminal has already drawn and prints its
     own in place of it -- T-3's injection at the CLI edge rather than in indexed
-    content. This quotes such a name into readable escapes and bounds the count.
+    content. This quotes such a name into readable escapes.
 
-    **This is the error path only, and it is not what closes the class.** The
-    class -- every proposal-derived string that reaches a terminal raw -- is
-    closed at the *output sink*: ``cli.commands._render`` and ``_fail`` escape
-    control characters in every value they print, so a name that skips ``_names``
-    (the exit-0 success payload did, before round three) still cannot rewrite a
-    line. ``_names`` remains because quoting and a five-name cap are readability
-    a blanket control-escape does not give: 50,000 files produced a 600 KB error
-    string in 1.5 s before the cap.
+    **Control characters are the class the quoting closes, and they were never
+    the whole of it** (#360). A name is also where a credential sits: a
+    ``contentFile`` and a migration filename are both author-written, both reach
+    refusals that fire *before* the secret scan runs, and both were echoed at
+    full length under the shipped ``block`` default -- so the same string the
+    scan would have redacted to four characters was printed whole by the refusal
+    that beat it there. :func:`_bounded` is what settles both halves.
+
+    The terminal-rewriting half is still closed at the *output sink* as well:
+    ``cli.commands._render`` and ``_fail`` escape control characters in every
+    value they print, so a name that skips this helper (the exit-0 success
+    payload did, before #233's round three) still cannot rewrite a line.
+    """
+    head = _bounded(name, _MAX_NAME_CHARS)
+    if head is None:
+        return _REDACTED_NAME
+    return repr(head) if len(head) == len(name) else f"{head!r}{_TRUNCATED}"
+
+
+def _their_words(reported: object) -> str:
+    """Another component's own message, bounded and redacted, for a refusal.
+
+    A parser's and a validator's errors quote the input they refused, so they
+    carry author text as surely as a name does -- and one of the two does it
+    *before* the secret scan runs. Measured 2026-09-04 on this build:
+
+    * ``yaml.YAMLError`` in :func:`_parse_migration` prints the offending source
+      line through PyYAML's ``Mark.get_snippet``, which is bounded to a window
+      around the mark -- a 43-character token was cut, a 23-character ``sk-``
+      token at that family's floor was echoed **whole**, and this site runs on
+      the raw bytes before anything is scanned;
+    * ``jsonschema``'s message in
+      :meth:`ProposalService._refuse_a_document_the_schema_rejects` quotes the
+      offending instance in full and is bounded by nothing.
+
+    Rendered unquoted, unlike :func:`_one_name`: these are sentences a reader
+    finishes rather than names a reader copies, and ``repr`` on a multi-line
+    parser error is unreadable. Bounded at :data:`_MAX_REPORT_CHARS` and not at
+    the name bound, which cut two legitimate diagnoses mid-sentence when both
+    shared one number.
+    """
+    text = str(reported)
+    head = _bounded(text, _MAX_REPORT_CHARS)
+    if head is None:
+        return _REDACTED_REPORT
+    return head if len(head) == len(text) else f"{head}{_TRUNCATED}"
+
+
+def _rendered_scalar(value: object) -> str:
+    """One untrusted *parsed* scalar -- a raw YAML value -- for a refusal.
+
+    A string goes through :func:`_one_name`, which is where the credential and
+    the terminal-control questions are answered. Anything else has already been
+    proved renderable by :func:`~theurian.security.yaml_loading.is_bounded_scalar`
+    -- a bool, a number, ``None`` or a timestamp -- and none of those can spell a
+    credential, so ``repr`` is the whole of it.
+    """
+    return _one_name(value) if isinstance(value, str) else repr(value)
+
+
+def _names(names: Sequence[str]) -> str:
+    """Untrusted names, each bounded by :func:`_one_name`, and how many at most.
+
+    Two ceilings, and they answer different questions. This one bounds *how
+    many*: 50,000 files in a committed proposal directory produced a 600 KB error
+    string in 1.5 s before :data:`_MAX_NAMES_LISTED` capped the list.
+    :func:`_one_name` bounds *how much of each*, which the cap never did (#360).
 
     The remaining interpolations in this module are constrained rather than
-    quoted -- and the sink escapes any control that slips through regardless.
-    Measured on 2026-08-20:
+    routed here, and each is constrained by construction rather than by trust:
 
-    * a migration file's own name, at the two "already in .theurian/migrations/"
-      refusals and in :func:`_parse_migration`, and its inner ``id`` in
-      :func:`_require_filename_matches_id` -- each reached its message only after
-      matching ``_MIGRATION_FILE_NAME``, whose charset is a ULID, ASCII
-      lowercase, hyphens and ``.yaml``;
     * identifiers -- ``ProposalId``, ``MigrationId``, ``ItemId``, ``RevisionId``
-      -- validated on construction against anchored patterns;
-    * ``OSError`` text in :meth:`ProposalService._commit`: CPython formats the
-      filename with ``repr`` inside ``OSError.__str__``, so
-      ``[Errno 2] No such file or directory: '/tmp/x\\x1b[2K\\rfake'`` is what
-      arrives;
-    * ``yaml.YAMLError`` text in :func:`_parse_migration`, which does echo a
-      source line -- but PyYAML's reader refuses ``ESC`` outright ("unacceptable
-      character #x001b") and normalises ``CR`` as a line break, so neither
-      primitive that rewrites a drawn line survives the parse.
+      -- validated on construction against anchored patterns, and every message
+      built from one (``location.relative``, the searched-directory lists) with
+      them;
+    * ``OSError.strerror``, which is the OS's own category for a failure and
+      carries none of the path (:meth:`ProposalService._unreadable` records why
+      ``str(exc)`` is never used in its place);
+    * :func:`_evidence_failure_reason`, a fixed table keyed on the exception's
+      *type*;
+    * this module's own literals -- ``AUTHORED_IN_THEURIAN``,
+      ``MIGRATION_API_VERSION``, ``MAX_UPSERT_OPERATIONS``, the field names in
+      :meth:`ProposalRequest.__post_init__` -- and integer counts.
     """
-    shown = ", ".join(repr(name) for name in names[:_MAX_NAMES_LISTED])
+    shown = ", ".join(_one_name(name) for name in names[:_MAX_NAMES_LISTED])
     remaining = len(names) - _MAX_NAMES_LISTED
     return shown if remaining <= 0 else f"{shown}, and {remaining} more"
 
@@ -2859,13 +3007,18 @@ def _require_filename_matches_id(migration_file: Path, document: Mapping[str, ob
         # migration id is a ULID, so anything but a short scalar is a mistake and
         # is refused without being rendered -- the filename ULID is the diagnosis.
         raise ProposalError(
-            f"The migration file is named for {prefix} but its id is not a simple value; the "
-            "filename ULID must equal the migration id.",
+            f"The migration file is named for {_names([prefix])} but its id is not a simple "
+            "value; the filename ULID must equal the migration id.",
             remedy="Rename the file to <id>-<slug>.yaml, or correct the id inside it.",
         )
+    # Both halves are routed even though only one of them is reachable as author
+    # text today: `prefix` comes off a name `_require_migration` already matched
+    # against `_MIGRATION_FILE_NAME`, so it is a ULID. Routing it anyway is the
+    # uniform rule #360 asked for -- a per-site trust argument is what has to be
+    # re-derived by whoever next calls this function from somewhere else.
     raise ProposalError(
-        f"The migration file is named for {prefix} but its id is {inner!r}; the "
-        "filename ULID must equal the migration id.",
+        f"The migration file is named for {_names([prefix])} but its id is "
+        f"{_rendered_scalar(inner)}; the filename ULID must equal the migration id.",
         remedy="Rename the file to <id>-<slug>.yaml, or correct the id inside it.",
     )
 
@@ -2926,7 +3079,7 @@ def _parse_migration(data: bytes, path: Path) -> Mapping[str, object]:
         return load_yaml_mapping(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
         raise ProposalError(
-            f"{path.name} could not be read as a migration: {exc}",
+            f"{_names([path.name])} could not be read as a migration: {_their_words(exc)}",
             remedy="Fix the migration file in the proposal directory, then accept it again.",
         ) from exc
 
