@@ -344,6 +344,7 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "authorization.py",
         "forest_builder.py",
         "index_builder.py",
+        "index_secret_scan.py",
         "ingestion_service.py",
         "migration_alias_guards.py",
         "migration_body_guards.py",

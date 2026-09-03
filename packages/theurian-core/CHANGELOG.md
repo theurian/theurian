@@ -12,6 +12,50 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **`theurian index build` scans the served corpus for secrets (SEC-11's second
+  control)** ([#329](https://github.com/theurian/theurian/issues/329), ADR-0027
+  decision 3). SEC-11 shipped at the approval gate, so a body that entered the
+  corpus before that scanner existed — or through a migration written straight
+  into `.theurian/migrations/`, which never passes `propose accept` — was indexed
+  and served with no scan having seen it. The build now reads every body it
+  indexes, keyed on the exact `title + body` string the index chunks, so a
+  credential in a title is covered like one in the prose. It re-checks the whole
+  served corpus on every rebuild rather than a delta.
+
+  **It reports and never refuses, and that is a boundary rather than a
+  preference.** A landed secret is readable through `knowledge.search` and
+  `knowledge.get` the moment `theurian migrate apply` writes it — search degrades
+  to an unranked canonical substring scan and `get` reads the store by id — so a
+  build that refused to publish would deny ranking without un-disclosing
+  anything, and a project that had never built an index would be denied ranking
+  for ever. The same `security.secretScan` knob therefore selects signal severity
+  here rather than a gate: under **`block`** the index is published, `theurian
+  index build` exits **6** — distinct from 1, so a pipeline can tell "published
+  with a finding" from "nothing was published" — and `theurian doctor` reports
+  `indexSecretScan: degraded` with the supersede/retire remedy until a rebuild
+  comes back clean; under **`warn`** the finding is reported and the exit stays
+  0; under **`off`** nothing is read. Nothing is ever retired automatically: the
+  detector is best effort, and acting on a false positive would be silent data
+  loss.
+
+  What the report may carry is bounded. A finding names the item id, the position
+  in the served text, the detector family and at most four characters of the
+  match — the ceiling `SecretFinding` already refuses to be constructed past —
+  and the findings across every body share one `MAX_FINDINGS` budget, so a corpus
+  cannot choose how long the list is. The scan sits below the `may_surface` and
+  `may_disclose` filters, so the published count is a function of the rows the
+  build wrote and cannot carry the existence of one it withheld. `theurian
+  doctor` publishes only the status, the policy and the count: a `--report` is
+  pasted into public issues, and the build's own output is where items are named.
+
+  `theurian ingest` still runs no scan of its own and needs none — everything its
+  manifest names is read again by the build. Draft-time advisory scanning remains
+  owed ([#330](https://github.com/theurian/theurian/issues/330)). T-15 was
+  re-graded against the shipped control and stays **High**: the build detects,
+  and `migrate apply` is still where the content becomes readable.
+
 ### Fixed
 
 - **One commit whose message is not valid UTF-8 no longer costs the whole

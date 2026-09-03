@@ -51,10 +51,15 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Naming `security.secretScan` as in force left a second gap in the same
   paragraph: a scanning control announced, in a document about `theurian
   ingest`, with nothing saying where it runs. The paragraph now carries the
-  bound — the scan covers the approval gate only, and `theurian ingest` and
-  index building run no scan — worded verbatim from the schema's own
-  `security.secretScan` description (SEC-11,
-  [#198](https://github.com/theurian/theurian/issues/198)).
+  bound — the scan covers the approval gate and the index build, `theurian
+  ingest` runs no scan of its own, and `theurian index build` scans every body it
+  indexes and reports rather than refusing — worded verbatim from the schema's
+  own `security.secretScan` description (SEC-11,
+  [#198](https://github.com/theurian/theurian/issues/198),
+  [#329](https://github.com/theurian/theurian/issues/329)). The bound widened
+  before this entry shipped: #329 made the index build SEC-11's second control,
+  and both surfaces moved together because the clause is derived from the schema
+  and matched byte for byte in the document.
 
   **What holds the two surfaces together is four pins, and the reach is the
   bullet rather than the document.** Both surfaces are pinned *whole* — the
