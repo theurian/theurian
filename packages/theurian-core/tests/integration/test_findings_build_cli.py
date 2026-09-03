@@ -140,6 +140,63 @@ def _commit_at_raw_date(root: Path, subject: str, raw_committer_date: str) -> No
     _git(root, "commit", "--allow-empty", "-m", subject, env=env)
 
 
+def _git_bytes(root: Path, *args: str, stdin: bytes | None = None) -> bytes:
+    """``git *args`` with stdout left as raw bytes, under the same pinned config.
+
+    The text-returning :func:`_git` cannot serve the #496 fixture at either end: a
+    hand-built commit object is written by feeding raw bytes to ``git
+    hash-object``, and the premise that git kept them verbatim is read back where
+    decoding is the very thing under test.
+    """
+    result = subprocess.run(  # noqa: S603
+        ["git", *args],  # noqa: S607 - git resolved via PATH, args are test-controlled
+        cwd=root,
+        check=True,
+        capture_output=True,
+        input=stdin,
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        },
+    )
+    return result.stdout
+
+
+def _commit_with_raw_message(root: Path, message: bytes) -> str:
+    """Commit a message git stores **verbatim**, however invalid its bytes (#496).
+
+    Hand-builds the commit object and writes it with ``git hash-object -t commit -w
+    --stdin --literally``, then moves ``main`` onto it, so :func:`_publish` pushes
+    it like any other commit. The hand-build is load-bearing *here*: measured
+    2026-09-03 on git 2.47.1, ``git commit -F`` and ``git commit-tree`` in their
+    **default** form re-encode a non-UTF-8 message to valid UTF-8 (a lone ``0x80``
+    stored as ``0xc2 0x80``) and warn while doing it, so a plant built with either
+    would exercise a corpus with nothing wrong in it.
+
+    Porcelain is not uniformly safe, though, which is why the claim is scoped to
+    the default form: ``git -c i18n.commitEncoding=<enc> commit -F`` stores the
+    bytes verbatim and silently, and a *mis*-declared encoding reaches this same
+    containment (#496 R1-3). That route is driven in
+    ``test_git_trailer_source.py``; this file keeps the hand-built plant, which is
+    the only way to reach a commit carrying no ``encoding`` header at all.
+    """
+    tree = _git(root, "rev-parse", "HEAD^{tree}").strip()
+    parent = _git(root, "rev-parse", "HEAD").strip()
+    # 1769904000 == 2026-02-01T00:00:00Z, dated after the valid siblings above it.
+    who = "Tester <tester@example.com> 1769904000 +0000"
+    payload = f"tree {tree}\nparent {parent}\nauthor {who}\ncommitter {who}\n\n".encode() + message
+    sha = (
+        _git_bytes(
+            root, "hash-object", "-t", "commit", "-w", "--stdin", "--literally", stdin=payload
+        )
+        .decode("utf-8")
+        .strip()
+    )
+    _git(root, "update-ref", "refs/heads/main", sha)
+    return sha
+
+
 def _publish(root: Path) -> None:
     """Push ``main`` and refresh ``refs/remotes/origin/main``, the one ref the source reads."""
     _git(root, "push", "origin", "main")
@@ -802,6 +859,89 @@ def test_a_max_year_negative_offset_committer_date_is_a_graded_refusal_not_a_cra
     assert payload["findings"] == 1
     # The crafted date-only commit is accounted, not lost, and did not abort.
     assert payload["rejected"] == 1
+
+
+#: The #496 plant, as a real public commit: a message git stores verbatim carrying
+#: a lone ``0x80``. It holds a well-formed trailer too, so the assertions can say
+#: the trailer inside an unreadable message is skipped rather than parsed out of a
+#: partial decode.
+_UNDECODABLE_MESSAGE: Final = (
+    b"chore: a hand-built commit with a raw \x80 byte\n\n"
+    b"Review-Finding: adversarial CRITICAL \xe2\x80\x94 unreadable, never accepted\n"
+)
+
+
+def test_a_non_utf8_commit_message_is_counted_as_rejected_not_a_bricked_build(
+    project: Path,
+) -> None:
+    """#496 (real CLI): one commit git stored as non-UTF-8 bytes must not brick the build.
+
+    git validates nothing about a commit message, so a public commit can carry
+    bytes that are not UTF-8 (a hand-built object, an older git, an
+    ``encoding``-header path). The source decoded the whole ``git log`` stdout in
+    one call, so such a commit raised ``GitHistoryUnavailableError`` and reached
+    ``findings build --json`` as exit 1 with a remedy naming a ``git fetch`` that
+    cannot help -- the whole corpus lost to one commit, which ADR-0029 decision 3
+    forbids, and the valid finding beside it lost with it.
+
+    The build must succeed and *account* the offending commit: one finding, one
+    rejection. The count is the operator-facing signal that something on history
+    could not be read, which is why the loss must never be silent -- and the report
+    is where an operator sees it.
+
+    The premise is asserted first because the plant is easy to build wrong:
+    measured 2026-09-03 on git 2.47.1, ``git commit -F`` and ``git commit-tree`` in
+    their default form re-encode the message to valid UTF-8, so a fixture using
+    either would pass here over a corpus with nothing wrong in it.
+    """
+    _commit(project, "fix: a valid one (#1)", "Review-Finding: security HIGH — a valid finding")
+    undecodable = _commit_with_raw_message(project, _UNDECODABLE_MESSAGE)
+    _publish(project)
+    with pytest.raises(UnicodeDecodeError):  # the premise: git kept the raw byte
+        _git_bytes(project, "log", "-1", "--format=format:%B", undecodable).decode("utf-8")
+
+    code, payload = _invoke("findings", "build")
+
+    assert code == 0, payload
+    assert payload["built"] is True
+    assert payload["findings"] == 1
+    assert payload["rejected"] == 1
+    dump = SqliteReviewFindingStore(ProjectPaths.of(project).findings_for("local")).dump()
+    assert [rejection.commit_sha for rejection in dump.rejected] == [undecodable]
+    assert "not valid UTF-8" in dump.rejected[0].reason
+    assert "�" in dump.rejected[0].raw_line  # replacement-decoded, never the raw byte
+
+
+def test_the_contained_commits_bytes_do_not_reach_a_review_findings_response(
+    servable_project: ProjectRegistry, project: Path
+) -> None:
+    """#496's containment must not become a new way for rejected bytes to be served.
+
+    ``rejected_trailers`` is written and dumped but never selected on the serving
+    path, so a rejected trailer's author-controlled bytes reach no response. That
+    invariant is pinned over the *grammar* rejections it was written for; this
+    drives it over the shape #496 adds -- a record-level rejection whose
+    ``raw_line`` is an excerpt of a commit message rather than a trailer line.
+
+    The response is asserted to be a real one first (the valid finding is served),
+    or "the excerpt is absent" would be true of any refusal.
+    """
+    _commit(project, "fix: a valid one (#1)", "Review-Finding: security HIGH — a valid finding")
+    _commit_with_raw_message(project, _UNDECODABLE_MESSAGE)
+    _publish(project)
+    code, payload = _invoke("findings", "build")
+    assert code == 0, payload
+    assert payload["rejected"] == 1, (
+        f"premise: the contained commit must be in the store: {payload}"
+    )
+
+    served = json.dumps(_call_findings(servable_project), ensure_ascii=False)
+
+    assert "a valid finding" in served, f"premise: a real response, not a refusal: {served}"
+    assert "hand-built commit" not in served  # the excerpt's own text
+    assert "unreadable, never accepted" not in served  # the trailer inside it
+    assert "�" not in served
+    assert "not valid UTF-8" not in served  # nor the rejection's reason
 
 
 def test_dump_raises_on_a_half_built_store_instead_of_reading_it_empty(tmp_path: Path) -> None:

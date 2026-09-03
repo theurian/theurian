@@ -1242,17 +1242,62 @@ When the source adapter frames parsed records for a batch read, it uses **`%x00`
 (`0x1f`). This protects the FR-S3 provenance anchor (decision 1): the framing
 bytes must be ones a commit author **cannot** place in a commit message.
 
-**Measured justification.** git **rejects** a NUL byte in a commit message
-(`error: a NUL byte in commit log message not allowed`, verified 2026-08-26) but
-**permits** RS (`0x1e`) and US (`0x1f`) in commit bodies (round-trip verified: a
-commit authored with those bytes commits and reads back unchanged). The prior
-claim that "both are C0 control characters that do not occur in authored commit
-text" is therefore **false**: a `\x1e`/`\x1f` framing is **forgeable** — a commit
-author can embed those bytes to inject a fabricated record carrying an
-attacker-chosen commit sha, date, subject, and PR number, forging the FR-S3
-provenance anchor (decision 1). NUL is the one byte git forbids in a commit
-message, so `%x00` framing with `git log -z` is the only framing an author cannot
-forge from inside a commit body.
+**Measured justification.** RS (`0x1e`) and US (`0x1f`) are **permitted** in a
+commit body (round-trip verified 2026-08-26: a commit authored with those bytes
+commits and reads back unchanged). The prior claim that "both are C0 control
+characters that do not occur in authored commit text" is therefore **false**: a
+`\x1e`/`\x1f` framing is **forgeable** — a commit author can embed those bytes to
+inject a fabricated record carrying an attacker-chosen commit sha, date, subject,
+and PR number, forging the FR-S3 provenance anchor (decision 1).
+
+NUL is unforgeable in its place, but **not because the byte cannot exist in a
+commit object**. That was the justification recorded here on 2026-08-26, and it
+was measured against porcelain alone: `git hash-object -t commit -w --stdin
+--literally` writes such an object without complaint (#496 round 1). Three
+separate grounds hold the framing up instead, each measured 2026-09-03 on git
+2.47.1:
+
+1. **Porcelain refuses it.** Both `git commit -F` and `git commit-tree` fail with
+   `error: a NUL byte in commit log message not allowed` (exit 128 and 1), so no
+   ordinary authoring route places one.
+2. **`git log --format=%B` truncates at it** — and this is what actually protects
+   the framing, because it holds however the object was written. A hand-built
+   object whose message carries a NUL keeps it verbatim in the object store
+   (`git cat-file commit` shows the bytes past it), yet `%B` for that same commit
+   emits only the bytes *ahead* of it. The figures are the pinning fixture's own,
+   so a reader can re-derive them by running it: the plant in
+   `test_a_nul_in_a_commit_object_truncates_the_message_git_emits` is a 114-byte
+   message whose NUL sits at offset 38, and `%B` emits exactly those 38 bytes.
+   The `-z` stream still splits into exactly `3n` tokens, so no author-placed byte
+   can reshape the partition. The framing is safe over **what git emits**, not over
+   what the object store can hold.
+3. **fsck posture bounds how far such an object travels**, and the two ends
+   differ:
+
+   | Path taken by a commit whose message holds a NUL | Measured outcome |
+   | :-- | :-- |
+   | `git commit -F` / `git commit-tree` | refused, `a NUL byte in commit log message not allowed` |
+   | `git hash-object -t commit -w --stdin --literally` | written, byte-verbatim |
+   | `git push` to a default bare origin | accepted |
+   | `git push` to a `receive.fsckObjects=true` origin (GitHub's posture) | **rejected**: `error: object …: nulInCommit: NUL byte in the commit object body` |
+   | `git clone` with `transfer.fsckObjects` / `fetch.fsckObjects` true | accepted — `nulInCommit` is a warning here, and the object arrives verbatim |
+   | `git log --format=%B` of it | message truncated at the NUL |
+
+So `%x00` framing with `git log -z` remains the framing an author cannot forge
+from inside a commit body — the property decision 1 rests on — while the *reach*
+of a hand-built NUL object is the table above rather than "impossible".
+
+**The recorded residual.** Truncation is loss, not corruption: a column-0
+`Review-Finding:` line sitting *behind* an object-level NUL never reaches the
+adapter at all, so it is neither accepted nor rejected and the build's `rejected`
+count does not move. That is named as the third population bound on `FindingLoad`
+— the load's population is what git emits, not what the object store holds — and
+pinned by `test_a_nul_in_a_commit_object_truncates_the_message_git_emits`. A
+second detection channel (re-reading every commit with `cat-file` and comparing
+against `%B`) is **deliberately not added**: it doubles the object reads of every
+build to detect an object that a `receive.fsckObjects` origin rejects at push,
+and the bound is stated instead. A repository whose origin does **not** run
+receive-side fsck carries that residual knowingly.
 
 ### D5 — `pullRequest` is derived `None` in this slice, and the subject heuristic is deleted
 

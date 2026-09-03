@@ -24,6 +24,7 @@ import subprocess
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Final
 
 import pytest
 
@@ -33,11 +34,12 @@ from theurian.domain.review_finding import (
     ReviewerToken,
 )
 from theurian.infrastructure.git.trailer_source import (
+    _FIELDS_PER_RECORD,
     _NUL,
+    _UNDECODABLE_EXCERPT_BYTES,
     GitHistoryUnavailableError,
     GitOutputFramingError,
     GitTrailerFindingSource,
-    _decode_git_output,
     _parse_committer_date,
     _split_records,
 )
@@ -55,18 +57,59 @@ FROZEN_SHA = "4c4a78475dc73d4689637fa995da76c4732c0511"
 # --- git fixture helpers ---------------------------------------------------
 
 
-def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> str:
+def _child_env(env: dict[str, str] | None, *, hermetic: bool) -> dict[str, str]:
+    """The environment one fixture ``git`` runs under.
+
+    **A hermetic call ignores the developer's own git configuration**, not only
+    the parts that set a commit identity: ``GIT_CONFIG_GLOBAL`` and
+    ``GIT_CONFIG_SYSTEM`` are pinned to ``os.devnull``, applied *after* ``env`` is
+    merged so a caller that forgets cannot override it. ``init`` and ``clone``
+    read global config too, not only ``commit`` -- a ``core.hooksPath`` or a clone
+    template would otherwise run under the developer's real settings, and a
+    ``commit.gpgsign = true`` makes this file's fixture commits sign with their
+    live key: a passphrase or hardware-token prompt with no test invoking one.
+    Measured 2026-09-03 while building the #496 plants -- a fixture-shaped ``git
+    commit -F`` without this pin produced a signed commit on this machine.
+    ``test_findings_build_cli.py`` records the same finding from its own round-two
+    review and pins the same two variables for the same reason.
+
+    **``hermetic=False`` is for a read against the *real* checkout**, and the
+    distinction is load-bearing rather than tidiness: ``safe.directory`` lives in
+    global config, and a checkout owned by another user -- the offline CI job runs
+    as root -- is refused without it. Pinning it away there would turn the live
+    canary into a silent skip (its ``origin/main`` probe answering "absent") or a
+    hard error, which is a guard that stops guarding. Only the two calls that
+    address the checkout these tests live in take ``hermetic=False``.
+
+    Other modules pass ``-c safe.directory=<root>`` for the same reason, and the
+    count is stated with the key that reproduces it (measured 2026-09-03):
+    ``git grep -nF 'f"safe.directory=' -- packages tools
+    ':!*test_git_trailer_source.py'`` -> **3**:
+    ``tests/unit/test_dogfood_corpus_governance.py``,
+    ``tests/integration/test_root_corpus_applies.py``, and
+    ``tools/corpus_drift.py`` -- the last outside this suite. The exclusion is what
+    keeps the key reproducing its own number, since this sentence quotes it. The
+    earlier "five other modules" counted files that merely *mention*
+    ``safe.directory`` in prose, which is not the population the sentence is about.
+    """
+    base = env if env is not None else dict(os.environ)
+    if not hermetic:
+        return base
+    return {**base, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+
+def _git(root: Path, *args: str, env: dict[str, str] | None = None, hermetic: bool = True) -> str:
     result = subprocess.run(  # noqa: S603
         ["git", *args],  # noqa: S607 - git resolved via PATH, args are test-controlled
         cwd=root,
         check=True,
         capture_output=True,
-        env=env,
+        env=_child_env(env, hermetic=hermetic),
     )
     return result.stdout.decode("utf-8")
 
 
-def _git_ok(root: Path, *args: str) -> bool:
+def _git_ok(root: Path, *args: str, hermetic: bool = True) -> bool:
     """True when ``git *args`` exits zero -- for a ref/object existence probe."""
     return (
         subprocess.run(  # noqa: S603
@@ -74,6 +117,7 @@ def _git_ok(root: Path, *args: str) -> bool:
             cwd=root,
             check=False,
             capture_output=True,
+            env=_child_env(None, hermetic=hermetic),
         ).returncode
         == 0
     )
@@ -137,12 +181,142 @@ def _commit_split_date(
 
 
 def _commit_body_file(clone: Path, body_bytes: bytes, when: str = "2026-03-01T12:00:00") -> str:
-    """Commit a message authored as raw bytes via ``-F`` (for RS/US byte bodies)."""
+    """Commit a message authored as raw bytes via ``-F`` (for RS/US byte bodies).
+
+    "Raw" reaches as far as bytes git will *keep* **under this helper's default
+    config**: measured 2026-09-03 on git 2.47.1, a plain ``-F`` re-encodes a
+    message that is not valid UTF-8 (a lone ``0x80`` stored as ``0xc2 0x80``) and
+    warns. The RS/US and lone-CR bodies below are ASCII, so they survive. A
+    non-UTF-8 plant needs either :func:`_commit_with_raw_message` (no ``encoding``
+    header at all) or :func:`_commit_under_declared_encoding`, which reaches the
+    same containment through ordinary porcelain by declaring an encoding the bytes
+    do not match.
+    """
     message_file = clone / "_msg.bin"
     message_file.write_bytes(body_bytes)
     _git(clone, "commit", "--allow-empty", "-F", str(message_file), env=_date_env(when))
     message_file.unlink()
     return _git(clone, "rev-parse", "HEAD").strip()
+
+
+def _git_bytes(
+    root: Path, *args: str, stdin: bytes | None = None, env: dict[str, str] | None = None
+) -> bytes:
+    """``git *args`` with its stdout left as raw bytes, optionally fed on stdin.
+
+    The text-returning :func:`_git` cannot serve the #496 fixtures at any end: a
+    hand-built commit object is written by feeding its raw bytes to ``git
+    hash-object``; the premise that git kept those bytes verbatim is read back with
+    ``cat-file``/``log``, where decoding is the very thing under test; and ``git
+    commit`` **echoes the subject it just wrote**, so committing a non-UTF-8 message
+    through :func:`_git` raises in the fixture rather than in the code under test.
+
+    Always hermetic, with no opt-out: every caller addresses a repository this file
+    built, so the live-checkout exemption :func:`_child_env` documents has nobody
+    to serve here. ``env`` supplies an identity or a date on top of that pinning,
+    never instead of it.
+    """
+    result = subprocess.run(  # noqa: S603
+        ["git", *args],  # noqa: S607 - git resolved via PATH, args are test-controlled
+        cwd=root,
+        check=True,
+        capture_output=True,
+        input=stdin,
+        env=_child_env(env, hermetic=True),
+    )
+    return result.stdout
+
+
+#: The committer instant the hand-built commits below carry: 2026-02-01T00:00:00Z,
+#: between the ``2026-01-01``/``2026-03-01`` siblings the tests commit around them,
+#: so the accepted order is chronological rather than a sha tie-break. Written as an
+#: epoch because a hand-built object carries git's raw ``<epoch> <±hhmm>`` stamp.
+_RAW_COMMIT_EPOCH: Final = 1769904000
+
+
+def _commit_with_raw_message(clone: Path, message: bytes, *, epoch: int = _RAW_COMMIT_EPOCH) -> str:
+    """Commit a message git stores **verbatim**, however invalid its bytes (#496).
+
+    Hand-builds the commit object and writes it with ``git hash-object -t commit -w
+    --stdin --literally``, then moves ``refs/heads/main`` onto it, so the caller's
+    usual :func:`_publish` pushes it like any other commit (measured 2026-09-03: a
+    non-UTF-8-message object pushes and fetches without complaint).
+
+    **The hand-build buys the no-``encoding``-header case, not the only case**
+    (#496 R1-3). Measured on git 2.47.1 (2026-09-03), the *default* ``git commit
+    -F`` and ``git commit-tree`` RE-ENCODE a message that is not UTF-8 -- a lone
+    ``0x80`` stored as ``0xc2 0x80`` -- and warn while doing it, so
+    :func:`_commit_body_file` would produce a commit whose message is *valid* UTF-8
+    and a test that proves nothing. That is not true of *every* porcelain route:
+    ``git -c i18n.commitEncoding=<enc> commit -F`` stores the bytes verbatim and
+    silently, which :func:`_commit_under_declared_encoding` uses to drive the same
+    containment from the other end. This helper stays because it is the only way to
+    plant a commit carrying **no** ``encoding`` header -- the shape an ``%B``
+    conversion has no chance to rescue.
+
+    Each caller still asserts the premise against the object git actually stored,
+    because a fixture that quietly stops exercising the case is exactly what this
+    helper exists to prevent.
+    """
+    tree = _git(clone, "rev-parse", "HEAD^{tree}").strip()
+    parent = _git(clone, "rev-parse", "HEAD").strip()
+    who = f"Tester <tester@example.com> {epoch} +0000"
+    payload = f"tree {tree}\nparent {parent}\nauthor {who}\ncommitter {who}\n\n".encode() + message
+    sha = (
+        _git_bytes(
+            clone, "hash-object", "-t", "commit", "-w", "--stdin", "--literally", stdin=payload
+        )
+        .decode("utf-8")
+        .strip()
+    )
+    _git(clone, "update-ref", "refs/heads/main", sha)
+    return sha
+
+
+def _commit_under_declared_encoding(
+    clone: Path, message: bytes, *, encoding: str, when: str = "2026-02-01T00:00:00"
+) -> str:
+    """Commit raw bytes through **ordinary porcelain**, under a declared encoding.
+
+    ``git -c i18n.commitEncoding=<enc> commit -F`` is the second route to a public
+    commit whose ``%B`` is not UTF-8, and it is the realistic one (#496 R1-3).
+    Measured 2026-09-03 on git 2.47.1, and each half matters:
+
+    - it stores the message **verbatim** under an ``encoding <enc>`` header and
+      writes **nothing to stderr** -- unlike the default ``-F``, which re-encodes
+      and warns, so nothing tells the author their bytes went in raw;
+    - on the way out git converts from that header. A declaration that *matches*
+      the bytes round-trips to UTF-8 and never reaches this adapter's containment;
+      a declaration that does **not** match fails the conversion and ``%B`` hands
+      back the stored bytes.
+
+    So the caller must pass bytes the declared encoding cannot represent -- the
+    ordinary shape of a Shift-JIS project meeting a UTF-8 contributor. Callers
+    assert that premise against what ``%B`` actually emits, exactly as the
+    hand-built plants do.
+    """
+    message_file = clone / "_declared_msg.bin"
+    message_file.write_bytes(message)
+    # `_git_bytes`, not `_git`: `git commit` echoes the subject it just wrote, so a
+    # text-decoding call would raise on the fixture's own bytes before the adapter
+    # ever saw them.
+    _git_bytes(
+        clone,
+        "-c",
+        f"i18n.commitEncoding={encoding}",
+        "commit",
+        "--allow-empty",
+        "-F",
+        str(message_file),
+        env=_date_env(when),
+    )
+    message_file.unlink()
+    return _git(clone, "rev-parse", "HEAD").strip()
+
+
+def _stored_message_of(clone: Path, sha: str) -> bytes:
+    """The raw ``%B`` bytes git emits for one commit -- the fixture's own premise."""
+    return _git_bytes(clone, "log", "-1", "--format=format:%B", sha)
 
 
 def _publish(clone: Path) -> None:
@@ -198,7 +372,13 @@ def _real_object_store() -> Path | None:
 
 
 def _origin_main_present(repo: Path) -> bool:
-    return _git_ok(repo, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main")
+    # One of the two calls that address the *real* checkout, so it keeps the
+    # developer's global config: without it a `safe.directory` refusal on a
+    # differently-owned checkout answers "no origin/main" and the live canary
+    # skips itself (see `_child_env`).
+    return _git_ok(
+        repo, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main", hermetic=False
+    )
 
 
 # --- AC-3 / D7: the source reads only public refs/remotes/origin/main -------
@@ -391,11 +571,19 @@ def test_git_config_parameters_is_stripped_so_the_output_stays_utf8(
 
     ``GIT_CONFIG_PARAMETERS`` injects config as if by ``-c`` -- a vector the
     ``GIT_CONFIG{,_COUNT,_GLOBAL,_SYSTEM}`` strip did not cover. An inherited
-    ``i18n.logOutputEncoding=UTF-16`` makes ``git log`` emit UTF-16, so the
-    adapter's ``stdout.decode("utf-8")`` would raise an uncaught
-    ``UnicodeDecodeError`` and crash the whole load. The adapter now strips
-    ``GIT_CONFIG_PARAMETERS`` with the rest of the ``GIT_*`` overrides, so the
-    finding reads cleanly whatever config the ambient environment tried to inject.
+    ``i18n.logOutputEncoding=UTF-16`` makes ``git log`` emit UTF-16, and a load
+    that reads such a stream is refused whole -- as a :class:`GitOutputFramingError`
+    either way, but **by whichever of its two arms the byte count lands on** (#496
+    R1-2). UTF-16 puts a NUL beside every ASCII character, so whether the stream
+    still splits into a multiple of three tokens is a function of the emitted
+    stream's *length* rather than of the encoding: it moves with the commit count
+    **and with the message text**, and both arms are reachable. No proportion is
+    stated here on purpose -- two measured grids differing only in their message
+    text gave different splits, so a ratio would be a property of the fixture's
+    prose and not of UTF-16. The two tests below drive one arm each. The adapter
+    strips ``GIT_CONFIG_PARAMETERS`` with the rest of the ``GIT_*`` overrides, so
+    the finding reads cleanly whatever config the ambient environment tried to
+    inject, and either refusal stays the backstop rather than the behaviour.
     """
     _origin, clone = _origin_and_clone(tmp_path)
     _commit(clone, "fix: utf8 (#1)", "Review-Finding: security HIGH — a public finding")
@@ -410,19 +598,120 @@ def test_git_config_parameters_is_stripped_so_the_output_stays_utf8(
     assert finding.reviewer is ReviewerToken.SECURITY
 
 
-def test_non_utf8_git_output_is_a_history_error_not_an_uncaught_decode(tmp_path: Path) -> None:
-    """Invalid UTF-8 from ``git`` becomes a typed error with a remedy, not a raw crash.
+def test_a_utf16_git_log_stream_is_a_typed_framing_error_not_an_uncaught_decode(
+    tmp_path: Path,
+) -> None:
+    """UTF-16 output from ``git`` is a typed error with a remedy, not a raw crash.
 
     Defense in depth for the decode: stripping ``GIT_CONFIG_PARAMETERS`` closes the
-    known UTF-16 vector, but any residual non-UTF-8 output (a repo-level
-    ``i18n.logOutputEncoding``, an unconvertible commit ``encoding`` header) must
-    still degrade to a :class:`GitHistoryUnavailableError` carrying a remedy, never
-    an uncaught ``UnicodeDecodeError``. This also removes the stdout/stderr decode
-    asymmetry -- stderr already decodes with ``errors="replace"``.
+    known ``i18n.logOutputEncoding=UTF-16`` vector, but any residual whole-stream
+    encoding change must still degrade to a ``TheurianError`` carrying a remedy,
+    never an uncaught ``UnicodeDecodeError``.
+
+    **Which typed error moved with #496, and the reason is not cosmetic.** This
+    used to be a :class:`GitHistoryUnavailableError` whose remedy named ``git
+    fetch``, because the adapter decoded the whole stdout in one call and any
+    failure there meant "no readable history". Since the stream is framed *before*
+    it is decoded, both arms of :class:`GitOutputFramingError` answer instead, and
+    the remedy names the installed git version rather than a fetch.
+
+    **Which arm fires here, and why that is not "the UTF-16 guard"** (#496 R1-2).
+    The input below is a synthetic seven-byte literal: it splits into four tokens
+    -- not a multiple of three -- so the **field-count** guard raises, and the
+    four-token premise is asserted so this cannot pass because some other guard
+    happened to fire. A *real* UTF-16 stream is not reliably that shape: whether it
+    still frames as whole records depends on the emitted stream's byte count, which
+    the commit count and the message text both move, and when it does frame the
+    **metadata decode** is what refuses it. That arm is driven end-to-end by
+    ``test_a_real_utf16_log_stream_is_refused_by_the_metadata_decode``. Neither
+    test alone covers a UTF-16 stream; what both pin is that either arm is a typed
+    error with the same remedy.
     """
-    with pytest.raises(GitHistoryUnavailableError) as caught:
-        _decode_git_output(b"\xff\xfe\x00R\x00e\x00v", tmp_path)
+    utf16 = b"\xff\xfe\x00R\x00e\x00v"
+    assert len(utf16.split(_NUL)) == 4, "the premise: UTF-16 output carries NUL bytes of its own"
+
+    with pytest.raises(GitOutputFramingError) as caught:
+        _split_records(utf16, tmp_path)
     assert caught.value.remedy  # a non-empty remedy, not a bare stack trace
+    assert "git version" in caught.value.remedy
+
+
+#: How many commits the search below may add before giving up. Justified by **this
+#: fixture's own message shape**, not by a rule about UTF-16 in general: replaying
+#: the search's exact walk (2026-09-03, git 2.47.1) hits ``3n`` framing at ``n=2``,
+#: and no run of non-framing counts within ``1..12`` exceeds two. A wider grid does
+#: show longer runs for *other* message texts, which is exactly why the limit is
+#: tied to the walk it bounds. Nothing about correctness rests on the number: the
+#: search **fails hard** when it finds nothing, so a message shape that outran the
+#: limit would redden this test rather than quietly skip the arm it exists to pin.
+_UTF16_FRAMING_SEARCH_LIMIT: Final = 12
+
+
+def _utf16_repo_whose_stream_frames_as_whole_records(
+    tmp_path: Path,
+) -> tuple[GitTrailerFindingSource, bytes]:
+    """A published repo whose real UTF-16 ``git log`` stream splits into ``3n`` tokens.
+
+    **The count is searched for, not assumed** (#496 R1-2). Whether a UTF-16 stream
+    still frames as whole records is a function of its byte count rather than of the
+    encoding -- UTF-16 puts a NUL beside every ASCII character, so the token count
+    tracks the message text, and two grids differing only in that text disagree on
+    which commit counts frame. A fixture pinned to one count would therefore stop
+    exercising the metadata-decode arm the first time a git version, or an edit to
+    the subject below, shifted a byte -- and would pass through the field-count arm
+    instead while its name still said "decode". So commits are added until the
+    stream frames (for the shape written here, that is ``n=2``), and the search
+    failing is a hard failure rather than a skip.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    tried: list[int] = []
+    for n in range(1, _UTF16_FRAMING_SEARCH_LIMIT + 1):
+        _commit(clone, f"fix: a thing (#{n})", f"Review-Finding: security HIGH — finding {n}")
+        _publish(clone)
+        _git(clone, "config", "i18n.logOutputEncoding", "UTF-16")
+        stdout = GitTrailerFindingSource(clone)._git_log()
+        _git(clone, "config", "--unset", "i18n.logOutputEncoding")
+        tried.append(len(stdout.split(_NUL)))
+        if tried[-1] % _FIELDS_PER_RECORD == 0:
+            _git(clone, "config", "i18n.logOutputEncoding", "UTF-16")
+            return GitTrailerFindingSource(clone), stdout
+    pytest.fail(
+        f"no commit count up to {_UTF16_FRAMING_SEARCH_LIMIT} produced a UTF-16 stream "
+        f"framing as a multiple of {_FIELDS_PER_RECORD} tokens (token counts: {tried}); "
+        "the metadata-decode arm cannot be driven end-to-end as written"
+    )
+
+
+def test_a_real_utf16_log_stream_is_refused_by_the_metadata_decode(tmp_path: Path) -> None:
+    """A real UTF-16 stream that frames cleanly is refused by the decode (#496 R1-2).
+
+    The synthetic literal above is short enough to break the field count; a real
+    stream often is not. ``i18n.logOutputEncoding=UTF-16`` in the repository's own
+    config reaches the adapter's child ``git`` -- only the ``GIT_*`` *environment*
+    overrides are stripped -- and when the resulting stream splits into whole
+    records the field-count guard passes it, leaving ``%H`` (a byte-order mark and
+    UTF-16 code units) as the thing that cannot decode.
+
+    This is the arm the branch's two docstrings originally attributed to the
+    field-count guard, and it had no end-to-end test at all. The assertion names
+    the field, not just the remedy, so the two arms of
+    :class:`GitOutputFramingError` stay distinguishable; the remedy assertions hold
+    the shared property -- a typed error naming the installed git version, never an
+    uncaught ``UnicodeDecodeError`` and never the ``git fetch`` remedy of a history
+    that is perfectly reachable.
+    """
+    source, stdout = _utf16_repo_whose_stream_frames_as_whole_records(tmp_path)
+    assert stdout.startswith((b"\xff\xfe", b"\xfe\xff")), (
+        f"the premise: git must really emit UTF-16 here, got {stdout[:16]!r}"
+    )
+
+    with pytest.raises(GitOutputFramingError) as caught:
+        source.load_findings()
+
+    assert "commit sha (%H)" in str(caught.value)
+    assert "not valid UTF-8" in str(caught.value)
+    assert "git version" in caught.value.remedy
+    assert "fetch" not in caught.value.remedy
 
 
 # --- D4: NUL framing, not forgeable RS/US ----------------------------------
@@ -433,9 +722,11 @@ def test_rs_and_us_bytes_in_a_body_do_not_fabricate_a_record(tmp_path: Path) -> 
 
     An earlier design framed ``git log`` records with RS/US, which git *permits* in
     a commit body -- so an author could embed them to inject a fabricated finding
-    carrying an attacker-chosen sha and date. The adapter frames with NUL, which
-    git forbids in a message, so a body full of RS/US yields exactly the one real
-    trailer, anchored to the real 40-hex sha, and nothing else.
+    carrying an attacker-chosen sha and date. The adapter frames with NUL, which no
+    commit content can place in a field -- ``%B`` truncates a message at its first
+    NUL rather than emitting it (D4, and the test below) -- so a body full of RS/US
+    yields exactly the one real trailer, anchored to the real 40-hex sha, and
+    nothing else.
     """
     _origin, clone = _origin_and_clone(tmp_path)
     body = (
@@ -451,6 +742,95 @@ def test_rs_and_us_bytes_in_a_body_do_not_fabricate_a_record(tmp_path: Path) -> 
     assert load.accepted[0].commit_sha == sha
     assert re.fullmatch(r"[0-9a-f]{40}", load.accepted[0].commit_sha)
     assert load.rejected == ()
+
+
+#: The plant for the bound below: a commit message carrying a NUL, with a
+#: well-formed keyed line **behind** it. Hand-built, because every porcelain route
+#: refuses a NUL outright -- ``error: a NUL byte in commit log message not
+#: allowed``, measured 2026-09-03 on git 2.47.1 for ``commit -F`` (exit 128),
+#: ``commit-tree`` (exit 1), and the declared-encoding form
+#: :func:`_commit_under_declared_encoding` uses, which the check precedes -- while
+#: ``hash-object --literally`` writes it verbatim.
+_NUL_IN_MESSAGE: Final = (
+    b"chore: a hand-built commit with a NUL \x00 byte\n\n"
+    b"Review-Finding: adversarial CRITICAL \xe2\x80\x94 behind the NUL, never read\n"
+)
+
+
+def test_a_nul_in_a_commit_object_truncates_the_message_git_emits(tmp_path: Path) -> None:
+    """D4's framing survives an object-level NUL, and the cost is the recorded bound.
+
+    **What the framing rests on, measured** (#496 R1-1). D4 justified NUL framing
+    by "git rejects a NUL byte in a commit message"; that holds for porcelain and
+    not for the object store, so this pins the ground that does hold for both:
+    ``git log --format=%B`` **truncates** the message at the first NUL. The record
+    partition therefore stays exact -- the adapter's own ``-z`` stream is still a
+    multiple of :data:`_FIELDS_PER_RECORD` tokens -- and ``%H``/``%cI`` arrive
+    untouched, so nothing an author writes into an object can reshape a record or
+    forge a provenance anchor.
+
+    **The cost is stated as the bound, not discovered as a bug.** The keyed line
+    sits behind the NUL, so git never emits it and it reaches neither tuple: not
+    accepted, and not rejected either. That is
+    :class:`~theurian.domain.review_finding.FindingLoad`'s **third** population
+    bound -- the load's population is what git emits, not what the object store
+    holds -- and ADR-0029 D4 records why it is bounded rather than detected by a
+    second ``cat-file`` read of every commit (porcelain cannot write such a commit,
+    and a ``receive.fsckObjects`` origin refuses to take one). This test is what
+    that bound is pinned by: if a future git stopped truncating, the framing
+    assertion below is what would redden.
+
+    The plant is byte-verified at the object store first, because the whole
+    measurement is about the difference between what git *stores* and what it
+    *emits* -- a plant that lost the NUL on the way in would make every assertion
+    below vacuous.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(
+        clone,
+        "fix: valid one (#1)",
+        "Review-Finding: security HIGH — first valid",
+        when="2026-01-01T00:00:00",
+    )
+    nul_sha = _commit_with_raw_message(clone, _NUL_IN_MESSAGE)
+    _commit(
+        clone,
+        "fix: valid two (#2)",
+        "Review-Finding: adversarial LOW — second valid",
+        when="2026-03-01T00:00:00",
+    )
+    _publish(clone)
+
+    # The premise, at the object store: git kept the NUL and every byte behind it.
+    stored_object = _git_bytes(clone, "cat-file", "commit", nul_sha)
+    assert stored_object.endswith(_NUL_IN_MESSAGE), "the plant lost its NUL on the way in"
+    assert b"behind the NUL, never read" in stored_object
+
+    source = GitTrailerFindingSource(clone)
+    stdout = source._git_log()
+    load = source.load_findings()
+
+    # 1. The framing holds: the emitted stream still partitions into whole records.
+    assert len(stdout.split(_NUL)) % _FIELDS_PER_RECORD == 0, (
+        "an object-level NUL reshaped the record partition"
+    )
+    # 2. What git emits for that commit is the message truncated at the NUL.
+    head, _sep, tail = _NUL_IN_MESSAGE.partition(_NUL)
+    assert _stored_message_of(clone, nul_sha) == head
+    assert tail, "the plant must have bytes behind the NUL for the truncation to bite"
+    # 3. Its metadata is intact, so the record is still anchored and ordered.
+    (record,) = [r for r in _split_records(stdout, clone) if r.sha == nul_sha]
+    assert re.fullmatch(r"[0-9a-f]{40}", record.sha)
+    assert record.committed_at == datetime(2026, 2, 1, tzinfo=UTC)
+    assert record.message == head.decode("utf-8")
+    # 4. The bound itself: the line behind the NUL is in NEITHER tuple, and the
+    #    siblings around it load untouched.
+    assert [f.finding_text for f in load.accepted] == ["first valid", "second valid"]
+    assert "behind the NUL, never read" not in [f.finding_text for f in load.accepted]
+    assert load.rejected == (), (
+        "the truncated tail is outside the load's population (FindingLoad bound 3), "
+        "so it is not accounted as a rejection either"
+    )
 
 
 # --- D3: a malformed keyed line is rejected, not fatal ----------------------
@@ -593,6 +973,476 @@ def test_a_quoted_grammar_example_is_rejected_and_siblings_still_load(tmp_path: 
     # Loss-free accounting: three keyed lines, two accepted, one rejected, none lost.
     assert len(load.accepted) + len(load.rejected) == 3
     assert valid_one != example_sha  # the valid commit is a distinct object
+
+
+# --- D3 / #496: a non-UTF-8 commit message is contained, not fatal ----------
+#
+# git validates nothing about a commit message, so a public commit can carry bytes
+# that are not UTF-8. Decoding the whole `git log` stdout in one call made any such
+# commit raise, so one of them anywhere on history took every well-formed sibling
+# with it and answered with a `git fetch` remedy that could not help -- the D3
+# "one commit bricks the entire corpus with no forward fix" abort. The stream is
+# framed before it is decoded now, and the message is contained per record.
+
+#: The plant: a hand-built commit message carrying a lone ``0x80`` **and** a
+#: well-formed trailer. Both halves matter -- the raw byte is what git stores
+#: verbatim and Python refuses to decode, and the trailer is what must NOT be
+#: accepted out of a message whose bytes could not be read.
+_UNDECODABLE_MESSAGE: Final = (
+    b"chore: a hand-built commit with a raw \x80 byte\n\n"
+    b"Review-Finding: adversarial CRITICAL \xe2\x80\x94 unreadable, never accepted\n"
+)
+
+
+def _corpus_with_an_undecodable_commit(tmp_path: Path) -> tuple[Path, str]:
+    """A published clone whose middle commit's message is not valid UTF-8.
+
+    Two well-formed trailer commits around one hand-built commit, so the assertions
+    can say both that the corpus survived and that the contained record is
+    accounted. Returns the clone and the offending commit's sha.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(
+        clone,
+        "fix: valid one (#1)",
+        "Review-Finding: security HIGH — first valid",
+        when="2026-01-01T00:00:00",
+    )
+    undecodable = _commit_with_raw_message(clone, _UNDECODABLE_MESSAGE)
+    _commit(
+        clone,
+        "fix: valid two (#2)",
+        "Review-Finding: adversarial LOW — second valid",
+        when="2026-03-01T00:00:00",
+    )
+    _publish(clone)
+    return clone, undecodable
+
+
+def test_a_non_utf8_commit_message_is_one_rejection_and_its_siblings_still_load(
+    tmp_path: Path,
+) -> None:
+    """#496: a message git stored as non-UTF-8 bytes costs its record, not the corpus.
+
+    The whole ``git log`` stdout used to be decoded in one call, so this commit
+    aborted the load before a single trailer was read -- including the two
+    well-formed ones beside it, which is the D3-forbidden shape: a commit that
+    cannot be edited (history is signed and append-only) permanently bricking the
+    corpus with no forward fix. Both valid findings must land, and the offending
+    record must be accounted exactly once.
+
+    Its own keyed line must **not** be accepted. A message whose bytes could not be
+    decoded has no candidate lines at all, so the trailer sitting inside it is
+    skipped with the record rather than parsed out of a partial decode -- the same
+    rule the unrepresentable-date sibling above follows.
+
+    The fixture's premise is asserted first and is not decoration: measured
+    2026-09-03 on git 2.47.1, ``git commit -F`` and ``git commit-tree`` both
+    re-encode a non-UTF-8 message to valid UTF-8, so a plant built with either
+    would leave this test passing over a corpus with nothing wrong in it.
+    """
+    clone, undecodable = _corpus_with_an_undecodable_commit(tmp_path)
+    stored = _stored_message_of(clone, undecodable)
+    with pytest.raises(UnicodeDecodeError):  # the premise: git kept the raw byte
+        stored.decode("utf-8")
+
+    load = GitTrailerFindingSource(clone).load_findings()  # must not raise
+
+    assert [f.finding_text for f in load.accepted] == ["first valid", "second valid"]
+    assert "unreadable, never accepted" not in [f.finding_text for f in load.accepted]
+    assert len(load.rejected) == 1
+    rejected = load.rejected[0]
+    assert rejected.commit_sha == undecodable  # git's own %H (D4), never forgeable
+    assert "not valid UTF-8" in rejected.reason
+    assert "0x80" in rejected.reason  # the offending byte is named, so it locates
+    assert "�" in rejected.raw_line  # replacement-decoded, never the raw byte
+
+
+#: The porcelain plant: CP932 (Shift-JIS) Japanese text, with the trailer's em
+#: dash left as its raw UTF-8 bytes -- U+2014 has no CP932 encoding at all, which
+#: is precisely the mixture a Shift-JIS project gets from a UTF-8 contributor. The
+#: whole message is therefore valid in *neither* encoding, so git's conversion out
+#: of the declared ``encoding CP932`` header fails and ``%B`` arrives raw.
+_MISDECLARED_CP932_MESSAGE: Final = (
+    "chore: 署名付きトークン under a declared CP932\n\n".encode("cp932")
+    + b"Review-Finding: adversarial CRITICAL \xe2\x80\x94 mis-declared, never accepted\n"
+)
+
+
+def test_a_mis_declared_commit_encoding_reaches_the_same_containment(tmp_path: Path) -> None:
+    """The containment's population includes ordinary porcelain (#496 R1-3).
+
+    The hand-built plant above proves the containment over a commit with no
+    ``encoding`` header. It also stood behind a claim that "the ordinary porcelain
+    does not produce one", and that claim is false in a way no warning surfaces:
+    ``git -c i18n.commitEncoding=CP932 commit -F`` stores the bytes **verbatim**
+    with an empty stderr, and when the declaration does not match the bytes -- a
+    Shift-JIS project taking a UTF-8 contributor's em dash -- git's conversion out
+    of the header fails and ``%B`` hands this adapter the raw bytes.
+
+    That makes the fix worth more than the narrow population said, so the route is
+    driven rather than described: the same one-rejection containment, reached
+    without a single plumbing command. The premise is asserted at both ends --
+    verbatim in the object, undecodable out of ``%B`` -- because a git that
+    converted successfully would leave this test passing over a corpus with nothing
+    wrong in it.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(
+        clone,
+        "fix: valid one (#1)",
+        "Review-Finding: security HIGH — first valid",
+        when="2026-01-01T00:00:00",
+    )
+    mis_declared = _commit_under_declared_encoding(
+        clone, _MISDECLARED_CP932_MESSAGE, encoding="CP932"
+    )
+    _commit(
+        clone,
+        "fix: valid two (#2)",
+        "Review-Finding: adversarial LOW — second valid",
+        when="2026-03-01T00:00:00",
+    )
+    _publish(clone)
+
+    stored_object = _git_bytes(clone, "cat-file", "commit", mis_declared)
+    assert b"\nencoding CP932\n" in stored_object, "the premise: git recorded the declaration"
+    assert stored_object.endswith(_MISDECLARED_CP932_MESSAGE), (
+        "the premise: porcelain stored the bytes verbatim rather than re-encoding them"
+    )
+    with pytest.raises(UnicodeDecodeError):  # the premise: %B hands them back raw
+        _stored_message_of(clone, mis_declared).decode("utf-8")
+
+    load = GitTrailerFindingSource(clone).load_findings()  # must not raise
+
+    assert [f.finding_text for f in load.accepted] == ["first valid", "second valid"]
+    assert "mis-declared, never accepted" not in [f.finding_text for f in load.accepted]
+    (rejected,) = load.rejected
+    assert rejected.commit_sha == mis_declared
+    assert "not valid UTF-8" in rejected.reason
+    assert "�" in rejected.raw_line
+
+
+def test_a_non_utf8_commit_message_is_not_reported_as_unreachable_history(
+    tmp_path: Path,
+) -> None:
+    """#496: the load must not raise the fetch-remedy error for a readable history.
+
+    The pre-fix failure was not only fatal, it was *misdescribed*:
+    :class:`GitHistoryUnavailableError` says the history could not be reached and
+    its remedy names ``git fetch origin main``, which cannot help when the ref
+    resolves, the objects are local, and one message merely holds a byte Python
+    will not decode. So this asserts the specific error's absence, not just that
+    some load succeeded -- a fix that swapped the exception type for another fatal
+    one would still brick the corpus and would still pass a bare "does not raise
+    GitHistoryUnavailableError" check on a corpus with no findings in it. The
+    accepted count is asserted too, so the corpus has to have actually loaded.
+    """
+    clone, _undecodable = _corpus_with_an_undecodable_commit(tmp_path)
+
+    try:
+        load = GitTrailerFindingSource(clone).load_findings()
+    except GitHistoryUnavailableError as exc:  # pragma: no cover - the pre-#496 behaviour
+        pytest.fail(
+            f"one non-UTF-8 commit message bricked the whole corpus with advice that "
+            f"cannot work: {exc} / remedy: {exc.remedy}"
+        )
+
+    assert len(load.accepted) == 2
+
+
+def test_an_undecodable_message_excerpt_is_bounded_and_replacement_decoded(
+    tmp_path: Path,
+) -> None:
+    """#496: an unbounded message cannot inflate the row that reports it.
+
+    A commit message is unbounded author-controlled input, and the rejection is
+    written to the store and counted in an operator's build report, so the excerpt
+    that locates the failure is capped rather than copied. The plant is a
+    ~8 KB message whose first 100 bytes are ordinary ASCII and whose tail is
+    thousands of raw ``0x80`` bytes.
+
+    Two assertions that are not the same one twice. The **bound** is written as a
+    hard number the plant is far larger than, so it fires however the cap constant
+    is spelled -- an assertion phrased only against :data:`_UNDECODABLE_EXCERPT_BYTES`
+    would be satisfied by a cap of a megabyte. The **value** is then hand-written
+    against the recorded cap -- the ASCII head, then replacement characters to 120
+    -- rather than re-derived with the adapter's own slice-and-decode, which is why
+    the cap itself is pinned first: it is a recorded decision, and moving it must
+    redden here rather than quietly re-baseline the expectation.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(clone, "fix: valid (#1)", "Review-Finding: security HIGH — a valid finding")
+    head = b"chore: a huge message whose tail is undecodable" + b"x" * 53
+    huge = _commit_with_raw_message(clone, head + b"\x80" * 8000)
+    _publish(clone)
+    with pytest.raises(UnicodeDecodeError):  # the premise: git kept the raw bytes
+        _stored_message_of(clone, huge).decode("utf-8")
+
+    load = GitTrailerFindingSource(clone).load_findings()
+
+    assert [f.finding_text for f in load.accepted] == ["a valid finding"]
+    (rejected,) = load.rejected
+    assert rejected.commit_sha == huge
+    assert len(rejected.raw_line) <= 1024, (
+        f"a {len(head) + 8000}-byte commit message reached the rejection row "
+        f"unbounded ({len(rejected.raw_line)} characters)"
+    )
+    assert _UNDECODABLE_EXCERPT_BYTES == 100 + 20, (
+        "the recorded excerpt cap moved; the hand-written expectation below is "
+        "written against 120 bytes and has to move with it"
+    )
+    assert rejected.raw_line == head.decode("ascii") + "�" * 20
+
+
+def test_the_excerpt_slices_bytes_before_decoding_them(tmp_path: Path) -> None:
+    """The excerpt is ``raw[:cap]`` decoded, not ``raw`` decoded then cut (#496 R1 M-1).
+
+    The two orders agree on almost every input, which is why a mutation swapping
+    them survived the suite. They disagree exactly where a **multi-byte character
+    straddles the cap**, and that is what this plants: 118 ASCII bytes, then a
+    three-byte ``U+2192`` occupying bytes 118-120, then a tail whose lone ``0x80``
+    is far past the cap and is what makes the whole-message decode fail at all.
+
+    Slicing first cuts that character in half, so the excerpt is **119** characters
+    ending in one ``U+FFFD``. Decoding first would carry the whole character across
+    the boundary and hand out **120** clean characters with the arrow intact. Both
+    respect the cap, so a length-only assertion cannot tell them apart; the
+    assertions below name the character count *and* the boundary character *and*
+    the arrow's absence, which no single re-derivation of the adapter's own
+    expression could satisfy by construction.
+
+    Why the order is the one worth pinning: the excerpt is written to the store and
+    shown in a build report, and "the first N bytes, replacement-decoded" is what
+    :data:`_UNDECODABLE_EXCERPT_BYTES` records. Decoding first would make the cap a
+    *character* count over a string the message's own bytes decide the length of.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(clone, "fix: valid (#1)", "Review-Finding: security HIGH — a valid finding")
+    straddling = b"x" * 118 + "→".encode() + b"y" * 40 + b"\x80" + b"z" * 20
+    assert straddling[118:121] == "→".encode(), "the premise: the character straddles byte 120"
+    assert _UNDECODABLE_EXCERPT_BYTES == 120, (
+        "the recorded cap moved; the plant is built to straddle byte 120 and has to move with it"
+    )
+    sha = _commit_with_raw_message(clone, straddling)
+    _publish(clone)
+    with pytest.raises(UnicodeDecodeError):  # the premise: git kept the raw bytes
+        _stored_message_of(clone, sha).decode("utf-8")
+
+    (rejected,) = GitTrailerFindingSource(clone).load_findings().rejected
+
+    assert rejected.commit_sha == sha
+    assert len(rejected.raw_line) == 119, (
+        "120 characters means the message was decoded before it was sliced, so the "
+        "straddling character survived a cut that should have halved it"
+    )
+    assert rejected.raw_line.endswith("�")
+    assert "→" not in rejected.raw_line
+
+
+def test_a_commit_with_an_empty_message_is_not_a_rejection(tmp_path: Path) -> None:
+    """An empty message is a readable message, not an undecodable one (#496 R1 M-2).
+
+    ``git commit --allow-empty-message`` produces a public commit whose ``%B`` is
+    zero bytes, and such a commit is *fine*: it carries no keyed line, so it
+    contributes nothing to either tuple and nothing at all should be recorded
+    against it. The containment must therefore key on ``message is None`` -- the
+    marker :func:`_decode_message` sets -- and not on the message being falsy,
+    which an empty string also is. A mutation weakening that test to ``not
+    record.message`` survived the suite, because no fixture had ever committed an
+    empty message; under it this commit is reported to an operator as an unreadable
+    one, with an empty excerpt and a reason describing a decode that never failed.
+
+    The zero-byte premise is asserted, since a git that stored a lone newline
+    instead would leave the message truthy and quietly stop exercising the case.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(clone, "fix: valid (#1)", "Review-Finding: security HIGH — a valid finding")
+    _git(
+        clone,
+        "commit",
+        "--allow-empty",
+        "--allow-empty-message",
+        "-m",
+        "",
+        env=_date_env("2026-03-02T00:00:00"),
+    )
+    empty = _git(clone, "rev-parse", "HEAD").strip()
+    _publish(clone)
+    assert _stored_message_of(clone, empty) == b"", "the premise: %B is zero bytes"
+
+    load = GitTrailerFindingSource(clone).load_findings()
+
+    assert [f.finding_text for f in load.accepted] == ["a valid finding"]
+    assert load.rejected == (), (
+        f"an empty commit message was reported as unreadable: {load.rejected}"
+    )
+
+
+def test_a_bad_byte_past_the_cap_is_located_by_the_reason_not_the_excerpt(
+    tmp_path: Path,
+) -> None:
+    """The excerpt shows nothing when the fault is past it; ``reason`` locates it (M-3).
+
+    A rejection has to be *actionable*: an operator reading a build report must be
+    able to find the commit and the byte. When the offending byte lies beyond
+    :data:`_UNDECODABLE_EXCERPT_BYTES` the excerpt is a clean, unremarkable prefix
+    -- no replacement character, nothing to see -- so everything that locates the
+    fault has to be in ``reason``, which carries the ``UnicodeDecodeError``'s byte
+    value and its **position** in the whole message.
+
+    The plant puts the bad byte at offset 300, well past the 120-byte cap, and the
+    assertions are two-sided: the excerpt must be *clean* (otherwise this is just
+    another copy of the bounded-excerpt test) and the position must be *present*
+    (otherwise a reader given a clean excerpt has nothing at all).
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(clone, "fix: valid (#1)", "Review-Finding: security HIGH — a valid finding")
+    bad_offset = 300
+    assert bad_offset > _UNDECODABLE_EXCERPT_BYTES, "the premise: the fault is past the cap"
+    message = b"chore: an ordinary ASCII head" + b"." * (bad_offset - 29) + b"\x80" + b" tail\n"
+    assert message.index(b"\x80") == bad_offset
+    sha = _commit_with_raw_message(clone, message)
+    _publish(clone)
+    with pytest.raises(UnicodeDecodeError):  # the premise: git kept the raw byte
+        _stored_message_of(clone, sha).decode("utf-8")
+
+    (rejected,) = GitTrailerFindingSource(clone).load_findings().rejected
+
+    assert rejected.commit_sha == sha
+    assert "�" not in rejected.raw_line, (
+        "the excerpt ends before the bad byte, so it cannot carry a mark for it"
+    )
+    assert str(bad_offset) in rejected.reason, (
+        f"nothing locates the fault: excerpt is clean and reason is {rejected.reason!r}"
+    )
+    assert "0x80" in rejected.reason
+
+
+def test_split_records_marks_an_undecodable_message_and_still_decodes_the_metadata(
+    tmp_path: Path,
+) -> None:
+    """The boundary where the containment is set, beside its year-10000 sibling.
+
+    ``_split_records`` does not raise on a message it cannot decode: it marks the
+    message unreadable and carries the bounded excerpt and the reason that
+    ``load_findings`` accounts as one rejection. The record's *metadata* still
+    decodes -- that is the whole reason the split happens before the decode -- so
+    the rejection can name the commit it is on.
+    """
+    stream = (
+        b"a" * 40
+        + _NUL
+        + b"2026-01-01T00:00:00+00:00"
+        + _NUL
+        + b"Review-Finding: security HIGH \x80 not readable"
+    )
+
+    (record,) = _split_records(stream, tmp_path)
+
+    assert record.message is None
+    assert record.sha == "a" * 40  # metadata decoded, so the rejection has a commit
+    assert record.date_iso == "2026-01-01T00:00:00+00:00"
+    assert record.committed_at == datetime(2026, 1, 1, tzinfo=UTC)
+    assert "�" in record.undecodable_excerpt
+    assert "not valid UTF-8" in record.undecodable_reason
+
+
+def test_a_record_failing_both_the_decode_and_the_date_is_accounted_exactly_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two record-level containments on one record are still one rejection.
+
+    The accounting is what must not double-count: a record is skipped once,
+    whichever reason skipped it. The decode is asked first, so the reason names it
+    -- a message that could not be decoded has no candidate lines at all, where an
+    unrepresentable date only says which record they were on.
+
+    Driven at the subprocess seam because git will not emit both faults on one
+    commit: a year-10000 committer date needs a crafted ``GIT_COMMITTER_DATE``,
+    while the undecodable message needs a hand-built object that would carry its
+    own stamp.
+    """
+    stream = (
+        b"a" * 40
+        + _NUL
+        + b"10000-01-02T00:00:00Z"  # unrepresentable as well
+        + _NUL
+        + b"chore: \x80 and a far-future date"
+    )
+    source = GitTrailerFindingSource(tmp_path)
+    monkeypatch.setattr(GitTrailerFindingSource, "_git_log", lambda _self: stream)
+
+    load = source.load_findings()  # must not raise
+
+    assert load.accepted == ()
+    assert len(load.rejected) == 1
+    assert "not valid UTF-8" in load.rejected[0].reason
+    # The decode is the reason given, not the date. Keyed on the date rejection's
+    # own phrase rather than on "10000": the excerpt cap's byte count is spelled in
+    # this same reason, so a digit key collides with it (measured -- raising the cap
+    # to 1000000 in a perturbation run made a "10000 not in reason" assertion fail
+    # for a reason that had nothing to do with the date).
+    assert "committer date" not in load.rejected[0].reason
+
+
+#: The two git-generated metadata fields, each planted as bytes that cannot be
+#: UTF-8. An author reaches neither -- ``%H`` is 40 hex characters and ``%cI`` an
+#: ISO-8601 instant -- so bytes that fail to decode there mean the *stream* is
+#: wrong, and the fatal framing error is the honest answer rather than a per-record
+#: containment (a record whose own sha is unreadable cannot be accounted at all).
+_UNDECODABLE_METADATA_STREAMS: tuple[tuple[str, bytes], ...] = (
+    (
+        "commit sha (%H)",
+        b"\x80" * 40 + _NUL + b"2026-01-01T00:00:00+00:00" + _NUL + b"Review-Finding: x",
+    ),
+    (
+        "committer date (%cI)",
+        b"a" * 40 + _NUL + b"2026-01-01T00:00:00\x80" + _NUL + b"Review-Finding: x",
+    ),
+)
+
+
+@pytest.mark.parametrize("field, stream", _UNDECODABLE_METADATA_STREAMS)
+def test_an_undecodable_metadata_field_stays_fatal_with_the_framing_remedy(
+    field: str, stream: bytes, tmp_path: Path
+) -> None:
+    """#496's bound: the containment covers the message, and *only* the message.
+
+    The stream partitions into exactly one whole record here -- so the field-count
+    guard does not fire -- and the failure is the metadata decode itself. It must
+    stay fatal: these bytes are git's, not an author's, so they cannot be a
+    per-record containment the way a message can, and the remedy that fits is the
+    one naming the installed git version, never the ``git fetch`` of
+    :class:`GitHistoryUnavailableError`.
+    """
+    assert len(stream.split(_NUL)) == 3, "the premise: a whole record, so only the decode fails"
+
+    with pytest.raises(GitOutputFramingError) as caught:
+        _split_records(stream, tmp_path)
+
+    assert field in str(caught.value)  # the reason names which field, not just 'a field'
+    assert "not valid UTF-8" in str(caught.value)
+    assert "git version" in caught.value.remedy
+    assert "fetch" not in caught.value.remedy
+
+
+def test_an_undecodable_metadata_field_is_fatal_through_the_whole_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same fatality, through ``load_findings`` rather than at the split.
+
+    Pinned end-to-end as well as at the boundary: a later change that caught the
+    framing error inside the load and returned a partial :class:`FindingLoad` would
+    leave the parametrized pin above green while publishing a corpus silently
+    missing every record after the broken one.
+    """
+    _field, stream = _UNDECODABLE_METADATA_STREAMS[0]
+    source = GitTrailerFindingSource(tmp_path)
+    monkeypatch.setattr(GitTrailerFindingSource, "_git_log", lambda _self: stream)
+
+    with pytest.raises(GitOutputFramingError):
+        source.load_findings()
 
 
 # --- AC-1: the read is the whole message, so a folded trailer is accounted ---
@@ -1126,7 +1976,9 @@ def test_live_origin_main_accounts_for_every_trailer_loss_free() -> None:
 
     assert load == again  # deterministic across two calls
 
-    raw = _git(repo, "log", "refs/remotes/origin/main", "--format=%B")
+    # The second of the two calls that address the *real* checkout, so it keeps the
+    # developer's global config for the same `safe.directory` reason (`_child_env`).
+    raw = _git(repo, "log", "refs/remotes/origin/main", "--format=%B", hermetic=False)
     keyed = [line for line in raw.split("\n") if line.startswith(TRAILER_KEY)]
     # Loss-free population accounting: every column-0 keyed line is accounted for
     # in exactly one tuple, none silently dropped, and there really are some.
@@ -1150,14 +2002,20 @@ def test_live_origin_main_accounts_for_every_trailer_loss_free() -> None:
 # also pinned here at the split boundary where the mark is set.
 
 
-def _record_stream(*fields: str) -> str:
+def _record_stream(*fields: str) -> bytes:
     """Join raw fields with the adapter's real NUL separator (separator semantics).
 
     A well-formed n-record stream is exactly ``3n`` fields joined by ``3n - 1``
     NULs -- git's ``--format=format:`` output, which separates rather than
     terminates records (no trailing NUL).
+
+    **Bytes, because that is what the adapter frames** (#496): ``_split_records``
+    partitions the raw stdout and decodes each field afterwards, so a stream
+    injected at that seam is bytes too. The fields are written as ``str`` here and
+    encoded, since every field a *well-formed* stream carries is text; the
+    undecodable ones are built as literal bytes at their own call sites.
     """
-    return _NUL.join(fields)
+    return _NUL.join(field.encode("utf-8") for field in fields)
 
 
 def test_split_records_normal_separator_stream_yields_whole_records(tmp_path: Path) -> None:
@@ -1391,8 +2249,8 @@ def test_an_overflowing_committer_date_is_a_rejection_and_siblings_still_load(
 def test_split_records_empty_stream_yields_no_records(tmp_path: Path) -> None:
     """An empty stdout partitions to zero records via the pop branch, not a framing error.
 
-    ``"".split(NUL)`` is a single empty token; the terminator-drop branch removes it
-    (``1 % 3 == 1`` and it is empty), leaving zero tokens and zero records rather
+    ``b"".split(NUL)`` is a single empty token; the terminator-drop branch removes
+    it (``1 % 3 == 1`` and it is empty), leaving zero tokens and zero records rather
     than a spurious ``GitOutputFramingError``.
     """
-    assert _split_records("", tmp_path) == []
+    assert _split_records(b"", tmp_path) == []

@@ -122,19 +122,51 @@ class StoredRejection:
     """One rejected trailer as it rests in the store, kept apart from the findings.
 
     ``raw_line`` is **inert bytes at rest**: author-controlled, untrusted commit
-    text (ADR-0029 D3), byte-preserved verbatim and never re-parsed or interpreted
-    by the store or its builder. A later reader must not "helpfully" parse it.
+    text (ADR-0029 D3), copied through and never re-parsed or interpreted by the
+    store or its builder. A later reader must not "helpfully" parse it. What the
+    *source* hands over differs by rejection kind and only one kind is verbatim: a
+    grammar rejection's own trailer line, byte-preserved; a date rejection's git
+    ``%cI``; and, for a message whose bytes are not valid UTF-8, a **bounded,
+    replacement-decoded excerpt** of that message rather than its bytes (#496).
 
-    ``reason`` is untrusted too, not product-generated: the parser builds it by
-    interpolating the offending token straight from the line, at three sites
-    (``f"unknown reviewer {token!r}"``, ``f"unknown severity {token!r}"``, and
-    ``f"...got {prefix!r}"``), so it carries arbitrary-length author-controlled
-    Unicode -- repr-escaped, but not uniformly to one token: the first two
-    interpolate a single split token, while the third embeds the whole
-    pre-separator prefix, itself potentially several space-separated words. None of
-    the three is otherwise bounded or sanitized. A serving-slice implementer must
-    not conclude this field is safe to render or index without the same
-    untrusted-content discipline ``raw_line`` already carries (SEC-15).
+    ``reason`` **may carry author-controlled text, so it is untrusted too** -- and
+    the reason to say so is not that every reason is authored, but that a consumer
+    holding one cannot tell which kind it has. Measured 2026-09-03 with two keys,
+    each stated with the population it ranges over, since neither count means
+    anything without one:
+
+    Every key below excludes this file, because a docstring that quotes a key is
+    matched by it -- which is exactly how the previous pair came to state 3 and 6
+    while returning 4 and 8.
+
+    - ``git grep -nF "RejectedTrailer(" -- packages/theurian-core/src
+      ':!*review_finding_store.py'`` -> **3** construction sites, all in the git
+      adapter, which is therefore this column's only writer. One passes a parser
+      reason straight through; the other two build their own.
+    - ``git grep -nF "raise MalformedTrailerError(" -- packages/theurian-core/src
+      ':!*review_finding_store.py'`` -> **6** raise sites, all in the parser, every
+      one of them reachable through that pass-through. Dropping the ``raise`` from
+      the key returns **7** -- the extra is the class's own definition, not a
+      seventh site.
+
+    So **8 reason-producing sites**, of which **3 interpolate the offending token
+    straight from the line** (``f"unknown reviewer {token!r}"``,
+    ``f"unknown severity {token!r}"``, ``f"...got {prefix!r}"``) and carry
+    arbitrary-length author-controlled Unicode -- repr-escaped, but not uniformly
+    to one token: the first two interpolate a single split token, while the third
+    embeds the whole pre-separator prefix, itself potentially several
+    space-separated words. None of the three is otherwise bounded or sanitized.
+    The other five are product-generated: three constant parser reasons, and the
+    adapter's two record-level ones, which interpolate git's own ``%cI`` and a
+    ``UnicodeDecodeError``'s render -- a codec name, a position, and the offending
+    byte as its **hexadecimal value** (``0x80``: four ASCII characters, and the map
+    from byte to text is not injective, since every byte with that value renders
+    the same four). The byte itself never reaches the string, so what an author
+    controls here is which of 256 renders appears, not any text they wrote.
+
+    A serving-slice implementer must not conclude this field is safe to render or
+    index without the same untrusted-content discipline ``raw_line`` already
+    carries (SEC-15). The safe reading is the 3, not the 5.
     """
 
     commit_sha: str
