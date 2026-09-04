@@ -48,10 +48,12 @@ JsonOption = Annotated[bool, typer.Option("--json", help="Emit machine-readable 
 #: ``WriteLock.held`` runs ``mkdir`` + ``os.open`` on ``.theurian/runtime/``,
 #: which raise a bare ``OSError`` -- not a ``TheurianError`` -- so on a first build
 #: whose state area is unwritable the raw traceback escaped the command's handler.
-#: One shape of that refusal is no longer bare: a symbolic link at the lock path
-#: is refused by ``O_NOFOLLOW`` and arrives as ``WriteLockUnusableError``, a
-#: ``TheurianError`` carrying its own cure, so it reaches the command's
-#: ``except TheurianError`` below rather than this constant (#481).
+#: **Only the ``mkdir`` still reaches this constant.** Every refusal of the
+#: ``os.open`` -- a symbolic link at the lock path (#481), a directory there, a
+#: mode that denies this process (#520) -- now arrives as
+#: ``WriteLockUnusableError``, a ``TheurianError`` carrying a cure that names the
+#: lock file, so it reaches the command's ``except TheurianError`` below instead
+#: of this text, which names a directory rather than the artefact.
 #: Names the precondition to fix first (a writable ``.theurian``), with the retry
 #: as the trailing clause, the same shape ``FindingsStoreError``'s write remedy
 #: takes.
@@ -76,12 +78,17 @@ def _lock_write_section(lock_path: Path) -> WriteSection:
     """A write-section factory whose lock-acquisition ``OSError`` arrives graded.
 
     ``WriteLock(lock_path).held`` is the real section, but its ``__enter__``
-    ``mkdir``/``os.open`` raise a bare ``OSError`` the command's ``except
-    TheurianError`` cannot see (#404 R1-2). The ``except OSError`` below spans the
-    whole ``with`` -- acquisition, body **and** release -- and converts any bare
-    ``OSError`` from it into a :class:`FindingsStoreError` a ``TheurianError``
-    handler catches. Acquisition is the only live source of one; the other two
-    phases are covered but do not raise here:
+    ``mkdir`` raises a bare ``OSError`` the command's ``except TheurianError``
+    cannot see (#404 R1-2). The ``except OSError`` below spans the whole ``with``
+    -- acquisition, body **and** release -- and converts any bare ``OSError`` from
+    it into a :class:`FindingsStoreError` a ``TheurianError`` handler catches.
+    The ``mkdir`` is the only live source of one; the other three are covered but
+    do not raise here:
+
+    - **The ``open``.** ``WriteLock._open`` converts every ``OSError`` it meets
+      into ``WriteLockUnusableError`` (#520), a ``TheurianError`` naming the lock
+      file rather than the directory, so it passes this handler untouched and is
+      graded by the command's own ``except TheurianError``.
 
     - **Body.** The one thing run inside is ``replace_all``, which converts its own
       ``(sqlite3.Error, OSError)`` before any escapes, and a

@@ -1703,8 +1703,10 @@ def migrate_apply(  # noqa: PLR0911 -- one early return per distinguishable fail
         #    expression is evaluated here, inside the `try`, and goes through
         #    `ProjectPaths._contained`, which refuses a lock path that leaves
         #    the tree (#237, T-5).
-        # 2. `WriteLockUnusableError`, when the lock path is a symbolic link the
-        #    open refuses rather than writing through (#481).
+        # 2. `WriteLockUnusableError`, when the `open` on the lock path is
+        #    refused at all -- a symbolic link the open declines rather than
+        #    writing through (#481), a directory there, a mode that denies this
+        #    process, or a `.theurian/runtime/` that refuses the create (#520).
         # 3. `WriteLockTimeoutError`, when another holder keeps `write_lock` past
         #    `WRITE_LOCK_TIMEOUT_SECONDS`.
         #

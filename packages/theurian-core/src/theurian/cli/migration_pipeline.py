@@ -103,8 +103,9 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
             WriteLockUnusableError: From the transaction itself. The last two
             come from the lock and cannot be raised when ``already_locked`` is
             ``True``, since no acquisition happens here then;
-            ``WriteLockUnusableError`` is the refusal of a symbolic link at the
-            lock path (#481).
+            ``WriteLockUnusableError`` is any refusal of the ``open`` on the lock
+            path -- a symbolic link (#481), a directory, or a mode that denies
+            this process (#520).
         WriteTransactionBusyError: If another writer holds the database when
             this transaction tries to begin or commit. Raised whatever
             ``already_locked`` says: it comes from the transaction, not from the
