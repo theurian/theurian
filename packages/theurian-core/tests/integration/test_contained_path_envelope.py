@@ -99,6 +99,29 @@ reaches the same ``--json`` surface, so it owes the envelope and nothing else.
 Folding the two together would demand one exit code from ``index build``'s
 "nothing was published" contract, which is not this class's to regrade.
 
+**The class this file closes, stated so a neighbour cannot falsify it.** The
+population is *a containment refusal reaching a ``--json`` caller* -- the
+authored-symlink and planted-directory class, keyed on the ``_contain`` /
+``_contained`` chokepoint and derived from the source by
+:func:`contained_derived_helpers`. It is **not** "every way a ``--json`` command
+can fail to publish an envelope", and reading it as that would make any unrelated
+escape look like a hole in it.
+
+``ProjectPaths.index_for`` is the neighbour that makes the distinction concrete.
+It raises the same ``ProjectError`` type and lives in the same class, and it is
+outside this population by root cause: what it refuses is a **value** -- an
+``indexBuildId`` read out of ``active-index.json``, derived, git-ignored and
+unsigned, which any local process can edit to carry ``../``. That is the
+derived-state-trust class (the GHSA-266v family), not the authored-symlink one
+(#237, T-5), and it has its own population -- ``git grep -n 'index_for(' --
+packages/theurian-core/src`` returned seven lines on 2026-09-05: the definition
+and six callers, reaching ``withdrawal_purge``, ``index_commands``,
+``index_status_report`` and ``mcp/search``. None of those is a ``_contain`` call
+site, so this file's key cannot see them and does not claim to; the escape it
+opens is filed as #551 and closes over that key with its own control. The same
+shape #518's closure took against #520's neighbour, and the reason the key is
+published beside the claim rather than left implicit.
+
 **What is deliberately not swept here.** A FIFO at the write-lock path blocks in
 the ``open`` rather than failing (recorded on #526, the lock face); nothing in
 this file plants one, and nothing here needs that fix to pass. The ``mkdir``
