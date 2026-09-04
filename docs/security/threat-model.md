@@ -480,8 +480,21 @@ symlinks first reveals that it is not. This is the case string prefix matching a
 
 **Controls:** resolution precedes comparison, so every symlink in the chain is
 followed before the containment check. Intermediate components are checked too,
-not only the final target. A symlinked *root* — `/tmp` on macOS, a symlinked home
-directory — still works, because the root is resolved as well.
+not only the final target — by a second walk over the path *as the caller named
+it*, since resolution has by then replaced every link with its destination and
+left nothing for a walk to see. A symlinked *root* — `/tmp` on macOS, a symlinked
+home directory — still works, because the root is resolved as well. Tested:
+`tests/unit/test_path_security.py::test_an_intermediate_link_that_leaves_the_root_is_refused_though_it_returns`
+and its narrowness control
+`::test_a_link_chain_that_never_leaves_the_root_is_still_read`, with
+`tests/integration/test_cli_commands.py::test_validate_refuses_a_content_file_that_leaves_the_project_and_comes_back`
+holding the same shape through the real CLI.
+
+The intermediate half of that sentence went unheld from the guard's introduction
+until issue #288: both call sites passed it the *resolved* path, so the walk only
+ever visited real directories, and deleting the guard outright left the suite
+green. It is named here because that is the failure this paragraph is now pinned
+against — a control asserted in four documents and driven by no test.
 
 **A second path resolves an untrusted `contentFile`: `theurian propose accept`.**
 A proposal directory may be committed and delivered through a pull request

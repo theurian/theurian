@@ -288,11 +288,6 @@ PROSE_ONLY: Final[tuple[tuple[str, str, str], ...]] = (
     ),
     (
         THREAT_MODEL,
-        "resolution precedes comparison",
-        "The same, for the resolution-order half of T-5.",
-    ),
-    (
-        THREAT_MODEL,
         "**Controls at ingestion**",
         "A list opener whose own sentence promises the symbols in the rows beneath it.",
     ),
