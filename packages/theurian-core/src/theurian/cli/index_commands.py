@@ -331,7 +331,8 @@ def _the_scan_record_path_is_contained(paths: ProjectPaths, as_json: bool) -> bo
     ``.theurian/state/`` -- raises a containment refusal there that no handler
     converts, so it would reach a ``--json`` caller as a traceback. Closing that
     needs the record write to hold a descriptor opened before the build, which is
-    a larger change than the exposure earns.
+    a larger change than the exposure earns; the disposition is recorded on
+    [#551](https://github.com/theurian/theurian/issues/551) (2026-09-05).
 
     ``_record_the_scan``'s ``except OSError`` is deliberately left alone. A
     directory at the record path is an incidental write failure met after a
