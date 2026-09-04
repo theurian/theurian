@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import stat
+from collections import deque
 from pathlib import Path, PurePosixPath
 
 from theurian.domain.errors import (
@@ -85,29 +86,117 @@ def resolve_within_root(root: Path, relative: str | PurePosixPath) -> Path:
     return resolved
 
 
+#: How many symlinks one requested path may be expanded through before the walk
+#: refuses. Matches the ``ELOOP`` ceiling Linux applies to a single pathname, so
+#: a chain this walk refuses is one no ``open()`` would have followed either. It
+#: is also what bounds the walk's cost: see :func:`assert_no_symlink_escape`.
+MAX_SYMLINK_HOPS = 40
+
+
+def _step(current: Path, part: str) -> Path:
+    """Where one *named* component of the requested path puts the walk.
+
+    Pure path arithmetic over a position that is already link-free -- the caller
+    expands links before it steps -- so ``..`` here is the real parent and not a
+    lexical guess.
+    """
+    if part == "/":
+        return Path(current.anchor or "/")
+    if part == "..":
+        return current.parent
+    return current / part
+
+
+def _expand(
+    link: Path,
+    *,
+    pending: deque[str],
+    hops: int,
+    requested: str | PurePosixPath,
+    resolved_root: Path,
+) -> tuple[Path, int]:
+    """Follow ``link`` by exactly **one** hop, and say where that lands.
+
+    One hop, never ``Path.resolve()``. Resolving collapses a component's whole
+    chain and reports only where it ended, so a link whose own target leaves the
+    root and comes back is indistinguishable from one that never left -- the
+    mechanism behind five of the six traversal spellings that reached ``migrate
+    validate`` exit 0 in round 1 (R1-A). The caller re-enters this function until
+    the position is not a link, so a chain is checked at every one of its joints
+    rather than at its end.
+
+    A **relative** target is queued rather than joined: its components go back
+    through :func:`_step`, so a ``..`` inside it is checked like any other
+    position. An **absolute** target is taken whole, and that asymmetry is
+    deliberate -- walking its components would stand the walk at ``/`` first and
+    refuse every legitimate absolute link that points inside the root. The
+    residual is narrow and recorded rather than hidden: ``..`` *inside* an
+    absolute target is collapsed lexically, so a target that climbs through a
+    symlinked directory names a position the kernel would not.
+    ``resolve_within_root`` still proves the true destination independently at
+    every call site, so what such a construction can buy is a missed refusal on
+    the route, never a read outside the root.
+    """
+    if hops >= MAX_SYMLINK_HOPS:
+        raise PathEscapeError(str(requested), str(resolved_root))
+    try:
+        target = PurePosixPath(link.readlink())
+    except OSError as exc:
+        # `is_symlink()` said there was a link and the read of it failed: the
+        # directory turned unreadable, or the entry went away mid-walk. Refused
+        # rather than stepped over, because this function's whole output is a
+        # proof of containment and an unread link is a component it cannot prove
+        # anything about. Graded, so `--json` still publishes a document.
+        raise PathEscapeError(str(requested), str(resolved_root)) from exc
+    if target.is_absolute():
+        return Path(os.path.normpath(str(target))), hops + 1
+    pending.extendleft(reversed(target.parts))
+    return link.parent, hops + 1
+
+
 def assert_no_symlink_escape(root: Path, *, base: Path, requested: str | PurePosixPath) -> None:
-    """Assert nothing on the way to ``requested`` leaves ``root`` via a symlink.
+    """Assert the walk to ``requested`` never stands outside ``root`` once inside it.
 
-    ``resolve_within_root`` already rejects a final target outside the root. This
-    function additionally rejects the case where an *intermediate* component is a
-    symlink that leaves the root, even when the final resolved path happens to
-    come back inside. That shape is never legitimate in a knowledge repository,
-    and allowing it would mean the set of readable files depends on symlink
-    topology rather than on the directory tree.
+    ``resolve_within_root`` rejects a *destination* outside the root. This
+    function rejects a **route** that leaves it, however the path is spelled and
+    whether or not it comes back: a request that resolves to a file genuinely
+    inside the root, reached by stepping out through a link and returning, is
+    refused. That shape is never legitimate in a knowledge repository, and
+    allowing it would mean the set of readable files depends on symlink topology
+    rather than on the directory tree.
 
-    **The walk is over the path as the caller named it, never over a resolved
-    one.** Walking a resolved path is what made the sentence above false for the
-    whole of this function's first life (issue #288): ``Path.resolve()`` has
-    already replaced every link with its destination, so the loop only ever
-    visited real directories and no component it saw could be a link at all. A
-    ``hop -> outside`` / ``outside/back -> root/real`` chain read 60 bytes
-    through this guard, and ``migrate validate`` exited 0 on a migration naming
-    it. Passing the unresolved path in was measured not to be enough on its own,
-    because the old body re-resolved its own argument.
+    **Positions, not endpoints -- and the difference is the whole guard.** Two
+    earlier shapes of this function each checked only where a resolution *landed*
+    and so enforced nothing much:
+
+    * Walking ``Path.resolve()``'s output (issue #288) meant the loop only ever
+      visited real directories, because resolution had already replaced every
+      link with its destination. Deleting the guard kept the suite green.
+    * Walking the requested components but resolving each one whole (round 1,
+      R1-A) still collapsed a component's entire chain before comparing, and
+      never checked the ``..`` arm at all. Five of six spellings of one
+      in-and-out traversal reached ``migrate validate`` exit 0; only the
+      two-component spelling the fix had been written against was refused.
+
+    So a symlink is expanded **one hop at a time** (:func:`_advance`), each hop's
+    landing checked, and every component's position checked -- ``..`` included.
+
+    **The latch is what lets ``base`` sit outside ``root``.** The walk is
+    permissive until it first steps inside the root and total from then on. That
+    is what keeps ``_destination_of`` working, whose ``contentFile`` starts in
+    ``migrations/`` and is outside ``knowledge/`` for its first two components,
+    while still refusing anything that leaves once it has arrived.
+
+    Cost is bounded by construction rather than by trust in the input: at most
+    one ``lstat`` per component plus one per hop, with components capped by the
+    published schema's 1024-character ``contentFile`` and hops by
+    :data:`MAX_SYMLINK_HOPS`. The shape it replaces called ``Path.resolve()`` per
+    component, which defeats realpath's own memoisation and measured 276 ms for a
+    single schema-legal path over a 900-link chain, rising linearly with no cap.
 
     Args:
-        root: The permitted root. Every symlink the walk meets must resolve
-            inside it, and so must the destination.
+        root: The permitted root. No position the walk stands on, after the first
+            that is inside it, may be outside it.
         base: The directory ``requested`` is interpreted from, and where the walk
             starts -- so ``base``'s own components are never examined, which is
             what keeps a checkout under a symlinked ``/tmp`` from refusing
@@ -119,8 +208,9 @@ def assert_no_symlink_escape(root: Path, *, base: Path, requested: str | PurePos
         requested: The path relative to ``base``, exactly as the caller wrote it.
 
     Raises:
-        PathEscapeError: If any component of ``requested`` is a symlink resolving
-            outside ``root``, or if the walk ends outside ``root``.
+        PathEscapeError: If the walk stands outside ``root`` after having been
+            inside it, if it ends outside ``root``, if a link cannot be read, or
+            if it would traverse more than :data:`MAX_SYMLINK_HOPS` links.
 
     ``base`` and ``requested`` are keyword-only because ``root`` and ``base`` are
     both directories: a silent transposition of the two would disable the check
@@ -129,21 +219,37 @@ def assert_no_symlink_escape(root: Path, *, base: Path, requested: str | PurePos
     """
     resolved_root = root.resolve()
     current = base.resolve()
+    # `base` may legitimately sit outside `root`: `_destination_of` walks a
+    # `contentFile` from `migrations/` towards `knowledge/`, and every position
+    # before it arrives is outside. So the walk is permissive until it first
+    # steps inside, and total from then on -- once a position is in the root, no
+    # later position may be out of it. Checking only the ends instead is what
+    # let five of six traversal spellings through (round 1, R1-A).
+    entered = current.is_relative_to(resolved_root)
 
-    for part in PurePosixPath(requested).parts:
-        if part == "..":
-            # `current` is fully resolved at every step, so its real parent is
-            # what `..` means from here. Reading it lexically instead would undo
-            # a link this loop had just followed.
-            current = current.parent
-            continue
-        candidate = current / part
-        if candidate.is_symlink():
-            current = candidate.resolve()
-            if not current.is_relative_to(resolved_root):
-                raise PathEscapeError(str(requested), str(resolved_root))
-            continue
-        current = candidate
+    pending = deque(PurePosixPath(requested).parts)
+    hops = 0
+    while True:
+        # Links first, and *whether or not* components remain: the last
+        # component's chain is walked to its end too. Expanding it only while
+        # more parts were pending left the tail of a trailing link unchecked,
+        # which is R1-A's mechanism (i) moved rather than fixed.
+        if current.is_symlink():
+            current, hops = _expand(
+                current,
+                pending=pending,
+                hops=hops,
+                requested=requested,
+                resolved_root=resolved_root,
+            )
+        elif pending:
+            current = _step(current, pending.popleft())
+        else:
+            break
+        now_inside = current.is_relative_to(resolved_root)
+        if entered and not now_inside:
+            raise PathEscapeError(str(requested), str(resolved_root))
+        entered = entered or now_inside
 
     if not current.is_relative_to(resolved_root):
         raise PathEscapeError(str(requested), str(resolved_root))

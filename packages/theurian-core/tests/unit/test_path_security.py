@@ -33,6 +33,7 @@ from theurian.security import paths as paths_module
 from theurian.security.paths import (
     MAX_PATH_DEPTH,
     MAX_SOURCE_FILE_BYTES,
+    MAX_SYMLINK_HOPS,
     _unbounded_shape,
     assert_no_symlink_escape,
     ensure_private_mode,
@@ -168,6 +169,51 @@ def _read_through_the_chain_that_comes_back(project_root: Path) -> object:
     return read_source_file(project_root, _chain_that_leaves_the_root_and_comes_back(project_root))
 
 
+def _folded_chain_that_leaves_the_root(project_root: Path) -> str:
+    """The same traversal as above, folded into a **single** component.
+
+    ``hop2``'s own target is ``outside/back``, so one component's chain leaves
+    the root and returns. A walk that expands a component with ``resolve()``
+    cannot see it: resolution reports only where the chain ended, which is
+    inside. This is round 1's R1-A, mechanism (i).
+    """
+    knowledge = project_root / ".theurian" / "knowledge"
+    (knowledge / _CHAIN_LEAF).write_text("# Auth policy\n")
+
+    outside = project_root.parent / "outside"
+    back = outside / "back"
+    if not back.is_symlink():
+        back.symlink_to(knowledge, target_is_directory=True)
+    folded = knowledge / "hop2"
+    if not folded.is_symlink():
+        folded.symlink_to(back, target_is_directory=True)
+
+    return f".theurian/knowledge/hop2/{_CHAIN_LEAF}"
+
+
+def _read_through_a_folded_chain(project_root: Path) -> object:
+    return read_source_file(project_root, _folded_chain_that_leaves_the_root(project_root))
+
+
+def _read_through_more_links_than_the_budget(project_root: Path) -> object:
+    """A chain longer than :data:`MAX_SYMLINK_HOPS`, every link inside the root.
+
+    Nothing here escapes, so this drives the budget and only the budget: what
+    would otherwise happen is an unbounded walk over an input the caller chose.
+    """
+    knowledge = project_root / ".theurian" / "knowledge"
+    (knowledge / _CHAIN_LEAF).write_text("# Auth policy\n")
+
+    target = knowledge / _CHAIN_LEAF
+    for index in range(MAX_SYMLINK_HOPS + 1):
+        link = knowledge / f"chain{index}-{_ECHO_MARKER}.md"
+        if not link.is_symlink():
+            link.symlink_to(target)
+        target = link
+
+    return read_source_file(project_root, f".theurian/knowledge/{target.name}")
+
+
 def _read_a_fifo_named_like_the_secret(project_root: Path) -> object:
     """The one refusal that fires *after* containment has been proved.
 
@@ -264,11 +310,29 @@ _ECHO_ATTACKS = [
         lambda root: assert_no_symlink_escape(
             root, base=root, requested=f"../outside/{_ECHO_MARKER}"
         ),
-        id="assert-no-symlink-escape-walk-ends-outside",
+        id="a-dotdot-that-climbs-out-after-entering",
+    ),
+    pytest.param(
+        lambda root: assert_no_symlink_escape(
+            root / ".theurian" / "knowledge",
+            base=root / ".theurian" / "migrations",
+            requested=f"{_ECHO_MARKER}.md",
+        ),
+        id="a-walk-from-an-outside-base-that-never-enters",
     ),
     pytest.param(
         _read_through_the_chain_that_comes_back,
         id="an-intermediate-link-leaves-the-root",
+        marks=_NEEDS_SYMLINKS,
+    ),
+    pytest.param(
+        _read_through_a_folded_chain,
+        id="a-single-component-whose-own-chain-leaves",
+        marks=_NEEDS_SYMLINKS,
+    ),
+    pytest.param(
+        _read_through_more_links_than_the_budget,
+        id="a-chain-past-the-hop-budget",
         marks=_NEEDS_SYMLINKS,
     ),
     pytest.param(
@@ -376,16 +440,41 @@ _RAISE_SITES: Final = (
     _RaiseSite(
         function="assert_no_symlink_escape",
         error="PathEscapeError",
-        role="the walk ends outside the root",
-        driven_by=("assert-no-symlink-escape-walk-ends-outside",),
+        role="the walk stepped outside the root after having been inside it",
+        driven_by=(
+            "an-intermediate-link-leaves-the-root",
+            "a-single-component-whose-own-chain-leaves",
+            "a-dotdot-that-climbs-out-after-entering",
+        ),
         unreachable_because="",
     ),
     _RaiseSite(
         function="assert_no_symlink_escape",
         error="PathEscapeError",
-        role="a component of the walked chain is a link that leaves the root",
-        driven_by=("an-intermediate-link-leaves-the-root",),
+        role="the walk never entered the root and ended outside it",
+        driven_by=("a-walk-from-an-outside-base-that-never-enters",),
         unreachable_because="",
+    ),
+    _RaiseSite(
+        function="_expand",
+        error="PathEscapeError",
+        role="the chain is longer than MAX_SYMLINK_HOPS",
+        driven_by=("a-chain-past-the-hop-budget",),
+        unreachable_because="",
+    ),
+    _RaiseSite(
+        function="_expand",
+        error="PathEscapeError",
+        role="a link the walk met could not be read",
+        driven_by=(),
+        unreachable_because=(
+            "it needs the link to stop being readable between the `is_symlink` that "
+            "saw it and the `readlink` that reads it, and both calls need the same "
+            "one permission on the same one directory, so no single-threaded driver "
+            "can separate them; its behaviour is pinned instead by "
+            "test_a_link_that_cannot_be_read_is_refused_rather_than_stepped_over, "
+            "which substitutes the failure at Path.readlink"
+        ),
     ),
     _RaiseSite(
         function="read_source_file",
