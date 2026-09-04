@@ -74,10 +74,7 @@ from typing import Final
 
 from write_lock_claims import REPO_ROOT, collapsed
 
-from theurian.infrastructure.sqlite.index_purge import (
-    _FTS5_DECLARATION,
-    _FTS5_TABLE_CANDIDATES,
-)
+from theurian.infrastructure.sqlite.index_purge import _FTS5_TABLES
 from theurian.infrastructure.sqlite.index_schema import INDEX_DDL
 
 # -- the wrap-aware reading --------------------------------------------------
@@ -187,11 +184,23 @@ CLOSURE_RECORDS: Final = (
 #: sentences in the past tense, because the measurement they carry is the record.
 #: "nothing in the purge merged them" is history and must stay; "nothing in the
 #: purge merges them" is a false claim about the shipped code.
+#:
+#: Both alternations were widened after round two of #499 observed that a key
+#: matching one spelling of a sentence is a key a re-wording walks past without
+#: anyone meaning to evade it. The subject and the verb are the parts that vary
+#: when the same claim is written twice: this branch's own history spells it
+#: "nothing in the module merges" in one file and "nothing in the shipped purge
+#: merges" in another, and both are the sentence this key exists to catch.
 OPEN_CHANNEL_KEYS: Final = (
-    ("the purge does not merge", re.compile(r"nothing in the (?:shipped )?purge merges")),
+    (
+        "the purge does not merge",
+        re.compile(
+            r"(?:nothing|no step|neither)(?: in the (?:shipped )?(?:purge|module|build))? merges"
+        ),
+    ),
     (
         "duration is monotone in the withdrawn count",
-        re.compile(r"(?:is|are|stays|stay) monotone in the withdrawn count"),
+        re.compile(r"(?:is|are|stays|stay|remains|remain) monotone in the withdrawn count"),
     ),
 )
 
@@ -309,28 +318,38 @@ PURGE_SOURCE: Final = _CORE / "src/theurian/infrastructure/sqlite/index_purge.py
 
 
 def _discovered_full_text_tables() -> tuple[list[str], int]:
-    """The tables the shipped merge reaches over the shipped schema, and the field it filtered.
+    """The tables the shipped merge reaches over the shipped schema, and how many it saw.
 
     Built the way `_merge_full_text` discovers them -- the live
-    :data:`_FTS5_TABLE_CANDIDATES` query and the live :data:`_FTS5_DECLARATION`
-    pattern over a database made from the live `INDEX_DDL` -- rather than by
-    counting `USING fts5` in the schema file. Two reasons, and each is a way the
-    file-count answer is wrong: `index_schema.py` also declares `FTS5_PROBE`, a
-    temp-table probe that is not part of a build, so the file carries five
-    occurrences where a build declares four; and the question this pin asks is
-    what the *discovery* reaches, which is the pattern's answer and not the
-    schema's.
+    :data:`_FTS5_TABLES` query over a database made from the live `INDEX_DDL` --
+    rather than by counting `USING fts5` in the schema file. Two reasons, and each
+    is a way the file-count answer is wrong: `index_schema.py` also declares
+    `FTS5_PROBE`, a temp-table probe that is not part of a build, so the file
+    carries five occurrences where a build declares four; and the question this
+    pin asks is what the *discovery* reaches, which is the query's answer and not
+    the schema's.
+
+    The query changed shape after round two of #499 -- it keys on the `_data` and
+    `_config` shadow tables a full-text index owns, having stopped reading the
+    declaration text at all -- and this helper changed with it rather than being
+    rewritten around the old one. That is the point of deriving the count from the
+    live constant: the discovery can be replaced outright and this still measures
+    the thing the records describe.
 
     In memory, so nothing here touches a filesystem: measured 2026-09-04, an
     in-memory database made from `INDEX_DDL` and a real `SqliteIndexStore.create`
-    build return the same 26 candidates and the same 4 reached.
+    build both hold 26 tables and both answer 4.
     """
     with closing(sqlite3.connect(":memory:")) as connection:
         connection.row_factory = sqlite3.Row
         connection.executescript(INDEX_DDL)
-        rows = connection.execute(_FTS5_TABLE_CANDIDATES).fetchall()
-    reached = [str(row["name"]) for row in rows if _FTS5_DECLARATION.match(str(row["sql"]))]
-    return reached, len(rows)
+        reached = [str(row["name"]) for row in connection.execute(_FTS5_TABLES).fetchall()]
+        total = int(
+            connection.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table'"
+            ).fetchone()[0]
+        )
+    return reached, total
 
 
 def test_the_merge_reaches_as_many_full_text_tables_as_the_records_claim() -> None:
@@ -343,19 +362,19 @@ def test_the_merge_reaches_as_many_full_text_tables_as_the_records_claim() -> No
     silently, without anyone editing them -- which is the shape
     `docs/.../pin-derivations-not-prose` exists to stop.
 
-    The control is asserted first and is what stops this passing on a pattern that
-    matched everything: the candidate query returns every `CREATE TABLE` in the
-    build, shadow tables included, so a declaration pattern that had stopped
-    discriminating would reach far more than four and be caught here rather than
-    read as agreement.
+    The control is asserted first and is what stops this passing on a discovery
+    that reached everything: a build holds far more tables than full-text indexes
+    -- each index owns four or five shadow tables, themselves `type = 'table'` --
+    so a key that had stopped discriminating would reach all of them and be caught
+    here rather than read as agreement.
     """
-    reached, candidates = _discovered_full_text_tables()
+    reached, tables = _discovered_full_text_tables()
 
-    assert candidates > len(reached), (
-        f"the declaration filter reached all {candidates} candidate tables, so it is no "
-        f"longer discriminating and the count below agrees with the records by accident. "
-        f"Each FTS5 table owns four or five shadow tables that also carry CREATE TABLE "
-        f"text, and `_FTS5_DECLARATION` is what excludes them"
+    assert tables > len(reached), (
+        f"the discovery reached all {tables} tables in the build, so it is no longer "
+        f"discriminating and the count below agrees with the records by accident. Each "
+        f"full-text index owns four or five shadow tables that are `type = 'table'` too; "
+        f"owning `_data` and `_config` is what separates the index from them"
     )
 
     assert len(reached) == RECORDED_FULL_TEXT_TABLES, (

@@ -9,26 +9,36 @@ v3 and carries four at v4; issue #499's own sketch of the fix says "both FTS5
 tables", which was the v3 count. A fifth table would be indexed, purged, and left
 holding its tombstones, and nothing would say so.
 
-So the merge reads the build's own `sqlite_master` instead, and this file is what
-makes that choice load-bearing rather than incidental: it plants FTS5 tables that
-no constant in the codebase names, and requires the purge to merge every one of
-them. Measured 2026-09-03 by replacing the discovery with a tuple of the four
+So the merge discovers them from the build itself, and this file is what makes
+that choice load-bearing rather than incidental: it plants FTS5 tables that no
+constant in the codebase names, and requires the purge to merge every one of
+them. Measured 2026-09-04 by replacing the discovery with a tuple of the four
 shipped names: the first test below goes RED, and `test_purged_build_structure.py`
 stays green on all six of its own.
 
-**Being in `sqlite_master` is not the same as being spelled the way the schema
-spells it.** `USING "fts5"`, `USING [fts5]`, `` USING `fts5` `` and
-`USING 'fts5'` are all accepted by SQLite and all name the same module (measured,
-3.47.1), so :data:`QUOTED_MODULE` is a perfectly ordinary FTS5 table that a
-reading keyed on the bare token walks straight past, leaving 44,409 bytes of
-tombstones behind it. :data:`ODD_NAME` is the identifier half of the same point:
-a name carrying a double quote, which reaches the merge only if it doubles the
-quote when it builds the statement -- undoubled it is
-`near "name_fts": syntax error`, not a silent mis-target.
+**What it discovers them *by* is the point this file now exists to hold.** Two
+rounds of this PR read the `CREATE` text out of `sqlite_master` and classified on
+it, and each fix moved the failure one character along instead of ending it. The
+four plants in :data:`MUST_MERGE` are that history, and every one of them is an
+ordinary FTS5 table:
+
+- :data:`PLANTED`, spelled the way the schema spells its own;
+- :data:`QUOTED_MODULE`, declared `USING "fts5"` -- one of four quote dialects
+  SQLite accepts for the same module name, all four measured legal on 3.47.1, and
+  all four skipped by a reading keyed on the bare token, which left 44,409 bytes
+  of tombstones in place;
+- :data:`ODD_NAME`, carrying a double quote, reached only by a merge that doubles
+  it when building the statement -- undoubled it is `near "name_fts": syntax
+  error`, not a silent mis-target;
+- :data:`PAREN_NAME`, a date-stamped `log(2024)` and the least exotic identifier
+  here, which the narrowing that fixed the quote dialects then *missed*: measured
+  against that pattern, it came back from a purge holding 44,409 bytes while its
+  three identically-filled siblings held 2,885 -- the T-17a residue re-opened for
+  one table, in silence.
 
 **And the reading has to be narrow, because a purge is all-or-nothing: anything
-it raises on unlinks the build.** Three decoys stand for three ways a loose
-reading raises, each message measured on 3.47.1:
+it raises on unlinks the build.** Four decoys stand for four ways a loose reading
+raises, each message measured on 3.47.1:
 
 - :data:`VOCAB_DECOY`, an `fts5vocab` view, which a `LIKE '%fts5%'` reading takes
   and which is not writable -- `INSERT INTO v(v) VALUES ('optimize')` against one
@@ -36,15 +46,23 @@ reading raises, each message measured on 3.47.1:
 - :data:`NAME_DECOY`, a plain table whose *name* ends in `_fts`, which a
   name-keyed reading takes and which answers `table pretend_fts has no column
   named pretend_fts`;
-- :data:`NAME_IN_QUOTES_DECOY`, an `fts5vocab` view *named* `x USING fts5`. This
-  one is legal SQL and the more interesting of the three, because the pattern
-  that shipped in this PR's first commit matched it -- on the table's own name,
-  through a `.+?` that crossed into the quotes -- so a build carrying it was a
-  build the purge destroyed. It is why the name portion is now `[^(]+?`.
+- :data:`NAME_IN_QUOTES_DECOY`, an `fts5vocab` view *named* `x USING fts5`, legal
+  SQL that this PR's first pattern matched on the table's own name;
+- :data:`DESTROYER_DECOY`, the same trick with the parenthesis included. It
+  survived the narrowing, because `[^(]+?` stops at the `(` inside *that name* and
+  a prefix match is all `re.match` ever needed. Both of these are a purge issuing
+  `optimize` against a read-only view, which raises, which unlinks the build it
+  was producing.
 
 Under each loose reading the purge raises instead of returning, so the purge
-completing is itself the assertion; all three are checked intact afterwards,
-since a merge that silently rewrote one would be worse than a merge that refused.
+completing is itself the assertion; all four are checked intact afterwards, since
+a merge that silently rewrote one would be worse than a merge that refused.
+
+Between them the eight plants say the class was never a spelling: a declaration
+embeds an identifier, an identifier is arbitrary text, and no amount of matching
+around arbitrary text classifies it. `_merge_full_text` reads none of that text
+now -- it keys on the shadow tables FTS5 creates -- so these eight are a
+regression bar rather than a list of cases a pattern has to keep passing.
 
 The last claim is *when* rather than which: a published purge must already be
 merged, which is checked by merging it again and finding nothing to remove. That
@@ -92,10 +110,17 @@ QUOTED_MODULE: Final = "quoted_fts"
 #: merge that doubles the quote when it builds its statement.
 ODD_NAME: Final = 'odd"name_fts'
 
-#: The three planted tables that carry tombstones and must all come back merged.
+#: And again, under a name containing a parenthesis -- a date-stamped log table,
+#: the least exotic identifier here. It exists because the narrowing that stopped
+#: a declaration's name portion at the first `(` stopped at *this* one: measured
+#: 2026-09-04 against that pattern, this table came back from a purge holding
+#: 44,409 bytes while its three identically-filled siblings held 2,885.
+PAREN_NAME: Final = "log(2024)"
+
+#: The four planted tables that carry tombstones and must all come back merged.
 #: Swept together, so a reading that handles one spelling and not another shows up
 #: as the spelling it dropped rather than as a green run.
-MUST_MERGE: Final = (PLANTED, QUOTED_MODULE, ODD_NAME)
+MUST_MERGE: Final = (PLANTED, QUOTED_MODULE, ODD_NAME, PAREN_NAME)
 
 #: Matches a `LIKE '%fts5%'` reading of `sqlite_master.sql` and is read-only, so
 #: a merge that took it would refuse every build that carried one.
@@ -108,8 +133,14 @@ NAME_DECOY: Final = "pretend_fts"
 #: the shape that a name-portion of `.+?` reads as a declaration of its own.
 NAME_IN_QUOTES_DECOY: Final = "x USING fts5"
 
-#: The three that must come back untouched.
-DECOYS: Final = (VOCAB_DECOY, NAME_DECOY, NAME_IN_QUOTES_DECOY)
+#: The same trick with the parenthesis included, which is what survived round
+#: one's narrowing: `[^(]+?` stops at the `(` inside *this name*, and `re.match`
+#: only ever needed a prefix, so the pattern matched and the merge issued
+#: `optimize` against a read-only view -- unlinking the build it was producing.
+DESTROYER_DECOY: Final = "z USING fts5("
+
+#: The four that must come back untouched.
+DECOYS: Final = (VOCAB_DECOY, NAME_DECOY, NAME_IN_QUOTES_DECOY, DESTROYER_DECOY)
 
 BODY: Final = (
     "Retention and isolation are decided per namespace. Authentication tokens "
@@ -199,28 +230,48 @@ def _posting_bytes(path: Path, table: str) -> int:
 
 
 def _full_text_tables(path: Path) -> list[str]:
-    """Every FTS5 table in the file, found by its storage rather than by its DDL.
+    """Every FTS5 table in the file, found by asking SQLite to accept one's commands.
 
-    Independent of the production reading on purpose, and independent in *kind*
-    rather than merely in wording: a table is an FTS5 index here iff it owns the
-    `<name>_data` and `<name>_config` shadow tables FTS5 creates for one. Nothing
-    about that consults the `CREATE` statement, so it cannot inherit the blind
-    spot a text pattern has -- which is not hypothetical, because the first
-    version of this helper keyed on the substring `fts5(` and so missed
-    :data:`QUOTED_MODULE` in exactly the way `_FTS5_DECLARATION` did. Two
-    predicates sharing a blind spot agree with each other and with nothing else.
+    **The oracle, and it is deliberately not the production reading's kind.**
+    `_merge_full_text` keys on the storage a table owns -- the `_data` and
+    `_config` shadow tables -- after two rounds proved that reading the `CREATE`
+    text could not be made to work. This helper used that same storage key for one
+    round, which stopped being an independent check the moment production adopted
+    it: two predicates that share a mechanism agree with each other and with
+    nothing else.
 
-    `_data` and `_config` together rather than either alone: both are created for
-    every FTS5 table whatever its options, where `_docsize` is absent under
-    `columnsize=0` and `_content` under external content -- so this counts four
-    shadow tables for the schema's own and five for a contentless plant.
+    So this asks the only authority that cannot be wrong about it. A table is a
+    full-text index iff SQLite accepts `INSERT INTO t(t) VALUES ('optimize')`
+    against it -- which is not a proxy for the question the merge asks, it *is*
+    that question. An `fts5vocab` view answers `may not be modified`; an ordinary
+    table answers `has no column named ...`; a real FTS5 table takes it however
+    its declaration was spelled.
+
+    Wrapped in a transaction that is always rolled back, so the probe is read-only
+    with respect to the file: verified by measuring posting bytes across two full
+    sweeps and finding them unchanged. That matters because
+    :func:`test_a_published_purge_is_already_merged_so_re_merging_finds_nothing_to_do`
+    measures exactly those bytes after calling this.
     """
-    with closing(sqlite3.connect(read_only_uri(path), uri=True)) as connection:
-        names = {
+    found: list[str] = []
+    with closing(sqlite3.connect(path, isolation_level=None)) as connection:
+        names = [
             str(row[0])
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-        }
-    return sorted(name for name in names if f"{name}_data" in names and f"{name}_config" in names)
+        ]
+        for name in names:
+            connection.execute("BEGIN")
+            try:
+                connection.execute(
+                    f"INSERT INTO {_quoted(name)}({_quoted(name)}) VALUES ('optimize')"  # noqa: S608 - identifier read back from this build
+                )
+            except sqlite3.Error:
+                continue  # not a full-text index; `finally` still rolls the probe back
+            else:
+                found.append(name)
+            finally:
+                connection.execute("ROLLBACK")
+    return sorted(found)
 
 
 def _add_nodes(path: Path, count: int) -> None:
@@ -281,24 +332,27 @@ def _tombstone(connection: sqlite3.Connection, table: str, *, declaration: str) 
 
 
 def _plant(path: Path) -> None:
-    """Add the three tables the merge must reach and the three it must not touch."""
+    """Add the four tables the merge must reach and the four it must not touch."""
     with closing(sqlite3.connect(path)) as connection:
-        # The three spellings, all naming the same module. `"fts5"` and the
-        # quote-carrying name are the two a reading can be right about the schema
-        # and still get wrong.
+        # Four ordinary FTS5 tables. Only the first is spelled the way the schema
+        # spells its own; the rest vary the module quoting and the identifier, and
+        # each of those variations defeated a shipped reading of the DDL.
         _tombstone(connection, PLANTED, declaration="fts5")
         _tombstone(connection, QUOTED_MODULE, declaration='"fts5"')
         _tombstone(connection, ODD_NAME, declaration="fts5")
+        _tombstone(connection, PAREN_NAME, declaration="fts5")
         with connection:
             connection.execute(
                 f"CREATE VIRTUAL TABLE {VOCAB_DECOY} USING fts5vocab({PLANTED}, row)"
             )
-            # Legal, and the shape a `.+?` name portion reads as a declaration:
-            # the module text sits inside the table's own quoted name.
-            connection.execute(
-                f"CREATE VIRTUAL TABLE {_quoted(NAME_IN_QUOTES_DECOY)} "
-                f"USING fts5vocab({PLANTED}, row)"
-            )
+            # Both legal, and both the shape a name-matching reading takes for a
+            # declaration of its own: the module text sits inside the table's
+            # quoted name. The second carries the parenthesis too, which is how it
+            # survived a reading that stopped the name portion at the first `(`.
+            for decoy in (NAME_IN_QUOTES_DECOY, DESTROYER_DECOY):
+                connection.execute(
+                    f"CREATE VIRTUAL TABLE {_quoted(decoy)} USING fts5vocab({PLANTED}, row)"
+                )
             connection.execute(f"CREATE TABLE {NAME_DECOY} (id INTEGER PRIMARY KEY, note TEXT)")
             connection.execute(
                 f"INSERT INTO {NAME_DECOY} (id, note) VALUES (1, 'untouched')"  # noqa: S608 - module-owned literals

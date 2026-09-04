@@ -43,7 +43,6 @@ correctness property rather than a preference.
 from __future__ import annotations
 
 import os
-import re
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import closing, contextmanager
@@ -377,8 +376,8 @@ _POST_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
 )
 
 
-#: Every table in the file that might be an FTS5 index, read out of the build
-#: rather than written down here.
+#: Every full-text index in the build, keyed on the storage a table owns rather
+#: than on how its declaration is spelled.
 #:
 #: **Discovered, because a written-down list is what the next table slips past.**
 #: The schema carried two of these at v3 and carries four at v4, since summary
@@ -391,58 +390,40 @@ _POST_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
 #: (:func:`_merge_full_text`, which names the other two residues this module
 #: talks about and keeps them apart from this one).
 #:
-#: `sql IS NOT NULL` is a **null guard, not a filter**: measured on a fresh index,
-#: `type = 'table'` already selects 32 rows of which 32 have SQL, because the rows
-#: SQLite writes with a null `sql` are the implicit indexes and they are
-#: `type = 'index'`. It earns its place by keeping a null out of
-#: :data:`_FTS5_DECLARATION`, which would otherwise be handed the string `"None"`.
+#: **Keyed on storage because the spelling cannot be read.** Two rounds of this PR
+#: matched `sqlite_master.sql` instead, and each fix moved the failure one
+#: character along rather than ending it. A bare-token reading skipped
+#: `USING "fts5"` and its three sibling quote dialects, all legal. The narrowing
+#: that fixed those -- stop the name portion at the first `(` -- then missed a
+#: genuine FTS5 table named `log(2024)`, which came back from a purge holding
+#: 44,409 bytes of postings where its three identically-filled siblings held
+#: 2,885, T-17a re-opened for that one table in silence; and it still matched an
+#: `fts5vocab` view named `z USING fts5(`, whose
+#: *own name* supplied the parenthesis the pattern stopped at, so the merge issued
+#: `optimize` against a read-only table, which raises, which unlinks the build.
 #:
-#: The shadow tables each FTS5 table owns -- `<name>_data`, `_idx`, `_docsize`,
-#: `_config`, and `_content` too unless the table is external-content, so four or
-#: five depending on that -- *do* carry `CREATE TABLE` text and survive to here.
-#: :data:`_FTS5_DECLARATION` is what excludes them.
+#: The class is not any one of those spellings. It is that a declaration embeds an
+#: identifier, an identifier is arbitrary text, and arbitrary text cannot be
+#: classified by matching text around it. So this reads none: a table backed by
+#: FTS5 owns `<name>_data` and `<name>_config`, created for every such table
+#: whatever its options and for no `fts5vocab` view, so owning both *is* being a
+#: full-text index. There is no next spelling, because nothing here is spelled.
+#:
+#: Both shadow tables rather than either alone: `_docsize` is absent under
+#: `columnsize=0` and `_content` under external content, while these two are not.
 #:
 #: `ORDER BY name` so a purge does the same work in the same order on every run.
 #: Nothing downstream reads the order -- each table's merge is independent of the
 #: others -- so this is determinism for its own sake and is argued, not pinned.
-_FTS5_TABLE_CANDIDATES: Final = """
-SELECT name, sql FROM sqlite_master
- WHERE type = 'table' AND sql IS NOT NULL
- ORDER BY name
+_FTS5_TABLES: Final = """
+SELECT fts.name FROM sqlite_master fts
+ WHERE fts.type = 'table'
+   AND EXISTS (SELECT 1 FROM sqlite_master shadow
+                WHERE shadow.type = 'table' AND shadow.name = fts.name || '_data')
+   AND EXISTS (SELECT 1 FROM sqlite_master shadow
+                WHERE shadow.type = 'table' AND shadow.name = fts.name || '_config')
+ ORDER BY fts.name
 """
-
-#: A `sqlite_master.sql` text that *declares* an FTS5 table, as against one that
-#: merely mentions one.
-#:
-#: Both halves of this are load-bearing, and each was measured wrong before it was
-#: measured right (2026-09-03, SQLite 3.47.1, fifteen declarations in
-#: `test_purge_full_text_discovery.py`'s own vocabulary):
-#:
-#: **The module name may be quoted.** `USING "fts5"`, `USING [fts5]`,
-#: `` USING `fts5` `` and `USING 'fts5'` are all accepted by SQLite and all name
-#: the same module. A reading that insisted on the bare token skipped every one of
-#: them, which is a table left holding its tombstones with nothing to say so.
-#:
-#: **The name portion may not cross into the argument list.** `[^(]+?` rather than
-#: `.+?`, because a module's arguments and a quoted table name are both places an
-#: operator's own text lands: an `fts5vocab` view *named* `x USING fts5` is legal,
-#: and under `.+?` its own name satisfied this pattern -- so the merge issued
-#: `optimize` against a read-only vocab table, which raises, which unlinks the
-#: build. A purge destroying its own output over a legal table is the failure this
-#: half exists to stop, and `test_purge_full_text_discovery.py` plants that table.
-#:
-#: Trailing `\s*\(` rather than `\b`, and it is what separates `fts5` from
-#: `fts5vocab` now that the leading quote is optional: every FTS5 table declares at
-#: least one column, so the module name is always followed by an argument list,
-#: while `fts5vocab(` puts `v` where this wants a quote or a parenthesis.
-#:
-#: No `DOTALL`: nothing here is `.` any more. `[^(]` and `\s` both match a newline
-#: on their own, so a DDL rewrapped across lines -- between the table name and
-#: `USING`, or anywhere else before the arguments -- still matches.
-_FTS5_DECLARATION: Final = re.compile(
-    r"^\s*CREATE\s+VIRTUAL\s+TABLE\s+[^(]+?\s+USING\s+[\"'`\[]?fts5[\"'`\]]?\s*\(",
-    re.IGNORECASE,
-)
 
 
 class IndexPurgeError(TheurianError):
@@ -869,10 +850,7 @@ def _merge_full_text(target: Path) -> None:
     cost the operator the type without adding a remedy.
     """
     with _writing(target) as connection:
-        candidates = connection.execute(_FTS5_TABLE_CANDIDATES).fetchall()
-        for row in candidates:
-            if not _FTS5_DECLARATION.match(str(row["sql"])):
-                continue
+        for row in connection.execute(_FTS5_TABLES).fetchall():
             # Quoted, and any embedded quote doubled: the identifier arrives from
             # `sqlite_master` rather than from this module, so it is data at this
             # point even though the schema that wrote it is ours. Pinned by the
