@@ -61,8 +61,13 @@ a merge that silently rewrote one would be worse than a merge that refused.
 Between them the eight plants say the class was never a spelling: a declaration
 embeds an identifier, an identifier is arbitrary text, and no amount of matching
 around arbitrary text classifies it. `_merge_full_text` reads none of that text
-now -- it keys on the shadow tables FTS5 creates -- so these eight are a
-regression bar rather than a list of cases a pattern has to keep passing.
+now. It asks two things the engine maintains -- whether the table owns the
+`_data` and `_config` shadow tables FTS5 creates, and whether SQLite's own
+catalog calls it a virtual table -- so these eight are a regression bar rather
+than a list of cases a pattern has to keep passing. The second half arrived a
+round after the first, and the family that forced it is at the bottom of this
+file: owning the shadow names is something an ordinary table can be made to do,
+and being virtual is not.
 
 The last claim is *when* rather than which: a published purge must already be
 merged, which is checked by merging it again and finding nothing to remove. That
@@ -258,13 +263,17 @@ def _full_text_tables(path: Path) -> list[str]:
     two readings of one question, so neither is a check on the other's answer in
     general -- only on the population this file plants, where they must agree. An
     FTS3 or FTS4 table is where they part: it takes `optimize`, so this helper
-    calls it a full-text table, while the storage key excludes it because FTS4
-    lays its index out as `_segdir`, `_segments`, `_stat`, `_content` and
-    `_docsize` with neither `_data` nor `_config` (measured). Production is right
-    there and this helper is not, because the question the merge asks is which
-    indexes *it* maintains -- Theurian's schema declares FTS5 and an FTS4 table in
-    a build is not one of them. Read this helper as "what would accept the
-    command" and the production key as "what the merge is responsible for".
+    calls it a full-text table, while production excludes it. Measured, and worth
+    naming precisely because production now has two halves: FTS4 *is* a virtual
+    table, so it clears the `pragma_table_list` join; what excludes it is the
+    ownership half, since FTS4 lays its index out as `_segdir`, `_segments`,
+    `_stat`, `_content` and `_docsize` with neither `_data` nor `_config`.
+
+    Production is right there and this helper is not, because the question the
+    merge asks is which indexes *it* maintains -- Theurian's schema declares FTS5,
+    and an FTS4 table in a build is not one of them. Read this helper as "what
+    would accept the command" and the production key as "what the merge is
+    responsible for".
     """
     found: list[str] = []
     with closing(sqlite3.connect(path, isolation_level=None)) as connection:
@@ -619,74 +628,142 @@ def _production_reaches(path: Path) -> list[str]:
         return [str(row[0]) for row in connection.execute(_FTS5_TABLES)]
 
 
+def _owns_the_shadow_names(path: Path, table: str) -> bool:
+    """Whether *table* owns the two shadow names, which is the half the join narrows.
+
+    The control for the tests below reads this rather than the production query,
+    because what it has to establish is that the plant would defeat an
+    ownership-only reading -- the state production was in before the catalog fact
+    was composed in.
+    """
+    with closing(sqlite3.connect(read_only_uri(path), uri=True)) as connection:
+        names = {
+            str(row[0])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+    return f"{table}_data" in names and f"{table}_config" in names
+
+
+def _row_count(path: Path, table: str) -> int:
+    """How many rows *table* holds.
+
+    The universal key for "the merge did not write here", and universal is why it
+    is a count rather than the rows themselves: a purge legitimately rewrites
+    `nodes.index_build_id` on every surviving node (`_restamp`), so comparing
+    whole rows would report that restamp as a defect. What the finding is about is
+    a row *appearing* -- an FTS5 command taken as an ordinary insert -- and a
+    count sees that wherever it happens.
+    """
+    with closing(sqlite3.connect(read_only_uri(path), uri=True)) as connection:
+        return int(
+            connection.execute(f"SELECT count(*) FROM {_quoted(table)}").fetchone()[0]  # noqa: S608 - module-owned literals
+        )
+
+
+def _contents_of(path: Path, table: str) -> list[tuple[object, ...]]:
+    """Every row of *table*, for the two plants the purge has no business touching at all."""
+    with closing(sqlite3.connect(read_only_uri(path), uri=True)) as connection:
+        return [
+            tuple(row)
+            for row in connection.execute(f"SELECT * FROM {_quoted(table)}")  # noqa: S608 - module-owned literals
+        ]
+
+
 @pytest.mark.parametrize(
-    ("label", "table", "plant_the_table"),
+    ("label", "table", "column"),
     [
         # A triple an operator might create for their own bookkeeping. Nothing in
         # `index_schema.py` produces this shape; only a hand write does.
-        ("a plain table wearing the shadow names", "memo", True),
-        # The same promotion aimed at a table the schema really has: give `nodes`
-        # the two shadow names and the discovery reaches `nodes` itself.
-        ("the schema's own `nodes`, promoted", "nodes", False),
+        ("a plain table wearing the shadow names", "memo", "body"),
+        # The member that refuted the earlier accepted-risk decision. Its column is
+        # named after the table, so `INSERT INTO selfcol(selfcol) VALUES ('optimize')`
+        # is a valid ordinary insert rather than an FTS5 command: it does not raise,
+        # it writes a row.
+        ("a triple whose column is named after its table", "selfcol", "selfcol"),
+        # The promotion aimed at a table the schema really has: give `nodes` the two
+        # shadow names and an ownership-only key reaches `nodes` itself. Already
+        # populated by the fixture, so nothing is created for it here.
+        ("the schema's own `nodes`, promoted", "nodes", None),
     ],
 )
-def test_a_hand_planted_shadow_triple_fails_the_purge_closed(
-    planted_build: Path, tmp_path: Path, label: str, table: str, plant_the_table: bool
+def test_a_hand_planted_shadow_triple_is_not_a_full_text_table_and_is_left_alone(
+    planted_build: Path, tmp_path: Path, label: str, table: str, column: str | None
 ) -> None:
-    """The decided behaviour when the storage key's *sufficiency* is defeated (#499).
+    """The catalog fact, and the family it removes by construction (#499).
 
-    Owning `_data` and `_config` is how an FTS5 table presents, and
-    `_merge_full_text` says exactly that rather than claiming the converse: every
-    FTS5 table owns them (measured over eleven option combinations), but a table
-    owning them need not be one. An operator writing to their own build can plant
-    the triple, and then the merge issues an FTS5 command against a plain table.
+    Owning `_data` and `_config` is how an FTS5 table presents, not proof of being
+    one, so an operator writing to their own build can manufacture a table an
+    ownership-only reading reaches. `_FTS5_TABLES` therefore also asks SQLite's
+    own catalog whether the table is virtual -- a fact the engine maintains, which
+    no ordinary table can present however it is named or shaped.
 
-    **This pins the direction that failure takes, because that is what the
-    decision turns on.** It fails closed: `derive_purged` raises and nothing
-    appears under the target name, so nothing is published. One layer up
-    `publish_purge_for_withdrawal` turns the same raise into a tainted pointer,
-    the previous build left serving and retrieval dropped to the canonical scan --
-    pinned by `test_purge_failed_build_is_not_served.py` and not repeated here,
-    because at this level the taint is not observable.
+    **The second parameter is why this is a fact and not a risk anyone accepted.**
+    An earlier revision recorded the triple family as tolerable because it failed
+    closed. That was measured on a table whose columns are ordinary, where
+    `INSERT INTO memo(memo)` answers `has no column named memo` and the purge
+    unlinks. Give the table a column named after itself and the same statement is
+    a valid insert: it succeeds, the purge completes, the build publishes, and the
+    operator's table gains a row reading `optimize`. Silent, and in a published
+    build -- the direction that decision's own reasoning refused to trade into. So
+    the family is excluded rather than tolerated.
 
-    The alternative -- skip a table whose `optimize` was refused -- is why this is
-    a recorded decision and not an oversight. Skipping needs a rule separating
-    "not a full-text table" from "a full-text table that is broken", and a rule
-    that is wrong in the second direction publishes a build with its tombstones
-    intact and says nothing. That is T-17a re-opened silently, traded against a
-    loud refusal whose remedy is for the operator to drop the triple.
+    Three assertions, because "excluded" has three observable halves: the merge
+    does not reach it, the purge publishes normally over it, and the operator's
+    rows come through unchanged.
 
-    **RED-capable**: make the merge swallow a refusal and carry on, and both
-    parameters fail on the assertion that nothing was published.
+    **RED-capable, in two layers.** Drop the `pragma_table_list` join from
+    `_FTS5_TABLES` and all three parameters fail on the not-reached assertion,
+    which is the primary guard and short-circuits the rest. Drop that assertion
+    too and the layer behind it is what answers: `memo` and the promoted `nodes`
+    raise `has no column named ...`, while the self-named-column plant publishes
+    and is caught by the row count. Both measured 2026-09-04. The second layer is
+    the one worth keeping in mind -- it is the only arm that sees the silent
+    write, and no assertion about a purge *raising* would have found it.
     """
     with closing(sqlite3.connect(planted_build)) as connection, connection:
-        if plant_the_table:
-            connection.execute(f"CREATE TABLE {_quoted(table)} (id INTEGER PRIMARY KEY, body TEXT)")
+        if column is not None:
+            connection.execute(f"CREATE TABLE {_quoted(table)} ({_quoted(column)} TEXT)")
+            connection.execute(
+                f"INSERT INTO {_quoted(table)} ({_quoted(column)}) VALUES (?)",  # noqa: S608 - module-owned literals
+                ("written by the operator",),
+            )
         connection.execute(
             f"CREATE TABLE {_quoted(table + '_data')} (id INTEGER PRIMARY KEY, block BLOB)"
         )
         connection.execute(f"CREATE TABLE {_quoted(table + '_config')} (k PRIMARY KEY, v)")
 
-    assert table in _production_reaches(planted_build), (
-        f"the control must move: {label} is supposed to defeat the storage key by owning "
-        f"{table}_data and {table}_config, so the merge reaches a table that is not a "
-        f"full-text index. If it does not, this test says nothing about that case"
+    before = _row_count(planted_build, table)
+
+    assert _owns_the_shadow_names(planted_build, table), (
+        f"the control must move: {label} is supposed to own {table}_data and {table}_config, "
+        f"so an ownership-only reading would reach it. If it does not, this test says nothing "
+        f"about the family it is here for"
     )
-    assert table not in _full_text_tables(planted_build), (
-        f"and the two predicates must disagree here, which is the whole finding: SQLite "
-        f"refuses an FTS5 command against {label}, so the probe excludes it while the "
-        f"storage key includes it"
+    assert before, (
+        f"the control must move: {label} has to hold a row for 'left alone' to be a claim "
+        f"about content rather than about an empty table staying empty"
+    )
+    assert table not in _production_reaches(planted_build), (
+        f"{label} is not a virtual table, so the merge must not reach it: SQLite's catalog "
+        f"says what a table is, and no arrangement of ordinary tables can say otherwise"
     )
 
     target = tmp_path / "purged.sqlite"
-    with pytest.raises(sqlite3.OperationalError, match="has no column named"):
-        SqliteIndexStore(planted_build).derive_purged(
-            target, revision_ids=[], index_build_id="01K1PURGED", state_hash="state-abc"
-        )
-
-    stranded = sorted(path.name for path in tmp_path.iterdir() if path.name.startswith("purged"))
-    assert not stranded, (
-        f"the purge must fail closed: a build refused over {label} may leave nothing under "
-        f"the target name, nor a `.building` file for the next run to trip over. "
-        f"Found {stranded}"
+    SqliteIndexStore(planted_build).derive_purged(
+        target, revision_ids=[], index_build_id="01K1PURGED", state_hash="state-abc"
     )
+
+    assert target.exists(), (
+        f"the purge must publish normally over {label}: the table is nothing to do with the "
+        f"merge, so carrying one may not cost an operator their build"
+    )
+    assert _row_count(target, table) == before, (
+        f"the purge wrote into a table it does not own. An FTS5 command against a non-FTS5 "
+        f"table is an ordinary statement, and an ordinary statement succeeds -- silently, "
+        f"into a build that then publishes. before={before} after={_row_count(target, table)}"
+    )
+    if column is not None:
+        assert _contents_of(target, table) == [("written by the operator",)], (
+            f"{label} is the operator's own table and the purge has no business in it at all, "
+            f"so its rows must come through byte for byte: {_contents_of(target, table)}"
+        )

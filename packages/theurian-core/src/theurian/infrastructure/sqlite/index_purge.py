@@ -418,38 +418,51 @@ _POST_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
 #: under `columnsize=0` and `_content` under external content, while these two
 #: are never absent.
 #:
-#: *Sufficiency does not hold, and an earlier version of this comment claimed it
-#: did.* Owning the two names is how an FTS5 table presents, not proof of being
-#: one. Nothing in `index_schema.py` creates such a triple that is not FTS5, but
-#: an operator writing to their own published build can: a plain `memo`,
-#: `memo_data` and `memo_config` is reached by this query, and `INSERT INTO
-#: memo(memo)` answers `table memo has no column named memo`. Naming a real table
-#: does it too -- `nodes_data` plus `nodes_config` promotes the schema's own
-#: `nodes` into this set.
+#: *Ownership alone was not sufficient, and the `pragma_table_list` join is what
+#: makes it so.* Owning the two names is how an FTS5 table presents, not proof of
+#: being one: nothing in `index_schema.py` creates a non-FTS5 triple, but an
+#: operator writing to their own build can, and naming the shadows after a table
+#: that already exists promotes it -- `nodes_data` plus `nodes_config` pulls the
+#: schema's own `nodes` in. So the query asks SQLite's catalog whether the table
+#: is a virtual table at all. That is a fact SQLite maintains, not a convention
+#: read off a name or a text, and no ordinary table can present it. Measured over
+#: the whole triple family: `memo` with a plain column, `memo` with a self-named
+#: column, and a promoted `nodes` are all excluded by the join, while both vocab
+#: views were already excluded by ownership and the eleven-option matrix above is
+#: unchanged at 11/11.
 #:
-#: **That case is a recorded decision rather than a defect, and the reasoning is
-#: the direction it fails in.** It fails *closed*: the raise propagates through
-#: `purge_into`, which unlinks the half-built file, and through
-#: `publish_purge_for_withdrawal`, which leaves the old build published, taints
-#: its pointer and drops retrieval to the canonical scan -- the same direction as
-#: every other purge fault, and measured to leave nothing under the target name.
-#: The remedy is the operator's: drop the triple.
+#: **An earlier revision recorded the triple case as an accepted risk on the
+#: grounds that it failed closed. That premise was false, and the join is here
+#: because of how it was false.** A triple whose promoted table has a column named
+#: after itself -- `CREATE TABLE memo (memo TEXT)` -- takes `INSERT INTO
+#: memo(memo) VALUES ('optimize')` as an ordinary insert. It succeeds. Measured:
+#: the purge completed, the build published, and the operator's table came out the
+#: far side with an extra row reading `optimize`. No withheld content moves and
+#: T-17a stays closed on necessity, but a purge that writes silently into a
+#: published build is the exact direction that decision's own reasoning refused to
+#: trade into, so the decision is superseded rather than re-argued.
 #:
-#: The alternative is asking SQLite instead of the schema -- attempt `optimize`
-#: and keep what is accepted, which is what `test_purge_full_text_discovery.py`
-#: does. In production that needs an allowlist of refusal messages to tell "not a
-#: full-text table" from "a full-text table that is broken", and a miss in that
-#: allowlist swallows a *real* FTS5 table's genuine fault and publishes the build
-#: with its tombstones intact. That is the silent direction -- the one that
-#: carries T-17a -- traded for the loud one. A build refused over an
-#: operator-created triple is recoverable and visible; a build published with
-#: withdrawn postings in it is neither.
+#: The same revision framed the choice as two options -- this key, or asking
+#: SQLite by attempting `optimize` and keeping what is accepted. Both readings
+#: were of the *table*; the catalog is a third and is a reading of the *schema*,
+#: so it needs no allowlist separating "not a full-text table" from "a full-text
+#: table that is broken". That allowlist was the reason to prefer the ownership
+#: key, and a miss in it would have swallowed a real FTS5 table's genuine fault
+#: and published with tombstones intact -- the silent direction. The catalog
+#: avoids the question rather than answering it.
+#:
+#: `pragma_table_list` needs SQLite 3.37; the schema's `trigram` tokenizer already
+#: needs 3.34, so this moves an existing floor rather than introducing one, and an
+#: older library fails loud -- `no such table: pragma_table_list` raises, and
+#: `purge_into` unlinks.
 #:
 #: `ORDER BY name` so a purge does the same work in the same order on every run.
 #: Nothing downstream reads the order -- each table's merge is independent of the
 #: others -- so this is determinism for its own sake and is argued, not pinned.
 _FTS5_TABLES: Final = """
 SELECT fts.name FROM sqlite_master fts
+ JOIN pragma_table_list AS catalog
+   ON catalog.schema = 'main' AND catalog.name = fts.name AND catalog.type = 'virtual'
  WHERE fts.type = 'table'
    AND EXISTS (SELECT 1 FROM sqlite_master shadow
                 WHERE shadow.type = 'table' AND shadow.name = fts.name || '_data')
