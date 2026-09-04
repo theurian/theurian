@@ -5,9 +5,18 @@ from a repository that may have been written by anyone. A path such as
 ``../../../../.ssh/id_ed25519`` or a symlink pointing at ``/etc/shadow`` must be
 refused, not read.
 
-The only correct check resolves symlinks *first* and compares the result against
-a resolved root. String prefix matching on unresolved paths is defeated by a
-symlink; ``os.path.normpath`` alone is defeated by one too.
+Containment is proved by resolving symlinks *first* and comparing the result
+against a resolved root. String prefix matching on unresolved paths is defeated
+by a symlink; ``os.path.normpath`` alone is defeated by one too.
+
+That check answers *where the path points*, and it is deliberately not the only
+one here, because it cannot answer *how the path got there*: a request can
+resolve to a file inside the root having travelled out of it through a link on
+the way. So a second check walks the components the caller named, before any
+resolution flattens them (:func:`assert_no_symlink_escape`, issue #288). The two
+want opposite inputs -- one the resolved path, one the unresolved one -- which is
+why they are separate functions and why feeding the first one's output to the
+second silently disables it.
 """
 
 from __future__ import annotations
