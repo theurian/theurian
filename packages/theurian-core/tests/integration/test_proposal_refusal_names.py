@@ -79,7 +79,7 @@ from theurian.infrastructure.filesystem.migration_loader import (
     load_migrations,
     validate_migration_document,
 )
-from theurian.security.content_secrets import scan_text
+from theurian.security.content_secrets import _MAX_TOKEN_CHARS, scan_text
 from theurian.security.yaml_loading import MAX_RENDERED_SCALAR_CHARS
 
 pytestmark = pytest.mark.integration
@@ -231,6 +231,20 @@ _GATES: Final = (
 #: these were false as written before round one attacked them, and both were
 #: false in the same way: a true sentence about one site, copied to another where
 #: something else is what makes it safe.
+#:
+#: **What the pair key still cannot tell apart, measured.** A function *name* is
+#: not unique in a module, so four rows are keyed on names that could recur:
+#: ``__post_init__`` twice (a dataclass hook, so a second dataclass here would
+#: share it) and ``refuse`` twice (a nested helper inside
+#: :func:`_unmoved_generated_bodies`, so a second nested ``refuse`` would too). A
+#: new site of either name using one of those same expressions would inherit a
+#: reason written about a different one. Checked at this commit: zero lambdas,
+#: zero decorator interpolations, zero rows attributed to ``<module>``, and the
+#: only duplicated function name in the module is ``__init__``, which carries no
+#: rows. This is a far narrower residual than the module-wide wildcard the key
+#: replaced -- two names rather than every bare identifier -- and it is recorded
+#: rather than closed because qualifying by line number would redden on every
+#: edit above a row.
 _UNGATED_BY_CONSTRUCTION: Final[Mapping[tuple[str, str], str]] = {
     # -- validated identifiers, and the messages built out of them -----------
     # A `ProposalId` is a ULID, so nothing a caller typed survives into
@@ -626,16 +640,17 @@ def test_the_scan_reads_the_whole_string_and_the_cut_happens_after_it() -> None:
     """Three directions, and the third is the one that was wrong (round 1, R1-B).
 
     A credential wholly inside the cut has to redact, and a credential wholly
-    past it has to redact too: the scanned set is the *whole* string, so the
-    printed cut is always a substring of something that scanned clean. Cutting
-    first inverted the second case -- the head scanned clean and printed -- and
-    the straddle below is what made that a leak rather than a preference.
+    past it has to redact too -- the second is what cutting first got wrong, by
+    scanning only the head, and it is what made the straddle a leak.
 
-    GHSA-3f65's lesson survives the inversion. That advisory is about keying a
-    gate on a *subset* of what it protects; here the scanned set is a superset of
-    the printed set, so nothing can drift in between. What the conservative
-    direction costs is a false redaction -- a name whose far tail is dirty is
-    withheld whole -- which is the right way to be wrong.
+    **The reason both scans are needed is not set containment.** Round one
+    defended scanning the whole with "the scanned set is a superset of the
+    printed set, so nothing can drift in between", by analogy with GHSA-3f65.
+    That analogy is false: containment says nothing about how a *detector*
+    answers, and this one is not monotone under truncation in either direction
+    (``test_a_credential_whose_run_overruns_the_family_cap_is_still_withheld``
+    is the other direction, and it published 43 of 43). What holds is the direct
+    property: every string that prints has itself been scanned, as printed.
     """
     # A path separator either side of the plant: `openai-api-key` anchors on
     # `\bsk-`, and a run of `b` immediately before it is a word character that
@@ -655,39 +670,103 @@ def test_the_scan_reads_the_whole_string_and_the_cut_happens_after_it() -> None:
     )
 
 
-@pytest.mark.parametrize("limit_name", ["name", "report"])
-def test_no_start_offset_lets_a_credential_publish_a_fragment_of_itself(limit_name: str) -> None:
-    """The straddle sweep, which is what R1-B actually measured (adversarial e14).
+#: The padding that puts :data:`NAME_SECRET`'s candidate run exactly *at* the
+#: four ``{n,255}`` families' cap. Derived from the detector's own constant and
+#: the fixture's own length, never written as 215: the cliff below *is* this
+#: arithmetic, and a hardcoded copy would keep passing if the cap moved while the
+#: leak it guards moved with it. The cap counts characters after the ``sk-``
+#: literal, which is what makes it 215 and not 255.
+_PADDING_AT_THE_CAP: Final = _MAX_TOKEN_CHARS - (len(NAME_SECRET) - len("sk-"))
 
-    A single boundary case is a point; the defect was a curve. The token is slid
-    across the bound one character at a time and *every* offset has to withhold
-    it whole. Against the cut-first order this went red across the whole sweep --
-    13 to 30 characters published at the name bound, 31 of 43 at the report bound
-    -- and the single-offset assertion above passed throughout, which is why the
-    sweep is here and not one more literal.
 
-    Padded with ``/`` and not with a candidate character. A run of ``z`` before
-    the token confounds two mechanisms -- entropy dilution and the cut -- so a
-    green sweep would not say which one held. A separator is outside
-    ``_CANDIDATE_CLASS``, so each segment is its own candidate run and the cut is
-    the only thing under test.
+def test_a_credential_whose_run_overruns_the_family_cap_is_still_withheld() -> None:
+    """The other direction of the same non-monotonicity (round 2, HIGH-1).
+
+    Four of the detector's six specific families are ``{n,255}`` followed by a
+    negative lookahead over their own character class, so a candidate run
+    *longer* than that cap matches nothing: every backtrack lands on a candidate
+    character and the lookahead never succeeds. ``-`` and ``_`` are candidate
+    characters, so an ordinary descriptive slug after a credential pushes the run
+    past it -- this needs no adversarial padding.
+
+    Scanning the whole *alone* then inverts into a leak worse than the straddle
+    it was fixing: the cut brings the run back under the cap, so the head scans
+    dirty while the whole scans clean, and the head is what prints -- the entire
+    43-character credential, in the message and again in the remedy, under the
+    shipped ``block`` default. Scanning both is what catches it, and the head is
+    the scan that does.
+
+    **No separator between the token and the padding**, which is the whole point:
+    every other fixture in this file puts a ``/`` there, and a separator ends the
+    candidate run at the token, so no fixture carrying one can build an over-long
+    run at all. That is why three green pins sat over this.
     """
-    limit = _MAX_NAME_CHARS if limit_name == "name" else _MAX_REPORT_CHARS
-    token = NAME_SECRET if limit_name == "name" else HIGH_ENTROPY_SECRET
-    assert scan_text(token), "the fixture plants nothing the detector reports"
+    overrun = NAME_SECRET + "a" * (_PADDING_AT_THE_CAP + 1)
 
-    published = {}
-    for start in range(limit - len(token), limit + 1):
-        rendered = _bounded("/" * start + token, limit)
-        if rendered is None:
-            continue
-        longest = max((n for n in range(len(token) + 1) if token[:n] in rendered), default=0)
-        if longest:
-            published[start] = longest
+    assert scan_text(NAME_SECRET), "the fixture plants nothing the detector reports"
+    assert not scan_text(overrun), (
+        "the detector reports the overrun shape whole, so this test no longer drives the "
+        "non-monotonicity it exists for -- re-derive the padding from the family cap"
+    )
+    assert _bounded(overrun, _MAX_NAME_CHARS) is None, (
+        "a credential whose candidate run overruns the family cap printed in full; the whole "
+        "was scanned and the whole is exactly what the cap defeats, so the head must be too"
+    )
 
-    assert published == {}, (
-        f"a credential straddling the {limit_name} bound published a fragment of itself at these "
-        f"start offsets (offset: characters published): {published}"
+
+def test_one_character_of_run_decides_whether_the_detector_reports_it() -> None:
+    """The cliff, as a boundary case rather than a curve (adversarial e38).
+
+    The cap is exact, not fuzzy: a run of :data:`_MAX_TOKEN_CHARS` after ``sk-``
+    is matched, and one character more matches nothing. Both sides are asserted,
+    because "the detector reports it" is satisfied by a detector that reports
+    everything and "the gate withholds it" by a gate that withholds everything.
+
+    This is the *detector's* boundary and not the gate's, which is why it is
+    asserted on ``scan_text``. The gate's answer is checked beside it so that the
+    one character cannot change what a refusal prints.
+    """
+    at_the_cap = NAME_SECRET + "a" * _PADDING_AT_THE_CAP
+    past_the_cap = NAME_SECRET + "a" * (_PADDING_AT_THE_CAP + 1)
+
+    assert scan_text(at_the_cap), "a run exactly at the cap should still be reported"
+    assert not scan_text(past_the_cap), (
+        "a run one character past the cap is still reported, so the cliff has moved and the "
+        "overrun test above is driving nothing"
+    )
+    assert _bounded(at_the_cap, _MAX_NAME_CHARS) is None, "the reported run was printed"
+    assert _bounded(past_the_cap, _MAX_NAME_CHARS) is None, (
+        "one character of padding turned a withheld credential into a printed one"
+    )
+
+
+def test_the_report_bound_cannot_recover_an_overrun_run_and_that_is_recorded() -> None:
+    """The residual the fix does not close, pinned to the mechanism that causes it.
+
+    The name bound recovers an over-long run because 200 characters is narrower
+    than the cap: the cut *shortens* the run back under it and the head scans
+    dirty. The report bound is 2,000, so the head keeps the run over the cap and
+    neither scan reports -- and when the string is shorter than the bound the two
+    scans are literally the same scan. No ordering of them can help; the string
+    prints.
+
+    This is the detector's hole and not the gate's. It was leaking identically
+    under every ordering this gate has had, and it is live in
+    ``_scan_for_secrets`` itself, where an over-long tail on a *body* is not
+    reported either. Asserted rather than left as prose so that fixing the
+    detector reddens this and the residual gets removed from the record with it.
+    """
+    overrun = NAME_SECRET + "a" * (_PADDING_AT_THE_CAP + 1)
+
+    assert not scan_text(overrun), "the detector now reports the overrun; the residual is closed"
+    assert len(overrun) < _MAX_REPORT_CHARS, (
+        "the fixture is longer than the report bound, so this would test the cut rather than "
+        "the case where head and whole are the same string"
+    )
+    printed = _bounded(overrun, _MAX_REPORT_CHARS)
+    assert printed is not None and NAME_SECRET in printed, (
+        "the report bound now withholds an overrun run -- the recorded residual at `_bounded` "
+        "and in the threat model is stale and must be removed"
     )
 
 

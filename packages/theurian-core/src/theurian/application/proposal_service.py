@@ -186,8 +186,20 @@ _MAX_NAME_CHARS: Final = MAX_RENDERED_SCALAR_CHARS
 _MAX_REPORT_CHARS: Final = 2000
 
 #: What follows a string this module cut, so a reader can tell a cut from a name
-#: that genuinely ends in an ellipsis. Outside the quotes, deliberately: inside
-#: them it would read as part of the name.
+#: that genuinely ends in an ellipsis. Outside the quotes where *this* module
+#: does the quoting (:func:`_one_name`), deliberately: inside them it reads as
+#: part of the name.
+#:
+#: **On one of the six paths it does land inside them, and that is recorded
+#: rather than fixed.** :func:`_plain` returns an unquoted string for a caller
+#: that quotes it itself, and one such caller exists --
+#: ``IrregularSourceFileError``, whose constructor renders ``{referrer!r}`` --
+#: so a cut referrer prints as ``'....... (truncated)'`` with the marker inside.
+#: Teaching :func:`_plain` where its result will be quoted is the coupling it
+#: exists to avoid, and it would buy a cosmetic gain on a path where the string
+#: is a project-relative path rather than a name a reader copies. The other two
+#: :func:`_plain` callers -- :func:`_their_words` and :func:`_rendered_scalar` --
+#: are not quoted by anyone, so the marker sits correctly outside there.
 #:
 #: **This module publishes no length of its own** -- how many characters it
 #: dropped is the contributor's number, the same reason
@@ -3118,26 +3130,43 @@ def _bounded(text: str, limit: int) -> str | None:
     there is no argument for that, so no site can opt out of the redaction while
     keeping the cut.
 
-    **The scan runs on the whole string, and the cut happens after it.** The
-    order was the other way round until round one attacked it, and cutting first
-    is what makes a boundary a leak: a credential *straddling* ``limit`` leaves a
-    sub-floor fragment in the head, the head scans clean, and the fragment
-    prints. Measured on this build at the name bound -- 31 of a 43-character
-    high-entropy token and 22 of a 43-character ``sk-`` token, in the shipped
-    ``block`` default, in the same message whose other arm redacted the same
-    author string correctly. Token starts from 160 to 200 each published 13 to 30
-    characters; the report bound published 31 of 43. This is first-party
-    truncation, not the third-party residual the last paragraph records.
+    **Both the whole string and the cut are scanned, and either one reporting
+    withholds it.** Two rounds each tried one of those scans on its own, and each
+    single scan has its own leak:
 
-    Scanning the whole and printing a cut is the strictly conservative direction,
-    and it does not give up what GHSA-3f65 taught. That advisory's lesson is that
-    a gate must not key on a *subset* of what it protects -- the serve gate hashed
-    the revision body while the index served title plus body, so a title drift
-    walked past it. Here the scanned set is a *superset* of the printed set:
-    everything printed was inside something that scanned clean, so no drift can
-    enter between the two. The cost of the conservative direction is a false
-    redaction -- a name whose far tail carries a credential is withheld whole
-    rather than cut down to a clean head -- which is the right way to be wrong.
+    * **Cut first, scan the cut** (the original) leaks the *straddle*. A
+      credential crossing ``limit`` leaves a sub-floor fragment in the head, the
+      head scans clean, and the fragment prints -- measured at the name bound, 31
+      of a 43-character high-entropy token and 22 of a 43-character ``sk-``
+      token, every start offset from 160 to 200 publishing 13 to 30 characters.
+    * **Scan the whole, print the cut** (round one's fix) leaks the *overrun*,
+      and worse: the **whole** credential, 43 of 43, in the message and again in
+      the remedy. Four of the detector's six specific families are
+      ``{n,255}`` followed by a negative lookahead over their own character
+      class, so a candidate run *longer* than
+      :data:`~theurian.security.content_secrets._MAX_TOKEN_CHARS` matches
+      nothing at all -- every backtrack lands on a candidate character and the
+      lookahead never succeeds. ``-`` and ``_`` are candidate characters, so an
+      ordinary descriptive slug after a credential is enough. The cut then
+      *creates* the boundary the lookahead wanted: the whole scans clean, the
+      200-character head scans dirty, and the head is what printed. The cliff is
+      exactly one character wide -- a run of 255 after ``sk-`` is caught, 256
+      leaks.
+
+    **The reason one scan cannot be enough is that the detector is not monotone
+    under truncation**, and that is the sentence two rounds got wrong. Scanning
+    the whole was defended as "the scanned set is a superset of the printed set,
+    so nothing can drift in between", by analogy with GHSA-3f65. The analogy does
+    not hold: set containment says nothing about how a *detector* answers, and
+    this one answers differently on a string and on its own prefix -- in **both**
+    directions, as the two bullets above show. A verdict on a superset does not
+    transfer to a substring.
+
+    What does hold is the property stated directly rather than derived: **every
+    string this prints has itself been scanned, as printed.** The head is scanned
+    because the head is what prints; the whole is scanned because a credential
+    the cut would sever must still be caught. Neither scan is redundant, and
+    neither is doing the other's job.
 
     **A dirty string is dropped whole, never partially echoed.** ``scan_text``
     reports a finding's line, column and family but not the match's *length*, so
@@ -3153,10 +3182,13 @@ def _bounded(text: str, limit: int) -> str | None:
     held under ``MAX_YAML_BYTES`` -- and the accept path already pays a full pass
     over those same bytes in :meth:`ProposalService._scan_for_secrets`. What is
     new is that a *pre-scan* refusal now pays one too. Measured 2026-09-04 on
-    CPython 3.13 (Apple silicon), one call on the worst-case ``sk-`` shape
-    :mod:`theurian.security.content_secrets` prices: see that module's table for
-    the per-MiB constant. A refusal is a one-shot local interaction, and the
-    alternative is publishing 31 characters of a credential.
+    CPython 3.13 (Apple silicon), a 3,000,000-character ``contentFile`` produced
+    its 966-character refusal in 1.06 s; the worst case at ``MAX_YAML_BYTES`` in
+    the shape :mod:`theurian.security.content_secrets` prices worst is about
+    4.4 s. A refusal is a one-shot local interaction, and the alternative is
+    publishing a credential. The second scan adds nothing to that ceiling: it is
+    bounded by ``limit``, and it is skipped entirely when the input is already
+    within it.
 
     **This gate's reach is the detector's reach, and that is a bound worth
     stating rather than one to read past.** What it promises is that a string
@@ -3171,19 +3203,71 @@ def _bounded(text: str, limit: int) -> str | None:
     were printed. The fragment is what a *third party's* truncation left, not
     something this module chose to quote, and it is the same residual every
     caller of this detector carries.
+
+    **The second and third shapes of that residual are where *both* scans come
+    back clean**, and no ordering of them can help. Measured 2026-09-04, the
+    longest prefix of a 43-character credential each rule publishes:
+
+    ======================  =========  ==========  ============
+    shape                   cut-first  whole-only  both (ships)
+    ======================  =========  ==========  ============
+    straddle                       20           0             0
+    overrun, name bound             0          43             0
+    overrun, report bound          43          43            43
+    entropy dilution               43          43            43
+    ======================  =========  ==========  ============
+
+    The rule that ships is no worse than either single scan on any shape and
+    strictly better on two, which is the whole of why it is both and not a
+    choice between them. The bottom two rows are identical in all three columns:
+    they are the *detector's* holes, not the gate's, and they were leaking
+    exactly as much before either round touched the order.
+
+    * **An over-long candidate run at the report bound.** The four ``{n,255}``
+      families lose their match on a run past
+      :data:`~theurian.security.content_secrets._MAX_TOKEN_CHARS`, and at a
+      2,000-character bound the *head* is still long enough to lose it too, so
+      neither scan reports. The name bound is narrow enough that the cut brings
+      the run back under the cap, which is what makes that row recoverable.
+    * **Entropy dilution.** A high-entropy token followed by a long low-entropy
+      run drops the whole candidate below
+      :data:`~theurian.security.content_secrets._ENTROPY_FLOOR`, and the head
+      inherits the dilution.
+
+    Both are properties of ``scan_text`` and both are live in
+    :meth:`ProposalService._scan_for_secrets` itself, where they are the same
+    best-effort residual SEC-11 already publishes -- a body whose credential
+    carries an over-long tail is not reported there either. Stated here because
+    this gate's own reach is bounded by them, and closing them belongs to the
+    detector rather than to a caller cutting strings.
     """
-    if scan_text(text, max_findings=1):
+    head = text[:limit]
+    # The head first, and the whole only when there is more: the two are an `or`,
+    # so the order cannot change the verdict, and rejecting on the cheap bounded
+    # scan skips a pass over an input that can be megabytes.
+    if scan_text(head, max_findings=1):
         return None
-    return text[:limit]
+    if len(text) > limit and scan_text(text, max_findings=1):
+        return None
+    return head
 
 
 def _plain(text: str, limit: int, withheld: str) -> str:
     """One untrusted string, gated, for a caller that does its own quoting.
 
-    :func:`_one_name`'s sibling and the *unquoted* half of one gate. The two
-    differ in exactly one thing -- whether the result is wrapped in ``repr`` and
-    where the truncation marker then sits -- and share :func:`_bounded`, so a
-    change to what may be printed cannot reach one form and miss the other.
+    :func:`_one_name`'s sibling and the *unquoted* half of one gate. They share
+    :func:`_bounded`, so a change to what may be printed cannot reach one form
+    and miss the other, and they agree on every input but one shape: measured
+    over six, ``repr(_plain(x))`` equals ``_one_name(x)`` in five, and the sixth
+    is a clean string over the bound, where the marker sits inside the quotes
+    rather than outside (:data:`_TRUNCATED` records why that is left alone).
+
+    They also differ in what they do to control characters -- ``repr`` escapes
+    them and this does not -- which is not a hole but is a second difference, so
+    "they differ in exactly one thing" was an overstatement. The sink closes it
+    either way: ``cli.commands._render`` and ``_fail`` run every printed value
+    through ``escape_terminal_controls``, and the ``--json`` branch goes through
+    ``json.dumps``.
 
     ``withheld`` is the caller's literal for a string the detector reported,
     because a name and another component's report deserve different words for

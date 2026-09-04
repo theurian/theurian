@@ -1576,15 +1576,19 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # migration id printing a credential in full, so a version of this
             # sentence that says *name* describes the control that had the defect.
             #
-            # The second is the ordering, and this pin previously held the
-            # *inverse* of what ships -- "cut to what may be printed ... and then
-            # scanned, so the guard is keyed on exactly the text that will be
-            # printed". That reading is what a reword must not drift back to: it
-            # leaves a credential straddling the bound publishing a sub-floor head
-            # (31 of 43 characters, measured), which is why the fragment now
-            # carries the direction and the reason together.
+            # The second is the *pair* of scans, and this pin has now held two
+            # wrong versions of it -- first "cut, then scan the cut", then "scan
+            # the whole, print the cut". Each single scan has its own leak, in
+            # opposite directions: the cut alone publishes a straddling
+            # credential's head (31 of 43), and the whole alone publishes an
+            # overrunning one entire (43 of 43, because four families stop
+            # matching a run past 255 characters and the cut restores the match).
+            # A reword that drops back to either single scan is a different
+            # control with a live leak, which is why the fragment names both
+            # scans and the "either" that joins them.
             # `test_the_scan_reads_the_whole_string_and_the_cut_happens_after_it`
-            # and the straddle sweep beside it are the fact side.
+            # and `test_a_credential_whose_run_overruns_the_family_cap_is_still_withheld`
+            # are the fact side, one per direction.
             #
             # The third is the over-claim guard, and it is the direction that has
             # already gone wrong once: "elsewhere on the accept path" was the
@@ -1596,8 +1600,11 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
                 "Every author-derived string `application/proposal_service.py` puts "
                 "into a message passes one gate"
             ),
-            "It is scanned *whole* and then cut to what may be printed",
-            "Scan-then-cut and not the reverse",
+            (
+                "Both the whole string and the cut it prints are scanned, and "
+                "either one reporting withholds it"
+            ),
+            "not monotone under truncation",
             "and the boundary of that is one module's",
             "`theurian ingest` runs no scan",
         ),
@@ -1647,7 +1654,7 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # `accept` runs (#537).
             (
                 "Refusals on this path scan every author-derived string they would "
-                "print, whole and whatever its type"
+                "print — both whole and as the cut that will print"
             ),
             "either print it cut to 200 characters or drop it whole when the detector reports it",
             "over a population proved by reflection over `proposal_service.py`'s own syntax tree",
@@ -1845,13 +1852,24 @@ SECRET_SCANNER_MODULE: Final = "theurian.security.content_secrets"  # noqa: S105
 #: fourth call is a fourth channel, and the sentence above stops being an
 #: enumeration the moment one lands without moving this.
 #:
-#: The accept path's **two** calls answer two different questions, and only the
+#: The accept path's **three** calls answer two different questions, and only the
 #: first is the SEC-11 gate. ``_findings_in`` screens what an acceptance would
 #: put into the pull request and the policy decides what happens next.
 #: ``_bounded`` screens a string this module is about to *print* into a refusal
 #: and takes no policy at all: it is output hygiene rather than a gate on
 #: content, so a project that chose ``off`` still does not get a credential
-#: echoed into its CI log (#360). It screens nothing that was not already about
+#: echoed into its CI log (#360).
+#:
+#: ``_bounded`` is **two** of the three, and the pair is the control rather than
+#: an optimisation: it scans the whole string and, separately, the cut it will
+#: actually print. Either one reporting withholds the string, because the
+#: detector is not monotone under truncation -- a run past the four ``{n,255}``
+#: families' cap matches nothing whole and matches once cut, and a credential
+#: straddling the cut matches whole and not cut. Dropping either call restores a
+#: measured leak (43 of 43 characters one way, 31 of 43 the other), so a count of
+#: two here would be a count of a control with one of its halves removed.
+#:
+#: It screens nothing that was not already about
 #: to be published, and it screens it on its way *out* rather than deciding
 #: anything about the proposal -- so the four documents this test protects
 #: (``ingest.md``, the schema's ``security.secretScan`` description,
@@ -1861,7 +1879,7 @@ SECRET_SCANNER_MODULE: Final = "theurian.security.content_secrets"  # noqa: S105
 #: ``ingest``.
 SECRET_SCANNER_CALL_SITES: dict[str, int] = {
     "application/index_builder.py": 3,
-    "application/proposal_service.py": 2,
+    "application/proposal_service.py": 3,
 }
 
 #: Each module of the shipped package that reaches :data:`SECRET_SCANNER_MODULE`

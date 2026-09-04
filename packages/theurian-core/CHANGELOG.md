@@ -303,13 +303,17 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   migration's inner `id` was printed at full length into the terminal and into
   `accept --json` — by refusals about a name collision or a missing file, which
   beat the scan to the output. Every author-derived string `propose accept` puts
-  into a message is now scanned *whole* and then cut to what may be printed (200
-  characters for a name, the bound this codebase already uses for an untrusted
-  YAML scalar; 2,000 for another component's own report) — whatever its type, and
-  whether this command does the interpolation or hands the value to an error
-  class that does. Scanned whole and not merely up to the cut: a credential
-  *straddling* the bound leaves a fragment in the head that the detector cannot
-  see on its own, so cutting first published 31 of 43 characters. A string the
+  into a message is now scanned twice — whole, and again as the cut that will
+  actually print — and either scan reporting withholds it (200 characters for a
+  name, the bound this codebase already uses for an untrusted YAML scalar; 2,000
+  for another component's own report), whatever its type, and whether this
+  command does the interpolation or hands the value to an error class that does.
+  Both scans are needed because the detector is not monotone under truncation:
+  scanning only the cut publishes a *straddling* credential's head (31 of 43
+  characters), and scanning only the whole publishes an *overrunning* one entire
+  (43 of 43), since four of the six specific families stop matching a candidate
+  run longer than 255 characters and the cut is what brings it back under. A
+  string the
   detector reports is replaced whole by a fixed literal — *a name that appears to
   carry a secret* — and never partially echoed, because the detector publishes no
   match length and a "clean" remainder around a redacted span is a partial copy

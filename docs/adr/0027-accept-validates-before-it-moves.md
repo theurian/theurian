@@ -570,9 +570,22 @@ one of its recorded residuals.
 > GHSA-3f65's lesson and wrong about its direction. Cutting first makes the
 > boundary itself a leak: a credential straddling it leaves a sub-floor fragment
 > in the head, the head scans clean, and 31 of 43 characters print. Scanning the
-> whole keeps what the advisory taught, because the scanned set is then a
-> *superset* of the printed set and nothing can drift in between; what it costs
-> is a false redaction, which is the right way to be wrong. A string the detector
+> whole *alone* inverts that into a worse leak: four of the detector's six
+> specific families are `{n,255}` followed by a negative lookahead over their own
+> character class, so a candidate run past that cap matches nothing at all — and
+> `-` and `_` are candidate characters, so an ordinary descriptive slug after a
+> credential is enough. The cut then creates the boundary the lookahead wanted,
+> the whole scans clean, and the 200-character head prints the credential
+> **whole**, 43 of 43, in the message and again in the remedy. The cliff is one
+> character wide: a run of 255 is caught, 256 is not.
+>
+> **So the gate scans both, and either one reporting withholds the string.** The
+> superset argument that defended a single scan is false and was the incomplete
+> closure the second round found: set containment says nothing about how a
+> *detector* answers, and this one is not monotone under truncation in either
+> direction. What holds is the property stated directly — every string that
+> prints has itself been scanned, as printed — with the whole scanned besides, so
+> a credential the cut would sever is still caught. A string the detector
 > reports is replaced by a literal of the module's own and never partially
 > echoed, because the detector publishes no match length and a "clean" remainder
 > around a redacted span is a partial copy besides. Two channels

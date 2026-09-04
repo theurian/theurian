@@ -1937,14 +1937,20 @@ a separate point:*
   the boundary of that is one module's.** Every author-derived string
   `application/proposal_service.py` puts into a message passes one gate —
   whatever its type, and whether the interpolation happens here or inside an
-  error class this module hands the value to. It is scanned *whole* and then cut
-  to what may be printed (200 characters for a name, the same bound
-  `security/yaml_loading.MAX_RENDERED_SCALAR_CHARS` already sets for an untrusted
-  scalar; 2,000 for another component's own report). Scan-then-cut and not the
-  reverse: cutting first leaves a sub-floor fragment of a *straddling* credential
-  in the head, the head scans clean, and 31 of 43 characters print. What is
-  printed is therefore always a substring of something that scanned clean, which
-  is a superset of the printed text rather than the subset GHSA-3f65 punished. A
+  error class this module hands the value to. **Both the whole string and the cut
+  it prints are scanned, and either one reporting withholds it** (200 characters
+  for a name, the same bound `security/yaml_loading.MAX_RENDERED_SCALAR_CHARS`
+  already sets for an untrusted scalar; 2,000 for another component's own
+  report). Neither scan alone is enough, and each single scan had its own leak:
+  scanning only the cut leaks a *straddling* credential's head (31 of 43
+  characters), and scanning only the whole leaks an *overrunning* one entire (43
+  of 43) — four of the six specific families are `{n,255}` plus a negative
+  lookahead, so a candidate run past that cap matches nothing, and the cut is
+  what brings it back under. The reason one scan cannot do it is that the
+  detector is **not monotone under truncation**: a verdict on a superset does not
+  transfer to a substring, which is why the containment analogy to GHSA-3f65 was
+  the wrong argument. What holds is direct — every string that prints has itself
+  been scanned, as printed. A
   string the detector reports is replaced by a fixed literal of the module's own
   — *a name that appears to carry a secret* — and never partially echoed, because
   the detector publishes no match length and a "clean" remainder around a
