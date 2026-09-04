@@ -87,7 +87,17 @@ a new Protocol in `domain/ports/`, not a `noqa`.
   impossible object exist. A `MISSING` setup step that cannot say what it would
   do is a bug at construction time, not at render time.
 - **Errors carry a remedy.** Every raised message names the command that fixes
-  it. Never a bare stack trace at a user.
+  it. Never a bare stack trace at a user. **A remedy must name the thing to act
+  on AND something the reader can run — a truthy string is not a remedy.** This
+  is a recurring finding, caught three times (#481 round one, #520 M-D, #525
+  M-D): a placeholder like `"Something went wrong."` survives the whole suite
+  because the test asserts the remedy is non-empty rather than that it names a
+  runnable cure. When you write a remedy constant, its test asserts
+  `names_a_remedy`-shaped content (the command/tool, and the artefact to act on);
+  when you correct a raised message's cause, verify the cause is the real one by
+  running it (`strerror` is `'Is a directory'`, not the path; the path is in
+  `str(exc)`) — a remedy that names a non-cause sends the operator to inspect the
+  wrong thing.
 - **Determinism.** No `hash()` (randomised per process), no unordered iteration
   where order reaches an output, no wall-clock in a pure function. Sorts that
   feed a result need a total key — a tie broken by dict order is a bug.
