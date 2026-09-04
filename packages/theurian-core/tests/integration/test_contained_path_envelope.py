@@ -1144,6 +1144,30 @@ def test_a_pinned_directory_refusal_reports_the_grade_the_command_chose(
         f"{dict(sorted(graded.items()))}, wanted {dict(sorted(pinned.items()))}"
     )
 
+    # M-D, and a repeat of a family this file set has already been caught by:
+    # replacing the remedy with "Something went wrong." survived the whole suite,
+    # exactly as it did in #481's round one, because every check on the field
+    # asked whether it was non-empty. A remedy is a cure only if it names the
+    # thing to act on and something the reader can run -- the standard
+    # `names_a_remedy` applies elsewhere and the lock-confinement file's own
+    # docstring records the same lesson.
+    cures = {
+        position: str((planted_directories[position].envelope or {}).get("remedy", ""))
+        for position in pinned
+    }
+    toothless = {
+        position: remedy
+        for position, remedy in cures.items()
+        if ".theurian/state/active-index.json" not in remedy
+        or "`theurian index build`" not in remedy
+    }
+
+    assert not toothless, (
+        f"a pinned directory refusal publishes a remedy that does not name the "
+        f"artefact to clear and the command to re-run, so it is a sentence rather "
+        f"than a cure: {toothless}"
+    )
+
 
 @_NEEDS_SYMLINKS
 def test_exactly_these_planted_directories_reach_a_swept_command(
@@ -1339,8 +1363,18 @@ def test_the_knowledge_plant_is_refused_by_the_migration_loader_not_by_containme
 # -- The bound: what must NOT become a refusal ------------------------------
 
 
+#: Every shape of ``active.json`` that is not a usable pointer but is also not a
+#: doctored tree. Four of them, because "will not parse" was only one:
+#: ``json.loads`` answers any JSON value, and three of these parse perfectly and
+#: then fail when the pointer is read out of them. The first is the original
+#: fixture; the other three each escaped as an uncaught ``TypeError`` until the
+#: reader gained its ``isinstance`` guard.
+_NOT_A_USABLE_POINTER: Final = ("nope", "[]", "null", "7")
+
+
+@pytest.mark.parametrize("written", _NOT_A_USABLE_POINTER)
 def test_a_pointer_that_will_not_parse_still_degrades_rather_than_refusing(
-    corpus: Path,
+    corpus: Path, written: str
 ) -> None:
     """The other side of the unification, so closing #525 cannot overshoot.
 
@@ -1354,8 +1388,24 @@ def test_a_pointer_that_will_not_parse_still_degrades_rather_than_refusing(
     naming the pointer to delete, and ``project status`` answers its full payload
     at exit 0 with ``statePointerCorrupt: true``, which is the field that exists
     to say so. GREEN before the fix and after.
+
+    **Parametrised, because one fixture made the claim narrower than it read.**
+    ``"nope"`` fails in ``json.loads`` and was the only input this ever ran; the
+    sentence above -- and the changelog entry quoting it -- say "a pointer that
+    will not parse", which a reader takes to cover the file being wrong. Three of
+    the four inputs here *do* parse: ``[]``, ``null`` and ``7`` are valid JSON,
+    and the reader then subscripted them. ``TypeError`` was in none of its
+    ``except`` families, so each escaped as a crash with **both channels empty**
+    -- the exact CP-2 shape this cluster removes, on the exact file it removes it
+    from. Swapping the fixture to ``"[]"`` is what makes the exit-0 assertion
+    below fail, which is how the gap was proved before it was closed.
+
+    The family is one reader, swept rather than assumed: ``active-index.json``,
+    ``index-secret-scan.json`` and ``config.yaml`` each already refuse a
+    non-object, and :func:`read_active_index_pointer` has carried this exact
+    ``isinstance`` guard since it was written.
     """
-    (corpus / ".theurian/state/active.json").write_text("nope")
+    (corpus / ".theurian/state/active.json").write_text(written)
 
     status = _observe(corpus, "project", "status")
     apply_result = _observe(corpus, "migrate", "apply")

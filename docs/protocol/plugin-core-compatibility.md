@@ -237,8 +237,11 @@ A containment refusal's move from exit **1 to 4**
 recorded here, and the first that meets the *changing an exit code's meaning* row
 head-on and still declines the bump. A path under `.theurian/` that resolves
 outside the working tree used to be graded by whichever `ProjectPaths` helper
-resolved first — 0, 1 and 4 for one root cause — and is now uniformly
-`EXIT_STATE_ERROR`. The population is derived rather than listed:
+resolved first — 0, 1 and 4 for one root cause — and now reports
+`EXIT_STATE_ERROR` at every position that was measured: the nine swept commands,
+and four more measured by hand beside them (`init`, `findings build`, `propose`,
+`propose accept`, which reported 1, 1, **2** and 1). "Uniformly" is not claimed
+for a route neither covers. The population is derived rather than listed:
 `CONTAINMENT_PLANTS` in
 `packages/theurian-core/tests/integration/test_contained_path_envelope.py` gives
 thirty-two (artefact × command) positions over the nine swept commands, six of

@@ -404,6 +404,16 @@ def test_a_lock_file_symlinked_onto_a_file_in_the_tree_never_truncates_that_file
         f"generic fallback that lands here when a self-describing subtype's own "
         f"remedy is dropped sends them to their migration set instead: {remedy!r}"
     )
+    # M-B. The `ELOOP` branch is what makes this artefact describable, and
+    # deleting it survived the whole suite: a real symbolic link stopped being
+    # called one, and every assertion here was about the remedy. The sibling
+    # property -- that the *other* artefacts are never called links -- has been
+    # asserted since #520; this is the half that says the link still is.
+    assert "symbolic link" in str(error_payload.get("error", "")), (
+        f"a symbolic link at the lock path is no longer described as one, so the "
+        f"reader is told a file could not be opened and left to find the link "
+        f"themselves: {error_payload.get('error')!r}"
+    )
 
 
 def test_an_ordinary_lock_file_is_still_taken_and_the_apply_succeeds(
@@ -711,6 +721,12 @@ class UnusableLock:
     plant: Callable[[Path], None]
     restore: Callable[[Path], None]
     needs_a_mode_that_denies: bool
+    #: ``True`` for the artefact that stops the acquisition at the ``mkdir``, one
+    #: call before the open. It is the only one whose refusal must describe a
+    #: directory that could not be *prepared*; the other three describe a file
+    #: that could not be opened, and publishing that sentence here would be false
+    #: about a call that never ran.
+    stops_at_the_directory: bool = False
 
 
 def _plant_a_directory(lock: Path) -> None:
@@ -771,6 +787,7 @@ UNUSABLE_LOCKS: Final = (
         plant=_plant_a_knowledge_directory_that_denies_the_runtime_create,
         restore=lambda lock: lock.parent.parent.chmod(0o700),
         needs_a_mode_that_denies=True,
+        stops_at_the_directory=True,
     ),
 )
 
@@ -866,6 +883,32 @@ def test_a_lock_the_open_cannot_take_is_refused_as_a_document(
             f"the remedy does not name {names_the_lock_file}, the file the operator "
             f"has to deal with, so it is a sentence rather than a cure: {remedy!r}"
         )
+        # M-C. `_refusal_text` publishes `strerror` and never `str(cause)`,
+        # because the `str` spelling appends the filename and the remedy beside
+        # it already prints the absolute path once. A mutation swapping the two
+        # survived the whole suite: the message read identically to a reader and
+        # carried the operator's absolute path into a second channel.
+        assert str(project) not in str(payload.get("error", "")), (
+            f"the published error carries the absolute path, which belongs in the "
+            f"remedy and nowhere else: {payload.get('error')!r}"
+        )
+        if artefact.stops_at_the_directory:
+            # M-A. The three-shape split is #520's whole point, and a mutation
+            # deleting the `creating_the_parent` branch collapsed shape 3 into
+            # shape 2 -- publishing "could not be opened" about an `open` that
+            # never ran, under a cure telling the reader to remove a lock file
+            # that is not there. The suite stayed green, because every assertion
+            # asked whether the remedy named the lock path, which shape 2 also
+            # does.
+            error = str(payload.get("error", ""))
+            assert "could not be opened" not in error, (
+                f"the refusal describes a failed `open` for an artefact that stopped "
+                f"the acquisition at the `mkdir`, one call earlier: {error!r}"
+            )
+            assert "directory holding the write lock" in error, (
+                f"the refusal does not say the directory could not be prepared, so a "
+                f"reader cannot tell which of the two calls refused: {error!r}"
+            )
         if not (lock.exists() or lock.is_symlink()):
             # Two of the four artefacts leave *nothing* at the lock path -- the
             # `0500` runtime directory refusing the `O_CREAT`, and the

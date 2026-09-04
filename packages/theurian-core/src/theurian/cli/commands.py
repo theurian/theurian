@@ -160,7 +160,11 @@ def _fail(message: str, *, remedy: str, as_json: bool, code: int) -> None:
 
 
 def _fail_a_path_escape(exc: ProjectPathEscapeError, *, as_json: bool) -> None:
-    """One grading and one cure for a path under ``.theurian/`` that leaves the tree.
+    """One grading and one cure for the containment refusals that were measured.
+
+    Not "for every way a path can leave the tree": what this covers is stated at
+    the foot of this docstring, and the routes outside it are named there rather
+    than absorbed into the sentence above.
 
     Until #525 the refusal ``ProjectPaths``' containment chokepoint raises was
     graded by whichever handler happened to catch it. The sweep in

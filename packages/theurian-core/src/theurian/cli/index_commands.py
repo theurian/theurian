@@ -100,9 +100,9 @@ EXIT_SECRET_FOUND = 6
 #: canonical database beside it.
 _UNWRITABLE_INDEX_POINTER_REMEDY: Final = (
     "Make sure `.theurian/state/active-index.json` is a writable file or absent -- a "
-    "directory or an unwritable mode at that path is what refuses the swap -- then run "
-    "`theurian index build` again. The build that just ran is still on disk and nothing "
-    "authored is at risk."
+    "directory at that path is what refuses the swap, and a `.theurian/state/` this "
+    "process cannot write refuses it too -- then run `theurian index build` again. The "
+    "build that just ran is still on disk and nothing authored is at risk."
 )
 
 
@@ -252,9 +252,12 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
         # A directory at `.theurian/state/active-index.json` is not a containment
         # failure -- nothing escapes the tree, and the chokepoint correctly waves
         # it through -- but it reaches the same `--json` surface and owes the same
-        # document. The type name and never the message: an `OSError`'s
-        # `strerror` carries the operator's absolute paths, the rule
-        # `_record_the_scan`'s warning already keeps.
+        # document. The type name and never the message, and the reason is not
+        # the one this comment used to give: `strerror` is the bare OS phrase
+        # ("Is a directory") and carries no path -- measured. What carries the
+        # operator's absolute paths is `str(exc)`, which appends the filename,
+        # and `type(exc).__name__` avoids both. The same correction applies to
+        # `_record_the_scan`'s warning below.
         _fail(
             f"The index was built, but the pointer that publishes it could not be written "
             f"({type(exc).__name__}), so this build is not published and what retrieval "
@@ -365,9 +368,14 @@ def _record_the_scan(
     the build reports what it found, says the signal will not survive the
     terminal, and still exits on the policy.
 
-    The exception's type name, never its message: an ``OSError``'s ``strerror``
-    carries the operator's absolute paths, which no payload here puts in (the rule
-    ``_purge_fields``' failure reason already holds). ``theurian doctor`` answers
+    The exception's type name, never its message. The reason is not the one this
+    paragraph used to give: an ``OSError``'s ``strerror`` is the bare OS phrase
+    and carries no path (measured -- ``'Is a directory'``); it is ``str(exc)``
+    that appends the filename, and the type name avoids both. No payload here
+    puts an operator's absolute path in (the rule ``_purge_fields``' failure
+    reason already holds), and
+    :func:`~theurian.infrastructure.sqlite.connection._refusal_text` states the
+    distinction correctly where it publishes ``strerror`` on purpose. ``theurian doctor`` answers
     ``unrecorded`` for this build afterwards -- honest ignorance, and never a clean
     bill -- which is what makes degrading safe rather than convenient.
 

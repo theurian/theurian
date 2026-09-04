@@ -641,9 +641,17 @@ class ProjectPaths:
         what gets published. Measured, and the branch's own CLI tests assert it:
         ``test_apply_refuses_an_escaping_state_symlink_and_writes_nothing_outside_the_tree``
         and its ``status`` sibling both expect
-        :func:`derived_escape_remedy`. So the CLI-reachable face of that plant is
-        the derived remedy, and the older text is reachable only by calling the
-        directory helper directly.
+        :func:`derived_escape_remedy`. So the CLI-reachable face of *that plant*
+        is the derived remedy.
+
+        **The older text is reachable, and an earlier version of this paragraph
+        said it was not.** ``initialize_project`` calls :func:`_contain` directly
+        for each directory it creates, passing
+        :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`, so ``theurian init`` over an
+        escaping ``.theurian/knowledge`` publishes it -- measured 2026-09-05
+        against the real CLI. What is true is narrower: no *swept* command
+        produces it for a plant under ``state`` or ``runtime``, because a helper
+        resolving something beneath those raises first.
 
         Unifying the two texts was left where it is; the exit-code grading that
         differed beside them is #525's, and the sweep in
@@ -1142,13 +1150,35 @@ def read_active_state(paths: ProjectPaths) -> ActiveState | None:
     that has one. It does not, in practice, get the chance to -- an unreadable
     parent surfaces through ``read_text`` as the ``OSError`` this now converts --
     and narrowing it further would be a guess about which errno means absent.
+
+    **A fourth way to fail arrives as a ``TypeError``, and the guard below is
+    what stops it.** ``json.loads`` answers any JSON value, not only an object:
+    ``[]``, ``null``, ``7`` and ``"hi"`` all parse, and
+    :meth:`ActiveState.from_json` then subscripts them. ``TypeError`` is in none
+    of the families above, so a pointer holding one of those -- a truncated
+    write, a hand edit, a restored fragment -- escaped every caller as a crash:
+    measured, seven CLI positions exited 1 with **both channels empty**, and the
+    MCP tools raised with no remedy at all.
+
+    Refused with the same message and the same cure as the parse failures, since
+    the file is derived and one cure covers all of them. The shape is taken from
+    :func:`read_active_index_pointer`, which has had this ``isinstance`` guard
+    since it was written -- the same defect, caught in the sibling and missed
+    here, and the whole reason a family is swept rather than reasoned about.
     """
     pointer = paths.active_pointer
     if not pointer.exists():
         return None
     try:
-        return ActiveState.from_json(json.loads(pointer.read_text(encoding="utf-8")))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError, TheurianError) as exc:
+        loaded = json.loads(pointer.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            # `raise ... from None` is not used: the `except` below re-raises with
+            # the message and the remedy every other failure here carries, so the
+            # one exit stays one exit.
+            msg = f"the pointer holds a JSON {type(loaded).__name__}, not an object"
+            raise TypeError(msg)
+        return ActiveState.from_json(loaded)
+    except (json.JSONDecodeError, OSError, TypeError, UnicodeDecodeError, TheurianError) as exc:
         raise ProjectError(f"{pointer} is unreadable: {exc}", remedy=ACTIVE_POINTER_REMEDY) from exc
 
 
