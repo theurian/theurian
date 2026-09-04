@@ -97,6 +97,46 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   managed ignore cannot make a never-built machine report `clean` (ADR-0004,
   SEC-7).
 
+### Changed
+
+- **BREAKING: a path under `.theurian/` that resolves outside the working tree
+  now exits 4 everywhere, where nineteen positions exited 1**
+  ([#525](https://github.com/theurian/theurian/issues/525)). One root cause — a
+  clone carrying a symbolic link force-added past ADR-0004's ignore — was
+  answered three different exit codes, decided by which `ProjectPaths` helper
+  resolved first rather than by what was wrong: 0 from `theurian project status`
+  degrading over an escaping `active.json`, 1 from the active-pointer read over
+  the `.theurian/state`, `active.json` and `config.yaml` faces, and 4 from the
+  state-database faces closed in 0.1.0.dev18. A caller scripting against these
+  commands had to know *which file* was doctored to learn that anything was.
+
+  `EXIT_STATE_ERROR` (4) is the survivor, and not by majority: it is the code
+  `theurian` already assigns to a `.theurian/migrations` symlinked out of the
+  tree — the same doctored-clone condition through a different guard. Exit 1 is
+  this CLI's "the command could not run here"; a working tree someone doctored
+  is a knowledge-state problem the user must repair, which is what 4 means. Exit
+  codes are a published contract (`docs/protocol/plugin-core-compatibility.md`),
+  so this is called out as breaking rather than carried as a detail.
+
+  **What did *not* move.** A pointer file that merely will not parse is derived
+  state to delete, not a doctored tree: it keeps exit 1, and `project status`
+  keeps answering its full payload at exit 0 with `statePointerCorrupt: true`.
+  So does an escaping `.theurian` *itself*, which is refused a level earlier
+  while the command context is still resolving and is graded by each command's
+  own "could not resolve a project" contract. Both bounds are pinned by tests.
+
+  Six of the nineteen positions published no exit code worth reading anyway:
+  they escaped `--json` as a Rich traceback with **zero bytes on stdout and zero
+  on stderr**, over `.theurian/state/active-index.json` in `index build`,
+  `index gc`, `index status`, `migrate apply` and `project status`, and over
+  `.theurian/state/index-secret-scan.json` in `index build`. Each is now one
+  `{error, remedy}` document naming the artefact to repair. The write lock's own
+  open joins them ([#520](https://github.com/theurian/theurian/issues/520)): a
+  directory at `.theurian/runtime/write.lock`, a lock file this process may not
+  open, and a `.theurian/runtime/` that refuses to create one each ended
+  `migrate apply --json` in a traceback, and each now describes what was found
+  rather than calling it a symbolic link.
+
 ### Fixed
 
 - **A path that leaves the project through a symlink and comes back inside is

@@ -452,6 +452,48 @@ class ProjectError(TheurianError):
         super().__init__(message)
 
 
+class ProjectPathEscapeError(ProjectError):
+    """A path under ``.theurian/`` could not be proved to stay inside the tree.
+
+    The one refusal :func:`_contain` makes, given a name so the CLI can grade it
+    without asking *which helper* raised (#525). One root cause -- a working tree
+    carrying a symbolic link force-added past ADR-0004's ignore -- was answered
+    exit 0, exit 1 and exit 4 by three different handlers, decided by whichever
+    ``ProjectPaths`` helper resolved first rather than by what was wrong. Every
+    one of them narrowed to ``ProjectError`` or to ``TheurianError``, so no
+    handler could tell this apart from an ``active.json`` holding four bytes of
+    text -- a *different* root cause, derived state to delete, whose exit 1 and
+    whose ``project status`` degradation are correct and had to survive the
+    unification.
+
+    **Not :class:`~theurian.domain.errors.PathEscapeError`, which is a different
+    class with a different subject.** That one is the migration loader's and the
+    proposal service's, over a ``contentFile`` an author chose: its whole message
+    discipline exists because ``requested`` is attacker-controlled text (SEC-7),
+    and its remedy names no file to delete because the culprit can sit anywhere
+    on the resolution chain. This one is over a path *Theurian itself* built from
+    ``knowledge_dir`` and constant child names, so the path is safe to print and
+    the cure is keyed on it (:meth:`ProjectPaths._escape_remedy`).
+
+    Carries no fields of its own: the message and the remedy :class:`ProjectError`
+    already holds are the whole payload, and the type is what the CLI grades on.
+
+    **The join check in :meth:`ProjectPaths.of` is deliberately not this type**,
+    and that is a bound on the class rather than an oversight. It guards
+    ``knowledge_dir`` itself -- ``.theurian`` shipped as a symbolic link to
+    somewhere outside the tree -- with its own anchor, and it fires while the
+    command context is still resolving, so its refusal is graded by whatever each
+    of ``resolve_context``'s five consumers already assigns to "could not resolve
+    a project": ``1`` from ``init`` and ``project register``, ``1`` from
+    ``_require_project``'s generic branch, and a payload at exit ``0`` from
+    ``project status``, whose contract is to answer for directories that are not
+    projects at all. Those are recorded per-command decisions
+    (``_require_project``'s own comment says so), and unifying them reaches a
+    surface this class does not: an outermost escaping link therefore still
+    reports ``1``. Recorded rather than closed.
+    """
+
+
 def _contain(root: Path, path: Path, *, remedy: str = KNOWLEDGE_DIR_ESCAPE_REMEDY) -> Path:
     """Prove ``path`` stays inside ``root``, or refuse with the escape remedy.
 
@@ -511,12 +553,17 @@ def _contain(root: Path, path: Path, *, remedy: str = KNOWLEDGE_DIR_ESCAPE_REMED
         # with those: every path reaching here is built from the already-validated
         # `knowledge_dir` and constant child names, so this arm is a contract
         # guarantee, not a branch real data drives.
-        raise ProjectError(
+        #
+        # Graded as the escape it cannot rule out, not one grade softer: a path
+        # whose containment could not be *decided* is a path no read or write may
+        # be attempted through, and a caller reading the exit code has the same
+        # thing to do about it.
+        raise ProjectPathEscapeError(
             f"{path} does not resolve to a location inside {resolved_root}: {exc}",
             remedy=remedy,
         ) from exc
     if not resolved.is_relative_to(resolved_root):
-        raise ProjectError(
+        raise ProjectPathEscapeError(
             f"{path} resolves outside the project root {resolved_root}, so a read or write "
             f"through it would land outside the working tree.",
             remedy=remedy,
@@ -555,9 +602,9 @@ class ProjectPaths:
         Keyed on the refused path rather than fixed per raise site, so the
         remedy is chosen once for every helper that routes through
         :meth:`_contained` -- including helpers added later, and including the
-        call sites #525 will widen the *handling* of. That issue re-keys which
-        refusals reach a caller as an envelope; this decides what the envelope
-        says, so the two compose rather than collide.
+        call sites #525 widened the *handling* of. That issue re-keyed which
+        refusals reach a caller as an envelope and unified their exit code; this
+        decides what the envelope says, so the two compose rather than collide.
 
         Lexical, deliberately. ``path`` is the requested location, always built
         here as ``knowledge_dir / <child> / ...``, and reading its shape is a
@@ -584,9 +631,12 @@ class ProjectPaths:
         the derived remedy, and the older text is reachable only by calling the
         directory helper directly.
 
-        Unifying the two texts, and the exit-code grading that differs beside
-        them, is #525's -- which is where the population is recorded, rather than
-        here where only this one seam is visible.
+        Unifying the two texts was left where it is; the exit-code grading that
+        differed beside them is #525's, and it is now one code for every refusal
+        this method keys a cure for. The population that closure ranges over is
+        recorded on :class:`ProjectPathEscapeError` and driven by
+        ``tests/integration/test_contained_path_envelope.py``, rather than here
+        where only this one seam is visible.
         """
         if not path.is_relative_to(self.knowledge_dir):  # pragma: no cover - see docstring
             # No helper builds such a path; `initialize_project` calls `_contain`

@@ -159,11 +159,14 @@ def _current_state_hash(root: Path) -> StateHash | None:
 
     Telling them apart is available and is deliberately not taken *here*.
     ``except (SchemaUnreadableError, ProjectError)`` would name those two faces
-    and nothing else: ``ProjectError`` has no subclasses anywhere in this tree,
-    every ``raise ProjectError`` in it is in ``application/project_service.py``
-    or ``cli/context``, and ``infrastructure/`` -- where
-    ``load_migrations`` lives and which imports neither -- has none. So inside
-    this ``try`` the only ``ProjectError`` is ``schema_root()``'s. What rules the
+    and nothing else: ``ProjectError``'s one subclass is
+    ``ProjectPathEscapeError``, raised only by ``_contain`` and so only from a
+    ``ProjectPaths`` helper -- and the resolve above is outside this ``try`` on
+    purpose. Every other ``raise ProjectError`` in the tree is in
+    ``application/project_service.py`` or ``cli/context``, and
+    ``infrastructure/`` -- where ``load_migrations`` lives and which imports
+    neither -- has none. So inside this ``try`` the only ``ProjectError`` is
+    ``schema_root()``'s. What rules the
     split out here is the other reader: ``_check_migrations`` calls
     ``schema_root()`` inside its own ``try`` and catches ``TheurianError``, and
     two readers of one load catching different sets is #91's divergence in a new

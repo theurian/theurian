@@ -36,6 +36,7 @@ from theurian.application.migration_engine import (
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
     BuildProvenance,
+    ProjectPathEscapeError,
     ProjectPaths,
     ensure_gitignore,
     entry_root,
@@ -156,6 +157,37 @@ def _fail(message: str, *, remedy: str, as_json: bool, code: int) -> None:
             f"error: {escape_terminal_controls(message)}\n{escape_terminal_controls(remedy)}\n"
         )
     raise typer.Exit(code)
+
+
+def _fail_a_path_escape(exc: ProjectPathEscapeError, *, as_json: bool) -> None:
+    """One grading and one cure for a path under ``.theurian/`` that leaves the tree.
+
+    Every ``ProjectPaths`` helper routes through one containment chokepoint, and
+    until #525 the refusal it raises was graded by whichever handler happened to
+    catch it: ``_read_active``'s exit 1 over ``.theurian/state`` and
+    ``active.json``, ``_require_project``'s exit 4 over the state database (#483)
+    and ``project status``'s exit 0 over a pointer it degraded about, with five
+    positions catching nothing at all and publishing a Rich traceback. A caller
+    scripting against these commands had to know *which file* was doctored to
+    learn that anything was.
+
+    ``EXIT_STATE_ERROR``, and not by majority: it is the code
+    :func:`_require_project` already assigns to ``PathEscapeError`` -- a
+    migrations directory symlinked out of the tree, the same doctored-clone
+    condition reached through a different guard (#233). Exit 1 is this CLI's "the
+    command could not run here"; a working tree carrying a symbolic link
+    force-added past ADR-0004's ignore is a knowledge-state problem the user must
+    repair, which is what 4 means.
+
+    ``exc.remedy`` bare rather than through :func:`_context_remedy`: the
+    chokepoint always sets one, keyed on the refused path
+    (``ProjectPaths._escape_remedy``), and a default would only ever replace a
+    cure that names the right artefact with one that does not.
+
+    Does not return -- :func:`_fail` raises -- but is typed like every other
+    caller of it, so the call sites keep their explicit ``return``.
+    """
+    _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
 
 
 #: Cure for a canonical state database this build cannot open or interpret.
@@ -712,9 +744,22 @@ def _read_active(paths: ProjectPaths, as_json: bool) -> ActiveState | None:
     happens *after* it, in ``_verify_history``; and deliberately reachable from
     ``cli.index_commands`` too, so the two composition roots cannot print
     different cures for the same file.
+
+    **Two root causes arrive at this one call, and they keep different exit
+    codes** (#525). ``read_active_state`` resolves ``paths.active_pointer``
+    before it reads it, so a ``.theurian/state`` or an ``active.json`` that
+    resolves outside the working tree refuses *here* -- a doctored tree, graded
+    like every other containment refusal. A pointer that merely will not parse is
+    derived state to delete, which is this function's own exit 1 and is not
+    #525's to regrade. Ordering the two ``except`` clauses is the whole
+    distinction: a single ``except TheurianError`` cannot draw it, which is why
+    the escape was answered "delete this file" at exit 1 across six commands.
     """
     try:
         return read_active_state(paths)
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        raise
     except TheurianError as exc:
         _fail(
             str(exc),
@@ -1188,10 +1233,24 @@ def project_status(as_json: JsonOption = False) -> None:
     # unreadable one used to end the whole command in a traceback with an empty
     # stdout. `_read_active` is not usable here -- it exits, and this command
     # answers at exit 0 even for a directory that is not a project at all.
+    #
+    # A pointer that resolves *outside* the working tree is the one arrival this
+    # cannot degrade about, and telling it apart is what the exception's type is
+    # for (#525). "Unreadable" here means derived state to delete, and
+    # `statePointerCorrupt` is the field that says so; a `.theurian/state/` a
+    # clone doctored past ADR-0004's ignore is the condition `database_for`'s
+    # handler below already refuses to answer partially about, met a few lines
+    # earlier through a different helper. Publishing a full payload with
+    # `statePointerCorrupt: true` for it -- exit 0, the shape measured at
+    # `491bded6` -- sends the reader to delete a file whose real problem is the
+    # link above it, and reports a project as healthy enough to describe.
     pointer_failure: TheurianError | None = None
     active: ActiveState | None = None
     try:
         active = read_active_state(context.paths)
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
     except TheurianError as exc:
         pointer_failure = exc
 
@@ -1216,6 +1275,29 @@ def project_status(as_json: JsonOption = False) -> None:
         _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
         return
 
+    # The index's own verdict, from the one function `theurian index status`
+    # publishes it from (issue #100). It used to be computed here, from the
+    # *canonical* pointer -- `active is None or active.state_hash !=
+    # context.state_hash` -- which asks whether `migrate apply` is up to date and
+    # never opened the index pointer at all. That old question is not lost: it is
+    # `activeStateHash` against `stateHash`, both still published below.
+    #
+    # Hoisted out of the payload so its own containment refusal can be graded:
+    # `index_staleness` resolves `active_index_pointer`, the third `.theurian/
+    # state/` leaf this command reaches, and inside a dict literal there was
+    # nowhere to catch it -- so it escaped as a Rich traceback with an empty
+    # machine channel, the CP-2 shape the two handlers above exist to avoid
+    # (#525).
+    try:
+        index_stale = index_staleness(
+            context.paths,
+            project_id=context.project_id.value,
+            current_state_hash=str(context.state_hash),
+        ).stale
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
+
     _emit(
         {
             "projectId": context.project_id.value,
@@ -1237,18 +1319,7 @@ def project_status(as_json: JsonOption = False) -> None:
             "stateHash": str(context.state_hash),
             "activeStateHash": None if active is None else str(active.state_hash),
             "stateBuilt": database.exists(),
-            # The index's own verdict, from the one function `theurian index
-            # status` publishes it from (issue #100). It used to be computed
-            # here, from the *canonical* pointer -- `active is None or
-            # active.state_hash != context.state_hash` -- which asks whether
-            # `migrate apply` is up to date and never opened the index pointer
-            # at all. That old question is not lost: it is `activeStateHash`
-            # against `stateHash`, two fields above, both still published.
-            "indexStale": index_staleness(
-                context.paths,
-                project_id=context.project_id.value,
-                current_state_hash=str(context.state_hash),
-            ).stale,
+            "indexStale": index_stale,
             # `activeStateHash: null` alone cannot say which of two things
             # happened, and the two have opposite cures: `migrate apply` for a
             # project that has never been applied, and *delete this file, then*
@@ -1728,7 +1799,12 @@ def migrate_apply(  # noqa: PLR0911 -- one early return per distinguishable fail
     # state, so the committed withdrawal is all it needs -- and it is the same
     # application-layer use case a future daemon write path calls (ADR-0024
     # decision 5). A withdrawal-free apply skips it inside the use case.
-    purge = _purge_withdrawal(context, report.withdrawn_candidates, provenance)
+    #
+    # ``as_json`` travels with it because the pointer read inside can refuse: the
+    # lock section's ``except TheurianError`` has already closed by here, so that
+    # refusal is graded where it is raised rather than by a handler this function
+    # would have to grow (#525).
+    purge = _purge_withdrawal(context, report.withdrawn_candidates, provenance, as_json=as_json)
 
     # A withdrawal purge publishes a *new* index build (a copy with the withdrawn
     # revisions removed), so its build id must be recorded as this install's or
@@ -1757,6 +1833,8 @@ def _purge_withdrawal(
     context: CommandContext,
     withdrawal_candidates: Sequence[WithdrawalCandidate],
     provenance: BuildProvenance,
+    *,
+    as_json: bool,
 ) -> WithdrawalPurge:
     """Purge the published index for a withdrawal, but only if this install built it.
 
@@ -1780,8 +1858,25 @@ def _purge_withdrawal(
     withdrawal-free apply reads no pointer here -- it has nothing to launder -- and
     the empty ``source_build_id`` (no pointer, or a pointer naming no build) falls
     through to the use case, which reports the benign ``no-published-index`` state.
+
+    **The read is graded here because nothing above it can be** (#525).
+    ``read_active_index`` absorbs every way the pointer's contents can be wrong
+    and answers ``None``, but it resolves ``active_index_pointer`` first, and a
+    path that leaves the working tree refuses. By this point ``migrate apply``'s
+    lock section has closed its ``except TheurianError`` and
+    ``publish_purge_for_withdrawal``'s own ``except Exception`` has not opened --
+    the read happens before that call -- so the refusal escaped both and ended
+    the command in a Rich traceback with an empty machine channel, *after* the
+    migration had committed. It stays a refusal rather than a
+    ``published: false`` reason: the apply is durable and the index follow-up is
+    what failed, but no honest account of the index can be given about a
+    ``.theurian/state/`` whose contents nothing here can vouch for.
     """
-    source_build_id = str((read_active_index(context.paths) or {}).get("indexBuildId", ""))
+    try:
+        source_build_id = str((read_active_index(context.paths) or {}).get("indexBuildId", ""))
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        raise
     if (
         withdrawal_candidates
         and source_build_id
