@@ -20,6 +20,8 @@ import pytest
 from fakes import FakeReviewFindingSource
 from write_lock_claims import REPO_ROOT, collapsed
 
+from theurian.application.index_builder import IndexBuilder
+from theurian.application.retrieval_service import ResultGate, RetrievalService
 from theurian.domain import ports
 from theurian.domain.ports import ReviewFindingSource
 from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
@@ -140,6 +142,20 @@ _POINT_5_INTRO = "the port set is exactly these"
 #: became wrong, and the pin below would then report the paragraph as deleted --
 #: sending a reader to restore text that is sitting there, saying the wrong thing.
 _DELTA_PARAGRAPH = "are the delta between point 5's"
+
+#: The module ADR-0003's `CanonicalReadSession` row and `canonical_store.py`'s
+#: class docstring both name as the session consumer's home. It holds
+#: :class:`RetrievalService` too, and that is not incidental -- it is the whole
+#: mechanism of the misattribution the pin below exists to stop. See that pin.
+_RETRIEVAL_MODULE = "theurian.application.retrieval_service"
+
+#: The two session Protocols the records say are injected *per consumer*. Held as
+#: the discriminator rather than as the annotation's full spelling: what was wrong
+#: three times is **which class gets which session**, not how the callable is
+#: written, and a byte-equal pin would also go RED if `retrieval_service.py`
+#: stopped deferring its annotations, which changes no record.
+_GATE_SESSION = "CanonicalReadSession"
+_BUILDER_SESSION = "IndexBuildSession"
 
 #: The second half of the delta claim. Point 5's list is a historical record, so
 #: "none left" is a statement about the register never having *shrunk*; a port
@@ -509,6 +525,99 @@ def test_adr_0003_records_which_ports_joined_the_register_since_point_5_was_writ
         f"the amendment no longer claims {_NONE_LEFT!r}, so nothing records that the "
         f"register has only ever grown; the assertion above then holds a property this "
         f"ADR has stopped stating."
+    )
+
+
+def _session_factory_annotation(consumer: type) -> str:
+    """The ``store_factory`` annotation on *consumer*, or a failure naming the class.
+
+    Read through :func:`inspect.signature` rather than by grepping the module,
+    because grep is what produced the wrong answer three times: it finds the
+    *file* an annotation lives in, and the class then gets inferred from the file.
+    Two classes in one module make that inference silently wrong, which is exactly
+    the shape here.
+    """
+    parameter = inspect.signature(consumer).parameters.get("store_factory")
+
+    assert parameter is not None, (
+        f"`{consumer.__name__}.__init__` takes no `store_factory`, so the records that "
+        f"say it is handed a session describe an injection point that does not exist"
+    )
+    return str(parameter.annotation)
+
+
+def test_the_records_name_the_class_that_actually_takes_the_session_factory() -> None:
+    """RED means a record names the wrong session consumer -- a fourth time (#140).
+
+    Three records say the same thing: ADR-0003's `CanonicalReadSession` row, the
+    roadmap's discharge bullet, and ``canonical_store.py``'s class docstring. All
+    three have now been wrong about it **three times**, each time in a different
+    way, and each correction was reached by grepping the annotation:
+
+    1. "a read session ``CanonicalStore`` returns" -- never true of any revision;
+       no method returns one.
+    2. ``IndexBuilder`` and ``RetrievalService`` share
+       ``Callable[[Path], CanonicalReadSession]`` -- the annotations differ, and
+       have since ``IndexBuildSession`` landed.
+    3. ``RetrievalService`` takes it -- it takes no ``store_factory`` at all.
+
+    The mechanism is stable across all three: **grep answers which file, and the
+    class is then inferred from the file.** :class:`ResultGate` and
+    :class:`RetrievalService` live in the same module, so that inference lands on
+    the wrong class every time and nothing contradicts it. Counting is not a
+    reasoning task, and neither is attribution; this pin reads the signature.
+
+    Four claims, and the middle two are what discriminate:
+
+    - :class:`RetrievalService` carries **no** ``store_factory``. The negative all
+      three wrong versions asserted, and the only one that fails if the records
+      revert to the most recent of them.
+    - :class:`ResultGate` -- the SEC-13 gate -- is handed a
+      ``CanonicalReadSession`` and not an ``IndexBuildSession``.
+    - :class:`IndexBuilder` is handed an ``IndexBuildSession`` and not a
+      ``CanonicalReadSession``. Together with the previous claim this *is* the
+      records' "injection is per consumer, not shared" -- asserted as two
+      different constants rather than as a third assertion comparing them, which
+      could not fail once these two hold.
+    - Both classes live in the module the records name, which is the premise the
+      history above rests on rather than a detail: if they ever stop sharing it,
+      the mistake this pin guards stops being available and its docstring stops
+      being true.
+    """
+    service = inspect.signature(RetrievalService).parameters
+
+    assert "store_factory" not in service, (
+        f"`RetrievalService.__init__` now takes a `store_factory` "
+        f"({sorted(service)}). Three records were corrected *away* from naming it as "
+        f"the session consumer; if this is a real new injection point, they each need "
+        f"a fourth revision rather than the third one quietly becoming true again."
+    )
+    assert ResultGate.__module__ == RetrievalService.__module__ == _RETRIEVAL_MODULE, (
+        f"`ResultGate` is in {ResultGate.__module__} and `RetrievalService` in "
+        f"{RetrievalService.__module__}; the records name {_RETRIEVAL_MODULE} and this "
+        f"pin's history says the two sharing it is what made the misattribution "
+        f"available. Correct the records, and this docstring with them."
+    )
+
+    gate, builder = (
+        _session_factory_annotation(ResultGate),
+        _session_factory_annotation(IndexBuilder),
+    )
+
+    assert re.search(rf"\b{_GATE_SESSION}\b", gate) and not re.search(
+        rf"\b{_BUILDER_SESSION}\b", gate
+    ), (
+        f"`ResultGate` is handed `{gate}`, and the records say it takes a "
+        f"`{_GATE_SESSION}`. That is the row's whole reason for placing "
+        f"`{_GATE_SESSION}` outside the register: the SEC-13 gate substitutes a "
+        f"`CanonicalStore` adapter, not a second boundary."
+    )
+    assert re.search(rf"\b{_BUILDER_SESSION}\b", builder) and not re.search(
+        rf"\b{_GATE_SESSION}\b", builder
+    ), (
+        f"`IndexBuilder` is handed `{builder}`, and the records say it takes an "
+        f"`{_BUILDER_SESSION}`. The two consumers taking the *same* session is the "
+        f"second of the three wrong versions, returning."
     )
 
 
