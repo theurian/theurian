@@ -322,8 +322,8 @@ def read_source_file(root: Path, relative: str | PurePosixPath) -> bytes:
 
     Raises:
         PathEscapeError: If the path escapes ``root`` -- either by resolving
-            outside it, or by traversing an intermediate symlink that leaves it
-            (:func:`assert_no_symlink_escape`, issue #288).
+            outside it, or by taking a route that leaves it and returns, however
+            that route is spelled (:func:`assert_no_symlink_escape`, issue #288).
         IrregularSourceFileError: If the file is one whose read ``st_size`` does
             not bound -- a FIFO, a socket, a device (issue #215).
         InputTooLargeError: If the file exceeds :data:`MAX_SOURCE_FILE_BYTES`.

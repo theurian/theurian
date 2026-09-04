@@ -253,41 +253,48 @@ def _read_a_file_past_the_size_cap(project_root: Path) -> object:
 
 
 #: One entry per *reachable* raise site in ``security/paths.py``, each driven
-#: with a path carrying `_ECHO_MARKER`. Three live in ``resolve_within_root``
-#: (absolute, depth, resolves-outside); two are ``assert_no_symlink_escape``'s --
-#: a walk that ends outside the root, driven directly because
-#: ``resolve_within_root`` has already refused that shape at every
-#: ``read_source_file`` call site, and an intermediate link that leaves the root,
-#: driven through ``read_source_file`` because that is the caller the refusal has
-#: to reach. The last two are ``read_source_file``'s own: the irregular-shape
-#: refusal and the size cap, which are the two that fire *after* containment
-#: holds and so are the two whose caller string is still unnormalized when they
-#: raise.
+#: with a path carrying `_ECHO_MARKER`. The module raises in ten places, across
+#: four functions:
+#:
+#: * ``resolve_within_root`` -- three: absolute, past the depth cap, resolves
+#:   outside.
+#: * ``assert_no_symlink_escape`` -- two: the walk left the root having been
+#:   inside it, and the walk ended outside a root it never entered. The second is
+#:   driven directly, because it needs a ``base`` outside the ``root``, which is
+#:   ``_destination_of``'s shape and not ``read_source_file``'s.
+#: * ``_expand`` -- two: more links than :data:`MAX_SYMLINK_HOPS`, and a link the
+#:   walk could not read.
+#: * ``read_source_file`` -- three: the irregular-shape refusal and the size cap
+#:   twice. These fire *after* containment holds, and so are the ones whose
+#:   caller string is still unnormalized when they raise.
 #:
 #: The population is every raise site in the module, not the escape family:
 #: keying it on which *error type* carries a path would have let a branch join
 #: the module by carrying one, which is exactly how the FIFO refusal (#215)
 #: entered echoing its caller's path while this list still read as complete.
 #:
-#: One raise site is deliberately absent, and this list is not a claim to cover
-#: it. ``read_source_file``'s post-read size re-check needs the file to grow
-#: between the ``stat`` and the ``read``, which no single-threaded driver can
-#: arrange -- and it raises the same ``InputTooLargeError``, from the same two
-#: constants, as the pre-read cap below it.
+#: Two raise sites are deliberately absent, and this list is not a claim to cover
+#: them. Both are races a single-threaded driver cannot arrange:
+#: ``read_source_file``'s post-read size re-check needs the file to grow between
+#: the ``stat`` and the ``read``, and ``_expand``'s unreadable-link branch needs
+#: the link to stop being readable between the ``is_symlink`` that saw it and the
+#: ``readlink`` that reads it. Each is pinned by its own test instead, named in
+#: its row.
 #:
-#: ``assert_no_symlink_escape``'s in-loop check used to be absent here too, on
-#: the reasoning that it walked ``target.resolve().relative_to(root)`` -- whose
-#: components are symlink-free by construction, so nothing it visited could be a
-#: link. That reasoning was correct and it described a guard that could never
-#: fire: issue #288 measured the whole function dead at both of its call sites.
-#: It now walks the components the caller named, so the branch is reachable, and
-#: ``an-intermediate-link-leaves-the-root`` is what reaches it.
+#: **The walk's own branches were absent here twice, for two different wrong
+#: reasons, and both are worth keeping written down.** First, on the reasoning
+#: that the loop walked ``target.resolve().relative_to(root)`` -- correct, and it
+#: described a guard that could never fire, because issue #288 had left the
+#: function dead at both call sites. Then, once it walked the requested
+#: components, on the assumption that one driver stood for the class: round 1
+#: measured five of six spellings of the same traversal still passing, because
+#: each component was resolved whole and the ``..`` arm was not checked at all.
+#: The ids below now separate the shapes that separate the mechanisms.
 #:
-#: **Both paragraphs above are claims about the shipped module, and they are
-#: checked rather than maintained**: :data:`_RAISE_SITES` restates them as data,
-#: and the two tests below it hold the enumeration against ``paths.py``'s own
-#: ``raise`` statements and against this list's ids. Editing either without the
-#: other goes red.
+#: **The enumeration above is a claim about the shipped module, and it is checked
+#: rather than maintained**: :data:`_RAISE_SITES` restates it as data, and the
+#: two tests below hold it against ``paths.py``'s own ``raise`` statements and
+#: against this list's ids. Editing either without the other goes red.
 _ECHO_ATTACKS = [
     pytest.param(
         lambda root: read_source_file(root, f"../outside/{_ECHO_MARKER}"),
