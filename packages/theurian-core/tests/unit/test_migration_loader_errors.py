@@ -865,6 +865,45 @@ def test_a_content_file_nested_too_deep_is_not_reported_as_an_escape(project: Pa
     _assert_names_no_file_to_delete(excinfo.value.remedy)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_content_file_that_is_both_too_deep_and_escaping_keeps_the_depth_message(
+    project: Path,
+) -> None:
+    """The ordering of `_parse_upsert`'s guards, which its comment asserts.
+
+    That comment says the escape walk runs *after* `resolve_within_root` "so the
+    depth and plain-containment refusals keep firing first and keep their own
+    messages". True, and until this test held by nothing: swapping the two lines
+    survived the whole suite, because no fixture was both too deep and escaping,
+    so the two orders produced the same answer for every input the suite had.
+
+    The distinction is the #233 family's, not a nicety. A path that nests past
+    the limit need never have left the root, and telling its author to hunt for
+    a symbolic link that leaves the project sends them looking for something
+    that may not exist.
+    """
+    knowledge = project / ".theurian" / "knowledge"
+    knowledge.mkdir(parents=True, exist_ok=True)
+    outside = project.parent / "outside-loader"
+    outside.mkdir(parents=True, exist_ok=True)
+    (knowledge / "hop").symlink_to(outside, target_is_directory=True)
+    (outside / "back").symlink_to(knowledge, target_is_directory=True)
+
+    deep = "/".join(["deep"] * 40)
+    migration = project / ".theurian" / "migrations" / "01K1NNNNNN01234567890ABCDE-both.yaml"
+    migration.write_text(
+        _UPSERT_MIGRATION.format(content_file=f"../knowledge/hop/back/{deep}/body.md")
+    )
+
+    with pytest.raises(PathDepthExceededError) as excinfo:
+        load_migrations(project, project / ".theurian" / "migrations", real_schema_root())
+
+    assert "escapes" not in str(excinfo.value), (
+        "the depth refusal keeps its own message even when the path also escapes"
+    )
+    _assert_names_no_file_to_delete(excinfo.value.remedy)
+
+
 def test_the_sibling_content_file_branches_name_the_migration_file_too(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
