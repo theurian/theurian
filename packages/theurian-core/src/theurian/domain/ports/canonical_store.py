@@ -425,11 +425,16 @@ class CanonicalReadSession(Protocol):
     ``get_item`` and ``get_revision`` are :class:`CanonicalStore`'s own narrowed
     in; ``get_item_exact`` is the alias-free read T-21 needs and that port does
     not offer; ``__enter__`` and ``__exit__`` add the handle lifetime it
-    deliberately does not express. No :class:`CanonicalStore` method returns one
-    -- a builder is handed one by an injected
-    ``store_factory: Callable[[Path], CanonicalReadSession]`` -- but what an
-    operator substitutes is still a :class:`CanonicalStore` adapter, so this
-    opens no boundary the register does not already govern.
+    deliberately does not express. No :class:`CanonicalStore` method returns one.
+
+    Injection is per consumer rather than one shared factory, and the two
+    annotations differ: ``RetrievalService`` (``application/retrieval_service.py``)
+    takes ``store_factory: Callable[[Path], CanonicalReadSession]``, while
+    ``IndexBuilder`` (``application/index_builder.py``) takes
+    ``Callable[[Path], IndexBuildSession]`` -- the widening
+    :class:`IndexBuildSession` records. What an operator substitutes is still a
+    :class:`CanonicalStore` adapter either way, so this opens no boundary the
+    register does not already govern.
 
     Stated without an ordinal on purpose. This paragraph read "not a fifteenth
     port" while ``ALL_PORTS`` held seventeen: an ordinal pinned to a count drifts

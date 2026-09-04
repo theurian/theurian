@@ -20,20 +20,26 @@ Every port must ship a deterministic fake. A port without one is not finished,
 because it cannot be exercised offline (OSS-15). Fakes live in ``tests/fakes/``.
 
 **The fake rule above is an intention, not an enforced one, and the gap is
-wide.** No test asserts it. Counted structurally -- ``isinstance`` against each
-runtime-checkable port -- ``tests/fakes/`` covers **four of the seventeen**
-ports below: ``Clock`` (``FrozenClock``), ``IdGenerator``
-(``SeededIdGenerator``), ``DaemonManager`` (``FakeService``) and
-``ReviewFindingSource`` (``FakeReviewFindingSource``). The other thirteen are
-exercised by stand-ins that live beside the tests that need them. Said plainly
-here because the sentence above reads as a guarantee, and a reader who takes it
-for one concludes that any port in this list can be swapped out offline.
+wide.** No test asserts it. Determined structurally -- ``isinstance`` against
+each runtime-checkable port -- the doubles in ``tests/fakes/`` cover these
+entries of :data:`ALL_PORTS` and no others: ``Clock`` (``FrozenClock``),
+``IdGenerator`` (``SeededIdGenerator``), ``DaemonManager`` (``FakeService``)
+and ``ReviewFindingSource`` (``FakeReviewFindingSource``). **Every other entry
+has no double**, which is most of them. Said plainly here because the sentence
+above reads as a guarantee, and a reader who takes it for one concludes that
+any port in this list can be swapped out offline.
+
+Named rather than counted, for the reason the paragraph above gives: a
+membership claim stays true when the register grows, while "four of seventeen"
+and "the other thirteen" are both falsified by a port that has nothing to do
+with fakes.
 
 Do not re-answer that by name search. ``isinstance`` is the key because a name
 search is wrong in both directions: it misses ``FrozenClock`` when looking for
 ``Clock``, and it hits ``fakes/pages.py`` when looking for ``IndexStore``,
 which builds ``RetrieverPage`` helpers and defines no ``IndexStore`` double.
-Measured on 2026-09-03 at ``e2a950ef``.
+Membership re-measured on 2026-09-04, on the branch of
+https://github.com/theurian/theurian/pull/534.
 """
 
 from theurian.domain.ports.authorization import AuthorizationProvider
