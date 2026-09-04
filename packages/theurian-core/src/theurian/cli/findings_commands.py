@@ -48,13 +48,16 @@ JsonOption = Annotated[bool, typer.Option("--json", help="Emit machine-readable 
 #: ``WriteLock.held`` runs ``mkdir`` + ``os.open`` on ``.theurian/runtime/``,
 #: which raise a bare ``OSError`` -- not a ``TheurianError`` -- so on a first build
 #: whose state area is unwritable the raw traceback escaped the command's handler.
-#: **The ``mkdir`` is what still reaches this constant.** ``WriteLock._open``'s
-#: ``except OSError`` is unfiltered since #520, so a refused ``os.open`` -- a
-#: symbolic link at the lock path (#481), a directory there, a mode that denies
-#: this process -- arrives as ``WriteLockUnusableError``, a ``TheurianError``
-#: carrying a cure that names the lock file, and reaches the command's ``except
-#: TheurianError`` below instead of this text, which names a directory rather
-#: than the artefact.
+#: **Nothing in the acquisition reaches this constant any more.** Both calls
+#: ``WriteLock.held`` makes before it has a descriptor now convert their own
+#: ``OSError`` into ``WriteLockUnusableError`` -- the ``open`` since #520, the
+#: ``mkdir`` beside it -- each carrying a cure that names the lock file or the
+#: directory holding it, so both reach the command's ``except TheurianError``
+#: below rather than this text. It is kept as the backstop for the release
+#: clauses ``_lock_write_section`` also spans, and for a future acquisition step
+#: that forgets to convert; a remedy nothing can currently produce is recorded
+#: here rather than deleted, because deleting it is what makes the next bare
+#: ``OSError`` a traceback again.
 #: Names the precondition to fix first (a writable ``.theurian``), with the retry
 #: as the trailing clause, the same shape ``FindingsStoreError``'s write remedy
 #: takes.
@@ -78,21 +81,24 @@ _PROVENANCE_REMEDY: Final = (
 def _lock_write_section(lock_path: Path) -> WriteSection:
     """A write-section factory whose lock-acquisition ``OSError`` arrives graded.
 
-    ``WriteLock(lock_path).held`` is the real section, but its ``__enter__``
-    ``mkdir`` raises a bare ``OSError`` the command's ``except TheurianError``
-    cannot see (#404 R1-2). The ``except OSError`` below spans the whole ``with``
-    -- acquisition, body **and** release -- and converts any bare ``OSError`` from
-    it into a :class:`FindingsStoreError` a ``TheurianError`` handler catches.
-    ``held``'s acquisition is two calls, a ``mkdir`` then an open, and the
-    ``mkdir`` is the one that still raises a bare ``OSError`` here. The open, the
-    body and the release are spanned too; none of the three is a live source, for
-    three different reasons:
+    ``WriteLock(lock_path).held`` is the real section, and its ``__enter__``
+    ``mkdir`` raised a bare ``OSError`` the command's ``except TheurianError``
+    could not see (#404 R1-2). The ``except OSError`` below spans the whole
+    ``with`` -- acquisition, body **and** release -- and converts any bare
+    ``OSError`` from it into a :class:`FindingsStoreError` a ``TheurianError``
+    handler catches.
 
-    - **The ``open``.** ``WriteLock._open``'s own ``except OSError`` is
-      unfiltered since #520 and re-raises ``WriteLockUnusableError``, a
-      ``TheurianError`` naming the lock file rather than the directory, so it
-      passes this handler untouched and is graded by the command's own ``except
-      TheurianError``.
+    **The acquisition no longer produces one**, so this handler now guards the
+    other two phases and a future third acquisition step. Each phase is quiet for
+    its own reason:
+
+    - **Acquisition.** Both calls ``held`` makes before it has a descriptor
+      convert their own ``OSError`` into ``WriteLockUnusableError`` -- the
+      ``open`` since #520, the ``mkdir`` in ``_prepare_the_directory`` beside it.
+      Each is a ``TheurianError`` naming the lock file or the directory holding
+      it, so it passes this handler untouched and is graded by the command's own
+      ``except TheurianError`` with a better cure than
+      :data:`_LOCK_ACQUIRE_REMEDY` could give it.
 
     - **Body.** The one thing run inside is ``replace_all``, which converts its own
       ``(sqlite3.Error, OSError)`` before any escapes, and a

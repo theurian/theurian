@@ -141,16 +141,19 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `.theurian/state/index-secret-scan.json` in `index build` — a sixth face the
   driving sweep found and the issue had not listed. Each is now one
   `{error, remedy}` document naming the artefact to repair, measured against the
-  real CLI on 2026-09-04. The write lock's own open joins them
+  real CLI on 2026-09-04. Taking the write lock joins them
   ([#520](https://github.com/theurian/theurian/issues/520)): a directory at
-  `.theurian/runtime/write.lock`, a lock file this process may not open, and a
-  `.theurian/runtime/` that refuses to create one each ended `migrate apply
-  --json` in a traceback, and each now describes what was found rather than
-  calling it a symbolic link. Two neighbours are untouched and recorded as such:
+  `.theurian/runtime/write.lock`, a lock file this process may not open, a
+  `.theurian/runtime/` that refuses to create one, and a `.theurian/` that
+  refuses to recreate `runtime/` at all each ended `migrate apply --json` in a
+  traceback, and each now describes what was found rather than calling it a
+  symbolic link. The fourth is the `mkdir` one call before the open, and it says
+  so rather than borrowing the open's wording — "could not be opened" about a
+  call that never ran, with a cure leading "remove whatever is at
+  `.theurian/runtime/write.lock`" about a path where nothing is, would be the
+  same defect one line earlier. One neighbour is untouched and recorded as such:
   a FIFO at that path still blocks inside the `open` rather than returning an
-  errno ([#526](https://github.com/theurian/theurian/issues/526)), and the
-  `mkdir` that runs before the open still raises a bare `OSError`, which
-  `theurian findings build` grades and `theurian migrate apply` does not.
+  errno ([#526](https://github.com/theurian/theurian/issues/526)).
 
 ### Fixed
 

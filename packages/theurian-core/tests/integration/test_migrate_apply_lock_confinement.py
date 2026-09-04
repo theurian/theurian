@@ -669,34 +669,33 @@ def test_a_directory_at_the_active_pointer_temp_path_fails_cleanly(project: Path
 
 # -- A lock the open cannot take is a refusal, not a traceback (#520) ---------
 #
-# The write lock's own `_open` translates every `OSError` the open meets into
-# `WriteLockUnusableError`. Until this section landed it translated exactly one
-# shape -- the `O_NOFOLLOW` `ELOOP` a symbolic link at the final component
-# produces -- and re-raised every other errno untouched, while every handler that
-# could catch it narrows to `TheurianError`: `migrate apply`'s `except
-# TheurianError` around the whole critical section, `findings build`'s, and
+# Both calls the write lock's own `held` makes before it has a descriptor now
+# translate their own `OSError` into `WriteLockUnusableError`: the open, and the
+# `mkdir` on the lock's parent beside it. Until this section landed the open translated exactly
+# one shape -- the `O_NOFOLLOW` `ELOOP` a symbolic link at the final component
+# produces -- and the `mkdir` translated none, while every handler that could
+# catch one narrows to `TheurianError`: `migrate apply`'s `except TheurianError`
+# around the whole critical section, `findings build`'s, and
 # `write_transaction`'s. So an ordinary filesystem condition at the lock path
 # left `--json` with a Rich traceback and an empty machine channel.
 #
-# Three artefacts a clone or a bad umask really delivers, each measured on
-# `491bded6` producing exit 1, **zero bytes of stdout and zero bytes of stderr**,
-# and an uncaught exception:
+# Four artefacts a clone or a bad umask really delivers, each measured producing
+# exit 1, **zero bytes of stdout and zero bytes of stderr**, and an uncaught
+# exception -- the first three on `491bded6`, the fourth on the commit that added
+# it here:
 #
 #   - a directory at `.theurian/runtime/write.lock` -> `IsADirectoryError`;
 #   - a lock file at mode 0000 -> `PermissionError`;
 #   - `.theurian/runtime` at mode 0500 with no lock file yet -> `PermissionError`
-#     from the `O_CREAT`.
+#     from the `O_CREAT`;
+#   - `.theurian/runtime` absent under a `.theurian` at mode 0500 ->
+#     `PermissionError` from the `mkdir`, one call earlier than the other three
+#     and found by a different key: reading `held`, not sweeping the lock path.
 #
 # **A FIFO is deliberately not among them.** `O_WRONLY` on a FIFO with no reader
 # blocks, so that artefact hangs inside the open rather than raising, and closing
 # it needs a different change (#526, the lock face). Nothing here plants one, and
 # every arm below passes without that fix.
-#
-# **The `mkdir` in `held` is not covered either, and that is a recorded gap.** It
-# runs before the open and still raises a bare `OSError`, so a `.theurian/` that
-# refuses to create `runtime/` reaches `migrate apply` as the traceback this
-# section removes from the open. `findings build` grades it through
-# `_lock_write_section`; nothing else does.
 
 
 @dataclass(frozen=True, slots=True)
@@ -733,6 +732,21 @@ def _plant_a_runtime_directory_that_denies_creation(lock: Path) -> None:
     lock.parent.chmod(0o500)
 
 
+def _plant_a_knowledge_directory_that_denies_the_runtime_create(lock: Path) -> None:
+    """Take ``.theurian/runtime`` away and make ``.theurian`` refuse to recreate it.
+
+    The one artefact that stops the acquisition *before* the open: ``held`` runs
+    ``mkdir(parents=True, exist_ok=True)`` on the lock's parent first, and with
+    the parent absent that is a real create rather than the ``EEXIST`` the other
+    three plants produce. Mode ``0500`` on ``.theurian`` leaves every read the
+    command makes on the way here working -- the migration set and the state
+    directory are both still traversable -- so the first thing that fails is the
+    ``mkdir``.
+    """
+    shutil.rmtree(lock.parent, ignore_errors=True)
+    lock.parent.parent.chmod(0o500)
+
+
 UNUSABLE_LOCKS: Final = (
     UnusableLock(
         label="a directory where the lock file belongs",
@@ -752,18 +766,38 @@ UNUSABLE_LOCKS: Final = (
         restore=lambda lock: lock.parent.chmod(0o700),
         needs_a_mode_that_denies=True,
     ),
+    UnusableLock(
+        label="a knowledge directory that refuses to recreate runtime",
+        plant=_plant_a_knowledge_directory_that_denies_the_runtime_create,
+        restore=lambda lock: lock.parent.parent.chmod(0o700),
+        needs_a_mode_that_denies=True,
+    ),
 )
 
 
-def _the_open_really_refuses(lock: Path) -> bool:
-    """Whether the production open actually fails over the planted artefact.
+def _the_acquisition_really_refuses(lock: Path) -> bool:
+    """Whether taking the lock actually fails over the planted artefact.
 
     The positive control on the plant. A mode denies nothing to root and nothing
-    on a filesystem that ignores permission bits, and a plant that quietly permits
-    the open would leave the assertions below describing a *successful* apply --
-    green, and about nothing. Issued with the exact flags the write lock's own
-    ``_open`` uses, so this asks the same question the product asks.
+    on a filesystem that ignores permission bits, and a plant that quietly
+    permitted the acquisition would leave the assertions below describing a
+    *successful* apply -- green, and about nothing.
+
+    Both calls ``held`` makes before it has a descriptor are issued here, in that
+    order and with the same arguments: the ``mkdir`` on the lock's parent, then
+    the ``open`` with the flags the write lock's own ``_open`` uses. Probing only
+    the open would answer ``True`` for the ``mkdir`` plant by accident -- the lock
+    file is missing, so the open fails with ``ENOENT`` whether or not the
+    ``mkdir`` was refused -- and a plant whose refusal the probe cannot attribute
+    is a plant that can go quietly wrong.
+
+    ``ELOOP`` is excluded because ``O_NOFOLLOW`` returns it for a symbolic link,
+    which is #481's artefact and has its own test above.
     """
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return True
     try:
         handle = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     except OSError as exc:
@@ -809,8 +843,8 @@ def test_a_lock_the_open_cannot_take_is_refused_as_a_document(
     lock = _lock_path(project)
     artefact.plant(lock)
     try:
-        if not _the_open_really_refuses(lock):
-            pytest.skip(f"this filesystem accepts the open over {artefact.label}")
+        if not _the_acquisition_really_refuses(lock):
+            pytest.skip(f"this filesystem accepts the lock over {artefact.label}")
 
         result = runner.invoke(app, ["migrate", "apply", "--json"])
 

@@ -69,11 +69,12 @@ Run 2026-09-04, with ``project_service.py``'s own definitions discounted:
 
 **The lock open is the class's other member, and it lives next door.** The write
 lock's own ``_open`` is not a ``_contained`` call site, so the AST key above does
-not reach it; ``test_migrate_apply_lock_confinement.py`` sweeps it over its own
-three artefacts (#520). **The two are not equally strong, and saying so is the
+not reach it; ``test_migrate_apply_lock_confinement.py`` sweeps it, and the
+``mkdir`` beside it, over four artefacts (#520). **The two are not equally
+strong, and saying so is the
 point.** This file's population is derived, so a fourteenth member arrives as a
-named failure (run above). That file's is a hand-written parametrisation of three
-artefacts, so a fourth artefact at the lock path arrives as nothing at all -- what
+named failure (run above). That file's is a hand-written parametrisation of four
+artefacts, so a fifth artefact at the lock path arrives as nothing at all -- what
 it guards is vacuity rather than completeness, through
 ``_the_open_really_refuses``, which skips a plant the filesystem happens to
 accept instead of asserting over a successful apply. The completeness claim
@@ -96,7 +97,9 @@ Folding the two together would demand one exit code from ``index build``'s
 
 **What is deliberately not swept here.** A FIFO at the write-lock path blocks in
 the ``open`` rather than failing (recorded on #526, the lock face); nothing in
-this file plants one, and nothing here needs that fix to pass. An escaping
+this file plants one, and nothing here needs that fix to pass. The ``mkdir``
+that runs before that open *was* on this list and is not any more -- it converts
+its own refusal, and ``test_migrate_apply_lock_confinement.py`` drives it. An escaping
 ``.theurian`` *itself* is refused a level earlier, by the join check in
 ``ProjectPaths.of`` rather than by ``_contained``, and keeps each command's own
 resolve-time grading -- the bound recorded on ``ProjectPathEscapeError``.
@@ -278,6 +281,12 @@ class Plant:
     refuses: frozenset[str] = field(default_factory=frozenset)
     #: Swept commands that refuse over the directory plant, where one is distinct.
     directory_refuses: frozenset[str] = field(default_factory=frozenset)
+    #: The exit code a *directory* plant's refusal must report, where this file
+    #: pins one. ``None`` leaves it unpinned, which is the default and the right
+    #: answer for the plants whose refusal belongs to a contract this file may not
+    #: regrade -- see
+    #: :func:`test_a_directory_where_a_file_belongs_is_also_answered_as_a_document`.
+    directory_refusal_grade: int | None = None
     #: Empty exactly when this plant's refusals are ``_contained``'s own, which is
     #: what makes it a member of the class #525 closes. Non-empty carries the
     #: measured reason it is not.
@@ -406,6 +415,13 @@ PLANTS: Final = (
             {"index build", "index gc", "index status", "migrate apply", "project status"}
         ),
         directory_refuses=frozenset({"index build"}),
+        # The one directory refusal this file grades. It is not a "nothing was
+        # published" outcome and not a containment failure either: the corpus was
+        # read, the index was built and renamed into place, and the atomic pointer
+        # swap is what the directory refused. `index build` chose
+        # `EXIT_STATE_ERROR` for it, and until this pin the code was the only
+        # record of that choice.
+        directory_refusal_grade=EXIT_STATE_ERROR,
     ),
     Plant(
         helper="index_secret_scan",
@@ -926,6 +942,60 @@ def test_a_directory_where_a_file_belongs_is_also_answered_as_a_document(
 
     assert not escaped, f"a planted directory published an exception: {escaped}"
     assert not silent, f"a planted directory failed with no document at all: {silent}"
+
+
+@_NEEDS_SYMLINKS
+def test_a_pinned_directory_refusal_reports_the_grade_the_command_chose(
+    planted_directories: Matrix,
+) -> None:
+    """The exit code for a directory at the index pointer, pinned rather than implied.
+
+    ``test_a_directory_where_a_file_belongs_is_also_answered_as_a_document``
+    asserts the envelope and deliberately not the code, because the directory
+    sweep spans outcomes whose grading is not this file's: ``index build``
+    answering "nothing was published" over a directory at the database path is
+    its own contract. That reasoning covers the plants left at ``None`` and does
+    **not** cover this one. A directory at ``.theurian/state/active-index.json``
+    refuses a swept command through a handler this branch added, which chose
+    ``EXIT_STATE_ERROR`` -- and until this test, the choice was recorded nowhere
+    but the ``_fail`` call itself, so moving it would have failed nothing.
+
+    Not a containment refusal: nothing escapes the tree, and
+    :func:`test_every_containment_refusal_carries_the_state_error_exit_code`
+    excludes the directory sweep by construction. The two arrive at the same code
+    for different reasons, which is why they are pinned in different tests rather
+    than folded into one quantifier over "everything that refuses".
+
+    ``write_lock``'s directory grade is deliberately not pinned here as well.
+    ``test_migrate_apply_lock_confinement.py`` already asserts it over its own
+    four artefacts, and a second copy is the drift shape
+    ``write_lock_claims.py``'s module docstring exists to describe: two pins over
+    one fact go RED in whichever one its author remembered.
+    """
+    pinned = {
+        (plant.helper, command): plant.directory_refusal_grade
+        for plant in PLANTS
+        if plant.has_directory_shape and plant.directory_refusal_grade is not None
+        for command in plant.directory_refuses
+    }
+
+    assert pinned, "no directory refusal is pinned, so this test asserts nothing"
+
+    unrefused = sorted(position for position in pinned if not planted_directories[position].refused)
+    graded = {
+        position: planted_directories[position].exit_code
+        for position, expected in pinned.items()
+        if planted_directories[position].exit_code != expected
+    }
+
+    assert not unrefused, (
+        f"a pinned directory refusal answered successfully, so its grade is not "
+        f"being read at all: {unrefused}"
+    )
+    assert not graded, (
+        f"a pinned directory refusal reports a code this file does not expect: "
+        f"{dict(sorted(graded.items()))}, wanted {dict(sorted(pinned.items()))}"
+    )
 
 
 @_NEEDS_SYMLINKS
