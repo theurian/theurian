@@ -153,7 +153,7 @@ CONTROL_TALLIES: Final[dict[str, dict[str, int]]] = {
     },
     "controls_discharge": {"POSITIVE_CONTROLS": 6, "LEDGER_CONTROLS": 5},
     "owner_position_cites": {
-        "POSITIVE_CONTROLS": 12,
+        "POSITIVE_CONTROLS": 13,
         "TREE_CONTROLS": 4,
         "LEDGER_CONTROLS": 7,
     },

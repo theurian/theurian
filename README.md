@@ -16,7 +16,7 @@
     <a href="#why-not-just-a-vector-store-over-your-docs">Why not a vector store?</a> ·
     <a href="#what-comes-back">What comes back</a> ·
     <a href="docs/roadmap.md">Roadmap</a> ·
-    <a href="docs/adr/README.md">26 ADRs</a> ·
+    <a href="docs/adr/README.md">ADRs</a> ·
     <a href="docs/security/threat-model.md">Threat model</a>
   </p>
 

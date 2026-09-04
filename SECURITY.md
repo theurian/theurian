@@ -51,7 +51,7 @@ are now released**:
 | Artifact | State | What settles it |
 | :-- | :-- | :-- |
 | Claude Code plugin | **Released**, at `0.1.1` | the sha the `theurian` entry pins in [theurian-plugins](https://github.com/theurian/theurian-plugins)' `marketplace.json`, and the `version` in `plugin.json` at that sha |
-| Theurian Core | **Released**, at `0.1.0.dev0` | `git ls-remote --tags https://github.com/theurian/theurian 'refs/tags/core-v*'`, and the versions on [PyPI](https://pypi.org/project/theurian/) |
+| Theurian Core | **Released** — first at `0.1.0.dev0` on 2026-08-07, and repeatedly since | `git ls-remote --tags https://github.com/theurian/theurian 'refs/tags/core-v*'`, and the versions on [PyPI](https://pypi.org/project/theurian/). **Which release is current is settled there, not here**: this row states that Core has been released, which is the fact that routes a report, and it does not track the version, which changes at every cut |
 
 Core tags are `core-v*` and plugin tags are `plugin-v*` (release process:
 [Core](docs/contributing/release.md#4-tag),
@@ -361,10 +361,15 @@ Pre-1.0, only an artifact's latest MINOR release receives security fixes. Once
 
 **The rows name a MINOR series, not a version, because a fix never arrives as the
 version that carried the defect.** PyPI does not re-accept a filename it already
-holds, so a Core fix ships as a new release inside `0.1.x` — naming `0.1.0.dev0`
-in the supported column would name a version to which no fix can ever arrive, and
-would go false at the next release, leaving the only installable Core outside
-both rows. `0.1.0.dev0` is the release currently occupying `0.1.x`.
+holds, so a Core fix ships as a new release inside `0.1.x` — naming a single
+version in the supported column (`0.1.0.dev0`, when this section was written)
+would name a version to which no fix can ever arrive, and would go false at the
+next release, leaving the only installable Core outside both rows. **Which
+release currently occupies `0.1.x` is settled by the `core-v*` tag list and by
+[PyPI](https://pypi.org/project/theurian/), and this file does not track it** —
+the same refusal the README makes about the version it tells you to install.
+A version written into this section would be a stale claim inside a security
+document, which is the failure mode the MINOR series exists to avoid.
 
 **A development release is supported on the same terms as any other**, and the
 alternative is not a conservative default: routing turns on whether an artifact
@@ -375,8 +380,10 @@ Core's changelog opened that section ahead of the tag, because the release
 workflow requires the section to exist before it will build — **an open changelog
 section is not a release**, and until the tag, `theurian version --json`
 reporting `0.1.0.dev0` was reporting a checkout. This file said the tag and the
-published artifact were what would settle it. Both have now happened: the tag is
-`core-v0.1.0.dev0` and the artifact is on PyPI.
+published artifact were what would settle it. **Both happened on 2026-08-07**,
+with `core-v0.1.0.dev0` pushed and its artifact published; that is a dated
+record of the first release and not a statement about the current one, and every
+release since is in the tag list and on PyPI.
 
 ## Theurian's security model
 
