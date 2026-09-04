@@ -135,24 +135,38 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   security note and threat-model T-5 all asserted is now enforced rather than
   merely written down — and driven by tests that fail when it is removed.
 
-  **What a repository will now see**, on two paths with two different
-  boundaries:
+  **What a repository will now see.** Derived from a measured differential
+  against 0.1.0.dev18, not from the shape of the defect — four link topologies
+  that were read before are refused now, and each gets its own sentence because
+  each needs a different repair:
 
-  - `theurian migrate validate` (and `apply`, and `ingest`) refuse a body
-    reached through a link out of **the project** and back: exit 4, naming the
-    migration file and never the author-written `contentFile`. A link chain that
-    stays inside the project is still followed.
-  - `theurian propose accept` applies the same rule with a tighter boundary,
-    **`.theurian/knowledge/`**, because that is where a body may legitimately
-    land: an in-project chain that leaves `knowledge/` and returns is newly
-    refused there even though it never leaves the project. That is a deliberate
-    narrowing — a body has no legitimate destination outside `knowledge/`, and
-    confining to the project root instead would let a hand-authored
-    `../../.git/hooks/pre-commit` write an executable git hook.
+  - **A body reached out of the project through a link and back** — the defect
+    itself. `theurian migrate validate` and `apply` exit 4 naming the migration
+    file (never the author-written `contentFile`), and `ingest` reports the
+    document as failed instead of indexing it. Repoint the link so the path
+    stays inside the project.
+  - **A chain of more than 40 symbolic links**, even one that never leaves the
+    project. The walk follows `MAX_SYMLINK_HOPS` links and no more — the same
+    ceiling Linux applies to a single pathname, so such a chain is one `open()`
+    would refuse anyway. The refusal says so in those words rather than claiming
+    an escape. Point the link at its destination directly. Forty links still
+    read.
+  - **A link whose absolute target spells the project through an alias this
+    command was not given** — a third machine-specific name for the same
+    directory. This is the recorded residual of the containment design and it
+    fails closed: a refusal with a remedy, never a read. Spell the target from
+    the project directory the command is run against, or run the command against
+    the spelling the link uses; both are read normally.
+  - **On `theurian propose accept` only**, an in-project chain that leaves
+    `.theurian/knowledge/` and returns, *without* leaving the project. Accept
+    bounds a body's route by `knowledge/` rather than by the project root,
+    because that is where a body may legitimately land — confining to the root
+    instead would let a hand-authored `../../.git/hooks/pre-commit` write an
+    executable git hook.
 
-  Either way, repoint the link so the path stays inside the relevant boundary, or
-  remove it, which is what the refusal's remedy says. This is a containment rule
-  and not a ban on links.
+  **A link chain that never leaves the relevant boundary is still followed**,
+  including one whose absolute target names the project by the spelling the
+  command was given. This is a containment rule, not a ban on symbolic links.
 
   `theurian.security.paths.assert_no_symlink_escape` changes signature with this
   — `(root, *, base, requested)`, where it took `(root, target)` — and the

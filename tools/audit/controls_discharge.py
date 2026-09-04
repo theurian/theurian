@@ -70,6 +70,21 @@ _SRC_SYMBOL: Final = re.compile(
 _TEST: Final = re.compile(r"tests?/[\w/]+\.py|\btest_\w+\.py|::test_\w+", re.IGNORECASE)
 
 
+def _repository_tests(root: Path) -> list[Path]:
+    """This repository's own test files -- not its dependencies'.
+
+    ``rglob`` descends into ``.venv``, where hundreds of installed packages ship
+    their own ``test_*.py``. A citation naming one of those resolved, so the
+    check could be satisfied by a name this repository does not define -- which
+    is the same "shape, not existence" hole one level down.
+    """
+    return [
+        path
+        for path in root.rglob("test_*.py")
+        if not any(part.startswith(".") or part == "node_modules" for part in path.parts)
+    ]
+
+
 def _test_names(root: Path) -> tuple[frozenset[str], frozenset[str]]:
     """Every test file name and every ``def test_*`` in the repository.
 
@@ -79,7 +94,7 @@ def _test_names(root: Path) -> tuple[frozenset[str], frozenset[str]]:
     """
     files: set[str] = set()
     functions: set[str] = set()
-    for path in root.rglob("test_*.py"):
+    for path in _repository_tests(root):
         files.add(path.name)
         for match in re.finditer(
             r"^def (test_\w+)", path.read_text(encoding="utf-8", errors="replace"), re.MULTILINE
