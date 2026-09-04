@@ -62,20 +62,25 @@ Ports and adapters, with the port set fixed in advance and deliberately small.
    > committed list, so `ALL_PORTS` membership is what "requires an ADR"
    > actually gates. A `Protocol` declared under `domain/ports/` but absent
    > from `ALL_PORTS` is **not** covered by that test — so this amendment names
-   > the current two rather than leaving them to be rediscovered.
+   > each of them rather than leaving them to be rediscovered.
    >
    > The count is a measurement, not a decision: **`ALL_PORTS` held 17 entries,
    > against 19 `Protocol` classes declared under `domain/ports/`, measured on
-   > 2026-09-03 at `e2a950ef`.** The live claim is `test_port_set_is_closed`
-   > and its `EXPECTED_PORTS` list, not this sentence. A number in prose is a
-   > snapshot, and the reason this point sat at "fourteen" while the register
-   > grew to seventeen is precisely that nothing recomputed it.
+   > 2026-09-03 at `e2a950ef`.** The live claims are `test_port_set_is_closed`
+   > with its `EXPECTED_PORTS` list, and — for the table below —
+   > `test_every_protocol_under_ports_is_registered_or_recorded_as_outside_it`
+   > with its `EXPECTED_OUTSIDE_THE_REGISTER`; not this sentence. A number in
+   > prose is a snapshot, and the reason this point sat at "fourteen" while the
+   > register grew to seventeen is precisely that nothing recomputed it. That
+   > second figure reached 20 within the day, and the table below carries the
+   > declaration that moved it.
    >
-   > The two Protocols outside the register, and why each is outside it:
+   > The Protocols outside the register, and why each is outside it:
    >
    > | Outside `ALL_PORTS` | Standing |
    > | :-- | :-- |
    > | `CanonicalReadSession` | **A narrowing of `CanonicalStore`, not a second substitution point.** Its members are `list_items`, `get_item`, `get_revision`, `get_item_exact`, `__enter__` and `__exit__`; the first three are `CanonicalStore`'s own, and the rest add the explicit handle lifetime that port deliberately does not express. It is handed to `IndexBuilder` and `RetrievalService` through an injected `store_factory: Callable[[Path], CanonicalReadSession]` — **no `CanonicalStore` method returns one** — but what an operator substitutes is still a `CanonicalStore` adapter, so it opens no boundary `ALL_PORTS` does not already govern |
+   > | `IndexBuildSession` | **A widening of `CanonicalReadSession` by one method, not a second substitution point.** It adds `list_relations` because a relation's `note` is served verbatim on every `knowledge.get` response, so SEC-11's build-time control has to read that channel too; it is declared separately rather than folded into the base so that every session-shaped collaborator is not obliged to answer a question only the index build asks. What an operator substitutes is still a `CanonicalStore` adapter, so its standing is `CanonicalReadSession`'s. It is also the demonstration this amendment's own pin was owed for: it landed outside the register in [#329](https://github.com/theurian/theurian/issues/329) between the amendment being written and its pin landing, and nothing went RED |
    > | `McpClientConfig` | **An open question, recorded here rather than settled.** It has a port's shape: `SetupContext.mcp_config` is constructor-injected, and `cli/setup_commands.py` — a composition root — names `ClaudeCodeMcpConfig` as its adapter. Yet it is absent from `ALL_PORTS` and unimported by `ports/__init__.py`, so `test_port_set_is_closed` has never seen it. Whether it *joins* the register is itself a decision this point says requires an ADR, and this amendment does not take it. Trail: [#140](https://github.com/theurian/theurian/issues/140) |
 
 6. No dependency-injection framework. Composition roots wire objects with plain
@@ -139,22 +144,27 @@ produce the same state hash" is not assertable.
   `ALL_PORTS` is not merely unlisted, it is unreached by every one of them.
   (A tenth, `test_determinism_ports_are_present`, names `Clock` and
   `IdGenerator` specifically and so is not in that nine.)
+- **Point 5's amendment is itself recomputed**, by two pins in the same module
+  that hold the code and this record against each other.
+  `test_every_protocol_under_ports_is_registered_or_recorded_as_outside_it`
+  derives both figures — `len(ALL_PORTS)`, and an `inspect` walk of every
+  `typing.Protocol` declared under `domain/ports/` — and asserts the
+  **membership** of the difference against a committed
+  `EXPECTED_OUTSIDE_THE_REGISTER`, so a Protocol added outside the register
+  fails naming itself rather than passing a count that happens to still add up.
+  `test_adr_0003_names_the_register_and_every_protocol_outside_it` reads this
+  ADR and requires the amendment to keep naming `ALL_PORTS` as the register and
+  to name exactly that live difference in its table.
+
+  This closes the gap the amendment itself recorded as owed, and it opened
+  before the pin could land: `IndexBuildSession` was declared under
+  `domain/ports/` and left out of `ALL_PORTS` by
+  [#329](https://github.com/theurian/theurian/issues/329), taking the declared
+  count from 19 to 20 while every check keyed to the register stayed green. The
+  prose pin went RED on its first run against that table, which is the whole
+  mechanism working once rather than an argument that it would.
 
 Still owed, with the milestone that will satisfy it:
-
-- **Nothing recomputes point 5's amendment, so it can drift the same way point
-  5 did.** The amendment states a register (`ALL_PORTS`), a count (17 entries
-  against 19 `Protocol` classes under `domain/ports/`), and a two-row table of
-  the Protocols outside the register. All three are prose today: adding an
-  eighteenth port, or a twentieth Protocol, falsifies this ADR silently and no
-  test goes RED. The pin owed is a derivation rather than a string match — it
-  recomputes both figures from `ALL_PORTS` and from an AST walk of
-  `domain/ports/*.py`, and it recomputes the outside-the-register set as the
-  difference between them, so the table's membership is checked and not just
-  its size. Landing in the tests stage of
-  [#140](https://github.com/theurian/theurian/issues/140); until it does, this
-  ADR's numbers are a dated measurement and `test_port_set_is_closed` is the
-  only live claim.
 
 - **No test asserts every port has a fake, and most do not have one.** This
   section claimed one did. `tests/fakes/` defines **six** doubles —

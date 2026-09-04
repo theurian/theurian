@@ -9,9 +9,12 @@ register ADR-0003 point 5's Milestone 7 amendment names. Adding an entry
 requires an ADR; the constraint exists to prevent the "interface for everything"
 failure mode §34 of the brief rules out. A ``Protocol`` declared in this package
 but absent from :data:`ALL_PORTS` is outside the closed set *and* outside every
-check keyed to it, which is a quieter failure than being listed wrongly. There
-are two such Protocols today and the amendment names both, with why each is
-outside.
+check keyed to it, which is a quieter failure than being listed wrongly. Such
+Protocols exist, and the amendment names each with why it is outside -- held to
+the live set by ``test_ports.py``'s
+``test_adr_0003_names_the_register_and_every_protocol_outside_it``. No count is
+given here on purpose: a number in a docstring is a snapshot, and this one had
+already moved before the sentence stating it was a day old.
 
 Every port must ship a deterministic fake. A port without one is not finished,
 because it cannot be exercised offline (OSS-15). Fakes live in ``tests/fakes/``.
