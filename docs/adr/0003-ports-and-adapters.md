@@ -39,6 +39,71 @@ Ports and adapters, with the port set fixed in advance and deliberately small.
    `ObjectStore`, `AuthorizationProvider`, `SecretStore`, `DaemonManager`,
    and the two determinism ports `Clock` and `IdGenerator`.
 
+   > **Amended in Milestone 7, by the port-register CL
+   > ([#140](https://github.com/theurian/theurian/issues/140)). The closed set
+   > is `ALL_PORTS`. The register is the part this point never wrote down, and
+   > that omission — not the number — is what let the set drift.**
+   >
+   > "Exactly these fourteen" gives a count and a list but names no *register*:
+   > no statement of which collection the closed set is closed **over**. Two
+   > readings are available and they disagree — membership of
+   > `theurian.domain.ports.ALL_PORTS`, or "declares a `typing.Protocol` under
+   > `domain/ports/`". Because the point never chose, a Protocol can be added
+   > under `domain/ports/`, injected by a composition root, and never reach the
+   > test that is supposed to make adding a port an architecture decision. That
+   > is not hypothetical. `McpClientConfig` did exactly that, and `IndexStore`
+   > reached `ALL_PORTS` only in Milestone 6 — before which every check in
+   > `tests/unit/test_ports.py` had been silently vacuous for it.
+   >
+   > **The register is `ALL_PORTS`, in `domain/ports/__init__.py`**: the set of
+   > *injected boundaries*, each a substitution point a composition root wires
+   > an adapter into. `test_port_set_is_closed` compares that tuple against a
+   > committed list, so `ALL_PORTS` membership is what "requires an ADR"
+   > actually gates. A `Protocol` declared under `domain/ports/` but absent
+   > from `ALL_PORTS` is **not** covered by that test — so this amendment names
+   > each of them rather than leaving them to be rediscovered.
+   >
+   > The count is a measurement, not a decision: **`ALL_PORTS` held 17 entries,
+   > against 19 `Protocol` classes declared under `domain/ports/`, measured on
+   > 2026-09-03 at `e2a950ef`.** The live claims are `test_port_set_is_closed`
+   > with its `EXPECTED_PORTS` list, and — for the table below —
+   > `test_every_protocol_under_ports_is_registered_or_recorded_as_outside_it`
+   > with its `EXPECTED_OUTSIDE_THE_REGISTER`; not this sentence. A number in
+   > prose is a snapshot, and the reason this point sat at "fourteen" while the
+   > register grew to seventeen is precisely that nothing recomputed it. That
+   > second figure reached 20 within the day, and the table below carries the
+   > declaration that moved it.
+   >
+   > **Three names joined the list above; none left it.** `IndexStore`,
+   > `ReviewFindingSource` and `ReviewFindingStore` are the delta between point
+   > 5's fourteen and the register — the set difference between
+   > `{p.__name__ for p in ALL_PORTS}` and the fourteen named above, computed
+   > both ways. The last two arrived with ADR-0029, which is the path this
+   > point asks for; `IndexStore` did not, and reached `ALL_PORTS` only in
+   > Milestone 6. The members themselves are not re-listed here — `ALL_PORTS`
+   > is the register, so re-listing it in prose would create exactly the second
+   > copy that drifts. This sentence is a live claim, not a snapshot:
+   > `test_adr_0003_records_which_ports_joined_the_register_since_point_5_was_written`
+   > recomputes the delta from the register and from point 5's own list, and
+   > holds the names, the count word and "none left" against it together.
+   >
+   > The Protocols outside the register, and why each is outside it:
+   >
+   > | Outside `ALL_PORTS` | Standing |
+   > | :-- | :-- |
+   > | `CanonicalReadSession` | **Mostly a narrowing of `CanonicalStore`, not a second substitution point.** Of its six members, `list_items`, `get_item` and `get_revision` are narrowed in from that port, and `__enter__`/`__exit__` add the handle lifetime it deliberately does not express. The sixth, `get_item_exact`, *widens*: it is the alias-free read T-21 needs and `CanonicalStore` does not offer, which is why the headline is hedged and not flat — and it is the precedent `IndexBuildSession` then followed, a session Protocol adding a member the port lacks. Injection is per consumer, not shared: `ResultGate` — the SEC-13 gate itself — takes `store_factory: Callable[[Path], CanonicalReadSession]` (`application/retrieval_service.py`), while `IndexBuilder` takes `Callable[[Path], IndexBuildSession]` (`application/index_builder.py`) — the widened row below. `RetrievalService`, which this row named through two revisions, takes no `store_factory` at all. **No `CanonicalStore` method returns either.** What an operator substitutes is still a `CanonicalStore` adapter, so this opens no boundary `ALL_PORTS` does not already govern |
+   > | `IndexBuildSession` | **A widening of `CanonicalReadSession` by one method, not a second substitution point.** It adds `list_relations` because a relation's `note` is served verbatim on every `knowledge.get` response, so SEC-11's build-time control has to read that channel too; it is declared separately rather than folded into the base so that every session-shaped collaborator is not obliged to answer a question only the index build asks. What an operator substitutes is still a `CanonicalStore` adapter, so its standing is `CanonicalReadSession`'s. It is also the demonstration this amendment's own pin was owed for: it landed outside the register in [#329](https://github.com/theurian/theurian/issues/329) between the amendment being written and its pin landing, and nothing went RED |
+   > | `McpClientConfig` | **An open question, recorded here rather than settled.** It has a port's shape: `SetupContext.mcp_config` is constructor-injected, and `cli/setup_commands.py` — a composition root — names `ClaudeCodeMcpConfig` as its adapter. Yet it is absent from `ALL_PORTS` and unimported by `ports/__init__.py`, so `test_port_set_is_closed` has never seen it. Whether it *joins* the register is itself a decision this point says requires an ADR, and this amendment does not take it. Trail: [#140](https://github.com/theurian/theurian/issues/140) |
+   >
+   > **What the pin on that table does and does not hold.** It checks the row
+   > *names* against the live difference, so a Protocol that leaves the register
+   > or joins it outside cannot pass unnamed. It does not read the Standing
+   > column: an empty or wrong reason is green. That column is a reviewer's to
+   > demand, not a test's — the reason a Protocol is deliberately outside is a
+   > judgement about substitution boundaries, and a test that scored it would
+   > be scoring prose it cannot evaluate. A row added without a real standing
+   > is the failure this leaves open, and it is left open knowingly.
+
 6. No dependency-injection framework. Composition roots wire objects with plain
    constructor calls, in one readable function per entry point.
 7. Every port ships a deterministic fake under `tests/fakes/`. A port with no
@@ -87,23 +152,100 @@ produce the same state hash" is not assertable.
   `domain/` imports neither `application/` nor `infrastructure/`.
 - mypy strict mode verifies every adapter satisfies its Protocol.
 - `tests/unit/test_ports.py` pins the port set itself: `test_port_set_is_closed`
-  compares `ALL_PORTS` against a committed list so adding a port is an
-  architecture decision rather than a refactor, and
-  `test_port_is_a_protocol`, `test_port_is_runtime_checkable`,
-  `test_port_has_no_implementation`, `test_port_declares_at_least_one_member`
-  and `test_port_methods_are_annotated` run over every one of them.
+  compares `ALL_PORTS` against a committed list, so adding a port is an
+  architecture decision rather than a refactor. **Nine further tests assert a
+  property of *each* entry of `ALL_PORTS`** — that is the population key, and
+  it is what excludes the set-level tests named at the end of this bullet —
+  six parametrised over it
+  (`test_port_is_a_protocol`, `test_port_is_runtime_checkable`,
+  `test_port_documents_itself`, `test_port_declares_at_least_one_member`,
+  `test_port_methods_are_annotated`, `test_port_has_no_implementation`) and
+  three looping over it (`test_all_ports_is_exported_and_consistent`,
+  `test_protocols_are_not_instantiable`, `test_typing_protocol_is_the_base`).
+  That all nine are *driven by the tuple* is what makes it the register point
+  5's amendment names: a `Protocol` under `domain/ports/` that never reaches
+  `ALL_PORTS` is not merely unlisted, it is unreached by every one of them.
+  The module's remaining `ALL_PORTS` tests assert nothing per-entry and so are
+  not in the nine: `test_port_set_is_closed` and the three pins below work on
+  the *set* — the first two against a committed constant, the third against a
+  baseline it derives from point 5's own list — and
+  `test_determinism_ports_are_present` names `Clock` and `IdGenerator`
+  specifically. Named rather than counted: a count here is a fourth thing to
+  keep in step, and the commit that added the third pin left the count behind.
+- **Point 5's amendment is itself recomputed**, by three pins in the same
+  module that hold the code and this record against each other.
+  `test_every_protocol_under_ports_is_registered_or_recorded_as_outside_it`
+  derives both figures — `len(ALL_PORTS)`, and an `inspect` walk of every
+  **module-level** `typing.Protocol` declared under `domain/ports/` (a
+  Protocol nested inside a class is not bound in module namespace and escapes
+  the walk; measured, and accepted because no declaration here takes that
+  shape) — and asserts the
+  **membership** of the difference against a committed
+  `EXPECTED_OUTSIDE_THE_REGISTER`, so a Protocol added outside the register
+  fails naming itself rather than passing a count that happens to still add up.
+  `test_adr_0003_names_the_register_and_every_protocol_outside_it` reads this
+  ADR and requires the amendment to keep naming `ALL_PORTS` as the register and
+  to name exactly that live difference in its table.
+
+  The third,
+  `test_adr_0003_records_which_ports_joined_the_register_since_point_5_was_written`,
+  holds the **register side** the first two cannot reach: they are both about
+  the complement of `ALL_PORTS`. It derives the delta paragraph's claim from
+  both ends — the register from the code, point 5's fourteen from point 5's own
+  list, located as the block directly below the sentence introducing it — and
+  requires the names, the count word and the "none left" claim to move
+  together. This is the case `test_port_set_is_closed` is blind to: that pin
+  catches a port added to `ALL_PORTS` and not to `EXPECTED_PORTS`, and says
+  nothing when both move together, which is precisely what adding a port does.
+  Without this pin an eighteenth port lands green while this amendment goes on
+  saying three.
+
+  This closes the gap the amendment itself recorded as owed, and it opened
+  before the pin could land: `IndexBuildSession` was declared under
+  `domain/ports/` and left out of `ALL_PORTS` by
+  [#329](https://github.com/theurian/theurian/issues/329), taking the declared
+  count from 19 to 20 while every check keyed to the register stayed green. The
+  prose pin went RED on its first run against that table, which is the whole
+  mechanism working once rather than an argument that it would.
 
 Still owed, with the milestone that will satisfy it:
 
 - **No test asserts every port has a fake, and most do not have one.** This
-  section claimed one did. `tests/fakes/` defines five doubles —
-  `FrozenClock`, `SeededIdGenerator`, `InMemoryWriter`, `FakeService`,
-  `FakeMcpConfig` — naming three of the fourteen ports
-  `test_port_set_is_closed` pins (`Clock`, `IdGenerator`, `DaemonManager`). The claim
-  is also the wrong shape for this design: a port with one adapter and no
-  in-memory double is not a gap, and demanding a fake per port would produce
+  section claimed one did. `tests/fakes/` defines **six** doubles —
+  `FrozenClock`, `FakeReviewFindingSource`, `SeededIdGenerator`, `FakeService`,
+  `FakeMcpConfig`, `InMemoryWriter` — and between them they satisfy **four of
+  the seventeen** ports in `ALL_PORTS`: `Clock`, `IdGenerator`, `DaemonManager`
+  and `ReviewFindingSource`. The other two doubles stand in for things that are
+  not in the register at all — `FakeMcpConfig` for `McpClientConfig`, and
+  `InMemoryWriter` for `MigrationWriter`, which is an `application/` Protocol
+  rather than a port. Thirteen ports have no double. Measured on 2026-09-03 at
+  `e2a950ef`.
+
+  The **key matters more than the count here**, so it is stated rather than
+  implied: each double is tested with `isinstance` against every
+  runtime-checkable port, not matched by name. That key reaches the four
+  register entries above and `McpClientConfig`, which is `@runtime_checkable`;
+  it does **not** reach `MigrationWriter`, which is not, and where `isinstance`
+  raises rather than answering. `InMemoryWriter`'s attribution is therefore
+  read from the structure — its own docstring names the Protocol it
+  implements, and a conformance test asserts both it and the real adapter
+  satisfy it — not derived by the key stated here. A name search answers
+  differently and wrongly in both directions — `git grep -w IndexStore` hits
+  `fakes/pages.py`, which builds `RetrieverPage` helpers and defines no
+  `IndexStore` double, while `git grep -w Clock` misses `FrozenClock`
+  entirely.
+
+  The claim is also the wrong shape for this design: a port with one adapter and
+  no in-memory double is not a gap, and demanding a fake per port would produce
   fakes nobody uses. What ADR-0003 actually wants is that *application code is
   testable without infrastructure*, and neither a test nor this section states
-  that in a checkable form. Deferred rather than filed: it needs a decision
-  about what the property is before it can have a test, and Milestone 6 adds
-  ports (RAPTOR summarisation) that will force the question.
+  that in a checkable form. **Still owed, and no milestone currently owns it.**
+  It was deferred to Milestone 6 on the expectation that new ports would force
+  the question. They did not force it. Milestone 6 landed
+  `SummarizationProvider` (`ExtractiveSummarizer`) with no double, and
+  Milestone 7's two ADR-0029 ports landed one between them —
+  `FakeReviewFindingSource` for `ReviewFindingSource`, nothing for
+  `ReviewFindingStore`. Each addition was decided on its own, which is the
+  behaviour a rule with no test produces. It still needs a decision about what
+  the property *is* before it can have one. Trail:
+  [#140](https://github.com/theurian/theurian/issues/140).
