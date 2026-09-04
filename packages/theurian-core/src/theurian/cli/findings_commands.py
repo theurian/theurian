@@ -48,12 +48,13 @@ JsonOption = Annotated[bool, typer.Option("--json", help="Emit machine-readable 
 #: ``WriteLock.held`` runs ``mkdir`` + ``os.open`` on ``.theurian/runtime/``,
 #: which raise a bare ``OSError`` -- not a ``TheurianError`` -- so on a first build
 #: whose state area is unwritable the raw traceback escaped the command's handler.
-#: **Only the ``mkdir`` still reaches this constant.** Every refusal of the
-#: ``os.open`` -- a symbolic link at the lock path (#481), a directory there, a
-#: mode that denies this process (#520) -- now arrives as
-#: ``WriteLockUnusableError``, a ``TheurianError`` carrying a cure that names the
-#: lock file, so it reaches the command's ``except TheurianError`` below instead
-#: of this text, which names a directory rather than the artefact.
+#: **The ``mkdir`` is what still reaches this constant.** ``WriteLock._open``'s
+#: ``except OSError`` is unfiltered since #520, so a refused ``os.open`` -- a
+#: symbolic link at the lock path (#481), a directory there, a mode that denies
+#: this process -- arrives as ``WriteLockUnusableError``, a ``TheurianError``
+#: carrying a cure that names the lock file, and reaches the command's ``except
+#: TheurianError`` below instead of this text, which names a directory rather
+#: than the artefact.
 #: Names the precondition to fix first (a writable ``.theurian``), with the retry
 #: as the trailing clause, the same shape ``FindingsStoreError``'s write remedy
 #: takes.
@@ -82,13 +83,16 @@ def _lock_write_section(lock_path: Path) -> WriteSection:
     cannot see (#404 R1-2). The ``except OSError`` below spans the whole ``with``
     -- acquisition, body **and** release -- and converts any bare ``OSError`` from
     it into a :class:`FindingsStoreError` a ``TheurianError`` handler catches.
-    The ``mkdir`` is the only live source of one; the other three are covered but
-    do not raise here:
+    ``held``'s acquisition is two calls, a ``mkdir`` then an open, and the
+    ``mkdir`` is the one that still raises a bare ``OSError`` here. The open, the
+    body and the release are spanned too; none of the three is a live source, for
+    three different reasons:
 
-    - **The ``open``.** ``WriteLock._open`` converts every ``OSError`` it meets
-      into ``WriteLockUnusableError`` (#520), a ``TheurianError`` naming the lock
-      file rather than the directory, so it passes this handler untouched and is
-      graded by the command's own ``except TheurianError``.
+    - **The ``open``.** ``WriteLock._open``'s own ``except OSError`` is
+      unfiltered since #520 and re-raises ``WriteLockUnusableError``, a
+      ``TheurianError`` naming the lock file rather than the directory, so it
+      passes this handler untouched and is graded by the command's own ``except
+      TheurianError``.
 
     - **Body.** The one thing run inside is ``replace_all``, which converts its own
       ``(sqlite3.Error, OSError)`` before any escapes, and a

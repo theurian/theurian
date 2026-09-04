@@ -31,10 +31,60 @@ helper added in a later milestone joins the sweep, or fails
 until someone classifies it. That is what makes "the population is closed" a
 checkable claim rather than an assertion -- and the key is demonstrably able to
 hit: adding a fourteenth ``_contained``-derived property to ``ProjectPaths``
-fails that test by name. It is a second, independent derivation beside
-the reflection over member *shapes* in
+fails that test by name. Run 2026-09-04 against the fix, with a
+``fourteenth_helper`` property returning
+``self._contained(self.knowledge_dir / "state" / "fourteenth.json")``: *"the
+planted set and the ``_contained`` call sites in ProjectPaths have moved apart;
+unplanted helpers: ['fourteenth_helper']"*. It is a second, independent
+derivation beside the reflection over member *shapes* in
 ``tests/unit/test_project_paths_containment.py``: that one asks the class what it
 exposes, this one asks the source what routes through the chokepoint.
+
+**The reach this sweep does not have, stated so nobody reads it as closed.**
+Four of the thirteen plants reach no swept command, and their exclusions are
+recorded coverage gaps rather than non-membership. Re-run the key rather than
+trusting the sentences below::
+
+    git grep -n '\\.specifications\\b' -- packages/theurian-core/src
+    git grep -n '_paths\\.proposals\\b\\|_paths\\.proposals_local\\b' -- packages/theurian-core/src
+    git grep -n '_paths\\.knowledge\\b' -- packages/theurian-core/src
+    git grep -n '\\.findings_for(' -- packages/theurian-core/src
+
+Run 2026-09-04, with ``project_service.py``'s own definitions discounted:
+
+- ``specifications`` returned **nothing**, so it is contained and unread, and a
+  future reader joins this sweep by failing the exact-set guard;
+- ``proposals``, ``proposals_local`` and ``knowledge`` returned lines in
+  ``application/proposal_service.py`` and nowhere else, reached through
+  ``propose`` and ``propose accept`` -- which ``CLI_SWEEP`` excludes for the
+  reasons ``test_canonical_store_corruption.py``'s ``CLI_NOT_SWEPT`` records:
+  each writes a fresh proposal directory or moves a migration file, so the
+  corpus stops being the corpus the next plant is measured against;
+- ``findings_for`` returned two consumers, ``cli/findings_commands.py``
+  (``findings build``, outside ``CLI_SWEEP`` -- it needs a fetched
+  ``refs/remotes/origin/main``) and ``mcp/tools.py`` (``review.findings``). The
+  second is a *different envelope contract* -- an MCP transport error, not a
+  ``--json`` document on stderr -- so it is not merely unswept here, it is
+  outside what this file can assert about at all.
+
+**The lock open is the class's other member, and it lives next door.** The write
+lock's own ``_open`` is not a ``_contained`` call site, so the AST key above does
+not reach it; ``test_migrate_apply_lock_confinement.py`` sweeps it over its own
+three artefacts (#520). **The two are not equally strong, and saying so is the
+point.** This file's population is derived, so a fourteenth member arrives as a
+named failure (run above). That file's is a hand-written parametrisation of three
+artefacts, so a fourth artefact at the lock path arrives as nothing at all -- what
+it guards is vacuity rather than completeness, through
+``_the_open_really_refuses``, which skips a plant the filesystem happens to
+accept instead of asserting over a successful apply. The completeness claim
+there rests on the ``except`` being unfiltered, which is a property of the one
+``try``/``except`` pair in that ``_open`` rather than of a sweep.
+
+The lock is named "the write lock's own ``_open``" throughout, and never by its
+bare class name: that name is the key ``test_connection_claims.py`` uses to find
+test files that *construct* a lock, and this one does not. Written here because
+the mistake was made twice while writing this file, and the key caught it both
+times.
 
 **Two artefact shapes, two different classes, kept apart on purpose.** An
 escaping symbolic link is refused by containment, and every such refusal owes one
@@ -46,7 +96,10 @@ Folding the two together would demand one exit code from ``index build``'s
 
 **What is deliberately not swept here.** A FIFO at the write-lock path blocks in
 the ``open`` rather than failing (recorded on #526, the lock face); nothing in
-this file plants one, and nothing here needs that fix to pass.
+this file plants one, and nothing here needs that fix to pass. An escaping
+``.theurian`` *itself* is refused a level earlier, by the join check in
+``ProjectPaths.of`` rather than by ``_contained``, and keeps each command's own
+resolve-time grading -- the bound recorded on ``ProjectPathEscapeError``.
 """
 
 from __future__ import annotations

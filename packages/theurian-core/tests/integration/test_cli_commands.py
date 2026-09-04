@@ -2440,8 +2440,9 @@ def test_apply_refuses_an_escaping_state_symlink_and_writes_nothing_outside_the_
     meets the identical refusal.
 
     ``EXIT_STATE_ERROR``, and this assertion **changed** with #525: the same
-    refusal reported 1 here and 4 through ``database_for`` until every
-    containment refusal was graded once. A working tree carrying a symbolic link
+    refusal reported 1 here and 4 through ``database_for`` until the refusals
+    ``test_contained_path_envelope.py`` sweeps were graded once. A working tree
+    carrying a symbolic link
     force-added past ADR-0004's ignore is a knowledge-state problem the user must
     repair, which is what 4 means; 1 is this CLI's "the command could not run
     here". The move is a breaking change to a published exit code, named as one

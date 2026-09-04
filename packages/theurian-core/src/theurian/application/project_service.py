@@ -455,16 +455,26 @@ class ProjectError(TheurianError):
 class ProjectPathEscapeError(ProjectError):
     """A path under ``.theurian/`` could not be proved to stay inside the tree.
 
-    The one refusal :func:`_contain` makes, given a name so the CLI can grade it
-    without asking *which helper* raised (#525). One root cause -- a working tree
-    carrying a symbolic link force-added past ADR-0004's ignore -- was answered
-    exit 0, exit 1 and exit 4 by three different handlers, decided by whichever
-    ``ProjectPaths`` helper resolved first rather than by what was wrong. Every
-    one of them narrowed to ``ProjectError`` or to ``TheurianError``, so no
-    handler could tell this apart from an ``active.json`` holding four bytes of
-    text -- a *different* root cause, derived state to delete, whose exit 1 and
-    whose ``project status`` degradation are correct and had to survive the
-    unification.
+    The refusal :func:`_contain` raises, given a name so the CLI can grade it
+    without asking *which helper* raised (#525). Reproduce the population with
+    ``git grep -n 'raise ProjectPathEscapeError' -- packages/theurian-core/src``.
+    Run 2026-09-04 it returned three lines: this sentence quoting the key, and two
+    ``raise`` statements, both inside :func:`_contain`. The self-hit is why the
+    count is stated rather than the command's output pasted -- the claimant reads
+    itself, the trap
+    ``test_connection_claims.py::test_the_only_test_that_constructs_the_write_lock_runs_in_one_process``
+    records for its own key.
+
+    One root cause -- a working tree carrying a symbolic link force-added past
+    ADR-0004's ignore -- was answered exit 0, exit 1 and exit 4 by different
+    handlers, decided by whichever ``ProjectPaths`` helper resolved first rather
+    than by what was wrong; the sweep in
+    ``tests/integration/test_contained_path_envelope.py`` measured which, at
+    ``491bded6``. The handlers narrowed to ``ProjectError`` or to
+    ``TheurianError``, so none could tell this apart from an ``active.json``
+    holding four bytes of text -- a *different* root cause, derived state to
+    delete, whose exit 1 and whose ``project status`` degradation are correct and
+    had to survive the unification.
 
     **Not :class:`~theurian.domain.errors.PathEscapeError`, which is a different
     class with a different subject.** That one is the migration loader's and the
@@ -482,15 +492,19 @@ class ProjectPathEscapeError(ProjectError):
     and that is a bound on the class rather than an oversight. It guards
     ``knowledge_dir`` itself -- ``.theurian`` shipped as a symbolic link to
     somewhere outside the tree -- with its own anchor, and it fires while the
-    command context is still resolving, so its refusal is graded by whatever each
-    of ``resolve_context``'s five consumers already assigns to "could not resolve
-    a project": ``1`` from ``init`` and ``project register``, ``1`` from
-    ``_require_project``'s generic branch, and a payload at exit ``0`` from
-    ``project status``, whose contract is to answer for directories that are not
-    projects at all. Those are recorded per-command decisions
-    (``_require_project``'s own comment says so), and unifying them reaches a
-    surface this class does not: an outermost escaping link therefore still
-    reports ``1``. Recorded rather than closed.
+    command context is still resolving, so its refusal is graded by whatever its
+    caller already assigns to "could not resolve a project". That is a recorded
+    per-command decision, not one grading: ``_require_project``'s own comment
+    says so, and the four ``resolve_context()`` call sites in ``cli/commands.py``
+    handle it three different ways. Its callers are wider still --
+    ``git grep -n 'ProjectPaths.of(' -- packages/theurian-core/src`` returned
+    ten lines on 2026-09-04: eight call sites, reaching ``setup_steps``,
+    ``setup_commands``, ``migration_pipeline`` and ``mcp/tools`` as well as
+    ``cli/context``, plus a comment in the migration loader and this sentence.
+    None of the eight was measured for #525. What *was* measured is that the outermost escaping link
+    still reports ``1``:
+    ``test_cli_commands.py::test_status_over_an_escaping_theurian_symlink_reads_nothing_from_outside_the_tree``
+    asserts it and stayed green through this change. Recorded, not closed.
     """
 
 
@@ -632,8 +646,9 @@ class ProjectPaths:
         directory helper directly.
 
         Unifying the two texts was left where it is; the exit-code grading that
-        differed beside them is #525's, and it is now one code for every refusal
-        this method keys a cure for. The population that closure ranges over is
+        differed beside them is #525's, and the sweep in
+        ``tests/integration/test_contained_path_envelope.py`` measures that the
+        refusals it reaches now report one code. The population that closure ranges over is
         recorded on :class:`ProjectPathEscapeError` and driven by
         ``tests/integration/test_contained_path_envelope.py``, rather than here
         where only this one seam is visible.

@@ -226,12 +226,14 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
     os.replace(request.index_path, final_path)  # noqa: PTH105 - the atomic primitive
     report = {**report, "indexPath": str(final_path)}
 
-    # Both refusals the pointer swap can make are graded here, because neither is
-    # a `TheurianError` the command's callees convert and both left `--json` with
-    # a Rich traceback and an empty machine channel (#525). The build has already
-    # been renamed into place at this point, so what is being reported is "the
-    # index exists and is not published", which is why the remedy names the
-    # pointer rather than the corpus.
+    # Two refusals the pointer swap made were measured escaping to a `--json`
+    # caller as a Rich traceback with an empty machine channel at `491bded6`, and
+    # both are graded here (#525): the containment refusal resolving
+    # `active_index_pointer`, and the `IsADirectoryError` from the `os.replace`
+    # over a directory planted at that path. The build has already been renamed
+    # into place at this point, so what is being reported is "the index exists
+    # and is not published", which is why the remedy names the pointer rather
+    # than the corpus.
     try:
         _publish(
             paths,
@@ -275,7 +277,7 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
         # arm, whose whole argument is that an incidental write failure must not
         # replace the findings the caller is about to read. A record path that
         # leaves the working tree is not incidental: it is the same doctored
-        # `.theurian/state/` every other refusal in this class is about, and
+        # `.theurian/state/` this class is about, and
         # reporting it as a footnote on a successful build understates a tree the
         # operator has to repair before any of this means anything.
         _fail_a_path_escape(exc, as_json=as_json)
@@ -640,9 +642,10 @@ def index_status(as_json: JsonOption = False) -> None:
     # state/` refuses here rather than reaching the payload -- and the refusal is
     # a document with the class's one exit code, not the Rich traceback with an
     # empty machine channel it published at `491bded6` (#525). This command's
-    # contract is to *report* on a broken index, and it keeps it for every shape
-    # of broken pointer the reader can parse; a path that leaves the working tree
-    # is not one of those, because nothing here can say what it points at.
+    # contract is to *report* on a broken index, and it keeps it for the pointer
+    # shapes `read_active_index_pointer` absorbs into `indexPointerCorrupt`; a
+    # path that leaves the working tree is not one of those, because nothing here
+    # can say what it points at.
     try:
         index = index_staleness(
             paths, project_id=context.project_id.value, current_state_hash=current
@@ -737,7 +740,7 @@ def index_gc(
 
     context, _ = _require_project(as_json)
     paths = context.paths
-    # `read_active_index_pointer` absorbs every way the pointer's *contents* can
+    # `read_active_index_pointer` absorbs the ways the pointer's *contents* can
     # be wrong -- that is what `unreadable` below reports -- but it resolves the
     # path first, and a path that leaves the working tree is not a contents
     # problem. Left uncaught it ended this command in a Rich traceback with an

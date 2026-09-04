@@ -244,8 +244,8 @@ class WriteLockUnusableError(TheurianError):
     does the damage to a working tree.
 
     **The message is a function of what the open actually met** (#520). The
-    symbolic-link sentence below is the one this class was written for and it is
-    false of every other artefact that reaches here -- a directory at the lock
+    symbolic-link sentence below is the one this class was written for, and it
+    was false of the three artefacts #520 measured -- a directory at the lock
     path, a lock file at mode ``0000``, a ``.theurian/runtime/`` that refuses the
     ``O_CREAT``. Publishing it for those sends the reader looking for a link that
     is not there, so the errno decides which sentence is published and the
@@ -255,12 +255,17 @@ class WriteLockUnusableError(TheurianError):
 
     **Sets its own remedy** (the #205 rule): the cure is to act on a file, and no
     caller can infer that from the exception's type. It is a ``TheurianError``
-    rather than the raw ``OSError`` the refusal arrives as, because every handler
-    that could catch it narrows to ``TheurianError`` -- ``migrate apply``'s
-    ``except`` around its whole critical section, ``findings build``'s, and
-    ``write_transaction``'s callers -- and a bare ``OSError`` there escapes
-    ``--json`` as a Rich traceback with an empty machine channel, which is the
-    reporting failure #483 and #484 close on the state-database path.
+    rather than the raw ``OSError`` the refusal arrives as, because the places
+    that enter the lock narrow to ``TheurianError``. Enumerate them with
+    ``git grep -n 'WriteLock(' -- packages/theurian-core/src`` rather than
+    trusting this sentence. Run 2026-09-04 it returned seven lines: three
+    ``with WriteLock(...).held()`` constructions -- ``cli/commands.py``
+    (``migrate apply``'s critical section), ``cli/findings_commands.py``
+    (``findings build``) and this module's :func:`write_transaction` -- and four
+    lines of prose, this one included. A
+    bare ``OSError`` at any of them escapes ``--json`` as a Rich traceback with
+    an empty machine channel, which is the reporting failure #483 and #484 close
+    on the state-database path.
     """
 
     def __init__(self, path: Path, cause: OSError) -> None:
@@ -286,8 +291,8 @@ class WriteLockUnusableError(TheurianError):
         )
         super().__init__(
             f"The write lock at {path.name} could not be opened as a lock file: "
-            f"{_refusal_text(cause)}. Every writer serialises on that one file, so "
-            f"Theurian refuses to write without it."
+            f"{_refusal_text(cause)}. Theurian takes that lock before it writes, so "
+            f"it refuses to write rather than proceed without it."
         )
 
 
@@ -589,41 +594,43 @@ class WriteLock:
         exclusion survives because every process follows the same link to the
         same file. It is a relocation, not the truncation #481 is about.
 
-        **Every ``OSError`` from this open is converted, not only the ``ELOOP``**
-        (#520). An earlier cut translated the link case alone and re-raised the
-        rest untouched, on the reasoning that no other errno is *this class* --
-        which is true of the message and false of the reporting contract. Every
-        handler that could catch this narrows to ``TheurianError``, so the three
-        artefacts a clone or a bad umask really delivers each ended a ``--json``
-        command in a Rich traceback with **zero bytes on stdout and zero on
-        stderr**: measured on ``491bded6`` for a directory at the lock path
-        (``EISDIR``), a lock file at mode ``0000`` (``EACCES``) and a
-        ``.theurian/runtime/`` at mode ``0500`` refusing the ``O_CREAT``
-        (``EACCES`` again). The errno still decides what is *said* -- see
+        **The ``except`` below is unfiltered, so every errno this open returns
+        becomes** :class:`WriteLockUnusableError` (#520). An earlier cut
+        translated the ``ELOOP`` alone and re-raised the rest untouched, on the
+        reasoning that no other errno is *this class* -- true of the message,
+        false of the reporting contract. Three artefacts a clone or a bad umask
+        delivers were measured on ``491bded6`` ending a ``--json`` command in a
+        Rich traceback with **zero bytes on stdout and zero on stderr**: a
+        directory at the lock path (``EISDIR``), a lock file at mode ``0000``
+        (``EACCES``) and a ``.theurian/runtime/`` at mode ``0500`` refusing the
+        ``O_CREAT`` (``EACCES`` again). Re-measured 2026-09-04 against the real
+        CLI: each now exits 4 with a parseable ``{error, remedy}`` on stderr. The
+        errno still decides what is *said* -- see
         :class:`WriteLockUnusableError`, which publishes the symbolic-link
-        sentence for ``ELOOP`` and the operating system's own account for
-        everything else -- so widening the conversion does not widen the claim.
+        sentence for ``ELOOP`` and the operating system's own account otherwise.
 
-        **A FIFO at the lock path is not among them, and cannot be.**
-        ``O_WRONLY`` on a FIFO with no reader blocks inside the ``open`` rather
-        than returning an errno, so that artefact hangs here and no ``except``
-        can see it. Closing it needs a change to the flags this call makes, which
-        is issue #526 rather than this conversion.
+        **A FIFO at the lock path is not among them, because it never reaches
+        this ``except``.** Measured 2026-09-04 on macOS 26.6.2, CPython 3.13.3,
+        with these exact flags against a FIFO nothing is reading:
+        ``O_NONBLOCK`` added returns ``ENXIO``; without it the call was still
+        inside ``open()`` when a 2-second ``SIGALRM`` fired. An ``except`` reads
+        a return that never happens. Issue #526 owns the flags; this conversion
+        cannot own it.
 
-        The ``mkdir`` in :meth:`held` is the one refusal on the way to the lock
-        that this does *not* cover: it runs before this call and raises its own
-        bare ``OSError``, which ``findings build`` grades through
-        ``_lock_write_section`` and ``migrate apply`` does not (recorded, not
-        fixed here -- the population #520 names is this open).
+        The other calls :meth:`held` makes are ``mkdir``, ``flock`` and
+        ``os.close`` -- read them off that method, it is eleven lines. ``flock``
+        is converted by :meth:`_acquire`; the ``mkdir`` runs before this call and
+        still raises a bare ``OSError``, which ``findings build`` grades through
+        ``_lock_write_section`` and ``migrate apply`` does not. Recorded, not
+        fixed here: the population #520 names is this open.
         """
         try:
             # `O_WRONLY`, not `O_RDWR`: `flock` locks the open file description
             # whatever its access mode, and nothing reads these bytes -- while
             # `O_RDWR` would refuse a lock file left at mode 0200, which
             # `Path.open("w")` opened without complaint (measured: EACCES against
-            # a success). The request stays no wider than the mode string's was,
-            # so widening the *conversion* below does not widen what is refused:
-            # every lock file that opened before this class existed still opens.
+            # a success). The flags are unchanged by #520 -- only the `except`
+            # below moved -- so nothing that opened before now refuses.
             #
             # 0o600 applies **only when this call creates the file**; a lock file
             # that already exists keeps the mode it was created with, including

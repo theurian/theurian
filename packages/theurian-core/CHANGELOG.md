@@ -99,8 +99,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Changed
 
-- **BREAKING: a path under `.theurian/` that resolves outside the working tree
-  now exits 4 everywhere, where nineteen positions exited 1**
+- **BREAKING: nineteen refusal positions over a path under `.theurian/` that
+  resolves outside the working tree move from exit 1 to exit 4**
   ([#525](https://github.com/theurian/theurian/issues/525)). One root cause — a
   clone carrying a symbolic link force-added past ADR-0004's ignore — was
   answered three different exit codes, decided by which `ProjectPaths` helper
@@ -110,6 +110,11 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   state-database faces closed in 0.1.0.dev18. A caller scripting against these
   commands had to know *which file* was doctored to learn that anything was.
 
+  The counts are a measurement, not an estimate: a sweep of thirteen doctored
+  artefacts by nine commands, run at `491bded6`, and it is committed as
+  `tests/integration/test_contained_path_envelope.py` so the population stays
+  derived from the source rather than from a list.
+
   `EXIT_STATE_ERROR` (4) is the survivor, and not by majority: it is the code
   `theurian` already assigns to a `.theurian/migrations` symlinked out of the
   tree — the same doctored-clone condition through a different guard. Exit 1 is
@@ -118,24 +123,34 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   codes are a published contract (`docs/protocol/plugin-core-compatibility.md`),
   so this is called out as breaking rather than carried as a detail.
 
-  **What did *not* move.** A pointer file that merely will not parse is derived
-  state to delete, not a doctored tree: it keeps exit 1, and `project status`
-  keeps answering its full payload at exit 0 with `statePointerCorrupt: true`.
-  So does an escaping `.theurian` *itself*, which is refused a level earlier
-  while the command context is still resolving and is graded by each command's
-  own "could not resolve a project" contract. Both bounds are pinned by tests.
+  **What did *not* move**, each with the test that holds it. A pointer file that
+  merely will not parse is derived state to delete, not a doctored tree: it keeps
+  exit 1, and `project status` keeps answering its full payload at exit 0 with
+  `statePointerCorrupt: true`
+  (`test_a_pointer_that_will_not_parse_still_degrades_rather_than_refusing`). So
+  does an escaping `.theurian` *itself*, which is refused a level earlier while
+  the command context is still resolving and is graded by each command's own
+  "could not resolve a project" contract
+  (`test_status_over_an_escaping_theurian_symlink_reads_nothing_from_outside_the_tree`,
+  green through this change at exit 1).
 
   Six of the nineteen positions published no exit code worth reading anyway:
   they escaped `--json` as a Rich traceback with **zero bytes on stdout and zero
   on stderr**, over `.theurian/state/active-index.json` in `index build`,
   `index gc`, `index status`, `migrate apply` and `project status`, and over
-  `.theurian/state/index-secret-scan.json` in `index build`. Each is now one
-  `{error, remedy}` document naming the artefact to repair. The write lock's own
-  open joins them ([#520](https://github.com/theurian/theurian/issues/520)): a
-  directory at `.theurian/runtime/write.lock`, a lock file this process may not
-  open, and a `.theurian/runtime/` that refuses to create one each ended
-  `migrate apply --json` in a traceback, and each now describes what was found
-  rather than calling it a symbolic link.
+  `.theurian/state/index-secret-scan.json` in `index build` — a sixth face the
+  driving sweep found and the issue had not listed. Each is now one
+  `{error, remedy}` document naming the artefact to repair, measured against the
+  real CLI on 2026-09-04. The write lock's own open joins them
+  ([#520](https://github.com/theurian/theurian/issues/520)): a directory at
+  `.theurian/runtime/write.lock`, a lock file this process may not open, and a
+  `.theurian/runtime/` that refuses to create one each ended `migrate apply
+  --json` in a traceback, and each now describes what was found rather than
+  calling it a symbolic link. Two neighbours are untouched and recorded as such:
+  a FIFO at that path still blocks inside the `open` rather than returning an
+  errno ([#526](https://github.com/theurian/theurian/issues/526)), and the
+  `mkdir` that runs before the open still raises a bare `OSError`, which
+  `theurian findings build` grades and `theurian migrate apply` does not.
 
 ### Fixed
 

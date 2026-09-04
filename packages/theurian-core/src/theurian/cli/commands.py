@@ -162,11 +162,12 @@ def _fail(message: str, *, remedy: str, as_json: bool, code: int) -> None:
 def _fail_a_path_escape(exc: ProjectPathEscapeError, *, as_json: bool) -> None:
     """One grading and one cure for a path under ``.theurian/`` that leaves the tree.
 
-    Every ``ProjectPaths`` helper routes through one containment chokepoint, and
-    until #525 the refusal it raises was graded by whichever handler happened to
-    catch it: ``_read_active``'s exit 1 over ``.theurian/state`` and
-    ``active.json``, ``_require_project``'s exit 4 over the state database (#483)
-    and ``project status``'s exit 0 over a pointer it degraded about, with five
+    Until #525 the refusal ``ProjectPaths``' containment chokepoint raises was
+    graded by whichever handler happened to catch it. The sweep in
+    ``tests/integration/test_contained_path_envelope.py`` measured the spread at
+    ``491bded6`` -- thirteen plants by nine commands -- and found exit 0 from
+    ``project status`` over a pointer it degraded about, exit 1 from nineteen
+    positions, exit 4 from the state-database faces (#483, #518), and six
     positions catching nothing at all and publishing a Rich traceback. A caller
     scripting against these commands had to know *which file* was doctored to
     learn that anything was.
@@ -179,13 +180,18 @@ def _fail_a_path_escape(exc: ProjectPathEscapeError, *, as_json: bool) -> None:
     force-added past ADR-0004's ignore is a knowledge-state problem the user must
     repair, which is what 4 means.
 
-    ``exc.remedy`` bare rather than through :func:`_context_remedy`: the
-    chokepoint always sets one, keyed on the refused path
-    (``ProjectPaths._escape_remedy``), and a default would only ever replace a
-    cure that names the right artefact with one that does not.
+    ``exc.remedy`` bare rather than through :func:`_context_remedy`: both of
+    ``_contain``'s raise sites pass a ``remedy``, and ``_contained`` supplies it
+    from ``ProjectPaths._escape_remedy``, keyed on the refused path -- so there
+    is no arrival here with an empty one for a default to answer, and
+    ``_context_remedy`` would return ``exc.remedy`` anyway. That the key survives
+    is pinned by
+    ``test_every_containment_refusal_publishes_the_remedy_for_the_path_it_refused``,
+    which went RED under a mutation flattening ``_escape_remedy`` to one text.
 
-    Does not return -- :func:`_fail` raises -- but is typed like every other
-    caller of it, so the call sites keep their explicit ``return``.
+    Does not return -- :func:`_fail` raises -- but is typed the way this
+    module's other callers of it are, so the call sites keep their explicit
+    ``return``.
     """
     _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
 
@@ -749,11 +755,13 @@ def _read_active(paths: ProjectPaths, as_json: bool) -> ActiveState | None:
     codes** (#525). ``read_active_state`` resolves ``paths.active_pointer``
     before it reads it, so a ``.theurian/state`` or an ``active.json`` that
     resolves outside the working tree refuses *here* -- a doctored tree, graded
-    like every other containment refusal. A pointer that merely will not parse is
+    through :func:`_fail_a_path_escape` like the rest of the class. A pointer that
+    merely will not parse is
     derived state to delete, which is this function's own exit 1 and is not
-    #525's to regrade. Ordering the two ``except`` clauses is the whole
-    distinction: a single ``except TheurianError`` cannot draw it, which is why
-    the escape was answered "delete this file" at exit 1 across six commands.
+    #525's to regrade. The two ``except`` clauses in order are the whole
+    distinction; a single ``except TheurianError`` sees one type and answers one
+    way, which is why the escape was answered "delete this file" at exit 1 across
+    the six state readers the sweep measures.
     """
     try:
         return read_active_state(paths)
@@ -1234,9 +1242,9 @@ def project_status(as_json: JsonOption = False) -> None:
     # stdout. `_read_active` is not usable here -- it exits, and this command
     # answers at exit 0 even for a directory that is not a project at all.
     #
-    # A pointer that resolves *outside* the working tree is the one arrival this
-    # cannot degrade about, and telling it apart is what the exception's type is
-    # for (#525). "Unreadable" here means derived state to delete, and
+    # A pointer that resolves *outside* the working tree is the arrival this
+    # must not degrade about, and telling it apart is what the exception's type
+    # is for (#525). "Unreadable" here means derived state to delete, and
     # `statePointerCorrupt` is the field that says so; a `.theurian/state/` a
     # clone doctored past ADR-0004's ignore is the condition `database_for`'s
     # handler below already refuses to answer partially about, met a few lines
@@ -1860,7 +1868,8 @@ def _purge_withdrawal(
     through to the use case, which reports the benign ``no-published-index`` state.
 
     **The read is graded here because nothing above it can be** (#525).
-    ``read_active_index`` absorbs every way the pointer's contents can be wrong
+    ``read_active_index`` absorbs the ways the pointer's contents can be wrong --
+    unparseable bytes, a top level that is not an object, no ``indexBuildId`` --
     and answers ``None``, but it resolves ``active_index_pointer`` first, and a
     path that leaves the working tree refuses. By this point ``migrate apply``'s
     lock section has closed its ``except TheurianError`` and
@@ -1869,8 +1878,10 @@ def _purge_withdrawal(
     the command in a Rich traceback with an empty machine channel, *after* the
     migration had committed. It stays a refusal rather than a
     ``published: false`` reason: the apply is durable and the index follow-up is
-    what failed, but no honest account of the index can be given about a
-    ``.theurian/state/`` whose contents nothing here can vouch for.
+    what failed, but the pointer this payload would describe resolves outside the
+    working tree, so the reason field would be reporting on a file the command
+    was refused. ``migrate apply`` is one of the five positions
+    ``test_contained_path_envelope.py`` requires to refuse over this plant.
     """
     try:
         source_build_id = str((read_active_index(context.paths) or {}).get("indexBuildId", ""))
