@@ -1041,8 +1041,12 @@ def test_every_containment_refusal_carries_the_state_error_exit_code(
 
     - **0** from ``project status`` over an escaping ``active.json``, which
       degraded to a full payload;
-    - **1** from ``_read_active``'s handler, over the ``state``, ``active.json``
-      and ``config.yaml`` plants, on six commands each;
+    - **1** from ``_read_active``'s handler, over the ``state``,
+      ``active_pointer`` and ``config`` plants. How many swept commands each of
+      the three reaches is derived from ``CONTAINMENT_PLANTS`` and held by
+      :func:`test_exactly_these_plants_reach_a_swept_command`, not recited here:
+      an earlier version of this line said "six commands each", and ``config``
+      has one reader, ``index build``;
     - **4** from ``_require_project`` and ``project status``'s own
       ``database_for`` handlers (#518), and from ``migrate apply``'s lock section.
 
@@ -1062,8 +1066,19 @@ def test_every_containment_refusal_carries_the_state_error_exit_code(
     records, and the reason the SEC-8 input caps beside it were left alone.
 
     Imported rather than written as ``4`` so a change to the constant moves the
-    product and this assertion together; the value itself is pinned as a
-    published contract by the plugin compatibility tests.
+    product and this assertion together. **What pins the value itself is
+    measured, because an earlier version of this paragraph credited the wrong
+    thing.** It said "the plugin compatibility tests", and
+    ``tests/contract/test_cli_contract.py`` asserts 0, 2, 3 and
+    ``EXIT_SECRET_FOUND`` against the installed binary -- never 4. Two things do
+    pin it, and neither is that file: six test modules redeclare the literal
+    (``git grep -l 'EXIT_STATE_ERROR = 4' -- packages/theurian-core/tests tests``
+    at ``febcffa1``), so moving the constant alone turns them RED, which is a pin
+    on the *number*; and the published *meaning* is pinned by
+    ``test_documented_commands.py``'s
+    ``test_the_index_command_document_enumerates_exactly_the_exits_the_build_selects``,
+    which derives what ``index build`` selects and requires the plugin document
+    branching on those codes to enumerate exactly them (#329).
     """
     graded = {
         (plant.helper, command): escaping_symlinks[plant.helper, command].exit_code
