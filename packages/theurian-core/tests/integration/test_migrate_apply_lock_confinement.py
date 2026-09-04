@@ -409,7 +409,13 @@ def test_a_lock_file_symlinked_onto_a_file_in_the_tree_never_truncates_that_file
     # called one, and every assertion here was about the remedy. The sibling
     # property -- that the *other* artefacts are never called links -- has been
     # asserted since #520; this is the half that says the link still is.
-    assert "symbolic link" in str(error_payload.get("error", "")), (
+    #
+    # Keyed on the class's own clause and not on the words "symbolic link",
+    # because a first cut of this assertion passed under exactly the mutation it
+    # was written for: with the branch deleted, the generic shape publishes
+    # `strerror`, and the OS phrase for `ELOOP` is "Too many levels of symbolic
+    # links". The substring was in the message for the wrong reason.
+    assert "is a symbolic link, not a lock file" in str(error_payload.get("error", "")), (
         f"a symbolic link at the lock path is no longer described as one, so the "
         f"reader is told a file could not be opened and left to find the link "
         f"themselves: {error_payload.get('error')!r}"

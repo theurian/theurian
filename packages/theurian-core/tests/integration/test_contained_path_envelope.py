@@ -1443,3 +1443,20 @@ def test_a_pointer_that_will_not_parse_still_degrades_rather_than_refusing(
         "outside the working tree is the state-integrity class #525 unifies"
     )
     assert (apply_result.envelope or {}).get("remedy", "").startswith("Delete ")
+
+    # The `isinstance` guard's own product, pinned separately from the exit code.
+    # Adding `TypeError` to the reader's `except` tuple is what converts the
+    # crash; the guard is what makes the *message* readable, and dropping it
+    # leaves every assertion above green while the envelope starts publishing the
+    # interpreter's complaint -- "list indices must be integers or slices, not
+    # str" -- to an operator who has to work out that their pointer holds a JSON
+    # array. Measured under exactly that mutation.
+    error = str((apply_result.envelope or {}).get("error", ""))
+    if written != "nope":
+        assert "not an object" in error, (
+            f"the refusal does not say what the pointer holds instead of an object, so "
+            f"the reader is handed a subscripting error to interpret: {error!r}"
+        )
+        assert "indices" not in error and "subscriptable" not in error, (
+            f"the interpreter's own `TypeError` text reached the envelope: {error!r}"
+        )
