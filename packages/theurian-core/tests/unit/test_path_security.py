@@ -34,6 +34,7 @@ from theurian.security.paths import (
     MAX_PATH_DEPTH,
     MAX_SOURCE_FILE_BYTES,
     MAX_SYMLINK_HOPS,
+    _anchors,
     _unbounded_shape,
     assert_no_symlink_escape,
     ensure_private_mode,
@@ -195,6 +196,21 @@ def _read_through_a_folded_chain(project_root: Path) -> object:
     return read_source_file(project_root, _folded_chain_that_leaves_the_root(project_root))
 
 
+def _read_through_an_unanchored_absolute_target(project_root: Path) -> object:
+    """A link whose absolute target names no known spelling of root or base.
+
+    The target is a real, readable file outside the project. Nothing about it is
+    judgeable: there is no anchor under which the walk could say whether its
+    prefix is inside, so it is refused rather than walked.
+    """
+    knowledge = project_root / ".theurian" / "knowledge"
+    outside = project_root.parent / "outside"
+    link = knowledge / f"unanchored-{_ECHO_MARKER}.md"
+    if not link.is_symlink():
+        link.symlink_to(outside / _ECHO_MARKER)
+    return read_source_file(project_root, f".theurian/knowledge/unanchored-{_ECHO_MARKER}.md")
+
+
 def _read_through_more_links_than_the_budget(project_root: Path) -> object:
     """A chain longer than :data:`MAX_SYMLINK_HOPS`, every link inside the root.
 
@@ -343,6 +359,11 @@ _ECHO_ATTACKS = [
         marks=_NEEDS_SYMLINKS,
     ),
     pytest.param(
+        _read_through_an_unanchored_absolute_target,
+        id="an-unanchored-absolute-link-target",
+        marks=_NEEDS_SYMLINKS,
+    ),
+    pytest.param(
         _read_a_fifo_named_like_the_secret,
         id="a-file-whose-size-bounds-nothing",
         marks=pytest.mark.skipif(
@@ -467,6 +488,13 @@ _RAISE_SITES: Final = (
         error="PathEscapeError",
         role="the chain is longer than MAX_SYMLINK_HOPS",
         driven_by=("a-chain-past-the-hop-budget",),
+        unreachable_because="",
+    ),
+    _RaiseSite(
+        function="_expand",
+        error="PathEscapeError",
+        role="an absolute link target is anchored at no known spelling of root or base",
+        driven_by=("an-unanchored-absolute-link-target",),
         unreachable_because="",
     ),
     _RaiseSite(
@@ -914,6 +942,157 @@ def test_which_directory_the_walk_starts_from_changes_the_verdict(project_root: 
 
     with pytest.raises(PathEscapeError):
         assert_no_symlink_escape(knowledge, base=knowledge, requested=generated)
+
+
+# -- The closure argument, as a table over REACHED-BY kinds -------------------
+#
+# "Every position the walk stands on is judged under an anchor-appropriate
+# latch, and a route we cannot judge is refused -- no walked position is ever
+# unjudged, no unjudgeable route is ever walked."
+#
+# Three shapes of this guard each failed because the table under it enumerated
+# *spellings*: the one fixture #288 was written against, then the six of round
+# one, then an eighth nobody had spelled. A spelling list can always be extended
+# by one; the way a position is *reached* cannot, because the walk has exactly
+# four moves. So the rows below are the four moves and the three admission
+# outcomes an absolute target can have -- and the residual is a row rather than
+# a footnote, because a residual nobody drives is indistinguishable from a bug.
+
+
+def _plant(project_root: Path) -> tuple[Path, Path]:
+    """``(knowledge, outside)`` with the leaf every row below reaches."""
+    knowledge = project_root / ".theurian" / "knowledge"
+    (knowledge / _CHAIN_LEAF).write_text("# Auth policy\n")
+    outside = project_root.parent / "outside"
+    outside.mkdir(exist_ok=True)
+    return knowledge, outside
+
+
+@_NEEDS_SYMLINKS
+def test_a_root_anchored_absolute_target_is_walked_armed(project_root: Path) -> None:
+    """Reached by an absolute-target hop, anchored at a root spelling.
+
+    Armed from the anchor, so the tail may not leave: the same link with a tail
+    that steps out through ``escape`` is refused, while the one that stays is
+    read. Both arms, because an armed latch that refused everything would
+    satisfy the first alone.
+    """
+    knowledge, outside = _plant(project_root)
+    (knowledge / "escape").symlink_to(outside, target_is_directory=True)
+    (knowledge / "stays.md").symlink_to(f"{knowledge}/{_CHAIN_LEAF}")
+    (knowledge / "leaves.md").symlink_to(f"{knowledge}/escape/../{_CHAIN_LEAF}")
+
+    assert read_source_file(project_root, ".theurian/knowledge/stays.md") == b"# Auth policy\n"
+
+    with pytest.raises(PathEscapeError):
+        read_source_file(project_root, ".theurian/knowledge/leaves.md")
+
+
+@_NEEDS_SYMLINKS
+def test_a_base_anchored_absolute_target_is_permissive_until_it_enters(
+    project_root: Path,
+) -> None:
+    """Reached by an absolute-target hop, anchored at a base spelling.
+
+    ``base`` may sit outside ``root`` -- that is ``_destination_of`` -- so a
+    target anchored there is judged the way that approach is: permissive until
+    it first steps inside, total afterwards. The second arm is the same base
+    anchor with a tail that enters and then leaves again.
+    """
+    knowledge, outside = _plant(project_root)
+    migrations = project_root / ".theurian" / "migrations"
+    migrations.mkdir(parents=True, exist_ok=True)
+    (migrations / "arrives").symlink_to(f"{migrations}/../knowledge/{_CHAIN_LEAF}")
+    (knowledge / "out").symlink_to(outside, target_is_directory=True)
+    (migrations / "departs").symlink_to(f"{migrations}/../knowledge/out/{_CHAIN_LEAF}")
+
+    assert_no_symlink_escape(knowledge, base=migrations, requested="arrives")
+
+    with pytest.raises(PathEscapeError):
+        assert_no_symlink_escape(knowledge, base=migrations, requested="departs")
+
+
+@_NEEDS_SYMLINKS
+def test_an_unanchored_absolute_target_is_refused_even_though_it_returns(
+    project_root: Path,
+) -> None:
+    """Reached by an absolute-target hop anchored nowhere: refused outright.
+
+    The route would come back inside -- the assertion below says the destination
+    is in-root -- and it is still refused, because there is no anchor under which
+    its prefix could be judged. Walking it under a fresh permissive approach
+    instead is the shape that was measured forgiving every absolute-target
+    escape, taking the seven-spelling matrix down to three of seven.
+    """
+    knowledge, outside = _plant(project_root)
+    (outside / "back").symlink_to(knowledge, target_is_directory=True)
+    (knowledge / "detour.md").symlink_to(f"{outside}/back/{_CHAIN_LEAF}")
+
+    destination = (knowledge / "detour.md").resolve()
+    assert destination.is_relative_to(project_root.resolve()), (
+        "the fixture must return INSIDE the root, or it is not testing admission"
+    )
+
+    with pytest.raises(PathEscapeError):
+        read_source_file(project_root, ".theurian/knowledge/detour.md")
+
+
+@_NEEDS_SYMLINKS
+def test_a_third_alias_of_the_root_is_refused_and_that_is_the_recorded_residual(
+    tmp_path: Path,
+) -> None:
+    """The residual this design accepts, driven so it cannot drift unnoticed.
+
+    An absolute target spelled through an alias of the root that the walk was
+    *not* given -- neither the spelling passed nor the one it resolves to -- is
+    refused although its route never leaves. Reaching it takes a committed
+    symlink naming a path specific to one machine, and it fails **closed**: a
+    refusal carrying a remedy, not a read.
+
+    The control is the same link with the root passed under that spelling, which
+    is the ordinary case (a checkout reached through a symlinked path): the
+    anchor set is derived from the arguments, so the alias joins it and the read
+    succeeds. That pairing is the whole argument for the residual being a
+    trade rather than a defect.
+    """
+    real = (tmp_path / "real").resolve()
+    knowledge = real / "project" / ".theurian" / "knowledge"
+    knowledge.mkdir(parents=True)
+    (knowledge / "auth.md").write_text("# Auth policy\n")
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    (knowledge / "aliased.md").symlink_to(f"{alias}/project/.theurian/knowledge/auth.md")
+
+    requested = ".theurian/knowledge/aliased.md"
+    assert (knowledge / "aliased.md").resolve() == (knowledge / "auth.md").resolve(), (
+        "both spellings must name one file, or this is not an alias test"
+    )
+
+    with pytest.raises(PathEscapeError):
+        read_source_file(real / "project", requested)
+
+    assert read_source_file(alias / "project", requested) == b"# Auth policy\n"
+
+
+def test_the_anchor_set_follows_the_arguments_it_is_derived_from() -> None:
+    """The anchor set is derived, so a fifth spelling joins it -- never the escape.
+
+    A hand-written list would put every spelling it forgot into the *escape*
+    space, which is the direction that fails open. This asserts the derivation
+    directly: change the spelling of an argument and the set changes with it.
+    """
+    root, base = Path("/srv/project"), Path("/srv/project/.theurian/migrations")
+    spellings = [anchor for anchor, _position, _armed in _anchors(root, base)]
+
+    assert root in spellings and base in spellings, "both arguments contribute their own spelling"
+
+    moved = [anchor for anchor, _position, _armed in _anchors(Path("/mnt/alias"), base)]
+    assert Path("/mnt/alias") in moved, "a differently spelled root joins the set"
+    assert root not in moved, "and the spelling it replaced leaves it"
+
+    armed = {anchor: state for anchor, _position, state in _anchors(root, base)}
+    assert armed[root] is True, "a root spelling is walked armed"
+    assert armed[base] is False, "a base spelling is walked permissive-until-entry"
 
 
 @_NEEDS_SYMLINKS
