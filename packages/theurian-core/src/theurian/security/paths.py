@@ -179,6 +179,18 @@ def read_source_file(root: Path, relative: str | PurePosixPath) -> bytes:
     The single supported way for Theurian to read content referenced from a
     migration. Reading a source file by any other route bypasses SEC-7 and SEC-8.
 
+    **Pass ``relative`` as the caller wrote it, not as ``resolve()`` returned
+    it.** The symlink-escape half of the containment check walks these
+    components, and ``Path.resolve()`` has already replaced every link with its
+    destination -- so a caller that flattens first still gets the size cap, the
+    shape check and the destination containment, and silently gets nothing from
+    the symlink walk. That failure is silent by construction: it removes a
+    refusal, and no test that reads a legitimate file can notice. A caller that
+    can only hold a flattened form therefore owes an
+    :func:`assert_no_symlink_escape` call of its own, made upstream on the
+    string its author actually wrote;
+    ``migration_loader.py::_parse_upsert`` is the worked example (issue #288).
+
     Raises:
         PathEscapeError: If the path escapes ``root`` -- either by resolving
             outside it, or by traversing an intermediate symlink that leaves it
