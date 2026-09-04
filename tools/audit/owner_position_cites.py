@@ -120,7 +120,15 @@ _OWNER_POSITION: Final = re.compile(
     # Measured out of the unmarked residue rather than imagined: each of these
     # three carries a live defect at `141cf6f` that the list above did not reach.
     # "when [#N] lands", "removed when [#N]", "tracked as their own face ([#N])".
-    r"|\blands\b|\bremoved\s+when\b|\btracked\s+as\b",
+    r"|\blands\b|\bremoved\s+when\b|\btracked\s+as\b"
+    # `still on` closes a lexicon inconsistency this key shipped: `stays open`
+    # was here and `stays open on #140` at roadmap:859 was caught, but roadmap
+    # appendix row 4's `still on #140` -- the same open-question-on-a-closed-issue
+    # shape, one verb apart -- was not, and shipped undetected (#552's finding).
+    # Adding it surfaced zero new suspects across the governed corpus at
+    # 635063f5, so it widens what the key sees without widening what a person
+    # must judge.
+    r"|\bstill\s+on\b",
     re.IGNORECASE,
 )
 
@@ -558,6 +566,17 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, tuple[str, ...], str, str, str, s
         "#468 stays open for both halves.",
         (),
         "468",
+        "issue:closed",
+        "control.md",
+        "none",
+        "SUSPECT",
+    ),
+    (
+        "the `still on` phrasing row 4's `still on #140` shipped through undetected",
+        "Whether it joins the register is still on [#140]"
+        "(https://github.com/theurian/theurian/issues/140).",
+        (),
+        "140",
         "issue:closed",
         "control.md",
         "none",
