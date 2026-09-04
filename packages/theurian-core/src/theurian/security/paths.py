@@ -35,6 +35,9 @@ from theurian.domain.errors import (
     IrregularSourceFileError,
     PathDepthExceededError,
     PathEscapeError,
+    SymlinkBudgetExceededError,
+    UnanchoredLinkTargetError,
+    UnreadableLinkError,
 )
 
 #: Maximum bytes a single source file may occupy (SEC-8). Knowledge is prose and
@@ -244,7 +247,12 @@ def _expand(
     refuses every absolute in-root link, whose prefix begins at ``/``.
     """
     if hops >= MAX_SYMLINK_HOPS:
-        raise PathEscapeError(str(walk.requested), str(walk.resolved_root))
+        # Not an escape: every link in such a chain may point inside the root,
+        # and a 41-link chain living entirely in `knowledge/` was measured being
+        # told to find the link that leaves the project (#233's family, round 2).
+        raise SymlinkBudgetExceededError(
+            str(walk.requested), str(walk.resolved_root), limit=MAX_SYMLINK_HOPS
+        )
     try:
         target = PurePosixPath(link.readlink())
     except OSError as exc:
@@ -253,11 +261,11 @@ def _expand(
         # rather than stepped over, because this function's whole output is a
         # proof of containment and an unread link is a component it cannot prove
         # anything about. Graded, so `--json` still publishes a document.
-        raise PathEscapeError(str(walk.requested), str(walk.resolved_root)) from exc
+        raise UnreadableLinkError(str(walk.requested), str(walk.resolved_root)) from exc
     if target.is_absolute():
         admitted = _admit(target, walk.anchors)
         if admitted is None:
-            raise PathEscapeError(str(walk.requested), str(walk.resolved_root))
+            raise UnanchoredLinkTargetError(str(walk.requested), str(walk.resolved_root))
         anchor, armed, tail = admitted
         # The anchor becomes the position and only the tail is queued, so the
         # approach this target opens starts where the anchor says it is rather

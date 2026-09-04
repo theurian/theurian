@@ -830,6 +830,97 @@ class PathDepthExceededError(PathEscapeError):
         SecurityError.__init__(self, f"{subject} the permitted depth limit of {limit} segments")
 
 
+class SymlinkBudgetExceededError(PathEscapeError):
+    """A path reached through more symbolic links than the walk will follow.
+
+    The same division :class:`PathDepthExceededError` makes, for the same reason
+    (issue #233): every link in such a chain may point *inside* the root, so
+    "Path escapes the permitted root" is false for it, and a remedy telling the
+    reader to find the link that leaves the project sends them after something
+    that does not exist. Measured through the real CLI on a 41-link chain living
+    entirely in ``.theurian/knowledge/``.
+
+    A :class:`PathEscapeError` subclass so every ``except`` and every exit-code
+    route keeps catching it unchanged; only what the reader is told changes.
+
+    ``limit`` is passed rather than imported, because the constant lives in
+    ``security/paths.py``, which imports this module.
+    """
+
+    def __init__(
+        self, requested: str, root: str, *, limit: int, entry: EscapeSite | None = None
+    ) -> None:
+        self.requested = requested
+        self.root = root
+        self.entry = entry
+        self.limit = limit
+        named = f"The path that {entry.name!r} names is" if entry else "This path is"
+        self.remedy = (
+            f"{named} reached through more than {limit} symbolic links, which is more "
+            f"than this check will follow. Shorten the chain -- point the link at its "
+            f"destination directly -- then retry."
+        )
+        subject = f"{entry.name!r} names a path that traverses" if entry else "Path traverses"
+        SecurityError.__init__(self, f"{subject} more than {limit} symbolic links")
+
+
+class UnreadableLinkError(PathEscapeError):
+    """A symbolic link on the path could not be read, so nothing about it is proved.
+
+    Refused rather than stepped over, because the containment walk's whole
+    output is a proof and an unread link is a component it can prove nothing
+    about. It is not an escape: the link may point anywhere, including squarely
+    inside the root, so it gets its own message for :class:`PathDepthExceededError`'s
+    reason.
+    """
+
+    def __init__(self, requested: str, root: str, *, entry: EscapeSite | None = None) -> None:
+        self.requested = requested
+        self.root = root
+        self.entry = entry
+        named = f"the path that {entry.name!r} names" if entry else "this path"
+        self.remedy = (
+            f"A symbolic link on {named} could not be read. Make it and the directory "
+            f"holding it readable, then retry."
+        )
+        subject = f"{entry.name!r} names a path whose" if entry else "A"
+        SecurityError.__init__(self, f"{subject} symbolic link could not be read")
+
+
+class UnanchoredLinkTargetError(PathEscapeError):
+    """A symbolic link whose absolute target names no known spelling of the project.
+
+    The containment walk admits an absolute link target only where it is
+    anchored at a spelling of the root or base it was given. An unanchored
+    target is refused whether or not its route would come back inside, because
+    there is no anchor under which its prefix could be judged.
+
+    Its own message because "escapes the permitted root" is false for the
+    residual this design accepts: a target spelled through a *third* alias of
+    the root names a legitimate location by a name this invocation was not
+    given, and telling that reader to find the link that leaves the project
+    would send them after a link that does not leave. The remedy names the fix
+    that actually works -- spell the target from the directory the command was
+    given, or repoint it.
+    """
+
+    def __init__(self, requested: str, root: str, *, entry: EscapeSite | None = None) -> None:
+        self.requested = requested
+        self.root = root
+        self.entry = entry
+        named = f"the path that {entry.name!r} names" if entry else "this path"
+        self.remedy = (
+            f"A symbolic link on {named} points at an absolute path that is not inside "
+            f"the project as this command addresses it. Repoint that link inside the "
+            f"project, spelling its target from the project directory this command was "
+            f"given, then retry."
+        )
+        subject = (
+            f"{entry.name!r} names a path reached through" if entry else "Path reached through"
+        )
+        SecurityError.__init__(self, f"{subject} a link pointing outside the project")
+
+
 class InputTooLargeError(SecurityError):
     """Input exceeded a configured parser limit (SEC-8).
 

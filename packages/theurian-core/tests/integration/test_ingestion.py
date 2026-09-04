@@ -291,7 +291,13 @@ def test_a_symlink_that_leaves_the_project_and_returns_is_not_ingested(project: 
     assert [document.path for document in report.documents] == [
         ".theurian/knowledge/architecture/good.md"
     ], "the plain neighbour is still ingested; only the route through outside is refused"
-    assert any("escapes the permitted root" in failure.reason for failure in report.failures)
+    assert any(
+        "link pointing outside the project" in failure.reason for failure in report.failures
+    ), (
+        "and it says why: the link's absolute target names no spelling of this project, "
+        "which is a truer sentence than 'escapes the permitted root' for a route that "
+        "comes back inside"
+    )
 
 
 def test_warnings_reach_the_report(project: Path) -> None:

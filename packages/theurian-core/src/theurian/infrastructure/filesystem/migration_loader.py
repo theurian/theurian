@@ -44,6 +44,7 @@ from theurian.domain.errors import (
     PathDepthExceededError,
     PathEscapeError,
     SchemaUnreadableError,
+    SymlinkBudgetExceededError,
 )
 from theurian.domain.identifiers import ItemId, MigrationId, RevisionId, SpecId
 from theurian.domain.knowledge import SourceAnchor
@@ -1492,6 +1493,29 @@ def _escape_role_of(path: Path) -> EscapeRole:
         return "resolved"
 
 
+def _with_entry(exc: PathEscapeError, entry: EscapeSite) -> PathEscapeError:
+    """``exc`` again, with ``entry`` attached and its **concrete type kept**.
+
+    Constructing a plain :class:`PathEscapeError` here is what the two re-raises
+    below used to do, and it flattened every subclass to the base -- publishing
+    "escapes the permitted root", and a remedy telling the reader to find the
+    link that leaves the project, for refusals where nothing escapes and no such
+    link exists. That is precisely the defect #233 fixed for depth, re-entering
+    through the *re-raise* rather than through the raise; round 2 measured it on
+    a 41-link chain living entirely inside ``.theurian/knowledge/``.
+
+    Written as a dispatch on the type rather than a clause per subclass at each
+    site, so a refusal added to ``security/paths.py`` later keeps its own words
+    here without anyone remembering to widen two ``except`` chains.
+    ``test_migration_loader_errors.py`` holds that claim against the module.
+    """
+    if isinstance(exc, PathDepthExceededError):
+        return PathDepthExceededError(exc.requested, exc.root, limit=exc.limit, entry=entry)
+    if isinstance(exc, SymlinkBudgetExceededError):
+        return SymlinkBudgetExceededError(exc.requested, exc.root, limit=exc.limit, entry=entry)
+    return type(exc)(exc.requested, exc.root, entry=entry)
+
+
 def _load_one(
     path: Path,
     project_root: Path,
@@ -1522,10 +1546,8 @@ def _load_one(
         # registry-supplied `knowledge_directory` deep enough to blow the limit,
         # the depth error would be mislabelled as an escape here, and this
         # passthrough would need restoring alongside `_parse_upsert`'s.
-        raise PathEscapeError(
-            exc.requested,
-            exc.root,
-            entry=EscapeSite(str(path.relative_to(project_root)), _escape_role_of(path)),
+        raise _with_entry(
+            exc, EscapeSite(str(path.relative_to(project_root)), _escape_role_of(path))
         ) from exc
     except OSError as exc:
         # The sibling of `_parse_upsert`'s conversion below, for the *other*
@@ -1792,7 +1814,7 @@ def _parse_upsert(
             exc.requested, exc.root, limit=exc.limit, entry=_referrer(path, project_root)
         ) from exc
     except PathEscapeError as exc:
-        raise PathEscapeError(exc.requested, exc.root, entry=_referrer(path, project_root)) from exc
+        raise _with_entry(exc, _referrer(path, project_root)) from exc
     except IrregularSourceFileError as exc:
         # The fourth branch that can refuse this `contentFile`, and re-raised for
         # the identical reason as the three above: `read_source_file` names

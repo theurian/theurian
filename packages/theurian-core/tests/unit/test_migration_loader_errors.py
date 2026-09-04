@@ -63,6 +63,7 @@ from theurian.infrastructure.filesystem.migration_loader import (
     _SchemaValidator,
     _validate_document,
     _validator,
+    _with_entry,
     load_migrations,
     validate_migration_document,
 )
@@ -902,6 +903,58 @@ def test_a_content_file_that_is_both_too_deep_and_escaping_keeps_the_depth_messa
         "the depth refusal keeps its own message even when the path also escapes"
     )
     _assert_names_no_file_to_delete(excinfo.value.remedy)
+
+
+def test_no_containment_refusal_loses_its_own_words_to_the_loader_re_raise() -> None:
+    """Every ``PathEscapeError`` subclass survives ``_with_entry`` as itself.
+
+    The loader re-raises a containment refusal to attach the migration file's
+    name. Constructing a plain ``PathEscapeError`` there flattened every
+    subclass to the base, so a chain of 41 links living entirely inside
+    ``.theurian/knowledge/`` was told that its path "escapes the permitted root"
+    and to go find the link that leaves the project -- exactly the defect #233
+    fixed for depth, re-entering through the re-raise instead of the raise.
+
+    The population is read off ``domain/errors.py`` rather than listed, so a
+    refusal added later is covered without anyone remembering this test: every
+    subclass of ``PathEscapeError`` must come back as its own type, carrying the
+    entry, with a message that names the entry.
+    """
+    subclasses = _path_escape_subclasses()
+    assert len(subclasses) >= 4, f"the sweep found only {sorted(c.__name__ for c in subclasses)}"
+
+    entry = EscapeSite(".theurian/migrations/01K1AAAAAA01234567890ABCDE-x.yaml", "referrer")
+    for cls in subclasses:
+        original = _construct(cls)
+        restored = _with_entry(original, entry)
+
+        assert type(restored) is cls, (
+            f"{cls.__name__} came back as {type(restored).__name__}; its own message and "
+            "remedy are lost, and the reader is told about an escape that may not exist"
+        )
+        assert restored.entry == entry, f"{cls.__name__} dropped the entry it was re-raised for"
+        assert entry.name in str(restored), f"{cls.__name__} does not name where to look"
+
+
+def _path_escape_subclasses() -> set[type[PathEscapeError]]:
+    """Every ``PathEscapeError`` subclass the domain defines, transitively."""
+    found: set[type[PathEscapeError]] = set()
+    frontier = [PathEscapeError]
+    while frontier:
+        for child in frontier.pop().__subclasses__():
+            if child not in found:
+                found.add(child)
+                frontier.append(child)
+    return found
+
+
+def _construct(cls: type[PathEscapeError]) -> PathEscapeError:
+    """One instance of ``cls``, supplying whatever extra its constructor takes."""
+    try:
+        return cls("requested", "/root")
+    except TypeError:
+        # The two that carry a limit. Keyword-only in both, and named alike.
+        return cls("requested", "/root", limit=40)  # type: ignore[call-arg]
 
 
 def test_the_sibling_content_file_branches_name_the_migration_file_too(

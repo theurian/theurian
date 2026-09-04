@@ -2979,7 +2979,18 @@ def test_validate_refuses_a_content_file_that_leaves_the_project_and_comes_back(
     assert result.stdout == "", "stdout stays a clean machine channel on failure"
     assert "Traceback" not in result.stderr, "a refusal is graded, never a raw escape"
     payload = json.loads(result.stderr)
-    assert payload["error"] == f"{escaping!r} names a path that escapes the permitted root"
+    # Every spelling here reaches the body through a link whose absolute target
+    # names a location this project does not answer to, so the refusal says that
+    # rather than "escapes the permitted root" -- which would be false for the
+    # five of six whose destination is squarely inside the project (#233's
+    # family, round 2). The `..`-out spelling is the one genuine escape, and it
+    # keeps the escape wording.
+    expected = (
+        f"{escaping!r} names a path reached through a link pointing outside the project"
+        if content_file != "../../../outside-knowledge/back/auth-policy.md"
+        else f"{escaping!r} names a path that escapes the permitted root"
+    )
+    assert payload["error"] == expected
     assert escaping in payload["remedy"], "the migration file is the place to open"
     assert content_file not in result.stderr, "the author-written value stays unechoed"
     assert str(project) not in result.stderr, "the absolute root is not the user's business"

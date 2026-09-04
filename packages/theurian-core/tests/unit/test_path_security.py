@@ -199,15 +199,19 @@ def _read_through_a_folded_chain(project_root: Path) -> object:
 def _read_through_an_unanchored_absolute_target(project_root: Path) -> object:
     """A link whose absolute target names no known spelling of root or base.
 
-    The target is a real, readable file outside the project. Nothing about it is
-    judgeable: there is no anchor under which the walk could say whether its
-    prefix is inside, so it is refused rather than walked.
+    The target has to come back **inside** the root, or ``resolve_within_root``
+    refuses on the destination first and the admission arm is never reached --
+    measured on the first version of this driver, which pointed straight at the
+    out-of-tree secret and never exercised the branch it exists to drive.
     """
     knowledge = project_root / ".theurian" / "knowledge"
     outside = project_root.parent / "outside"
+    returning = outside / "back"
+    if not returning.is_symlink():
+        returning.symlink_to(knowledge, target_is_directory=True)
     link = knowledge / f"unanchored-{_ECHO_MARKER}.md"
     if not link.is_symlink():
-        link.symlink_to(outside / _ECHO_MARKER)
+        link.symlink_to(f"{returning}/auth.md")
     return read_source_file(project_root, f".theurian/knowledge/unanchored-{_ECHO_MARKER}.md")
 
 
@@ -485,21 +489,21 @@ _RAISE_SITES: Final = (
     ),
     _RaiseSite(
         function="_expand",
-        error="PathEscapeError",
+        error="SymlinkBudgetExceededError",
         role="the chain is longer than MAX_SYMLINK_HOPS",
         driven_by=("a-chain-past-the-hop-budget",),
         unreachable_because="",
     ),
     _RaiseSite(
         function="_expand",
-        error="PathEscapeError",
+        error="UnanchoredLinkTargetError",
         role="an absolute link target is anchored at no known spelling of root or base",
         driven_by=("an-unanchored-absolute-link-target",),
         unreachable_because="",
     ),
     _RaiseSite(
         function="_expand",
-        error="PathEscapeError",
+        error="UnreadableLinkError",
         role="a link the walk met could not be read",
         driven_by=(),
         unreachable_because=(
@@ -633,6 +637,18 @@ _ESCAPE_REMEDY = (
     "traverses for a symbolic link that leaves the root, then retry."
 )
 _DEPTH_MESSAGE = f"Path exceeds the permitted depth limit of {MAX_PATH_DEPTH} segments"
+_BUDGET_MESSAGE = f"Path traverses more than {MAX_SYMLINK_HOPS} symbolic links"
+_BUDGET_REMEDY = (
+    f"This path is reached through more than {MAX_SYMLINK_HOPS} symbolic links, which "
+    f"is more than this check will follow. Shorten the chain -- point the link at its "
+    f"destination directly -- then retry."
+)
+_UNANCHORED_MESSAGE = "Path reached through a link pointing outside the project"
+_UNANCHORED_REMEDY = (
+    "A symbolic link on this path points at an absolute path that is not inside the "
+    "project as this command addresses it. Repoint that link inside the project, "
+    "spelling its target from the project directory this command was given, then retry."
+)
 _DEPTH_REMEDY = (
     f"This path nests more than {MAX_PATH_DEPTH} path segments below the permitted "
     f"root. Shorten it -- flatten the directories it nests through -- then retry."
@@ -671,9 +687,23 @@ _DEPTH_REMEDY = (
         ),
         pytest.param(
             _read_through_the_chain_that_comes_back,
-            _ESCAPE_MESSAGE,
-            _ESCAPE_REMEDY,
+            _UNANCHORED_MESSAGE,
+            _UNANCHORED_REMEDY,
             id="an-intermediate-link-leaves-the-root",
+            marks=_NEEDS_SYMLINKS,
+        ),
+        pytest.param(
+            _read_through_an_unanchored_absolute_target,
+            _UNANCHORED_MESSAGE,
+            _UNANCHORED_REMEDY,
+            id="an-unanchored-absolute-link-target",
+            marks=_NEEDS_SYMLINKS,
+        ),
+        pytest.param(
+            _read_through_more_links_than_the_budget,
+            _BUDGET_MESSAGE,
+            _BUDGET_REMEDY,
+            id="a-chain-past-the-hop-budget",
             marks=_NEEDS_SYMLINKS,
         ),
         pytest.param(
