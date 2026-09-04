@@ -269,11 +269,13 @@ class WriteLockUnusableError(TheurianError):
     rather than the raw ``OSError`` the refusal arrives as, because the places
     that enter the lock narrow to ``TheurianError``. Enumerate them with
     ``git grep -n 'WriteLock(' -- packages/theurian-core/src`` rather than
-    trusting this sentence. Run 2026-09-04 it returned seven lines: three
-    ``with WriteLock(...).held()`` constructions -- ``cli/commands.py``
+    trusting this sentence, and read the *constructions* out of what it returns:
+    three ``with WriteLock(...).held()`` sites -- ``cli/commands.py``
     (``migrate apply``'s critical section), ``cli/findings_commands.py``
-    (``findings build``) and this module's :func:`write_transaction` -- and four
-    lines of prose, this one included. A
+    (``findings build``) and this module's :func:`write_transaction`. The rest of
+    the output is prose, this docstring included, so no total is stated here: the
+    total is a number this sentence changes by being written, which is how the
+    one it used to give came to be wrong. A
     bare ``OSError`` at any of them escapes ``--json`` as a Rich traceback with
     an empty machine channel, which is the reporting failure #483 and #484 close
     on the state-database path.
@@ -300,6 +302,15 @@ class WriteLockUnusableError(TheurianError):
             # `O_NOFOLLOW` reports `ELOOP` for a symbolic link at the final
             # component, and `_open`'s docstring records why nothing else can
             # deliver one here.
+            #
+            # The link this arm actually meets is an *in-tree* one, and that is
+            # the case #481 was about: `ProjectPaths.write_lock` routes through
+            # the containment chokepoint, which refuses a link resolving outside
+            # the project root before the open is ever issued. So a link out of
+            # the tree is answered by `ProjectPathEscapeError` and never reaches
+            # here; what does reach here is the link whose target is inside the
+            # root, which containment correctly waves through and which is
+            # exactly the shape that truncated a file in the user's own tree.
             self.remedy = (
                 f"Remove the symbolic link at {path} and retry. It is derived state "
                 f"(ADR-0004) that Theurian recreates, so nothing authored is lost -- and "
@@ -311,11 +322,25 @@ class WriteLockUnusableError(TheurianError):
                 f"to take the lock rather than touching that file."
             )
             return
-        self.remedy = (
-            f"Remove whatever is at {path}, and make sure the directory holding it is "
-            f"writable, then retry. It is derived state (ADR-0004) that Theurian "
-            f"recreates, so nothing authored is lost."
-        )
+        # Which clause leads is decided by what is actually there. The three
+        # artefacts #520 measured split two ways: a directory at the lock path and
+        # a lock file at mode 0000 are things to remove, while a
+        # `.theurian/runtime/` at mode 0500 refuses the `O_CREAT` with *nothing*
+        # at the path -- and leading "Remove whatever is at <lock path>" there
+        # sends the reader to delete a file that does not exist, past the
+        # permission that is the real cure.
+        if path.exists() or path.is_symlink():
+            self.remedy = (
+                f"Remove whatever is at {path}, and make sure the directory holding it is "
+                f"writable, then retry. It is derived state (ADR-0004) that Theurian "
+                f"recreates, so nothing authored is lost."
+            )
+        else:
+            self.remedy = (
+                f"Make the directory holding {path} writable so Theurian can create the "
+                f"lock file there, then retry. It is derived state (ADR-0004) that "
+                f"Theurian recreates, so nothing authored is lost."
+            )
         super().__init__(
             f"The write lock at {path.name} could not be opened as a lock file: "
             f"{_refusal_text(cause)}. Theurian takes that lock before it writes, so "

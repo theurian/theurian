@@ -866,6 +866,18 @@ def test_a_lock_the_open_cannot_take_is_refused_as_a_document(
             f"the remedy does not name {names_the_lock_file}, the file the operator "
             f"has to deal with, so it is a sentence rather than a cure: {remedy!r}"
         )
+        if not (lock.exists() or lock.is_symlink()):
+            # Two of the four artefacts leave *nothing* at the lock path -- the
+            # `0500` runtime directory refusing the `O_CREAT`, and the
+            # `.theurian` that will not recreate `runtime/` -- and a cure that
+            # opens "remove whatever is at <lock path>" sends the reader to
+            # delete a file that is not there, past the permission that is the
+            # actual fix. Same defect as the symbolic-link sentence below, in the
+            # remedy rather than the message.
+            assert "Remove whatever is at" not in remedy, (
+                f"nothing is at {lock}, and the cure opens by telling the reader to "
+                f"remove it: {remedy!r}"
+            )
         published = f"{payload.get('error', '')}\n{remedy}"
         assert "symbolic link" not in published, (
             f"the refusal calls {artefact.label} a symbolic link, which it is not; "

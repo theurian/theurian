@@ -180,6 +180,16 @@ def _fail_a_path_escape(exc: ProjectPathEscapeError, *, as_json: bool) -> None:
     force-added past ADR-0004's ignore is a knowledge-state problem the user must
     repair, which is what 4 means.
 
+    **The commands that call this are the claim, and they were counted by running
+    them.** The sweep covers nine; four more grade the class through their own
+    handlers and are outside it, each measured 2026-09-05 against the real CLI
+    over an escaping artefact and each answering ``4`` since this arm reached it:
+    ``init`` (was 1, over ``.theurian/knowledge`` at init time), ``findings
+    build`` (was 1, over ``.theurian/runtime``), ``propose accept`` (was 1, over
+    ``.theurian/proposals``) and ``propose`` (was **2**, and publishing "Correct
+    the option the message names" over the escape's own cure). Anything reached
+    by neither route is unmeasured, and this docstring does not speak for it.
+
     ``exc.remedy`` bare rather than through :func:`_context_remedy`: both of
     ``_contain``'s raise sites pass a ``remedy``, and ``_contained`` supplies it
     from ``ProjectPaths._escape_remedy``, keyed on the refused path -- so there
@@ -837,6 +847,16 @@ def init_command(as_json: JsonOption = False) -> None:
 
     try:
         created = initialize_project(context.paths)
+    except ProjectPathEscapeError as exc:
+        # Measured at exit 1 until this arm: `initialize_project` calls `_contain`
+        # directly for every directory it creates, so an escaping
+        # `.theurian/knowledge` present at init time -- what a clone delivers --
+        # refused here while the identical refusal under a swept command reported
+        # 4. `init` is outside `CLI_SWEEP` (it writes `.theurian/` and appends to
+        # `.gitignore` in the working directory), which is why the sweep could
+        # not see it and a reviewer had to.
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
     except TheurianError as exc:
         # `initialize_project` now refuses a `.theurian` subtree that a tracked
         # symlink points outside the working tree (#237), rather than `mkdir`-ing

@@ -123,6 +123,15 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   codes are a published contract (`docs/protocol/plugin-core-compatibility.md`),
   so this is called out as breaking rather than carried as a detail.
 
+  **Four commands outside the sweep moved with them**, each measured against the
+  real CLI on 2026-09-05 over an escaping artefact: `theurian init` (was 1, over
+  a `.theurian/knowledge` symlink present at init time — `initialize_project`
+  reaches containment directly for every directory it creates), `theurian
+  findings build` (was 1, over `.theurian/runtime`), `theurian propose accept`
+  (was 1) and `theurian propose` (was **2** — its "invalid input" code, with the
+  escape's own cure replaced by *"Correct the option the message names, then run
+  this command again"*, advice for a flag the caller never got wrong).
+
   **What did *not* move**, each with the test that holds it. A pointer file that
   merely will not parse is derived state to delete, not a doctored tree: it keeps
   exit 1, and `project status` keeps answering its full payload at exit 0 with
@@ -141,7 +150,24 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `.theurian/state/index-secret-scan.json` in `index build` — a sixth face the
   driving sweep found and the issue had not listed. Each is now one
   `{error, remedy}` document naming the artefact to repair, measured against the
-  real CLI on 2026-09-04. Taking the write lock joins them
+  real CLI on 2026-09-04.
+
+  **The sixth face also published a build while reporting that it had not**, and
+  that half was found in review rather than by the sweep. `theurian index build`
+  resolved the scan record's path inside the step that *writes* it, which runs
+  after the pointer swap and after the build is provenanced — so an escaping
+  `.theurian/state/index-secret-scan.json` exited 4, the code the plugin
+  documents describe as "nothing was published", with the new build published and
+  serving. The report never printed, so `secretFindings` was suppressed and the
+  default `block` policy's exit 6 never fired: a credential-bearing build served
+  while the caller was told a symlink was the problem. The path is now proved
+  contained before the build starts, so the refusal costs the caller nothing and
+  the documents' reading of exit 4 is true as written. A *directory* at that same
+  path still publishes and warns — an incidental write failure met after a
+  correct publish is a different root cause from a doctored tree, and the two
+  keep different answers. Introduced by the secret-scan build feature
+  ([#329](https://github.com/theurian/theurian/issues/329)), which merged after
+  the 0.1.0.dev18 cut and is in no released version. Taking the write lock joins them
   ([#520](https://github.com/theurian/theurian/issues/520)): a directory at
   `.theurian/runtime/write.lock`, a lock file this process may not open, a
   `.theurian/runtime/` that refuses to create one, and a `.theurian/` that

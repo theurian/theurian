@@ -31,7 +31,11 @@ from theurian.application.findings_builder import (
     FindingsBuildRequest,
     WriteSection,
 )
-from theurian.application.project_service import FINDINGS_STORE_ID, BuildProvenance
+from theurian.application.project_service import (
+    FINDINGS_STORE_ID,
+    BuildProvenance,
+    ProjectPathEscapeError,
+)
 from theurian.domain.errors import TheurianError
 from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
 from theurian.infrastructure.sqlite.connection import WriteLock
@@ -149,7 +153,12 @@ def findings_build(as_json: JsonOption = False) -> None:
     (#404 R1-5), so ``_fail`` below carries "wait for the other process", never the
     generic doctor cure and never a raw traceback.
     """
-    from theurian.cli.commands import _emit, _fail, _require_project  # noqa: PLC0415 - cycle
+    from theurian.cli.commands import (  # noqa: PLC0415 - cycle
+        _emit,
+        _fail,
+        _fail_a_path_escape,
+        _require_project,
+    )
 
     context, _ = _require_project(as_json)
     paths = context.paths
@@ -190,6 +199,15 @@ def findings_build(as_json: JsonOption = False) -> None:
         # refuses, so a failure here is a failed build reported with the precondition
         # to fix -- not a success whose artifact nothing will serve.
         BuildProvenance.default().record_findings(paths.root, FINDINGS_STORE_ID)
+    except ProjectPathEscapeError as exc:
+        # Both `findings_for` and `write_lock` are composed inside this `try` and
+        # both route through the containment chokepoint, so a doctored
+        # `.theurian/state/` or `.theurian/runtime/` refuses here. Measured at
+        # exit 1 until this arm, against 4 for the same tree under any swept
+        # command; this command is outside `CLI_SWEEP` because it reads
+        # `refs/remotes/origin/main`, which is why the sweep could not see it.
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
     except TheurianError as exc:
         # Each failure carries its own remedy: a path that cannot be contained
         # names the escape, unreachable git history (a fresh clone) names the

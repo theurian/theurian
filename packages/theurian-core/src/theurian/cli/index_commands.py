@@ -100,7 +100,7 @@ EXIT_SECRET_FOUND = 6
 #: canonical database beside it.
 _UNWRITABLE_INDEX_POINTER_REMEDY: Final = (
     "Make sure `.theurian/state/active-index.json` is a writable file or absent -- a "
-    "directory or an unreadable mode at that path is what refuses the swap -- then run "
+    "directory or an unwritable mode at that path is what refuses the swap -- then run "
     "`theurian index build` again. The build that just ran is still on disk and nothing "
     "authored is at risk."
 )
@@ -183,6 +183,8 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
         return
     policy = _secret_scan_policy(paths, as_json)
     if policy is None:
+        return
+    if not _the_scan_record_path_is_contained(paths, as_json):
         return
 
     # The context already carries the generator every other command uses, so
@@ -268,20 +270,9 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
     # ranked path use the build that was just published.
     BuildProvenance.default().record_index(paths.root, index_build_id)
     findings: list[str] = list(report["secretFindings"])
-    try:
-        warning = _record_the_scan(
-            paths, index_build_id=index_build_id, policy=policy, findings=len(findings)
-        )
-    except ProjectPathEscapeError as exc:
-        # Deliberately *not* folded into `_record_the_scan`'s degrade-to-a-warning
-        # arm, whose whole argument is that an incidental write failure must not
-        # replace the findings the caller is about to read. A record path that
-        # leaves the working tree is not incidental: it is the same doctored
-        # `.theurian/state/` this class is about, and
-        # reporting it as a footnote on a successful build understates a tree the
-        # operator has to repair before any of this means anything.
-        _fail_a_path_escape(exc, as_json=as_json)
-        return
+    warning = _record_the_scan(
+        paths, index_build_id=index_build_id, policy=policy, findings=len(findings)
+    )
     if findings:
         # A remedy on a success result, the shape `AcceptedProposal
         # .cleanup_remedy` already has: the build did publish, and telling the
@@ -303,6 +294,57 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
         # canonical store already serves, so `block` is loud rather than
         # obstructive.
         raise typer.Exit(EXIT_SECRET_FOUND)
+
+
+def _the_scan_record_path_is_contained(paths: ProjectPaths, as_json: bool) -> bool:
+    """Prove the SEC-11 record's path stays in the tree, before anything is built.
+
+    A precondition rather than a write. Resolving the property *is* the check:
+    ``ProjectPaths.index_secret_scan`` routes through the containment chokepoint,
+    which resolves non-strict and compares against the project root, so it opens
+    nothing and creates nothing -- the same call ``_record_the_scan`` makes later,
+    made early enough that its refusal costs the caller nothing.
+
+    **Where it sits is the whole point, and it was found the hard way.** The
+    refusal used to arrive at ``_record_the_scan``, which runs *after* ``_publish``
+    has swapped the pointer and after ``record_index`` has provenanced the build.
+    So an escaping ``.theurian/state/index-secret-scan.json`` ended the command at
+    exit 4 with **the new build already published and serving** -- and because the
+    ``_emit`` below was never reached, ``secretFindings`` never printed and the
+    ``block`` policy's ``EXIT_SECRET_FOUND`` never fired. Under the default policy
+    with a credential in the corpus that is a credential-bearing build serving,
+    reported as a containment failure: the SEC-11 signal replaced by a message
+    about a symlink. The three plugin documents this cluster wrote say exit 4
+    means nothing was published; here it meant the opposite.
+
+    Proving the path first is what makes that sentence true rather than reworded.
+    Nothing is built, nothing is published, and the operator clears the doctored
+    tree (ADR-0004 remediation) and re-runs -- where the full report and the
+    policy exit fire normally. Deferred behind a loud refusal, never dropped.
+
+    **The residual, recorded rather than closed.** This proves the path at
+    precondition time; ``_record_the_scan`` resolves it again at write time. A
+    tree doctored *between* the two -- by someone who already has write access to
+    ``.theurian/state/`` -- raises a containment refusal there that no handler
+    converts, so it would reach a ``--json`` caller as a traceback. Closing that
+    needs the record write to hold a descriptor opened before the build, which is
+    a larger change than the exposure earns.
+
+    ``_record_the_scan``'s ``except OSError`` is deliberately left alone. A
+    directory at the record path is an incidental write failure met after a
+    correct publish, and degrading it to a warning keeps the findings reaching
+    the caller; a path that leaves the working tree is a doctored tree, and the
+    two are different root causes with different answers. That distinction is the
+    reason this check exists here rather than a widened ``except`` there.
+    """
+    from theurian.cli.commands import _fail_a_path_escape  # noqa: PLC0415 - cycle
+
+    try:
+        paths.index_secret_scan  # noqa: B018 - resolving the property is the check
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        return False
+    return True
 
 
 def _record_the_scan(
@@ -328,6 +370,13 @@ def _record_the_scan(
     ``_purge_fields``' failure reason already holds). ``theurian doctor`` answers
     ``unrecorded`` for this build afterwards -- honest ignorance, and never a clean
     bill -- which is what makes degrading safe rather than convenient.
+
+    **``OSError`` and nothing wider, on purpose.** A path that leaves the working
+    tree is not an incidental write failure met after a correct publish; it is a
+    doctored tree, and it is proved absent before this command builds anything
+    (:func:`_the_scan_record_path_is_contained`, which records why the two get
+    different answers). Widening this ``except`` to cover it is what would put a
+    published build behind a containment refusal.
     """
     try:
         write_index_secret_scan(

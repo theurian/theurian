@@ -98,12 +98,16 @@ is step 3 below, not the front-matter
   whose id sorts above it (a writer that has finished and not published yet), nor
   anything under a `.building` suffix.
 - It refuses the whole run rather than treating every build on disk as
-  unreferenced, in two cases: the pointer names a build whose file is missing,
-  and the pointer cannot be read at all. Both exit 1 having reclaimed nothing,
-  with `--dry-run` too. Relay the remedy it prints instead of retrying; for the
-  missing file that remedy is ``Run `theurian index build` to publish a build
-  that exists. Reclaiming now would delete every build on disk, because none of
-  them is the published one.``
+  unreferenced, in three cases. Two exit **1** having reclaimed nothing, with
+  `--dry-run` too: the pointer names a build whose file is missing, and the
+  pointer cannot be read at all. The third exits **4** — the pointer's own path
+  resolves outside the working tree, which is a doctored checkout rather than a
+  reclaim decision, and it is graded like every other containment refusal. Relay
+  the remedy it prints instead of retrying; for the missing file that remedy is
+  ``Run `theurian index build` to publish a build that exists. Reclaiming now
+  would delete every build on disk, because none of them is the published one.``
+  For the exit-4 case the remedy names the path to remove, and re-running before
+  removing it meets the identical refusal.
 - Reach for this when the index is suspected to be inconsistent, after changing
   an embedding or summarization provider, or after a Theurian upgrade that
   changes the index format. The provider case is the one where step 1 matters

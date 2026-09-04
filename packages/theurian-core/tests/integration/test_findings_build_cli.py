@@ -51,6 +51,7 @@ from theurian.application.project_service import (
     ProjectPaths,
     ProjectRegistry,
 )
+from theurian.cli.commands import EXIT_STATE_ERROR
 from theurian.cli.findings_commands import _PROVENANCE_REMEDY
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
@@ -719,6 +720,14 @@ def test_a_symlinked_store_leaf_escaping_the_tree_is_refused_and_writes_nothing_
     leaf is replaced by a symlink pointing outside the project *before* the
     build runs, so ``findings_for`` refuses before anything is written -- and
     the outside directory is asserted empty, not merely that the command failed.
+
+    The code **changed** with #525's second round, from 1 to
+    ``EXIT_STATE_ERROR``. One root cause -- a path under ``.theurian/`` that
+    resolves outside the working tree -- was answered 4 by every swept command
+    and 1 here, and this command is outside ``CLI_SWEEP`` because it reads
+    ``refs/remotes/origin/main``, so the sweep could not see it. Both paths this
+    command composes inside its ``try`` route through the chokepoint, so the
+    grading arm covers the store leaf here and the write lock beside it.
     """
     _commit(project, "fix: a change (#1)", "Review-Finding: security HIGH — a finding")
     _publish(project)
@@ -730,7 +739,7 @@ def test_a_symlinked_store_leaf_escaping_the_tree_is_refused_and_writes_nothing_
 
     code, payload = _invoke("findings", "build")
 
-    assert code == 1, payload
+    assert code == EXIT_STATE_ERROR, payload
     assert set(payload) == {"error", "remedy"}, (
         f"an escaping store path must arrive as the graded {{error, remedy}} contract, not a "
         f"raw traceback; got {sorted(payload)}"

@@ -105,6 +105,7 @@ import importlib
 import inspect
 import pathlib
 import re
+import sys
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -1079,7 +1080,27 @@ def test_the_index_build_walk_sees_every_way_that_module_ends_the_process() -> N
     )
 
 
-def test_the_exit_walk_resolves_a_literal_a_local_constant_and_an_imported_one() -> None:
+#: A module whose exit codes exercise every arm of the resolver at once.
+#:
+#: Written to disk and imported rather than parsed in place, because
+#: :func:`selected_non_zero_exits` takes a *module name*: it imports the module
+#: to resolve names ``ast.literal_eval`` cannot, and a tree with no module behind
+#: it can only drive the collector.
+_RESOLVER_FIXTURE: Final = (
+    "LOCAL = 7\n"
+    "def root() -> None:\n"
+    "    from theurian.cli.commands import EXIT_STATE_ERROR\n"
+    "    _fail('a', code=1)\n"
+    "    _fail('b', code=LOCAL)\n"
+    "    _fail('c', code=EXIT_STATE_ERROR)\n"
+    "    _fail('d', code=NOT_A_THING)\n"
+    "    raise typer.Exit(0)\n"
+)
+
+
+def test_the_exit_walk_resolves_a_literal_a_local_constant_and_an_imported_one(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """RED means the resolver stopped resolving, and every derived set is short.
 
     Driven by synthetic source, because the shipped module cannot drive it: its
@@ -1089,7 +1110,39 @@ def test_the_exit_walk_resolves_a_literal_a_local_constant_and_an_imported_one()
     function, which is the shape ``EXIT_STATE_ERROR`` really has -- plus the
     negative case, a name that resolves to nothing and must be reported rather
     than dropped.
+
+    **Through :func:`selected_non_zero_exits`, and that is the correction.** An
+    earlier cut asserted over ``_exit_code_expressions`` and ``_import_origins``
+    and then checked the two facts by hand, which drives the *collector* and
+    leaves the resolution loop -- ``literal_eval``, the ``origins`` lookup, the
+    ``getattr`` fallback, and the int-or-``unresolved`` split -- unexecuted. A
+    mutation replacing that fallback with a value the ``if code`` filter drops
+    left the whole module green while a name that resolved to nothing vanished
+    instead of being reported, which is the one behaviour the docstring's last
+    sentence promises. Calling the real entry point is what makes the promise
+    checkable.
+
+    The fixture module is written under ``tmp_path`` and imported from there, so
+    the arms are exercised against the same code path the shipped module takes
+    rather than against a hand-walked copy of it.
     """
+    module_name = "theurian_resolver_fixture"
+    (tmp_path / f"{module_name}.py").write_text(_RESOLVER_FIXTURE, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, module_name, raising=False)
+    importlib.invalidate_caches()
+
+    selected = selected_non_zero_exits(module_name, "root")
+
+    assert selected.codes == frozenset({1, 7, 4}), (
+        f"the resolver no longer turns a literal, a module-level constant and a "
+        f"function-local import into the numbers they name: {sorted(selected.codes)}"
+    )
+    assert selected.unresolved == ("NOT_A_THING",), (
+        f"a name that resolves to nothing is no longer reported as unresolved, so a "
+        f"derived set can be short without saying so: {selected.unresolved}"
+    )
+
     synthetic = ast.parse(
         "LOCAL = 7\n"
         "def root() -> None:\n"
@@ -1105,6 +1158,11 @@ def test_the_exit_walk_resolves_a_literal_a_local_constant_and_an_imported_one()
 
     expressions = _exit_code_expressions(functions["root"])
 
+    # The collector's own half, kept beside the resolver's: these say *which
+    # expressions were seen*, where the assertions above say what they resolved
+    # to. A collector that stopped seeing `NOT_A_THING` would make the
+    # `unresolved` assertion above pass for the wrong reason -- an empty tuple
+    # because nothing was collected, rather than because everything resolved.
     assert expressions == {"1", "LOCAL", "EXIT_STATE_ERROR", "NOT_A_THING", "0"}
     assert origins["EXIT_STATE_ERROR"] == "theurian.cli.commands", (
         "a function-local `ImportFrom` is no longer read, so the one constant the "
@@ -1113,4 +1171,37 @@ def test_the_exit_walk_resolves_a_literal_a_local_constant_and_an_imported_one()
     declaring = importlib.import_module(origins["EXIT_STATE_ERROR"])
     assert declaring.EXIT_STATE_ERROR == 4, (
         "`EXIT_STATE_ERROR` no longer names 4 in the module that declares it"
+    )
+
+
+def test_every_function_the_exit_walk_must_see_is_one_it_looks_at() -> None:
+    """MEDIUM-2: the walk reads ``tree.body``, so a nested helper is invisible to it.
+
+    :func:`_module_functions` collects top-level ``FunctionDef`` nodes and nothing
+    else. Two shapes escape it -- a function defined inside another function, and
+    an ``async def`` -- and either would take its exit codes out of the derived
+    set silently: the document would look like it over-enumerates, and the fix
+    a reader reached for would be to delete a code the command still produces.
+
+    Held as a structural fact about the module rather than as a promise about the
+    collector, because that is the assumption the collector actually rests on.
+    ``index_commands.py`` has sixteen functions and all sixteen are top-level and
+    synchronous; the day one is not, this fails and someone decides whether the
+    walk should follow it.
+    """
+    tree, _module = _module_tree(INDEX_BUILD_MODULE)
+    collected = frozenset(_module_functions(tree))
+    every = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+
+    assert collected, "the collector found no function at all, so this compares nothing"
+    assert every - collected == set(), (
+        f"{INDEX_BUILD_MODULE} now defines functions the exit walk cannot see -- nested "
+        f"or `async def`, both outside `tree.body`'s `FunctionDef` filter: "
+        f"{sorted(every - collected)}. Any exit code chosen inside one is missing from "
+        f"the derived set, and `index.md` would be held to a set smaller than what the "
+        f"command selects"
     )

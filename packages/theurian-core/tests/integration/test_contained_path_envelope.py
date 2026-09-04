@@ -6,7 +6,7 @@ project root -- a symbolic link a clone force-added past ADR-0004's ignore -- by
 raising ``ProjectPathEscapeError``. Whether that refusal reached the caller as a
 machine document or as a Rich traceback with an empty machine channel was decided
 *per call site*, and the call sites disagreed. Measured on ``491bded6`` over the
-thirteen plants below, of which eight reach a swept command through
+fourteen members below, of which eight reach a swept command through
 ``_contained``:
 
 - ``.theurian/state/active-index.json`` escaping: **five** swept commands
@@ -30,18 +30,22 @@ helper added in a later milestone joins the sweep, or fails
 :func:`test_every_contained_derived_helper_is_planted_or_excluded_with_a_reason`
 until someone classifies it. That is what makes "the population is closed" a
 checkable claim rather than an assertion -- and the key is demonstrably able to
-hit: adding a fourteenth ``_contained``-derived property to ``ProjectPaths``
-fails that test by name. Run 2026-09-04 against the fix, with a
-``fourteenth_helper`` property returning
+hit: adding one more ``_contained``-derived property to ``ProjectPaths`` fails
+that test by name. Run 2026-09-04 against the fix, with a ``fourteenth_helper``
+property returning
 ``self._contained(self.knowledge_dir / "state" / "fourteenth.json")``: *"the
 planted set and the ``_contained`` call sites in ProjectPaths have moved apart;
-unplanted helpers: ['fourteenth_helper']"*. It is a second, independent
+unplanted helpers: ['fourteenth_helper']"*. The key found a real gap the same
+way when it was widened past the class: ``initialize_project`` arrived as
+*"unplanted helpers: ['initialize_project']"*, having reached the chokepoint
+directly for a whole population of writes while a class-scoped key called the
+set closed. It is a second, independent
 derivation beside the reflection over member *shapes* in
 ``tests/unit/test_project_paths_containment.py``: that one asks the class what it
 exposes, this one asks the source what routes through the chokepoint.
 
 **The reach this sweep does not have, stated so nobody reads it as closed.**
-Four of the thirteen plants reach no swept command, and their exclusions are
+Four of the plantable artefacts reach no swept command, and their exclusions are
 recorded coverage gaps rather than non-membership. Re-run the key rather than
 trusting the sentences below::
 
@@ -72,7 +76,7 @@ lock's own ``_open`` is not a ``_contained`` call site, so the AST key above doe
 not reach it; ``test_migrate_apply_lock_confinement.py`` sweeps it, and the
 ``mkdir`` beside it, over four artefacts (#520). **The two are not equally
 strong, and saying so is the
-point.** This file's population is derived, so a fourteenth member arrives as a
+point.** This file's population is derived, so one more member arrives as a
 named failure (run above). That file's is a hand-written parametrisation of four
 artefacts, so a fifth artefact at the lock path arrives as nothing at all -- what
 it guards is vacuity rather than completeness, through
@@ -203,18 +207,38 @@ CLI_SWEEP: Final = (
 # -- The population, read out of the source ---------------------------------
 
 
+def _routes_through(node: ast.AST, *, method: str = "", function: str = "") -> bool:
+    """Whether ``node`` calls the named method (``self.x(...)``) or function (``x(...)``)."""
+    return any(
+        isinstance(call, ast.Call)
+        and (
+            (method and isinstance(call.func, ast.Attribute) and call.func.attr == method)
+            or (function and isinstance(call.func, ast.Name) and call.func.id == function)
+        )
+        for call in ast.walk(node)
+    )
+
+
 def contained_derived_helpers() -> frozenset[str]:
-    """Every ``ProjectPaths`` member that routes a path through ``_contained``.
+    """Every place in ``project_service`` that puts a path through containment.
 
     Parsed from the module's own source rather than remembered, so the class this
     file sweeps is defined by the code and not by whoever last edited the list. A
     helper added in a later milestone appears here the moment it is written, and
     fails the partition below until it is planted or excluded with a reason.
 
+    **Two shapes, because the chokepoint has two kinds of caller**, and keying on
+    only the first was a finding: ``ProjectPaths`` members reach it through
+    ``self._contained(...)``, and module-level functions reach ``_contain(...)``
+    directly. ``initialize_project`` is the second kind -- ``_contain``'s own
+    docstring names it as a routed caller -- and a key scoped to the class could
+    not see it, so a whole population of *writes* stood outside a set this file
+    calls closed. Both are read out of the module's own AST.
+
     Keyed on the *call*, not on the member's shape: ``migrations`` returns a path
     and is deliberately contained by its reader instead (the migration loader's
     richer, culprit-naming refusal, issue #233), and ``index_for`` makes its own
-    state-scoped check. Neither calls ``_contained``, so neither is a member of
+    state-scoped check. Neither reaches the chokepoint, so neither is a member of
     this class -- which is the distinction a reflection over return annotations
     cannot draw, and why the unit-level sweep in
     ``tests/unit/test_project_paths_containment.py`` and this one are two
@@ -228,17 +252,18 @@ def contained_derived_helpers() -> frozenset[str]:
         for node in tree.body
         if isinstance(node, ast.ClassDef) and node.name == ProjectPaths.__name__
     ]
-    return frozenset(
+    members = {
         member.name
         for member in class_def.body
-        if isinstance(member, ast.FunctionDef)
-        and any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "_contained"
-            for node in ast.walk(member)
-        )
-    )
+        if isinstance(member, ast.FunctionDef) and _routes_through(member, method="_contained")
+    }
+    callers = {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and _routes_through(node, function="_contain")
+    }
+    return frozenset(members | callers)
 
 
 # -- One plant per helper ----------------------------------------------------
@@ -256,7 +281,7 @@ class Plant:
 
     ``refuses`` and ``directory_refuses`` are measurements, stated exactly so the
     sweep cannot go vacuous. A plant no command reaches asserts nothing, and four
-    of the thirteen helpers are in exactly that position -- so "no swept command
+    of the plantable artefacts are in exactly that position -- so "no swept command
     published a traceback" is a property a sweep over unreached plants satisfies
     perfectly.
 
@@ -291,10 +316,15 @@ class Plant:
     #: what makes it a member of the class #525 closes. Non-empty carries the
     #: measured reason it is not.
     outside_the_class_because: str = ""
+    #: ``False`` for a member of the population that is not a path helper at all.
+    #: ``initialize_project`` calls the chokepoint directly for each directory it
+    #: creates, so it belongs to the population the key derives -- and there is no
+    #: single artefact to plant at, so it takes no part in the sweeps.
+    derives_a_path: bool = True
 
     @property
     def has_directory_shape(self) -> bool:
-        return not self.is_directory
+        return self.derives_a_path and not self.is_directory
 
     @property
     def in_the_containment_class(self) -> bool:
@@ -316,8 +346,11 @@ _EVERY_STATE_READER: Final = frozenset(
     }
 )
 
-#: The thirteen ``_contained``-derived helpers, each with the artefact a clone can
-#: deliver at its path and the commands that artefact is measured to reach.
+#: Every member the key derives, each with the artefact a clone can deliver at its
+#: path and the commands that artefact is measured to reach. Thirteen are
+#: ``ProjectPaths`` helpers with a path to plant at; ``initialize_project`` is the
+#: fourteenth and has none, so it carries its measured reason and sits out the
+#: sweeps (:data:`SWEPT_PLANTS`).
 #:
 #: Every number here was measured on ``491bded6`` (macOS 26.6, CPython 3.13.3) by
 #: running the whole matrix; none was inferred from reading a call graph, which is
@@ -460,7 +493,30 @@ PLANTS: Final = (
         refuses=_EVERY_STATE_READER,
         directory_refuses=frozenset({"index build", "migrate status", "migrate apply"}),
     ),
+    Plant(
+        helper="initialize_project",
+        relative="",
+        is_directory=True,
+        remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+        derives_a_path=False,
+        outside_the_class_because=(
+            "it is not a path helper and no swept command runs it. It reaches the "
+            "chokepoint directly, once per directory it creates, and its only CLI "
+            "consumer is `init` -- outside `CLI_SWEEP` because it writes `.theurian/` "
+            "and appends to `.gitignore` in the working directory, the reason "
+            "`test_canonical_store_corruption.py`'s `CLI_NOT_SWEPT` records. Measured "
+            "instead by running it: with `.theurian/knowledge` an escaping symlink at "
+            "init time, `theurian init --json` published a clean envelope at exit 1 "
+            "before this cluster and at 4 after, which is the class's grading reached "
+            "through a command this file cannot sweep."
+        ),
+    ),
 )
+
+#: The plants a sweep can actually place on disk. ``initialize_project`` is a
+#: member of the derived population and not an artefact, so every fixture and
+#: every exact-set guard below ranges over this rather than over ``PLANTS``.
+SWEPT_PLANTS: Final = tuple(plant for plant in PLANTS if plant.derives_a_path)
 
 PLANT_BY_HELPER: Final = {plant.helper: plant for plant in PLANTS}
 
@@ -497,10 +553,19 @@ class Observation:
     envelope: dict[str, Any] | None
     #: The type name of an exception that escaped to the terminal, or ``None``.
     escaped: str | None
+    #: What the published index pointer looked like immediately before and after
+    #: this command ran. Compared only where the command *refused*: a refusal
+    #: that moved the pointer published a build while reporting that it had not.
+    pointer_before: PointerState
+    pointer_after: PointerState
 
     @property
     def refused(self) -> bool:
         return self.exit_code != 0
+
+    @property
+    def moved_the_pointer(self) -> bool:
+        return self.pointer_before != self.pointer_after
 
 
 def _run(*args: str) -> None:
@@ -508,7 +573,33 @@ def _run(*args: str) -> None:
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
 
 
-def _observe(*args: str) -> Observation:
+#: A published-pointer snapshot: whether it is a link, what it names, whether it
+#: resolves, and the bytes behind it. Enough to tell a swapped pointer from an
+#: untouched one without assuming the pointer is a readable file -- over these
+#: plants it is variously a symbolic link out of the tree, a directory, and a
+#: path whose parent has left the working tree.
+PointerState = tuple[bool, str | None, bool, bytes | None]
+
+
+def _pointer_state(root: Path) -> PointerState:
+    """What ``.theurian/state/active-index.json`` is, without following it blindly.
+
+    ``readlink`` before any read, because a plant may have replaced the pointer
+    itself, and ``read_bytes`` under a bare ``except OSError`` because a directory
+    or a parent that escaped the tree is exactly what several plants deliver. A
+    snapshot that raised would turn the assertion below into a fixture failure
+    for the plants it most needs to cover.
+    """
+    pointer = root / ".theurian" / "state" / "active-index.json"
+    link = str(pointer.readlink()) if pointer.is_symlink() else None
+    try:
+        body: bytes | None = pointer.read_bytes()
+    except OSError:
+        body = None
+    return (pointer.is_symlink(), link, pointer.exists(), body)
+
+
+def _observe(root: Path, *args: str) -> Observation:
     """Run one command and record what reached the caller.
 
     ``CliRunner`` keeps an uncaught exception on ``result.exception`` rather than
@@ -516,7 +607,13 @@ def _observe(*args: str) -> Observation:
     captured streams. Reading it off the result is what keeps this sweep looking
     at what an operator sees -- a boxed traceback with absolute source paths and
     an empty machine channel -- rather than at what the runner happened to keep.
+
+    ``root`` is taken so the published pointer can be snapshotted on both sides of
+    the run. A refusal is not only a document and an exit code: it is also a claim
+    about what the command did *not* do, and that half is invisible in the
+    streams.
     """
+    before = _pointer_state(root)
     result = runner.invoke(app, [*args, "--json"])
     escaped = result.exception
     if isinstance(escaped, SystemExit):
@@ -535,6 +632,8 @@ def _observe(*args: str) -> Observation:
         stdout=result.stdout,
         envelope=envelope,
         escaped=None if escaped is None else type(escaped).__name__,
+        pointer_before=before,
+        pointer_after=_pointer_state(root),
     )
 
 
@@ -644,14 +743,14 @@ def _sweep(
             root = _build_corpus(tmp_path_factory.mktemp(plant.helper.replace("_", "-")), patch)
             plant_it(root, plant)
             for command in CLI_SWEEP:
-                observed[plant.helper, " ".join(command)] = _observe(*command)
+                observed[plant.helper, " ".join(command)] = _observe(root, *command)
     return observed
 
 
 @pytest.fixture(scope="module")
 def escaping_symlinks(tmp_path_factory: pytest.TempPathFactory) -> Matrix:
-    """Thirteen plants by nine commands, the containment class's whole surface."""
-    return _sweep(tmp_path_factory, _plant_escaping_symlink, iter(PLANTS))
+    """Every plantable artefact by nine commands, the class's whole swept surface."""
+    return _sweep(tmp_path_factory, _plant_escaping_symlink, iter(SWEPT_PLANTS))
 
 
 @pytest.fixture(scope="module")
@@ -660,7 +759,7 @@ def planted_directories(tmp_path_factory: pytest.TempPathFactory) -> Matrix:
     return _sweep(
         tmp_path_factory,
         _plant_directory,
-        (plant for plant in PLANTS if plant.has_directory_shape),
+        (plant for plant in SWEPT_PLANTS if plant.has_directory_shape),
     )
 
 
@@ -698,7 +797,7 @@ def test_every_contained_derived_helper_is_planted_or_excluded_with_a_reason() -
     )
     assert planted >= REACHES_NO_SWEPT_COMMAND
     outside = {plant.helper for plant in PLANTS if not plant.in_the_containment_class}
-    assert outside == REACHES_NO_SWEPT_COMMAND | {"knowledge"}, (
+    assert outside == REACHES_NO_SWEPT_COMMAND | {"knowledge", "initialize_project"}, (
         f"the plants held outside the containment class have moved: {sorted(outside)}"
     )
     assert all(PLANT_BY_HELPER[helper].outside_the_class_because for helper in outside), (
@@ -762,7 +861,7 @@ def test_each_plant_sits_at_the_path_its_helper_derives(corpus: Path) -> None:
 
     mismatched = {
         plant.helper: (_planted_path(corpus, plant), derived(plant))
-        for plant in PLANTS
+        for plant in SWEPT_PLANTS
         if _planted_path(corpus, plant) != derived(plant)
     }
 
@@ -780,7 +879,7 @@ def test_an_undoctored_corpus_answers_every_swept_command(corpus: Path) -> None:
     contribute a refusal to every plant's measured set and make the exact-set
     guard describe the fixture instead of the defect.
     """
-    codes = {" ".join(command): _observe(*command) for command in CLI_SWEEP}
+    codes = {" ".join(command): _observe(corpus, *command) for command in CLI_SWEEP}
 
     assert [name for name, seen in codes.items() if seen.refused] == [], (
         f"a command failed against an undoctored corpus: "
@@ -790,7 +889,7 @@ def test_an_undoctored_corpus_answers_every_swept_command(corpus: Path) -> None:
 
 @_NEEDS_SYMLINKS
 def test_exactly_these_plants_reach_a_swept_command(escaping_symlinks: Matrix) -> None:
-    """The vacuity guard. Four of the thirteen plants reach nothing at all.
+    """The vacuity guard. Four of the plantable artefacts reach nothing at all.
 
     Every property below is quantified over the matrix, and every one of them is
     satisfied perfectly by a sweep whose plants no command ever touches. Stating
@@ -818,9 +917,9 @@ def test_exactly_these_plants_reach_a_swept_command(escaping_symlinks: Matrix) -
             for command in (" ".join(path) for path in CLI_SWEEP)
             if escaping_symlinks[plant.helper, command].refused
         )
-        for plant in PLANTS
+        for plant in SWEPT_PLANTS
     }
-    expected = {plant.helper: plant.refuses for plant in PLANTS}
+    expected = {plant.helper: plant.refuses for plant in SWEPT_PLANTS}
 
     reaches_nothing = frozenset(helper for helper, seen in measured.items() if not seen)
 
@@ -871,6 +970,54 @@ def test_a_containment_refusal_never_reaches_a_json_caller_as_a_traceback(
     assert not escaped, (
         f"{len(escaped)} commands published an exception instead of an envelope: "
         f"{dict(sorted(escaped.items()))}"
+    )
+
+
+@_NEEDS_SYMLINKS
+def test_a_refusal_left_the_published_index_pointer_where_it_found_it(
+    escaping_symlinks: Matrix,
+) -> None:
+    """A refusal is a claim about what did not happen, and this is that half.
+
+    Issue #525, round one CRITICAL. ``index build`` resolved
+    ``.theurian/state/index-secret-scan.json`` inside ``_record_the_scan``, which
+    runs **after** ``_publish`` has swapped the pointer and after ``record_index``
+    has provenanced the build. So an escaping record path ended the command at
+    exit 4 -- "a path leaves the working tree", and the three plugin documents
+    this cluster wrote say exit 4 means nothing was published -- with the new
+    build published and serving. Because ``_emit`` was never reached,
+    ``secretFindings`` never printed and the ``block`` policy's exit 6 never
+    fired: under the default policy, a credential-bearing build served while the
+    caller was told a symlink was the problem.
+
+    Every other property in this file was satisfied by that. The envelope was
+    clean, the exit code was the class's, the remedy named the right artefact,
+    and stdout was empty -- all true, and all true *of a command that published*.
+    What none of them could see is the pointer, so this reads it on both sides of
+    every run and holds the pair equal wherever the command refused.
+
+    Quantified over the whole matrix rather than over ``index build``, because
+    the claim is the contract's, not one command's: no swept command that reports
+    a non-zero exit over a doctored artefact may leave the published pointer
+    somewhere new. The vacuity guard is the count of pairs actually compared --
+    a matrix in which nothing refused would satisfy the property perfectly.
+    """
+    refusals = [
+        (position, observation)
+        for position, observation in escaping_symlinks.items()
+        if observation.refused
+    ]
+    moved = {
+        position: (observation.pointer_before, observation.pointer_after)
+        for position, observation in refusals
+        if observation.moved_the_pointer
+    }
+
+    assert refusals, "no swept command refused at all, so this test compares nothing"
+    assert not moved, (
+        f"a command reported a non-zero exit and moved the published index pointer "
+        f"while doing it, so its refusal is false about what it published: "
+        f"{sorted(moved)}"
     )
 
 
@@ -974,7 +1121,7 @@ def test_a_pinned_directory_refusal_reports_the_grade_the_command_chose(
     """
     pinned = {
         (plant.helper, command): plant.directory_refusal_grade
-        for plant in PLANTS
+        for plant in SWEPT_PLANTS
         if plant.has_directory_shape and plant.directory_refusal_grade is not None
         for command in plant.directory_refuses
     }
@@ -1009,11 +1156,11 @@ def test_exactly_these_planted_directories_reach_a_swept_command(
             for command in (" ".join(path) for path in CLI_SWEEP)
             if planted_directories[plant.helper, command].refused
         )
-        for plant in PLANTS
+        for plant in SWEPT_PLANTS
         if plant.has_directory_shape
     }
     expected = {
-        plant.helper: plant.directory_refuses for plant in PLANTS if plant.has_directory_shape
+        plant.helper: plant.directory_refuses for plant in SWEPT_PLANTS if plant.has_directory_shape
     }
 
     assert measured == expected, {
@@ -1210,8 +1357,8 @@ def test_a_pointer_that_will_not_parse_still_degrades_rather_than_refusing(
     """
     (corpus / ".theurian/state/active.json").write_text("nope")
 
-    status = _observe("project", "status")
-    apply_result = _observe("migrate", "apply")
+    status = _observe(corpus, "project", "status")
+    apply_result = _observe(corpus, "migrate", "apply")
 
     assert status.exit_code == 0, (
         "an unreadable pointer is a degradation this command reports in a field, "
