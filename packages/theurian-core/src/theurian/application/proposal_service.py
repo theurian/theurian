@@ -2951,6 +2951,12 @@ class ProposalService:
         hand-authored ``../../.git/hooks/pre-commit`` write an executable git
         hook that runs on the maintainer's next commit.
 
+        Resolution alone is not the whole of it, and the second check is why the
+        first paragraph says *where the path points* rather than *how it got
+        there*: a destination reached by stepping out of ``knowledge/`` through a
+        link and back in again resolves inside and is still refused
+        (:func:`~theurian.security.paths.assert_no_symlink_escape`, issue #288).
+
         ``resolve()`` is the one call here that can raise before any check runs,
         and on a caller-influenced value. Measured on CPython 3.13,
         ``resolve(strict=False)`` swallows ELOOP and ENAMETOOLONG, so the only
@@ -2979,7 +2985,14 @@ class ProposalService:
         except ValueError as exc:
             raise PathEscapeError(content_file, str(knowledge)) from exc
         destination = resolve_within_root(self._paths.knowledge, PurePosixPath(relative))
-        assert_no_symlink_escape(self._paths.knowledge, destination)
+        # The guard is handed ``content_file`` and the directory it is written
+        # relative to, never ``destination``: ``relative`` above is computed from
+        # an already-resolved path, so a chain that leaves ``knowledge/`` through
+        # an intermediate link and returns arrives here with the link gone. That
+        # is the shape issue #288 measured passing this call site untouched.
+        assert_no_symlink_escape(
+            self._paths.knowledge, base=self._paths.migrations, requested=content_file
+        )
         return destination
 
 

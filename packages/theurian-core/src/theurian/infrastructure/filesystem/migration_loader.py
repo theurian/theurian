@@ -72,7 +72,11 @@ from theurian.domain.migration import (
     UpsertRevision,
 )
 from theurian.domain.values import ContentHash, MediaType
-from theurian.security.paths import read_source_file, resolve_within_root
+from theurian.security.paths import (
+    assert_no_symlink_escape,
+    read_source_file,
+    resolve_within_root,
+)
 from theurian.security.yaml_loading import load_yaml_mapping
 
 #: Ceiling on migration files *loaded* per project. Not a design limit -- it
@@ -1756,15 +1760,26 @@ def _parse_upsert(
         ) from exc
 
     relative_posix = PurePosixPath(relative)
-    # Both calls are inside the same guard: the branch above is not the only one
-    # that can refuse this `contentFile` on containment grounds. `resolve_within_root`
-    # re-checks depth and containment on the now-relative form, and
-    # `read_source_file` runs the symlink-escape check after it -- and both used
-    # to raise anonymously, so which of three sibling branches fired decided
-    # whether the user was told where to look. The reason recorded for naming
-    # the migration file above applies verbatim to them.
+    # All three calls are inside the same guard: the branch above is not the only
+    # one that can refuse this `contentFile` on containment grounds.
+    # `resolve_within_root` re-checks depth and containment on the now-relative
+    # form, `assert_no_symlink_escape` checks what that form can no longer show,
+    # and `read_source_file` reads -- and they used to raise anonymously, so
+    # which sibling branch fired decided whether the user was told where to
+    # look. The reason recorded for naming the migration file above applies
+    # verbatim to them.
+    #
+    # `content_file` and `migrations_dir` are what the escape guard is given,
+    # never `relative_posix`. `relative_posix` is derived from a path
+    # `.resolve()` already flattened, so a chain that steps out of the project
+    # through a link and back in again arrives here with the link gone: issue
+    # #288 measured exactly that reaching `migrate validate` as exit 0,
+    # `migrationCount: 1`, on a `contentFile: ../knowledge/hop/back/...`. The
+    # guard runs after `resolve_within_root` so the depth and plain-containment
+    # refusals keep firing first and keep their own messages.
     try:
         resolved_path = resolve_within_root(project_root, relative_posix)
+        assert_no_symlink_escape(project_root, base=migrations_dir, requested=content_file)
         body_bytes = read_source_file(project_root, relative_posix)
     except PathDepthExceededError as exc:
         # Caught *before* the escape clause below -- it is a `PathEscapeError`

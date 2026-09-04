@@ -2687,6 +2687,53 @@ def test_accept_refuses_a_body_path_that_leaves_the_project(
     assert not (paths.root.parent / "escaped.md").exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_accept_refuses_a_body_path_that_leaves_knowledge_and_comes_back(
+    service: ProposalService, paths: ProjectPaths, tmp_path: Path
+) -> None:
+    """Issue #288's write-side face of the test above.
+
+    The hand-edited ``contentFile`` steps out of ``knowledge/`` through ``hop``
+    and back in through ``back``, so it resolves to the *same* destination the
+    unedited draft would have written -- the assertion below says so. Every
+    check keyed on that destination is therefore satisfied, which is why
+    ``_destination_of`` needs a second one keyed on the components the author
+    wrote rather than on what they resolve to.
+
+    **What this pins is the refusal's cause, not its existence.** With
+    ``_destination_of``'s guard walking the resolved path, the traversal was
+    accepted here and ``accept`` failed further on, inside the ADR-0027
+    rehearsal, where the throwaway target carries no ``hop`` link to follow:
+    ``ProposalError: Accepting this proposal would leave .theurian/migrations/
+    unable to apply: ... contentFile ... could not be read`` (measured on this
+    branch's base, ``33ee7ae1``). That is an accident of what the rehearsal
+    copies, it names the migration set rather than the link, and it is not a
+    containment check -- so ``PathEscapeError`` here, and not merely
+    ``pytest.raises(Exception)``, is the whole assertion.
+    """
+    drafted = service.draft(_request())
+    outside = tmp_path / "outside-knowledge"
+    outside.mkdir()
+    (paths.knowledge / "hop").symlink_to(outside, target_is_directory=True)
+    (outside / "back").symlink_to(paths.knowledge, target_is_directory=True)
+
+    hopped = drafted.content_file.replace("../knowledge/", "../knowledge/hop/back/", 1)
+    assert hopped != drafted.content_file, "the draft's contentFile must be the ../knowledge/ form"
+    assert (paths.migrations / hopped).resolve() == drafted.body_destination.resolve(), (
+        "the fixture must resolve to the legitimate destination, or it tests the plain escape"
+    )
+
+    document = drafted.migration_file.read_text(encoding="utf-8")
+    drafted.migration_file.write_text(
+        document.replace(drafted.content_file, hopped), encoding="utf-8"
+    )
+
+    with pytest.raises(PathEscapeError):
+        service.accept(drafted.proposal_id)
+
+    assert not drafted.body_destination.exists(), "nothing is written through the hop"
+
+
 # -- accept trusts nothing in the proposal directory (CRITICAL) ------------
 #
 # A proposal directory is committed and arrives through a contributor's pull

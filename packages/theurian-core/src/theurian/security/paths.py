@@ -76,8 +76,8 @@ def resolve_within_root(root: Path, relative: str | PurePosixPath) -> Path:
     return resolved
 
 
-def assert_no_symlink_escape(root: Path, target: Path) -> None:
-    """Assert no component of ``target`` leaves ``root`` via a symlink.
+def assert_no_symlink_escape(root: Path, *, base: Path, requested: str | PurePosixPath) -> None:
+    """Assert nothing on the way to ``requested`` leaves ``root`` via a symlink.
 
     ``resolve_within_root`` already rejects a final target outside the root. This
     function additionally rejects the case where an *intermediate* component is a
@@ -85,21 +85,59 @@ def assert_no_symlink_escape(root: Path, target: Path) -> None:
     come back inside. That shape is never legitimate in a knowledge repository,
     and allowing it would mean the set of readable files depends on symlink
     topology rather than on the directory tree.
+
+    **The walk is over the path as the caller named it, never over a resolved
+    one.** Walking a resolved path is what made the sentence above false for the
+    whole of this function's first life (issue #288): ``Path.resolve()`` has
+    already replaced every link with its destination, so the loop only ever
+    visited real directories and no component it saw could be a link at all. A
+    ``hop -> outside`` / ``outside/back -> root/real`` chain read 60 bytes
+    through this guard, and ``migrate validate`` exited 0 on a migration naming
+    it. Passing the unresolved path in was measured not to be enough on its own,
+    because the old body re-resolved its own argument.
+
+    Args:
+        root: The permitted root. Every symlink the walk meets must resolve
+            inside it, and so must the destination.
+        base: The directory ``requested`` is interpreted from, and where the walk
+            starts -- so ``base``'s own components are never examined, which is
+            what keeps a checkout under a symlinked ``/tmp`` from refusing
+            itself. It is always a directory Theurian computed (a project root,
+            ``.theurian/migrations/``), never a caller-supplied string, and it
+            may legitimately sit outside ``root``: a ``contentFile`` is written
+            relative to the migration file and reaches ``knowledge/`` by climbing
+            out of ``migrations/``.
+        requested: The path relative to ``base``, exactly as the caller wrote it.
+
+    Raises:
+        PathEscapeError: If any component of ``requested`` is a symlink resolving
+            outside ``root``, or if the walk ends outside ``root``.
+
+    ``base`` and ``requested`` are keyword-only because ``root`` and ``base`` are
+    both directories: a silent transposition of the two would disable the check
+    while every type still fitted, which is the one mistake at this call site
+    that no reviewer and no type checker would see.
     """
     resolved_root = root.resolve()
-    current = resolved_root
+    current = base.resolve()
 
-    try:
-        relative = target.resolve().relative_to(resolved_root)
-    except ValueError as exc:
-        raise PathEscapeError(str(target), str(resolved_root)) from exc
+    for part in PurePosixPath(requested).parts:
+        if part == "..":
+            # `current` is fully resolved at every step, so its real parent is
+            # what `..` means from here. Reading it lexically instead would undo
+            # a link this loop had just followed.
+            current = current.parent
+            continue
+        candidate = current / part
+        if candidate.is_symlink():
+            current = candidate.resolve()
+            if not current.is_relative_to(resolved_root):
+                raise PathEscapeError(str(requested), str(resolved_root))
+            continue
+        current = candidate
 
-    for part in relative.parts:
-        current = current / part
-        if current.is_symlink():
-            link_target = current.resolve()
-            if not link_target.is_relative_to(resolved_root):
-                raise PathEscapeError(str(target), str(resolved_root))
+    if not current.is_relative_to(resolved_root):
+        raise PathEscapeError(str(requested), str(resolved_root))
 
 
 def _unbounded_shape(mode: int) -> str | None:
@@ -142,14 +180,18 @@ def read_source_file(root: Path, relative: str | PurePosixPath) -> bytes:
     migration. Reading a source file by any other route bypasses SEC-7 and SEC-8.
 
     Raises:
-        PathEscapeError: If the path escapes ``root``.
+        PathEscapeError: If the path escapes ``root`` -- either by resolving
+            outside it, or by traversing an intermediate symlink that leaves it
+            (:func:`assert_no_symlink_escape`, issue #288).
         IrregularSourceFileError: If the file is one whose read ``st_size`` does
             not bound -- a FIFO, a socket, a device (issue #215).
         InputTooLargeError: If the file exceeds :data:`MAX_SOURCE_FILE_BYTES`.
         FileNotFoundError: If the file does not exist.
     """
     resolved = resolve_within_root(root, relative)
-    assert_no_symlink_escape(root, resolved)
+    # `relative`, not `resolved`: the guard's whole subject is the components the
+    # caller named, and handing it the resolved form is what left it dead (#288).
+    assert_no_symlink_escape(root, base=root, requested=relative)
 
     info = resolved.stat()
     shape = _unbounded_shape(info.st_mode)

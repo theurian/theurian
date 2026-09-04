@@ -2901,6 +2901,57 @@ def test_validate_names_the_migration_file_when_its_content_file_escapes(project
     assert "remove it" not in payload["remedy"], "the migration file is not the culprit"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_validate_refuses_a_content_file_that_leaves_the_project_and_comes_back(
+    project: Path,
+) -> None:
+    """Issue #288, through the CLI: the escape that resolution cannot see.
+
+    ``knowledge/hop`` leaves the project and ``outside/back`` returns to it, so
+    ``contentFile: ../knowledge/hop/back/auth-policy.md`` *resolves* to the very
+    body the sibling test above writes -- the pin matches, containment on the
+    resolved path holds, and every check keyed on the destination is satisfied.
+    Measured at ``0a52479`` and again at this branch's base ``33ee7ae1``:
+    ``exit 0``, ``migrationCount: 1``, ``valid: true``.
+
+    The refusal names the migration file and never the author's ``contentFile``,
+    which is the same division of labour the sibling test pins; the remedy is
+    the referrer form, so it offers the traversed-link cause rather than
+    asserting the path text is wrong.
+    """
+    _invoke("init")
+    knowledge = project / ".theurian" / "knowledge"
+    (knowledge / "architecture").mkdir(parents=True, exist_ok=True)
+    (knowledge / "architecture" / "auth-policy.md").write_text(BODY)
+
+    outside = project.parent / "outside-knowledge"
+    outside.mkdir()
+    (knowledge / "hop").symlink_to(outside, target_is_directory=True)
+    (outside / "back").symlink_to(knowledge / "architecture", target_is_directory=True)
+
+    escaping = f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml"
+    (project / escaping).write_text(
+        MIGRATION.replace(
+            "contentFile: ../knowledge/architecture/auth-policy.md",
+            "contentFile: ../knowledge/hop/back/auth-policy.md",
+        )
+    )
+    assert (project / ".theurian/migrations/../knowledge/hop/back/auth-policy.md").resolve() == (
+        knowledge / "architecture" / "auth-policy.md"
+    ).resolve(), "the fixture must resolve back inside, or it tests the plain escape"
+
+    result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    assert "Traceback" not in result.stderr, "a refusal is graded, never a raw escape"
+    payload = json.loads(result.stderr)
+    assert payload["error"] == f"{escaping!r} names a path that escapes the permitted root"
+    assert escaping in payload["remedy"], "the migration file is the place to open"
+    assert "hop/back" not in result.stderr, "the author-written value stays unechoed"
+    assert str(project) not in result.stderr, "the absolute root is not the user's business"
+
+
 @pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
 def test_status_refuses_an_unreadable_migrations_directory_instead_of_reporting_it_empty(
     project: Path,

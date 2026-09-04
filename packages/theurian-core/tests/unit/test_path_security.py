@@ -128,6 +128,46 @@ def _link_that_leaves_the_root(project_root: Path) -> None:
         link.symlink_to(project_root.parent / "outside" / _ECHO_MARKER)
 
 
+#: The leaf the chain below reaches, carrying `_ECHO_MARKER` because the echo
+#: sweep needs the marker in the *requested* string. A distinct name from
+#: `_link_that_leaves_the_root`'s: that entry is a link pointing outside, and
+#: reusing it would let `resolve_within_root` refuse first and pass the test
+#: without the walk ever running.
+_CHAIN_LEAF = f"auth-{_ECHO_MARKER}.md"
+
+
+def _chain_that_leaves_the_root_and_comes_back(project_root: Path) -> str:
+    """Issue #288's chain, and the relative path that requests its leaf.
+
+    ``knowledge/hop`` leaves the root; ``outside/back`` lands back inside it. The
+    request therefore *resolves* to a file in ``knowledge/`` -- which is why
+    ``resolve_within_root`` allows it and why the escape has to be caught by
+    walking the components the caller named.
+    """
+    knowledge = project_root / ".theurian" / "knowledge"
+    (knowledge / _CHAIN_LEAF).write_text("# Auth policy\n")
+
+    outside = project_root.parent / "outside"
+    hop = knowledge / "hop"
+    if not hop.is_symlink():
+        hop.symlink_to(outside, target_is_directory=True)
+    back = outside / "back"
+    if not back.is_symlink():
+        back.symlink_to(knowledge, target_is_directory=True)
+
+    return f".theurian/knowledge/hop/back/{_CHAIN_LEAF}"
+
+
+def _read_through_the_chain_that_comes_back(project_root: Path) -> object:
+    """The in-loop refusal, driven through ``read_source_file``.
+
+    Driven through the real caller rather than by calling the guard directly:
+    the guard was reachable in isolation for its whole first life and dead at
+    every call site, so a driver that skips the caller proves the wrong thing.
+    """
+    return read_source_file(project_root, _chain_that_leaves_the_root_and_comes_back(project_root))
+
+
 def _read_a_fifo_named_like_the_secret(project_root: Path) -> object:
     """The one refusal that fires *after* containment has been proved.
 
@@ -168,29 +208,34 @@ def _read_a_file_past_the_size_cap(project_root: Path) -> object:
 
 #: One entry per *reachable* raise site in ``security/paths.py``, each driven
 #: with a path carrying `_ECHO_MARKER`. Three live in ``resolve_within_root``
-#: (absolute, depth, resolves-outside); the fourth is
-#: ``assert_no_symlink_escape``'s ``except ValueError``, which no
-#: ``read_source_file`` call can reach -- ``resolve_within_root`` runs first and
-#: has already proved containment -- so it is driven directly. The last two are
-#: ``read_source_file``'s own: the irregular-shape refusal and the size cap,
-#: which are the two that fire *after* containment holds and so are the two
-#: whose caller string is still unnormalized when they raise.
+#: (absolute, depth, resolves-outside); two are ``assert_no_symlink_escape``'s --
+#: a walk that ends outside the root, driven directly because
+#: ``resolve_within_root`` has already refused that shape at every
+#: ``read_source_file`` call site, and an intermediate link that leaves the root,
+#: driven through ``read_source_file`` because that is the caller the refusal has
+#: to reach. The last two are ``read_source_file``'s own: the irregular-shape
+#: refusal and the size cap, which are the two that fire *after* containment
+#: holds and so are the two whose caller string is still unnormalized when they
+#: raise.
 #:
 #: The population is every raise site in the module, not the escape family:
 #: keying it on which *error type* carries a path would have let a branch join
 #: the module by carrying one, which is exactly how the FIFO refusal (#215)
 #: entered echoing its caller's path while this list still read as complete.
 #:
-#: Two raise sites are deliberately absent, and this list is not a claim to
-#: cover them. ``assert_no_symlink_escape``'s in-loop check walks
-#: ``target.resolve().relative_to(root)``, whose components are by construction
-#: already symlink-free, so no component it visits can be a link absent a
-#: concurrent replacement mid-loop; whether that guard should exist at all is
-#: issue #288's question, not this test's. ``read_source_file``'s post-read size
-#: re-check needs the file to grow between the ``stat`` and the ``read``, which
-#: no single-threaded driver can arrange -- and it raises the same
-#: ``InputTooLargeError``, from the same two constants, as the pre-read cap
-#: below it.
+#: One raise site is deliberately absent, and this list is not a claim to cover
+#: it. ``read_source_file``'s post-read size re-check needs the file to grow
+#: between the ``stat`` and the ``read``, which no single-threaded driver can
+#: arrange -- and it raises the same ``InputTooLargeError``, from the same two
+#: constants, as the pre-read cap below it.
+#:
+#: ``assert_no_symlink_escape``'s in-loop check used to be absent here too, on
+#: the reasoning that it walked ``target.resolve().relative_to(root)`` -- whose
+#: components are symlink-free by construction, so nothing it visited could be a
+#: link. That reasoning was correct and it described a guard that could never
+#: fire: issue #288 measured the whole function dead at both of its call sites.
+#: It now walks the components the caller named, so the branch is reachable, and
+#: ``an-intermediate-link-leaves-the-root`` is what reaches it.
 #:
 #: **Both paragraphs above are claims about the shipped module, and they are
 #: checked rather than maintained**: :data:`_RAISE_SITES` restates them as data,
@@ -216,8 +261,15 @@ _ECHO_ATTACKS = [
         marks=_NEEDS_SYMLINKS,
     ),
     pytest.param(
-        lambda root: assert_no_symlink_escape(root, root.parent / "outside" / _ECHO_MARKER),
-        id="assert-no-symlink-escape-target-outside",
+        lambda root: assert_no_symlink_escape(
+            root, base=root, requested=f"../outside/{_ECHO_MARKER}"
+        ),
+        id="assert-no-symlink-escape-walk-ends-outside",
+    ),
+    pytest.param(
+        _read_through_the_chain_that_comes_back,
+        id="an-intermediate-link-leaves-the-root",
+        marks=_NEEDS_SYMLINKS,
     ),
     pytest.param(
         _read_a_fifo_named_like_the_secret,
@@ -324,21 +376,16 @@ _RAISE_SITES: Final = (
     _RaiseSite(
         function="assert_no_symlink_escape",
         error="PathEscapeError",
-        role="the target does not resolve under the root at all",
-        driven_by=("assert-no-symlink-escape-target-outside",),
+        role="the walk ends outside the root",
+        driven_by=("assert-no-symlink-escape-walk-ends-outside",),
         unreachable_because="",
     ),
     _RaiseSite(
         function="assert_no_symlink_escape",
         error="PathEscapeError",
         role="a component of the walked chain is a link that leaves the root",
-        driven_by=(),
-        unreachable_because=(
-            "the loop walks target.resolve().relative_to(root), whose components are "
-            "already symlink-free by construction, so no component it visits can be a "
-            "link absent a concurrent replacement mid-loop; whether the guard should "
-            "exist at all is issue #288's question"
-        ),
+        driven_by=("an-intermediate-link-leaves-the-root",),
+        unreachable_because="",
     ),
     _RaiseSite(
         function="read_source_file",
@@ -491,10 +538,19 @@ _DEPTH_REMEDY = (
             marks=_NEEDS_SYMLINKS,
         ),
         pytest.param(
-            lambda root: assert_no_symlink_escape(root, root.parent / "outside" / _ECHO_MARKER),
+            lambda root: assert_no_symlink_escape(
+                root, base=root, requested=f"../outside/{_ECHO_MARKER}"
+            ),
             _ESCAPE_MESSAGE,
             _ESCAPE_REMEDY,
-            id="assert-no-symlink-escape-target-outside",
+            id="assert-no-symlink-escape-walk-ends-outside",
+        ),
+        pytest.param(
+            _read_through_the_chain_that_comes_back,
+            _ESCAPE_MESSAGE,
+            _ESCAPE_REMEDY,
+            id="an-intermediate-link-leaves-the-root",
+            marks=_NEEDS_SYMLINKS,
         ),
         pytest.param(
             lambda root: read_source_file(root, "/".join(["deep"] * 40) + f"/{_ECHO_MARKER}"),
@@ -592,6 +648,56 @@ def test_symlink_staying_inside_root_is_allowed(project_root: Path) -> None:
     link = project_root / ".theurian" / "knowledge" / "alias.md"
     link.symlink_to(project_root / ".theurian" / "knowledge" / "auth.md")
     assert read_source_file(project_root, ".theurian/knowledge/alias.md") == b"# Auth policy\n"
+
+
+@_NEEDS_SYMLINKS
+def test_an_intermediate_link_that_leaves_the_root_is_refused_though_it_returns(
+    project_root: Path,
+) -> None:
+    """Issue #288: the escape every containment check above is blind to.
+
+    ``hop`` leaves the root and ``back`` comes home, so the request *resolves*
+    to a file that really is inside ``knowledge/`` -- the assertion below says
+    so before the read is attempted. Every check keyed on the resolved
+    destination therefore passes it, and the guard that exists for exactly this
+    shape passed it too, because it was walking the resolved path: measured at
+    ``0a52479`` as 60 bytes returned, not refused.
+
+    Read is refused, not merely reported: the harm is that which files are
+    readable would otherwise depend on symlink topology rather than on the
+    directory tree.
+    """
+    relative = _chain_that_leaves_the_root_and_comes_back(project_root)
+
+    destination = (project_root / relative).resolve()
+    assert destination.is_relative_to(project_root.resolve()), (
+        "the fixture must resolve back INSIDE the root, or it is testing the plain "
+        "escape that resolve_within_root already refuses"
+    )
+    assert destination.read_bytes() == b"# Auth policy\n", "the leaf is a real, readable file"
+
+    with pytest.raises(PathEscapeError):
+        read_source_file(project_root, relative)
+
+
+@_NEEDS_SYMLINKS
+def test_a_link_chain_that_never_leaves_the_root_is_still_read(project_root: Path) -> None:
+    """The other half of #288's claim, and the reason it is a *containment* rule.
+
+    Two hops, neither leaving: the guard is exactly as narrow as it says it is,
+    so a repository that organises ``knowledge/`` with in-project links keeps
+    working. Without this, ``test_..._is_refused_though_it_returns`` above is
+    equally satisfied by a guard that banned every intermediate link -- which is
+    ``ProposalService._reject_symlink_in_chain``'s stance, deliberately not this
+    one's.
+    """
+    knowledge = project_root / ".theurian" / "knowledge"
+    (knowledge / "real").mkdir()
+    (knowledge / "real" / "auth.md").write_text("# Auth policy\n")
+    (knowledge / "first").symlink_to(knowledge / "second", target_is_directory=True)
+    (knowledge / "second").symlink_to(knowledge / "real", target_is_directory=True)
+
+    assert read_source_file(project_root, ".theurian/knowledge/first/auth.md") == b"# Auth policy\n"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
