@@ -1289,16 +1289,24 @@ class SqliteIndexStore:
         rows were being scanned, ranked and returned to Python on every request,
         and after a purge they are not there to scan.
 
-        **That is the scan below the trigram floor, and it is the reason this
-        paragraph does not generalise.** F5' drives ``search_substring`` with a
-        two-character query, which never reaches the trigram index. Above the
-        floor a purged build is *not* flat: FTS5 ``'delete'`` tombstones the
-        postings, nothing in the shipped purge merges them, and query duration
-        there stays monotone in the withdrawn count -- 16.8 ms against a
-        never-held build's 1.2 ms at 5,950 withdrawn, measured in PR #498's
-        round-one review and owned by
-        `#499 <https://github.com/theurian/theurian/issues/499>`_ as a face of
-        T-17a.
+        **That is the scan below the trigram floor, and until
+        `#499 <https://github.com/theurian/theurian/issues/499>`_ that was the
+        reason this paragraph did not generalise.** F5' drives
+        ``search_substring`` with a two-character query, which never reaches the
+        trigram index. Above the floor a purged build used to be anything but
+        flat: FTS5 ``'delete'`` tombstones the postings rather than removing
+        them, nothing in the purge merged them, and query duration there was
+        monotone in the withdrawn count -- 16.8 ms against a never-held build's
+        1.2 ms at 5,950 withdrawn, measured in PR #498's round-one review.
+        ``index_purge._merge_full_text`` now issues an FTS5 ``optimize`` over
+        every full-text table it discovers in the build's own schema, and the
+        trigram path is flat with the scan: measured by three independent
+        instruments in PR #545's round one (2026-09-04) at 0.84-0.99x a
+        never-held build on one and a non-monotonic spread of 5.7% or less on
+        another, against control arms at 3.61x, 4.22x and 12.18x. The figures above
+        stay scoped to the branch they were taken on, because that is the branch
+        they were measured on -- not because the other one behaves differently
+        now.
 
         The cache also imposed a rule on callers: *construct a fresh
         `SqliteIndexStore` per search*, because a pooled one would have leaked

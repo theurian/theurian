@@ -369,6 +369,72 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   remains owed ([#330](https://github.com/theurian/theurian/issues/330)), which is
   now the whole of what that issue carries.
 
+- **A purged index no longer carries the postings of the rows it purged, so query
+  duration stops varying with how many were withdrawn**
+  ([#499](https://github.com/theurian/theurian/issues/499), T-17a, ADR-0024).
+  FTS5 answers a `DELETE` by appending a delete marker, not by removing the row's
+  postings. The purge issued those deletes and nothing merged afterwards, so every
+  purged build held the posting lists of everything withdrawn since the last full
+  `theurian index build` — measured at **151×** a never-held build's trigram
+  postings at 5,950 withdrawn rows. Nothing of that reached a response, which is
+  why the whole suite stayed green with the fix missing: a tombstoned row is
+  excluded from results and from the collection statistics `bm25` reads. What it
+  reached was the clock. Query duration on the trigram path was **monotone in the
+  withdrawn count** — the withdrawn count read off the clock at three of five
+  calibration points exactly, rising to 5.67× the never-held duration — and that
+  count is one SEC-13 arranges the response not to state.
+
+  **The purge merges now.** `index_purge._merge_full_text` issues an FTS5
+  `optimize` over every full-text table in the build, after the restamp and
+  before verification, which is the point after which nothing writes to a
+  full-text index. **Which tables is read out of the build's own schema, not a
+  written-down list**: the index schema carried two of these at v3 and carries
+  four at v4, so a merge over a constant tuple would be correct the day it was
+  written and silently partial the day the next table landed. The reading accepts
+  every spelling of the module name SQLite does (`USING "fts5"`,
+  `` USING `fts5` ``, `USING [fts5]`, `USING 'fts5'`) and requires it to be
+  followed by its argument list, which is what keeps `fts5vocab(` out once the
+  quote is optional. That exclusion is not cosmetic: a vocab table is read-only,
+  so merging one raises, and a purge that raises unlinks the build it just
+  produced.
+
+  A purged build's posting bytes now sit at **0.91× and 0.95×** a never-held
+  build's on the chunk tables and **0.75× and 0.89×** on the node tables, and are
+  flat across the withdrawn sweep — spread **1.01× and 1.00×** over 0/100/400
+  withdrawn where the unmerged purge spread 6.40× and 9.52×, which is a committed
+  assertion in `tests/integration/test_purged_build_structure.py` and not a
+  one-off measurement. The duration is flat with them: **0.84–0.99×** on one
+  instrument and a non-monotonic spread of **5.7% or less** on another, against
+  control arms at 3.61×, 4.22× and 12.18×.
+
+  **What the merge costs has two axes, and they do not read alike**, so one
+  number for it would misdescribe whichever case the reader had. Against *index
+  size* it is **1.60–1.70×** the purge's own duration across a twentyfold span —
+  the merge is the same order as the page copy a purge already pays, so along
+  that axis it is a constant factor and not a term that overtakes the rest at
+  scale. Against *withdrawal count* it runs **6.4× falling to 1.15×**, worst
+  exactly where the purge is cheapest: a residue-cleanup purge with nothing
+  withdrawn costs 472 ms on an 11.6 MB index, because the merge's cost tracks the
+  index while the purge's tracks what it deletes. The absolute cost — the one an
+  operator waits on — stays bounded by index size on both axes and about an order
+  of magnitude under re-deriving the build (ADR-0024 prices that at 2,614 ms for
+  12.3 MB and 37,684 ms for 150.3 MB), so the recorded-acceptance fallback that
+  decision allowed for was not needed. It is paid once per withdrawal against a
+  per-query cost it removes: on a 5,000-chunk corpus with 5,000 rows withdrawn, a
+  substring query took 32.5 ms on a purged build before and 16.0 ms after,
+  against 16.6 ms on a build that never held the rows.
+
+  **Nothing about a response changes.** Responses were byte-identical to a
+  never-held build's before this fix and are byte-identical after it — what the
+  clock carried was the *count*, and it no longer does. **What is not fixed is the
+  file's size**: a purged build is the same size with the merge as without it, and
+  the merge inverts the composition rather than shrinking it — 95.9% free-list
+  pages where three quarters used to be live segment blocks. That reaches no
+  caller (`fts5vocab` over the published build returns nothing for a withdrawn-only
+  marker, and no MCP surface publishes an index size) and is tracked as the
+  disk-forensics surface it is,
+  [#344](https://github.com/theurian/theurian/issues/344).
+
 ## [0.1.0.dev18] - 2026-09-03
 
 ### Added
@@ -1037,6 +1103,11 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   at the FTS5 segment level — and owned by
   [#499](https://github.com/theurian/theurian/issues/499), whose closure is the
   merge or a recorded acceptance carrying the measured bound.
+  *(What this release measured. #499 took the merge route and is fixed under
+  `[Unreleased]` above; the duration is flat now, and the composition claim
+  inverts — a purged build is 95.9% free-list where this paragraph reports 25%.
+  The threat model's T-17a entry carries both, and the byte face that remains is
+  [#344](https://github.com/theurian/theurian/issues/344)'s.)*
 
   **So "the purge removes the term the quantities are functions of" is scoped**
   rather than left as a universal: it holds for the canonical-read count, the
@@ -1048,6 +1119,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   below under that scope**: it states the same sentence unqualified, and it is
   left standing as what the re-measurement reported at the time — it shipped in
   that release — rather than edited after the fact.
+  *(The scoping this paragraph adds is a record of what was true at this
+  release. #499's merge is fixed under `[Unreleased]` above, so the sentence it
+  qualifies — "the purge removes the term the quantities are functions of" —
+  holds for query duration too now, on both instruments.)*
 
   **The flat columns are pinned** in
   `packages/theurian-core/tests/integration/test_purged_build_quantities.py`,

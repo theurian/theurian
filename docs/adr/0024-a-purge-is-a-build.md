@@ -189,13 +189,13 @@ stops testing the channel it names.
 > 5,403,892 trigram bytes purged; 11 and 33,439 optimized; 13 and 35,638
 > never-held** — 151× the postings for rows the build no longer serves — with
 > the substring scan at 16.8 ms, 1.1 ms and 1.2 ms and every response identical.
-> End to end the duration is monotone in the withdrawn count: at 5,950
-> withdrawn a request costs **+27.4 ms** more than at nothing withdrawn — the
-> round-one measurement, +27.36 ms — and **six later re-runs give +27.59…+28.18
-> ms**, so the delta is the stable figure across separate runs while the ratio
-> moves with its denominator: 5.08–5.67×, median 5.41×. The conclusion moves on
-> neither. That crosses the threat model's 1.40 ms end-to-end floor (TB-1)
-> between 500 and 1,000 withdrawn rows.
+> End to end the duration was monotone in the withdrawn count at that
+> measurement: at 5,950 withdrawn a request cost **+27.4 ms** more than at
+> nothing withdrawn — the round-one measurement, +27.36 ms — and **six later
+> re-runs give +27.59…+28.18 ms**, so the delta is the stable figure across
+> separate runs while the ratio moves with its denominator: 5.08–5.67×, median
+> 5.41×. The conclusion moves on neither. That crossed the threat model's 1.40 ms
+> end-to-end floor (TB-1) between 500 and 1,000 withdrawn rows.
 > The `optimize`d comparison above is the source table's; a `VACUUM` applied in
 > the reproduction lands at the same 241,664 B.
 >
@@ -207,6 +207,58 @@ stops testing the channel it names.
 > segment level) rather than a new class; its recorded closure is the merge or
 > an acceptance carrying the measured bound. The threat model's T-17a entry
 > carries the full measurement, and these records move again when #499 lands.
+
+> **Amended in Milestone 7. #499 landed on 2026-09-04 in PR #545, and this is
+> the move the sentence above promised.** The correction stands as written —
+> `'delete'` does tombstone rather than remove, and the equality above still
+> rests on the averages record alone — but the clause it ends on, *"nothing in
+> the shipped purge merges"*, is no longer true of the shipped purge. What
+> implementing it revealed is that the merge belongs **after `_restamp`**, not
+> inside `_delete` where the issue sketched it: `_restamp`'s per-node `UPDATE`
+> fires the node FTS triggers, so it writes a tombstone per *surviving* node on
+> every purge, including one that withdraws nothing. Merging before it leaves
+> `nodes_fts` at 1.50× and `nodes_trigram` at 1.77× a never-held build, against
+> 0.75× and 0.89× merging after. The later placement is the better answer because
+> nothing writes to a full-text index after `_verify`, which is a property a test
+> can pin without naming today's writers — and the placement is pinned that way,
+> as idempotence: re-merging a published build must find nothing to remove
+> (`tests/integration/test_purge_full_text_discovery.py`). The structural
+> property this ADR cares about — a purged build holding no more of the segment
+> structure than one that never held the withdrawn rows — is
+> `tests/integration/test_purged_build_structure.py`, which was written RED
+> against the pre-merge purge.
+>
+> `index_purge._merge_full_text` issues an FTS5 `optimize` over every full-text
+> table it discovers in the build's own `sqlite_master`. Discovered rather than
+> listed, for the reason this ADR's own history demonstrates: the schema carried
+> two of these at v3 and carries four at v4, and #499's sketch says "both FTS5
+> tables" — the v3 count. A merge over a written-down tuple is correct the day it
+> is written and silently partial the day the next table lands.
+>
+> The measured result: a purged build's posting bytes at 0.91× and 0.95× a
+> never-held build's on the chunk tables and 0.75× and 0.89× on the node tables,
+> flat across the withdrawn sweep at a spread of 1.01× and 1.00× where the
+> unmerged purge spread 6.40× and 9.52×, and query duration flat with them
+> — 0.84–0.99× on one instrument and a non-monotonic spread of ≤5.7% on another,
+> against control arms at 3.61×, 4.22× and 12.18×, three independent instruments
+> in PR #545's round one. **Priced on two axes, because they do not read alike**
+> and one number would misdescribe whichever case the reader had: 1.60–1.70× the
+> purge's own duration across a twentyfold span of index size, and 6.4× falling
+> to 1.15× as the withdrawal count rises — worst exactly where the purge is
+> cheapest, a residue-cleanup purge, and there 472 ms on an 11.6 MB index. The
+> absolute cost stays bounded by index size on both axes, and about an order of
+> magnitude under this ADR's own 2,614 ms / 37,684 ms for re-deriving a build, so
+> the recorded-acceptance fallback this ADR allowed for was not needed. Responses
+> were byte-identical before the merge and are byte-identical after it: what the
+> clock carried was the withdrawn *count*, and it no longer does.
+>
+> **What is left is not this ADR's.** The purged file is the same size with the
+> merge as without it, and the merge inverts its composition — 95.9% free-list
+> pages where three quarters used to be live segment blocks. That byte face is
+> [#344](https://github.com/theurian/theurian/issues/344)'s, recorded there with
+> the measurement, and it reaches no caller: `fts5vocab` over the published build
+> returns nothing for the withdrawn-only marker that survives in raw bytes, and
+> no MCP surface publishes an index size.
 
 `認証` is the one row where the control agrees, and that is the expected answer
 rather than a weak fixture: two characters fall below the trigram floor and are

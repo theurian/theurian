@@ -19,13 +19,18 @@ rediscovered by a fourth review round.
 
 **The scope is those three quantities and not "any quantity", and the boundary is
 not a hedge.** PR #498's round-one adversarial review measured *query duration* on
-the trigram path, where the purge only shrinks the term rather than removing it:
+the trigram path, where the purge only shrank the term rather than removing it:
 FTS5's `'delete'` writes a tombstone, the row's postings stay in the segment
-structure until a merge, and nothing in the shipped purge merges. Isolated at
-5,950 withdrawn rows, the substring scan costs 16.8 ms on a purged build against
-1.2 ms on a never-held one. That face is owned by
-[#499](https://github.com/theurian/theurian/issues/499) and recorded under T-17a
-in `docs/security/threat-model.md`.
+structure until a merge, and nothing in the purge merged. Isolated at 5,950
+withdrawn rows, the substring scan cost 16.8 ms on a purged build against 1.2 ms
+on a never-held one. That face was owned by
+[#499](https://github.com/theurian/theurian/issues/499), recorded under T-17a in
+`docs/security/threat-model.md`, and is **closed**:
+`index_purge._merge_full_text` merges the tombstones on every purge, and the
+duration is measured flat by three independent instruments (PR #545 round one,
+2026-09-04). The boundary stays exactly as written, because it is a statement
+about what *this file's instruments* can see and not about the state of that
+face.
 
 **None of this module's instruments can see that face**, which is why the scope
 above is a boundary a reader must not widen. `tracemalloc` traces memory
@@ -33,12 +38,15 @@ allocated through Python's own allocator, and `CountingReadSession` and
 :class:`Measured` count Python-level calls; a tombstoned posting list is walked
 inside SQLite's C code during one `execute`, producing no row, no Python
 allocation and no additional call. The two instruments are measured disagreeing
-on the same builds in that same T-17a note: peak memory flat to 0.1 KB across the
-whole 0 -> 5,950 sweep while the clock on the same query rises by +27.4 ms -- the
-delta is the stable figure (+27.59 to +28.18 ms over six re-runs) where the ratio
-moves with its denominator, 5.08-5.67x depending on the run, median 5.41x. **A
-green run of this file says the three pinned quantities carry no withheld term.
-It says nothing about duration, and it cannot.**
+on the same builds in that same T-17a note: on the pre-merge purge, peak memory
+flat to 0.1 KB across the whole 0 -> 5,950 sweep while the clock on the same
+query rose by +27.4 ms -- the delta is the stable figure (+27.59 to +28.18 ms
+over six re-runs) where the ratio moves with its denominator, 5.08-5.67x
+depending on the run, median 5.41x. **A green run of this file says the three
+pinned quantities carry no withheld term. It says nothing about duration, and it
+cannot** -- which is why the duration face is held somewhere else:
+`test_purged_build_structure.py` pins the posting bytes a query walks, upstream
+of the clock and visible to an instrument that does not lie in CI.
 
 **Why the per-withheld-row term goes to zero is branch-dependent, and stating it
 as one mechanism was this file's own error, caught in review.** On the branch that
@@ -773,13 +781,15 @@ def test_a_purged_builds_peak_memory_stops_moving_with_the_withheld_count(
 
     **What equality here does not cover is a residue Python never allocates.**
     The module docstring states the instrument limit in full: FTS5's tombstoned
-    postings are walked inside SQLite's C code, and the same builds that hold this
-    peak flat cost +27.4 ms more end to end -- the delta is the stable figure
-    (+27.59 to +28.18 ms over six re-runs) where the ratio moves with its
-    denominator, 5.08-5.67x depending on the run, median 5.41x
-    ([#499](https://github.com/theurian/theurian/issues/499)). Equality of a
-    `tracemalloc` peak is evidence about the Python heap and about nothing below
-    it.
+    postings are walked inside SQLite's C code, and on the pre-merge purge the
+    same builds that held this peak flat cost +27.4 ms more end to end -- the
+    delta is the stable figure (+27.59 to +28.18 ms over six re-runs) where the
+    ratio moves with its denominator, 5.08-5.67x depending on the run, median
+    5.41x ([#499](https://github.com/theurian/theurian/issues/499), closed by
+    the merge in PR #545). Equality of a `tracemalloc` peak was evidence about
+    the Python heap and about nothing below it then, and still is now that the
+    residue is gone: what changed is the file under the instrument, not what the
+    instrument can see.
 
     **Scope, stated rather than assumed.** The work log isolated a 4.3 KB step in
     the *composite* purged column that appears only above 200 withheld, is not

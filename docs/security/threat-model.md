@@ -1155,11 +1155,13 @@ over withheld counts 0, 50 and 200, and by
 `test_a_purged_build_stays_at_one_retriever_pass_across_the_first_pass_depth_edge`
 over 49–52 for the truncating branch, both in
 `packages/theurian-core/tests/integration/test_purged_build_quantities.py`.
-**What the purge does not remove is the segment residue**: the same rows'
-postings survive as FTS5 tombstones and are monotone in the withdrawn count on
-the trigram path ([#499](https://github.com/theurian/theurian/issues/499), a
-face of T-17a), so this frame bounds the canonical-read term and not query
-duration.
+**This frame bounds the canonical-read term and not query duration**, and until
+[#499](https://github.com/theurian/theurian/issues/499) the duration carried a
+term of its own: the same rows' postings survived as FTS5 tombstones and were
+monotone in the withdrawn count on the trigram path (a face of T-17a). The purge
+merges them now, and the duration is measured flat by three independent
+instruments (PR #545 round one, 2026-09-04). The scope clause stays because it
+says which instrument measured what, not because a channel is still open.
 
 **What the cap bounds, and what it does not.** It bounds concurrent occupancy
 of the retrieval answer path alone — all three members enter through
@@ -4797,13 +4799,16 @@ extraction takes and not ceilings.
 > > the `tracemalloc` peak — the ones pinned below. **The scope is those three
 > > and not "any quantity"**, and the boundary is not a hedge: PR #498's round-one
 > > adversarial review measured **query duration on the trigram path**, where the
-> > purge only *shrinks* the term because FTS5 `'delete'` tombstones the postings
-> > and nothing merges them — **+27.4 ms** end to end at 5,950 withdrawn
+> > purge then only *shrank* the term because FTS5 `'delete'` tombstones the
+> > postings and nothing merged them — **+27.4 ms** end to end at 5,950 withdrawn
 > > (5.08–5.67× the baseline across runs, median 5.41×), owned by
 > > [#499](https://github.com/theurian/theurian/issues/499) and recorded as a
-> > face of T-17a below. The two results do not conflict; they are different
-> > instruments. Everything here is measured below the trigram floor, on the scan
-> > branch and on Python-side counts, and #499's is above it, in the segments.
+> > face of T-17a below. **That face is closed, merged in PR #545 on 2026-09-04**;
+> > the boundary above stands unchanged, because it says what *these* instruments
+> > can see and not what state that face is in. The two results never conflicted;
+> > they are different instruments. Everything here is measured below the trigram
+> > floor, on the scan branch and on Python-side counts, and #499's was above it,
+> > in the segments.
 > >
 > > The stale build is reported beside the purged one in every table, because
 > > "the purged column is flat" is also what a harness that measured nothing would
@@ -5126,6 +5131,14 @@ the dense path, which T-6 enumerates as the second member of that class.
 > > and it does reach a caller — as a duration.** Owner for the live half:
 > > [#499](https://github.com/theurian/theurian/issues/499).
 > >
+> > **Read that correction as of 2026-09-02, not as of today. #499 landed in PR
+> > #545 on 2026-09-04**, and it moves two of its three clauses: the duration no
+> > longer reaches a caller, and the residue is now mostly free list after all
+> > (95.9%). The scaling clause stands — the *file* still grows with what was
+> > withdrawn. The landing note at the end of this block carries the
+> > measurements; everything between here and there is the record of what was
+> > true before the merge.
+> >
 > > **What the paragraph above does and does not say.** It is right that the
 > > withdrawn text lingers in the copy, right about the `deprecateItem` control,
 > > and right that the *content* reaches no caller. It states **no quantity at
@@ -5150,11 +5163,14 @@ the dense path, which T-6 enumerates as the second member of that class.
 > > it: 9.7 MB to serve fifty rows.
 > >
 > > **The location was wrong, and this table already said so.** This note read
-> > the growth as free-list residue. **Three quarters of it is live**: 587 free
-> > pages of 2,372 at 5,950 withdrawn is 25%, so 1,785 pages are pages SQLite
-> > considers in use. FTS5's `'delete'` writes a **tombstone** — the row's
+> > the growth as free-list residue. **Three quarters of it was live**: 587 free
+> > pages of 2,372 at 5,950 withdrawn is 25%, so 1,785 pages were pages SQLite
+> > considers in use. (That share inverts once the merge lands — see the landing
+> > note at the end of this block — which is why this sentence is in the past
+> > tense and the table above it is not: the table is the file's *size*, and the
+> > merge does not move it.) FTS5's `'delete'` writes a **tombstone** — the row's
 > > postings stay in the segment structure until a merge, and nothing in the
-> > shipped purge merges. Measured independently in PR #498's round-one
+> > purge merged. Measured independently in PR #498's round-one
 > > adversarial review at 5,950 withdrawn and reproduced by the orchestrator:
 > > a purged build carries 1,481 trigram blocks and 5,403,892 trigram bytes
 > > against a never-held build's 13 and 35,638 — **151× the postings for rows it
@@ -5219,6 +5235,53 @@ the dense path, which T-6 enumerates as the second member of that class.
 > > either direction), and count-recovery being demonstrated at 3 of 5 means the
 > > face still owes its own extraction program — a channel with no demonstrated
 > > sibling needs one before it closes.
+> >
+> > **Closed on 2026-09-04 by the first of those two routes: the merge landed
+> > inside the purge (PR #545, [#499](https://github.com/theurian/theurian/issues/499)).**
+> > This is the pull request that settles it, and the records above move with it —
+> > everything from the 2026-09-01 correction down to the paragraph before this
+> > one is the measured record of the pre-merge purge and is left standing as
+> > that, not edited into the present tense.
+> >
+> > `index_purge._merge_full_text` issues an FTS5 `optimize` over every full-text
+> > table it discovers in the build's own schema — discovered rather than listed,
+> > because the schema carried two of these at v3 and carries four at v4 — after
+> > `_restamp` and before `_verify`, which is the point after which nothing writes
+> > to a full-text index. **The clock's term is gone because the postings are.**
+> > A purged build's posting bytes sit at 0.91× and 0.95× a never-held build's on
+> > the chunk tables and 0.75× and 0.89× on the node tables, and are flat across
+> > the withdrawn sweep — spread 1.01× and 1.00× over 0/100/400 withdrawn against
+> > 6.40× and 9.52× on the same key before the merge, which is
+> > `tests/integration/test_purged_build_structure.py`'s committed assertion and
+> > not a one-off measurement — and the duration is flat with
+> > them: three independent instruments in PR #545's round one measured 0.84–0.99×
+> > a never-held build on one and a non-monotonic spread of ≤5.7% on another,
+> > against control arms at 3.61×, 4.22× and 12.18×; responses stayed
+> > byte-identical (12/12 and 21/21, CJK-marker corpora included), and twenty
+> > chained purges spread 1.000. Its price has two axes that do not read alike —
+> > 1.60–1.70× the purge's own duration across a twentyfold span of index size,
+> > and 6.4× falling to 1.15× as the withdrawal count rises, worst where the purge
+> > is cheapest — with the absolute cost bounded by index size on both and about
+> > an order of magnitude under the rebuild it exists to avoid.
+> >
+> > **The extraction program the paragraph above owed is discharged by the closure
+> > rather than by being written.** It was owed because the channel was open with
+> > recovery demonstrated at 3 of 5; the channel is closed, so what would have
+> > been extracted no longer varies. What did *not* close is the byte face, which
+> > is [#344](https://github.com/theurian/theurian/issues/344)'s and not this
+> > entry's, **and its composition inverts**: the purged file is byte-identical in
+> > size with the merge and without it, still ~24× a never-held build, but 95.9%
+> > of it is free-list pages now (7,986 of 8,327 at 5,950 withdrawn; it was 25%
+> > free, three quarters live) because the merge moves the postings into the free
+> > list rather than out of the file. A withdrawn-only marker survives 119 times
+> > in the published file's raw bytes, down from 213, and reaches no caller:
+> > `fts5vocab` over the published build returns nothing for it, and no MCP
+> > surface publishes an index size. Two reviewers measured both independently;
+> > the record is [on #344](https://github.com/theurian/theurian/issues/344#issuecomment-5537204162),
+> > where `secure_delete` and `VACUUM` remain the design space and were explicitly
+> > not taken in #545. So the paragraph that opens this block — *"no query reads a
+> > free page, so it reaches no caller through any tool; it is a disk-forensics
+> > surface"* — is true again, having been false in between.
 >
 > **Two residuals remain, both measured. The first is content-independent and not
 > an extraction channel; the second is a purge failure, now closed by
@@ -6344,7 +6407,7 @@ fix.
 | T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — `theurian propose accept` scans every body it would land **and the migration document's author-written fields** ([#336](https://github.com/theurian/theurian/issues/336)), `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it, and a proposal's `evidence.json` is scanned whole-text at accept even though the command lands it nowhere, because the command tells the author to commit the directory it sits in ([#361](https://github.com/theurian/theurian/issues/361)). Refusals on the accept path bound and redact every author-controlled name they print, within `proposal_service.py` ([#360](https://github.com/theurian/theurian/issues/360), [#339](https://github.com/theurian/theurian/issues/339); `migration_loader.py`'s own echo is a different producer's population, [#537](https://github.com/theurian/theurian/issues/537)). The document's derived fields are not read, each barred by a mechanism rather than by choice, and draft-time advisory scanning remains owed ([#330](https://github.com/theurian/theurian/issues/330)). `theurian index build` is SEC-11's second control and scans every body it indexes, with the source anchors and relation notes served beside it — every text channel of the approved, in-ceiling corpus this deployment serves by default, on every rebuild — and it reports and never refuses, because by then the content is already served whatever the index holds; an unapproved body reachable through `includeUnapproved` and a superseded revision in the store are outside that population and are recorded as residuals in the threat model and `SECURITY.md` ([#329](https://github.com/theurian/theurian/issues/329); #198 is closed, having shipped the `propose accept` half). `theurian ingest` runs no scan of its own |
 | T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet ([#80](https://github.com/theurian/theurian/issues/80); #39 is closed, on its documentation half only) |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
-| T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15); closed for the sensitivity axis in #119 by exclusion at build plus a `changeSensitivity` purge trigger (ADR-0025 parts 1–2). The unpurged-build (purge-failed) cell — including its verbatim `--raptor` `raptorPath` face — is closed by GHSA-97q9-xxfg-33r6, which refuses to serve a purge-failed build (graded High: two non-default operator conditions), leaving only an in-flight request, a double disk fault, and a concurrent clean build reverted by the non-atomic taint write (all SAFE-direction, the last deferred to the derived index's single-writer contract, ADR-0022/ADR-0018, owned by [#439](https://github.com/theurian/theurian/issues/439) — merged PR #113 stood here until #427's sweep); the byte residue ([#344](https://github.com/theurian/theurian/issues/344)) is recorded — **and it is not mostly free-list, and not only a disk surface**: FTS5 `'delete'` tombstones the postings and nothing in the shipped purge merges them, so about three quarters of a purged build's growth is live segment blocks (587 free pages of 2,372) and query duration on the trigram path is monotone in the withdrawn count — at 5,950 withdrawn, **+27.4 ms** end to end (the round-one measurement, +27.36 ms; six later re-runs give +27.59…+28.18 ms, so the delta is stable across runs), which is 5.08–5.67× the baseline depending on the run, median 5.41×, crossing TB-1's 1.40 ms floor between 500 and 1,000 withdrawn rows, with the withdrawn **count** readable off the clock at 3 of 5 and **no content recovered** (responses byte-identical, because `'delete'` does decrement the averages record). A new face of this entry's own root cause at the FTS5 segment level rather than a new class; open, graded High, labelled pre-1.0, owned by [#499](https://github.com/theurian/theurian/issues/499), whose closure is the merge inside the purge or a recorded acceptance carrying the measured bound |
+| T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15); closed for the sensitivity axis in #119 by exclusion at build plus a `changeSensitivity` purge trigger (ADR-0025 parts 1–2). The unpurged-build (purge-failed) cell — including its verbatim `--raptor` `raptorPath` face — is closed by GHSA-97q9-xxfg-33r6, which refuses to serve a purge-failed build (graded High: two non-default operator conditions), leaving only an in-flight request, a double disk fault, and a concurrent clean build reverted by the non-atomic taint write (all SAFE-direction, the last deferred to the derived index's single-writer contract, ADR-0022/ADR-0018, owned by [#439](https://github.com/theurian/theurian/issues/439) — merged PR #113 stood here until #427's sweep); the byte residue ([#344](https://github.com/theurian/theurian/issues/344)) is recorded. **The segment-level face is closed: [#499](https://github.com/theurian/theurian/issues/499), merged in PR #545 on 2026-09-04.** FTS5 `'delete'` tombstones the postings rather than removing them, and nothing in the purge merged them, so before the fix about three quarters of a purged build's growth was live segment blocks (587 free pages of 2,372) and query duration on the trigram path was monotone in the withdrawn count — at 5,950 withdrawn, **+27.4 ms** end to end (the round-one measurement, +27.36 ms; six later re-runs give +27.59…+28.18 ms, so the delta is stable across runs), which is 5.08–5.67× the baseline depending on the run, median 5.41×, crossing TB-1's 1.40 ms floor between 500 and 1,000 withdrawn rows, with the withdrawn **count** readable off the clock at 3 of 5 and **no content recovered** (responses byte-identical, because `'delete'` does decrement the averages record). `index_purge._merge_full_text` now issues an FTS5 `optimize` over every full-text table it discovers in the build's own schema, after `_restamp` and before `_verify`: a purged build's posting bytes sit at 0.91× and 0.95× a never-held build's on the chunk tables and 0.75× and 0.89× on the node tables, and are flat across the withdrawn sweep — spread 1.01× and 1.00× over 0/100/400 withdrawn, against 6.40× and 9.52× on the same key before the merge (`tests/integration/test_purged_build_structure.py`) — and the clock is flat with them — 0.84–0.99× on one instrument and a non-monotonic spread of ≤5.7% on another, against control arms at 3.61×, 4.22× and 12.18×, three independent instruments in PR #545's round one. **What remains is #344's byte face, whose composition inverts**: the purged file is byte-identical in size with the merge and without it, still ~24× a never-held build, but its growth is now 95.9% free-list pages (7,986 of 8,327 at 5,950 withdrawn; it was 25% free, three quarters live) because the merge moves the postings *into* the free list. A withdrawn-only marker survives 119 times in the published file's raw bytes (down from 213) and reaches no caller: `fts5vocab` over the published build returns nothing for it, and no MCP surface publishes an index size. Both measured by two reviewers independently and recorded on [#344](https://github.com/theurian/theurian/issues/344#issuecomment-5537204162), where `secure_delete`/`VACUUM` remain the design space — explicitly not taken in #545. A new face of this entry's own root cause at the FTS5 segment level rather than a new class; the postings and the clock are closed, and the disk-forensics remainder is open under #344 |
 | T-18 | Reused revision id resolves to a withheld item's body | I | Critical | Closed in 0.1.0.dev3 — item-scoped `append_revision` + `put_item` store guards, `SCHEMA_VERSION` gate (GHSA-7997-g35f-q59h) |
 | T-19 | A repository ships a doctored `.theurian/state/` served without a local build | I | Critical | Closed in 0.1.0.dev4 — out-of-tree `BuildProvenance` anchor, enforced at every serve path (GHSA-266v-fcj2-qggx, ADR-0004, SEC-7) |
 | T-20 | A body file shared across two revisions is served past the status gate | I | Critical | Closed in 0.1.0.dev5 — whole-set refusal keyed on body filesystem identity (`st_dev`/`st_ino`), `DuplicateContentFileError` (GHSA-w5cm-cqf9-vm7r) |
