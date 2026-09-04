@@ -76,7 +76,7 @@ Ports and adapters, with the port set fixed in advance and deliberately small.
    >
    > **Three names joined the list above; none left it.** `IndexStore`,
    > `ReviewFindingSource` and `ReviewFindingStore` are the delta between point
-   > 5's fourteen and the register's seventeen — the set difference between
+   > 5's fourteen and the register — the set difference between
    > `{p.__name__ for p in ALL_PORTS}` and the fourteen named above, computed
    > both ways. The last two arrived with ADR-0029, which is the path this
    > point asks for; `IndexStore` did not, and reached `ALL_PORTS` only in
@@ -91,7 +91,7 @@ Ports and adapters, with the port set fixed in advance and deliberately small.
    >
    > | Outside `ALL_PORTS` | Standing |
    > | :-- | :-- |
-   > | `CanonicalReadSession` | **Mostly a narrowing of `CanonicalStore`, not a second substitution point.** Of its six members, `list_items`, `get_item` and `get_revision` are narrowed in from that port, and `__enter__`/`__exit__` add the handle lifetime it deliberately does not express. The sixth, `get_item_exact`, *widens*: it is the alias-free read T-21 needs and `CanonicalStore` does not offer, which is why the headline is hedged and not flat — and it is the precedent `IndexBuildSession` then followed, a session Protocol adding a member the port lacks. Injection is per consumer, not shared: `RetrievalService` takes `store_factory: Callable[[Path], CanonicalReadSession]` (`application/retrieval_service.py`), while `IndexBuilder` takes `Callable[[Path], IndexBuildSession]` (`application/index_builder.py`) — the widened row below. **No `CanonicalStore` method returns either.** What an operator substitutes is still a `CanonicalStore` adapter, so this opens no boundary `ALL_PORTS` does not already govern |
+   > | `CanonicalReadSession` | **Mostly a narrowing of `CanonicalStore`, not a second substitution point.** Of its six members, `list_items`, `get_item` and `get_revision` are narrowed in from that port, and `__enter__`/`__exit__` add the handle lifetime it deliberately does not express. The sixth, `get_item_exact`, *widens*: it is the alias-free read T-21 needs and `CanonicalStore` does not offer, which is why the headline is hedged and not flat — and it is the precedent `IndexBuildSession` then followed, a session Protocol adding a member the port lacks. Injection is per consumer, not shared: `ResultGate` — the SEC-13 gate itself — takes `store_factory: Callable[[Path], CanonicalReadSession]` (`application/retrieval_service.py`), while `IndexBuilder` takes `Callable[[Path], IndexBuildSession]` (`application/index_builder.py`) — the widened row below. `RetrievalService`, which this row named through two revisions, takes no `store_factory` at all. **No `CanonicalStore` method returns either.** What an operator substitutes is still a `CanonicalStore` adapter, so this opens no boundary `ALL_PORTS` does not already govern |
    > | `IndexBuildSession` | **A widening of `CanonicalReadSession` by one method, not a second substitution point.** It adds `list_relations` because a relation's `note` is served verbatim on every `knowledge.get` response, so SEC-11's build-time control has to read that channel too; it is declared separately rather than folded into the base so that every session-shaped collaborator is not obliged to answer a question only the index build asks. What an operator substitutes is still a `CanonicalStore` adapter, so its standing is `CanonicalReadSession`'s. It is also the demonstration this amendment's own pin was owed for: it landed outside the register in [#329](https://github.com/theurian/theurian/issues/329) between the amendment being written and its pin landing, and nothing went RED |
    > | `McpClientConfig` | **An open question, recorded here rather than settled.** It has a port's shape: `SetupContext.mcp_config` is constructor-injected, and `cli/setup_commands.py` — a composition root — names `ClaudeCodeMcpConfig` as its adapter. Yet it is absent from `ALL_PORTS` and unimported by `ports/__init__.py`, so `test_port_set_is_closed` has never seen it. Whether it *joins* the register is itself a decision this point says requires an ADR, and this amendment does not take it. Trail: [#140](https://github.com/theurian/theurian/issues/140) |
    >
@@ -155,7 +155,8 @@ produce the same state hash" is not assertable.
   compares `ALL_PORTS` against a committed list, so adding a port is an
   architecture decision rather than a refactor. **Nine further tests assert a
   property of *each* entry of `ALL_PORTS`** — that is the population key, and
-  it is what excludes the four tests below — six parametrised over it
+  it is what excludes the set-level tests named at the end of this bullet —
+  six parametrised over it
   (`test_port_is_a_protocol`, `test_port_is_runtime_checkable`,
   `test_port_documents_itself`, `test_port_declares_at_least_one_member`,
   `test_port_methods_are_annotated`, `test_port_has_no_implementation`) and
@@ -164,13 +165,15 @@ produce the same state hash" is not assertable.
   That all nine are *driven by the tuple* is what makes it the register point
   5's amendment names: a `Protocol` under `domain/ports/` that never reaches
   `ALL_PORTS` is not merely unlisted, it is unreached by every one of them.
-  Four tests in the module reference `ALL_PORTS` without asserting anything
-  per-entry, and so are not in the nine: `test_port_set_is_closed` and the two
-  pins below compare the *set* against a committed one, and
+  The module's remaining `ALL_PORTS` tests assert nothing per-entry and so are
+  not in the nine: `test_port_set_is_closed` and the three pins below work on
+  the *set* — the first two against a committed constant, the third against a
+  baseline it derives from point 5's own list — and
   `test_determinism_ports_are_present` names `Clock` and `IdGenerator`
-  specifically.
-- **Point 5's amendment is itself recomputed**, by two pins in the same module
-  that hold the code and this record against each other.
+  specifically. Named rather than counted: a count here is a fourth thing to
+  keep in step, and the commit that added the third pin left the count behind.
+- **Point 5's amendment is itself recomputed**, by three pins in the same
+  module that hold the code and this record against each other.
   `test_every_protocol_under_ports_is_registered_or_recorded_as_outside_it`
   derives both figures — `len(ALL_PORTS)`, and an `inspect` walk of every
   **module-level** `typing.Protocol` declared under `domain/ports/` (a
@@ -184,7 +187,7 @@ produce the same state hash" is not assertable.
   ADR and requires the amendment to keep naming `ALL_PORTS` as the register and
   to name exactly that live difference in its table.
 
-  A third pin,
+  The third,
   `test_adr_0003_records_which_ports_joined_the_register_since_point_5_was_written`,
   holds the **register side** the first two cannot reach: they are both about
   the complement of `ALL_PORTS`. It derives the delta paragraph's claim from
@@ -220,7 +223,13 @@ Still owed, with the milestone that will satisfy it:
 
   The **key matters more than the count here**, so it is stated rather than
   implied: each double is tested with `isinstance` against every
-  runtime-checkable port, not matched by name. A name search answers
+  runtime-checkable port, not matched by name. That key reaches the four
+  register entries above and `McpClientConfig`, which is `@runtime_checkable`;
+  it does **not** reach `MigrationWriter`, which is not, and where `isinstance`
+  raises rather than answering. `InMemoryWriter`'s attribution is therefore
+  read from the structure — its own docstring names the Protocol it
+  implements, and a conformance test asserts both it and the real adapter
+  satisfy it — not derived by the key stated here. A name search answers
   differently and wrongly in both directions — `git grep -w IndexStore` hits
   `fakes/pages.py`, which builds `RetrieverPage` helpers and defines no
   `IndexStore` double, while `git grep -w Clock` misses `FrozenClock`

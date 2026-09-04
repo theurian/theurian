@@ -428,13 +428,16 @@ class CanonicalReadSession(Protocol):
     deliberately does not express. No :class:`CanonicalStore` method returns one.
 
     Injection is per consumer rather than one shared factory, and the two
-    annotations differ: ``RetrievalService`` (``application/retrieval_service.py``)
+    annotations differ: ``ResultGate`` (``application/retrieval_service.py``)
     takes ``store_factory: Callable[[Path], CanonicalReadSession]``, while
     ``IndexBuilder`` (``application/index_builder.py``) takes
     ``Callable[[Path], IndexBuildSession]`` -- the widening
-    :class:`IndexBuildSession` records. What an operator substitutes is still a
-    :class:`CanonicalStore` adapter either way, so this opens no boundary the
-    register does not already govern.
+    :class:`IndexBuildSession` records. ``ResultGate`` is the same SEC-13 gate
+    :meth:`__enter__` below already names as the caller that matters, which is
+    the check this sentence should have run: the module contradicted itself for
+    two revisions while naming ``RetrievalService`` here. What an operator
+    substitutes is still a :class:`CanonicalStore` adapter either way, so this
+    opens no boundary the register does not already govern.
 
     Stated without an ordinal on purpose. This paragraph read "not a fifteenth
     port" while ``ALL_PORTS`` held seventeen: an ordinal pinned to a count drifts
