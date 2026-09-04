@@ -87,10 +87,12 @@ EXIT_SECRET_FOUND = 6
 #: succeeded (#525).
 #:
 #: Names the pointer rather than the index, because that is what is wrong: the
-#: build is complete and on disk under its final name, and the only thing that
-#: did not happen is the atomic swap that would make retrieval read it. Sending
-#: the reader to rebuild would spend the corpus scan again on a file that is
-#: already correct, and land at the identical refusal.
+#: build is complete and on disk under its final name (``os.replace`` ran before
+#: the publish), and the only thing that did not happen is the atomic swap that
+#: would make retrieval read it. So the precondition leads and the retry trails,
+#: the shape ``_STATE_DATABASE_FAULT_REMEDY`` and ``_LOCK_ACQUIRE_REMEDY`` both
+#: take: a reader sent straight back to ``theurian index build`` would spend the
+#: corpus scan again and land at the identical refusal.
 #:
 #: ``active-index.json`` is derived (ADR-0004) and a directory or an unwritable
 #: mode at its path is something a person put there, so the instruction is to
@@ -251,7 +253,8 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
         # `_record_the_scan`'s warning already keeps.
         _fail(
             f"The index was built, but the pointer that publishes it could not be written "
-            f"({type(exc).__name__}), so retrieval is still reading the previous build.",
+            f"({type(exc).__name__}), so this build is not published and what retrieval "
+            f"reads is unchanged.",
             remedy=_UNWRITABLE_INDEX_POINTER_REMEDY,
             as_json=as_json,
             code=EXIT_STATE_ERROR,
