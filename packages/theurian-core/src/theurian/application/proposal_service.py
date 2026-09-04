@@ -23,15 +23,29 @@ is where the reasoning lives:
   That is a change from ADR-0013 §4's division, which left every question about
   the migration to ``migrate validate``; it held while ``accept`` was a ``mv``,
   and stopped holding when the same command began deleting its sources (#307).
-* **That nothing it would land appears to carry a secret** (decision 3, SEC-11,
-  T-15), under the policy ``security.secretScan`` selects -- ``block`` unless the
-  project says otherwise. It scans everything the acceptance would land -- each
-  body's content, the migration document's own author-written fields (its
-  ``contentFile`` among them), the migration file's bytes, its filename, and each
-  body's landed path (#336, #349); a field reaches every search result while the
-  body is only read on request. Best effort, and the product's
-  published stance that it is not a replacement for a repository secret scanner
-  is unchanged by it.
+* **That none of the six things it reads appears to carry a secret** (decision
+  3, SEC-11, T-15), under the policy ``security.secretScan`` selects -- ``block``
+  unless the project says otherwise. It scans each body's content, the migration
+  document's own author-written fields (its ``contentFile`` among them), the
+  migration file's bytes, its filename, each body's landed path (#336, #349) and
+  the evidence record's own text (#361); a field reaches every search result
+  while the body is only read on request. The evidence record is the one input
+  the command does not *move*: it stays in the proposal directory that
+  ``accept``'s own first next step tells the author to commit, which puts it in
+  history by a different route.
+
+  **Six inputs and not "everything that reaches the pull request", which is what
+  this said and could not support.** ``accept`` removes only the bodies its
+  migration names and leaves the rest of the proposal directory where it is, so
+  anything else a contributor put there -- a reviewer's notes, an editor's
+  backup, a ``.env`` -- rides the same three facts into the commit as the
+  evidence record and is scanned by nothing
+  (:func:`_unmoved_generated_bodies` records the leaving-it-there half). That is
+  pre-existing behaviour and deliberately so; what was new was a universal
+  sentence over it. Filed as
+  `#540 <https://github.com/theurian/theurian/issues/540>`_. Best effort besides,
+  and the product's published stance that it is not a replacement for a
+  repository secret scanner is unchanged by any of it.
 
 Both are driven by a composition root -- the CLI today, Milestone 7's
 write-intent MCP tools next -- which is why the schema check arrives as an
@@ -63,6 +77,7 @@ import json
 import os
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from itertools import chain
 from pathlib import Path, PurePosixPath
 from typing import Final, NoReturn
 
@@ -108,7 +123,11 @@ from theurian.security.paths import (
     resolve_within_root,
 )
 from theurian.security.project_config import SecretScanPolicy, read_secret_scan_policy
-from theurian.security.yaml_loading import is_bounded_scalar, load_yaml_mapping
+from theurian.security.yaml_loading import (
+    MAX_RENDERED_SCALAR_CHARS,
+    is_bounded_scalar,
+    load_yaml_mapping,
+)
 
 #: The evidence file's name. Fixed, unlike the migration's: nothing moves it, so
 #: it cannot collide with anything, and a reviewer looking for the reasoning
@@ -119,6 +138,88 @@ EVIDENCE_FILE: Final = "evidence.json"
 #: The directory is committed input, so its file count is the contributor's:
 #: 50,000 files produced a 600 KB error string in 1.5 s before this bound.
 _MAX_NAMES_LISTED: Final = 5
+
+#: How much of *one* untrusted name a refusal renders before it stops (#360).
+#: :data:`_MAX_NAMES_LISTED` bounds how many, and bounded nothing about how long
+#: each one is: a ``contentFile`` is a raw YAML scalar the schema has not seen
+#: yet, so ``_body_moves``' "not in the proposal directory" refusal echoed the
+#: whole of it into a terminal.
+#:
+#: Reused rather than minted: :data:`~theurian.security.yaml_loading
+#: .MAX_RENDERED_SCALAR_CHARS` is this codebase's existing answer to *how much of
+#: an untrusted scalar may be interpolated*, and a second number beside it would
+#: be two answers to one question.
+_MAX_NAME_CHARS: Final = MAX_RENDERED_SCALAR_CHARS
+
+#: The same for another component's *report* -- a parser's or a validator's own
+#: message -- which is a different question and needs a different number.
+#:
+#: A name is a token; a report is prose that has to survive being read. Measured
+#: 2026-09-04 over the full suite, the longest legitimate report reaching this
+#: gate is 779 characters -- the loader's duplicate-``contentFile`` diagnosis,
+#: which names an item, two revisions and the path they share -- and the longest
+#: schema message 763 (a ``oneOf`` listing every operation shape).
+#: :data:`_MAX_NAME_CHARS` cut both mid-sentence, which is what this number is
+#: for.
+#:
+#: **It does not bound the flood the first version of this comment claimed.**
+#: That reason was "``jsonschema`` puts ``repr(instance)`` in its message, and an
+#: instance from a 4 MiB migration is megabytes", and it is false: ``jsonschema``
+#: truncates its own instance rendering at 524 characters first (measured against
+#: author values of 5,000, 12,345 and 99,999 characters -- 497 characters of the
+#: value in every one), so nothing that producer composes can reach 2,000 at all.
+#: What this bounds is a producer that does *not* truncate. The loader's
+#: ``MigrationError`` is one -- it composes freely from a migration's own
+#: contents -- and it arrives here through :meth:`ProposalService._union_refusal`
+#: and :meth:`ProposalService._landed_set_refusal`.
+#:
+#: **Residual, recorded rather than closed: that same truncation appends the
+#: value's exact length** (``(12345 characters in all)``), so this path publishes
+#: one number the author's own value chose -- against the discipline
+#: :data:`_TRUNCATED` holds for names. It is not stripped, and the reason is what
+#: stripping would take: pattern-matching a third party's prose to delete a
+#: clause is a guard that fails silently the first time that prose is reworded,
+#: and the clause is genuinely part of the diagnosis -- ``jsonschema`` truncated
+#: precisely so the reader learns the value was longer. Bounded to a single
+#: integer, no greater than the migration's own ``MAX_YAML_BYTES``, about a value
+#: the author wrote and can read back.
+_MAX_REPORT_CHARS: Final = 2000
+
+#: What follows a string this module cut, so a reader can tell a cut from a name
+#: that genuinely ends in an ellipsis. Outside the quotes where *this* module
+#: does the quoting (:func:`_one_name`), deliberately: inside them it reads as
+#: part of the name.
+#:
+#: **On one of the six paths it does land inside them, and that is recorded
+#: rather than fixed.** :func:`_plain` returns an unquoted string for a caller
+#: that quotes it itself, and one such caller exists --
+#: ``IrregularSourceFileError``, whose constructor renders ``{referrer!r}`` --
+#: so a cut referrer prints as ``'....... (truncated)'`` with the marker inside.
+#: Teaching :func:`_plain` where its result will be quoted is the coupling it
+#: exists to avoid, and it would buy a cosmetic gain on a path where the string
+#: is a project-relative path rather than a name a reader copies. The other two
+#: :func:`_plain` callers -- :func:`_their_words` and :func:`_rendered_scalar` --
+#: are not quoted by anyone, so the marker sits correctly outside there.
+#:
+#: **This module publishes no length of its own** -- how many characters it
+#: dropped is the contributor's number, the same reason
+#: :data:`_MAX_NAMES_LISTED`'s tail is suppressed in
+#: :meth:`ProposalService._secret_refusal`. The absolute is about this module's
+#: own truncation and not about every count that can appear in a refusal: a
+#: report composed by another component may carry its own, and
+#: :data:`_MAX_REPORT_CHARS` records the one that does.
+_TRUNCATED: Final = " (truncated)"
+
+#: What a refusal prints in place of a name the detector reports (#360). A fixed
+#: literal and never a prefix of the name: a partial echo is the walk-around
+#: :class:`~theurian.security.content_secrets.SecretFinding`'s four-character
+#: bound exists to prevent, and the same rule
+#: :meth:`ProposalService._landed_text` applies to a finding's *location*.
+_REDACTED_NAME: Final = "a name that appears to carry a secret"
+
+#: The same, for another component's own words -- a parser's or a validator's
+#: message, which quotes the input it refused.
+_REDACTED_REPORT: Final = "a report whose own text appears to carry a secret"
 
 #: How many entries ``operations`` may hold before ``accept`` refuses the
 #: migration outright, checked against the raw parsed document -- before
@@ -232,9 +333,23 @@ _AT_BODY_PATH: Final = "the landed path of body"
 #: echo: when the path is itself the credential, locating a body-content finding
 #: by it republished the value, walking around the same four-character bound the
 #: two name channels do -- and it was the last finding-location channel still
-#: built from scanned text. The broader class of author-supplied names echoed in
-#: *refusal messages* elsewhere on the accept path is tracked separately (#360).
+#: built from scanned text. The sibling class of author-supplied names echoed in
+#: *refusal messages* elsewhere in this module is closed by :func:`_bounded` and
+#: the two renderings over it (#360), whose boundary :func:`_names` records.
 _AT_BODY_CONTENT: Final = "the content of body"
+
+#: The evidence record's own text, whole (#361). The one channel here that names
+#: something the acceptance does **not** land -- and it is scanned for exactly
+#: that reason: ``_remove_proposal_sources`` deletes the migration and every body
+#: and leaves ``evidence.json`` in the proposal directory, while accept's own
+#: first next step tells the author to open a pull request with that directory in
+#: it. So the file travels into Git history by this command's own instruction,
+#: which is the outcome T-15 and SEC-11 name, reached through the evidence file
+#: rather than through the migration.
+#:
+#: Unindexed, because there is exactly one: the name is fixed
+#: (:data:`EVIDENCE_FILE`) and nothing moves it.
+_AT_EVIDENCE: Final = "the evidence record as written"
 
 #: The errnos a ``chmod`` actually cures, for the accept-path read-failure remedy.
 #: An ``EISDIR``/``ENOTDIR``/``ENAMETOOLONG``/``ELOOP`` is the proposal's own input
@@ -517,12 +632,15 @@ class ProposalSecretFinding:
       is a literal this module chose (:func:`_authored_strings`), never a key read
       back out of the document, so an untrusted key cannot ride into the message
       this renders.
-    * **An artifact the acceptance lands** -- a body's content or its landed
-      path, the migration's own bytes, or its filename -- named by a fixed
-      literal for the channel it came from (:data:`_AT_BODY_CONTENT`,
-      :data:`_AT_BODY_PATH`, :data:`_AT_MIGRATION_BYTES`,
-      :data:`_AT_MIGRATION_NAME`), the two body channels each carrying an integer
-      index so two bodies stay tellable apart. None is built from what was
+    * **A file the acceptance puts in front of a reviewer** -- a body's content
+      or its landed path, the migration's own bytes, its filename, or the
+      evidence record (#361), which the command lands nowhere and leaves in the
+      directory it tells the author to commit -- named by a fixed literal for the
+      channel it came from (:data:`_AT_BODY_CONTENT`, :data:`_AT_BODY_PATH`,
+      :data:`_AT_MIGRATION_BYTES`, :data:`_AT_MIGRATION_NAME`,
+      :data:`_AT_EVIDENCE`), the two body channels each carrying an integer index
+      so two bodies stay tellable apart and the evidence channel carrying none
+      because there is exactly one. None is built from what was
       scanned: on the two name channels, and on a body whose content is itself
       credential-shaped, a location derived from the match would republish it, so
       the literal is what keeps the finding from being a second copy of what it
@@ -556,10 +674,33 @@ class SecretScanResult:
     ``warn`` it says the proposal was scanned and is clean, and under ``off`` it
     says nothing was scanned at all. Under ``block`` it is always empty -- a
     finding refuses the acceptance, so a result exists only when there was none.
+
+    **``skipped`` is the third thing an empty list can mean** (round 1, M-3).
+    Under ``warn`` an evidence record that is present but unreadable is stepped
+    over -- deliberately, because ``warn`` never stops an acceptance -- and until
+    this field the result of that was indistinguishable from a clean scan: no
+    finding, no indicator, and an operator who chose ``warn`` silently got ``off``
+    for that channel. Reporting is the *whole* of what ``warn`` produces, so a
+    channel it could not read has to be part of the report. Named channels rather
+    than a flag, so a second skippable channel does not need a second field.
     """
 
     policy: SecretScanPolicy
     findings: tuple[ProposalSecretFinding, ...] = ()
+    #: Channels this run did not clear, by the same fixed literals a finding's
+    #: location uses (:data:`_AT_EVIDENCE` today). Empty under ``off``, which
+    #: reads nothing at all and says so through ``policy`` instead.
+    #:
+    #: **Two causes, one field**, because the caller's question is the same for
+    #: both: was every channel looked at? A record that is present and cannot be
+    #: read is one; a channel the run never reached is the other, and it happens
+    #: when the finding budget fills in the bodies before the chain gets this far.
+    #: Reporting only the first published ``skipped=()`` for a run that had not
+    #: looked -- the same false "nothing was skipped" this field exists to stop.
+    #: They are not told apart because nothing acts on the difference: either
+    #: way the answer is that this channel was not cleared, and the remedy is to
+    #: fix what the run reported and accept again.
+    skipped: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -857,14 +998,17 @@ class ProposalService:
         accepted proposal answers is unchanged, and it is described where it
         lives: :meth:`_refuse_unless_the_union_applies`.
 
-        **Everything the acceptance would land is scanned for secrets first**
-        (SEC-11, ADR-0027 decision 3, #336, #349) -- each body's content, the
-        migration document's own author-written fields (its ``contentFile``
-        included), the migration file's bytes, its filename and each body's landed
-        path -- under the policy ``security.secretScan`` selects and ``block`` by
-        default. It sits between the structural checks and the pre-check on
-        purpose: the pre-check stages the bodies into a throwaway tree, and a
-        body that is going to be refused should not be written anywhere at all.
+        **Six inputs are scanned for secrets first** (SEC-11, ADR-0027 decision
+        3, #336, #349, #361) -- each
+        body's content, the migration document's own author-written fields (its
+        ``contentFile`` included), the migration file's bytes, its filename, each
+        body's landed path and the evidence record's own text -- under the policy
+        ``security.secretScan`` selects and ``block`` by default. It sits between
+        the structural checks and the pre-check on purpose: the pre-check stages
+        the bodies into a throwaway tree, and a body that is going to be refused
+        should not be written anywhere at all. It also sits ahead of every word
+        this command says about what to do next, so a refusal arrives before the
+        author is ever told to commit the directory the finding is in.
         :meth:`_scan_for_secrets` has the reasoning.
 
         Every file this reads is proved to be a regular file inside the project
@@ -890,15 +1034,18 @@ class ProposalService:
 
         **CP-2 invariant: no accept-path filesystem or path fault escapes
         ``accept`` untranslated.** A fault that must abort ``accept`` is turned
-        into an error carrying a ``remedy`` at one of five *translation* sites:
+        into an error carrying a ``remedy`` at one of six *translation* sites:
         the examination phase's ``except OSError`` in this method,
         :meth:`_refuse_unless_the_union_applies`, :meth:`_commit`'s own clause,
         :meth:`_destination_of`, which catches its ``resolve()``
         ``ValueError`` -- not an ``OSError``, so the examination clause never sees
-        it -- in place, and
+        it -- in place,
         :func:`~theurian.security.project_config.read_secret_scan_policy`, which
         translates every way ``.theurian/config.yaml`` can fail before it
-        returns. The examination and commit clauses are deliberately separate,
+        returns, and :meth:`_evidence_text`, which reads the evidence record
+        inside the scan and so sits outside the examination clause for the same
+        reason the rest of the scan does (#361). The examination and commit
+        clauses are deliberately separate,
         because a failed *write* must roll the destinations back before it
         reports, and one clause spanning both would describe a half-written tree
         as an unreadable proposal. The pre-check and the secret scan sit outside
@@ -911,8 +1058,8 @@ class ProposalService:
         degrades a post-landing cleanup failure to a remedy and still returns
         success, and :func:`_roll_back` stays silent so a raise cannot mask the
         error already propagating. An editor adding a filesystem call that must
-        abort ``accept`` has to land it under one of the five translation sites,
-        or add a sixth -- a raw escape publishes no ``{error, remedy}`` under
+        abort ``accept`` has to land it under one of the six translation sites,
+        or add a seventh -- a raw escape publishes no ``{error, remedy}`` under
         ``--json`` (#227).
 
         Raises:
@@ -930,9 +1077,11 @@ class ProposalService:
                 could not be fully examined -- including a directory or a file
                 in it the filesystem refuses to list, stat or read -- names a
                 file the security layer refuses, declares more operations than
-                :data:`MAX_UPSERT_OPERATIONS`, would land anything that appears
-                to contain a secret -- a body, a migration field, the migration's
-                own bytes, its filename or a body's path -- while
+                :data:`MAX_UPSERT_OPERATIONS`, would put anything that appears
+                to contain a secret into the pull request -- a body, a migration
+                field, the migration's own bytes, its filename, a body's landed
+                path or the evidence record -- or has an evidence record present
+                that cannot be read, either of the last two while
                 ``security.secretScan`` is ``block``, or
                 would leave the project's migration set unable to apply. Both
                 types above are subclasses, so a caller that catches only this
@@ -1030,9 +1179,14 @@ class ProposalService:
         scanner and is not a replacement for one* -- is unchanged by its
         existence.
 
-        **The population is what ``accept`` lands, not what it parses** (#349).
-        ``_commit`` writes bytes to paths; a parse is something this method does
-        on the way. Five inputs, in the order they are scanned:
+        **The population is what an acceptance lands, plus the one thing it
+        leaves behind and tells the author to commit** (#349, #361). ``_commit``
+        writes bytes to paths; a parse is something this method does on the way.
+        It is deliberately *not* "everything that reaches the pull request":
+        ``_remove_proposal_sources`` leaves the rest of the proposal directory
+        where it is, and a stray file in it rides the same route unscanned
+        (#540, and this module's own docstring). Six inputs, in the order they
+        are scanned:
 
         * **each body's bytes**, the channel since #198 -- the artifact a
           reviewer actually opens in a pull request;
@@ -1057,7 +1211,11 @@ class ProposalService:
         * **each body's landed path** relative to ``.theurian/knowledge/``,
           directory components included -- ``_commit`` calls
           ``destination.parent.mkdir(parents=True)``, so every component becomes
-          a real directory in the tree.
+          a real directory in the tree; and
+        * **the evidence record's own text**, which this command lands nowhere
+          and which travels into the repository all the same (#361). It is the
+          one input here that is not an artifact of the move, and
+          :meth:`_evidence_text` is where that difference is argued.
 
         **No channel subsumes the parsed field values.** A double-quoted YAML
         scalar spells any character as ``\\xNN``, so a token can sit in a parsed
@@ -1135,10 +1293,12 @@ class ProposalService:
             silently rather than given a ceiling of its own.
 
         Raises:
-            ProposalError: If the policy is ``block`` and anything the acceptance
-                would land appears to carry a secret. Raised before anything has
-                been written, so the proposal directory is intact and the change
-                can be corrected rather than re-drafted.
+            ProposalError: If the policy is ``block`` and anything this
+                acceptance would put into the pull request appears to carry a
+                secret, or if it is ``block`` and the evidence record is present
+                but cannot be read (:meth:`_evidence_text`). Raised before
+                anything has been written, so the proposal directory is intact
+                and the change can be corrected rather than re-drafted.
             ProjectConfigError: If ``.theurian/config.yaml`` exists and cannot be
                 read, or states a ``security.secretScan`` value that is not one
                 of the three. Deliberately not translated into a
@@ -1153,10 +1313,35 @@ class ProposalService:
         if policy is SecretScanPolicy.OFF:
             return SecretScanResult(policy=policy)
 
-        findings = _findings_in(self._landed_text(migration_file, migration_bytes, document, moves))
+        # Chained rather than appended, so the laziness `_findings_in` relies on
+        # survives: a run whose budget fills in the bodies never opens
+        # `evidence.json` at all, and the read that channel needs is not paid by
+        # an acceptance that was going to be refused anyway.
+        # Accumulators rather than return values, because `_evidence_text` is a
+        # generator and `_findings_in` is what drives it -- the same shape
+        # `_authored_strings` uses for its `seen` set. They are read after the
+        # scan has run, so they report what actually happened rather than what
+        # the channel list intended.
+        reached: list[str] = []
+        skipped: list[str] = []
+        findings = _findings_in(
+            chain(
+                self._landed_text(migration_file, migration_bytes, document, moves),
+                self._evidence_text(location, policy, reached, skipped),
+            )
+        )
+        # A channel the run never got to is a channel it did not clear, and
+        # saying so needs no file opened -- which is what keeps this compatible
+        # with the laziness the chain buys. A generator that is never advanced
+        # runs none of its body, so an empty `reached` is exactly "the budget
+        # filled upstream and this channel was abandoned" (round 2, M-1). Without
+        # it the result published `skipped=()` for a run that had not looked,
+        # which is the same false "nothing was skipped" the field exists to stop.
+        if _AT_EVIDENCE not in reached:
+            skipped.append(_AT_EVIDENCE)
         if policy is SecretScanPolicy.BLOCK and findings:
             raise self._secret_refusal(location, findings)
-        return SecretScanResult(policy=policy, findings=findings)
+        return SecretScanResult(policy=policy, findings=findings, skipped=tuple(skipped))
 
     def _landed_text(
         self,
@@ -1167,9 +1352,13 @@ class ProposalService:
     ) -> Iterable[tuple[str, str]]:
         """Every text this acceptance would land, each with where it sits.
 
-        The five channels :meth:`_scan_for_secrets` enumerates, in the order it
-        states. Lazy, so a run that fills the budget in the first channel never
-        decodes the migration a second time.
+        Five of the six channels :meth:`_scan_for_secrets` enumerates, in the
+        order it states; the sixth is :meth:`_evidence_text`, which is separate
+        because it is the one input the acceptance does not land. Lazy, so a run
+        that fills the budget in the first channel never decodes the migration a
+        second time -- and, chained rather than listed, never opens
+        ``evidence.json`` either (pinned by
+        ``test_proposal_evidence_scan.py::test_a_run_whose_budget_fills_first_never_opens_the_evidence_record``).
 
         **Every location is a fixed literal of this module's own, never the text
         that was scanned.** A body's *content* and a body's *path* are two
@@ -1182,9 +1371,13 @@ class ProposalService:
         four-character bound :class:`~theurian.security.content_secrets
         .SecretFinding` holds on the match -- the same reason the two name
         channels never name what they found. Bringing it under the literal rule
-        is what makes *no* finding location author-controlled or scanned text;
-        the broader class of author-supplied names echoed in refusal *messages*
-        elsewhere on the accept path is tracked separately (#360).
+        is what makes *no* finding location author-controlled or scanned text.
+
+        The sibling class -- author-supplied names echoed in refusal *messages*
+        elsewhere in this module, several of them fired *before* this scan runs --
+        is closed by :func:`_bounded` and the two renderings over it (#360). Its
+        boundary is this module: :func:`_names` records the population that lies
+        outside it and is not closed.
         """
         knowledge = self._paths.knowledge.resolve()
         landed = tuple(move.destination.relative_to(knowledge).as_posix() for move in moves)
@@ -1208,6 +1401,122 @@ class ProposalService:
         for index, at in enumerate(landed):
             yield f"{_AT_BODY_PATH}[{index}]", at
 
+    def _evidence_text(
+        self,
+        location: _ProposalLocation,
+        policy: SecretScanPolicy,
+        reached: list[str],
+        skipped: list[str],
+    ) -> Iterable[tuple[str, str]]:
+        """The evidence record's own text, which travels without being landed (#361).
+
+        **The rationale this replaces was half right.** ``accept`` moves neither
+        ``evidence.json`` nor the proposal directory's name, and the conclusion
+        drawn from that -- neither is an artifact this scan can be about -- does
+        not follow for the first of the two. Three facts of this command put the
+        file into Git history without moving it:
+        :meth:`_remove_proposal_sources` deletes the migration and every body and
+        leaves the evidence behind; ``_ACCEPT_STEPS[0]`` tells the author to open
+        a pull request *with the proposal directory in it*, because the merge is
+        the approval; and ``.theurian/proposals/`` is not git-ignored. So an
+        agent's free-text ``reasoning`` carrying a credential becomes a commit,
+        which is the outcome T-15 and SEC-11 name -- reached through the evidence
+        file rather than through the migration.
+
+        **The whole text, never a field walk.** The migration document has an
+        allowlist because what lands there is a *parsed* value that the loader
+        reads and the index publishes; what lands here is the file, byte for
+        byte, so the bytes are the artifact and the bytes are what is scanned.
+        A field enumeration would also be the thing that drifts: ``reasoning`` is
+        free text under no schema constraint, and a record gaining a field would
+        gain an unscanned channel with it.
+
+        The residual, stated: a credential spelled with JSON ``\\uNNNN`` escapes
+        sits in the parsed value and not in the bytes, so this misses it. It is
+        not reachable through the record ``draft`` writes -- ``json.dumps``
+        escapes non-ASCII and never ASCII, and a credential is ASCII -- so
+        reaching it takes a hand-edited evidence file written to hide one, which
+        is the adversary :mod:`theurian.security.content_secrets` already
+        disclaims completeness against.
+
+        **A present record that cannot be read refuses under ``block`` and is
+        skipped under ``warn``**, which is the one place the two postures differ
+        here. ``block`` promises that nothing it cannot clear gets past, and a
+        channel it cannot read is a channel it cannot clear -- a 9 MiB or
+        symlinked ``evidence.json`` would otherwise be a one-line bypass of the
+        control. ``warn`` proceeds even when a credential *is* found, so
+        proceeding when one merely could not be looked for takes nothing away
+        that ``warn`` was offering -- but it is *reported*, on
+        :attr:`SecretScanResult.skipped`, because reporting is the whole of what
+        ``warn`` produces and a channel it could not read is part of the report.
+        ``off`` never reaches this method.
+
+        **A ``--local`` proposal is scanned the same way, though its record
+        travels nowhere** (ADR-0028: the directory is git-ignored, and
+        ``_LOCAL_ACCEPT_FIRST_STEP`` says so). Git-ignored keeps the bytes out of
+        a *commit* and not off the disk -- which is exactly why
+        :meth:`_secret_refusal`'s rotation advice is already unconditional -- and
+        a control whose population depends on a flag is a second path to get
+        wrong for a case where the value is live either way.
+
+        Absent is not a failure: ``draft`` writes the body, then the evidence,
+        then the migration, so an interrupted draft legitimately has none
+        (:meth:`_read_evidence_record` records that split).
+        """
+        # Before the existence probe, so that "this channel was considered" is
+        # recorded even when there is nothing to consider. A generator only runs
+        # its body once advanced, so the absence of this marker is what tells
+        # `_scan_for_secrets` the run never got here at all.
+        reached.append(_AT_EVIDENCE)
+        evidence = location.directory / EVIDENCE_FILE
+        if not evidence.exists() and not evidence.is_symlink():
+            return
+        try:
+            data = self._read_within_project(evidence)
+        except (OSError, TheurianError) as exc:
+            # CP-2's sixth translation site. This method runs outside `accept`'s
+            # examination clause -- the scan deliberately sits there, so a fault
+            # in `config.yaml` is not reported as an unreadable proposal -- and an
+            # untranslated `OSError` from here would escape `accept` raw and
+            # publish no `{error, remedy}` under `--json` (#227).
+            if policy is SecretScanPolicy.BLOCK:
+                raise self._evidence_unscannable(location, exc) from exc
+            # `warn` proceeds, and says so: an unreadable channel that reported
+            # nothing is otherwise indistinguishable from a clean one, which
+            # degrades the operator's chosen posture to `off` in silence (M-3).
+            skipped.append(_AT_EVIDENCE)
+            return
+        # `errors="replace"`, the same reasoning as the body channel: an
+        # undecodable evidence file is a fault `_read_evidence_record` reports
+        # with a better message than this scan could, and replacement leaves
+        # every ASCII run -- which is what a credential is -- intact.
+        yield _AT_EVIDENCE, data.decode("utf-8", errors="replace")
+
+    def _evidence_unscannable(
+        self, location: _ProposalLocation, error: BaseException
+    ) -> ProposalError:
+        """``block`` could not read the evidence record, so it cannot clear it.
+
+        The reason is derived from the *type* of the failure and never from
+        ``str(exc)``, whose text carries the absolute filename and with it the
+        machine's home directory -- the discipline :meth:`_evidence_indeterminate`
+        records, and the table it reads is shared with it so a new failure mode
+        cannot fall through to an answer in one and not the other.
+        """
+        return ProposalError(
+            f"{location.relative}/{EVIDENCE_FILE} is present but could not be read "
+            f"({_evidence_failure_reason(error, fallthrough='the security layer refused it')}), "
+            f"so the secret scan cannot clear it -- and "
+            "accepting this would tell you to commit that directory.",
+            remedy=(
+                f"Make {location.relative}/{EVIDENCE_FILE} readable and no larger than the "
+                "source-file cap, then accept it again. If the record is not recoverable, "
+                "delete it -- an absent one is a legacy or interrupted draft and is allowed. "
+                "To accept without scanning it, set security.secretScan to warn or off in "
+                ".theurian/config.yaml (block, warn, off; block is what an absent key selects)."
+            ),
+        )
+
     def _secret_refusal(
         self, location: _ProposalLocation, findings: tuple[ProposalSecretFinding, ...]
     ) -> ProposalError:
@@ -1218,11 +1527,19 @@ class ProposalService:
         detector bounds it again at its own :data:`~theurian.security
         .content_secrets.MAX_FINDINGS`, so this is the second of two ceilings
         rather than the only one. **``findings`` is every channel's together** --
-        the bodies, the document's fields, the migration's bytes, its filename
-        and each landed path -- so the cap and its deliberate silence about what
-        it dropped apply once, to the whole list. Capped per channel it would
-        publish five times the cap and say which channels the proposal leaked on,
-        which is the contributor's count again in a different shape.
+        the bodies, the document's fields, the migration's bytes, its filename,
+        each landed path and the evidence record -- so the cap and its deliberate
+        silence about what it dropped apply once, to the whole list. Capped per
+        channel it would publish six times the cap and say which channels the
+        proposal leaked on, which is the contributor's count again in a different
+        shape.
+
+        **The sentence names no destination**, because the six channels no longer
+        share one. Five are artifacts the acceptance lands; the evidence record is
+        one it leaves for the pull request instead (#361), and for a ``--local``
+        proposal that record travels nowhere at all. "In what it would land" was
+        true of five of six and is the kind of sentence a reader checks against
+        the finding's own location, which says which channel it was.
 
         **The remedy says to rotate before it says how to proceed.** A secret
         that reached a proposal directory is in a Git working tree and, if the
@@ -1237,8 +1554,7 @@ class ProposalService:
         """
         listed = [finding.describe() for finding in findings[:_MAX_NAMES_LISTED]]
         return ProposalError(
-            f"This proposal appears to carry a secret in what it would land: {_names(listed)}. "
-            "Nothing has moved.",
+            f"This proposal appears to carry a secret: {_names(listed)}. Nothing has moved.",
             remedy=(
                 "Treat the value as exposed and rotate it -- it is already in a working tree, "
                 "and in Git history if the proposal has been committed. Then remove it from the "
@@ -1344,7 +1660,7 @@ class ProposalService:
             raise
         except TheurianError as exc:
             raise ProposalError(
-                f"{_names([migration_file.name])} is not a valid migration: {exc}",
+                f"{_names([migration_file.name])} is not a valid migration: {_their_words(exc)}",
                 remedy=(
                     "Correct the migration in the proposal directory, then accept it again. "
                     "Nothing has moved."
@@ -1462,7 +1778,8 @@ class ProposalService:
         if landed_error is not None:
             return self._landed_set_refusal(landed_error)
         message = (
-            f"Accepting this proposal would leave .theurian/migrations/ unable to apply: {error}"
+            f"Accepting this proposal would leave .theurian/migrations/ unable to apply: "
+            f"{_their_words(error)}"
         )
         if isinstance(error, RevisionConflictError):
             # The racing face (#307): this proposal claimed a revision that was
@@ -1507,7 +1824,7 @@ class ProposalService:
         """
         return ApprovedSetUnusableError(
             f"The project's migration set cannot be applied as it stands, with or without "
-            f"this proposal: {error}",
+            f"this proposal: {_their_words(error)}",
             remedy=(
                 "This proposal is not the cause: nothing has moved and its directory is "
                 "intact. The fault is in .theurian/migrations/ -- read what the message "
@@ -1857,7 +2174,9 @@ class ProposalService:
         """
         return ProposalError(
             f"Proposal {proposal_id.value} could not be examined: its {EVIDENCE_FILE} is present "
-            f"but could not be read ({_evidence_failure_reason(error)}), so whether it has been "
+            f"but could not be read "
+            f"({_evidence_failure_reason(error, fallthrough='it is not a JSON object')}), so "
+            f"whether it has been "
             "accepted cannot be answered.",
             remedy=f"Make {location.relative}/{EVIDENCE_FILE} readable and "
             "well-formed, then run theurian propose accept again. If it cannot be recovered, look "
@@ -2051,7 +2370,7 @@ class ProposalService:
         """
         if destination.exists() or destination.is_symlink():
             raise MigrationNameTakenError(
-                f"{destination.name} is already in .theurian/migrations/. The name "
+                f"{_names([destination.name])} is already in .theurian/migrations/. The name "
                 "carries the migration's id, so that migration is already in place.",
                 remedy=(
                     "Read the migration that is already there. If this proposal is a "
@@ -2164,21 +2483,34 @@ class ProposalService:
         that *a* file is a FIFO and never which one. Reproduced through the real
         CLI as a ``propose accept --json`` payload naming no path at all.
 
-        What is attached is ``path`` made project-relative -- and ``path`` is
-        Theurian's own construction, never an authored string: a ULID proposal
-        directory joined with either a name ``iterdir()`` returned, the constant
-        ``evidence.json``, or the normalized ``knowledge/`` tail
-        :meth:`_body_moves` obtained from :meth:`_destination_of`, which resolved
-        it and proved containment first. It is the identical string
-        :meth:`_reject_symlink_in_chain` already prints for this same file, so it
-        opens no echo the accept path did not already have.
+        What is attached is ``path`` made project-relative, and **that is
+        Theurian's own construction only down to the leaf** -- the sentence here
+        used to say "never an authored string", which round one falsified. A
+        ULID proposal directory joined with a name ``iterdir()`` returned, or
+        with the constant ``evidence.json``, is entirely ours; the third case is
+        not. The ``knowledge/`` tail :meth:`_body_moves` obtains from
+        :meth:`_destination_of` has been *resolved* and proved contained, and
+        resolution normalizes a path without renaming its components: an author's
+        ``contentFile: ../knowledge/<credential>.md`` arrives here with the
+        credential intact, and a FIFO at that path published it
+        character-for-character in both halves of the CP-2 payload. Containment
+        is not provenance, and a check that proves where a string points says
+        nothing about who chose its characters.
+
+        So the leaf goes through the gate every other author-derived string in
+        this module goes through (#360), and what is attached is the gated form.
+        ``IrregularSourceFileError`` quotes what it is given, so :func:`_plain`
+        rather than :func:`_one_name`: the constructor's own ``{referrer!r}`` is
+        the quoting.
         """
         self._reject_symlink_in_chain(path)
         relative = PurePosixPath(path.relative_to(self._paths.root))
         try:
             return read_source_file(self._paths.root, relative)
         except IrregularSourceFileError as exc:
-            raise IrregularSourceFileError(exc.shape, referrer=relative.as_posix()) from exc
+            raise IrregularSourceFileError(
+                exc.shape, referrer=_plain(relative.as_posix(), _MAX_NAME_CHARS, _REDACTED_NAME)
+            ) from exc
 
     def _reject_symlink_in_chain(self, path: Path) -> None:
         """Refuse ``path`` if any component below the project root is a symlink.
@@ -2492,10 +2824,12 @@ class ProposalService:
         ``referrer`` at all, so ``accept`` published "The referenced file is a
         named pipe (FIFO), not a regular file" naming no path -- the identical
         CP-2 shape :meth:`_read_within_project` was fixed to stop. ``relative``
-        is safe to attach: it is Theurian's own project-relative construction
-        from ``move.destination``, resolved and proved contained by
-        :meth:`_destination_of` before ``_commit`` ever runs, never an
-        author-controlled string. :class:`~theurian.domain.errors.InputTooLargeError`
+        is attached **through the gate**, for the reason
+        :meth:`_read_within_project` now records at length: it is built from
+        ``move.destination``, which :meth:`_destination_of` resolved and proved
+        contained, and containment is not provenance -- the leaf is still the
+        spelling the author's ``contentFile`` chose.
+        :class:`~theurian.domain.errors.InputTooLargeError`
         needs no matching clause -- its constructor takes no path at all, the
         same as every other size-cap raise on this path -- and an unattached
         :class:`~theurian.domain.errors.PathEscapeError` here stays generic
@@ -2514,7 +2848,8 @@ class ProposalService:
                         restored_bytes = read_source_file(self._paths.root, relative)
                     except IrregularSourceFileError as exc:
                         raise IrregularSourceFileError(
-                            exc.shape, referrer=relative.as_posix()
+                            exc.shape,
+                            referrer=_plain(relative.as_posix(), _MAX_NAME_CHARS, _REDACTED_NAME),
                         ) from exc
                     restored.append((move.destination, restored_bytes))
                 else:
@@ -2524,9 +2859,9 @@ class ProposalService:
                 _write_file(migration_destination, migration_bytes, exclusive=True)
             except FileExistsError as exc:
                 raise MigrationNameTakenError(
-                    f"{migration_destination.name} appeared in .theurian/migrations/ while "
-                    "this proposal was being accepted, so accepting it would overwrite that "
-                    "migration.",
+                    f"{_names([migration_destination.name])} appeared in .theurian/migrations/ "
+                    "while this proposal was being accepted, so accepting it would overwrite "
+                    "that migration.",
                     remedy="Read what is there, then draft this proposal again for a new id.",
                 ) from exc
             created.append(migration_destination)
@@ -2572,6 +2907,15 @@ class ProposalService:
         self, moves: tuple[_BodyMove, ...], migration_file: Path
     ) -> str | None:
         """Delete the proposal's now-copied files; report, don't raise, on failure.
+
+        **The evidence record is deliberately not among them**, and that is why
+        it is scanned rather than removed (#361). ``_read_evidence_record`` reads
+        it to answer whether a proposal has already been accepted -- the question
+        whose wrong answer mints a duplicate migration (#89) -- so deleting it
+        here would destroy the diagnosis a re-accept depends on. It therefore
+        stays in a directory ``accept`` tells the author to commit, which makes
+        it an input to :meth:`_scan_for_secrets` even though this method moves it
+        nowhere.
 
         Runs only after the migration and every body have landed, so the move is
         already a success: a failure here is a cleanup that could not finish, not
@@ -2727,8 +3071,14 @@ def _unmoved_generated_bodies(directory: Path, proposal_id: ProposalId) -> tuple
     """
 
     def refuse(error: OSError) -> NoReturn:
+        # `strerror` with a *literal* fallback, never `error` itself: an
+        # `OSError`'s own text carries the absolute filename, which is the
+        # machine's home directory (the discipline `_unreadable` and
+        # `_evidence_indeterminate` both record, and which this one call had
+        # walked around through its `or`).
         raise ProposalError(
-            f"Proposal {proposal_id.value} could not be examined: {error.strerror or error} at "
+            f"Proposal {proposal_id.value} could not be examined: "
+            f"{error.strerror or 'it could not be read'} at "
             f"{_names([_within(error.filename, directory)])}. Whether it has been accepted "
             "cannot be answered without reading it.",
             remedy="Make the path above readable -- chmod u+rx on the directory -- then run "
@@ -2793,45 +3143,315 @@ def _project_relative(filename: object, root: Path) -> str:
     return "a path outside the project"
 
 
-def _names(names: Sequence[str]) -> str:
-    """Untrusted names, quoted and bounded, for an *error message*.
+def _bounded(text: str, limit: int) -> str | None:
+    """``text`` cut to what a refusal may print, or ``None`` if it may not print it.
+
+    The one gate every author-derived string in this module passes through before
+    it reaches a message (#360), and the reason it is one gate rather than a
+    judgement per site: which producer is trustworthy is exactly the enumeration
+    that drifts. A caller renders what comes back; ``None`` means the detector
+    reported the cut text and the caller must name it by a literal of its own
+    instead.
+
+    ``limit`` is the caller's, because a name and a report are different
+    questions with different answers (:data:`_MAX_NAME_CHARS`,
+    :data:`_MAX_REPORT_CHARS`). What is *not* the caller's is whether to scan:
+    there is no argument for that, so no site can opt out of the redaction while
+    keeping the cut.
+
+    **Both the whole string and the cut are scanned, and either one reporting
+    withholds it.** Two rounds each tried one of those scans on its own, and each
+    single scan has its own leak:
+
+    * **Cut first, scan the cut** (the original) leaks the *straddle*. A
+      credential crossing ``limit`` leaves a sub-floor fragment in the head, the
+      head scans clean, and the fragment prints -- measured at the name bound, 31
+      of a 43-character high-entropy token and 22 of a 43-character ``sk-``
+      token, every start offset from 160 to 200 publishing 13 to 30 characters.
+    * **Scan the whole, print the cut** (round one's fix) leaks the *overrun*,
+      and worse: the **whole** credential, 43 of 43, in the message and again in
+      the remedy. Four of the detector's six specific families are
+      ``{n,255}`` followed by a negative lookahead over their own character
+      class, so a candidate run *longer* than
+      :data:`~theurian.security.content_secrets._MAX_TOKEN_CHARS` matches
+      nothing at all -- every backtrack lands on a candidate character and the
+      lookahead never succeeds. ``-`` and ``_`` are candidate characters, so an
+      ordinary descriptive slug after a credential is enough. The cut then
+      *creates* the boundary the lookahead wanted: the whole scans clean, the
+      200-character head scans dirty, and the head is what printed. The cliff is
+      exactly one character wide -- a run of 255 after ``sk-`` is caught, 256
+      leaks.
+
+    **The reason one scan cannot be enough is that the detector is not monotone
+    under truncation**, and that is the sentence two rounds got wrong. Scanning
+    the whole was defended as "the scanned set is a superset of the printed set,
+    so nothing can drift in between", by analogy with GHSA-3f65. The analogy does
+    not hold: set containment says nothing about how a *detector* answers, and
+    this one answers differently on a string and on its own prefix -- in **both**
+    directions, as the two bullets above show. A verdict on a superset does not
+    transfer to a substring.
+
+    What does hold is the property stated directly rather than derived: **every
+    string this prints has itself been scanned, as printed.** The head is scanned
+    because the head is what prints; the whole is scanned because a credential
+    the cut would sever must still be caught. Neither scan is redundant, and
+    neither is doing the other's job.
+
+    **A dirty string is dropped whole, never partially echoed.** ``scan_text``
+    reports a finding's line, column and family but not the match's *length*, so
+    substituting only the matched span is not reconstructible from what the
+    detector returns -- and a "clean" remainder around a redacted span is a
+    partial copy of the credential besides, which is the walk-around
+    :class:`~theurian.security.content_secrets.SecretFinding`'s four-character
+    bound exists to prevent.
+
+    **The scan is paid on the whole input, which is what moved.** The strings
+    reaching here are bounded by what a *committed proposal* can carry -- a
+    ``contentFile`` is a scalar of a migration ``_parse_migration`` has already
+    held under ``MAX_YAML_BYTES`` -- and the accept path already pays a full pass
+    over those same bytes in :meth:`ProposalService._scan_for_secrets`. What is
+    new is that a *pre-scan* refusal now pays one too. Measured 2026-09-04 on
+    CPython 3.13 (Apple silicon), a 3,000,000-character ``contentFile`` produced
+    its 966-character refusal in 1.06 s; the worst case at ``MAX_YAML_BYTES`` in
+    the shape :mod:`theurian.security.content_secrets` prices worst is about
+    4.4 s. A refusal is a one-shot local interaction, and the alternative is
+    publishing a credential. The second scan adds nothing to that ceiling: it is
+    bounded by ``limit``, and it is skipped entirely when the input is already
+    within it.
+
+    **This gate's reach is the detector's reach, and that is a bound worth
+    stating rather than one to read past.** What it promises is that a string
+    the detector reports is not printed; it does not promise that no credential
+    is. :mod:`theurian.security.content_secrets` is best effort by recorded
+    design, and one shape of the residual is visible right here, measured
+    2026-09-04 through the real CLI: PyYAML's ``Mark.get_snippet`` cuts the front
+    off a long line, so a 43-character ``sk-`` token in a malformed migration
+    reached :func:`_their_words` with its prefix already gone, leaving 32
+    lower-case hex characters that no family matches -- no upper-case letter for
+    the generic family's class gate, no ``sk-`` for the specific one -- and they
+    were printed. The fragment is what a *third party's* truncation left, not
+    something this module chose to quote, and it is the same residual every
+    caller of this detector carries.
+
+    **The second and third shapes of that residual are where *both* scans come
+    back clean**, and no ordering of them can help. Measured 2026-09-04, the
+    longest prefix of a 43-character credential each rule publishes:
+
+    ======================  =========  ==========  ============
+    shape                   cut-first  whole-only  both (ships)
+    ======================  =========  ==========  ============
+    straddle                       20           0             0
+    overrun, name bound             0          43             0
+    overrun, report bound          43          43            43
+    entropy dilution               43          43            43
+    ======================  =========  ==========  ============
+
+    The rule that ships is no worse than either single scan on any shape and
+    strictly better on two, which is the whole of why it is both and not a
+    choice between them. The bottom two rows are identical in all three columns:
+    they are the *detector's* holes, not the gate's, and they were leaking
+    exactly as much before either round touched the order.
+
+    * **An over-long candidate run at the report bound.** The four ``{n,255}``
+      families lose their match on a run past
+      :data:`~theurian.security.content_secrets._MAX_TOKEN_CHARS`, and at a
+      2,000-character bound the *head* is still long enough to lose it too, so
+      neither scan reports. The name bound is narrow enough that the cut brings
+      the run back under the cap, which is what makes that row recoverable.
+    * **Entropy dilution.** A high-entropy token followed by a long low-entropy
+      run drops the whole candidate below
+      :data:`~theurian.security.content_secrets._ENTROPY_FLOOR`, and the head
+      inherits the dilution.
+
+    Both are properties of ``scan_text`` and both are live in
+    :meth:`ProposalService._scan_for_secrets` itself, where they are the same
+    best-effort residual SEC-11 already publishes -- a body whose credential
+    carries an over-long tail is not reported there either. Stated here because
+    this gate's own reach is bounded by them, and closing them belongs to the
+    detector rather than to a caller cutting strings.
+    """
+    head = text[:limit]
+    # The head first, and the whole only when there is more: the two are an `or`,
+    # so the order cannot change the verdict, and rejecting on the cheap bounded
+    # scan skips a pass over an input that can be megabytes.
+    if scan_text(head, max_findings=1):
+        return None
+    if len(text) > limit and scan_text(text, max_findings=1):
+        return None
+    return head
+
+
+def _plain(text: str, limit: int, withheld: str) -> str:
+    """One untrusted string, gated, for a caller that does its own quoting.
+
+    :func:`_one_name`'s sibling and the *unquoted* half of one gate. They share
+    :func:`_bounded`, so a change to what may be printed cannot reach one form
+    and miss the other, and they agree on every input but one shape: measured
+    over six, ``repr(_plain(x))`` equals ``_one_name(x)`` in five, and the sixth
+    is a clean string over the bound, where the marker sits inside the quotes
+    rather than outside (:data:`_TRUNCATED` records why that is left alone).
+
+    They also differ in what they do to control characters -- ``repr`` escapes
+    them and this does not -- which is not a hole but is a second difference, so
+    "they differ in exactly one thing" was an overstatement. The sink closes it
+    either way: ``cli.commands._render`` and ``_fail`` run every printed value
+    through ``escape_terminal_controls``, and the ``--json`` branch goes through
+    ``json.dumps``.
+
+    ``withheld`` is the caller's literal for a string the detector reported,
+    because a name and another component's report deserve different words for
+    the same fact. It is never a prefix of ``text``: see :func:`_bounded`.
+    """
+    head = _bounded(text, limit)
+    if head is None:
+        return withheld
+    return head if len(head) == len(text) else f"{head}{_TRUNCATED}"
+
+
+def _one_name(name: str) -> str:
+    """One untrusted name, quoted, bounded and redacted, for an *error message*.
 
     ``repr`` and never the raw name. A proposal directory is committed input
     (ADR-0013 point 7), so its filenames are the contributor's: one carrying
     ``ESC [ 2 K CR`` erases the line a terminal has already drawn and prints its
     own in place of it -- T-3's injection at the CLI edge rather than in indexed
-    content. This quotes such a name into readable escapes and bounds the count.
+    content. This quotes such a name into readable escapes.
 
-    **This is the error path only, and it is not what closes the class.** The
-    class -- every proposal-derived string that reaches a terminal raw -- is
-    closed at the *output sink*: ``cli.commands._render`` and ``_fail`` escape
-    control characters in every value they print, so a name that skips ``_names``
-    (the exit-0 success payload did, before round three) still cannot rewrite a
-    line. ``_names`` remains because quoting and a five-name cap are readability
-    a blanket control-escape does not give: 50,000 files produced a 600 KB error
-    string in 1.5 s before the cap.
+    **Control characters are the class the quoting closes, and they were never
+    the whole of it** (#360). A name is also where a credential sits: a
+    ``contentFile`` and a migration filename are both author-written, both reach
+    refusals that fire *before* the secret scan runs, and both were echoed at
+    full length under the shipped ``block`` default -- so the same string the
+    scan would have redacted to four characters was printed whole by the refusal
+    that beat it there. :func:`_bounded` is what settles both halves.
+
+    The terminal-rewriting half is still closed at the *output sink* as well:
+    ``cli.commands._render`` and ``_fail`` escape control characters in every
+    value they print, so a name that skips this helper (the exit-0 success
+    payload did, before #233's round three) still cannot rewrite a line.
+
+    **The gate runs before ``repr``, and that ordering is safe in the direction
+    that matters.** What is printed is ``repr(head)`` while what was scanned is
+    ``head``, so the two are not the same string -- but ``repr`` cannot
+    manufacture a match the scan did not see. Every escape it introduces begins
+    with a backslash, which is outside
+    :data:`~theurian.security.content_secrets._CANDIDATE_CLASS`, so it *ends* a
+    candidate run rather than extending one: every run in the repr is a substring
+    of a run in the raw. The transform can only split what the detector judged,
+    never join or lengthen it.
+
+    Its other effect is on *length*, and that one is real: ``repr`` of an astral
+    character is a ten-character ``\\U0001f600`` escape, so a name at the
+    200-character bound can print as 2,002. The bound is on the name and not on
+    its rendering, deliberately -- bounding the rendering would make the cut
+    depend on how the terminal spells a character -- and 2 KB is not the flood
+    :data:`_MAX_NAMES_LISTED` exists to stop. Both boundaries were checked: a
+    name of exactly the bound and one of the bound plus one behave as this
+    function's two arms say.
+    """
+    head = _bounded(name, _MAX_NAME_CHARS)
+    if head is None:
+        return _REDACTED_NAME
+    return repr(head) if len(head) == len(name) else f"{head!r}{_TRUNCATED}"
+
+
+def _their_words(reported: object) -> str:
+    """Another component's own message, bounded and redacted, for a refusal.
+
+    A parser's and a validator's errors quote the input they refused, so they
+    carry author text as surely as a name does -- and one of the two does it
+    *before* the secret scan runs. Measured 2026-09-04 on this build:
+
+    * ``yaml.YAMLError`` in :func:`_parse_migration` prints the offending source
+      line through PyYAML's ``Mark.get_snippet``, which is bounded to a window
+      around the mark -- a 43-character token was cut, a 23-character ``sk-``
+      token at that family's floor was echoed **whole**, and this site runs on
+      the raw bytes before anything is scanned;
+    * ``jsonschema``'s message in
+      :meth:`ProposalService._refuse_a_document_the_schema_rejects` quotes the
+      offending instance in full and is bounded by nothing.
+
+    Rendered unquoted, unlike :func:`_one_name`: these are sentences a reader
+    finishes rather than names a reader copies, and ``repr`` on a multi-line
+    parser error is unreadable. Bounded at :data:`_MAX_REPORT_CHARS` and not at
+    the name bound, which cut two legitimate diagnoses mid-sentence when both
+    shared one number.
+    """
+    return _plain(str(reported), _MAX_REPORT_CHARS, _REDACTED_REPORT)
+
+
+def _rendered_scalar(value: object) -> str:
+    """One untrusted *parsed* scalar -- a raw YAML value -- for a refusal.
+
+    **One exit, and the type does not choose it** (#360 round 1, R1-A). This had
+    two: a ``str`` went through :func:`_one_name` and everything else returned
+    bare ``repr``, on the argument that ``is_bounded_scalar`` admits only "a
+    bool, a number, ``None`` or a timestamp" and none of those can spell a
+    credential. The enumeration was wrong, and the shape of the error is the one
+    worth remembering -- it selected the gate by *value type* where the question
+    is *provenance*. ``_StrictLoader`` is a ``SafeLoader``, so ``!!binary``
+    constructs ``bytes``; ``is_bounded_scalar`` admits ``bytes`` under 200
+    characters explicitly; and a migration whose ``id`` is
+    ``!!binary c2stZTNj...`` printed its decoded credential in full in an
+    ``accept --json`` payload, at a refusal that fires before the scan, under the
+    shipped ``block`` default, through the committed-proposal channel ADR-0013
+    point 7 documents. Reproduced by two reviewers independently.
+
+    So the render is built first and gated second, whatever the type. ``repr`` is
+    still what turns a non-``str`` into text -- that part was never the defect --
+    but its *result* is the untrusted string, and it goes through the same
+    :func:`_bounded` as a name. ``bytes``' ``repr`` spells the credential
+    verbatim inside ``b'...'``, which is exactly what the detector reads.
+    """
+    if isinstance(value, str):
+        return _one_name(value)
+    # Not `repr` and return: the rendered text is the untrusted string here, so
+    # it passes the same gate a name does. `_plain` and not `_one_name`, because
+    # `repr` has already quoted it (`b'...'`) and quoting it twice reads as a
+    # mistake -- the bound and the redaction are identical either way.
+    return _plain(repr(value), _MAX_NAME_CHARS, _REDACTED_NAME)
+
+
+def _names(names: Sequence[str]) -> str:
+    """Untrusted names, each bounded by :func:`_one_name`, and how many at most.
+
+    Two ceilings, and they answer different questions. This one bounds *how
+    many*: 50,000 files in a committed proposal directory produced a 600 KB error
+    string in 1.5 s before :data:`_MAX_NAMES_LISTED` capped the list.
+    :func:`_one_name` bounds *how much of each*, which the cap never did (#360).
 
     The remaining interpolations in this module are constrained rather than
-    quoted -- and the sink escapes any control that slips through regardless.
-    Measured on 2026-08-20:
+    routed here, and each is constrained by construction rather than by trust:
 
-    * a migration file's own name, at the two "already in .theurian/migrations/"
-      refusals and in :func:`_parse_migration`, and its inner ``id`` in
-      :func:`_require_filename_matches_id` -- each reached its message only after
-      matching ``_MIGRATION_FILE_NAME``, whose charset is a ULID, ASCII
-      lowercase, hyphens and ``.yaml``;
     * identifiers -- ``ProposalId``, ``MigrationId``, ``ItemId``, ``RevisionId``
-      -- validated on construction against anchored patterns;
-    * ``OSError`` text in :meth:`ProposalService._commit`: CPython formats the
-      filename with ``repr`` inside ``OSError.__str__``, so
-      ``[Errno 2] No such file or directory: '/tmp/x\\x1b[2K\\rfake'`` is what
-      arrives;
-    * ``yaml.YAMLError`` text in :func:`_parse_migration`, which does echo a
-      source line -- but PyYAML's reader refuses ``ESC`` outright ("unacceptable
-      character #x001b") and normalises ``CR`` as a line break, so neither
-      primitive that rewrites a drawn line survives the parse.
+      -- validated on construction against anchored patterns, and every message
+      built from one (``location.relative``, the searched-directory lists) with
+      them;
+    * ``OSError.strerror``, which is the OS's own category for a failure and
+      carries none of the path (:meth:`ProposalService._unreadable` records why
+      ``str(exc)`` is never used in its place);
+    * :func:`_evidence_failure_reason`, a fixed table keyed on the exception's
+      *type*;
+    * this module's own literals -- ``AUTHORED_IN_THEURIAN``,
+      ``MIGRATION_API_VERSION``, ``MAX_UPSERT_OPERATIONS``, the field names in
+      :meth:`ProposalRequest.__post_init__` -- and integer counts.
+
+    **What lies outside this population, and is not closed.** The gate's boundary
+    is this module, and one *other* module reached on the accept path holds the
+    same shape:
+    ``infrastructure/filesystem/migration_loader.py`` prefixes ``{path.name}`` --
+    a landed migration's filename -- onto every ``MigrationError`` it raises, and
+    interpolates more than that besides: an operation's ``contentFile`` as
+    written, and raw scalars from the document it is refusing. And
+    the CLI loads the migration set during context resolution, so that message
+    arrives *before* ``accept`` runs at all. Measured 2026-09-04 through the real
+    CLI: a landed migration named for a credential printed it at full length in
+    an ``accept --json`` payload while every refusal in this module withheld the
+    same string. It is a different producer with a different population and four
+    other commands reading it (``migrate validate``/``apply``/``status``,
+    ``index build``), so it is recorded here rather than closed from here.
     """
-    shown = ", ".join(repr(name) for name in names[:_MAX_NAMES_LISTED])
+    shown = ", ".join(_one_name(name) for name in names[:_MAX_NAMES_LISTED])
     remaining = len(names) - _MAX_NAMES_LISTED
     return shown if remaining <= 0 else f"{shown}, and {remaining} more"
 
@@ -2859,13 +3479,18 @@ def _require_filename_matches_id(migration_file: Path, document: Mapping[str, ob
         # migration id is a ULID, so anything but a short scalar is a mistake and
         # is refused without being rendered -- the filename ULID is the diagnosis.
         raise ProposalError(
-            f"The migration file is named for {prefix} but its id is not a simple value; the "
-            "filename ULID must equal the migration id.",
+            f"The migration file is named for {_names([prefix])} but its id is not a simple "
+            "value; the filename ULID must equal the migration id.",
             remedy="Rename the file to <id>-<slug>.yaml, or correct the id inside it.",
         )
+    # Both halves are routed even though only one of them is reachable as author
+    # text today: `prefix` comes off a name `_require_migration` already matched
+    # against `_MIGRATION_FILE_NAME`, so it is a ULID. Routing it anyway is the
+    # uniform rule #360 asked for -- a per-site trust argument is what has to be
+    # re-derived by whoever next calls this function from somewhere else.
     raise ProposalError(
-        f"The migration file is named for {prefix} but its id is {inner!r}; the "
-        "filename ULID must equal the migration id.",
+        f"The migration file is named for {_names([prefix])} but its id is "
+        f"{_rendered_scalar(inner)}; the filename ULID must equal the migration id.",
         remedy="Rename the file to <id>-<slug>.yaml, or correct the id inside it.",
     )
 
@@ -2926,7 +3551,7 @@ def _parse_migration(data: bytes, path: Path) -> Mapping[str, object]:
         return load_yaml_mapping(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
         raise ProposalError(
-            f"{path.name} could not be read as a migration: {exc}",
+            f"{_names([path.name])} could not be read as a migration: {_their_words(exc)}",
             remedy="Fix the migration file in the proposal directory, then accept it again.",
         ) from exc
 
@@ -3017,14 +3642,26 @@ _EVIDENCE_FAILURE_REASONS: Final = (
 )
 
 
-def _evidence_failure_reason(error: BaseException | None) -> str:
-    """A path-free, control-free reason an ``evidence.json`` could not be read."""
+def _evidence_failure_reason(error: BaseException | None, *, fallthrough: str) -> str:
+    """A path-free, control-free reason an ``evidence.json`` could not be read.
+
+    ``fallthrough`` is the caller's, because the two callers reach the end of the
+    table for different reasons and one verdict cannot be right for both.
+    :meth:`ProposalService._evidence_indeterminate` gets here with ``error=None``,
+    which is its way of saying the document parsed and was not an object -- so
+    "it is not a JSON object" is the answer, and it was the shared default.
+    :meth:`ProposalService._evidence_unscannable` never parses anything: it only
+    ever passes an exception, and if a *new* ``TheurianError`` from the security
+    layer ever fell past the table it would have told the reader the file was not
+    a JSON object when nobody had looked (round 1, M-6). Its own default says
+    what is actually true there.
+    """
     for kind, reason in _EVIDENCE_FAILURE_REASONS:
         if isinstance(error, kind):
             return reason
     if isinstance(error, OSError):
         return (error.strerror or "it could not be read").lower()
-    return "it is not a JSON object"
+    return fallthrough
 
 
 def _upsert_bodies(document: Mapping[str, object]) -> Iterable[tuple[str, str | None, str | None]]:

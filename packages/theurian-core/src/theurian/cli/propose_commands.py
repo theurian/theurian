@@ -523,6 +523,23 @@ def propose_accept(
         return
 
     root = context.paths.root
+    # `migrationFile` and `bodyFiles` name landed paths at full length, and that
+    # is deliberate rather than an oversight of #360's redaction. #360 is about
+    # *refusals*, where the echo is gratuitous: the message is about a name
+    # collision or a missing file and reprints a credential on its way out. This
+    # is a success payload whose entire job is to say what was written, and a
+    # redacted path reports nothing -- the author cannot find the file they were
+    # just told about.
+    #
+    # A secret-shaped landed path reaches this field three ways, not one: under
+    # `warn`, under `off`, and under `block` when the detector misses it -- the
+    # comment said "reaching it needs `warn`", which is the same over-claim the
+    # note twelve lines below already contradicts by observing that the findings
+    # list is empty under `off` too. Only the first of the three publishes the
+    # same string redacted beside it in `secretFindings` with the rotate step
+    # above it; under the other two the path is simply reported, which is what
+    # the field is for. Non-disclosing in all three: the caller is the maintainer
+    # who wrote the path.
     payload: dict[str, object] = {
         "proposalId": accepted.proposal_id.value,
         "migrationFile": _relative(accepted.migration.destination, root),
@@ -537,6 +554,11 @@ def propose_accept(
         # exactly what the policy beside it distinguishes (SEC-11).
         "secretScanPolicy": accepted.secret_scan.policy.value,
         "secretFindings": [f.describe() for f in accepted.secret_scan.findings],
+        # Part of the shape for the same reason `secretFindings` is: an empty
+        # list has to be a statement. Non-empty only under `warn`, which is the
+        # one policy that proceeds past a channel it could not read -- `block`
+        # refuses and `off` reads nothing (#361, round 1 M-3).
+        "secretScanSkipped": list(accepted.secret_scan.skipped),
         "nextSteps": _accept_steps(accepted),
     }
     # Set only when the move landed but the proposal's own source files could not
@@ -560,15 +582,15 @@ def propose_accept(
 # every compiler and linter emits, so a `--json` consumer can still split it and
 # a human can paste it into an editor.
 #
-# A finding location is one of a fixed set of channels (#336, #349): a body's
-# content or its landed path, a field of the migration document, the migration's
-# own bytes, or its filename. Every one is built from literals in
-# `proposal_service.py` -- a channel name with an integer index, or a document
-# field path assembled from module literals -- and carries no contributor or
-# scanned text, so none can smuggle author-controlled characters through the
-# human sink (`_render`/`escape_terminal_controls`) or the JSON sink
-# (`json.dumps`). #360 tracks the same discipline for the refusal *messages*
-# elsewhere on the accept path.
+# A finding location is one of a fixed set of channels (#336, #349, #361): a
+# body's content or its landed path, a field of the migration document, the
+# migration's own bytes, its filename, or the evidence record. Every one is built
+# from literals in `proposal_service.py` -- a channel name with an integer index,
+# or a document field path assembled from module literals -- and carries no
+# contributor or scanned text, so none can smuggle author-controlled characters
+# through the human sink (`_render`/`escape_terminal_controls`) or the JSON sink
+# (`json.dumps`). The refusal *messages* elsewhere on the accept path hold the
+# same discipline as of #360, through `proposal_service._bounded`.
 
 
 #: What a caller does next, and the one thing about it that surprises people:
@@ -605,29 +627,58 @@ _LOCAL_ACCEPT_FIRST_STEP: Final = (
 )
 
 
-#: The step a ``warn`` acceptance that landed a flagged value gets, ahead of
-#: everything else. Under ``warn`` the acceptance succeeds (exit 0) and the
-#: findings ride on ``secretFindings`` -- but with no next step, the report told
-#: the author to open a pull request over content the scan believes carries a
-#: live credential (code-review M-4, adversarial M-3). The wording is
+#: The step a ``warn`` acceptance with a finding gets, ahead of everything else.
+#: Under ``warn`` the acceptance succeeds (exit 0) and the findings ride on
+#: ``secretFindings`` -- but with no next step, the report told the author to open
+#: a pull request over content the scan believes carries a live credential
+#: (code-review M-4, adversarial M-3). The wording is
 #: :meth:`~theurian.application.proposal_service.ProposalService._secret_refusal`'s
-#: rotate advice, in the tense the landed case needs: the value is already in
-#: ``.theurian/knowledge/`` or ``.theurian/migrations/`` rather than still in the
-#: proposal. It names no single file, because a finding may sit in a body, a
-#: migration field, the migration's own bytes, its filename or a body's path
-#: (#336, #349) and only ``secretFindings`` knows which.
+#: rotate advice, in the tense the landed case needs.
+#:
+#: **It names no destination, and that is a correction rather than a style
+#: choice.** It used to say the value was "in the working tree, and in Git
+#: history once this is committed", which was true of the five channels an
+#: acceptance *lands* and false of the sixth: ``evidence.json`` is not landed
+#: anywhere (#361), and under ``--local`` it goes into no commit at all -- so for
+#: a local proposal this step asserted a commit that the step printed directly
+#: below it (:data:`_LOCAL_ACCEPT_FIRST_STEP`) says will not happen. The
+#: service-side sibling was rewritten when the sixth channel landed and this one
+#: was missed; the two are corrected the same way, by saying only what holds for
+#: every channel. What does hold everywhere is that the value is on this machine
+#: in a working tree, which is what makes rotation the first move.
+#:
+#: It names no single file either, because a finding may sit in a body, a
+#: migration field, the migration's own bytes, its filename, a body's landed path
+#: (#336, #349) or the evidence record (#361), and only ``secretFindings`` knows
+#: which.
 _ROTATE_ADVICE_STEP: Final = (
-    "The secret scan flagged something this acceptance landed (security.secretScan is `warn`, "
-    "so it proceeded). Treat each flagged value as exposed and rotate it -- it is now in the "
-    "working tree, and in Git history once this is committed. The findings, with their "
-    "locations, are in `secretFindings`. If any is a false positive, no action is needed for "
-    "it."
+    "The secret scan flagged something in this proposal (security.secretScan is `warn`, so the "
+    "acceptance proceeded). Treat each flagged value as exposed and rotate it -- it is in a "
+    "working tree on this machine, and each finding's own location says where. The findings "
+    "are in `secretFindings`. If any is a false positive, no action is needed for it."
+)
+
+
+#: The step a ``warn`` acceptance gets when the scan could not read one of its
+#: channels (#361, round 1 M-3). Under ``warn`` an unreadable evidence record is
+#: stepped over rather than refused -- ``warn`` never stops an acceptance -- and
+#: with no step saying so, an operator who chose ``warn`` got ``off`` for that
+#: channel and no way to tell. Reporting is the whole of what ``warn`` produces.
+#:
+#: It names the channels from ``secretScanSkipped`` rather than restating them,
+#: so a second skippable channel needs no second sentence.
+_SKIPPED_CHANNEL_STEP: Final = (
+    "The secret scan could not read part of this proposal, so it was accepted without that part "
+    "being checked (security.secretScan is `warn`, so it proceeded). What was skipped is in "
+    "`secretScanSkipped`. Make it readable and run `theurian propose accept` again on the next "
+    "proposal, or set security.secretScan to `block` if an unreadable input should stop an "
+    "acceptance."
 )
 
 
 def _accept_steps(accepted: AcceptedProposal) -> list[str]:
     """The accept steps, with the first one corrected for a local proposal and a
-    rotate step prepended when ``warn`` landed a flagged body.
+    rotate step prepended when ``warn`` had something to say.
 
     Only the first of the standing steps differs for a local proposal, because
     only it names the proposal directory. Built from :data:`_ACCEPT_STEPS`' own
@@ -637,12 +688,19 @@ def _accept_steps(accepted: AcceptedProposal) -> list[str]:
     succeeded and the exit code says nothing is wrong, so the rotate instruction
     has to live in the steps or it lives nowhere (findings are non-empty only
     under ``warn`` -- ``block`` refuses and ``off`` scans nothing).
+
+    A skipped channel prepends :data:`_SKIPPED_CHANNEL_STEP` for the same reason
+    and *after* the rotate step, because a value already believed to be exposed
+    outranks a channel nobody could look at. Both can fire at once: a proposal
+    can carry a flagged body and an unreadable evidence record.
     """
     standing = (
         list(_ACCEPT_STEPS)
         if not accepted.local
         else [_LOCAL_ACCEPT_FIRST_STEP, *_ACCEPT_STEPS[1:]]
     )
+    if accepted.secret_scan.skipped:
+        standing = [_SKIPPED_CHANNEL_STEP, *standing]
     if accepted.secret_scan.findings:
         return [_ROTATE_ADVICE_STEP, *standing]
     return standing

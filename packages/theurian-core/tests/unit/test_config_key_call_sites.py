@@ -1431,13 +1431,36 @@ def test_the_watched_descriptions_are_ordered_the_way_the_schema_derives_them() 
 #:   directly. Each row therefore pins a sentence asserting the control **and** a
 #:   sentence bounding it.
 #:
-#: **One row per document, and the ``ingest.md`` row carries a second claim.**
-#: SEC-11's reach is what four of the five fragment groups here are about; the
-#: ``ingest.md`` row also pins the #461 correction, which states from the config
-#: side which key of ``.theurian/config.yaml`` is in force and which is not. The
-#: two belong in one row because they are one paragraph's worth of bound on one
-#: document, and splitting them would put two rows for one file in a table whose
-#: rows have to be kept in step by hand.
+#: **One row per document, and three of the four rows carry a second claim.**
+#: SEC-11's reach is what four of the seven fragment groups here are about, one
+#: per row. The other three are a different claim on the same paragraphs, and each
+#: stays in its document's row because it is one document's worth of bound;
+#: splitting them would put two rows for one file in a table whose rows have to be
+#: kept in step by hand.
+#:
+#: * ``ingest.md`` also pins the #461 correction, which states from the config side
+#:   which key of ``.theurian/config.yaml`` is in force and which is not.
+#: * The threat model and the requirements table each also pin the accept path's
+#:   **refusal-name gate** (#360, #339): an author-controlled name is cut to what
+#:   may be printed and *then* scanned, and dropped whole if the detector reports
+#:   it. That gate is not SEC-11's reach and is filed beside it rather than in it,
+#:   because it consults no policy -- :data:`SECRET_SCANNER_CALL_SITES`' two
+#:   ``proposal_service.py`` calls are the SEC-11 gate ``_findings_in`` and this
+#:   one, ``_bounded`` -- so a project that chose ``off`` still does not get a
+#:   reported name echoed into its CI log. It is pinned here because it is the
+#:   same T-15 paragraph, and a document that describes one of the two controls
+#:   and not the other describes a different product.
+#:
+#: **The fact side of what this table gained with #360 and #361**, since a
+#: spelling pin holds none of it: that ``evidence.json`` is read at all is held by
+#: ``tests/integration/test_proposal_evidence_scan.py`` -- its three policies, its
+#: unreadable-record split, and the ordering test that is the point of the refusal
+#: arriving before the author is told to commit the directory -- and that every
+#: author-controlled interpolation reaches ``_bounded`` is held by
+#: ``test_proposal_refusal_names.py::test_every_interpolation_in_a_message_is_gated_or_recorded``
+#: with its own positive control beside it. :data:`SECRET_SCANNER_CALL_SITES` holds
+#: the count between them: two ``scan_text`` calls in the accept path, one per
+#: group, so a third is a channel none of these documents describes.
 #:
 #: Matched after collapsing runs of whitespace to a single space, because these
 #: are line-wrapped Markdown: a sentence routinely breaks across two source
@@ -1478,7 +1501,17 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
                 "the ULID- and `contentSha256`-shaped identifiers, which the "
                 "detector's class gate cannot fire on"
             ),
-            "`evidence.json` is not scanned",
+            # The evidence channel (#361), and the direction this row now holds
+            # is the *opposite* of the one it held until this change. The
+            # fragment here was "`evidence.json` is not scanned" from #198 until
+            # #361 landed the scan, and it went RED on the docs commit that
+            # corrected the sentence -- which is the pin doing its job rather
+            # than the pin being wrong. Two fragments, because the claim has two
+            # halves that fail differently: dropping the first under-claims a
+            # shipped control, and dropping the second promises that *draft*
+            # time is covered when only accept is.
+            "`evidence.json` is scanned too — whole-text, not field by field",
+            "Scanning at *draft* time is still a separate, owed control",
             # The build-time control (#329), and the two halves of its posture. The
             # first says the scan exists and where; the second says it reports
             # rather than refusing, which is the claim an operator acts on -- a
@@ -1515,6 +1548,64 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             ),
             "`aclGroup`, `contentType`, `validFrom`, `validTo`",
             "each field excluded by a mechanism rather than by choice",
+            # The evidence channel (#361), and the direction this row holds is the
+            # opposite of the one it held before that issue: the "does not reach"
+            # list said `evidence.json` is not scanned, and the correction is what
+            # these three fragments hold in place. The first two are the claim's
+            # halves and fail differently -- dropping the sixth channel
+            # under-claims a shipped control, and dropping "whole-text, never by a
+            # field walk" invites a field-walk rewrite, which would gain an
+            # unscanned channel the next time the evidence record gained a field.
+            # The third is this group's over-claim guard, matching the SECURITY.md
+            # row above: #330's draft-time half is still owed, and a reword that
+            # drops the bullet promises screening at `propose draft` that does not
+            # run.
+            (
+                "**The sixth channel is the proposal's `evidence.json`, which "
+                "`accept` scans without landing**"
+            ),
+            "It is scanned **whole-text, never by a field walk**",
+            "**Draft-time scanning is still owed; `evidence.json` at accept is not.**",
+            # The refusal-name gate (#360, #339), the second claim group this row
+            # carries; the table's header says why it is not SEC-11's reach. Three
+            # fragments: the population, the ordering, and the boundary.
+            #
+            # The first names the module whose strings pass the gate, and says
+            # "author-derived" and "whatever its type" rather than "name": the
+            # gate selected on value type until round one found a `!!binary`
+            # migration id printing a credential in full, so a version of this
+            # sentence that says *name* describes the control that had the defect.
+            #
+            # The second is the *pair* of scans, and this pin has now held two
+            # wrong versions of it -- first "cut, then scan the cut", then "scan
+            # the whole, print the cut". Each single scan has its own leak, in
+            # opposite directions: the cut alone publishes a straddling
+            # credential's head (31 of 43), and the whole alone publishes an
+            # overrunning one entire (43 of 43, because four families stop
+            # matching a run past 255 characters and the cut restores the match).
+            # A reword that drops back to either single scan is a different
+            # control with a live leak, which is why the fragment names both
+            # scans and the "either" that joins them.
+            # `test_the_scan_reads_the_whole_string_and_the_cut_happens_after_it`
+            # and `test_a_credential_whose_run_overruns_the_family_cap_is_still_withheld`
+            # are the fact side, one per direction.
+            #
+            # The third is the over-claim guard, and it is the direction that has
+            # already gone wrong once: "elsewhere on the accept path" was the
+            # phrasing this branch had to narrow in three places, because
+            # `migration_loader.py` prefixes a landed migration's filename onto
+            # every `MigrationError` and `resolve_context` reaches it before
+            # `accept` runs at all (#537).
+            (
+                "Every author-derived string `application/proposal_service.py` puts "
+                "into a message passes one gate"
+            ),
+            (
+                "Both the whole string and the cut it prints are scanned, and "
+                "either one reporting withholds it"
+            ),
+            "not monotone under truncation",
+            "and the boundary of that is one module's",
             "`theurian ingest` runs no scan",
         ),
     ),
@@ -1536,6 +1627,38 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "`contentType` and the date fields",
             "What it does not reach: the document's derived fields",
             "each barred by a mechanism rather than by choice",
+            # The evidence channel (#361) and its bound, the pair the SECURITY.md
+            # row above carries. This T-15 row is one table cell, so each half is
+            # one clause of it: the first sits inside the enumeration of what the
+            # scan reaches and carries the manner with it -- whole-text, and at
+            # accept although nothing is landed -- and the second sits inside "What
+            # it does not reach". Dropping the first under-claims a shipped
+            # control; dropping the second promises #330's draft-time scanning,
+            # which is still owed.
+            (
+                "and the proposal's `evidence.json`, scanned whole-text although "
+                "`accept` lands it nowhere"
+            ),
+            "and draft-time scanning, still owed",
+            # The refusal-name gate (#360, #339), the second claim group this row
+            # carries; see the table's header for why it is filed beside SEC-11's
+            # reach and not inside it. The first fragment is the gate's two halves,
+            # the bound and then the drop on a detector report, and losing either
+            # one describes a control that publishes something this one does not.
+            # The second is what makes the population checkable rather than
+            # asserted -- reflection over the module's syntax tree, which is the
+            # fact side named in the header. The third is the over-claim guard: the
+            # version of this claim that covers the whole accept path is false
+            # while `migration_loader.py` prefixes a landed migration's filename
+            # onto every `MigrationError` and `resolve_context` reaches it before
+            # `accept` runs (#537).
+            (
+                "Refusals on this path scan every author-derived string they would "
+                "print — both whole and as the cut that will print"
+            ),
+            "either print it cut to 200 characters or drop it whole when the detector reports it",
+            "over a population proved by reflection over `proposal_service.py`'s own syntax tree",
+            "`migration_loader.py`'s `MigrationError` prefix, a different producer's population",
             # The build-time control (#329), on the row that enumerates what SEC-11
             # reaches. Both halves, for the reason the SECURITY.md row above gives:
             # naming the scan without its posture reads as a second gate.
@@ -1622,6 +1745,23 @@ def test_each_secret_scan_prose_surface_states_the_control_and_its_bound(
     names that specifically -- "a best-effort detector shipping as the SEC-11
     control invites the reading that content is now screened", which is why the
     disclaimer has to survive into every surface that describes it.
+
+    **Two claim groups since #360 and #361, and only one of them is SEC-11's
+    reach.** The threat model and the requirements table each now state that
+    ``accept`` scans a proposal's ``evidence.json`` whole-text, and that its
+    refusals cut an author's name to what may be printed before scanning it. The
+    first is the policy-gated control this test has always been about; the second
+    consults no policy and is filed beside it.
+
+    Both are held here as **spelling and nothing else** -- every fragment below
+    would match word for word against a build that had stopped doing either. The
+    fact side is :data:`SECRET_SCANNER_CALL_SITES`, which holds that the accept
+    path makes exactly two ``scan_text`` calls, with
+    ``tests/integration/test_proposal_evidence_scan.py`` beneath ``_findings_in``
+    and
+    ``test_proposal_refusal_names.py::test_every_interpolation_in_a_message_is_gated_or_recorded``
+    beneath ``_bounded``. A fragment here may be relaxed only when one of those
+    has moved first.
     """
     normalized = " ".join((REPO_ROOT / relative_path).read_text(encoding="utf-8").split())
 
@@ -1711,9 +1851,35 @@ SECRET_SCANNER_MODULE: Final = "theurian.security.content_secrets"  # noqa: S105
 #: number is a per-module count rather than a set for exactly this reason -- a
 #: fourth call is a fourth channel, and the sentence above stops being an
 #: enumeration the moment one lands without moving this.
+#:
+#: The accept path's **three** calls answer two different questions, and only the
+#: first is the SEC-11 gate. ``_findings_in`` screens what an acceptance would
+#: put into the pull request and the policy decides what happens next.
+#: ``_bounded`` screens a string this module is about to *print* into a refusal
+#: and takes no policy at all: it is output hygiene rather than a gate on
+#: content, so a project that chose ``off`` still does not get a credential
+#: echoed into its CI log (#360).
+#:
+#: ``_bounded`` is **two** of the three, and the pair is the control rather than
+#: an optimisation: it scans the whole string and, separately, the cut it will
+#: actually print. Either one reporting withholds the string, because the
+#: detector is not monotone under truncation -- a run past the four ``{n,255}``
+#: families' cap matches nothing whole and matches once cut, and a credential
+#: straddling the cut matches whole and not cut. Dropping either call restores a
+#: measured leak (43 of 43 characters one way, 31 of 43 the other), so a count of
+#: two here would be a count of a control with one of its halves removed.
+#:
+#: It screens nothing that was not already about
+#: to be published, and it screens it on its way *out* rather than deciding
+#: anything about the proposal -- so the four documents this test protects
+#: (``ingest.md``, the schema's ``security.secretScan`` description,
+#: ``SECURITY.md`` and the threat model's T-15 controls, all saying ``theurian
+#: ingest`` runs no scan of its own) are untouched by it: this module is
+#: ``theurian propose`` and ``theurian propose accept``, and neither is
+#: ``ingest``.
 SECRET_SCANNER_CALL_SITES: dict[str, int] = {
     "application/index_builder.py": 3,
-    "application/proposal_service.py": 1,
+    "application/proposal_service.py": 3,
 }
 
 #: Each module of the shipped package that reaches :data:`SECRET_SCANNER_MODULE`
