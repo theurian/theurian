@@ -60,6 +60,17 @@ and ADR-0024 and the CHANGELOG deliberately *retain* the old wording inside
 pointered historical entries. A blanket repository-wide negative key would go RED
 on those retentions, which is why the negative key below is scoped to the four
 live sites rather than swept over the tree.
+
+**And it does not claim the records are consistent, only that each key is where
+it should be.** The positive test asks whether the closure clause is present and
+the negative one whether an open-channel clause is absent; a sentence *appended*
+to a record, contradicting the clause above it without using either key's
+wording, passes both. That hole is inherent to a text ratchet rather than a
+weakness of these keys -- the general form is entailment over prose, which no
+regex decides -- and the mitigation is elsewhere: the behavioural pins in
+`test_purge_full_text_discovery.py` and `test_purged_build_structure.py` are what
+make a contradicting sentence false, and this file is what makes the true one
+hard to delete.
 """
 
 from __future__ import annotations

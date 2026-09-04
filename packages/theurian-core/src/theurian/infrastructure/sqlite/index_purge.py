@@ -404,13 +404,46 @@ _POST_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
 #:
 #: The class is not any one of those spellings. It is that a declaration embeds an
 #: identifier, an identifier is arbitrary text, and arbitrary text cannot be
-#: classified by matching text around it. So this reads none: a table backed by
-#: FTS5 owns `<name>_data` and `<name>_config`, created for every such table
-#: whatever its options and for no `fts5vocab` view, so owning both *is* being a
-#: full-text index. There is no next spelling, because nothing here is spelled.
+#: classified by matching text around it. So this reads none of it, and keys on
+#: storage instead. There is no next spelling, because nothing here is spelled.
 #:
-#: Both shadow tables rather than either alone: `_docsize` is absent under
-#: `columnsize=0` and `_content` under external content, while these two are not.
+#: **What that key does and does not establish, stated apart.** The direction the
+#: silent face needs is *necessity*, and it is proven: every FTS5 table owns
+#: `<name>_data` and `<name>_config`, measured across eleven option combinations
+#: -- default, external content, contentless, `contentless_delete`,
+#: `columnsize=0`, `detail=none`, `detail=column`, a prefix index, the `trigram`
+#: and `porter` tokenizers, and multi-column. So no full-text table is skipped,
+#: and a skipped table is the only failure that re-opens T-17a. Both shadow
+#: tables rather than either alone, for the same reason: `_docsize` is absent
+#: under `columnsize=0` and `_content` under external content, while these two
+#: are never absent.
+#:
+#: *Sufficiency does not hold, and an earlier version of this comment claimed it
+#: did.* Owning the two names is how an FTS5 table presents, not proof of being
+#: one. Nothing in `index_schema.py` creates such a triple that is not FTS5, but
+#: an operator writing to their own published build can: a plain `memo`,
+#: `memo_data` and `memo_config` is reached by this query, and `INSERT INTO
+#: memo(memo)` answers `table memo has no column named memo`. Naming a real table
+#: does it too -- `nodes_data` plus `nodes_config` promotes the schema's own
+#: `nodes` into this set.
+#:
+#: **That case is a recorded decision rather than a defect, and the reasoning is
+#: the direction it fails in.** It fails *closed*: the raise propagates through
+#: `purge_into`, which unlinks the half-built file, and through
+#: `publish_purge_for_withdrawal`, which leaves the old build published, taints
+#: its pointer and drops retrieval to the canonical scan -- the same direction as
+#: every other purge fault, and measured to leave nothing under the target name.
+#: The remedy is the operator's: drop the triple.
+#:
+#: The alternative is asking SQLite instead of the schema -- attempt `optimize`
+#: and keep what is accepted, which is what `test_purge_full_text_discovery.py`
+#: does. In production that needs an allowlist of refusal messages to tell "not a
+#: full-text table" from "a full-text table that is broken", and a miss in that
+#: allowlist swallows a *real* FTS5 table's genuine fault and publishes the build
+#: with its tombstones intact. That is the silent direction -- the one that
+#: carries T-17a -- traded for the loud one. A build refused over an
+#: operator-created triple is recoverable and visible; a build published with
+#: withdrawn postings in it is neither.
 #:
 #: `ORDER BY name` so a purge does the same work in the same order on every run.
 #: Nothing downstream reads the order -- each table's merge is independent of the
@@ -769,7 +802,7 @@ def _merge_full_text(target: Path) -> None:
     Call that the **restamp residue**. Three different quantities in this module
     answer to the word, and only the last survives the shipped ordering: the
     *tombstone residue* a merge exists to remove, which compounds across purges
-    when nothing merges it (:data:`_FTS5_TABLE_CANDIDATES`); this restamp residue;
+    when nothing merges it (:data:`_FTS5_TABLES`); this restamp residue;
     and the *varint residue* at the end of this docstring. The restamp residue
     does *not* compound -- the next purge's copy carries it in and that purge's
     merge clears it -- so

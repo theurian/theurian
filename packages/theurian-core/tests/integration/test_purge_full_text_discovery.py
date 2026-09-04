@@ -90,6 +90,7 @@ from typing import Final
 import pytest
 
 from theurian.domain.chunking import Chunk, IndexableChunk
+from theurian.infrastructure.sqlite.index_purge import _FTS5_TABLES
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 from theurian.infrastructure.sqlite.schema import read_only_uri
 
@@ -252,6 +253,18 @@ def _full_text_tables(path: Path) -> list[str]:
     sweeps and finding them unchanged. That matters because
     :func:`test_a_published_purge_is_already_merged_so_re_merging_finds_nothing_to_do`
     measures exactly those bytes after calling this.
+
+    **Where the two disagree, and which one is right about what.** They are not
+    two readings of one question, so neither is a check on the other's answer in
+    general -- only on the population this file plants, where they must agree. An
+    FTS3 or FTS4 table is where they part: it takes `optimize`, so this helper
+    calls it a full-text table, while the storage key excludes it because FTS4
+    lays its index out as `_segdir`, `_segments`, `_stat`, `_content` and
+    `_docsize` with neither `_data` nor `_config` (measured). Production is right
+    there and this helper is not, because the question the merge asks is which
+    indexes *it* maintains -- Theurian's schema declares FTS5 and an FTS4 table in
+    a build is not one of them. Read this helper as "what would accept the
+    command" and the production key as "what the merge is responsible for".
     """
     found: list[str] = []
     with closing(sqlite3.connect(path, isolation_level=None)) as connection:
@@ -554,7 +567,8 @@ def test_a_published_purge_is_already_merged_so_re_merging_finds_nothing_to_do(
 
     Both controls are asserted first. Every table must be carrying posting data,
     or "nothing to give up" is a table with nothing in it; and the four the schema
-    ships plus all three plants must be present, or the sweep is not sweeping what
+    ships plus every one of :data:`MUST_MERGE` must be present, or the sweep is
+    not sweeping what
     :func:`_full_text_tables` claims.
     """
     target = tmp_path / "purged.sqlite"
@@ -589,4 +603,90 @@ def test_a_published_purge_is_already_merged_so_re_merging_finds_nothing_to_do(
         f"re-merging the published build shrank a full-text index, so the purge published one "
         f"that was not fully merged: something wrote to it after the merge ran. "
         f"published={published} remerged={remerged}"
+    )
+
+
+def _production_reaches(path: Path) -> list[str]:
+    """What `_merge_full_text`'s own query answers over *path*.
+
+    The one place this file consults the production discovery, and it is a control
+    rather than an oracle: the test below is about what happens *when* the storage
+    key is defeated, so it has to establish that the plant defeats it. Reading the
+    live constant is the point -- a hand-copy of the query would keep passing after
+    production changed and quietly stop testing the case.
+    """
+    with closing(sqlite3.connect(read_only_uri(path), uri=True)) as connection:
+        return [str(row[0]) for row in connection.execute(_FTS5_TABLES)]
+
+
+@pytest.mark.parametrize(
+    ("label", "table", "plant_the_table"),
+    [
+        # A triple an operator might create for their own bookkeeping. Nothing in
+        # `index_schema.py` produces this shape; only a hand write does.
+        ("a plain table wearing the shadow names", "memo", True),
+        # The same promotion aimed at a table the schema really has: give `nodes`
+        # the two shadow names and the discovery reaches `nodes` itself.
+        ("the schema's own `nodes`, promoted", "nodes", False),
+    ],
+)
+def test_a_hand_planted_shadow_triple_fails_the_purge_closed(
+    planted_build: Path, tmp_path: Path, label: str, table: str, plant_the_table: bool
+) -> None:
+    """The decided behaviour when the storage key's *sufficiency* is defeated (#499).
+
+    Owning `_data` and `_config` is how an FTS5 table presents, and
+    `_merge_full_text` says exactly that rather than claiming the converse: every
+    FTS5 table owns them (measured over eleven option combinations), but a table
+    owning them need not be one. An operator writing to their own build can plant
+    the triple, and then the merge issues an FTS5 command against a plain table.
+
+    **This pins the direction that failure takes, because that is what the
+    decision turns on.** It fails closed: `derive_purged` raises and nothing
+    appears under the target name, so nothing is published. One layer up
+    `publish_purge_for_withdrawal` turns the same raise into a tainted pointer,
+    the previous build left serving and retrieval dropped to the canonical scan --
+    pinned by `test_purge_failed_build_is_not_served.py` and not repeated here,
+    because at this level the taint is not observable.
+
+    The alternative -- skip a table whose `optimize` was refused -- is why this is
+    a recorded decision and not an oversight. Skipping needs a rule separating
+    "not a full-text table" from "a full-text table that is broken", and a rule
+    that is wrong in the second direction publishes a build with its tombstones
+    intact and says nothing. That is T-17a re-opened silently, traded against a
+    loud refusal whose remedy is for the operator to drop the triple.
+
+    **RED-capable**: make the merge swallow a refusal and carry on, and both
+    parameters fail on the assertion that nothing was published.
+    """
+    with closing(sqlite3.connect(planted_build)) as connection, connection:
+        if plant_the_table:
+            connection.execute(f"CREATE TABLE {_quoted(table)} (id INTEGER PRIMARY KEY, body TEXT)")
+        connection.execute(
+            f"CREATE TABLE {_quoted(table + '_data')} (id INTEGER PRIMARY KEY, block BLOB)"
+        )
+        connection.execute(f"CREATE TABLE {_quoted(table + '_config')} (k PRIMARY KEY, v)")
+
+    assert table in _production_reaches(planted_build), (
+        f"the control must move: {label} is supposed to defeat the storage key by owning "
+        f"{table}_data and {table}_config, so the merge reaches a table that is not a "
+        f"full-text index. If it does not, this test says nothing about that case"
+    )
+    assert table not in _full_text_tables(planted_build), (
+        f"and the two predicates must disagree here, which is the whole finding: SQLite "
+        f"refuses an FTS5 command against {label}, so the probe excludes it while the "
+        f"storage key includes it"
+    )
+
+    target = tmp_path / "purged.sqlite"
+    with pytest.raises(sqlite3.OperationalError, match="has no column named"):
+        SqliteIndexStore(planted_build).derive_purged(
+            target, revision_ids=[], index_build_id="01K1PURGED", state_hash="state-abc"
+        )
+
+    stranded = sorted(path.name for path in tmp_path.iterdir() if path.name.startswith("purged"))
+    assert not stranded, (
+        f"the purge must fail closed: a build refused over {label} may leave nothing under "
+        f"the target name, nor a `.building` file for the next run to trip over. "
+        f"Found {stranded}"
     )
