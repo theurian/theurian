@@ -30,11 +30,20 @@ must not do, and why each is a separate hazard:
 :meth:`sqlite3.Connection.backup` is the remaining primitive: page-level, so
 rowid stability is not a behaviour it could get wrong, and taken through a
 connection, so it sees the WAL.
+
+**And a purge is not finished when the rows are deleted.** FTS5 answers a
+`DELETE` by writing a tombstone rather than removing the row's postings, so the
+copy the delete leaves still holds the posting list of everything withdrawn --
+absent from every response and legible on the clock, which is how #499 read the
+withdrawn count off query duration. :func:`_merge_full_text` is what ends that,
+and it is why the ordering of the four steps in :func:`purge_into` is a
+correctness property rather than a preference.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import closing, contextmanager
@@ -368,6 +377,49 @@ _POST_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
 )
 
 
+#: Every table in the file that might be an FTS5 index, read out of the build
+#: rather than written down here.
+#:
+#: **Discovered, because a written-down list is what the next table slips past.**
+#: The schema carried two of these at v3 and carries four at v4, since summary
+#: nodes got their own storage (`index_schema.py`); issue #499's own sketch of
+#: this fix says "both FTS5 tables", which was the v3 count and is now half of
+#: them. A merge over a constant tuple is correct the day it is written and
+#: silently partial the day the next table lands -- and partial here is not a
+#: smaller effect but an open channel, because the residue compounds across
+#: purges (:func:`_merge_full_text`).
+#:
+#: `sql IS NOT NULL` drops the rows SQLite writes for implicit indexes. The four
+#: shadow tables each FTS5 table owns (`<name>_data`, `_idx`, `_docsize`,
+#: `_config`) *do* carry `CREATE TABLE` text and survive to be filtered by
+#: :data:`_FTS5_DECLARATION` instead. `ORDER BY name` so a purge does the same
+#: work in the same order on every run.
+_FTS5_TABLE_CANDIDATES: Final = """
+SELECT name, sql FROM sqlite_master
+ WHERE type = 'table' AND sql IS NOT NULL
+ ORDER BY name
+"""
+
+#: A `sqlite_master.sql` text that *declares* an FTS5 table, as against one that
+#: merely mentions one.
+#:
+#: The module name is matched as a whole token rather than as a substring,
+#: because `fts5vocab` is a module too and an `fts5vocab` table is not writable:
+#: `INSERT INTO v(v) VALUES ('optimize')` against one raises `table v may not be
+#: modified` (measured, SQLite 3.47.1). Under a `LIKE '%fts5%'` reading, adding a
+#: diagnostic vocab view would turn every purge into a refusal. `\b` is what
+#: separates the two -- there is no word boundary between `fts5` and `vocab`.
+#:
+#: `\s+` throughout and `DOTALL` on, because `sqlite_master` stores the `CREATE`
+#: statement as it was written: the DDL in `index_schema.py` puts a newline after
+#: the opening parenthesis, and a reformatting of it must not silently drop a
+#: table out of the set this covers.
+_FTS5_DECLARATION: Final = re.compile(
+    r"^\s*CREATE\s+VIRTUAL\s+TABLE\s+.+?\s+USING\s+fts5\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
 class IndexPurgeError(TheurianError):
     """A purge could not produce a build fit to publish. Carries a remedy.
 
@@ -496,6 +548,10 @@ def purge_into(  # noqa: PLR0913 - a build's identity (id, state hash), its inpu
         if recompute_forest is not None and delta.affected_scopes and delta.has_surviving_nodes:
             recompute_forest(building, tuple(sorted(delta.affected_scopes)))
         _restamp(building, index_build_id=index_build_id, state_hash=state_hash)
+        # Last of the three writers, because a merge only holds until the next
+        # write to a full-text index and both of the others are one: the delete
+        # above, and `_restamp`'s per-node `UPDATE`.
+        _merge_full_text(building)
         _verify(building, revision_ids)
         os.replace(building, target)  # noqa: PTH105 - os.replace is the atomic primitive
     except BaseException:
@@ -671,6 +727,100 @@ def _restamp(target: Path, *, index_build_id: str, state_hash: str) -> None:
         # is the price of the row's own record of itself being true; the
         # alternative is a provenance column that lies about which build it is in.
         connection.execute("UPDATE nodes SET index_build_id = ?", (index_build_id,))
+
+
+def _merge_full_text(target: Path) -> None:
+    """Merge each FTS5 index down to one segment, so the purge leaves no tombstones.
+
+    **A `DELETE` does not remove a row's postings from an FTS5 index.** The
+    external-content triggers issue `INSERT INTO <t>(<t>, rowid, ...) VALUES
+    ('delete', ...)`, which appends a delete *marker*: the withdrawn row's
+    posting list stays in the segment structure until a merge rewrites the
+    segment without it. So until this ran, the build a purge published still held
+    the postings of everything it had been asked to remove, and every query
+    scanned past them.
+
+    None of that reached a response, which is why the whole suite stayed green
+    with it missing: a tombstoned row is excluded from results *and* from the
+    collection statistics `bm25` reads, so a purged build already answered
+    identically to one that never held the rows (ADR-0024, T-17). What it reached
+    was the clock. Issue #499 calibrated query duration against how many rows had
+    been withdrawn and recovered the withdrawn count at three of five points
+    exactly, rising to 5.67x the never-held duration at 5,950 withdrawn -- a count
+    SEC-13 arranges the response not to state. That is T-17a's root cause, *the
+    index still holds the withdrawn rows*, surviving the purge that exists to end
+    it.
+
+    **After `_restamp`, and not inside `_delete` where #499 sketched it.**
+    `_restamp`'s `UPDATE nodes SET index_build_id` fires `nodes_fts_update` and
+    `nodes_trigram_update` once per surviving node, so it writes a tombstone per
+    node *after* the delete -- on every purge, including one that withdraws
+    nothing at all. Merging before it publishes a build still carrying that
+    restamp's residue: measured on a 200-chunk, 60-node corpus, `nodes_fts` at
+    1.50x and `nodes_trigram` at 1.77x a build that never held the withdrawn
+    rows, against 0.75x and 0.89x merging afterwards.
+
+    That residue does *not* compound -- the next purge's copy carries it in and
+    that purge's merge clears it -- so what the earlier placement leaves is
+    bounded by the surviving node count rather than by the withdrawn count, and
+    the count channel #499 is about closes under either placement. The later one
+    is taken because it needs no such argument: **nothing writes to a full-text
+    index after this call**, so a published build is merged outright and
+    `test_purge_full_text_discovery.py` can pin that by re-running the merge and
+    finding nothing to do. `recompute_forest` is upstream of `_restamp` and so is
+    covered by the same ordering; `_verify` only counts and `os.replace` only
+    renames.
+
+    **`optimize`, not the bounded `merge` #499 offered as its alternative.** A
+    `merge` does a page-budgeted amount of work and stops, so whatever it does not
+    reach stays -- the channel attenuated rather than closed. Measured on a
+    2,000-row table with half its rows deleted (2026-09-03, SQLite 3.47.1), a
+    `merge` at rank 4 moved the posting bytes not at all, called once or twenty
+    times over, where `optimize` took them 119,186 -> 53,154. `optimize` runs
+    until the index is a single segment, which is the parity
+    `test_purged_build_structure.py` asserts against a build that never held the
+    rows.
+
+    Priced before it shipped, because a merge is O(index) where the delete it
+    follows is not (2026-09-03, `time.perf_counter` around `derive_purged`, arms
+    alternating, medians of nine, 10-core arm64 at load ~3). Source index size,
+    purge without this step, purge with it: 4.3 MB 62 -> 100 ms; 17.6 MB
+    307 -> 524 ms; 35.3 MB 571 -> 965 ms; 88.3 MB 1,568 -> 2,606 ms. **A flat
+    1.66x across a twentyfold span**, which is the reading that decides it: the
+    merge is the same order as the page copy the purge already pays, so it is a
+    constant factor rather than a term that overtakes the rest at scale. Cheap
+    against the alternative, too -- ADR-0024's table above prices *re-deriving* a
+    build at 2,614 ms for 12.3 MB and 37,684 ms for 150.3 MB, so a purge that
+    merges still comes in about an order of magnitude under the rebuild it exists
+    to avoid. And it is paid once per withdrawal, against a per-query cost it
+    removes: on a 5,000-chunk corpus with 5,000 rows withdrawn, a substring query
+    took 32.5 ms on a purged build before this and 16.0 ms after, against 16.6 ms
+    on a build that never held the rows.
+
+    A `sqlite3.Error` here is left to propagate rather than dressed as an
+    `IndexPurgeError`, which is the opposite of what `_copy` does above.
+    `publish_purge_for_withdrawal` catches it, reports `type(exc).__name__`, and
+    attaches `PURGE_FAILED_REMEDY`, which already names the rebuild -- and it
+    deliberately never surfaces an `IndexPurgeError.msg`, so wrapping here would
+    cost the operator the type without adding a remedy.
+    """
+    with _writing(target) as connection:
+        candidates = connection.execute(_FTS5_TABLE_CANDIDATES).fetchall()
+        for row in candidates:
+            if not _FTS5_DECLARATION.match(str(row["sql"])):
+                continue
+            # Quoted, and any embedded quote doubled: the identifier arrives from
+            # `sqlite_master` rather than from this module, so it is data at this
+            # point even though the schema that wrote it is ours.
+            quoted = '"{}"'.format(str(row["name"]).replace('"', '""'))
+            # One transaction per table rather than one around all of them. An
+            # `optimize` rewrites a whole index into a single segment, and holding
+            # four of those open together is four indexes' worth of pages in the
+            # WAL before any checkpoint can run.
+            with connection:
+                connection.execute(
+                    f"INSERT INTO {quoted}({quoted}) VALUES ('optimize')"  # noqa: S608 - quoted identifier from this schema's own DDL
+                )
 
 
 def _verify(target: Path, revision_ids: Sequence[str]) -> None:
