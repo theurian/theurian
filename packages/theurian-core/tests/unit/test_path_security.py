@@ -789,6 +789,154 @@ def test_a_link_chain_that_never_leaves_the_root_is_still_read(project_root: Pat
     assert read_source_file(project_root, ".theurian/knowledge/first/auth.md") == b"# Auth policy\n"
 
 
+@_NEEDS_SYMLINKS
+def test_a_component_whose_own_chain_leaves_the_root_is_refused(project_root: Path) -> None:
+    """Round 1, R1-A mechanism (i): the escape folded inside one component.
+
+    ``hop2 -> outside/back -> knowledge``. There is no intermediate *component*
+    to inspect at all -- the whole traversal is inside one link's chain -- so a
+    walk that expands a component with ``resolve()`` sees only where the chain
+    ended, which is inside the root. Measured at ``dcd11dcd``: 54 bytes
+    returned. It is the same in-and-out route as the test above, spelled so that
+    per-component checking alone cannot see it.
+    """
+    relative = _folded_chain_that_leaves_the_root(project_root)
+
+    destination = (project_root / relative).resolve()
+    assert destination.is_relative_to(project_root.resolve()), (
+        "the fixture must resolve back INSIDE the root, or it tests the plain escape"
+    )
+
+    with pytest.raises(PathEscapeError):
+        read_source_file(project_root, relative)
+
+
+@_NEEDS_SYMLINKS
+def test_a_dotdot_that_climbs_out_of_the_root_is_refused_even_if_a_link_returns(
+    project_root: Path,
+) -> None:
+    """Round 1, R1-A mechanism (ii): the escape spelled in plain text.
+
+    No intermediate link is needed to *leave* -- ``..`` does it, in a string the
+    author writes -- and one link brings the path home. The walk used to move
+    its position on ``..`` without checking anything, so this was the cheapest
+    spelling of the whole class and the one needing no link outside the root at
+    all. Driven through the guard rather than ``read_source_file`` because
+    ``resolve_within_root`` refuses this shape first: what is pinned here is that
+    the *route* check catches it independently, which is what makes it hold at
+    ``_destination_of``, where the base legitimately starts outside.
+    """
+    knowledge = project_root / ".theurian" / "knowledge"
+    outside = project_root.parent / "outside"
+    (outside / "back").symlink_to(knowledge, target_is_directory=True)
+
+    requested = f"../outside/back/{_CHAIN_LEAF}"
+    with pytest.raises(PathEscapeError):
+        assert_no_symlink_escape(project_root, base=project_root, requested=requested)
+
+
+@_NEEDS_SYMLINKS
+def test_the_position_after_a_link_is_where_it_pointed_not_where_it_sat(
+    project_root: Path,
+) -> None:
+    """``..`` after a link means the *target's* parent, and nothing else held it.
+
+    ``selflink -> .`` then ``..`` climbs out of the root, which is exactly what
+    the kernel does: ``os.path.realpath`` puts this request outside. A walk that
+    kept the link's own parent as its position would compute a different -- and
+    in-root -- answer, so the two disagree on precisely this shape.
+
+    Driven against the guard directly, and that is the point rather than a
+    shortcut: ``resolve_within_root`` refuses this request first at every
+    production call site, which is what let a mutation dropping the position
+    update survive the whole suite (round 1, M-2). A test routed through
+    ``read_source_file`` would pass with the position tracking deleted.
+    """
+    (project_root / "sibling.md").write_text("OUTSIDE THE ROOT\n")
+    (project_root / "selflink").symlink_to(".")
+
+    requested = "selflink/../sibling.md"
+    assert not Path(os.path.realpath(project_root / requested)).is_relative_to(
+        project_root.resolve()
+    ), "the kernel puts this outside the root; the walk must agree"
+
+    with pytest.raises(PathEscapeError):
+        assert_no_symlink_escape(project_root, base=project_root, requested=requested)
+
+
+@_NEEDS_SYMLINKS
+def test_a_link_chain_inside_the_budget_is_still_read(project_root: Path) -> None:
+    """The budget's narrowness control: a long-but-legal chain still resolves.
+
+    Without this, the refusal above is equally satisfied by a walk that refuses
+    every chain, and :data:`MAX_SYMLINK_HOPS` could drift down to 1 unnoticed.
+    """
+    knowledge = project_root / ".theurian" / "knowledge"
+    target = knowledge / "auth.md"
+    for index in range(MAX_SYMLINK_HOPS - 1):
+        link = knowledge / f"hop{index}.md"
+        link.symlink_to(target)
+        target = link
+
+    assert read_source_file(project_root, f".theurian/knowledge/{target.name}") == (
+        b"# Auth policy\n"
+    )
+
+
+@_NEEDS_SYMLINKS
+def test_which_directory_the_walk_starts_from_changes_the_verdict(project_root: Path) -> None:
+    """``base`` is load-bearing, and until this nothing in the suite said so.
+
+    ``_destination_of`` passes ``base=migrations`` with ``root=knowledge``, and a
+    mutation swapping it for ``base=knowledge`` survived the whole suite (round
+    1, M-4): every ``contentFile`` the product generates opens with
+    ``../knowledge/``, and the two directories are siblings, so for those inputs
+    the swap was invisible.
+
+    It is not invisible to the walk that ships now, because the containment latch
+    reads ``base``: starting *inside* the root means the first ``..`` already
+    leaves it. Both directions are pinned, since a check that only ever refuses
+    would satisfy one of them by accident.
+    """
+    knowledge = project_root / ".theurian" / "knowledge"
+    migrations = project_root / ".theurian" / "migrations"
+    migrations.mkdir(parents=True, exist_ok=True)
+    generated = f"../knowledge/{_CHAIN_LEAF}"
+
+    assert_no_symlink_escape(knowledge, base=migrations, requested=generated)
+
+    with pytest.raises(PathEscapeError):
+        assert_no_symlink_escape(knowledge, base=knowledge, requested=generated)
+
+
+@_NEEDS_SYMLINKS
+def test_a_link_that_cannot_be_read_is_refused_rather_than_stepped_over(
+    project_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one raise site the echo sweep cannot reach, pinned where it can be.
+
+    ``is_symlink()`` and ``readlink()`` need the same one permission on the same
+    one directory, so nothing single-threaded can make the first succeed and the
+    second fail -- the failure is a race, and the substitution below is how it is
+    put under test at all. What matters is the *direction*: a component this
+    function cannot read is a component it cannot prove contained, so it refuses
+    instead of stepping over it, and the refusal is graded rather than a raw
+    ``OSError`` escaping into a ``--json`` payload.
+    """
+    knowledge = project_root / ".theurian" / "knowledge"
+    (knowledge / "alias.md").symlink_to(knowledge / "auth.md")
+
+    def _unreadable(self: Path) -> Path:
+        raise OSError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(Path, "readlink", _unreadable)
+
+    with pytest.raises(PathEscapeError) as caught:
+        read_source_file(project_root, ".theurian/knowledge/alias.md")
+
+    assert "alias" not in str(caught.value), "the caller's own string stays unechoed"
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
 def test_symlinked_root_is_not_a_false_rejection(tmp_path: Path) -> None:
     """A symlinked project root must still work.
