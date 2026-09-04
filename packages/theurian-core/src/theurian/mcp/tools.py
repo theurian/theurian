@@ -1240,11 +1240,16 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # `test_a_purged_build_reads_canonical_once_per_visible_row_however_many_were_withheld`
         # and over 49-52 by
         # `test_a_purged_build_stays_at_one_retriever_pass_across_the_first_pass_depth_edge`,
-        # both in `tests/integration/test_purged_build_quantities.py`. What the
-        # purge does NOT remove is the segment residue: the withdrawn rows'
-        # postings survive as FTS5 tombstones and make query duration on the
-        # trigram path monotone in the withdrawn count (#499, a face of T-17a),
-        # so this frame bounds the canonical-read term and not the clock.
+        # both in `tests/integration/test_purged_build_quantities.py`. This
+        # frame bounds the canonical-read term and not the clock, and until
+        # #499 the clock carried a term of its own: FTS5 `'delete'` tombstones
+        # the withdrawn rows' postings rather than removing them, nothing in
+        # the purge merged them, and query duration on the trigram path was
+        # monotone in the withdrawn count (a face of T-17a).
+        # `index_purge._merge_full_text` closed that face -- flat at 0.84-0.99x
+        # a never-held build, three independent instruments in PR #545's round
+        # one, 2026-09-04 -- so what this frame's scope now records is which
+        # instrument measured what, not a channel still open.
         #
         # **`ToolError`, not an empty result or a ninth `fallbackReason`.** A
         # search that goes quiet under load instead of saying why is the

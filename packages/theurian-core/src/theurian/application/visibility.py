@@ -227,16 +227,24 @@ class CanonicalVisibility:
         stale control asserts ``visible + withheld`` first — so a fixture that
         never held the withdrawn rows fails there before it reaches the claim.
 
-        **What the purge does not remove is the segment residue, and the scope
-        of "removes the term" is this method's own quantity.** FTS5's ``'delete'``
-        tombstones the postings and nothing in the shipped purge merges them, so
-        query duration on the trigram path stays monotone in the withdrawn count
-        -- +27.4 ms end to end at 5,950 withdrawn (5.08-5.67x the baseline
-        across runs, median 5.41x), measured in PR #498's round-one
-        review and owned by
-        `#499 <https://github.com/theurian/theurian/issues/499>`_ as a face of
-        T-17a. The canonical-read count this docstring is about is genuinely
-        term-free after a purge; the clock is not.
+        **The scope of "removes the term" is this method's own quantity**, and
+        the residue that used to sit outside it is now closed too. FTS5's
+        ``'delete'`` tombstones the postings rather than removing them, and
+        until `#499 <https://github.com/theurian/theurian/issues/499>`_ nothing
+        in the purge merged them, so query duration on the trigram path was
+        monotone in the withdrawn count -- +27.4 ms end to end at 5,950
+        withdrawn (5.08-5.67x the baseline across runs, median 5.41x), measured
+        in PR #498's round-one review. ``index_purge._merge_full_text`` now
+        issues an FTS5 ``optimize`` over every full-text table it discovers in
+        the build's own schema, and the duration is flat: measured by three
+        independent instruments in PR #545's round one (2026-09-04) at
+        0.84-0.99x a never-held build on one and a non-monotonic spread of 5.7%
+        or less on another, against control arms at 3.61x, 4.22x and 12.18x. The
+        canonical-read count this docstring is about was always term-free after
+        a purge; the clock is now too. What is left is a byte face with no query
+        behind it -- the purged file is the same size with the merge as without,
+        its growth now nearly all free-list pages -- owned by
+        `#344 <https://github.com/theurian/theurian/issues/344>`_.
 
         Zero rows is the case worth naming: a query that matched nothing asks
         this store nothing, which is why
