@@ -336,17 +336,35 @@ def test_the_retracted_write_time_sensitivity_wording_survives_only_in_its_own_c
     """Row 12's retraction must not have leaked back into SECURITY.md. RED if it does.
 
     Row 12 discharged a SECURITY.md self-contradiction — the passage saying
-    ``sensitivity, tenant and ACL group`` are refused at write time, which the code
+    the sensitivity, tenant and ACL axes are refused at write time, which the code
     never did. #552 kept that exact wording alive in *one* place, the discharged
     row itself, deliberately: a discharge that deletes the claim it discharged
     leaves a later reader no way to check it. So the phrase must appear exactly
     once, in the roadmap, and never in SECURITY.md — where its return would be the
     original contradiction, reopened inside a security document.
+
+    **The census excludes the two test roots, and that is not optional.** A
+    claim-pinning test that greps for a literal it quotes counts *itself* once its
+    file is tracked — the self-hit ``test_connection_claims.py`` warns about, and
+    the one this pin hit: with the whole tree in scope the census returned this
+    file beside the roadmap and the assertion failed ``2 != 1``. The population
+    the pin means is governed prose and source, not test machinery, so the
+    pathspec drops both test roots (the ``:!packages/theurian-core/tests/`` idiom
+    #534's roadmap grep uses). SECURITY.md is *not* excluded, so a real leak there
+    is still caught — verified: the key returns exactly the roadmap here, and
+    would return SECURITY.md too if the wording reappeared in it.
     """
-    carriers = _git("grep", "-l", "sensitivity, tenant and ACL group")
+    carriers = _git(
+        "grep",
+        "-l",
+        "sensitivity, tenant and ACL group",
+        "--",
+        ":!packages/theurian-core/tests/",
+        ":!tests/",
+    )
 
     assert carriers == ["docs/roadmap.md"], (
-        f"the retracted `sensitivity, tenant and ACL group` write-time wording is "
+        f"the retracted sensitivity/tenant/ACL write-time wording is "
         f"carried by {carriers}, not by the roadmap cell alone. If SECURITY.md is "
         f"among them the discharged contradiction has reopened; if the roadmap is "
         f"absent the discharge has deleted the claim it was meant to preserve"
