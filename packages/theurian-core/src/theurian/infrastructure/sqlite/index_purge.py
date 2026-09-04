@@ -386,14 +386,25 @@ _POST_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
 #: this fix says "both FTS5 tables", which was the v3 count and is now half of
 #: them. A merge over a constant tuple is correct the day it is written and
 #: silently partial the day the next table lands -- and partial here is not a
-#: smaller effect but an open channel, because the residue compounds across
-#: purges (:func:`_merge_full_text`).
+#: smaller effect but an open channel, because the **tombstone residue** in a
+#: table nothing merges compounds across purges, each one copying the last
+#: (:func:`_merge_full_text`, which names the other two residues this module
+#: talks about and keeps them apart from this one).
 #:
-#: `sql IS NOT NULL` drops the rows SQLite writes for implicit indexes. The four
-#: shadow tables each FTS5 table owns (`<name>_data`, `_idx`, `_docsize`,
-#: `_config`) *do* carry `CREATE TABLE` text and survive to be filtered by
-#: :data:`_FTS5_DECLARATION` instead. `ORDER BY name` so a purge does the same
-#: work in the same order on every run.
+#: `sql IS NOT NULL` is a **null guard, not a filter**: measured on a fresh index,
+#: `type = 'table'` already selects 32 rows of which 32 have SQL, because the rows
+#: SQLite writes with a null `sql` are the implicit indexes and they are
+#: `type = 'index'`. It earns its place by keeping a null out of
+#: :data:`_FTS5_DECLARATION`, which would otherwise be handed the string `"None"`.
+#:
+#: The shadow tables each FTS5 table owns -- `<name>_data`, `_idx`, `_docsize`,
+#: `_config`, and `_content` too unless the table is external-content, so four or
+#: five depending on that -- *do* carry `CREATE TABLE` text and survive to here.
+#: :data:`_FTS5_DECLARATION` is what excludes them.
+#:
+#: `ORDER BY name` so a purge does the same work in the same order on every run.
+#: Nothing downstream reads the order -- each table's merge is independent of the
+#: others -- so this is determinism for its own sake and is argued, not pinned.
 _FTS5_TABLE_CANDIDATES: Final = """
 SELECT name, sql FROM sqlite_master
  WHERE type = 'table' AND sql IS NOT NULL
@@ -403,20 +414,34 @@ SELECT name, sql FROM sqlite_master
 #: A `sqlite_master.sql` text that *declares* an FTS5 table, as against one that
 #: merely mentions one.
 #:
-#: The module name is matched as a whole token rather than as a substring,
-#: because `fts5vocab` is a module too and an `fts5vocab` table is not writable:
-#: `INSERT INTO v(v) VALUES ('optimize')` against one raises `table v may not be
-#: modified` (measured, SQLite 3.47.1). Under a `LIKE '%fts5%'` reading, adding a
-#: diagnostic vocab view would turn every purge into a refusal. `\b` is what
-#: separates the two -- there is no word boundary between `fts5` and `vocab`.
+#: Both halves of this are load-bearing, and each was measured wrong before it was
+#: measured right (2026-09-03, SQLite 3.47.1, fifteen declarations in
+#: `test_purge_full_text_discovery.py`'s own vocabulary):
 #:
-#: `\s+` throughout and `DOTALL` on, because `sqlite_master` stores the `CREATE`
-#: statement as it was written: the DDL in `index_schema.py` puts a newline after
-#: the opening parenthesis, and a reformatting of it must not silently drop a
-#: table out of the set this covers.
+#: **The module name may be quoted.** `USING "fts5"`, `USING [fts5]`,
+#: `` USING `fts5` `` and `USING 'fts5'` are all accepted by SQLite and all name
+#: the same module. A reading that insisted on the bare token skipped every one of
+#: them, which is a table left holding its tombstones with nothing to say so.
+#:
+#: **The name portion may not cross into the argument list.** `[^(]+?` rather than
+#: `.+?`, because a module's arguments and a quoted table name are both places an
+#: operator's own text lands: an `fts5vocab` view *named* `x USING fts5` is legal,
+#: and under `.+?` its own name satisfied this pattern -- so the merge issued
+#: `optimize` against a read-only vocab table, which raises, which unlinks the
+#: build. A purge destroying its own output over a legal table is the failure this
+#: half exists to stop, and `test_purge_full_text_discovery.py` plants that table.
+#:
+#: Trailing `\s*\(` rather than `\b`, and it is what separates `fts5` from
+#: `fts5vocab` now that the leading quote is optional: every FTS5 table declares at
+#: least one column, so the module name is always followed by an argument list,
+#: while `fts5vocab(` puts `v` where this wants a quote or a parenthesis.
+#:
+#: No `DOTALL`: nothing here is `.` any more. `[^(]` and `\s` both match a newline
+#: on their own, so a DDL rewrapped across lines -- between the table name and
+#: `USING`, or anywhere else before the arguments -- still matches.
 _FTS5_DECLARATION: Final = re.compile(
-    r"^\s*CREATE\s+VIRTUAL\s+TABLE\s+.+?\s+USING\s+fts5\b",
-    re.IGNORECASE | re.DOTALL,
+    r"^\s*CREATE\s+VIRTUAL\s+TABLE\s+[^(]+?\s+USING\s+[\"'`\[]?fts5[\"'`\]]?\s*\(",
+    re.IGNORECASE,
 )
 
 
@@ -760,16 +785,21 @@ def _merge_full_text(target: Path) -> None:
     1.50x and `nodes_trigram` at 1.77x a build that never held the withdrawn
     rows, against 0.75x and 0.89x merging afterwards.
 
-    That residue does *not* compound -- the next purge's copy carries it in and
-    that purge's merge clears it -- so what the earlier placement leaves is
-    bounded by the surviving node count rather than by the withdrawn count, and
-    the count channel #499 is about closes under either placement. The later one
-    is taken because it needs no such argument: **nothing writes to a full-text
-    index after this call**, so a published build is merged outright and
-    `test_purge_full_text_discovery.py` can pin that by re-running the merge and
-    finding nothing to do. `recompute_forest` is upstream of `_restamp` and so is
-    covered by the same ordering; `_verify` only counts and `os.replace` only
-    renames.
+    Call that the **restamp residue**. Three different quantities in this module
+    answer to the word, and only the last survives the shipped ordering: the
+    *tombstone residue* a merge exists to remove, which compounds across purges
+    when nothing merges it (:data:`_FTS5_TABLE_CANDIDATES`); this restamp residue;
+    and the *varint residue* at the end of this docstring. The restamp residue
+    does *not* compound -- the next purge's copy carries it in and that purge's
+    merge clears it -- so
+    what the earlier placement leaves is bounded by the surviving node count
+    rather than by the withdrawn count, and the count channel #499 is about closes
+    under either placement. The later one is taken because it needs no such
+    argument: **nothing writes to a full-text index after this call**, so a
+    published build is merged outright and `test_purge_full_text_discovery.py` can
+    pin that by re-running the merge and finding nothing to do. `recompute_forest`
+    is upstream of `_restamp` and so is covered by the same ordering; `_verify`
+    only counts and `os.replace` only renames.
 
     **`optimize`, not the bounded `merge` #499 offered as its alternative.** A
     `merge` does a page-budgeted amount of work and stops, so whatever it does not
@@ -782,20 +812,54 @@ def _merge_full_text(target: Path) -> None:
     rows.
 
     Priced before it shipped, because a merge is O(index) where the delete it
-    follows is not (2026-09-03, `time.perf_counter` around `derive_purged`, arms
-    alternating, medians of nine, 10-core arm64 at load ~3). Source index size,
-    purge without this step, purge with it: 4.3 MB 62 -> 100 ms; 17.6 MB
-    307 -> 524 ms; 35.3 MB 571 -> 965 ms; 88.3 MB 1,568 -> 2,606 ms. **A flat
-    1.66x across a twentyfold span**, which is the reading that decides it: the
-    merge is the same order as the page copy the purge already pays, so it is a
-    constant factor rather than a term that overtakes the rest at scale. Cheap
-    against the alternative, too -- ADR-0024's table above prices *re-deriving* a
-    build at 2,614 ms for 12.3 MB and 37,684 ms for 150.3 MB, so a purge that
-    merges still comes in about an order of magnitude under the rebuild it exists
-    to avoid. And it is paid once per withdrawal, against a per-query cost it
-    removes: on a 5,000-chunk corpus with 5,000 rows withdrawn, a substring query
-    took 32.5 ms on a purged build before this and 16.0 ms after, against 16.6 ms
-    on a build that never held the rows.
+    follows is not (`time.perf_counter` around `derive_purged`, arms alternating,
+    10-core arm64). **The ratio has two axes and they do not read alike**, so
+    quoting one number for it would misdescribe whichever case the reader had:
+
+    *Source size*, withdrawn held at a tenth of visible, medians of nine at load
+    ~3 -- 4.3 MB 62 -> 100 ms; 17.6 MB 307 -> 524 ms; 35.3 MB 571 -> 965 ms;
+    88.3 MB 1,568 -> 2,606 ms. **1.60x to 1.70x across a twentyfold span**, and
+    the flatness is the reading that decides the trade: the merge is the same
+    order as the page copy a purge already pays, so along this axis it is a
+    constant factor rather than a term that overtakes the rest at scale.
+
+    *Withdrawal count*, visible held at 10,000, medians of nine at load 8-14 (so
+    the milliseconds are inflated and only the shape is claimed; two runs at
+    different loads agree on it) -- 0 withdrawn 73 -> 472 ms; 500 436 -> 940 ms;
+    2,000 657 -> 902 ms; 5,000 1,798 -> 2,065 ms. **6.4x falling to 1.15x**,
+    because the merge's own cost tracks the index while the purge's tracks what it
+    deletes: the ratio is worst exactly where the purge is cheapest, a
+    residue-cleanup purge with nothing withdrawn, and there it is 472 ms on an
+    11.6 MB index. The absolute cost, which is the one an operator waits on, stays
+    bounded by index size on both axes.
+
+    Cheap against the alternative either way -- ADR-0024's table above prices
+    *re-deriving* a build at 2,614 ms for 12.3 MB and 37,684 ms for 150.3 MB, so a
+    purge that merges still comes in about an order of magnitude under the rebuild
+    it exists to avoid. And it is paid once per withdrawal, against a per-query
+    cost it removes: on a 5,000-chunk corpus with 5,000 rows withdrawn, a
+    substring query took 32.5 ms on a purged build before this and 16.0 ms after,
+    against 16.6 ms on a build that never held the rows.
+
+    **Scope: this ends the query-reachable face of T-17a and not the file face.**
+    What a query walks is the segment structure, and after this that structure is
+    a never-held build's. The *file* is not compacted -- the merged-away pages
+    become free-list rather than returning to the filesystem, measured at 95.9%
+    free-list on a purged build -- so anyone reading the raw file still sees where
+    the withdrawn rows were. That face is #344's, which also records that this
+    merge *increases* the free-list share it measures, and neither `secure_delete`
+    nor `VACUUM` is taken here (the second would renumber the rowids four
+    external-content indexes key on, which is the module docstring's second
+    hazard).
+
+    One residue survives on the query-reachable side and is named rather than
+    claimed away: the **varint residue**, the rowid deltas a posting list encodes.
+    Withdrawing rows widens the gaps between the surviving rowids, so a purged
+    build's posting bytes still move with the withdrawn count -- measured 0.28% on
+    `chunks_trigram` and 0.72% on `chunks_fts` across 0 to 400 withdrawn, monotone
+    non-decreasing and saturating, 69x to 181x inside the band
+    `test_purged_build_structure.py` asserts. It is the honest slack in that
+    file's key, and it is a different quantity from the restamp residue above.
 
     A `sqlite3.Error` here is left to propagate rather than dressed as an
     `IndexPurgeError`, which is the opposite of what `_copy` does above.
@@ -811,7 +875,10 @@ def _merge_full_text(target: Path) -> None:
                 continue
             # Quoted, and any embedded quote doubled: the identifier arrives from
             # `sqlite_master` rather than from this module, so it is data at this
-            # point even though the schema that wrote it is ours.
+            # point even though the schema that wrote it is ours. Pinned by the
+            # `odd"name_fts` table `test_purge_full_text_discovery.py` plants --
+            # without the doubling that name is a syntax error, not a silent
+            # mis-target.
             quoted = '"{}"'.format(str(row["name"]).replace('"', '""'))
             # One transaction per table rather than one around all of them. An
             # `optimize` rewrites a whole index into a single segment, and holding
@@ -819,7 +886,7 @@ def _merge_full_text(target: Path) -> None:
             # WAL before any checkpoint can run.
             with connection:
                 connection.execute(
-                    f"INSERT INTO {quoted}({quoted}) VALUES ('optimize')"  # noqa: S608 - quoted identifier from this schema's own DDL
+                    f"INSERT INTO {quoted}({quoted}) VALUES ('optimize')"  # noqa: S608 - identifier is data here, quoted and doubled above
                 )
 
 

@@ -306,11 +306,25 @@ def _add_nodes(path: Path, count: int) -> None:
 def _build(path: Path, *, withheld: int, build_id: str) -> tuple[SqliteIndexStore, list[str]]:
     """A build over :data:`VISIBLE` visible chunks plus `withheld` withdrawn ones.
 
-    Interleaved by chunk id before insertion, so the visible rows land at the same
-    ``chunks`` rowids in every build here. FTS5 keys on that rowid, so a different
-    insertion order would make two builds differ for a reason that has nothing to
-    do with the purge -- `test_index_purge.py`'s `_populate` makes the same
-    arrangement for the same reason.
+    Sorted by chunk id before insertion, the arrangement `test_index_purge.py`'s
+    `_populate` also makes, so that insertion order is a function of the corpus
+    and not of the order this happens to append in.
+
+    **It does not put the visible rows at the same rowids in every build, and an
+    earlier version of this docstring claimed it did.** ``gone-`` sorts ahead of
+    ``keep-``, so the withdrawn rows take the low rowids and every visible row
+    shifts up by exactly `withheld`: measured 2026-09-03, ``keep-00000#0`` lands
+    at rowid 1, 101 and 401 across 0 / 100 / 400 withdrawn.
+
+    That shift is the one thing left in this module's key that does move with the
+    withdrawn count, and it is named rather than argued away. FTS5 stores rowids
+    as deltas, so wider gaps between the survivors cost slightly wider varints:
+    measured over 0 / 50 / 100 / 200 / 400 withdrawn, a purged build's postings
+    run 0.72% (`chunks_fts`) and 0.28% (`chunks_trigram`) above their floor,
+    monotone non-decreasing and saturating by 200. That is 69x and 181x inside
+    :data:`FLAT_FACTOR`, so the flatness claim holds with room to spare -- but it
+    is slack, not zero, and a corpus whose ids sorted the other way would not have
+    it at all.
     """
     store = SqliteIndexStore(path)
     store.create(index_build_id=build_id, state_hash="state-abc")
