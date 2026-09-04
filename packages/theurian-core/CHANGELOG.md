@@ -99,6 +99,40 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed
 
+- **A path that leaves the project through a symlink and comes back inside is
+  refused, where it used to be read**
+  ([#288](https://github.com/theurian/theurian/issues/288), SEC-7, T-5).
+  `contentFile: ../knowledge/hop/back/auth-policy.md`, with `knowledge/hop`
+  pointing out of the project and `outside/back` pointing home again, *resolves*
+  to a file that really is inside `knowledge/` — so every containment check keyed
+  on the destination passed it, and `theurian migrate validate` answered
+  `valid: true`, exit 0. `assert_no_symlink_escape` existed to refuse exactly
+  that shape and never had: both of its call sites handed it the already-resolved
+  path, and `Path.resolve()` has by then replaced every link with its
+  destination, leaving the walk nothing to see. Deleting the guard outright kept
+  the whole suite green.
+
+  The walk now runs over the components the caller wrote, before resolution
+  flattens them, at the three places that hold them: `read_source_file`, the
+  migration loader's `contentFile` resolution, and `propose accept`'s body
+  destination. The loader is the one that decides the CLI's answer — it resolves
+  the path before `read_source_file` is reached, so repairing the read alone
+  still left `migrate validate` at exit 0.
+
+  **Nothing was disclosed by this, and nothing newly is.** The resolved
+  destination was inside the project before the fix and is inside it after, so no
+  out-of-project file was ever readable through this shape. What changes is that
+  a defence-in-depth claim `SECURITY.md`, the migration protocol, the local-MCP
+  security note and threat-model T-5 all asserted is now enforced rather than
+  merely written down — and driven by tests that fail when it is removed.
+
+  **A repository that reaches a body through a link out of the project and back
+  will now see `theurian migrate validate` exit 4**, naming the migration file
+  and never the author-written `contentFile`. Repoint that link so the path stays
+  inside the project, or remove it, which is what the refusal's remedy says. A
+  symlink chain that never leaves the project is still followed: this is a
+  containment rule, not a ban on links.
+
 - **One commit whose message is not valid UTF-8 no longer costs the whole
   review-finding corpus**
   ([#496](https://github.com/theurian/theurian/issues/496), ADR-0029 decision 3).
