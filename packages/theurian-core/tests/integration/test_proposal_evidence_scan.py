@@ -173,7 +173,7 @@ def _configure(paths: ProjectPaths, policy: str) -> None:
 
 
 def _with_a_secret_in_the_reasoning(
-    service: ProposalService, *, local: bool = False
+    service: ProposalService, *, local: bool = False, body: str = CLEAN_BODY
 ) -> DraftedProposal:
     """The ordinary proposal, with a credential pasted into ``evidence.reasoning``.
 
@@ -190,7 +190,7 @@ def _with_a_secret_in_the_reasoning(
     which no test held: the skip mutation -- returning before the yield when
     ``location.local`` -- survived the suite.
     """
-    drafted = service.draft(_request(), local=local)
+    drafted = service.draft(_request(body), local=local)
     evidence = drafted.directory / EVIDENCE_FILE
     document = json.loads(evidence.read_text(encoding="utf-8"))
     document["reasoning"] = f"Verified against staging with THEURIAN_TOKEN={PLANTED_TOKEN}"
@@ -485,6 +485,197 @@ def test_a_run_whose_budget_fills_first_never_opens_the_evidence_record(
     assert EVIDENCE_FILE not in reads, (
         f"the evidence record was read by a run whose budget was already full ({reads}), so the "
         f"channels are no longer consumed lazily"
+    )
+
+
+def _a_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A throwaway project the real CLI can be pointed at, and the redirection.
+
+    ``init`` scopes a project to a Git working tree, so the repository is part of
+    the fixture rather than an accident of where the suite runs -- the same setup
+    ``test_propose_cli.py``'s own project fixture performs. ``HOME`` and
+    ``THEURIAN_DATA_DIR`` are redirected and the working directory is set in the
+    same call, because ``init`` resolves the project from ``Path.cwd()`` and
+    takes no argument that says where.
+    """
+    root = tmp_path / "demo"
+    root.mkdir()
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+    (tmp_path / "home").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
+    monkeypatch.chdir(root)
+    initialised = CliRunner().invoke(app, ["init", "--json"], catch_exceptions=False)
+    assert initialised.exit_code == 0, initialised.output
+    return root
+
+
+def _draft_through_the_cli(runner: CliRunner, root: Path) -> str:
+    """One ordinary proposal, drafted by the real command, returning its id."""
+    body = root / "body.md"
+    body.write_text(CLEAN_BODY, encoding="utf-8")
+    drafted = runner.invoke(
+        app,
+        [
+            "propose",
+            "--item-id",
+            "architecture.retry-policy",
+            "--title",
+            "Retry policy",
+            "--kind",
+            "architecture",
+            "--owner",
+            "platform-team",
+            "--author",
+            "platform-team@example.com",
+            "--description",
+            "Record the retry budget the API review settled on.",
+            "--body-file",
+            str(body),
+            "--agent-id",
+            "claude-code",
+            "--task-id",
+            "task-7",
+            "--model",
+            "claude-opus-5",
+            "--reasoning",
+            EVIDENCE.reasoning,
+            "--source-uri",
+            ANCHOR.source_uri,
+            "--source-commit",
+            # The fixture anchor sets it, and the CLI needs a `str` -- asserted
+            # rather than coalesced so a fixture edit that dropped it fails here
+            # instead of drafting an anchor this test did not mean to write.
+            _required(ANCHOR.commit_sha, "the fixture anchor has no commit sha"),
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+    assert drafted.exit_code == 0, drafted.output
+    return str(json.loads(drafted.stdout)["proposalId"])
+
+
+def test_a_budget_that_fills_upstream_still_reports_the_channel_it_never_reached(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The hole the laziness pin opened in the skipped note (round 2, M-1).
+
+    ``skipped`` is appended from inside ``_evidence_text``, which
+    ``_findings_in`` drives lazily -- so a run whose finding budget fills in the
+    bodies never advances that generator, and the note it would have made is
+    never made. The result published ``skipped=()`` for a run that had not
+    looked: exactly the false "nothing was skipped" the field exists to stop,
+    reached by the very optimisation the test above pins.
+
+    The fix cannot simply open the file, because that is what the laziness pin
+    forbids. It does not need to: a channel the run never reached is a channel it
+    did not clear, and saying so needs no I/O at all.
+
+    Both halves are asserted. The budget really is full -- otherwise the
+    generator would have been reached and this would be the ordinary case under
+    another name -- and the record really is unreadable.
+    """
+    _configure(paths, "warn")
+    # Planted at draft time: rewriting the body afterwards breaks the migration's
+    # own `contentSha256`, and the rehearsal then refuses before the scan result
+    # is ever returned.
+    drafted = _with_a_secret_in_the_reasoning(
+        service,
+        body="# Retry policy\n\n"
+        + "".join(f"    TOKEN_{index}={PLANTED_TOKEN}\n" for index in range(MAX_FINDINGS + 2)),
+    )
+    evidence = drafted.directory / EVIDENCE_FILE
+    evidence.unlink()
+    evidence.symlink_to(paths.root.parent / "elsewhere.json")
+
+    accepted = service.accept(drafted.proposal_id)
+
+    assert len(accepted.secret_scan.findings) == MAX_FINDINGS, (
+        f"the budget did not fill ({len(accepted.secret_scan.findings)} findings), so the "
+        f"evidence generator was reached and this is not the case under test"
+    )
+    assert accepted.secret_scan.skipped == (_AT_EVIDENCE,), (
+        f"a run that never reached the evidence channel reported {accepted.secret_scan.skipped}, "
+        f"publishing 'nothing was skipped' for a channel it had not looked at"
+    )
+
+
+def test_the_payload_publishes_the_skipped_channels_and_not_only_the_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``secretScanSkipped`` itself, which nothing held (round 2, M-2).
+
+    The only assertion on it was ``"secretScanSkipped" in steps[0]`` -- the
+    *step's own text*, naming a field. Deleting the field from the payload left
+    the suite green, and the failure mode is self-inconsistent output: the step
+    goes on telling the reader to look in a key the document no longer carries.
+
+    Driven through the real CLI, because the payload is the composition root's
+    and the service cannot hold it.
+    """
+    runner = CliRunner()
+    root = _a_project(tmp_path, monkeypatch)
+    (root / ".theurian" / "config.yaml").write_text(
+        'security:\n  secretScan: "warn"\n', encoding="utf-8"
+    )
+    proposal_id = _draft_through_the_cli(runner, root)
+    evidence = root / ".theurian" / "proposals" / proposal_id / EVIDENCE_FILE
+    evidence.unlink()
+    evidence.symlink_to(tmp_path / "elsewhere.json")
+
+    accepted = runner.invoke(
+        app, ["propose", "accept", proposal_id, "--json"], catch_exceptions=False
+    )
+
+    assert accepted.exit_code == 0, accepted.output
+    payload = json.loads(accepted.stdout)
+    assert payload["secretScanSkipped"] == [_AT_EVIDENCE], (
+        f"the payload does not publish what was skipped: {payload.get('secretScanSkipped')!r}"
+    )
+    assert _SKIPPED_CHANNEL_STEP in payload["nextSteps"], "the step and the field disagree"
+    assert "secretScanSkipped" in _SKIPPED_CHANNEL_STEP, (
+        "the step names a different field than the one published, so a reader is sent to a key "
+        "that is not there"
+    )
+
+
+def test_a_flagged_body_and_an_unreadable_record_both_speak_in_priority_order(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The both-fire branch, which the docstring claims and no test drove (round 2, M-3).
+
+    ``_accept_steps`` says a skipped channel is prepended *after* the rotate
+    step, "because a value already believed to be exposed outranks a channel
+    nobody could look at", and that both can fire at once. The two existing tests
+    drive one condition each -- findings with nothing skipped, and skipped with
+    no findings -- so reversing the priority left the suite green.
+
+    Both conditions are asserted present before the order is, because an ordering
+    assertion over a one-element list passes for the wrong reason.
+    """
+    _configure(paths, "warn")
+    drafted = _with_a_secret_in_the_reasoning(
+        service, body=f"# Retry policy\n\n    TOKEN={PLANTED_TOKEN}\n"
+    )
+    evidence = drafted.directory / EVIDENCE_FILE
+    evidence.unlink()
+    evidence.symlink_to(paths.root.parent / "elsewhere.json")
+
+    accepted = service.accept(drafted.proposal_id)
+
+    assert accepted.secret_scan.findings, "no finding fired, so the rotate step is not in play"
+    assert accepted.secret_scan.skipped, "nothing was skipped, so the skipped step is not in play"
+    steps = _accept_steps(accepted)
+    assert steps[0] is _ROTATE_ADVICE_STEP, (
+        f"a value already believed exposed did not come first: {steps[0]}"
+    )
+    assert steps[1] is _SKIPPED_CHANNEL_STEP, (
+        f"the skipped channel is not second, so both did not fire in the recorded order: {steps}"
     )
 
 

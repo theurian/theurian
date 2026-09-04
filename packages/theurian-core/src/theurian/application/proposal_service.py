@@ -687,9 +687,19 @@ class SecretScanResult:
 
     policy: SecretScanPolicy
     findings: tuple[ProposalSecretFinding, ...] = ()
-    #: Channels this run could not read, by the same fixed literals a finding's
-    #: location uses (:data:`_AT_EVIDENCE` today). Empty under ``block``, which
-    #: refuses rather than skipping, and under ``off``, which reads nothing.
+    #: Channels this run did not clear, by the same fixed literals a finding's
+    #: location uses (:data:`_AT_EVIDENCE` today). Empty under ``off``, which
+    #: reads nothing at all and says so through ``policy`` instead.
+    #:
+    #: **Two causes, one field**, because the caller's question is the same for
+    #: both: was every channel looked at? A record that is present and cannot be
+    #: read is one; a channel the run never reached is the other, and it happens
+    #: when the finding budget fills in the bodies before the chain gets this far.
+    #: Reporting only the first published ``skipped=()`` for a run that had not
+    #: looked -- the same false "nothing was skipped" this field exists to stop.
+    #: They are not told apart because nothing acts on the difference: either
+    #: way the answer is that this channel was not cleared, and the remedy is to
+    #: fix what the run reported and accept again.
     skipped: tuple[str, ...] = ()
 
 
@@ -1307,18 +1317,28 @@ class ProposalService:
         # survives: a run whose budget fills in the bodies never opens
         # `evidence.json` at all, and the read that channel needs is not paid by
         # an acceptance that was going to be refused anyway.
-        # An accumulator rather than a return value, because `_evidence_text` is
-        # a generator and `_findings_in` is what drives it -- the same shape
-        # `_authored_strings` uses for its `seen` set. It is read after the scan
-        # has run, so it reports what actually happened rather than what the
-        # channel list intended.
+        # Accumulators rather than return values, because `_evidence_text` is a
+        # generator and `_findings_in` is what drives it -- the same shape
+        # `_authored_strings` uses for its `seen` set. They are read after the
+        # scan has run, so they report what actually happened rather than what
+        # the channel list intended.
+        reached: list[str] = []
         skipped: list[str] = []
         findings = _findings_in(
             chain(
                 self._landed_text(migration_file, migration_bytes, document, moves),
-                self._evidence_text(location, policy, skipped),
+                self._evidence_text(location, policy, reached, skipped),
             )
         )
+        # A channel the run never got to is a channel it did not clear, and
+        # saying so needs no file opened -- which is what keeps this compatible
+        # with the laziness the chain buys. A generator that is never advanced
+        # runs none of its body, so an empty `reached` is exactly "the budget
+        # filled upstream and this channel was abandoned" (round 2, M-1). Without
+        # it the result published `skipped=()` for a run that had not looked,
+        # which is the same false "nothing was skipped" the field exists to stop.
+        if _AT_EVIDENCE not in reached:
+            skipped.append(_AT_EVIDENCE)
         if policy is SecretScanPolicy.BLOCK and findings:
             raise self._secret_refusal(location, findings)
         return SecretScanResult(policy=policy, findings=findings, skipped=tuple(skipped))
@@ -1382,7 +1402,11 @@ class ProposalService:
             yield f"{_AT_BODY_PATH}[{index}]", at
 
     def _evidence_text(
-        self, location: _ProposalLocation, policy: SecretScanPolicy, skipped: list[str]
+        self,
+        location: _ProposalLocation,
+        policy: SecretScanPolicy,
+        reached: list[str],
+        skipped: list[str],
     ) -> Iterable[tuple[str, str]]:
         """The evidence record's own text, which travels without being landed (#361).
 
@@ -1439,6 +1463,11 @@ class ProposalService:
         then the migration, so an interrupted draft legitimately has none
         (:meth:`_read_evidence_record` records that split).
         """
+        # Before the existence probe, so that "this channel was considered" is
+        # recorded even when there is nothing to consider. A generator only runs
+        # its body once advanced, so the absence of this marker is what tells
+        # `_scan_for_secrets` the run never got here at all.
+        reached.append(_AT_EVIDENCE)
         evidence = location.directory / EVIDENCE_FILE
         if not evidence.exists() and not evidence.is_symlink():
             return
