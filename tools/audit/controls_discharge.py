@@ -69,6 +69,54 @@ _SRC_SYMBOL: Final = re.compile(
 #: A pinning test, however it is spelled.
 _TEST: Final = re.compile(r"tests?/[\w/]+\.py|\btest_\w+\.py|::test_\w+", re.IGNORECASE)
 
+
+def _test_names(root: Path) -> tuple[frozenset[str], frozenset[str]]:
+    """Every test file name and every ``def test_*`` in the repository.
+
+    Read off the tree rather than from a list, for the same reason every other
+    population here is: a list is a claim about the repository that nothing
+    recomputes.
+    """
+    files: set[str] = set()
+    functions: set[str] = set()
+    for path in root.rglob("test_*.py"):
+        files.add(path.name)
+        for match in re.finditer(
+            r"^def (test_\w+)", path.read_text(encoding="utf-8", errors="replace"), re.MULTILINE
+        ):
+            functions.add(match.group(1))
+    return frozenset(files), frozenset(functions)
+
+
+def _unresolvable(text: str, files: frozenset[str], functions: frozenset[str]) -> tuple[str, ...]:
+    """The test citations in ``text`` that name nothing in this repository.
+
+    ``_TEST`` matches a citation's *shape*, never its existence, so a block
+    citing ``::test_this_was_renamed_last_year`` counted as discharged exactly
+    as one citing a test that runs. Measured on the tree at ``dcd11dcd``:
+    replacing all three of T-5's cited names with nonsense left the audit at
+    exit 0. A citation naming something that is not there is evidence of
+    nothing, and this is what tells the two apart.
+
+    Matching is on the **basename** for a path and on the function name for a
+    ``::`` citation, deliberately: the documents' house spelling is
+    ``tests/unit/test_x.py``, which resolves against no working directory, and
+    tightening that to a full repository path is a separate edit to the prose
+    rather than a thing this check should force. What it catches is the case
+    that matters -- a name nothing in the tree defines.
+    """
+    missing: list[str] = []
+    for match in _TEST.finditer(text):
+        citation = match.group(0)
+        if citation.startswith("::"):
+            resolved = citation[2:] in functions
+        else:
+            resolved = Path(citation).name in files
+        if not resolved:
+            missing.append(citation)
+    return tuple(missing)
+
+
 #: The markers that say a control is not (fully) in force, so somebody owes it.
 #:
 #: **The active voice was missing, which is round one's M-d.** Every "owed"
@@ -216,6 +264,8 @@ class Verdict:
     cites: tuple[str, ...]
     open_cites: tuple[str, ...]
     unknown_cites: tuple[str, ...]
+    #: Test citations in this block that name nothing in the repository.
+    unresolvable_cites: tuple[str, ...] = ()
 
     @property
     def discharged(self) -> bool:
@@ -374,12 +424,26 @@ PROSE_ONLY: Final[tuple[tuple[str, str, str], ...]] = (
 )
 
 
-def verdict_for(member: Member, table: dict[str, str]) -> Verdict:
+def verdict_for(
+    member: Member,
+    table: dict[str, str],
+    *,
+    test_files: frozenset[str] = frozenset(),
+    test_functions: frozenset[str] = frozenset(),
+) -> Verdict:
     cites = _cited(member.text)
+    citations = tuple(match.group(0) for match in _TEST.finditer(member.text))
+    unresolvable = _unresolvable(member.text, test_files, test_functions)
     return Verdict(
         member=member,
         names_symbol=bool(_SRC_SYMBOL.search(member.text)),
-        names_test=bool(_TEST.search(member.text)),
+        # A citation nothing in the tree defines does not discharge anything: it
+        # is the shape of evidence without the evidence (round 1, M-1). A block
+        # whose *only* citations are unresolvable falls back to whatever else it
+        # names, which is usually a symbol, so this tightens the floor without
+        # reddening a block that was already carrying real evidence.
+        names_test=bool(citations) and len(unresolvable) < len(citations),
+        unresolvable_cites=unresolvable,
         not_shipped=bool(_NOT_SHIPPED.search(member.text)),
         cites=tuple(cites),
         open_cites=tuple(n for n in cites if tracker_state.is_open(table, n)),
@@ -389,7 +453,11 @@ def verdict_for(member: Member, table: dict[str, str]) -> Verdict:
 
 def audit(root: Path, *, offline: bool = False) -> tuple[list[Verdict], str]:
     table, provenance = tracker_state.states(offline=offline)
-    return [verdict_for(member, table) for member in members(root)], provenance
+    files, functions = _test_names(root)
+    return [
+        verdict_for(member, table, test_files=files, test_functions=functions)
+        for member in members(root)
+    ], provenance
 
 
 #: Planted blocks run instead of the tree under ``--positive-control``, as
@@ -661,6 +729,7 @@ def _report(verdicts: list[Verdict]) -> int:
     undischarged = [v for v in verdicts if not v.discharged]
     dead = [v for v in verdicts if v.owner_is_dead]
     unknown = [v for v in verdicts if v.unknown_cites]
+    unresolvable = [v for v in verdicts if v.unresolvable_cites]
     stale, ambiguous = ledger_drift(verdicts, PROSE_ONLY)
 
     if undischarged:
@@ -676,6 +745,10 @@ def _report(verdicts: list[Verdict]) -> int:
         print("\nUNKNOWN CITE -- a number this repository's tracker does not carry:")
         for verdict in unknown:
             print(f"  {verdict.member.where}  {list(verdict.unknown_cites)}")
+    if unresolvable:
+        print("\nUNRESOLVABLE CITE -- a test citation naming nothing in this repository:")
+        for verdict in unresolvable:
+            print(f"  {verdict.member.where}  {list(verdict.unresolvable_cites)}")
     if stale:
         print("\nSTALE LEDGER ROWS -- these now name a symbol or a test; delete the row:")
         for path, fragment, _ in stale:
@@ -685,7 +758,7 @@ def _report(verdicts: list[Verdict]) -> int:
         for (path, fragment, _), covered in ambiguous:
             print(f"  {path}  {fragment!r} covers {covered}")
 
-    return 1 if undischarged or dead or unknown or stale or ambiguous else 0
+    return 1 if undischarged or dead or unknown or unresolvable or stale or ambiguous else 0
 
 
 if __name__ == "__main__":
