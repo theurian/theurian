@@ -622,3 +622,47 @@ def test_each_census_audit_can_still_fail(script: pathlib.Path) -> None:
     done = _run(script, CONTROL_FLAG, OFFLINE)
 
     assert done.returncode == 0, _report(done, script, f"{CONTROL_FLAG} {OFFLINE}")
+
+
+def test_a_citation_resolves_against_this_repository_and_not_its_dependencies() -> None:
+    """``controls_discharge``'s citation check reads *our* tests, not installed ones.
+
+    ``rglob("test_*.py")`` descends into ``.venv``, where hundreds of packaged
+    dependencies ship their own test files. A threat-model citation naming one of
+    those resolved, so a pin could be satisfied by a name this repository does
+    not define -- the same "shape rather than existence" hole the check was added
+    to close, one level down.
+
+    Both directions, because a filter that excluded everything would satisfy the
+    first assertion alone: a name only a dependency defines must not resolve, and
+    a name this repository defines must.
+    """
+    sys.path.insert(0, str(AUDIT_DIR))
+    import controls_discharge
+
+    root = REPO_ROOT
+    files, functions = controls_discharge._test_names(root)
+
+    ours = {path.name for path in controls_discharge._repository_tests(root)}
+    assert "test_census_audits_run.py" in ours, "this very file is part of the population"
+    assert not any(
+        part.startswith(".")
+        for path in controls_discharge._repository_tests(root)
+        for part in path.parts
+    ), "no dotted directory -- .venv above all -- contributes a name"
+
+    dependency_only = {
+        path.name
+        for path in root.rglob("test_*.py")
+        if any(part.startswith(".") for part in path.parts)
+    } - ours
+    assert dependency_only, "the control needs a dependency test to exist to be meaningful"
+    planted = sorted(dependency_only)[0]
+    assert controls_discharge._unresolvable(f"`tests/{planted}`", files, functions), (
+        f"{planted} lives only in a dependency tree and must not satisfy a citation"
+    )
+
+    real = sorted(functions)[0]
+    assert not controls_discharge._unresolvable(f"`::{real}`", files, functions), (
+        "and the key still hits a name this repository really defines"
+    )

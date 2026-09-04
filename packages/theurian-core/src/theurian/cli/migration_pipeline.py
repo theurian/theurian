@@ -197,10 +197,21 @@ def _materialize(candidate: CandidateMigrationSet, target: Path) -> Path:
     is what makes the result the *union* rather than the two sets side by side:
     a body this proposal replaces is replaced here too.
 
-    Every read goes through :func:`read_source_file`, so the copy inherits the
-    containment, symlink-escape and size checks the loader itself read these
-    files under (SEC-7, SEC-8) -- a landed body relocated behind a symlink that
-    leaves the project is refused here exactly as it is there. Every write is
+    Every read goes through :func:`read_source_file`, so the copy inherits its
+    containment, file-shape and size checks (SEC-7, SEC-8).
+
+    **It does not inherit the whole of the loader's route check, and that is
+    recorded rather than implied.** The body half of ``candidate.landed`` is the
+    loader's own ``resolved_content_path`` -- a path ``resolve()`` has already
+    flattened -- so the symlink-route walk inside :func:`read_source_file` has no
+    link left to see there. What bounds these reads is the
+    :func:`~theurian.security.paths.assert_no_symlink_escape` the loader made on
+    the author's ``contentFile`` when the landed set was read: upstream, and on
+    the one string that could still carry a route. The migration-file half is
+    ``migration.source_path``, which comes from a directory listing and is not
+    flattened, so for those entries the walk here is live. An earlier version of
+    this paragraph claimed the copy read "under the same checks" as the loader;
+    it reads under one fewer, and which one is the point. Every write is
     proved to stay under ``target`` before it happens: the relative paths come
     from the loader, which already contained them, and re-proving a *write* is
     cheaper than reasoning about whether that stays true.

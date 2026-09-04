@@ -266,6 +266,40 @@ def test_a_symlink_escaping_the_project_fails_only_itself(project: Path) -> None
     assert any("escapes the permitted root" in f.reason for f in report.failures)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_symlink_that_leaves_the_project_and_returns_is_not_ingested(project: Path) -> None:
+    """The third call site of the route check (#288, round 1 R1-A).
+
+    ``ingest`` reads through ``read_source_file`` like the loader and the accept
+    path, so the class reaches it too -- and here the consequence is that the
+    document lands in the index and is served, not merely validated. The link
+    resolves to a real in-project file, so every check keyed on the destination
+    passes it; the route is what refuses it.
+
+    The plain neighbour is the control: one document is still ingested, so this
+    pins a containment rule rather than a walk that fails everything it meets.
+    """
+    _write(project, "knowledge/architecture/good.md", "# Good\n")
+    knowledge = project / ".theurian" / "knowledge"
+    outside = project.parent / "outside-ingest"
+    outside.mkdir(parents=True, exist_ok=True)
+    (outside / "back.md").symlink_to(knowledge / "architecture" / "good.md")
+    (knowledge / "architecture" / "gate.md").symlink_to(outside / "back.md")
+
+    report = _ingest(project)
+
+    assert [document.path for document in report.documents] == [
+        ".theurian/knowledge/architecture/good.md"
+    ], "the plain neighbour is still ingested; only the route through outside is refused"
+    assert any(
+        "link pointing outside the project" in failure.reason for failure in report.failures
+    ), (
+        "and it says why: the link's absolute target names no spelling of this project, "
+        "which is a truer sentence than 'escapes the permitted root' for a route that "
+        "comes back inside"
+    )
+
+
 def test_warnings_reach_the_report(project: Path) -> None:
     """ADR-0019: a governed key in front matter must be visible to the user."""
     _write(

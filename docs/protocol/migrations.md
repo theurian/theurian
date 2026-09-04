@@ -414,9 +414,18 @@ ordinary checksum mismatch.
 
 `contentFile` is resolved relative to the migration file and must stay inside the
 project root. `..` traversal, absolute paths, and symlinks leaving the root are
-all refused, including symlinks on intermediate components (SEC-7). The JSON
-Schema rejects absolute paths as cheap defence in depth; the runtime check is the
-real control, because only it can resolve symlinks.
+all refused (SEC-7). The *route* is checked and not only the destination: a
+`contentFile` that leaves the project and returns — however it is spelled, and
+even though it resolves to a file inside the project — is refused, so a body is
+reachable only along a path that stays inside throughout. A link chain that never
+leaves is followed normally, up to 40 links: beyond that the walk refuses on the
+chain's length and says so, rather than reporting an escape that did not happen.
+An absolute link target is followed only when it spells the project the way the
+running command addresses it; a third alias of the same directory is refused,
+which is the containment design's recorded residual and fails closed. The JSON
+Schema rejects absolute paths as cheap
+defence in depth; the runtime check is the real control, because only it can
+resolve symlinks.
 
 ### Rebuildability
 

@@ -479,9 +479,29 @@ symlinks first reveals that it is not. This is the case string prefix matching a
 `normpath` both miss.
 
 **Controls:** resolution precedes comparison, so every symlink in the chain is
-followed before the containment check. Intermediate components are checked too,
-not only the final target. A symlinked *root* — `/tmp` on macOS, a symlinked home
-directory — still works, because the root is resolved as well.
+followed before the containment check. A symlinked *root* — `/tmp` on macOS, a
+symlinked home directory — still works, because the root is resolved as well.
+**What is checked is the route, not only the endpoint**: a request that resolves
+to a file genuinely inside the root, reached by stepping out through a link and
+coming back, is refused, because `assert_no_symlink_escape` expands links one hop
+at a time and compares every position the walk stands on against the root, `..`
+included. Checking only where each resolution *landed* is what let five of six
+spellings of one in-and-out traversal through. Tested:
+`packages/theurian-core/tests/unit/test_path_security.py::test_an_intermediate_link_that_leaves_the_root_is_refused_though_it_returns`,
+`::test_a_component_whose_own_chain_leaves_the_root_is_refused` and
+`::test_a_dotdot_that_climbs_out_of_the_root_is_refused_even_if_a_link_returns`,
+with the narrowness control
+`::test_a_link_chain_that_never_leaves_the_root_is_still_read`, and six spellings
+driven through the real CLI at
+`packages/theurian-core/tests/integration/test_cli_commands.py::test_validate_refuses_a_content_file_that_leaves_the_project_and_comes_back`.
+
+This half of the sentence went unheld from the guard's introduction until issue
+#288: both call sites passed it the *resolved* path, so the walk only ever
+visited real directories, and deleting the guard outright left the suite green.
+The first fix then checked the requested components but resolved each one whole,
+which left the same claim false for every spelling but the one it was written
+against. It is named here because that is the failure this paragraph is now
+pinned against — a control asserted in four documents and driven by no test.
 
 **A second path resolves an untrusted `contentFile`: `theurian propose accept`.**
 A proposal directory may be committed and delivered through a pull request

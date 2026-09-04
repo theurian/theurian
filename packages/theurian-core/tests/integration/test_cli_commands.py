@@ -2901,6 +2901,132 @@ def test_validate_names_the_migration_file_when_its_content_file_escapes(project
     assert "remove it" not in payload["remedy"], "the migration file is not the culprit"
 
 
+#: Six spellings of ONE traversal: every entry leaves the project through a
+#: symlink and returns to the same body, and every one is `contentFile`-legal
+#: under the published schema. They exist as a table because a single spelling
+#: is what the first fix was written against, and round 1 measured five of the
+#: six still reaching `migrate validate` exit 0 against it -- the guard was
+#: keyed on where a resolution landed rather than on the route it took. `..`-out
+#: needs no link outside the project at all, and `folded` hides the whole
+#: traversal inside one component's link chain, so neither is reachable by
+#: inspecting intermediate components.
+_IN_AND_OUT_SPELLINGS = [
+    pytest.param("../knowledge/hop/back/auth-policy.md", id="two-components"),
+    pytest.param("../knowledge/hop/./back/auth-policy.md", id="a-dot-between-them"),
+    pytest.param("../knowledge/folded/auth-policy.md", id="folded-into-one-component"),
+    pytest.param("../knowledge/deep/auth-policy.md", id="out-through-a-nested-directory"),
+    pytest.param("shortcut/auth-policy.md", id="a-link-inside-migrations"),
+    pytest.param("../../../outside-knowledge/back/auth-policy.md", id="dotdot-out-one-link-back"),
+]
+
+
+def _plant_the_in_and_out_links(project: Path) -> Path:
+    """Every link the spellings above travel through, and the body they reach."""
+    knowledge = project / ".theurian" / "knowledge"
+    architecture = knowledge / "architecture"
+    architecture.mkdir(parents=True, exist_ok=True)
+    (architecture / "auth-policy.md").write_text(BODY)
+
+    outside = project.parent / "outside-knowledge"
+    (outside / "nested").mkdir(parents=True)
+    (outside / "back").symlink_to(architecture, target_is_directory=True)
+    (outside / "nested" / "home").symlink_to(architecture, target_is_directory=True)
+
+    (knowledge / "hop").symlink_to(outside, target_is_directory=True)
+    (knowledge / "folded").symlink_to(outside / "back", target_is_directory=True)
+    (knowledge / "deep").symlink_to(outside / "nested" / "home", target_is_directory=True)
+    (project / ".theurian" / "migrations" / "shortcut").symlink_to(
+        outside / "back", target_is_directory=True
+    )
+    return architecture / "auth-policy.md"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("content_file", _IN_AND_OUT_SPELLINGS)
+def test_validate_refuses_a_content_file_that_leaves_the_project_and_comes_back(
+    project: Path, content_file: str
+) -> None:
+    """Issue #288 and round 1's R1-A, through the CLI: the route, not the endpoint.
+
+    Each spelling *resolves* to the very body the sibling test above writes --
+    the assertion below says so -- so the pin matches, containment on the
+    resolved path holds, and every check keyed on the destination is satisfied.
+    Measured at ``0a52479``, at ``33ee7ae1`` and again at ``dcd11dcd``: ``exit
+    0``, ``migrationCount: 1``, ``valid: true`` for all but the first two.
+
+    The refusal names the migration file and never the author's ``contentFile``,
+    which is the same division of labour the sibling test pins; the remedy is
+    the referrer form, so it offers the traversed-link cause rather than
+    asserting the path text is wrong.
+    """
+    _invoke("init")
+    body = _plant_the_in_and_out_links(project)
+
+    escaping = f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml"
+    (project / escaping).write_text(
+        MIGRATION.replace(
+            "contentFile: ../knowledge/architecture/auth-policy.md",
+            f"contentFile: {content_file}",
+        )
+    )
+    assert (project / ".theurian" / "migrations" / content_file).resolve() == body.resolve(), (
+        "the fixture must resolve back inside, or it tests the plain escape"
+    )
+
+    result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    assert "Traceback" not in result.stderr, "a refusal is graded, never a raw escape"
+    payload = json.loads(result.stderr)
+    # Every spelling here reaches the body through a link whose absolute target
+    # names a location this project does not answer to, so the refusal says that
+    # rather than "escapes the permitted root" -- which would be false for the
+    # five of six whose destination is squarely inside the project (#233's
+    # family, round 2). The `..`-out spelling is the one genuine escape, and it
+    # keeps the escape wording.
+    expected = (
+        f"{escaping!r} names a path reached through a link pointing outside the project"
+        if content_file != "../../../outside-knowledge/back/auth-policy.md"
+        else f"{escaping!r} names a path that escapes the permitted root"
+    )
+    assert payload["error"] == expected
+    assert escaping in payload["remedy"], "the migration file is the place to open"
+    assert content_file not in result.stderr, "the author-written value stays unechoed"
+    assert str(project) not in result.stderr, "the absolute root is not the user's business"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_validate_still_accepts_a_content_file_reached_through_an_in_project_link(
+    project: Path,
+) -> None:
+    """The narrowness control for the table above, at the same call site.
+
+    Without it, every spelling above is equally satisfied by refusing each
+    ``contentFile`` that touches a symlink at all -- which would be a ban on
+    links rather than the containment rule the guard documents, and would break
+    a repository that organises ``knowledge/`` with in-project links.
+    """
+    _invoke("init")
+    knowledge = project / ".theurian" / "knowledge"
+    (knowledge / "architecture").mkdir(parents=True, exist_ok=True)
+    (knowledge / "architecture" / "auth-policy.md").write_text(BODY)
+    (knowledge / "by-topic").symlink_to(knowledge / "architecture", target_is_directory=True)
+
+    (project / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml").write_text(
+        MIGRATION.replace(
+            "contentFile: ../knowledge/architecture/auth-policy.md",
+            "contentFile: ../knowledge/by-topic/auth-policy.md",
+        )
+    )
+
+    code, payload = _invoke("migrate", "validate")
+
+    assert code == 0, payload
+    assert payload["valid"] is True
+    assert payload["migrationCount"] == 1
+
+
 @pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
 def test_status_refuses_an_unreadable_migrations_directory_instead_of_reporting_it_empty(
     project: Path,

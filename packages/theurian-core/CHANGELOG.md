@@ -99,6 +99,82 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed
 
+- **A path that leaves the project through a symlink and comes back inside is
+  refused, where it used to be read**
+  ([#288](https://github.com/theurian/theurian/issues/288), SEC-7, T-5).
+  `contentFile: ../knowledge/hop/back/auth-policy.md`, with `knowledge/hop`
+  pointing out of the project and `outside/back` pointing home again, *resolves*
+  to a file that really is inside `knowledge/` — so every containment check keyed
+  on the destination passed it, and `theurian migrate validate` answered
+  `valid: true`, exit 0. `assert_no_symlink_escape` existed to refuse exactly
+  that shape and never had: both of its call sites handed it the already-resolved
+  path, and `Path.resolve()` has by then replaced every link with its
+  destination, leaving the walk nothing to see. Deleting the guard outright kept
+  the whole suite green.
+
+  The walk now runs over the components the caller wrote, before resolution
+  flattens them, at the three places that hold them: `read_source_file`, the
+  migration loader's `contentFile` resolution, and `propose accept`'s body
+  destination. The loader is the one that decides the CLI's answer — it resolves
+  the path before `read_source_file` is reached, so repairing the read alone
+  still left `migrate validate` at exit 0.
+
+  **What is checked is the route, not where it ends.** Links are expanded one hop
+  at a time and every position the walk stands on is compared against the root,
+  `..` included, so all six spellings of one in-and-out traversal are refused
+  alike: two components, a `.` between them, the whole traversal folded inside a
+  single component's chain of links, out through a nested directory, a link
+  inside `.theurian/migrations/`, and a plain-text `..` with one link back. An
+  earlier form of this fix compared only where each resolution *landed* and
+  refused just the first two.
+
+  **Nothing was disclosed by this, and nothing newly is.** The resolved
+  destination was inside the project before the fix and is inside it after, so no
+  out-of-project file was ever readable through this shape. What changes is that
+  a defence-in-depth claim `SECURITY.md`, the migration protocol, the local-MCP
+  security note and threat-model T-5 all asserted is now enforced rather than
+  merely written down — and driven by tests that fail when it is removed.
+
+  **What a repository will now see.** Derived from a measured differential
+  against 0.1.0.dev18, not from the shape of the defect — four link topologies
+  that were read before are refused now, and each gets its own sentence because
+  each needs a different repair:
+
+  - **A body reached out of the project through a link and back** — the defect
+    itself. `theurian migrate validate` and `apply` exit 4 naming the migration
+    file (never the author-written `contentFile`), and `ingest` reports the
+    document as failed instead of indexing it. Repoint the link so the path
+    stays inside the project.
+  - **A chain of more than 40 symbolic links**, even one that never leaves the
+    project. The walk follows `MAX_SYMLINK_HOPS` links and no more — the same
+    ceiling Linux applies to a single pathname, so such a chain is one `open()`
+    would refuse anyway. The refusal says so in those words rather than claiming
+    an escape. Point the link at its destination directly. Forty links still
+    read.
+  - **A link whose absolute target spells the project through an alias this
+    command was not given** — a third machine-specific name for the same
+    directory. This is the recorded residual of the containment design and it
+    fails closed: a refusal with a remedy, never a read. Spell the target from
+    the project directory the command is run against, or run the command against
+    the spelling the link uses; both are read normally.
+  - **On `theurian propose accept` only**, an in-project chain that leaves
+    `.theurian/knowledge/` and returns, *without* leaving the project. Accept
+    bounds a body's route by `knowledge/` rather than by the project root,
+    because that is where a body may legitimately land — confining to the root
+    instead would let a hand-authored `../../.git/hooks/pre-commit` write an
+    executable git hook.
+
+  **A link chain that never leaves the relevant boundary is still followed**,
+  including one whose absolute target names the project by the spelling the
+  command was given. This is a containment rule, not a ban on symbolic links.
+
+  `theurian.security.paths.assert_no_symlink_escape` changes signature with this
+  — `(root, *, base, requested)`, where it took `(root, target)` — and the
+  constant `MAX_SYMLINK_HOPS` joins the module. Recorded because it is exported,
+  though nothing outside this package is known to call it; the two new arguments
+  are keyword-only precisely because `root` and `base` are both directories and a
+  transposition would disable the check while every type still fitted.
+
 - **One commit whose message is not valid UTF-8 no longer costs the whole
   review-finding corpus**
   ([#496](https://github.com/theurian/theurian/issues/496), ADR-0029 decision 3).
