@@ -319,8 +319,11 @@ outside the substituted anchors goes out verbatim.
 
 Every path Theurian reads is resolved with `realpath` and checked with
 `is_relative_to` against a resolved root. Absolute paths, `..` traversal, and
-symlinks leaving the root are refused — including symlinks on *intermediate* path
-components, not only the final target.
+symlinks leaving the root are refused. The check is on the *route* rather than
+the endpoint: links are expanded one hop at a time and every position the walk
+stands on is compared against the root, so a path that leaves and returns is
+refused even though it resolves inside — an intermediate component, one
+component's own chain, and a plain-text `..` alike.
 
 Resolving the root as well as the candidate matters: `/tmp` is a symlink on
 macOS, and many people keep repositories under a symlinked home directory.

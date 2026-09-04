@@ -96,9 +96,23 @@ MAX_SYMLINK_HOPS = 40
 def _step(current: Path, part: str) -> Path:
     """Where one *named* component of the requested path puts the walk.
 
-    Pure path arithmetic over a position that is already link-free -- the caller
-    expands links before it steps -- so ``..`` here is the real parent and not a
-    lexical guess.
+    Pure path arithmetic over a position the caller has already expanded, so
+    ``..`` here is the real parent and not a lexical guess.
+
+    "Already expanded" is what ``Path.is_symlink()`` answered, and it reports
+    ``False`` for a link it could not stat at all -- an unreadable parent
+    directory, a component past ``NAME_MAX``. Such a position is stepped over as
+    though it were a real directory. That is the pre-existing behaviour of every
+    check in this module rather than something this walk introduces (issue
+    #543), and it costs a refusal, never a read outside the root:
+    ``resolve_within_root`` proves the destination separately, and a component
+    the kernel cannot stat is one no ``open()`` will traverse either.
+
+    ``part`` is a POSIX component, because ``requested`` is parsed as a
+    ``PurePosixPath``. A Windows-style ``a\\b`` therefore arrives as one
+    component rather than two; ``resolve_within_root`` catches the forms that
+    matter on the platforms this ships to, and CI has no Windows leg to measure
+    the rest.
     """
     if part == "/":
         return Path(current.anchor or "/")

@@ -399,8 +399,11 @@ published artifact were what would settle it. Both have now happened: the tag is
   implemented**; there is no sink yet to apply it at.
 - **The filesystem boundary.** Every path is resolved with `realpath` and checked
   for containment in the project root. `..` traversal, absolute paths, and
-  symlinks that leave the root are all refused, including symlinks on
-  intermediate path components.
+  symlinks that leave the root are all refused. What is checked is the whole
+  *route*, not only where it ends: a path that steps out of the root and comes
+  back — through an intermediate component, through a single component's own
+  chain of links, or through `..` in plain text — is refused even though it
+  resolves to a file inside the root.
 - **Parser input.** Size, depth, and expansion-ratio limits, with safe loaders
   only (`yaml.safe_load`). External `$ref` targets are recorded as unresolved,
   never fetched.

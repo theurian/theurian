@@ -910,6 +910,42 @@ def test_which_directory_the_walk_starts_from_changes_the_verdict(project_root: 
 
 
 @_NEEDS_SYMLINKS
+def test_the_two_boundaries_disagree_about_an_in_project_detour(project_root: Path) -> None:
+    """The accept path is narrower than the read path, and the CHANGELOG says so.
+
+    ``migrate validate`` and ``ingest`` bound a route by the **project root**;
+    ``propose accept`` bounds it by ``.theurian/knowledge/``, because that is
+    where a body may legitimately land -- confining a write to the project root
+    instead would allow a hand-authored ``../../.git/hooks/pre-commit``. So an
+    in-project chain that steps out of ``knowledge/`` and returns is allowed by
+    the first and refused by the second, though it never leaves the project.
+
+    Pinned because it is a compatibility statement now published in the
+    changelog, and because "a chain that never leaves the project is still
+    followed" -- true of the read path -- is false of the accept path. Round 1
+    (R1-B) found that sentence unqualified and the break undisclosed.
+    """
+    knowledge = project_root / ".theurian" / "knowledge"
+    migrations = project_root / ".theurian" / "migrations"
+    migrations.mkdir(parents=True, exist_ok=True)
+    shared = project_root / ".theurian" / "shared"
+    shared.mkdir()
+    (shared / "home").symlink_to(knowledge, target_is_directory=True)
+    (knowledge / "detour").symlink_to(shared, target_is_directory=True)
+
+    requested = f"../knowledge/detour/home/{_CHAIN_LEAF}"
+    (knowledge / _CHAIN_LEAF).write_text("# Auth policy\n")
+    assert (migrations / requested).resolve().is_relative_to(project_root.resolve()), (
+        "the detour must stay inside the project, or it is not this test's subject"
+    )
+
+    assert_no_symlink_escape(project_root, base=migrations, requested=requested)
+
+    with pytest.raises(PathEscapeError):
+        assert_no_symlink_escape(knowledge, base=migrations, requested=requested)
+
+
+@_NEEDS_SYMLINKS
 def test_a_link_that_cannot_be_read_is_refused_rather_than_stepped_over(
     project_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
