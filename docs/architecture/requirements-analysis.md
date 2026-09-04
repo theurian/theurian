@@ -1225,7 +1225,7 @@ Delivered in this change:
 | 3 | ADRs 0001–0015 | `docs/adr/` |
 | 4 | Architecture docs with Mermaid | `docs/architecture/*.md` |
 | 5 | Domain entities, value objects, invariants | `packages/theurian-core/src/theurian/domain/` |
-| 6 | Fourteen ports as `Protocol`s | `packages/theurian-core/src/theurian/domain/ports/` |
+| 6 | Fourteen ports as `Protocol`s *(what this change delivered; the set has grown since — [ADR-0003](../adr/0003-ports-and-adapters.md) point 5's Milestone 7 amendment names `ALL_PORTS` as the register and carries the current count)* | `packages/theurian-core/src/theurian/domain/ports/` |
 | 7 | Compatibility resolution logic + tests | `.../domain/compatibility.py` |
 | 8 | Path-boundary security primitives + tests | `.../security/paths.py` |
 | 9 | Public JSON Schemas | `schemas/` |

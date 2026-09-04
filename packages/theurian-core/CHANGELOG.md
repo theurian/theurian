@@ -8330,6 +8330,9 @@ error is the one reading the release notes to decide whether to upgrade.
 - **Fourteen ports** as `Protocol`s, including `Clock` and `IdGenerator` — both
   ports because time and identifiers are inputs to the state hash, and without
   controlling them the reproducibility guarantee is not assertable.
+  *(What this release shipped. The set has grown since;
+  [ADR-0003](../../docs/adr/0003-ports-and-adapters.md) point 5's Milestone 7
+  amendment names `ALL_PORTS` as the register and carries the current count.)*
 - **Scope isolation primitives.** A RAPTOR tree's identity is
   `(project, tenant, sensitivity, acl_group, namespace)`, so a summary spanning
   two sensitivity levels has no tree to belong to.
