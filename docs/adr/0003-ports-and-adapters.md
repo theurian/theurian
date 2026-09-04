@@ -82,7 +82,10 @@ Ports and adapters, with the port set fixed in advance and deliberately small.
    > point asks for; `IndexStore` did not, and reached `ALL_PORTS` only in
    > Milestone 6. The members themselves are not re-listed here — `ALL_PORTS`
    > is the register, so re-listing it in prose would create exactly the second
-   > copy that drifts.
+   > copy that drifts. This sentence is a live claim, not a snapshot:
+   > `test_adr_0003_records_which_ports_joined_the_register_since_point_5_was_written`
+   > recomputes the delta from the register and from point 5's own list, and
+   > holds the names, the count word and "none left" against it together.
    >
    > The Protocols outside the register, and why each is outside it:
    >
@@ -180,6 +183,19 @@ produce the same state hash" is not assertable.
   `test_adr_0003_names_the_register_and_every_protocol_outside_it` reads this
   ADR and requires the amendment to keep naming `ALL_PORTS` as the register and
   to name exactly that live difference in its table.
+
+  A third pin,
+  `test_adr_0003_records_which_ports_joined_the_register_since_point_5_was_written`,
+  holds the **register side** the first two cannot reach: they are both about
+  the complement of `ALL_PORTS`. It derives the delta paragraph's claim from
+  both ends — the register from the code, point 5's fourteen from point 5's own
+  list, located as the block directly below the sentence introducing it — and
+  requires the names, the count word and the "none left" claim to move
+  together. This is the case `test_port_set_is_closed` is blind to: that pin
+  catches a port added to `ALL_PORTS` and not to `EXPECTED_PORTS`, and says
+  nothing when both move together, which is precisely what adding a port does.
+  Without this pin an eighteenth port lands green while this amendment goes on
+  saying three.
 
   This closes the gap the amendment itself recorded as owed, and it opened
   before the pin could land: `IndexBuildSession` was declared under

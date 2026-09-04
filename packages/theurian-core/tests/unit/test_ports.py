@@ -115,7 +115,7 @@ EXPECTED_OUTSIDE_THE_REGISTER = frozenset(
 )
 
 #: The sentence ADR-0003's point 5 amendment must keep carrying: the register
-#: itself. Lowercase because it is matched against :func:`collapsed` output.
+#: itself. Lowercase because it is matched against :func:`_prose` output.
 #:
 #: This one key does double duty, which is why the negative it guards is not
 #: written as a second pattern. The amendment exists because point 5 gave a bare
@@ -129,6 +129,86 @@ _REGISTER_SENTENCE = "**the register is `all_ports`, in `domain/ports/__init__.p
 #: ``Outside `ALL_PORTS` `` -- a word before the backtick -- and the separator row
 #: carries no code span at all, so neither is counted as a Protocol.
 _OUTSIDE_TABLE_ROW = re.compile(r"^\s*>\s*\|\s*`(\w+)`\s*\|")
+
+#: Point 5's own sentence, which introduces the fourteen with a colon. Keyed
+#: without the number word, so a point that had been *rewritten* to a different
+#: count still resolves and fails on its list rather than vanishing from the scan.
+_POINT_5_INTRO = "the port set is exactly these"
+
+#: The amendment's delta paragraph. Keyed count-free and claim-free on purpose:
+#: a key carrying "three" or "none left" would stop matching the moment either
+#: became wrong, and the pin below would then report the paragraph as deleted --
+#: sending a reader to restore text that is sitting there, saying the wrong thing.
+_DELTA_PARAGRAPH = "are the delta between point 5's"
+
+#: The second half of the delta claim. Point 5's list is a historical record, so
+#: "none left" is a statement about the register never having *shrunk*; a port
+#: removed from `ALL_PORTS` falsifies it, and that is a decision, not a drift.
+_NONE_LEFT = "none left it"
+
+#: A Markdown code span whose whole content is an identifier. The backticks are
+#: what make this safe over prose: ``{p.__name__ for p in ALL_PORTS}`` and
+#: ``Outside `ALL_PORTS` `` are not identifiers, so neither is read as a name.
+_CODE_SPAN = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)`")
+
+#: How these records spell a count. Recomputed and translated rather than read,
+#: so the prose has to move with the register instead of merely being consistent
+#: with itself. ``test_adr_0029_claims.py`` holds its records the same way.
+#:
+#: It runs past the register's size because it is matched against point 5's own
+#: ``these fourteen`` as well as the amendment's delta. Every lookup goes through
+#: :func:`_spells`, never through a bare ``in``: ``these four`` is a substring of
+#: ``these fourteen``, and a containment test read point 5's list as a population
+#: of four while it was naming fourteen.
+_NUMBER_WORDS = {
+    0: "no",
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+    10: "ten",
+    11: "eleven",
+    12: "twelve",
+    13: "thirteen",
+    14: "fourteen",
+    15: "fifteen",
+    16: "sixteen",
+    17: "seventeen",
+    18: "eighteen",
+    19: "nineteen",
+    20: "twenty",
+}
+
+
+def _prose(text: str) -> str:
+    """*text* as one lowercased line, with Markdown quote markers removed.
+
+    :func:`collapsed` alone is not enough here, and the difference is invisible
+    until a key spans a line. Point 5's amendment is a **blockquote**: every line
+    opens ``> ``, so a claim written across a soft wrap reads ``between point > 5's
+    fourteen`` once whitespace alone is flattened. A key written the way the
+    sentence reads then matches nothing while the sentence sits there intact --
+    and the pin reports the record as deleted, which is the failure mode
+    ``write_lock_claims.py`` records paying for twice.
+    """
+    return collapsed("\n".join(re.sub(r"^[ \t]*>[ \t]?", "", line) for line in text.splitlines()))
+
+
+def _spells(text: str, phrase: str) -> bool:
+    """Whether *text* carries *phrase* as whole words, normalised by :func:`_prose`.
+
+    Every count in these records is spelled as a word, and English number words
+    nest: ``four`` inside ``fourteen``, ``six`` inside ``sixteen``, ``nine``
+    inside ``nineteen``. A containment test therefore answers a different question
+    than the one being asked, and it answered it wrongly here first -- reading
+    point 5's ``exactly these fourteen`` as a spelled count of four.
+    """
+    return re.search(rf"\b{re.escape(phrase)}\b", _prose(text)) is not None
 
 
 def _protocols_declared_under_ports() -> frozenset[str]:
@@ -163,6 +243,19 @@ def _protocols_declared_under_ports() -> frozenset[str]:
     )
 
 
+def _blocks() -> list[str]:
+    """Every Markdown block of ADR-0003, raw, in document order.
+
+    A block runs between blank lines, which is what makes "the list directly
+    below the sentence introducing it" expressible at all.
+    """
+    return [
+        block
+        for block in re.split(r"\n[ \t]*\n", ADR_0003.read_text(encoding="utf-8"))
+        if block.strip()
+    ]
+
+
 def _the_amendment_block() -> str:
     """ADR-0003's point 5 amendment, raw, asserted to be exactly one block.
 
@@ -179,11 +272,7 @@ def _the_amendment_block() -> str:
         "the register key carries a capital and is matched against lowercased "
         "prose, so it can never match however intact the ADR is"
     )
-    blocks = [
-        block
-        for block in re.split(r"\n[ \t]*\n", ADR_0003.read_text(encoding="utf-8"))
-        if _REGISTER_SENTENCE in collapsed(block)
-    ]
+    blocks = [block for block in _blocks() if _REGISTER_SENTENCE in _prose(block)]
 
     assert len(blocks) == 1, (
         f"ADR-0003 does not carry {_REGISTER_SENTENCE!r} in exactly one block: found "
@@ -192,6 +281,76 @@ def _the_amendment_block() -> str:
         f"is the drift #140 was filed for."
     )
     return blocks[0]
+
+
+def _amendment_paragraph(key: str) -> str:
+    """The one paragraph *inside* the amendment carrying ``key``, raw.
+
+    The amendment is a single Markdown block -- its paragraphs are separated by
+    quote-only ``>`` lines, not by blank ones -- so a document-level block scan
+    cannot reach them, and a search over the whole amendment would let a claim
+    written in one paragraph be satisfied by a word in another.
+
+    Raw, for :func:`_the_amendment_block`'s reason, and asserted unique for
+    :func:`_the_amendment_block`'s reason.
+    """
+    assert key.lower() == key, (
+        f"{key!r} is matched against lowercased prose and can never match, so the pin "
+        f"reading it would report the amendment as gutted"
+    )
+    paragraphs = [
+        paragraph
+        for paragraph in re.split(r"\n[ \t]*>[ \t]*\n", _the_amendment_block())
+        if key in _prose(paragraph)
+    ]
+
+    assert len(paragraphs) == 1, (
+        f"point 5's amendment does not carry {key!r} in exactly one paragraph: found "
+        f"{len(paragraphs)}"
+    )
+    return paragraphs[0]
+
+
+def _point_5_original_ports() -> frozenset[str]:
+    """The fourteen point 5 was written with, read from point 5's own list.
+
+    Derived rather than copied here, and that is the honest form: the amendment
+    measures its delta against "the fourteen named above", so the baseline is
+    whichever names point 5 actually carries. A constant in this file would be a
+    second copy of that list, free to drift from the record it claims to quote --
+    the failure ADR-0003 point 5 is *itself* an instance of.
+
+    Located as the block directly below the sentence that introduces it with a
+    colon, so a paragraph inserted between them fails here rather than leaving the
+    scan reading prose as a port list. The count point 5 spells is asserted against
+    the names found, because every later figure is a difference against this one:
+    a mangled list would otherwise be reported as a wrong *delta*, sending a reader
+    to correct the amendment when what moved was the historical record above it.
+    """
+    blocks = _blocks()
+    introductions = [index for index, block in enumerate(blocks) if _POINT_5_INTRO in _prose(block)]
+
+    assert len(introductions) == 1, (
+        f"ADR-0003 does not introduce point 5's port list in exactly one block "
+        f"(keyed on {_POINT_5_INTRO!r}): found {len(introductions)}"
+    )
+    introduction, names = blocks[introductions[0]], _CODE_SPAN.findall(blocks[introductions[0] + 1])
+    spelled = [
+        count for count, word in _NUMBER_WORDS.items() if _spells(introduction, f"these {word}")
+    ]
+
+    assert len(spelled) == 1, (
+        f"point 5 no longer spells how many ports it fixed, so the list below it is a "
+        f"population with nothing to check it against: {introduction!r}"
+    )
+    assert len(names) == len(set(names)) == spelled[0], (
+        f"point 5 says it fixes {spelled[0]} ports and the block below it names "
+        f"{len(names)} ({sorted(names)}). That list is the historical baseline the "
+        f"amendment's delta is measured against; if it has been edited, the record was "
+        f"rewritten rather than amended, and the delta below is now measured against "
+        f"something point 5 never said."
+    )
+    return frozenset(names)
 
 
 def test_port_set_is_closed() -> None:
@@ -284,6 +443,72 @@ def test_adr_0003_names_the_register_and_every_protocol_outside_it() -> None:
         f"record of which Protocols are deliberately outside the register and why, so "
         f"a row is owed for each addition -- with its standing -- and a row that no "
         f"longer matches a declaration sends a reader after something that is not there."
+    )
+
+
+def test_adr_0003_records_which_ports_joined_the_register_since_point_5_was_written() -> None:
+    """The register side of the same record, which the outside-set pins cannot reach.
+
+    Those pins hold the *complement* of ``ALL_PORTS``. This holds what the
+    amendment says about ``ALL_PORTS`` itself: which names joined point 5's
+    fourteen, and that none left. Both sides are derived -- the register from the
+    code, the fourteen from point 5's own list -- so the sentence is checked
+    against a live difference rather than against itself.
+
+    **This does not duplicate `test_port_set_is_closed`.** That pin catches a port
+    added to ``ALL_PORTS`` and not to ``EXPECTED_PORTS``; it says nothing when both
+    move together, which is exactly what a legitimate port addition does. In that
+    case ADR-0003 goes silently false -- a fourth name joined and the amendment
+    still says three -- and this is the pin that fails. Verified as the difference
+    it is: a port added to both lists leaves the whole rest of the suite green.
+
+    The delta is held as **prose, not as a table row**, deliberately.
+    :data:`_OUTSIDE_TABLE_ROW` reads every ``> | `Name` |`` row of the amendment
+    block as an outside-the-register Protocol, so a table of the register's own
+    members would be read as its complement and take the sibling pin RED. The
+    paragraph is located and its code spans intersected with the port vocabulary
+    instead, which reads prose without constraining its shape.
+
+    Three things move together or this fails: the names, the count word the
+    sentence spells, and the "none left" claim. A rename of one of the three drops
+    it out of the vocabulary and fails on membership; a fourth port fails on both
+    membership and the word; a port *removed* from the register fails on the
+    third, which is a decision to record rather than a sentence to reword.
+    """
+    original = _point_5_original_ports()
+    registered = frozenset(port.__name__ for port in ports.ALL_PORTS)
+    joined, left = registered - original, original - registered
+
+    paragraph = _amendment_paragraph(_DELTA_PARAGRAPH)
+    vocabulary = original | registered | _protocols_declared_under_ports()
+    named = frozenset(_CODE_SPAN.findall(paragraph)) & vocabulary
+
+    assert named == joined, (
+        f"ADR-0003's amendment names {sorted(named)} as the ports that joined point 5's "
+        f"list, and the register says {sorted(joined)}. A port reaching `ALL_PORTS` "
+        f"without this paragraph moving leaves the ADR under-reporting its own register "
+        f"-- and `test_port_set_is_closed` stays green through it, because that pin only "
+        f"compares the tuple against `EXPECTED_PORTS`, which the same change updates."
+    )
+    assert not left, (
+        f"{sorted(left)} left `ALL_PORTS` and the amendment still says {_NONE_LEFT!r}. "
+        f"Removing a port is a decision point 5 asks for an ADR for, so the remedy is to "
+        f"record it here, not to reword the sentence."
+    )
+    assert len(joined) in _NUMBER_WORDS, (
+        f"{len(joined)} ports have joined the register, past what this pin can spell; "
+        f"extend `_NUMBER_WORDS` and correct the amendment with it"
+    )
+    assert _spells(paragraph, f"{_NUMBER_WORDS[len(joined)]} names joined the list above"), (
+        f"{len(joined)} ports have joined point 5's list and the amendment does not say "
+        f"`{_NUMBER_WORDS[len(joined)]} names joined the list above`. The membership above "
+        f"is right, so this is the sentence's own count left behind -- the drift that put "
+        f"`fourteen` over a register of seventeen in the first place."
+    )
+    assert _spells(paragraph, _NONE_LEFT), (
+        f"the amendment no longer claims {_NONE_LEFT!r}, so nothing records that the "
+        f"register has only ever grown; the assertion above then holds a property this "
+        f"ADR has stopped stating."
     )
 
 
