@@ -320,7 +320,13 @@ class _PayloadMarker:
 #: item is keyed on now.
 _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     _PayloadMarker(ItemId("architecture.monorepo-with-independent-artifacts"), "`Core`", 1),
-    _PayloadMarker(ItemId("architecture.sqlite-is-a-derived-artifact"), "`FINDINGS_STORE_ID`", 1),
+    # Re-measured 2026-09-06 for the #579 re-seed: `FINDINGS_STORE_ID` counts 1 in
+    # both the new body and the revision it replaced, so it stopped discriminating.
+    # `ADR-0030` counts 3 in the amended body and 0 in all three earlier ones, and
+    # all three occurrences sit inside the Milestone 8 amendment block -- so a
+    # revert of that block, coordinated across body, migration anchor and evidence,
+    # moves the count to 0 and reddens this pin.
+    _PayloadMarker(ItemId("architecture.sqlite-is-a-derived-artifact"), "ADR-0030", 3),
     _PayloadMarker(ItemId("architecture.yaml-knowledge-migrations"), "#245", 1),
     _PayloadMarker(ItemId("architecture.dependency-pinning-and-pre-1-0-isolation"), "`3.13`", 1),
     _PayloadMarker(ItemId("architecture.dco-over-cla"), "30/30", 1),
