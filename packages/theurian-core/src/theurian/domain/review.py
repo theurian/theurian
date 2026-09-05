@@ -96,11 +96,31 @@ class ReviewComment:
 
 @dataclass(frozen=True, slots=True)
 class ReviewResolution:
-    """How and when a thread was closed."""
+    """How, and if the provider records it, when and by whom a thread was closed.
 
-    resolved_by: ReviewParticipant
-    resolved_at: datetime
+    **Two fields are optional because GitHub cannot fill them** (ADR-0030
+    decision 5, measured by schema introspection on 2026-09-05):
+    ``PullRequestReviewThread`` carries **no resolution timestamp at all**, and
+    its ``resolvedBy`` is nullable -- a thread can be resolved with no
+    participant recorded.
+
+    A required field the provider cannot fill leaves an adapter only bad
+    options. Fabricate a value -- the ingestion time, or the last comment's --
+    and every consumer downstream reads as a measurement something nobody
+    measured; drop the whole resolution record instead, and the resolution
+    *state* the model exists to carry is lost with it. ``None`` is the honest
+    value for a quantity the provider does not record, and it is the one thing
+    neither bad option can express.
+
+    ``state`` leads the field order because it is the only one the provider
+    always answers, and because the two optional fields must follow a field with
+    no default. That reordering is the breaking half of this change: a positional
+    construction moves.
+    """
+
     state: ReviewThreadState
+    resolved_by: ReviewParticipant | None = None
+    resolved_at: datetime | None = None
     fix_commit: str | None = None
 
     def __post_init__(self) -> None:
