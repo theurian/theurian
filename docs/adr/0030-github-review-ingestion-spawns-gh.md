@@ -1011,8 +1011,13 @@ ADR-0004 exists only on this branch, so the only commit that could be anchored i
 one a squash-merge discards — which would turn a working test RED on `main` the
 moment this lands. So the re-seed is owed to the change that runs **after** the
 squash commit exists, by the standing pattern recorded when the seven twins were
-re-seeded on 2026-09-05. CI runs the checker `--advisory`, which is why this drift
-does not block, and why saying so here is the only thing that records it.
+re-seeded on 2026-09-05, and **it is owned by
+[#579](https://github.com/theurian/theurian/issues/579)** (open; read on
+2026-09-05), sequenced as the first work item after this PR merges. Naming the
+owner is the point: an owed item described without a number is the stated-absence
+shape this ADR corrects twice elsewhere. CI runs the checker `--advisory`, which
+is why this drift does not block, and why saying so here is the only thing that
+records it.
 
 `tools/corpus_drift.py` walks the committed migrations and compares each anchor to
 its live source, so a new `docs/` file with no twin — ADR-0030 itself — is outside
@@ -1095,7 +1100,7 @@ the two commits are **sequenced serially in one worktree**, never fanned out.
 
 | Alternative | Why rejected |
 | :-- | :-- |
-| **An in-process HTTP client (`httpx` plus a token from the environment)** | Three costs at once. It adds a production dependency to a core whose runtime dependency list is six packages, none of them an HTTP client. It puts **token custody** inside Theurian — reading, holding and possibly logging a credential the operator currently keeps in their own credential store. And it creates a **raw-URL surface**, which makes all three of SEC-10's controls live checks that must be built and kept correct. The `gh api graphql` form does not make the SSRF class disappear — run C and runs D–F show the destination moving under a pinned hostname — it removes the *input* those two checks read: there is no URL in the argument vector to apply a scheme allowlist to, and the private-network reach is closed by constructing the environment (clause 4) rather than by inspecting a destination. The `gh` spawn trades a process boundary for that. |
+| **An in-process HTTP client (`httpx` plus a token from the environment)** | Three costs at once. It adds a production dependency to a core whose runtime dependency list is six packages, none of them an HTTP client. It puts **token custody** inside Theurian — reading, holding and possibly logging a credential the operator currently keeps in their own credential store. And it creates a **raw-URL surface**, which makes all three of SEC-10's controls live checks that must be built and kept correct. The `gh api graphql` form does not make the SSRF class disappear — run C and runs D–F show the destination moving under a pinned hostname — it removes the *input* those two checks read: there is no URL in the argument vector to apply a scheme allowlist to, and the private-network reach is **reduced** by constructing the environment (clause 4) rather than by inspecting a destination, **with the config-family residual recorded** (the forwarded variables still resolve a config file, and the TOCTOU race survives slice 1's pre-spawn refusal). The `gh` spawn trades a process boundary for that, and buys a smaller reduction than an earlier draft of this row claimed. |
 | **Inherit the parent environment and scrub the dangerous variables** | A scrub is a blocklist over a set the adapter does not control. Run C measured that `HTTPS_PROXY` moves the request even with `--hostname` pinned, so the blocklist would have to be complete over destination variables, proxy variables, and whatever the next `gh` release reads. Constructing the environment inverts the burden onto a set this project chooses and pins. |
 | **`gh api --paginate`** | Whatever the flag follows, the *response* chooses it rather than the adapter — and this design pins no version-specific semantics for it (clause 8 bounds the binary's version, not its behaviour). Excluding the flag is cheaper than characterising it: a GraphQL cursor is an opaque string in a typed variable, so the adapter still decides every destination it reaches. |
 | **`gh api repos/{owner}/{repo}/pulls/...` (the REST path form)** | Repository identity would travel in the URL position, where it is string-interpolated into a path. The GraphQL form carries the same identity as typed variables with no path to escape into, which is what makes clause 2 a checkable property rather than a promise about quoting. |

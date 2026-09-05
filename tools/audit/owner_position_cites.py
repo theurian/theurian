@@ -450,10 +450,10 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "member whose retraction sits two blocks down rather than one, and it is what "
         "sets `_SUPERSESSION_REACH`.",
     ),
-    # The three rows below are one member of a class this ledger did not have
-    # (one in ADR-0029, two in ADR-0030):
-    # before: a cite whose owner is **open**, read as dead only because the
-    # offline snapshot is older than the issue. `tracker_state` answers from
+    # The three rows below -- one in ADR-0029, two in ADR-0030 -- are one member of
+    # a class this ledger did not have before: a cite whose owner is **open**, read
+    # as dead only because the offline snapshot is older than the issue.
+    # `tracker_state` answers from
     # `tracker-state.json` under `--offline` (which the census test forces, for
     # reproducibility), that file was measured 2026-09-03 at `01aa2479`, and
     # `states()` returns `(absent from the tracker)` for anything filed since --
@@ -469,6 +469,19 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     # exit 1, the good direction failing. So the refresh and this deletion are one
     # commit, not two, and #576 carries the same note so whoever does the refresh
     # meets it there rather than discovering it from a red gate.
+    #
+    # **A fourth cite of the same shape gets no row, and that is the finding.**
+    # ADR-0030's corpus disposition names #579 -- filed 2026-09-05, open, and
+    # absent from the same snapshot -- as the owner of the post-merge corpus
+    # re-seed, in owner position (`it is owned by`). The sweep produces no row for
+    # it, so adding one here would land in the stale direction. It is spared by the
+    # `_HISTORICAL` over-clear this module measures above: the sentence says the
+    # re-seed runs *after* the squash commit exists, and one incidental `after`
+    # outranks the owner key. Measured by driving :func:`classify` on that sentence
+    # with the number absent -- `after` gives `history`, the same sentence with
+    # `after` replaced by `once` gives `SUSPECT`. So this cite's exemption is an
+    # accident of wording, not a verdict: reword that sentence and a row becomes
+    # owed. The refresh in #576 clears #579 the same way it clears #575.
     (
         "docs/adr/0030-github-review-ingestion-spawns-gh.md",
         "575",
