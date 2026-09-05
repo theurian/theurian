@@ -6,7 +6,7 @@ bearing part: every one of these failures once produced the same sentence -- "no
 retrieval index has been built for this project" -- which is true of exactly one
 of them. The rest told a user to run a command they had already run.
 
-Eight reason codes and fifteen recipes -- counted off the ``BREAKAGES`` table
+Eight reason codes and sixteen recipes -- counted off the ``BREAKAGES`` table
 below rather than restated from memory, which is how the previous pair of numbers
 ("seven, twelve") came to be a code and three recipes short of the table it
 described. ``index-unbuilt`` is the ninth code the module can emit and has no
@@ -15,16 +15,21 @@ provenance record it depends on is the subject.
 
 The two counts do not line up in either direction, deliberately:
 
-- ``index-pointer-invalid`` is reached by five recipes. Four leave a pointer file
+- ``index-pointer-invalid`` is reached by six recipes. Four leave a pointer file
   that names no build at all -- truncated JSON, a JSON array, an object without
-  ``indexBuildId``, arbitrary bytes -- and the fifth leaves one that parses and
-  names a path outside the project. One remedy fixes all five, so they must say
-  the same thing; they are five recipes rather than one because they reach that
-  answer through four branches in two functions, and the first of those branches
+  ``indexBuildId``, arbitrary bytes -- while the last two leave one that parses
+  perfectly and names something the filesystem will not give back: a path
+  outside the project, and (the sixth, added for #388) a name too long for the
+  filesystem to answer about. One remedy fixes all six, so they must say the
+  same thing; they are six recipes rather than one because they reach that
+  answer through five branches in two functions, and one of those branches
   catches two unrelated exception types -- ``UnicodeDecodeError`` is a
   ``ValueError`` and not a ``JSONDecodeError``, so either can be dropped from the
-  tuple without the other noticing. A table holding one of the five could not
-  tell whether the other four still worked; it held one, and they did not.
+  tuple without the other noticing. A table holding one of the six could not
+  tell whether the others still worked; it held one, and they did not. The sixth
+  is the same lesson one level down: the escaping recipe beside it was the only
+  cover for ``_searchable_file``, and a length that ``index_for`` cannot refuse
+  walked past it into an ``UnexpectedToolError``.
 - ``index-project-mismatch`` is the one reason carrying two notes: a client's next
   action is `index build` either way, while a person reading the transcript needs
   to know whether an id changed under the index or was never recorded at all.
@@ -367,6 +372,28 @@ def _pointer_escapes_the_project(root: Path) -> None:
     _pointer(root).write_text(json.dumps(pointer))
 
 
+def _pointer_names_an_unusable_filename(root: Path) -> None:
+    """A build id the operating system will not accept as a name (#388).
+
+    The **length** axis, and it is here because ``index_for``'s containment
+    refusal cannot see it. ``Path.resolve()`` in non-strict mode never stats, so
+    the id comes back as a `Path` and the caller's own ``os.stat`` is what
+    raises -- ``ENAMETOOLONG``, an errno ``pathlib``'s ignored set does not hold
+    (``{ENOENT, EBADF, ENOTDIR, ELOOP}`` on CPython 3.13, measured). Before the
+    fix this was not a fallback at all: ``knowledge.search`` answered the SDK's
+    ``UnexpectedToolError``, because ``mcp/tools.py``'s ``except TheurianError``
+    boundary does not catch an ``OSError``.
+
+    The length is arithmetic rather than ``234`` so the bound being crossed is
+    visible: 15 for ``theurian-index-``, 7 for ``.sqlite``, one byte past a
+    255-byte ``NAME_MAX``.
+    """
+    _must(root, "index", "build")
+    pointer = json.loads(_pointer(root).read_text())
+    pointer["indexBuildId"] = "A" * (255 - len("theurian-index-") - len(".sqlite") + 1)
+    _pointer(root).write_text(json.dumps(pointer))
+
+
 def _pointer_truncated_mid_write(root: Path) -> None:
     """A pointer whose JSON stops in the middle of naming its build.
 
@@ -601,6 +628,13 @@ BREAKAGES: tuple[tuple[str, str, str, Recipe, dict[str, Any]], ...] = (
         "pointer-invalid",
         INDEX_POINTER_INVALID,
         _pointer_escapes_the_project,
+        {},
+    ),
+    (
+        "pointer-names-an-unusable-filename",
+        "pointer-invalid",
+        INDEX_POINTER_INVALID,
+        _pointer_names_an_unusable_filename,
         {},
     ),
     *(

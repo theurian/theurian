@@ -85,6 +85,27 @@ ACTIVE_POINTER_REMEDY: Final = (
     "the pointer is derived, so nothing is lost."
 )
 
+#: The same cure for the pointer the *operating system* refused, rather than the
+#: one whose bytes will not parse.
+#:
+#: The delete above is a cure for a file whose contents are wrong, and it is one
+#: the reader can carry out only if the directory holding it is theirs to write.
+#: With `.theurian/state` at mode `000` -- #389's third face, and the arrangement
+#: this constant exists for -- the delete is refused too, so publishing that text
+#: alone sends the operator to run a command that fails the same way the one they
+#: just ran did. Which of the two is in the way depends on where the permission
+#: sits: a mode-`000` *file* in a writable directory is deletable, because
+#: `unlink` is governed by the parent's bits, so the delete is named first and
+#: the `chmod` is named as what to reach for when it is refused. Both acts are
+#: runnable and both name the artefact, which is what a remedy owes
+#: (`test_derived_state_value_envelope.py` pins the `chmod` half against the
+#: mode-`000` plant).
+ACTIVE_POINTER_UNREADABLE_REMEDY: Final = (
+    "Delete .theurian/state/active.json and run `theurian migrate apply`. If the "
+    "delete is refused too, run `chmod u+rwx .theurian/state` first -- the pointer "
+    "is derived, so nothing is lost either way."
+)
+
 #: The cure for derived state that this installation did not build. Names the
 #: whole `.theurian/state/` directory rather than the pointer alone: the
 #: databases there are what carry the untrusted bytes, they are named by a hash
@@ -868,6 +889,11 @@ class ProjectPaths:
         local process can edit. `../` in it resolves outside the project, and
         SEC-7 covers every path, not only the ones that look like user input.
 
+        **Returning does not make the path one the OS will answer for**, which is
+        the correction #388 records and the comment below carries in full: a
+        caller that stats what this hands back grades ``OSError`` beside the
+        ``ProjectError``, or the stat escapes as a traceback.
+
         Raises:
             ProjectError: If the id would escape the state directory, or cannot
                 name a path at all.
@@ -889,8 +915,19 @@ class ProjectPaths:
                 remedy=INDEX_POINTER_REMEDY,
             ) from exc
 
-        # Resolving succeeded, so the returned path is one the OS will accept --
-        # a caller's later `is_file()` cannot raise the error just converted.
+        # Resolving succeeded, and that is **all** it establishes. This said "the
+        # returned path is one the OS will accept -- a caller's later `is_file()`
+        # cannot raise the error just converted", and #388 measured it false:
+        # `Path.resolve()` in non-strict mode never stats, so an
+        # `index_build_id` of 234 characters or more (15 + 234 + 7 past a
+        # 255-byte `NAME_MAX`) comes back from here as a `Path` whose first
+        # `os.stat` raises `OSError` errno 63, `ENAMETOOLONG`. CPython 3.13's
+        # `pathlib._abc._IGNORED_ERRNOS` is `{ENOENT, EBADF, ENOTDIR, ELOOP}`
+        # (measured 2026-09-05), so `is_file()` does not swallow it either.
+        # Callers therefore grade `OSError` beside `TheurianError` at the probe,
+        # and which of them do is derived from the source rather than listed:
+        # `test_derived_state_value_envelope.py`'s
+        # `test_every_index_for_caller_grades_the_stat_beside_the_call`.
         if not contained:
             raise ProjectError(
                 f"The index pointer names {index_build_id!r}, which resolves outside {state}.",
@@ -1204,11 +1241,18 @@ def resolve_state_hash(loaded: LoadedMigrations, schema_version: int) -> StateHa
 def read_active_state(paths: ProjectPaths) -> ActiveState | None:
     """Read the active state pointer, or ``None`` if there is none.
 
-    Every way of failing to interpret the file lands on one ``ProjectError``
-    carrying one remedy, because the file is derived and one cure covers all of
-    them. Catching only the parse failures left the other two escaping raw, and
-    the shape they escaped in was the same each time -- an OS-level string with
-    no next action, at whichever surface asked:
+    Every way of failing to interpret the file lands on one ``ProjectError``.
+    **Two remedies, not one**, and the sentence here said "one remedy, because
+    the file is derived and one cure covers all of them" until the ``OSError``
+    arm below reached a case it is false of: deleting the pointer is a cure the
+    reader can carry out only while the directory holding it is theirs to write,
+    and #389's third face is precisely the one where it is not
+    (:data:`ACTIVE_POINTER_UNREADABLE_REMEDY`, which names both acts). The parse
+    failures keep :data:`ACTIVE_POINTER_REMEDY` unchanged.
+
+    Catching only the parse failures left the other two escaping raw, and the
+    shape they escaped in was the same each time -- an OS-level string with no
+    next action, at whichever surface asked:
 
     - ``UnicodeDecodeError`` is a ``ValueError`` and is not a subclass of
       ``JSONDecodeError``, so a pointer holding arbitrary bytes reached every MCP
@@ -1220,11 +1264,21 @@ def read_active_state(paths: ProjectPaths) -> ActiveState | None:
       which reached the same tools as ``[Errno 13] Permission denied`` naming the
       absolute path.
 
-    ``Path.exists`` above is deliberately left as it is: it swallows the stat
-    failure and answers ``False``, which would report "no state" for a project
-    that has one. It does not, in practice, get the chance to -- an unreadable
-    parent surfaces through ``read_text`` as the ``OSError`` this now converts --
-    and narrowing it further would be a guess about which errno means absent.
+    **The ``Path.exists`` probe is inside the ``try``, and moving it there is
+    what #389's last face needed.** This docstring used to say it "swallows the
+    stat failure and answers ``False``" and "does not, in practice, get the
+    chance to", and both are measured false: CPython 3.13's
+    ``pathlib._abc._IGNORED_ERRNOS`` is ``{ENOENT, EBADF, ENOTDIR, ELOOP}``
+    (measured 2026-09-05), so ``EACCES`` is re-raised, and the probe runs
+    *before* the ``read_text`` the sentence deferred to. With
+    ``.theurian/state`` at mode ``000`` the ``PermissionError`` left this
+    function above the handler written for it, and seven of the nine commands in
+    ``test_canonical_store_corruption.py``'s ``CLI_SWEEP`` ended in a Rich
+    traceback at exit 1 with **zero bytes on stdout** -- measured at ``75fe9b4f``
+    through the real CLI, everything but ``project list`` and ``version``.
+    Inside the ``try`` the probe's failure takes the same conversion the read's
+    already did; ``False`` still means "no pointer", and now only when the OS
+    said so.
 
     **A fourth way to fail arrives as a ``TypeError``, and the guard below is
     what stops it.** ``json.loads`` answers any JSON value, not only an object:
@@ -1235,16 +1289,17 @@ def read_active_state(paths: ProjectPaths) -> ActiveState | None:
     measured, seven CLI positions exited 1 with **both channels empty**, and the
     MCP tools raised with no remedy at all.
 
-    Refused with the same message and the same cure as the parse failures, since
-    the file is derived and one cure covers all of them. The shape is taken from
+    Refused with the same message and the same cure as the parse failures: a
+    pointer holding a JSON array is a file whose *bytes* are wrong, which is what
+    deleting it fixes. The shape is taken from
     :func:`read_active_index_pointer`, which has had this ``isinstance`` guard
     since it was written -- the same defect, caught in the sibling and missed
     here, and the whole reason a family is swept rather than reasoned about.
     """
     pointer = paths.active_pointer
-    if not pointer.exists():
-        return None
     try:
+        if not pointer.exists():
+            return None
         loaded = json.loads(pointer.read_text(encoding="utf-8"))
         if not isinstance(loaded, dict):
             # `raise ... from None` is not used: the `except` below re-raises with
@@ -1254,7 +1309,13 @@ def read_active_state(paths: ProjectPaths) -> ActiveState | None:
             raise TypeError(msg)
         return ActiveState.from_json(loaded)
     except (json.JSONDecodeError, OSError, TypeError, UnicodeDecodeError, TheurianError) as exc:
-        raise ProjectError(f"{pointer} is unreadable: {exc}", remedy=ACTIVE_POINTER_REMEDY) from exc
+        # One exit, two cures, keyed on which of the two questions failed: an
+        # `OSError` is the OS declining to hand the bytes over, and the delete
+        # that fixes wrong bytes may be declined the same way.
+        cure = (
+            ACTIVE_POINTER_UNREADABLE_REMEDY if isinstance(exc, OSError) else ACTIVE_POINTER_REMEDY
+        )
+        raise ProjectError(f"{pointer} is unreadable: {exc}", remedy=cure) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -1301,12 +1362,20 @@ def read_active_index_pointer(paths: ProjectPaths) -> ActiveIndexPointer:
     build, so it is not a usable pointer; accepting it built a path out of an
     empty id and reported `index-file-missing` — "the published index build is
     no longer on disk", about a build that was never named.
+
+    **The ``is_file`` probe is inside the ``try``, for the reason its sibling
+    :func:`read_active_state` records in full.** It sat above it until #389's
+    third face, and a ``.theurian/state`` at mode ``000`` made it raise
+    ``PermissionError`` past the ``except`` written for exactly that errno one
+    line down -- ``pathlib`` re-raises ``EACCES``. A probe that cannot be
+    answered is now ``unreadable`` rather than a crash: not "there is no
+    pointer", which would publish `theurian index build` as the cure for a
+    directory no process can read.
     """
     pointer = paths.active_index_pointer
-    if not pointer.is_file():
-        return ActiveIndexPointer()
-
     try:
+        if not pointer.is_file():
+            return ActiveIndexPointer()
         loaded = json.loads(pointer.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         # `UnicodeDecodeError` is a `ValueError`, not an `OSError`, and

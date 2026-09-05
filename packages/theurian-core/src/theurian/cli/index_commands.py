@@ -929,17 +929,7 @@ def index_gc(
         return
 
     published = str((pointer.payload or {}).get("indexBuildId", ""))
-    if published and not paths.index_for(published).is_file():
-        _fail(
-            f"The published index pointer names build {published}, and that build's file is "
-            f"not there. Nothing was reclaimed.",
-            remedy=(
-                "Run `theurian index build` to publish a build that exists. Reclaiming now "
-                "would delete every build on disk, because none of them is the published one."
-            ),
-            as_json=as_json,
-            code=1,
-        )
+    if published and not _the_published_build_is_on_disk(paths, published, as_json=as_json):
         return
 
     reclaimable = _reclaimable(paths, published=published)
@@ -962,6 +952,80 @@ def index_gc(
         },
         as_json=as_json,
     )
+
+
+def _the_published_build_is_on_disk(paths: ProjectPaths, published: str, *, as_json: bool) -> bool:
+    """Whether the pointer's build has a file, refusing rather than raising if it cannot tell.
+
+    Returns ``True`` only when the file is there. Every other answer has already
+    published its own ``{error, remedy}`` through :func:`_fail`, which raises, so
+    the ``return False`` lines are how this reads rather than how it exits.
+
+    **Three outcomes, three cures, and collapsing them is what this exists to
+    stop.** The `is_file()` probe used to sit bare in `index_gc`, and two of the
+    three reached a `--json` caller as a Rich traceback with **zero bytes on
+    stdout** -- measured against the real CLI at ``75fe9b4f``, both from
+    ``index_commands.py:932``:
+
+    - an `indexBuildId` of ``"../../../../../../tmp/evil"``, which `index_for`
+      refuses as a `ProjectError` (#551);
+    - an `indexBuildId` of 234 characters or more, which `index_for` accepts --
+      ``Path.resolve()`` in non-strict mode never stats -- and which then makes
+      the caller's own `os.stat` raise ``OSError`` errno 63, ``ENAMETOOLONG``
+      (#388). ``pathlib``'s ignored-errno set is
+      ``{ENOENT, EBADF, ENOTDIR, ELOOP}`` on CPython 3.13 (measured), so nothing
+      below swallows it;
+    - the build's file simply not being there, which was the one case this
+      already answered.
+
+    The pointer is derived, git-ignored and unsigned (ADR-0004, SEC-7), so all
+    three are whatever a local process or a doctored clone left behind. They keep
+    **separate** messages because they are separate states to an operator: "the
+    pointer names a build that is not on disk" is cured by a rebuild, while a
+    pointer naming a path the OS will not accept has to be deleted first. That is
+    the same split :data:`INDEX_POINTER_REMEDY` already draws for the *unreadable*
+    pointer one branch up, and the message here is worded from the same file.
+    """
+    from theurian.cli.commands import _fail, _fail_a_path_escape  # noqa: PLC0415 - cycle
+
+    try:
+        names_a_file = paths.index_for(published).is_file()
+    except ProjectPathEscapeError as exc:
+        # `index_for` resolves `paths.state` before it looks at the id, so a
+        # `.theurian/state` that leaves the working tree refuses here as the
+        # doctored tree it is -- #525's grading, not this function's exit 1.
+        _fail_a_path_escape(exc, as_json=as_json)
+        return False
+    except TheurianError as exc:
+        _fail(str(exc), remedy=INDEX_POINTER_REMEDY, as_json=as_json, code=1)
+        return False
+    except OSError:
+        # The type is not published and neither is the message: `str(exc)` on an
+        # `OSError` appends the filename, which is the operator's absolute path,
+        # and the id is already in the sentence. What a reader needs is that the
+        # *pointer* is the thing to repair, which is what the remedy says.
+        _fail(
+            f"The published index pointer names build {published!r}, and the operating "
+            f"system will not answer whether that build's file exists. Nothing was reclaimed.",
+            remedy=INDEX_POINTER_REMEDY,
+            as_json=as_json,
+            code=1,
+        )
+        return False
+
+    if not names_a_file:
+        _fail(
+            f"The published index pointer names build {published}, and that build's file is "
+            f"not there. Nothing was reclaimed.",
+            remedy=(
+                "Run `theurian index build` to publish a build that exists. Reclaiming now "
+                "would delete every build on disk, because none of them is the published one."
+            ),
+            as_json=as_json,
+            code=1,
+        )
+        return False
+    return True
 
 
 def _reclaim(paths_to_remove: list[Path], *, as_json: bool) -> bool:
