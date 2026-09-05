@@ -1763,33 +1763,13 @@ def test_a_state_directory_that_escapes_after_the_publish_still_reports_the_find
     assert "Remove" in warning, (
         f"the warning carries no cure for the escape it reports: {warning!r}"
     )
-
-
-def test_the_escape_warning_does_not_borrow_the_writable_cure(
-    planted: Path, tmp_path: Path
-) -> None:
-    """The two arms keep different cures, because the causes are different.
-
-    An incidental write failure is met with `chmod`; a path that left the working
-    tree is met by removing what redirected it, and `chmod` on a directory that
-    is no longer the directory cures nothing. One message covering both would
-    name a non-cause for one of them -- the shape this project has shipped three
-    times.
-    """
-    outside = tmp_path / "state-elsewhere"
-    real = write_active_index_pointer
-
-    def redirecting(*args: Any, **kwargs: Any) -> None:
-        real(*args, **kwargs)
-        state = planted / ".theurian/state"
-        shutil.move(str(state), str(outside))
-        state.symlink_to(outside)
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(index_commands, "write_active_index_pointer", redirecting)
-        _, payload = _in(planted, "index", "build")
-
-    warning = payload["recordWarning"]
+    # The two arms keep different cures, because the causes are different: an
+    # incidental write failure is met with `chmod`, and a path that left the tree
+    # is met by removing what redirected it -- `chmod` on a directory that is no
+    # longer the directory cures nothing. Asserted here rather than in a test of
+    # its own, which would repeat this whole build for one absence; the offline
+    # CI job's budget is what decides that, and the assertion is about the very
+    # string above it.
     assert "writable" not in warning, (
         f"the escape took the write-failure cure, which is a non-cause here: {warning!r}"
     )

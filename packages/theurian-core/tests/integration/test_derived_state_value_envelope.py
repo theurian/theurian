@@ -64,6 +64,7 @@ import ast
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -212,15 +213,25 @@ def _refused_cleanly(ran: Ran, *, code: int = 1) -> dict[str, Any]:
     return envelope
 
 
-@pytest.fixture
-def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """A registered project with canonical state applied and one index published.
+@pytest.fixture(scope="module")
+def _prepared(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    """One registered, applied, indexed project, built **once** for this module.
 
-    ``HOME`` and ``THEURIAN_DATA_DIR`` go through ``monkeypatch`` along with the
-    ``chdir``: the CLI resolves a project from the working directory, so a test
-    that forgot either would run against the developer's own checkout.
+    Module-scoped because the setup is four real CLI invocations -- `init`,
+    `project register`, `migrate apply`, `index build` -- and this file has 22
+    tests. Per test that is 20 index builds, and it cost the offline CI job
+    (a 10-minute budget it already used 8m06s of on ``main``) more than its
+    remaining headroom: the job timed out at 68%. Every test still gets a
+    *pristine* project, restored by :func:`project` below rather than rebuilt.
+
+    ``HOME``, ``THEURIAN_DATA_DIR`` and the working directory are set here with a
+    hand-held ``MonkeyPatch`` and undone at module teardown, because the built-in
+    ``monkeypatch`` fixture is function-scoped. Setting them is not optional and
+    not merely hygiene: the CLI resolves a project from ``Path.cwd()``, so a run
+    without the ``chdir`` initialises Theurian into the developer's own checkout.
     """
-    root = tmp_path / "demo"
+    base = tmp_path_factory.mktemp("derived-state")
+    root = base / "demo"
     root.mkdir()
     for args in (
         ["git", "init", "-q", "-b", "main"],
@@ -229,19 +240,44 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     ):
         subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
 
-    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.chdir(root)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("THEURIAN_DATA_DIR", str(base / "datadir"))
+        patch.setenv("HOME", str(base / "home"))
+        patch.chdir(root)
 
-    assert _run("init").exit_code == 0
-    (root / ".theurian/knowledge/architecture/auth.md").write_text(BODY, encoding="utf-8")
-    (root / f".theurian/migrations/{MIGRATION_ID}-auth.yaml").write_text(
-        MIGRATION, encoding="utf-8"
-    )
-    for command in (["project", "register"], ["migrate", "apply"], ["index", "build"]):
-        ran = _run(*command)
-        assert ran.exit_code == 0, f"{command}: {ran.stdout}{ran.stderr}"
-    yield root
+        assert _run("init").exit_code == 0
+        (root / ".theurian/knowledge/architecture/auth.md").write_text(BODY, encoding="utf-8")
+        (root / f".theurian/migrations/{MIGRATION_ID}-auth.yaml").write_text(
+            MIGRATION, encoding="utf-8"
+        )
+        for command in (["project", "register"], ["migrate", "apply"], ["index", "build"]):
+            ran = _run(*command)
+            assert ran.exit_code == 0, f"{command}: {ran.stdout}{ran.stderr}"
+
+        shutil.copytree(root / ".theurian", base / "pristine")
+        yield root
+
+
+@pytest.fixture
+def project(_prepared: Path) -> Iterator[Path]:
+    """The prepared project, and ``.theurian/`` put back exactly as it was after.
+
+    Restoring is what makes the module-scoped build safe, and it is a *copy of
+    the whole subtree* rather than of the files each test is known to touch: a
+    test that names its own damage cannot report damage it did not expect, which
+    is how a shared fixture turns one test's failure into the next one's.
+
+    The ``chmod`` loop runs first because a plant here is a mode-``000``
+    directory, and ``rmtree`` cannot descend into one -- including on the path
+    where a test failed before its own ``finally`` restored the bits.
+    """
+    yield _prepared
+    theurian = _prepared / ".theurian"
+    for path in (theurian, *theurian.rglob("*")):
+        if path.is_dir():
+            path.chmod(0o700)
+    shutil.rmtree(theurian)
+    shutil.copytree(_prepared.parent / "pristine", theurian)
 
 
 def _builds(root: Path) -> list[str]:
@@ -512,7 +548,7 @@ async def _search(registry: ProjectRegistry) -> Any:
 
 
 def test_a_database_filename_the_os_will_not_answer_for_is_refused_with_a_cure(
-    project: Path, tmp_path: Path
+    project: Path,
 ) -> None:
     """The third value on this axis, and the one the fallback table has no row for.
 
@@ -530,7 +566,7 @@ def test_a_database_filename_the_os_will_not_answer_for_is_refused_with_a_cure(
     crashes" and still leave an agent with nothing to do, and it would put the
     operator's absolute path on a surface that keeps them off (GHSA-97q9).
     """
-    registry = ProjectRegistry.default(tmp_path / "datadir")
+    registry = ProjectRegistry.default(project.parent / "datadir")
     _publish_a_database_filename(project, "B" * 260 + ".sqlite")
 
     with pytest.raises(SdkToolError) as raised:
