@@ -61,12 +61,18 @@ class SecretPathIsASymbolicLinkError(SecurityError):
     waiting for it; the refusal is what makes that visible, and it is the posture
     :class:`InsecureSecretPermissionsError` beside it already takes about a mode.
 
-    **Not the whole of #371.** The *substitution* face -- an attacker unlinking
-    ``mcp-token`` and leaving their own 0600 regular file, which ``set`` then
-    truncates and overwrites and ``get`` reads without complaint -- is not a
-    symbolic link and nothing here refuses it. What that face needs is ``setup``
-    declining to mint into a group- or other-writable ``auth`` directory at all,
-    which is a different guard in a different place.
+    **Not the whole of #371**, and the two remainders are different shapes:
+
+    * the *substitution* face -- an attacker unlinking ``mcp-token`` and leaving
+      their own 0600 regular file, which ``set`` then truncates and overwrites and
+      ``get`` reads without complaint. It is not a symbolic link, so no
+      ``O_NOFOLLOW`` sees it; what it needs is ``setup`` declining to mint into a
+      group- or other-writable ``auth`` directory at all
+      ([#573](https://github.com/theurian/theurian/issues/573)), a different guard
+      in a different place;
+    * the *prefix* face -- a link at ``auth/`` rather than at the secret's own
+      name. ``O_NOFOLLOW`` constrains the final component, so both sides follow it
+      ([#577](https://github.com/theurian/theurian/issues/577)).
 
     The message says "writing" nowhere: one type serves both call sites, and a
     sentence naming the wrong verb is what a reader would act on.
@@ -78,6 +84,13 @@ class SecretPathIsASymbolicLinkError(SecurityError):
         # link serves both the write attack and the read one, and the earlier
         # wording described only the first. An operator meeting this from `get`
         # is holding a token somebody else chose, which is the reverse direction.
+        #
+        # The cure names `theurian auth rotate`, which is correct because
+        # `TOKEN_KEY` is the only key this store ever holds -- `git grep -n
+        # "\.set(\|\.get(" -- packages/theurian-core/src` over the secret-store
+        # callers returns `TOKEN_KEY` at every one (2026-09-05). A second key
+        # would make this remedy name a command that does not rotate it, so a
+        # `SecretStore` gaining one has to revisit this line.
         self.remedy = (
             f"Remove the symbolic link at {path} and run `theurian auth rotate` to mint a "
             f"fresh token. Something with write access to {path.parent} put it there, so "
@@ -148,15 +161,36 @@ class FileSecretStore:
         The existing checks keep their order and their meaning. ``exists()`` still
         answers "no secret yet" with ``None`` -- and note it answers ``False`` for
         a *dangling* link, so that shape is a missing token rather than a refusal,
-        which is correct: nothing was stored and nothing was read. The
-        world-accessible check still runs before any byte is read, so a secret
-        other accounts could already read is refused rather than used.
+        which is correct: nothing was stored and nothing was read. It also answers
+        ``False`` for a **prefix loop**, because ``pathlib`` swallows ``ELOOP``
+        among the errnos it treats as "not there", and that is what keeps a loop
+        above this file from reaching the open at all -- the read side's whole
+        ELOOP attribution, recorded on :mod:`theurian.security.no_follow` and
+        pinned by ``test_no_follow_writes.py``.
+
+        **The two refusals are ordered, and the order decides which one a planted
+        link produces** (round two, security M-5). ``is_world_accessible`` runs
+        *before* the open, and it follows the link -- so a link naming a
+        world-readable target raises :class:`InsecureSecretPermissionsError`, not
+        the symbolic-link refusal, and that error reports the **target's** mode as
+        though it were the token's. It is the safer of the two orders (a secret
+        other accounts can already read is refused whatever else is wrong with the
+        path) and it is not the more informative one; the arrangement is recorded
+        rather than reordered, because moving the link check first would let a
+        world-readable *regular* token file through on the same code path if the
+        symlink arm ever grew a non-refusing branch.
+
+        **The final-component bound applies here exactly as it does to**
+        :meth:`set`: ``O_NOFOLLOW`` refuses a link at the secret's own name, and a
+        symbolic link at ``auth/`` itself is followed
+        ([#577](https://github.com/theurian/theurian/issues/577)).
 
         Raises:
-            SecretPathIsASymbolicLinkError: If the secret's own name is a
-                symbolic link.
-            InsecureSecretPermissionsError: If the file is group- or
-                world-accessible.
+            InsecureSecretPermissionsError: If the file -- or, through a link, the
+                file it names -- is group- or world-accessible. Checked first, so
+                it pre-empts the refusal below.
+            SecretPathIsASymbolicLinkError: If the secret's own name is a symbolic
+                link and its target is not world-accessible.
             OSError: For every other way the open or the read can fail.
         """
         path = self._path(key)

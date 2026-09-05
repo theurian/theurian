@@ -235,9 +235,14 @@ def _symbolic_link_write_refusal(path: Path, *, artifact: str) -> str:
     than the one written here first.** That sentence said "every payload in this
     module keeps operators' absolute paths out", which is false of this module:
     :func:`_fail_a_path_escape` publishes ``str(exc)`` from a refusal whose whole
-    message is two absolute paths, and ``git grep -n '_fail(str(exc)'
-    packages/theurian-core/src/theurian/cli/commands.py`` returned ten more sites
-    on 2026-09-05. What is true is that **two payloads keep them out on purpose**
+    message is two absolute paths, and it is not alone: ``git grep -n
+    '_fail(str(exc)' packages/theurian-core/src/theurian/cli/commands.py``
+    returned **14 lines** on 2026-09-05 -- four of them prose in this file
+    (including this sentence), leaving ten call sites in that spelling, of which
+    ``_fail_a_path_escape`` is one, so **nine more** than it. An earlier version
+    of this paragraph said "ten more", counting the prose out but not itself out
+    (round two, code review). What is true is that **two payloads keep them out
+    on purpose**
     -- ``_purge_fields``' failure reason and ``_record_the_scan``'s warning, each
     recording why at its own definition -- and this follows those two rather than
     a module-wide rule that does not exist.
@@ -1594,6 +1599,54 @@ _LOCKED_WRITE_FAULT_REMEDY = (
 )
 
 
+#: Cure for an ``ELOOP`` met at a path in section B that is **not** the pointer's
+#: temporary -- today, ``<data_dir>/provenance.json.tmp``.
+#:
+#: Two things the pointer's cure says are false here, and saying either would send
+#: the reader somewhere wrong (round two, H-D, measured):
+#:
+#: * **No refusal happened.** ``BuildProvenance._write`` is a bare
+#:   ``Path.write_text``; nothing on that path declines a link. A *non-loop* link
+#:   there is followed at exit 0 and the victim outside the data directory is
+#:   overwritten -- measured 2026-09-05. What ends the command here is the link
+#:   being a loop, which the kernel refuses on its own account.
+#: * **No repository is involved.** ``<data_dir>`` is per-user and created 0700 by
+#:   Theurian itself, so "a repository that carries one has committed it past that
+#:   ignore" describes a delivery route that cannot reach this path.
+#:
+#: What is true and useful: the file is derived, deleting it costs nothing, and
+#: something with write access to a 0700 directory put a link there.
+_UNGUARDED_LINK_REMEDY: Final = (
+    "Delete {path} and run `theurian migrate apply` again -- it is a working file "
+    "Theurian recreates, so nothing is lost. It sits in your per-user data directory, "
+    "which Theurian creates at 0700, so check what has write access there: Theurian "
+    "did not put a symbolic link at that name."
+)
+
+
+def _unguarded_link_fault(path: Path) -> str:
+    """What to publish for a link at a section-B path Theurian does not guard.
+
+    Deliberately **not** :func:`_symbolic_link_write_refusal`, whose sentence ends
+    "so Theurian refused rather than touching that file". That is true of the
+    pointer's temporary, which is opened ``O_NOFOLLOW``; it is false here, and
+    publishing it would tell an operator a guard exists where none does -- the
+    product asserting something about its own security behaviour that is not so
+    (round two, H-D).
+
+    Says what actually happened instead: the write could not complete, and the
+    path is a symbolic link. The leaf and not the absolute path, following the two
+    payloads that withhold them on purpose; the remedy beside it carries the full
+    path.
+    """
+    return (
+        f"{path.name} is a symbolic link, and the write to it could not complete. "
+        f"Theurian does not write through that path deliberately -- it has no "
+        f"symbolic-link guard -- so treat whatever the link names as having been "
+        f"exposed to this write."
+    )
+
+
 def _fail_the_state_publish(exc: OSError, paths: ProjectPaths, *, as_json: bool) -> None:
     """Grade section B's ``OSError``, keyed on whether a symbolic link caused it.
 
@@ -1632,9 +1685,13 @@ def _fail_the_state_publish(exc: OSError, paths: ProjectPaths, *, as_json: bool)
     * There is **no module-wide rule to be consistent with**. Absolute paths reach
       this module's payloads from every ``_fail(str(exc), ...)`` site, and there
       are **37** of them (measured 2026-09-05 by walking this file's AST for a
-      ``_fail`` call whose first argument is ``str(exc)``; a line-based grep
-      answers 10, because it sees only the single-line spelling -- the count is
-      stated with its key for exactly that reason). The two payloads that withhold
+      ``_fail`` call whose first argument is ``str(exc)`` -- two reviewers
+      re-derived that number independently in round two). A line-based ``git grep``
+      for the same text answers **14 lines**, of which four are prose and ten are
+      call sites written on one line; it under-counts because most ``_fail`` calls
+      are spread over several. The count is stated with its key for exactly that
+      reason -- an earlier draft said the grep "answers 10", which is the filtered
+      figure and not what the command prints. The two payloads that withhold
       absolute paths do so as a local decision each records at its own definition.
       Making a 38th site withhold would add a third convention rather than
       complete a second.
@@ -1660,14 +1717,19 @@ def _fail_the_state_publish(exc: OSError, paths: ProjectPaths, *, as_json: bool)
         # pointer. Falling back to it is the honest floor rather than a guess:
         # the alternative is a refusal that names nothing at all.
         culprit = Path(exc.filename) if exc.filename else temporary
-        artifact = (
-            "The active-state pointer's temporary file"
-            if culprit == temporary
-            else "A file this command writes before publishing the pointer"
-        )
+        if culprit == temporary:
+            _fail(
+                _symbolic_link_write_refusal(
+                    culprit, artifact="The active-state pointer's temporary file"
+                ),
+                remedy=symbolic_link_remedy(culprit),
+                as_json=as_json,
+                code=EXIT_STATE_ERROR,
+            )
+            return
         _fail(
-            _symbolic_link_write_refusal(culprit, artifact=artifact),
-            remedy=symbolic_link_remedy(culprit),
+            _unguarded_link_fault(culprit),
+            remedy=_UNGUARDED_LINK_REMEDY.format(path=culprit),
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )
@@ -2345,8 +2407,10 @@ class _Resolver:
 #: * a **directory at the manifest's own name** -- ``IsADirectoryError``, while
 #:   ``.theurian/cache/`` is perfectly writable;
 #: * **something that is not a directory at ``.theurian/cache``** -- a regular
-#:   file, or a committed link to a path that is not a directory (missing, or a
-#:   regular file). All three raise ``FileExistsError`` (errno 17, measured) from
+#:   file, or a committed link naming a path that is not a directory: one that is
+#:   missing, and one that names a regular *file*, which the remedy names too
+#:   because an operator looking only for a broken link would not find it. All
+#:   three raise ``FileExistsError`` (errno 17, measured) from
 #:   the ``mkdir`` the round-one H-2 fix moved inside the handler's ``try``:
 #:   ``exist_ok=True`` suppresses ``EEXIST`` only after ``is_dir()`` agrees, and
 #:   it follows the link to answer. A link to a directory *inside* the tree is
@@ -2359,11 +2423,11 @@ class _Resolver:
 #: the whole subtree is derived (ADR-0004) and one `theurian ingest` rebuilds it.
 _UNWRITABLE_MANIFEST_REMEDY: Final = (
     "Make sure `.theurian/cache` is a directory this user can write, and that "
-    "`.theurian/cache/ingestion.json` is a writable file or absent -- a regular file or a "
-    "broken symbolic link where the directory belongs refuses the write, and so does a "
-    "directory at the manifest's own name. Remove whatever is in the way, then run "
-    "`theurian ingest` again. The manifest only records which sources have already been "
-    "parsed, so nothing authored is at risk."
+    "`.theurian/cache/ingestion.json` is a writable file or absent -- a regular file, or a "
+    "symbolic link naming anything that is not a directory, where the directory belongs "
+    "refuses the write, and so does a directory at the manifest's own name. Remove "
+    "whatever is in the way, then run `theurian ingest` again. The manifest only records "
+    "which sources have already been parsed, so nothing authored is at risk."
 )
 
 

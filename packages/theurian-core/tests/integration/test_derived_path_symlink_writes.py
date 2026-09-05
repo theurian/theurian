@@ -42,13 +42,18 @@ from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectPaths
 from theurian.application.setup_context import SetupContext
-from theurian.application.setup_steps import probe_token_storage
+from theurian.application.setup_steps import probe_token, probe_token_storage
 from theurian.cli.commands import EXIT_STATE_ERROR
 from theurian.cli.main import app
 from theurian.domain.errors import SecurityError
 from theurian.domain.setup import StepStatus
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
-from theurian.infrastructure.secrets.file_store import TOKEN_KEY, FileSecretStore
+from theurian.infrastructure.secrets.file_store import (
+    TOKEN_KEY,
+    FileSecretStore,
+    InsecureSecretPermissionsError,
+    SecretPathIsASymbolicLinkError,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -317,6 +322,22 @@ def _assert_the_error_names(envelope: dict[str, Any], *, artifact: str, link: Pa
         f"the error carries the operator's absolute path, which belongs in the "
         f"remedy and not here: {message}"
     )
+    # Round two, adversarial M-1: the pins above say which *file* the message is
+    # about and nothing about what it says HAPPENED, so inverting the sentence to
+    # "followed it and replaced" survived the whole suite
+    # (`R2-MISLEAD-message-says-it-wrote-through`). A refusal that describes
+    # itself as a completed write is worse than no message: it sends an operator
+    # to restore a file nothing touched, and it is the product asserting the
+    # opposite of its own security behaviour.
+    assert "refused" in message, (
+        f"the message does not say the write was refused, so it does not "
+        f"distinguish a refusal from a write that went through: {message}"
+    )
+    for claim in ("followed it", "replaced whatever it names.", "was written"):
+        assert claim not in message, (
+            f"the message claims the write happened ({claim!r}), which is the "
+            f"inverse of what this path does: {message}"
+        )
 
 
 def _assert_names_the_derived_directory(
@@ -426,10 +447,12 @@ def test_the_apply_refusal_names_the_file_that_actually_refused(
 
     The plant is a **self-referential link**, which is the shape that reaches
     ``ELOOP`` at a write this command does not guard: the provenance write is
-    ``Path.write_text``, which follows an ordinary link happily. That path is the
+    ``Path.write_text``, and a *non-loop* link there is followed at exit 0 with
+    the victim outside the data directory overwritten -- measured 2026-09-05, and
+    the reason the message below must not claim a refusal. That path is the
     per-user data directory and is outside this class (#523 records it as no
-    capability increase); what is fixed here is only the *naming*, and this pins
-    it.
+    capability increase); what is fixed is the *reporting*, and this pins all four
+    of its claims.
     """
     data_dir = tmp_path / "datadir"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -447,6 +470,28 @@ def test_the_apply_refusal_names_the_file_that_actually_refused(
         "the cure still blames the pointer's temporary, which was never created"
     )
     assert not (project / ".theurian/state/active.json.tmp").exists()
+
+    # Round two, H-D and adversarial `R2-L2-fallthrough-artifact-lies`: the
+    # *message* was never read here, so collapsing the artefact ternary to the
+    # pointer phrase survived. Two clauses, and both were false for this culprit.
+    assert loop.name in envelope["error"], (
+        f"the message does not name the file that failed: {envelope['error']}"
+    )
+    assert "active-state pointer" not in envelope["error"], (
+        "the message calls a per-user provenance file the active-state pointer, "
+        "which is the mutation this assertion exists to kill"
+    )
+    assert "refused" not in envelope["error"], (
+        "the message claims Theurian refused this write. Nothing on this path "
+        "refuses: `BuildProvenance._write` is a bare `write_text`, and a non-loop "
+        "link there is followed at exit 0 (measured). Claiming a guard that does "
+        "not exist is the product asserting something false about its own "
+        "security behaviour"
+    )
+    assert "repository" not in envelope["remedy"], (
+        "the cure blames a repository for a link in the per-user data directory, "
+        "which no clone can reach"
+    )
 
 
 @_NEEDS_SYMLINKS
@@ -543,13 +588,20 @@ def test_the_in_tree_scan_record_refusal_names_the_temporary_to_remove(built: Pa
 
 @_NEEDS_SYMLINKS
 def test_a_link_at_the_published_scan_record_is_consumed_rather_than_refused(built: Path) -> None:
-    """The published name is *not* guarded, and the reason is what it is written to by.
+    """The published name is *not* write-guarded, and the reason is what writes to it.
 
-    Only ``os.replace`` ever names this path, and ``rename(2)`` operates on the
-    link rather than through it: measured standalone, replacing over a linked
-    record left the link's target byte-identical and turned the record into a
-    regular file. So there is nothing here for ``O_NOFOLLOW`` to back, and the
-    build proceeds.
+    No write opens this path -- only ``os.replace`` names it, and ``rename(2)``
+    operates on the link rather than through it: measured standalone, replacing
+    over a linked record left the link's target byte-identical and turned the
+    record into a regular file. So there is nothing here for ``O_NOFOLLOW`` to
+    back on the write side, and the build proceeds.
+
+    It **is** read through a link, by ``_read_record``'s ``read_text`` on both of
+    its callers, and that is a recorded decision rather than a gap: both gate on
+    the build id before the contents mean anything, so a planted link can make a
+    verdict unavailable but not flip one, and a local attacker who can plant it
+    can rewrite the record directly for less work. The reasoning lives on
+    ``_the_scan_record_paths_are_usable`` (security round two, H-C).
 
     **This test replaces one that asserted the opposite** (round one, code review
     H-1). The earlier precondition refused on this path with text claiming
@@ -791,6 +843,48 @@ def test_ingest_answers_a_directory_where_the_manifest_belongs(project: Path) ->
     assert ".theurian/cache/ingestion.json" in envelope["remedy"]
 
 
+@_NEEDS_SYMLINKS
+def test_a_contained_state_link_destroys_a_colliding_name(project: Path) -> None:
+    """#577's ``state`` face, pinned as a fact beside the ``cache`` one.
+
+    ``.theurian/state -> ../build`` resolves inside the working tree, so
+    containment passes it and ``O_NOFOLLOW`` never sees it -- the link is a prefix
+    directory, not the final component of any write. The whole state directory
+    relocates into ``build/`` at exit 0.
+
+    **What that costs is a colliding name, and the mechanism matters**: the
+    pointer write truncates ``build/active.json.tmp`` and the ``os.replace`` that
+    publishes over it then *unlinks* it. Measured 2026-09-05.
+
+    A tracked ``build/active.json`` gives exit 1 instead, and that is an accident
+    rather than a guard -- the pointer read fails to parse it and aborts before
+    any write. Naming only that case, as an earlier note did, would read as the
+    plant being harmless; it is harmless for exactly one filename.
+
+    Written to go RED the day prefix hardening lands, like its ``cache`` sibling.
+    """
+    build = project / "build"
+    build.mkdir()
+    colliding = build / "active.json.tmp"
+    colliding.write_bytes(VICTIM)
+    state = project / ".theurian/state"
+    shutil.rmtree(state, ignore_errors=True)
+    state.symlink_to(Path("..") / "build", target_is_directory=True)
+
+    ran = _run("migrate", "apply")
+
+    assert ran.exit_code == 0, (
+        f"the prefix-link bound may have been closed -- if so, delete this test "
+        f"and the qualifiers that point at it (#577): {ran.stderr}"
+    )
+    assert not colliding.exists(), (
+        "the colliding name survived, so this test no longer pins the loss it was written for"
+    )
+    assert json.loads((build / "active.json").read_text(encoding="utf-8"))["stateHash"], (
+        "state did not relocate here, so the relocation this pins did not happen"
+    )
+
+
 # -- AC4: the local access token ---------------------------------------------
 
 
@@ -829,6 +923,21 @@ def test_a_planted_token_link_is_refused_on_the_read_side_too(tmp_path: Path) ->
     3. ``probe_token_storage`` reported **satisfied**: ``is_file()`` follows the
        link, the target is 0600, and ``auth`` is 0700, so all three of its
        predicates pass.
+    4. ``probe_token`` reported **satisfied** too, and kept doing so after the
+       first three were closed (security round two, H-A -- three reviewers
+       converged on it). ``is_file()`` and ``read_text()`` both follow, so a link
+       to an attacker-owned file of at least ``MIN_TOKEN_LENGTH`` characters
+       reads as a healthy token; a shorter one reaches the "too short" arm, which
+       is the same read-through wearing a different verdict.
+
+    **Why four and not three.** The population is
+    ``git grep -n "TOKEN_KEY" -- packages/theurian-core/src``, filtered to the
+    production sites that *access* the file rather than name it: ``set``, ``get``,
+    ``probe_token_storage`` and ``probe_token``. Round one closed three of them
+    and this docstring said the class was closed -- the exact failure mode the
+    paragraph below warns about, committed one round after writing it. Both
+    probes are driven here now, in a loop over the pair, so a fifth access site
+    joins by being added to that loop rather than by being remembered.
 
     And the write-side refusal this branch added *pins the plant in place*:
     ``auth rotate`` now declines the link rather than replacing it, so the state
@@ -842,24 +951,74 @@ def test_a_planted_token_link_is_refused_on_the_read_side_too(tmp_path: Path) ->
     data_dir, loot = _planted_token_link(tmp_path)
     store = FileSecretStore(data_dir)
 
-    with pytest.raises(SecurityError) as excinfo:
+    with pytest.raises(SecretPathIsASymbolicLinkError) as excinfo:
         asyncio.run(store.get(TOKEN_KEY))
 
-    assert str(data_dir / "auth" / TOKEN_KEY) in excinfo.value.remedy
+    link = data_dir / "auth" / TOKEN_KEY
+    assert str(link) in excinfo.value.remedy
+    # The fifth converted site, given the same message treatment as the four in
+    # the project tree (round two, LOW). It is an exception rather than an
+    # envelope -- no CLI command reaches it without its own handler -- so the
+    # assertions are made against `str(exc)` instead of `envelope["error"]`.
+    assert link.name in str(excinfo.value)
+    assert str(link) not in str(excinfo.value), (
+        "the message carries the absolute path, which belongs in the remedy"
+    )
+    assert "refuses" in str(excinfo.value), (
+        "the message does not say the access was refused, so it does not "
+        "distinguish a refusal from a read that went through"
+    )
 
     from theurian.daemon.runner import ensure_token
 
-    with pytest.raises(SecurityError):
+    with pytest.raises(SecretPathIsASymbolicLinkError):
         asyncio.run(ensure_token(data_dir))
 
-    step = probe_token_storage(_setup_context(tmp_path, data_dir))
-    assert step.status is not StepStatus.SATISFIED, (
-        f"doctor reports {step.status.value} about a token file that is a link to "
-        f"{loot}, which the attacker wrote"
-    )
+    context = _setup_context(tmp_path, data_dir)
+    for probe in (probe_token, probe_token_storage):
+        step = probe(context)
+        assert step.status is not StepStatus.SATISFIED, (
+            f"doctor's {probe.__name__} reports {step.status.value} about a token file "
+            f"that is a link to {loot}, which the attacker wrote"
+        )
     assert loot.read_text(encoding="utf-8") == ATTACKER_TOKEN, (
         "the read path rewrote the attacker's file instead of refusing it"
     )
+
+
+@_NEEDS_SYMLINKS
+def test_a_world_readable_target_is_refused_by_the_mode_check_first(tmp_path: Path) -> None:
+    """The ordering the ``Raises`` contract now records (round two, security M-5).
+
+    ``is_world_accessible`` runs before the open and follows the link, so a link
+    naming a **0644** target produces ``InsecureSecretPermissionsError`` rather
+    than the symbolic-link refusal -- and that error reports the *target's* mode as
+    though it were the token's.
+
+    Pinned rather than corrected: refusing a secret other accounts can already
+    read, whatever else is wrong with the path, is the safer of the two orders.
+    What is not safe is the contract being silent about which refusal a given
+    plant produces, because a caller branching on the type would meet the other
+    one. The token's own name is asserted absent from nothing here -- what is
+    asserted is only that the mode check won, which is the fact the docstring
+    claims.
+    """
+    data_dir = tmp_path / "data"
+    loose = tmp_path / "attacker" / "loose"
+    loose.parent.mkdir(parents=True)
+    loose.write_text(ATTACKER_TOKEN, encoding="utf-8")
+    loose.chmod(0o644)
+    (data_dir / "auth").mkdir(parents=True, mode=0o700)
+    (data_dir / "auth" / TOKEN_KEY).symlink_to(loose)
+
+    with pytest.raises(InsecureSecretPermissionsError) as excinfo:
+        asyncio.run(FileSecretStore(data_dir).get(TOKEN_KEY))
+
+    assert excinfo.value.mode == 0o644, (
+        "the refusal reports a mode other than the target's, so the ordering this "
+        "test pins is not the one that ran"
+    )
+    assert loose.read_text(encoding="utf-8") == ATTACKER_TOKEN
 
 
 @_NEEDS_SYMLINKS

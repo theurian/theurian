@@ -32,9 +32,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   this fix left open — **read one back through the same link**: `get` returned
   the attacker's value, the daemon accepted it as its bearer token because
   `ensure_token` re-mints only when there is no token, and `theurian doctor`
-  reported the arrangement satisfied. Both directions refuse now, and `doctor`
-  reports a link at the token's name as a conflict rather than stat-ing through
-  it.
+  reported the arrangement satisfied. Both directions refuse now, and **both** of
+  `doctor`'s token steps report a link at that name as a conflict rather than
+  stat-ing through it — `token-storage`, and `token` itself, which went on
+  publishing `satisfied` about an attacker-owned file until it got the same arm
+  (three reviewers converged on it in round two). The population is the four
+  production sites that access the file: `set`, `get`, `probe_token_storage`,
+  `probe_token`.
 
   **One root cause, fixed in two halves that do not cover each other.** Every
   one of these writes now opens with `O_NOFOLLOW`
@@ -69,9 +73,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   which this release does not do. Recorded as
   [#577](https://github.com/theurian/theurian/issues/577) and pinned as a fact by
   a test that goes RED the day the hardening lands. The substitution
+  ([#573](https://github.com/theurian/theurian/issues/573))
   face of #371 is likewise unchanged and is a different mechanism rather than a
   remaining corner of this one: an attacker's own **regular file** at the token's
-  name is not a link, so no `O_NOFOLLOW` sees it and it is indistinguishable from
+  name is not a link, so no `O_NOFOLLOW` sees it ([#573](https://github.com/theurian/theurian/issues/573)) and it is indistinguishable from
   Theurian's own by mode. `theurian doctor` continues to demand rotation for a
   group- or other-writable `auth/` directory, which is the signal that face has.
 

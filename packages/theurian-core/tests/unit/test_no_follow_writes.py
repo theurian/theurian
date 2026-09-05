@@ -42,6 +42,7 @@ it.
 from __future__ import annotations
 
 import ast
+import asyncio
 import errno
 import functools
 import inspect
@@ -53,10 +54,12 @@ from typing import Final
 import pytest
 
 from theurian.application.project_service import ProjectPaths
+from theurian.infrastructure.secrets.file_store import TOKEN_KEY, FileSecretStore
 from theurian.security import no_follow
 from theurian.security.no_follow import (
     WRITE_FLAGS,
     is_a_symbolic_link_refusal,
+    open_for_reading_without_following_a_link,
     open_without_following_a_link,
     symbolic_link_remedy,
     write_text_without_following_a_link,
@@ -276,6 +279,59 @@ def test_the_descriptor_is_closed_when_wrapping_it_fails(
     assert excinfo.value.errno == errno.EBADF, "the descriptor was still open"
 
 
+@_NEEDS_SYMLINKS
+@pytest.mark.parametrize(
+    "plant",
+    [
+        pytest.param(("auth",), id="self-loop"),
+        pytest.param(("a", "auth"), id="mutual-loop"),
+    ],
+)
+def test_a_prefix_loop_is_answered_before_the_read_open(
+    tmp_path: Path, plant: tuple[str, ...]
+) -> None:
+    """Security round two, H-B: what stops a *prefix* loop reaching the read open.
+
+    The write side's answer is the ``mkdir`` that runs first, and the module
+    docstring used to give it for both directions. ``FileSecretStore.get`` never
+    mkdirs anything. What actually holds the read side is ``Path.exists()``, which
+    ``pathlib`` implements over an ``os.stat`` whose ``ELOOP`` it swallows into
+    ``False`` -- so ``get`` returns ``None`` and no open is attempted.
+
+    That barrier is a **side effect of a probe written for a different question**
+    ("is there a secret yet?"), which is exactly why it is pinned: an edit that
+    reordered or dropped that check would take the read side's ELOOP attribution
+    with it and change no other line. Both loop shapes are driven, because a
+    self-loop and a mutual loop reach ``stat`` differently and only one of them
+    was measured when the finding was written.
+
+    The raw open is asserted beside it, so the test cannot pass by the loop having
+    been harmless: it must be the ``exists()`` call that answered, not the
+    absence of anything to trip over.
+    """
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    if len(plant) == 1:
+        (data_dir / "auth").symlink_to("auth")
+    else:
+        (data_dir / "a").symlink_to("auth")
+        (data_dir / "auth").symlink_to("a")
+    token = data_dir / "auth" / TOKEN_KEY
+
+    assert token.exists() is False, (
+        "`Path.exists()` no longer swallows the prefix loop, so the read side's "
+        "ELOOP attribution now rests on something this test does not describe"
+    )
+    assert asyncio.run(FileSecretStore(data_dir).get(TOKEN_KEY)) is None
+
+    with pytest.raises(OSError) as excinfo:
+        open_for_reading_without_following_a_link(token)
+    assert is_a_symbolic_link_refusal(excinfo.value), (
+        "the raw open did not trip on the loop, so `exists()` was not what "
+        "prevented it and this test proves nothing"
+    )
+
+
 def test_the_opener_hands_back_a_usable_descriptor(tmp_path: Path) -> None:
     """``FileSecretStore.set`` uses the opener rather than the text writer.
 
@@ -440,6 +496,18 @@ _WRITE_CALLS: Final = frozenset(
     }
 )
 
+#: The subset of :data:`_WRITE_CALLS` that does not follow a link.
+#:
+#: The judgment below is ``every write call this function makes is one of these``,
+#: not ``it calls the text writer somewhere`` (round two, code review M-4). The
+#: earlier spelling was wrong in both directions: a function using only
+#: ``open_without_following_a_link`` -- which ``FileSecretStore`` does -- read as
+#: unconverted, and a function that called the text writer *and* a bare
+#: ``write_text`` read as converted while half its writes followed links.
+_NO_FOLLOW_SPELLINGS: Final = frozenset(
+    {"write_text_without_following_a_link", "open_without_following_a_link"}
+)
+
 #: The writers that name a ``ProjectPaths`` helper and are **not** required to go
 #: through ``no_follow``, with the measured reason.
 _PROJECT_WRITERS_OUTSIDE_THE_CLASS: Final[dict[str, str]] = {
@@ -483,27 +551,63 @@ def _enclosing_functions_of_an_atomic_replace(tree: ast.Module) -> set[str]:
     }
 
 
+#: Every way this codebase could publish by rename. ``replace`` and ``rename`` are
+#: the same syscall with different clobber semantics; ``shutil.move`` falls back
+#: to a copy across devices but is a rename within one, and a publisher that
+#: switched to it would be just as much a member.
+#:
+#: **The zero this widening reports has its own control**, because a key extended
+#: to shapes nothing uses is indistinguishable from a key that is broken. The
+#: search ``git grep -nE '"'"'os[.]rename[(]|[.]rename[(]|shutil[.]move'"'"'`` over
+#: ``packages/theurian-core/src`` returned **no lines** on 2026-09-05, so no
+#: shipped member arrives through the new spellings today -- and
+#: :func:`test_the_publisher_key_hits_a_planted_positive` drives each of them
+#: against a planted module instead, which is what makes that zero readable.
+_ATOMIC_RENAME_NAMES: Final = frozenset({"replace", "rename", "move"})
+
+
 def _is_an_atomic_replace(node: ast.AST) -> bool:
-    """Whether ``node`` is a rename-into-place, in either spelling.
+    """Whether ``node`` is a rename-into-place, in any of its spellings.
 
-    ``os.replace(temporary, final)`` -- two arguments, on the ``os`` module -- and
-    ``temporary.replace(final)`` -- ``Path.replace``, one argument, on anything.
+    Four shapes, and the last three were added in round two after the docstring
+    said "either spelling" while knowing two (adversarial M-2):
 
-    **The arity is the discriminator, and it is exact rather than heuristic.**
-    ``str.replace`` takes two arguments and ``re.Pattern.sub`` is a different
-    name, so a one-positional-argument ``.replace`` on this tree is a
-    ``Path.replace``; keying on the attribute name alone pulled in thirteen string
-    replaces (``_escape_like``, ``redact``, ``excerpt`` and the rest) and would
-    have made the exclusion list a place to bury them. ``dataclasses.replace`` is
-    excluded by the same clause from the other side: it is called with keywords,
-    and this requires none.
+    * ``os.replace(temporary, final)`` -- two arguments, on the ``os`` module;
+    * ``temporary.replace(final)`` -- ``Path.replace``, one argument;
+    * ``os.rename(...)`` / ``temporary.rename(final)`` -- the same syscall with
+      different clobber semantics, and just as much a publish;
+    * ``shutil.move(...)`` -- a rename within one filesystem.
+
+    **The arity is the discriminator for the bare-attribute forms, and it is exact
+    rather than heuristic.** ``str.replace`` takes two arguments, so a
+    one-positional-argument ``.replace`` on this tree is a ``Path.replace``.
+
+    Measured 2026-09-05 by walking this tree's AST for a call whose function is an
+    attribute named ``replace`` -- the same key this predicate uses, so the number
+    is reproducible rather than eyeballed: **23** such calls, of which the filter
+    keeps **10** (eight ``os.replace`` and two ``Path.replace``, which are exactly
+    the publishers) and **one** is a qualified ``dataclasses.replace``, excluded
+    from the other side because it is called with keywords and this requires none.
+    The other twelve are string replaces. A line-based
+    ``git grep -nE`` over the same pattern answers 24, because it also counts a
+    prose mention; the AST number is the one stated, with its key. Without the
+    arity filter every one of those twelve becomes something the exclusion list
+    has to bury.
+
+    ``shutil.move`` and ``os.rename`` take a module qualifier, so they are matched
+    on that rather than on arity -- ``move`` in particular is a common enough verb
+    that a bare one-argument ``.move(...)`` would be a poor key.
     """
     if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
         return False
-    if node.func.attr != "replace":
+    if node.func.attr not in _ATOMIC_RENAME_NAMES:
         return False
-    if isinstance(node.func.value, ast.Name) and node.func.value.id == "os":
+    if isinstance(node.func.value, ast.Name) and node.func.value.id in {"os", "shutil"}:
         return True
+    if node.func.attr == "move":
+        # Only ever counted through its module qualifier: `.move(x)` on an
+        # arbitrary object is not a filesystem publish.
+        return False
     return len(node.args) == 1 and not node.keywords
 
 
@@ -552,14 +656,27 @@ def _attributes_named(node: ast.AST) -> set[str]:
 
 
 def _project_paths_helpers() -> frozenset[str]:
-    """Every public path helper ``ProjectPaths`` exposes, by reflection.
+    """Every public path member ``ProjectPaths`` exposes, by reflection.
 
     The same source of truth ``test_project_paths_containment.py`` sweeps, asked
-    the same way, so a helper added later joins this key without anyone editing
+    the same way, so a member added later joins this key without anyone editing
     it. Read off the class rather than listed, because a list is a claim about the
     class that nothing recomputes.
+
+    **The plain dataclass fields are included, and were not** (round two, code
+    review M-3). ``ProjectPaths`` is ``slots=True``, so ``root`` and
+    ``knowledge_dir`` appear in ``vars()`` as ``member_descriptor`` objects, which
+    are neither a ``property`` nor a function -- the shape filter dropped both.
+    They are the two members every other helper is *built from*, so a writer that
+    joined ``knowledge_dir`` directly was invisible to a key whose whole subject is
+    writers of project paths. That is not hypothetical: joining ``knowledge_dir``
+    at the call site is exactly how the ingestion manifest escaped containment in
+    the first place (#394).
+
+    ``__annotations__`` rather than a third ``isinstance`` arm, because it names
+    the declared fields whatever the descriptor machinery turns them into.
     """
-    found: set[str] = set()
+    found = {name for name in ProjectPaths.__annotations__ if not name.startswith("_")}
     for name, member in vars(ProjectPaths).items():
         if name.startswith("_"):
             continue
@@ -609,6 +726,25 @@ def test_the_publisher_key_hits_a_planted_positive(tmp_path: Path) -> None:
     assert not _enclosing_functions_of_an_atomic_replace(
         ast.parse('def clean(text):\n    return text.replace("a", "b")\n')
     ), "the key counts a string replace as a publisher, so its exclusions bury them"
+
+    # Round two, adversarial M-2. `git grep` finds no shipped member through any
+    # of these, so without a planted control the widening would be a key nothing
+    # exercises -- which reads identically to a key that does not work.
+    for spelling in (
+        "        temporary.rename(final)",
+        "        os.rename(temporary, final)",
+        "        shutil.move(temporary, final)",
+    ):
+        planted_source = (
+            "import os\nimport shutil\ndef publish(temporary, final):\n" + spelling + "\n"
+        )
+        assert _enclosing_functions_of_an_atomic_replace(ast.parse(planted_source)) == {
+            "publish"
+        }, f"the key does not see {spelling.strip()!r}, so a publisher using it is invisible"
+
+    assert not _enclosing_functions_of_an_atomic_replace(
+        ast.parse("def go(widget):\n    widget.move(3)\n")
+    ), "a bare `.move(x)` on an arbitrary object counts as a filesystem publish"
     function = _qualified_functions(tree)["Publisher.publish"]
     assert _DERIVES_ITS_OWN_TEMPORARY in _calls_by_attribute(function)
     assert "write_text_without_following_a_link" not in _calls_by_name(function)
@@ -654,9 +790,18 @@ def test_project_service_still_defines_exactly_the_two_write_methods_excluded() 
     """
     tree = _module_sources()[_SOURCE_ROOT / "application/project_service.py"]
     writes = {name for name in _qualified_functions(tree) if name.endswith("._write")}
+    # Derived from the exclusion map rather than written out again (round two,
+    # LOW): a literal set here would be a second place to update, and the one
+    # that got forgotten would be the one that stayed green.
+    excluded = {
+        position.split("::", 1)[1]
+        for position in _PUBLISHERS_OUTSIDE_THE_CLASS
+        if position.startswith("application/project_service.py::")
+    }
 
-    assert writes == {"ProjectRegistry._write", "BuildProvenance._write"}, (
-        f"`project_service.py`'s `_write` methods have moved: {sorted(writes)}"
+    assert writes == excluded, (
+        f"`project_service.py`'s `_write` methods and the exclusions naming them "
+        f"have moved apart: methods {sorted(writes)}, excluded {sorted(excluded)}"
     )
 
 
@@ -702,7 +847,8 @@ def test_every_atomic_publisher_writes_its_temporary_without_following_a_link() 
     following = {
         position
         for position, function in members.items()
-        if "write_text_without_following_a_link" not in _calls_by_name(function)
+        if (_calls_by_attribute(function) | _calls_by_name(function))
+        & _WRITE_CALLS - _NO_FOLLOW_SPELLINGS
     }
     derives = {
         position
@@ -742,13 +888,18 @@ def test_every_writer_of_a_project_path_opens_it_without_following_a_link() -> N
       per-user data directory, which is not a project tree -- so its
       ``O_NOFOLLOW`` on both the read and the write is driven by
       ``test_derived_path_symlink_writes.py`` instead.
-    * ``initialize_project`` writes the repository's ``.gitignore``, which it
-      reaches as ``root / ".gitignore"`` and not through a helper. That write
-      **does** follow a planted link (measured 2026-09-05: `theurian init --json`
-      exit 0, the managed block appended to a file outside the working tree), and
-      it is deliberately not fixed here: `.gitignore` is authored, Git-tracked
-      content, which is the #237 authored-symlink root cause rather than this
-      one. Named here so the gap is recorded rather than implied by an absence.
+    * ``ensure_gitignore`` writes the repository's ``.gitignore``. An earlier
+      version of this paragraph named ``initialize_project`` -- its *caller* --
+      and gave the wrong reason for the invisibility too (round two, code review
+      M-3). The real one: ``ensure_gitignore(root: Path)`` takes a bare ``Path``
+      parameter and never touches ``ProjectPaths`` at all, so no reflection over
+      that class can reach it, and widening the key to the plain fields does not
+      change that. Its write **does** follow a planted link (measured 2026-09-05:
+      ``theurian init --json`` exit 0, the managed block appended to a file
+      outside the working tree), and it is deliberately not fixed here:
+      ``.gitignore`` is authored, Git-tracked content, which is the #237
+      authored-symlink root cause rather than this one. Named here so the gap is
+      recorded rather than implied by an absence.
     """
     helpers = _project_paths_helpers()
     assert helpers, "the helper reflection returned nothing, so this key matches nothing"
@@ -773,10 +924,11 @@ def test_every_writer_of_a_project_path_opens_it_without_following_a_link() -> N
     )
 
     following = {
-        position: sorted((_calls_by_attribute(function) | _calls_by_name(function)) & _WRITE_CALLS)
+        position: sorted(writes - _NO_FOLLOW_SPELLINGS)
         for position, function in writers.items()
         if position not in excluded
-        and "write_text_without_following_a_link" not in _calls_by_name(function)
+        and (writes := (_calls_by_attribute(function) | _calls_by_name(function)) & _WRITE_CALLS)
+        - _NO_FOLLOW_SPELLINGS
     }
 
     assert not following, (

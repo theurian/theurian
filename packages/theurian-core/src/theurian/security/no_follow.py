@@ -5,8 +5,20 @@
 write into a destructive write somewhere else. That is one root cause with
 several faces -- the write lock (#481), the two active pointers and the
 secret-scan record (#523), the ingestion manifest (#394) and the local access
-token (#371) -- and this module is the one place the flags that refuse it are
-spelled.
+token (#371).
+
+**This module is where the shared spellings live, and it is not the only place
+``O_NOFOLLOW`` appears** -- the first draft of this paragraph said it was, and the
+write lock it enumerates two lines up is one of the counter-examples. Run
+``git grep -n O_NOFOLLOW -- packages/theurian-core/src`` rather than trusting a
+sentence: two shipped call sites build the flags themselves, and both predate
+this module and are correct to.
+``infrastructure/sqlite/connection.py::WriteLock._open`` deliberately omits
+``O_TRUNC`` (a lock file's bytes mean nothing, and truncation is what turns a
+mis-aimed open into data loss), and
+``application/proposal_service.py::_write_file`` swaps ``O_TRUNC`` for ``O_EXCL``
+on the migration, whose name must never land on another file. Neither could use
+:data:`WRITE_FLAGS` without losing the property it was written for.
 
 **Two guards, and neither replaces the other.** A path derived from a contained
 one must *also* be proved contained (``ProjectPaths._contained``): ``O_NOFOLLOW``
@@ -18,30 +30,59 @@ tree, which is the shape that truncates a file in the user's own checkout.
 **The refusal covers the final component only**, which is the bound
 ``WriteLock._open`` already records for #481 and this module does not widen:
 ``O_NOFOLLOW`` constrains the last path component, so an ordinary directory
-symlink in the *prefix* is followed. That is not a corner case: a clone carrying
-``.theurian/cache -> ../docs`` still relocates the ingestion manifest onto a
-tracked ``docs/ingestion.json`` at exit 0 (measured 2026-09-05, and pinned as a
-fact by
-``test_derived_path_symlink_writes.py::test_a_contained_directory_link_still_relocates_the_manifest``).
-Nothing here refuses it, containment does not either -- the target resolves
-inside the tree -- and closing it needs ``openat`` against a directory descriptor
-at every level, which nothing in this codebase does. Recorded as
+symlink in the *prefix* is followed. That is not a corner case, and it reaches
+both derived subdirectories -- measured 2026-09-05 against the real CLI, with a
+fact-pin for each:
+
+* ``.theurian/cache -> ../docs`` relocates the ingestion manifest onto a tracked
+  ``docs/ingestion.json`` at exit 0
+  (``test_a_contained_directory_link_still_relocates_the_manifest``);
+* ``.theurian/state -> ../build`` relocates the whole state directory. Files
+  under ``build/`` whose names do not collide simply survive beside it, and a
+  colliding one does not: a tracked ``build/active.json.tmp`` was truncated by
+  the pointer write and then **unlinked** by the ``os.replace`` that publishes
+  over it, at exit 0 (``test_a_contained_state_link_destroys_a_colliding_name``).
+  A tracked ``build/active.json`` instead ends the run at exit 1 -- but that is an
+  *accident*, not a guard: the pointer read fails to parse it and aborts before
+  anything is written, so the same plant with any other colliding name proceeds.
+
+Nothing here refuses either, containment does not either -- both targets resolve
+inside the tree -- and closing them needs ``openat`` against a directory
+descriptor at every level, which nothing in this codebase does. Recorded as
 [#577](https://github.com/theurian/theurian/issues/577).
 
-**Why an ``ELOOP`` from one of these opens is the final component's**, stated the
-way the measurements came out rather than the way the first draft guessed. Every
-caller ``mkdir(parents=True, exist_ok=True)``s the parent before the open, so the
-prefix has already been walked by the time the open runs -- but that ``mkdir``
-does not always *return*: with a self-referential prefix
+**Why an ``ELOOP`` from one of these opens is the final component's. The write
+side and the read side are answered by different mechanisms, and an earlier
+version of this paragraph gave the write side's answer for both** (security round
+two, H-B).
+
+*Writes.* Every write caller ``mkdir(parents=True, exist_ok=True)``s the parent
+before the open, so the prefix has already been walked by the time the open runs
+-- but that ``mkdir`` does not always *return*: with a self-referential prefix
 (``.theurian/state -> state``) it raises ``FileExistsError`` (errno 17, measured),
-not ``ELOOP``, and the open never happens at all. The conclusion survives the
-correction because it only needs the weaker premise: the open runs **only when
-the mkdir succeeded**, and a mkdir that succeeded resolved that prefix, so an
-``ELOOP`` reaching the open cannot be from it. What the mkdir's own failure does
-*not* get is a cure keyed on the real cause -- ``migrate apply`` publishes "Check
-that ``.theurian/state/`` is writable", which is a non-cause for a symlink loop.
-That is a wrong-remedy residual, not a write escape, and it is recorded rather
-than fixed here.
+not ``ELOOP``, and the open never happens at all. The conclusion survives that
+correction because it needs only the weaker premise: the open runs **when the
+mkdir succeeded**, and a mkdir that succeeded resolved that prefix, so an
+``ELOOP`` reaching the open cannot be from it.
+
+*Reads.* :func:`open_for_reading_without_following_a_link` has no ``mkdir`` --
+its one caller, ``FileSecretStore.get``, creates nothing -- so none of that
+argument applies to it. What holds the read side is a single call in the caller:
+``Path.exists()`` runs first, and ``pathlib`` swallows ``ELOOP`` among the errnos
+it treats as "not there", so a prefix loop makes ``exists()`` answer ``False`` and
+``get`` return ``None`` before any open is attempted. Measured 2026-09-05 on a
+self-loop (``auth -> auth``) and a mutual loop (``auth -> a -> auth``): both give
+``exists() is False`` and ``get() is None``, while the raw open at the same path
+raises errno 62. That barrier is a *side effect* of a probe written for a
+different question, so it is named here and pinned by
+``test_no_follow_writes.py::test_a_prefix_loop_is_answered_before_the_read_open``
+-- if a future edit drops the ``exists()`` check, the read side loses its
+attribution guarantee with no other line changing.
+
+What the write side's mkdir failure does *not* get is a cure keyed on the real
+cause -- ``migrate apply`` publishes "Check that ``.theurian/state/`` is
+writable", which is a non-cause for a symlink loop. That is a wrong-remedy
+residual, not a write escape, and it is recorded rather than fixed here.
 
 A refusal arrives as a plain :class:`OSError` and is deliberately not translated
 into a :class:`~theurian.domain.errors.TheurianError` here. Every caller of these
@@ -198,19 +239,32 @@ def is_a_symbolic_link_refusal(exc: OSError) -> bool:
 
 
 def symbolic_link_remedy(path: Path) -> str:
-    """The cure for a symbolic link found at a **derived** path Theurian writes.
+    """The cure for a symbolic link at a derived path **inside a project tree**.
 
-    One spelling shared by the derived-path faces -- the two active pointers, the
-    secret-scan record and the ingestion manifest -- because the artefact is
-    derived (ADR-0004), removing the link costs nothing that is not rebuilt, and a
-    repository carrying one has force-added it past that ignore.
+    Every clause it publishes rests on that precondition: the artefact is derived
+    (ADR-0004), so removing the link costs nothing that is not rebuilt; and a
+    repository carrying one has force-added it past that ignore, which is only
+    sayable of a path a clone can deliver.
 
-    **Not every face of the class**, and the exception is the one where those
-    three sentences are all false: the local access token
-    (:class:`~theurian.infrastructure.secrets.file_store.SecretPathIsASymbolicLinkError`)
-    is not derived, is not rebuilt by anything, and reaches no repository -- so it
-    carries a cure of its own that names ``theurian auth rotate`` and the
-    directory's permissions instead.
+    **Five call sites, not four** -- the count this docstring gave before round two
+    omitted the write lock, which is the face the class started from. Reproduce
+    with ``git grep -n 'symbolic_link_remedy(' -- packages/theurian-core/src``:
+    the definition, plus ``connection.py`` (``.theurian/runtime/write.lock``),
+    ``commands.py`` twice (the active pointer's temporary and the ingestion
+    manifest), and ``index_commands.py`` twice (the index pointer's temporary and
+    the secret-scan record's). All five are under ``.theurian/``.
+
+    **Two faces are deliberately not call sites**, because the precondition fails
+    for them and the text would be false:
+
+    * the local access token
+      (:class:`~theurian.infrastructure.secrets.file_store.SecretPathIsASymbolicLinkError`)
+      -- per-user, not derived, reachable by no repository -- carries a cure of
+      its own naming ``theurian auth rotate`` and the directory's permissions;
+    * a section-B path that Theurian does **not** guard, such as
+      ``<data_dir>/provenance.json.tmp``, gets ``commands.py``'s
+      ``_UNGUARDED_LINK_REMEDY`` -- which claims no refusal and mentions no
+      repository, both of which this text would get wrong (round two, H-D).
 
     Naming the leaf rather than the directory holding it is what the
     final-component bound above buys. The *containment* refusal is the other way

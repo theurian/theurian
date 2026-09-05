@@ -341,11 +341,38 @@ def _the_scan_record_paths_are_usable(paths: ProjectPaths, as_json: bool) -> boo
     ``lstat``, not a resolution: a link whose target is inside the tree is
     contained, correctly, and is exactly the shape that truncated a file in the
     operator's own checkout. That is true of the ``.json.tmp`` leaf, which is
-    ``open``-ed; it is **false of the published record**, which is only ever the
-    destination of ``os.replace``. Measured 2026-09-05, standalone: with the
-    record a link to a tracked file, ``os.replace(temporary, record)`` left the
-    link's target byte-identical and turned the record into a regular file --
-    ``rename(2)`` operates on the link, never through it.
+    ``open``-ed for **writing**; it is false of the published record, which no
+    write ever opens -- it is only the destination of ``os.replace``. Measured
+    2026-09-05, standalone: with the record a link to a tracked file,
+    ``os.replace(temporary, record)`` left the link's target byte-identical and
+    turned the record into a regular file -- ``rename(2)`` operates on the link,
+    never through it.
+
+    **The record is read through a link, and that is a recorded decision rather
+    than an oversight** (security round two, H-C; an earlier version of this
+    paragraph said "never opened" without qualifying it to writes, which is false
+    of the read). ``index_secret_scan.py::_read_record`` calls
+    ``record.read_text``, reached twice -- by ``carry_index_secret_scan_forward``
+    and by ``published_index_secret_scan``, the second of which ``theurian
+    doctor`` calls. Both follow a link.
+
+    No read guard is added, because the capability does not change:
+
+    * Both readers **gate on the build id** before the record's contents mean
+      anything -- ``published_index_secret_scan`` compares the recorded id
+      against the pointer's, and the carry-forward compares against the source
+      build it is copying. A record naming any other id is discarded, so a
+      clone-delivered link cannot flip a verdict; it can only make one
+      unavailable, which is the ``unrecorded`` answer ``doctor`` already gives for
+      a record that is absent.
+    * A *local* attacker who can plant the link can also rewrite the record
+      itself, which is fewer steps for the same effect. The link buys nothing
+      over the direct write, and ``BuildProvenance`` is what stands between a
+      doctored ``.theurian/state/`` and a served build (ADR-0004, SEC-7).
+
+    So the asymmetry is deliberate: the write side refuses because a write through
+    a link **destroys** what it names, and the read side does not because a read
+    through one destroys nothing and decides nothing this deployment trusts.
 
     An earlier cut of this function refused on the record too, and did it with
     text claiming "writing through it would replace whatever it names", which is
@@ -408,11 +435,14 @@ def _the_scan_record_paths_are_usable(paths: ProjectPaths, as_json: bool) -> boo
     )
 
     try:
-        # `index_secret_scan` is resolved for its containment check and for nothing
-        # else -- the published name is never opened, so it carries no symlink
-        # refusal. Assigning it would read as an unused local; the bare access is
-        # the whole of what this line does.
-        paths.index_secret_scan  # noqa: B018 - resolving the property is the check
+        # Resolved for its containment check and for nothing else: no *write*
+        # opens the published name, so it carries no symlink refusal (the reads
+        # that do follow a link are the recorded decision in this function's
+        # docstring). Discarded into `_` rather than left as a bare expression --
+        # the `noqa: B018` that used to sit here suppressed the linter's real
+        # question, which is whether the line has an effect, and the answer is
+        # that resolving the property *is* the effect.
+        _ = paths.index_secret_scan
         temporary = paths.index_secret_scan_temporary
     except ProjectPathEscapeError as exc:
         _fail_a_path_escape(exc, as_json=as_json)
