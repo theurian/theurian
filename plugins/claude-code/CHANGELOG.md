@@ -290,12 +290,23 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the same correction #461 made to `ingest.md` itself
   ([#501](https://github.com/theurian/theurian/pull/501)).
 
-  The document now says review ingestion is owed with Milestone 7, says the
-  allowlist is not protecting the user, and enumerates what `theurian ingest`
-  actually reads: files under `.theurian/`, plus three `git` reads —
-  `rev-parse --show-toplevel`, `rev-parse HEAD` and `remote get-url origin`.
-  Measured by running the command against a `git` shim that logs every
-  invocation.
+  The document now enumerates what `theurian ingest` actually reads: files under
+  `.theurian/`, plus three `git` reads — `rev-parse --show-toplevel`,
+  `rev-parse HEAD` and `remote get-url origin`. Measured by running the command
+  against a `git` shim that logs every invocation.
+
+  **Three of this entry's premises have since turned over, and the entry is
+  corrected here rather than left to read as current** — an `[Unreleased]`
+  section describes the tree a reader has checked out.
+  [ADR-0030](../../docs/adr/0030-github-review-ingestion-spawns-gh.md) slice 1
+  landed the adapter, so `infrastructure/github/` **holds** one;
+  `providers.review.repositories` **is** read, and enforced before any process
+  is spawned, so the allowlist protects the review-ingestion path — which no
+  command reaches yet, which is the sentence `ingest.md` now carries in place of
+  "it protects no one"; and `.theurian/config.yaml` is read for **two** keys,
+  `security.secretScan` and the allowlist. `reviewIngestion: false` is still
+  what `system.capabilities` reports, and it now means "no ingestion call
+  surface is callable" rather than "nothing reaches GitHub".
 - `/theurian:ingest` no longer says it stores anything. It opened with "Read
   source material into the canonical store as evidence" and its first Rule said
   "Ingestion stores **evidence**", both of which describe a write that does not

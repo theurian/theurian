@@ -1,6 +1,6 @@
-"""Reading `.theurian/config.yaml` (SEC-11, ADR-0027 decision 3, #129).
+"""Reading `.theurian/config.yaml` (SEC-11, SEC-10, ADR-0027 decision 3, ADR-0030).
 
-**This is the first code in ``src/`` that reads a project's configuration file.**
+**This is the only code in ``src/`` that reads a project's configuration file.**
 Until ADR-0027 decision 3 nothing did: the schema published
 ``security.secretScan`` and ``providers.review.repositories`` as reserved keys,
 and half a dozen documents told a reader not to rely on either control *because*
@@ -8,14 +8,14 @@ the key was inert. ``tests/unit/test_config_key_call_sites.py`` exists to go RED
 on the diff that changes that, and it is the record of which claims had to be
 corrected alongside.
 
-**Scoped to one key on purpose.** ``providers.review.repositories`` is SEC-10's
-allowlist and is still owed
-(`#429 <https://github.com/theurian/theurian/issues/429>`_ owns it against the
-first external fetch path, as
-`#129 <https://github.com/theurian/theurian/issues/129>`_ closed on this
-sentence's wording rather than on the control); nothing here reads it, and the
-call-sites test still pins that absence. A reader added for one key does not
-license adding one for the other.
+**Two keys now, and the second arrived with the code that needs it.**
+``providers.review.repositories`` is SEC-10's repository allowlist, and ADR-0030
+decision 2 makes it load-bearing: review ingestion consults it **before any
+process is spawned**. This module reads the key; ``security/review_allowlist.py``
+decides what a value means and refuses what is not listed. The split is the same
+one ``secretScan`` has -- reading the file is one concern, and what a value
+selects is another -- and it keeps the shape rules for a published key in the
+module that also owns the pattern the schema publishes.
 
 **Absent means ``block``, and unrecognised means refuse.** Those are two rules
 and not one. A project with no configuration file, or one that says nothing
@@ -55,7 +55,14 @@ PROJECT_CONFIG_FILE: Final = "config.yaml"
 #: visible in a diff.
 SECRET_SCAN_KEY: Final = "secretScan"  # noqa: S105 - a published config key, not a secret
 
+#: SEC-10's allowlist key, spelled exactly as the schema publishes it. The one
+#: place in ``src/`` that names it, which is what
+#: ``test_config_key_call_sites.py``'s reader enumeration records.
+REVIEW_REPOSITORIES_KEY: Final = "repositories"
+
 _SECURITY_BLOCK: Final = "security"
+_PROVIDERS_BLOCK: Final = "providers"
+_REVIEW_BLOCK: Final = "review"
 
 
 class SecretScanPolicy(StrEnum):
@@ -102,6 +109,22 @@ _VALID_VALUES: Final = (
 _QUOTING_CURE: Final = (
     f" YAML reads a bare `{SecretScanPolicy.OFF.value}` (and `no`, and `false`) as a boolean, "
     f'so write it quoted: `{SECRET_SCAN_KEY}: "{SecretScanPolicy.OFF.value}"`.'
+)
+
+
+#: The allowlist key's dotted path, composed from the block constants so the
+#: message and the reader cannot disagree about where the key lives.
+_ALLOWLIST_PATH: Final = f"{_PROVIDERS_BLOCK}.{_REVIEW_BLOCK}.{REVIEW_REPOSITORIES_KEY}"
+
+#: What a reader does about a malformed allowlist. It names the artefact and a
+#: command: the schema is what publishes the shape, and `gh repo view` is what
+#: prints the spelling GitHub resolves, which is the spelling an entry must carry.
+_ALLOWLIST_CURE: Final = (
+    f"Write `{_ALLOWLIST_PATH}` as a list of `owner/repo` strings, as "
+    f"`schemas/config/project-config.schema.json` publishes it -- "
+    f"`gh repo view <owner>/<name> --json nameWithOwner` prints the spelling GitHub "
+    f"resolves. The list is refused whole rather than filtered, so no entry is "
+    f"silently dropped while an operator believes it is allowlisted."
 )
 
 
@@ -168,6 +191,67 @@ def read_secret_scan_policy(root: Path, config_file: Path) -> SecretScanPolicy:
                 f"at, because guessing would hide a typo about a security control."
             ),
         ) from exc
+
+
+def read_review_repositories(root: Path, config_file: Path) -> tuple[str, ...]:
+    """The repositories this project allowlists for review ingestion (SEC-10).
+
+    Reads ``providers.review.repositories`` and answers what the file states, in
+    file order. It does **not** decide whether a given repository is allowed --
+    that is ``security/review_allowlist.py``'s, which also owns the pattern an
+    entry must match. This function's whole job is "what does the file say, and
+    is it the shape the schema publishes".
+
+    Args:
+        root: The project root, the containment boundary for the read.
+        config_file: Where the file is, composed by the caller from
+            ``ProjectPaths`` for the reason :func:`read_secret_scan_policy`
+            records.
+
+    Returns:
+        The stated entries in the order the file lists them, or an empty tuple
+        when the file, the ``providers`` block, the ``review`` block or the key
+        is absent. **Empty is not "allow everything"**: the allowlist module
+        refuses every repository against an empty list, which is what makes an
+        unconfigured project ingest nothing rather than anything.
+
+    Raises:
+        ProjectConfigError: If the file cannot be read or parsed, or the key is
+            present and is not a list of short strings. Refused rather than
+            filtered: dropping the malformed entries would leave an operator
+            believing a repository is allowlisted when the line that names it was
+            silently discarded.
+    """
+    document = _read_document(root, config_file)
+    if document is None:
+        return ()
+
+    providers = _section(document, _PROVIDERS_BLOCK)
+    review = (
+        None if providers is None else _section(providers, _REVIEW_BLOCK, under=_PROVIDERS_BLOCK)
+    )
+    if review is None or REVIEW_REPOSITORIES_KEY not in review:
+        return ()
+
+    stated = review[REVIEW_REPOSITORIES_KEY]
+    if not isinstance(stated, list):
+        raise ProjectConfigError(
+            f"`{_ALLOWLIST_PATH}` in {PROJECT_CONFIG_FILE} is a "
+            f"{type(stated).__name__}, not a list of `owner/repo` values.",
+            remedy=_ALLOWLIST_CURE,
+        )
+    # Every entry is checked before any is returned, and `is_bounded_scalar`
+    # runs before the `isinstance` message could render one: an entry pointing at
+    # a YAML alias graph re-expands under `repr` to gigabytes from a few hundred
+    # bytes (T-6), which is the ordering `read_secret_scan_policy` records above.
+    for entry in stated:
+        if not is_bounded_scalar(entry) or not isinstance(entry, str):
+            raise ProjectConfigError(
+                f"`{_ALLOWLIST_PATH}` in {PROJECT_CONFIG_FILE} lists an entry that is "
+                f"not a short `owner/repo` string.",
+                remedy=_ALLOWLIST_CURE,
+            )
+    return tuple(stated)
 
 
 def _read_document(root: Path, config_file: Path) -> dict[str, Any] | None:
@@ -245,8 +329,10 @@ def _unreadable(error: Exception) -> ProjectConfigError:
     )
 
 
-def _section(document: dict[str, Any], name: str) -> dict[str, Any] | None:
-    """One top-level block, or ``None`` when the file states none.
+def _section(
+    document: dict[str, Any], name: str, *, under: str | None = None
+) -> dict[str, Any] | None:
+    """One block, or ``None`` when the file states none.
 
     A block written as ``security:`` with nothing under it parses to ``None``,
     which is somebody commenting a setting out rather than a malformed file, and
@@ -254,19 +340,30 @@ def _section(document: dict[str, Any], name: str) -> dict[str, Any] | None:
     and is a *scalar or a list* is a different thing: the file is not the shape
     the published schema declares, and reading a policy out of it would be
     inventing one.
+
+    ``under`` names the block this one is nested in, so the refusal says
+    ``providers.review`` rather than ``review`` -- a file has one ``review``
+    block and several plausible places to have put it, and a message naming the
+    leaf sends the reader to the wrong line.
     """
+    dotted = name if under is None else f"{under}.{name}"
     if name not in document:
         return None
     block = document[name]
     if block is None:
         return None
     if not isinstance(block, dict):
+        # The `security` block is the one whose values this module also decides,
+        # so its refusal carries them; naming `secretScan`'s three values under
+        # `providers.review` would send the reader to an unrelated key.
+        values = f" {_VALID_VALUES}" if dotted == _SECURITY_BLOCK else ""
         raise ProjectConfigError(
-            f"`{name}` in {PROJECT_CONFIG_FILE} is a {type(block).__name__}, not a block of "
+            f"`{dotted}` in {PROJECT_CONFIG_FILE} is a {type(block).__name__}, not a block of "
             f"settings.",
             remedy=(
-                f"Correct {PROJECT_CONFIG_FILE} so `{name}` is a mapping, or remove it. "
-                f"{_VALID_VALUES}"
+                f"Correct {PROJECT_CONFIG_FILE} so `{dotted}` is a mapping, or remove it -- "
+                f"`schemas/config/project-config.schema.json` publishes the shape of every "
+                f"block.{values}"
             ),
         )
     return block

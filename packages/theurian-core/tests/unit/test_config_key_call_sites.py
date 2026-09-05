@@ -9,15 +9,17 @@ opposite states:
   applies it at ``theurian propose accept``, so the schema now publishes
   ``default: "block"`` — the policy an absent key and an absent config file both
   select (#198).
-- ``providers.review.repositories`` — SEC-10's repository allowlist. **Still
-  reserved**, owed with the first external fetch path. Nothing reads it, its
-  description says so, and this module is what holds the source tree to that.
-  That description used to name ``#129`` as its owner, and the schema's *root*
-  description used to carry an unnarrowed "Nothing in src/ reads this file"
-  (#455); #199 unit B repointed the first to #429 — the live owner of the T-7
-  fetch controls — and narrowed the second to the one reader the file has. Both
-  are pinned below, the root for the first time: a wheel-shipped description with
-  no pin is how the false one survived four sweeps.
+- ``providers.review.repositories`` — SEC-10's repository allowlist. **In
+  force** since ADR-0030 decision 2. ``security/project_config.py`` reads it and
+  ``security/review_allowlist.py`` refuses a repository the list does not name,
+  before any process is spawned; the schema's description and the surfaces below
+  say so, and this module is what holds the source tree to that. The claim has
+  now turned over in both directions: the description used to name ``#129`` as
+  its owner and the schema's *root* description used to carry an unnarrowed
+  "Nothing in src/ reads this file" (#455), which #199 unit B repointed and
+  narrowed; this change is the one that made "nothing reads it" false. Both are
+  pinned below, the root since #455: a wheel-shipped description with no pin is
+  how the false one survived four sweeps.
 - **Every key in the ``raptor`` block** — ADR-0008 decision 10's switch. **Still
   reserved.** ``docs/architecture/raptor.md`` and ADR-0008 decision 10 used to
   say nothing in ``src/`` read ``.theurian/config.yaml`` at all; ADR-0027
@@ -218,14 +220,18 @@ _ALL_SPELLINGS = frozenset().union(*WATCHED_SPELLINGS.values())
 #: Every place in the shipped package that names one of the keys above, as
 #: ``(module path under theurian/, the spelling it names)``.
 #:
-#: **Seven entries, and exactly one of them reads the file.** The scan matches
+#: **Eight entries, and exactly one module reads the file.** The scan matches
 #: whole names and not semantics -- deliberately, see the population key above --
 #: so it cannot tell a reader from a field named after one, and this list is
 #: therefore the honest output of the scan rather than a curated set of readers:
 #:
-#: * ``security/project_config.py :: secretScan`` **is** the reader. It is the
-#:   only place in ``src/`` that names the published JSON key, and the only place
-#:   that opens ``.theurian/config.yaml``.
+#: * ``security/project_config.py :: secretScan`` and
+#:   ``security/project_config.py :: repositories`` **are** the two readers, and
+#:   that module is the only place in ``src/`` that opens
+#:   ``.theurian/config.yaml``. The second arrived with ADR-0030 decision 2's
+#:   allowlist; ``security/review_allowlist.py`` decides what its values mean and
+#:   names none of the watched spellings, which is why it is absent here and not
+#:   an omission.
 #: * ``application/proposal_service.py :: secret_scan`` and
 #:   ``cli/propose_commands.py :: secret_scan`` are the ``AcceptedProposal``
 #:   field carrying what the scan did, and the local the accept path binds it to.
@@ -245,10 +251,10 @@ _ALL_SPELLINGS = frozenset().union(*WATCHED_SPELLINGS.values())
 #:   -- which is the opposite of reading the file: a default is what applies
 #:   *because* nothing read a value.
 #:
-#: Adding an eighth entry is not a bookkeeping edit. For ``repositories`` it says a
-#: key the published schema still calls inert is now read, which makes the schema
-#: description and the prose surfaces in this module's docstring false until they
-#: are corrected in the same change. For anything under ``raptor.`` it says
+#: Adding a ninth entry is not a bookkeeping edit. For ``repositories`` it says a
+#: **second** module now names SEC-10's allowlist key, which the schema's "one
+#: reader" sentence and this module's docstring both deny, so both are false
+#: until they are corrected in the same change. For anything under ``raptor.`` it says
 #: ADR-0008 decision 10's "Nothing in ``src/`` reads ``raptor.enabled``, nor any
 #: other key in the ``raptor`` block" and ``docs/architecture/raptor.md``'s "no
 #: ``raptor`` key is read" have become false, and
@@ -261,6 +267,7 @@ CONFIG_KEY_READER_SITES: frozenset[tuple[str, str]] = frozenset(
         ("application/proposal_service.py", "secret_scan"),
         ("cli/index_commands.py", "secret_scan"),
         ("cli/propose_commands.py", "secret_scan"),
+        ("security/project_config.py", "repositories"),
         ("security/project_config.py", "secretScan"),
     }
 )
@@ -352,7 +359,11 @@ SCANNER_CASES: tuple[tuple[str, frozenset[str]], ...] = (
         'raise ValueError(f"repositories on this machine; {_SEE_THE_VALUES}.")',
         frozenset(),
     ),
-    ('"""Repositories must be allowlisted in `.theurian/config.yaml`."""', frozenset()),
+    (
+        '"""`providers.review.repositories` in `.theurian/config.yaml` is read by '
+        '`security/project_config.py`."""',
+        frozenset(),
+    ),
     # -- the real prose the `raptor` block's keys collide with ---------------
     # All four occurrences of `enabled` in `src/` (population key in the module
     # docstring), transcribed. The first two use it as an ordinary English word;
@@ -423,9 +434,11 @@ def test_the_config_key_scan_sees_each_naming_form_and_no_other(
 
     The negative cases carry the more interesting half. Three of them are
     transcribed from ``src/`` as it stands — a docstring about someone's
-    repositories, an f-string that opens with the word, and the
+    repositories, an f-string that opens with the word, and a sentence from the
     ``infrastructure/github`` package docstring — and each would be a false red on
-    a clean tree under a substring scan.
+    a clean tree under a substring scan. The third moved with ADR-0030: that
+    docstring used to say the allowlist was owed and now says who reads it, and a
+    transcription is only worth having while it is a transcription.
     """
     found = {spelling for _, spelling in _key_references(source, "snippet.py")}
 
@@ -479,9 +492,11 @@ def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_one
 
     ``security.secretScan`` publishes ``default: "block"`` *because* code applies
     it (#198, ADR-0027 decision 3), and ``providers.review.repositories`` is
-    published as an allowlist that is "not in force" (#129). Six surfaces tell a
-    reader how far to trust each: ``SECURITY.md``'s bullet on secrets already in
-    a repository, ``docs/security/threat-model.md`` at T-15 and T-7, the T-15 row
+    published as an allowlist that is **"in force"** -- consulted before any
+    process is spawned (ADR-0030 decision 2), where it read "not in force" until
+    that change. Six surfaces tell a reader how far to trust each:
+    ``SECURITY.md``'s bullet on secrets already in a repository,
+    ``docs/security/threat-model.md`` at T-15 and T-7, the T-15 row
     in ``docs/architecture/requirements-analysis.md``,
     ``docs/architecture/review-knowledge.md``,
     ``plugins/claude-code/commands/ingest.md``, and the annotated keys in
@@ -549,9 +564,15 @@ def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_one
         "plugins/claude-code/commands/ingest.md, and "
         "examples/sample-project/.theurian/config.yaml.\n\n"
         "A NEW site for `repositories`: `providers.review.repositories` (SEC-10, "
-        "#129) is published as reserved and those documents say so *because* "
-        "nothing reads it. In the same change, correct its schema description and "
-        "the surfaces that rest on it, then record the site here.\n\n"
+        "ADR-0030 decision 2) is read in exactly one module, and the schema's "
+        "root description says so. A second module naming the key makes that "
+        "sentence false; correct it and the surfaces that rest on it in the same "
+        "change, then record the site here.\n\n"
+        "A MISSING site for `repositories`: the allowlist is published as in "
+        "force and refusing before a spawn, and six documents describe it that "
+        "way. If the reader is gone, review ingestion contacts whatever it is "
+        "handed -- correct all of it in the same change rather than dropping the "
+        "entry.\n\n"
         "A MISSING site for `secretScan`: SEC-11's scanner (#198, ADR-0027 "
         "decision 3) is in force at `theurian propose accept`, the schema "
         'publishes `default: "block"` on that basis, and those same documents '
@@ -591,12 +612,13 @@ def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_one
 SCHEMA_ROOT_DESCRIPTION: Final = (
     "Per-repository configuration, Git-tracked. Contains no secrets: credentials live "
     "in ~/.theurian and the OS secret store (ADR-0011). This file has one reader: "
-    "`security/project_config.py` takes `security.secretScan` from it and nothing else "
-    "(ADR-0027 decision 3), so that one key is in force and every other key published "
-    "here is reserved. Setting a reserved key changes nothing, and where a default "
-    "below is also honoured by the product the code carries its own copy rather than "
-    "reading this file. The review-ingestion allowlist is owed with the first external "
-    "fetch path "
+    "`security/project_config.py` takes `security.secretScan` and "
+    "`providers.review.repositories` from it and nothing else (ADR-0027 decision 3, "
+    "ADR-0030 decision 2), so those two keys are in force and every other key "
+    "published here is reserved. Setting a reserved key changes nothing, and where a "
+    "default below is also honoured by the product the code carries its own copy "
+    "rather than reading this file. The raw-URL fetch controls -- a scheme allowlist "
+    "and private-network rejection -- stay owed against the OpenAPI `$ref` fetcher "
     "(https://github.com/theurian/theurian/issues/429)."
 )
 
@@ -735,23 +757,25 @@ INGEST_COMMAND_DOC: Final = REPO_ROOT / "plugins" / "claude-code" / "commands" /
 #: deliberate act: the diff that makes it RED is the diff that has to say what
 #: moved.
 INGEST_CONFIG_BULLET: Final = (
-    "Review history from GitHub is **not ingested yet**: `system.capabilities` reports "
-    "`reviewIngestion: false`, and `theurian ingest` reads only local data: files under "
-    "`.theurian/`, plus three `git` reads — the repository root (`rev-parse "
-    "--show-toplevel`), HEAD (`rev-parse HEAD`), and the `origin` URL (`remote get-url "
-    "origin`). When it lands (Milestone 7) a repository will have to be on the allowlist "
-    "in `.theurian/config.yaml` before Theurian contacts it. That file is read today, but "
-    "for one key only: `security/project_config.py` takes `security.secretScan` from it "
-    "and nothing else (ADR-0027 decision 3). That key selects a control this command never "
-    "reaches: it covers the approval gate and the index build — `theurian ingest` runs no "
-    "scan of its own, and `theurian index build` scans every body it indexes, with the "
-    "source anchors and relation notes served beside them, and reports rather than "
-    "refusing (SEC-11, "
+    "Review history from GitHub is **not ingested by this command**: "
+    "`system.capabilities` reports `reviewIngestion: false`, and `theurian ingest` reads "
+    "only local data: files under `.theurian/`, plus three `git` reads — the repository "
+    "root (`rev-parse --show-toplevel`), HEAD (`rev-parse HEAD`), and the `origin` URL "
+    "(`remote get-url origin`). The allowlist in `.theurian/config.yaml` is read and "
+    "enforced (SEC-10, ADR-0030 decision 2): `security/review_allowlist.py` refuses a "
+    "repository `providers.review.repositories` does not name, before any process is "
+    "spawned. It protects a path no command exposes yet, so do not tell the user that "
+    "listing a repository has turned anything on. That file is read for two keys: "
+    "`security/project_config.py` takes `security.secretScan` and "
+    "`providers.review.repositories` from it and nothing else (ADR-0027 decision 3, "
+    "ADR-0030 decision 2). The first selects a control this command never reaches: it "
+    "covers the approval gate and the index build — `theurian ingest` runs no scan of "
+    "its own, and `theurian index build` scans every body it indexes, with the source "
+    "anchors and relation notes served beside them, and reports rather than refusing "
+    "(SEC-11, "
     "[#198](https://github.com/theurian/theurian/issues/198) shipped the approval-gate "
     "half and [#329](https://github.com/theurian/theurian/issues/329) the index-build "
-    "half), the schema's own wording. Nothing reads the "
-    "`providers.review.repositories` allowlist, so "
-    "do not tell the user the allowlist is protecting them."
+    "half), the schema's own wording."
 )
 
 
@@ -891,7 +915,7 @@ _ADDED_SENTENCE: Final = "Ingested content is screened before it is indexed."
 #: A two-bullet document shaped like the one the pin reads, so a sibling bullet is
 #: reachable and the item under test is not the last thing in the file.
 _ANCHOR_BULLET: Final = "- That file is read today, but for one key only: `security.secretScan`."
-_SIBLING_BULLET: Final = "- Nothing reads the `providers.review.repositories` allowlist."
+_SIBLING_BULLET: Final = "- The `providers.review.repositories` allowlist is read before any spawn."
 
 
 def _document_with(*appended: str) -> str:
@@ -1226,12 +1250,19 @@ WATCHED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
             "properties",
             "repositories",
         ),
-        "Not in force. Allowlist of `owner/repo` values that review ingestion must "
-        "consult before contacting a repository (SEC-10). Nothing reads it today; owed "
-        "with the first external fetch path "
-        "(https://github.com/theurian/theurian/issues/429 owns the fetch controls; "
-        "https://github.com/theurian/theurian/issues/129 closed on the wording rather "
-        "than on the control).",
+        "In force. Allowlist of `owner/repo` values that review ingestion consults "
+        "before contacting a repository (SEC-10, ADR-0030 decision 2). "
+        "`security/project_config.py` reads it and `security/review_allowlist.py` "
+        "refuses a repository this list does not name, before any process is spawned; "
+        "an empty or absent list allows nothing. A name is matched "
+        "case-insensitively, as GitHub resolves it. The pattern rejects a `.` or `..` "
+        "segment, so no value here is a path that leaves the project, while "
+        "`owner/.github` stays valid. Review ingestion reads public repositories only "
+        "in this version: an allowlisted repository that resolves as private is "
+        "refused at ingestion, and ADR-0030 decision 2 records who owns the "
+        "private-repository arm. The raw-URL fetch controls -- a scheme "
+        "allowlist and private-network rejection -- stay owed against the OpenAPI "
+        "`$ref` fetcher (https://github.com/theurian/theurian/issues/429).",
     ),
     (
         "raptor.enabled",
@@ -1684,16 +1715,26 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # that never returns to that shape moved nothing.
             #
             # Five fragments, because the corrected argument has five moving
-            # parts and each can be dropped on its own: the narrowed premise,
-            # the reader that bounds it, where that reader's control runs, the
-            # key that still has none, and the conclusion the paragraph exists
-            # to deliver. The last is pinned for the reason
-            # `RAPTOR_MD_SENTENCES` in `test_raptor_config_claims.py` records
-            # -- a rewrite that keeps only the conclusion leaves a reader no
-            # way to check it, and one that keeps only the premises leaves the
-            # warning unsaid.
-            "That file is read today, but for one key only",
-            "`security/project_config.py` takes `security.secretScan` from it and nothing else",
+            # parts and each can be dropped on its own: the two keys the file
+            # is read for, the module that reads them, where the allowlist's
+            # refusal happens, the key that selects nothing this command
+            # reaches, and the conclusion the paragraph exists to deliver. The
+            # last is pinned for the reason `RAPTOR_MD_SENTENCES` in
+            # `test_raptor_config_claims.py` records -- a rewrite that keeps
+            # only the conclusion leaves a reader no way to check it, and one
+            # that keeps only the premises leaves the warning unsaid.
+            #
+            # ADR-0030 decision 2 turned the allowlist half over: the fragments
+            # used to hold "for one key only" and "nothing reads the allowlist",
+            # and both went false in the commit that added the reader. What
+            # replaces them is the *reach* -- before any process is spawned, and
+            # no command exposes it yet -- because over-reading is now the way a
+            # reader of this page gets it wrong.
+            "That file is read for two keys",
+            (
+                "`security/project_config.py` takes `security.secretScan` and "
+                "`providers.review.repositories` from it and nothing else"
+            ),
             # The bound, and the one fragment here pinned as a **whole
             # sentence** rather than a phrase. Naming `security.secretScan` as
             # in force announces a scanning control inside a document about
@@ -1706,7 +1747,7 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # goes RED the day a second call site makes "the approval gate only"
             # false while this pin -- spelling, and only spelling -- stays green.
             (
-                "That key selects a control this command never reaches: it covers the "
+                "The first selects a control this command never reaches: it covers the "
                 "approval gate and the index build — `theurian ingest` runs no scan of "
                 "its own, and `theurian index build` scans every body it indexes, with "
                 "the source anchors and relation notes served beside them, and reports "
@@ -1716,8 +1757,12 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
                 "[#329](https://github.com/theurian/theurian/issues/329) the index-build "
                 "half), the schema's own wording."
             ),
-            "Nothing reads the `providers.review.repositories` allowlist",
-            "do not tell the user the allowlist is protecting them",
+            (
+                "`security/review_allowlist.py` refuses a repository "
+                "`providers.review.repositories` does not name, before any process is "
+                "spawned"
+            ),
+            "do not tell the user that listing a repository has turned anything on",
         ),
     ),
 )
@@ -1910,10 +1955,10 @@ SECRET_SCANNER_IMPORTERS: tuple[str, ...] = (
 #: while ``ingest.md``, the schema description, ``SECURITY.md`` and T-15 all say
 #: the policy is consulted at the approval gate.
 #:
-#: **Five entries, and only two of them read a policy.** The membership is what
+#: **Six entries, and only two of them read a policy.** The membership is what
 #: this pin holds; what each importer *does* with the module is held by the call
-#: count beside it, and the pair is what makes a sixth importer a change somebody
-#: has to explain. What each of the five takes:
+#: count beside it, and the pair is what makes a seventh importer a change
+#: somebody has to explain. What each of the six takes:
 #:
 #: * ``application/project_service.py`` takes ``PROJECT_CONFIG_FILE`` -- the file
 #:   name, not the policy -- and reads nothing.
@@ -1923,12 +1968,17 @@ SECRET_SCANNER_IMPORTERS: tuple[str, ...] = (
 #:   ``IndexRequest.secret_scan``, and ``application/index_secret_scan.py`` takes
 #:   it as the type it records and reads back. Neither opens the file: a build is
 #:   handed the policy its composition root read (#329).
+#: * ``security/review_allowlist.py`` takes ``read_review_repositories`` -- the
+#:   *other* reader this module gained with ADR-0030 decision 2 -- and no policy
+#:   at all. It is here because this pin counts importers of the module, not of
+#:   the policy, which is the property that makes a module-object call visible.
 SECRET_SCAN_POLICY_IMPORTERS: tuple[str, ...] = (
     "application/index_builder.py",
     "application/index_secret_scan.py",
     "application/project_service.py",
     "application/proposal_service.py",
     "cli/index_commands.py",
+    "security/review_allowlist.py",
 )
 
 #: Number words as the changelog spells them, index = value.

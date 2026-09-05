@@ -16,11 +16,16 @@ providers:
     adapter: sqlite-vec
   review:
     adapter: none
-    # The allowlist review ingestion will read (SEC-10). This file is read --
-    # `security/project_config.py` opens it for `security.secretScan` alone --
-    # but nothing in `src/` reads `providers.review.repositories`, so the
-    # allowlist is not in force. It is owed with the first external fetch path
-    # (#429 owns it; #129 was closed on the wording rather than the control).
+    # In force (SEC-10, ADR-0030 decision 2). `security/project_config.py` reads
+    # `providers.review.repositories` and `security/review_allowlist.py` refuses
+    # a repository this list does not name, before the process that reaches
+    # GitHub is started -- an empty or absent list allows nothing. Names are
+    # matched case-insensitively, as GitHub resolves them, and a `.` or `..`
+    # segment is refused so no value here is a path out of the project. Public
+    # repositories only in this version: an allowlisted repository that resolves
+    # as private is refused at ingestion (#575 owns private-repository
+    # ingestion). No command exposes review ingestion yet, so listing a
+    # repository here starts nothing on its own.
     repositories:
       - acme/order-service
 

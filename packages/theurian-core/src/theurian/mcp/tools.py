@@ -1899,8 +1899,17 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 # It says nothing about GitHub, review threads, comment
                 # resolution, or any write intent -- those are `reviewIngestion`,
                 # which stays false below. A client reading this `true` may call
-                # the tool; it may not conclude that review *history* is
-                # ingested, because it is not.
+                # the tool; it may not conclude that review *history* is served,
+                # because no tool serves it.
+                #
+                # `reviewIngestion: false` narrowed with ADR-0030 and is worth
+                # reading exactly: the GitHub *fetch path* shipped in slice 1 --
+                # `infrastructure/github/` spawns `gh` -- while this stayed
+                # false, because no tool exposes it. So the flag reports "no
+                # ingestion call surface a client may call", not "this build
+                # cannot reach GitHub". The serve slice flips it beside a scope
+                # field recording that ingestion covers public allowlisted
+                # repositories only.
                 "reviewFindings": True,
                 "reviewIngestion": False,
                 "traceability": False,

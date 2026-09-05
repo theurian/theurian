@@ -1622,14 +1622,30 @@ a local-file label, and each cap asserted on both sides of its boundary: at the
 limit and one past it for depth, and at exactly `MAX_REFS` both with and without
 a further node that could hold a reference.
 
-*Future controls, not shipped:* the scheme allowlist, the rejection of
-private-network destinations, and the repository allowlist in
-`.theurian/config.yaml` are owed with the first external fetch path, and are
-owned by [#429](https://github.com/theurian/theurian/issues/429).
-`security/project_config.py` reads that file, but for one key only —
-`security.secretScan`. Nothing in `src/` reads `providers.review.repositories`,
-and `infrastructure/github/` is a docstring-only package with no HTTP client, so
-no code path performs any of the three.
+**The three controls, per control and per context.** They were a single "future
+controls, not shipped" paragraph until ADR-0030's adapter landed. It is the first
+change that performs an external fetch, so it is the first change that *can*
+carry any of them — and it carries exactly one, reduces a second, and leaves the
+third with nothing to check on its own path:
+
+| Control | On the `gh` review-ingestion path | In the raw-URL context (`$ref`) |
+| :-- | :-- | :-- |
+| Repository allowlist | **Discharged.** `providers.review.repositories` is read by `security/project_config.py` and enforced by `security/review_allowlist.py` **before any process is spawned**; an empty or absent list allows nothing, and a name is matched case-insensitively as GitHub resolves it. Pinned by `tests/unit/test_review_allowlist.py` and by `tests/integration/test_gh_review_provider.py::test_an_unallowlisted_repository_starts_no_process`, which asserts the spawn recorder is *empty* — a filter would pass any assertion about the result | not applicable: there is no repository to allowlist |
+| Private-network rejection | **Split by family, and neither half is discharged as a whole.** The **proxy family** is closed by construction: `HTTPS_PROXY` and its siblings are absent from the child by the equality of ADR-0030 clause 4's constant, and run C is what shows one would otherwise move the request. The **config family** is **reduced, not closed**: the `gh` configuration file is still reached by the child through the three forwarded locators (runs D–F), and slice 1 adds a best-effort pre-spawn refusal of known transport-override keys in the file those locators resolve to. **What survives is ADR-0030 decision 1's four-member divergence class**, derived from one fact — the check's read cannot be `gh`'s read: **(a)** the race between the two reads, **(b)** a key a newer `gh` understands and this check has never heard of, **(c)** parser divergence (with the key written twice, PyYAML takes the last occurrence and `gh` dials the first), and **(d)** resolution divergence. The check reduces the accidental, pre-existing, single-well-formed-file case and nothing above it | **still owed**, [#429](https://github.com/theurian/theurian/issues/429) |
+| Scheme allowlist | not applicable: the argument vector carries no URL to check a scheme on. Repository identity travels as typed GraphQL variables and the endpoint is the literal `graphql` | **still owed**, [#429](https://github.com/theurian/theurian/issues/429) |
+
+The divergence class is **recorded, not closed**, and its demonstration is
+`tests/integration/test_gh_transport_residual.py`: with the refusal bypassed
+through a test seam, a real `gh` sends the request to a planted unix socket, with
+a negative control beside it. The residual's own exposure is worth stating
+plainly, because it is not "an attacker who could already read the token": an
+actor able to write the operator's own `gh` configuration directory redirects an
+**authenticated** request and captures what it carries, without holding the
+credential.
+
+#429 stays open and its activation context is wider than this one — it includes
+the OpenAPI `$ref` fetcher, where a URL taken from an ingested document is the
+input and both remaining controls have something to check.
 
 > **Corrected in the #199 unit-A audit (2026-08-30, owner corrected again after
 > review).** This paragraph said "No reader of `.theurian/config.yaml` exists in
@@ -1659,11 +1675,14 @@ no code path performs any of the three.
 > "check the issue is open": **an owner has to be the change that would implement
 > the control, and an epic in the right milestone is not automatically that.**
 
-What stands in for all three is the absence of the request. *Never fetched* is
-pinned separately from the recording, because reading the recorded output cannot
-see a fetch performed beside it: a mutation that recorded every ref exactly as
-before and added a real `urlopen` beside it survived the whole suite. Three arms
-in `tests/unit/test_network_call_sites.py` cover each other's blind spots.
+**On the `$ref` path, what still stands in for the two owed controls is the
+absence of the request** — and that is now a claim about *that* path rather than
+about the package, because one site does reach out (the fourth bullet below).
+*Never fetched* is pinned separately from the recording, because reading the
+recorded output cannot see a fetch performed beside it: a mutation that recorded
+every ref exactly as before and added a real `urlopen` beside it survived the
+whole suite. Three arms in `tests/unit/test_network_call_sites.py` cover each
+other's blind spots.
 
 - **Network names, structurally.**
   `test_no_module_outside_the_daemon_health_probe_reaches_a_network_client`
@@ -1672,23 +1691,30 @@ in `tests/unit/test_network_call_sites.py` cover each other's blind spots.
   resolves attribute chains — `urllib.request.…` after a bare `import urllib` —
   and constant-string dynamic imports such as `__import__("_socket")`.
 - **Process spawns, structurally.**
-  `test_no_module_outside_the_git_and_service_adapters_can_spawn_a_process` asks
-  the same question of the other way out of this process, since `curl`, `gh` and
-  `git fetch` reach the network without Theurian importing a client. It watches
-  `subprocess`, the `os` spawn/exec family — `system`, `popen`, `spawn*`,
+  `test_no_module_outside_the_recorded_spawn_sites_can_start_another_program`
+  asks the same question of the other way out of this process, since `curl`, `gh`
+  and `git fetch` reach the network without Theurian importing a client. It
+  watches `subprocess`, the `os` spawn/exec family — `system`, `popen`, `spawn*`,
   `posix_spawn*` and `exec*` — and `asyncio.create_subprocess_*`, and permits
-  **three** sites, none of which takes its argument vector from a document: the
-  `git` context reads in `cli/context.py`; the service runner in
+  **four** sites. Three take no argument vector from a document: the `git`
+  context reads in `cli/context.py`; the service runner in
   `infrastructure/services/runner.py`; and, since ADR-0029's trailer source
   landed, `infrastructure/git/trailer_source.py`, which runs `git log` over the
   pinned `refs/remotes/origin/main` to read `Review-Finding:` trailers. That
   third one is a spawn and **not** a network client — `git log` reads local
   object storage and the local remote-tracking ref, contacting no remote — and
   its argument vector is four constants with the ref pinned rather than passed,
-  so nothing a document or a config carries reaches it. This entry said "two
-  sites" and named the first two until 2026-09-02; the pinned set
-  (`PROCESS_SPAWN_SITES` in `tests/unit/test_network_call_sites.py`) has held
-  three since the trailer source landed.
+  so nothing a document or a config carries reaches it.
+
+  **The fourth reaches GitHub on purpose**, and its arrival is what retired this
+  entry's absence argument: `infrastructure/github/gh_cli.py` spawns the
+  operator's `gh` as `gh api graphql --hostname github.com` (ADR-0030). Its
+  destination *does* come from configuration, which is exactly the moment SEC-10's
+  repository allowlist stopped being owed and started running — see *Controls*
+  above. This entry said "two sites" and named the first two until 2026-09-02, and
+  "three" until ADR-0030's adapter landed; the pinned set (`PROCESS_SPAWN_SITES`
+  in `tests/unit/test_network_call_sites.py`) is what the count is held against,
+  by `test_threat_model_t7_claims.py`.
 - **The socket layer, behaviourally.**
   `test_parsing_a_hostile_document_opens_no_socket` watches
   `socket.create_connection`, `socket.socket` and `socket.getaddrinfo` while
@@ -1705,7 +1731,15 @@ and issued from a child process is outside all three —
 and the spawn arm's own docstring names and measures it.
 
 `system.capabilities` reports `reviewIngestion: false`, pinned by
-`test_capabilities_report_what_is_and_is_not_built`.
+`test_capabilities_report_what_is_and_is_not_built` — and **that flag no longer
+means "this build cannot reach GitHub"**. The fetch path shipped with ADR-0030
+slice 1 while the flag stayed `false`, because no tool exposes it; from slice 3
+the flag means *an ingestion call surface exists that a client may call*. The
+window between the two is a **bounded residual, recorded rather than argued
+away**: for slices 1 and 2 the machine-readable answer reads `false` while a
+fetch path ships, which is a wrong answer to a security question even though a
+client acting on it loses no capability it could have had, since no tool is
+callable. Judge this entry's controls by the table above, not by the flag.
 
 **`reviewFindings: true` is beside it and does not weaken it.** The
 `review.findings` tool serves the `Review-Finding:` trailers `theurian findings
@@ -1713,12 +1747,11 @@ build` already landed in a project's local store (ADR-0029). It **adds no
 network site** — the serving read is a SQLite read of a local artifact — and
 **adds no new spawn site**: the git read behind the store is the
 `infrastructure/git/trailer_source.py` entry already listed above, performed by
-the CLI's rebuild rather than by the tool. So the flag that has to move before
-this entry's controls become load-bearing is still `reviewIngestion`, which is
-the change that reaches GitHub and therefore owes the repository allowlist
-([#429](https://github.com/theurian/theurian/issues/429)). Both flags are
-asserted, with that split stated as the reason, in
-`test_capabilities_report_what_is_and_is_not_built`.
+the CLI's rebuild rather than by the tool. The change that made this entry's
+repository allowlist load-bearing was **not** either flag moving: it was the
+review-ingestion *adapter* landing, two slices ahead of the flag it will
+eventually flip. Both flags are asserted, with that split stated as the reason,
+in `test_capabilities_report_what_is_and_is_not_built`.
 
 #### T-15 — A secret in a document becomes an approved, indexed revision (Information disclosure, High — the scanner covers one gate, best effort)
 
@@ -6455,7 +6488,7 @@ fix.
 | T-4 | Path traversal | I | Critical | SEC-7 |
 | T-5 | Symlink escape | I | Critical | SEC-7 |
 | T-6 | Resource exhaustion, at parse, at query, and at `accept` | D | Medium | SEC-8 |
-| T-7 | SSRF via external URL | I | Medium | SEC-10 — `$ref` recorded-never-fetched only; scheme allowlist, private-network rejection and repository allowlist owed with the first external fetch path, owned by [#429](https://github.com/theurian/theurian/issues/429) (#129 closed on the wording, not the controls) |
+| T-7 | SSRF via external URL | I | Medium | SEC-10 — per control: the **repository allowlist is discharged** on the `gh` review-ingestion path (read before any spawn, ADR-0030); **private-network rejection is reduced** there, with a four-member divergence class recorded as the residual; the **scheme allowlist** does not apply there (no URL in the vector). On the `$ref` path, recorded-never-fetched only, and both remaining controls are owed to [#429](https://github.com/theurian/theurian/issues/429) (#129 closed on the wording, not the controls) |
 | T-8 | Token in a config file | I | High | SEC-5 |
 | T-9 | Token in a log | I | High | SEC-6 |
 | T-10 | Cross-sensitivity summary leak | I | High | SEC-14 |

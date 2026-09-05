@@ -17,6 +17,8 @@ reports `reviewFindings: true` — `review.findings` is callable — beside
 `writeTools: false`, `reviewIngestion: false`, and `traceability: false`; those
 three mean the write-intent, review-*history*, and traceability tools described
 below are designed protocol shape, not callable tools in the current server.
+`reviewIngestion: false` is a statement about *callable tools* and nothing wider:
+the review-history fetch path itself has shipped (see below).
 
 ## Every project-scoped call names its project
 
@@ -341,11 +343,17 @@ build` and announced as `reviewFindings: true`
 ([ADR-0029](../adr/0029-review-findings-are-governed-knowledge.md)).
 
 Review *history* ingestion — GitHub threads, inline comments, resolution state —
-is still planned, not shipped: the server reports `reviewIngestion: false`, and
-none of the planned tools below is callable. The two flags are separate on
-purpose. `reviewFindings` promises an offline read of local git trailers;
-`reviewIngestion` is the one that reaches GitHub, and it is the change that owes
-the repository allowlist SEC-10 records.
+is **fetched but not served**: the adapter shipped with
+[ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) slice 1, and none of
+the planned tools below is callable, so the server still reports
+`reviewIngestion: false`. Read that flag narrowly. It does **not** mean "this
+build cannot reach GitHub" — the fetch path exists, and with it SEC-10's
+repository allowlist, read and enforced before any process is spawned. From the
+serve slice it means *an ingestion call surface exists that a client may call*,
+published beside a scope field recording that ingestion covers public
+allowlisted repositories only. The two flags stay separate for the reason they
+always were: `reviewFindings` promises an offline read of local git trailers,
+and `reviewIngestion` is the one whose surface reaches GitHub-sourced content.
 
 | Tool | Status | Purpose |
 | :-- | :-- | :-- |
