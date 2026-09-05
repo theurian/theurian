@@ -304,7 +304,7 @@ class _PayloadMarker:
 #: item is keyed on now.
 _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     _PayloadMarker(ItemId("architecture.monorepo-with-independent-artifacts"), "`Core`", 1),
-    _PayloadMarker(ItemId("architecture.sqlite-is-a-derived-artifact"), "#87", 1),
+    _PayloadMarker(ItemId("architecture.sqlite-is-a-derived-artifact"), "`FINDINGS_STORE_ID`", 1),
     _PayloadMarker(ItemId("architecture.yaml-knowledge-migrations"), "#245", 1),
     _PayloadMarker(ItemId("architecture.dependency-pinning-and-pre-1-0-isolation"), "`3.13`", 1),
     _PayloadMarker(ItemId("architecture.dco-over-cla"), "30/30", 1),
