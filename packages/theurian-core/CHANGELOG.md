@@ -28,7 +28,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   through `.theurian/cache/ingestion.json`, and `FileSecretStore.set` through
   `<data_dir>/auth/mcp-token` — each with the victim's body replaced, in the
   working tree and outside it. The token case wrote the freshly minted
-  credential into the attacker's own file at 0600.
+  credential into the attacker's own file at 0600, and — the half a first cut of
+  this fix left open — **read one back through the same link**: `get` returned
+  the attacker's value, the daemon accepted it as its bearer token because
+  `ensure_token` re-mints only when there is no token, and `theurian doctor`
+  reported the arrangement satisfied. Both directions refuse now, and `doctor`
+  reports a link at the token's name as a conflict rather than stat-ing through
+  it.
 
   **One root cause, fixed in two halves that do not cover each other.** Every
   one of these writes now opens with `O_NOFOLLOW`
@@ -59,9 +65,11 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   final path component only. A symbolic link at a *directory* above the target
   is still followed, and closing that needs `openat` against a directory
   descriptor at every level, which this release does not do. The substitution
-  face of #371 — an attacker's own regular file at the token's name, which is
-  not a link — is likewise unchanged; `theurian doctor` continues to demand
-  rotation for a group- or other-writable `auth/` directory.
+  face of #371 is likewise unchanged and is a different mechanism rather than a
+  remaining corner of this one: an attacker's own **regular file** at the token's
+  name is not a link, so no `O_NOFOLLOW` sees it and it is indistinguishable from
+  Theurian's own by mode. `theurian doctor` continues to demand rotation for a
+  group- or other-writable `auth/` directory, which is the signal that face has.
 
 ## [0.1.0] - 2026-09-05
 

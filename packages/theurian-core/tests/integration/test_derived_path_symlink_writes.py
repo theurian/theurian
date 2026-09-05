@@ -34,13 +34,19 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from fakes.setup import FakeMcpConfig, FakeService
 from migration_fixtures import body_pin
+from setup_migrations import state_hash_from_the_loader, unchecked_migrations
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectPaths
+from theurian.application.setup_context import SetupContext
+from theurian.application.setup_steps import probe_token_storage
 from theurian.cli.commands import EXIT_STATE_ERROR
 from theurian.cli.main import app
 from theurian.domain.errors import SecurityError
+from theurian.domain.setup import StepStatus
+from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import TOKEN_KEY, FileSecretStore
 
 pytestmark = pytest.mark.integration
@@ -87,6 +93,35 @@ operations:
 #: afterwards: a truncation to zero and an overwrite are both "the file is still
 #: there", and both are the defect.
 VICTIM: Final = b"VICTIM BODY THAT MUST SURVIVE\n"
+
+#: The value the attacker puts in the file their planted link names. Compared
+#: rather than merely "the read raised": a read side that unlinked the link and
+#: re-minted would also raise nothing, and would have destroyed the evidence.
+ATTACKER_TOKEN: Final = "ATTACKER-CHOSEN-TOKEN"  # noqa: S105 - a test fixture, not a credential
+
+
+def _setup_context(tmp_path: Path, data_dir: Path) -> SetupContext:
+    """The context ``probe_token_storage`` needs, in this file's own spelling.
+
+    Duplicated from ``test_probe_storage_claims.py`` rather than imported: that
+    file's helper is private to it, and a shared fixture would make the two files
+    fail together over a change to either. Only the two fields this probe reads
+    carry meaning here.
+    """
+    return SetupContext(
+        home=tmp_path / "home",
+        data_dir=data_dir,
+        port=7419,
+        project_root=None,
+        connection=ConnectionSpec(port=7419),
+        mcp_config=FakeMcpConfig(),
+        secrets=FileSecretStore(data_dir),
+        health=lambda: None,
+        service=FakeService(),
+        executable="",
+        check_migrations=unchecked_migrations,
+        current_state_hash=state_hash_from_the_loader,
+    )
 
 
 class Ran:
@@ -623,6 +658,74 @@ def test_ingest_answers_a_directory_where_the_manifest_belongs(project: Path) ->
 
 
 # -- AC4: the local access token ---------------------------------------------
+
+
+def _planted_token_link(tmp_path: Path) -> tuple[Path, Path]:
+    """An ``auth/mcp-token`` link to a token file the attacker owns and chose.
+
+    The whole shape, not a fragment of it: ``auth`` at 0700 and the loot at 0600,
+    so every mode-keyed probe in the product answers *satisfied* about it. A plant
+    with a loose mode would be refused by a check that has nothing to do with the
+    link, and the test would pass for the wrong reason.
+
+    Returns ``(data_dir, loot)``.
+    """
+    data_dir = tmp_path / "data"
+    loot = tmp_path / "attacker" / "loot"
+    loot.parent.mkdir(parents=True)
+    loot.write_text(ATTACKER_TOKEN, encoding="utf-8")
+    loot.chmod(0o600)
+    (data_dir / "auth").mkdir(parents=True, mode=0o700)
+    (data_dir / "auth" / TOKEN_KEY).symlink_to(loot)
+    return data_dir, loot
+
+
+@_NEEDS_SYMLINKS
+def test_a_planted_token_link_is_refused_on_the_read_side_too(tmp_path: Path) -> None:
+    """Security round one, HIGH-1. Three observables, pinned together.
+
+    The write side refusing is not enough, and closing only one of these leaves
+    the credential in play. Measured against this branch's head **before** the
+    read side was converted, with the plant this fixture builds:
+
+    1. ``FileSecretStore.get(TOKEN_KEY)`` returned ``'ATTACKER-CHOSEN-TOKEN'``;
+    2. ``daemon.runner.ensure_token`` therefore never re-minted -- it re-mints
+       only when there is no token -- so the daemon would have served that value
+       as its bearer token;
+    3. ``probe_token_storage`` reported **satisfied**: ``is_file()`` follows the
+       link, the target is 0600, and ``auth`` is 0700, so all three of its
+       predicates pass.
+
+    And the write-side refusal this branch added *pins the plant in place*:
+    ``auth rotate`` now declines the link rather than replacing it, so the state
+    persists until an operator removes the link by hand. That is why the read
+    conversion is part of the same class rather than a follow-up.
+
+    Asserted as one test rather than three, because the finding is the
+    conjunction: a fix that made ``get`` raise while ``doctor`` still said
+    satisfied would leave an operator with no way to learn what happened.
+    """
+    data_dir, loot = _planted_token_link(tmp_path)
+    store = FileSecretStore(data_dir)
+
+    with pytest.raises(SecurityError) as excinfo:
+        asyncio.run(store.get(TOKEN_KEY))
+
+    assert str(data_dir / "auth" / TOKEN_KEY) in excinfo.value.remedy
+
+    from theurian.daemon.runner import ensure_token
+
+    with pytest.raises(SecurityError):
+        asyncio.run(ensure_token(data_dir))
+
+    step = probe_token_storage(_setup_context(tmp_path, data_dir))
+    assert step.status is not StepStatus.SATISFIED, (
+        f"doctor reports {step.status.value} about a token file that is a link to "
+        f"{loot}, which the attacker wrote"
+    )
+    assert loot.read_text(encoding="utf-8") == ATTACKER_TOKEN, (
+        "the read path rewrote the attacker's file instead of refusing it"
+    )
 
 
 @_NEEDS_SYMLINKS

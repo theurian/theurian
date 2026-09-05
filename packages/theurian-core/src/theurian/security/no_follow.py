@@ -48,6 +48,19 @@ if TYPE_CHECKING:
 #: swaps one for the other changes nothing but the refusal.
 WRITE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
 
+#: The flags a *read* takes. ``O_RDONLY`` and the same guard, and no ``O_CREAT``:
+#: a read of a path that is not there is a missing file, not something to make.
+#:
+#: A read through a planted link is not the mirror image of a write through one
+#: -- nothing is destroyed -- and it is worse in the direction that matters for a
+#: credential: the caller believes it is holding what Theurian stored, and it is
+#: holding what the attacker chose. Measured on this branch before the read was
+#: converted: ``FileSecretStore.get`` returned the attacker's value, the daemon
+#: served it as its bearer token because ``ensure_token`` re-mints only when
+#: there is *no* token, and ``theurian doctor`` reported the arrangement
+#: satisfied (security round one, HIGH-1).
+READ_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW
+
 #: The creation mode for a derived artefact, and **deliberately not the ``0o666``
 #: that** ``open(path, "w")`` **passes**.
 #:
@@ -63,9 +76,14 @@ WRITE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
 #: Found by CodeQL (``py/overly-permissive-file``) on the first push of this
 #: branch, over the ``0o666`` an earlier cut carried for exact parity.
 #:
-#: ANDed with the umask, and applied only when the open *creates* the file: an
-#: artefact an older build left behind keeps the mode it was created with, and
-#: nothing here chmods a file it did not create.
+#: Masked by the umask's *complement* -- the file is created with
+#: ``mode & ~umask``, so a bit absent here can never be granted and a bit present
+#: here can still be taken away. "ANDed with the umask" is what this note said
+#: until round one, and it is the opposite operation.
+#:
+#: Applied only when the open *creates* the file: an artefact an older build left
+#: behind keeps the mode it was created with, and nothing here chmods a file it
+#: did not create.
 _DEFAULT_CREATE_MODE: Final = 0o644
 
 
@@ -80,6 +98,21 @@ def open_without_following_a_link(path: Path, *, mode: int = _DEFAULT_CREATE_MOD
             always meant and reaches the caller's existing handler unchanged.
     """
     return os.open(path, WRITE_FLAGS, mode)
+
+
+def open_for_reading_without_following_a_link(path: Path) -> int:
+    """``os.open`` for a read, refusing a link at the final component.
+
+    The read twin, and it exists because the write guard alone leaves a
+    credential readable through a plant (security round one, HIGH-1). Returns the
+    descriptor; the caller owns closing it.
+
+    Raises:
+        OSError: ``ELOOP`` for the link (:func:`is_a_symbolic_link_refusal`),
+            ``ENOENT`` for a path that is not there, and whatever else the open
+            refuses with.
+    """
+    return os.open(path, READ_FLAGS)
 
 
 def write_text_without_following_a_link(
@@ -119,21 +152,39 @@ def is_a_symbolic_link_refusal(exc: OSError) -> bool:
     probe beside the open, because a probe is a decision taken before the call it
     describes and the window between the two is a window an attacker picks; the
     kernel's own answer for *this* call has no such window.
+
+    **Two platforms this project does not build on answer the same condition with
+    a different errno**, recorded so nobody reads the check as portable: FreeBSD
+    returns ``EMLINK`` and NetBSD ``EFTYPE``. Neither is measured here -- there is
+    no such machine on this project -- and neither is in CI, whose matrix is
+    ubuntu and macOS. A port to either needs this predicate widened, and would
+    otherwise degrade silently: the refusal still happens (the open still
+    declines), but it would be graded as an ordinary write fault and publish the
+    wrong cure.
     """
     return exc.errno == errno.ELOOP
 
 
 def symbolic_link_remedy(path: Path) -> str:
-    """The cure for a symbolic link found at a derived path Theurian writes.
+    """The cure for a symbolic link found at a **derived** path Theurian writes.
 
-    One spelling, shared by every face of the class: the artefact is derived
-    (ADR-0004), so removing the link costs nothing that is not rebuilt, and a
-    repository carrying one has force-added it past that ignore. Naming the leaf
-    rather than the directory holding it is what the final-component bound above
-    buys -- unlike
-    :func:`~theurian.application.project_service.derived_escape_remedy`, which
-    answers a *containment* refusal where the culprit can sit anywhere between
-    the derived subdirectory and the leaf and so can only name the directory.
+    One spelling shared by the derived-path faces -- the two active pointers, the
+    secret-scan record and the ingestion manifest -- because the artefact is
+    derived (ADR-0004), removing the link costs nothing that is not rebuilt, and a
+    repository carrying one has force-added it past that ignore.
+
+    **Not every face of the class**, and the exception is the one where those
+    three sentences are all false: the local access token
+    (:class:`~theurian.infrastructure.secrets.file_store.SecretPathIsASymbolicLinkError`)
+    is not derived, is not rebuilt by anything, and reaches no repository -- so it
+    carries a cure of its own that names ``theurian auth rotate`` and the
+    directory's permissions instead.
+
+    Naming the leaf rather than the directory holding it is what the
+    final-component bound above buys. The *containment* refusal is the other way
+    round: its culprit can sit anywhere between the derived subdirectory and the
+    leaf, so it can only name the directory, and the application layer spells that
+    one beside the helper that raises it.
     """
     return (
         f"Remove the symbolic link at {path} and retry. It is derived state "
@@ -143,8 +194,10 @@ def symbolic_link_remedy(path: Path) -> str:
 
 
 __all__ = [
+    "READ_FLAGS",
     "WRITE_FLAGS",
     "is_a_symbolic_link_refusal",
+    "open_for_reading_without_following_a_link",
     "open_without_following_a_link",
     "symbolic_link_remedy",
     "write_text_without_following_a_link",

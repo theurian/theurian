@@ -297,11 +297,14 @@ def test_a_group_writable_directory_demands_rotation_not_only_a_chmod(tmp_path: 
     asked for here, the way the world-readable-file arm asks for it.
 
     This paragraph used to give a second mechanism, "or plant a symlink the next
-    mint writes the token through (#371)", and that half is closed:
-    ``FileSecretStore.set`` opens with ``O_NOFOLLOW`` and refuses rather than
-    minting through a link
-    (``test_derived_path_symlink_writes.py::test_the_secret_store_refuses_to_write_a_token_through_a_link``).
-    The substitution above is the mechanism that keeps this arm alive.
+    mint writes the token through (#371)", and that half is closed on **both**
+    sides: ``FileSecretStore`` opens with ``O_NOFOLLOW`` to write and to read, so
+    it neither mints through a planted link nor hands back what one names
+    (``test_derived_path_symlink_writes.py::test_the_secret_store_refuses_to_write_a_token_through_a_link``
+    and ``::test_a_planted_token_link_is_refused_on_the_read_side_too``), and
+    ``probe_token_storage``'s own ``is_symlink()`` arm reports the plant rather
+    than stat-ing through it. The substitution above -- an attacker's own regular
+    file, which is not a link at all -- is the mechanism that keeps this arm alive.
     """
     data_dir = tmp_path / "data"
     _stored_token(data_dir, token_mode=0o600, directory_mode=0o770)

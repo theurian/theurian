@@ -477,16 +477,45 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
     arm asks for `theurian auth rotate` the way the readable-file arm does.
 
     **The symlink half of that surface is closed, and this paragraph used to name
-    it as live.** Planting a link at the token's name and letting the next mint
-    write through it is what #371 was; ``FileSecretStore.set`` opens with
-    ``O_NOFOLLOW`` and refuses. What is left is the substitution above, which is
-    a *different* mechanism -- an attacker's own regular file, indistinguishable
-    from Theurian's by mode -- and it is why this arm survived that fix. The
+    it as live.** Planting a link at the token's name is what #371 was, and it had
+    two directions: the next mint writing through it, and a later read handing
+    back what the attacker had already put there. ``FileSecretStore`` opens with
+    ``O_NOFOLLOW`` on both sides and refuses, and the ``is_symlink()`` arm at the
+    top of this probe reports the plant instead of stat-ing through it. What is
+    left is the substitution above, which is a *different* mechanism -- an
+    attacker's own regular file, indistinguishable from Theurian's by mode -- and
+    it is why this arm survived that fix. The
     original single directory arm dropped rotation on the write bit too, telling
     an operator whose 0770 ``auth/`` an attacker could rewrite that nothing needed
     replacing.
     """
     path = context.auth_dir / TOKEN_KEY
+    # `lstat` before anything that follows the link, and *before* the
+    # `is_file()` arm below, which does follow it (security round one, HIGH-1).
+    # With a link here naming an attacker-owned 0600 file, all three of this
+    # probe's predicates passed -- `is_file()` true, target not world-accessible,
+    # `auth` 0700 -- and the report read `satisfied` about a token somebody else
+    # wrote. The store refuses to read or write through it now, so `doctor`
+    # saying "converged" would be the one surface still claiming otherwise.
+    #
+    # CONFLICTING rather than MISSING, and that is the SEC-18 rule rather than a
+    # preference: `MISSING` is the status that makes setup *act*, and acting here
+    # means writing the token, which is the operation the store declines. The
+    # remedy is a person removing a link they did not create.
+    if path.is_symlink():
+        return SetupStep(
+            step_id=StepId.TOKEN_STORAGE,
+            status=StepStatus.CONFLICTING,
+            summary="The token file is a symbolic link.",
+            detail=(
+                f"{path} is a symbolic link, not the token file Theurian wrote. Anything "
+                f"reading it gets whatever the link names, so remove it with `rm {path}` "
+                f"and run `theurian auth rotate` to mint a fresh token. Something with "
+                f"write access to {context.auth_dir} put it there -- check that directory's "
+                f"permissions (it should be 0700), and treat any token in use since it "
+                f"appeared as compromised."
+            ),
+        )
     if not path.is_file():
         return SetupStep(
             step_id=StepId.TOKEN_STORAGE,
@@ -518,10 +547,13 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
             # reason the world-readable-file arm does.
             #
             # The *symlink* half of that surface is closed and no longer belongs
-            # in this sentence: `FileSecretStore.set` opens with `O_NOFOLLOW` and
-            # refuses rather than minting through a planted link (#371). The
-            # substitution above is what is left, and it is why this arm survives
-            # that fix rather than being deleted with it.
+            # in this sentence: `FileSecretStore` opens with `O_NOFOLLOW` on both
+            # sides and refuses rather than minting through -- or reading back
+            # through -- a planted link (#371, and the read side from security
+            # round one), and the `is_symlink()` arm at the top of this probe
+            # reports one rather than stating it away. The substitution above is
+            # what is left, and it is why this arm survives that fix rather than
+            # being deleted with it.
             return SetupStep(
                 step_id=StepId.TOKEN_STORAGE,
                 status=StepStatus.CONFLICTING,
