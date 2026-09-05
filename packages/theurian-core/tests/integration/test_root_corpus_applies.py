@@ -310,7 +310,7 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     _PayloadMarker(ItemId("architecture.dco-over-cla"), "30/30", 1),
     _PayloadMarker(ItemId("architecture.state-hash-covers-the-working-tree"), "`contentSha256`", 1),
     _PayloadMarker(ItemId("architecture.sqlite-schema-versioning"), "#117", 3),
-    _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#468", 5),
+    _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#497", 1),
     _PayloadMarker(ItemId("architecture.rank-fusion-over-score-normalisation"), "T-17a's", 1),
     _PayloadMarker(ItemId("architecture.raptor-forest"), "#145", 1),
     _PayloadMarker(ItemId("architecture.trigram-index-beside-the-word-index"), "#464", 2),
