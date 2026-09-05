@@ -285,8 +285,8 @@ mandate lens runs off-list, on the family nobody enumerated — handing the
 checklist over as the reviewer's scope would delete that value. From round two
 onward the subject narrows: the scope is what the fixes newly claim, attacked
 through that same block. A finding outside it is tagged **out-of-perspective**
-and filed with a disposition rather than graded into the round; a reproducible
-CRITICAL is reported immediately, whatever perspective it came from.
+and filed with a disposition rather than graded into the round, so it does not
+hold the flip to Ready; a reproducible CRITICAL reports immediately regardless.
 
 **An enumerated family is the implementer's to hold, and recurrence burns in.**
 A round-one finding on a family the brief enumerated is an implementation-stage
@@ -300,7 +300,7 @@ new family → the standing table; the brief selects the applicable ones per
 change; a repeat against the same specialist → that specialist's own definition.
 
 Do not write these review briefs from memory each time — the agent definitions
-hold the standing context; the brief adds only what is specific to this change.
+hold the standing context; the brief names it and adds what this change needs.
 
 ### Round one is full; later rounds are not
 
