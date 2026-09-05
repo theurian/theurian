@@ -391,7 +391,9 @@ the design cannot run — so this ADR does not claim it. The protection here is
 **The serving-layer embargo rule is a requirement that binds any FUTURE
 non-public ingestion path** — a private-fork ingestion, a manual seed — that could
 carry an embargoed finding into the store. Its enforcement is **deferred to the
-path that has advisory context**: the FR-V GitHub-API arm can mark a finding
+path that has advisory context**: the **private-repository arm**
+([#575](https://github.com/theurian/theurian/issues/575), 2026-09-05 — ADR-0030
+scoped the public GitHub arm away from it) can mark a finding
 `securityRelated` at ingestion time, where the advisory state is available, and
 then refuse it **uniformly** at serve — the refusal must not distinguish "an
 embargoed finding exists and is withheld" from "no such finding exists", or the
@@ -731,7 +733,8 @@ Owed at implementation, each tied to the lane that will discharge it:
   This test is the regression that catches it, and it pins the scoping rather than
   trusting it.
 - **Any future non-public ingestion path refuses an embargoed finding uniformly
-  at serve** — owed to *that* path (the FR-V GitHub-API arm that has advisory
+  at serve** — owed to *that* path (the private-repository arm,
+  [#575](https://github.com/theurian/theurian/issues/575), which has advisory
   context), not to this source, which structurally holds no embargoed trailer to
   serve (decision 6). A test that a finding marked `securityRelated` for an
   unpublished advisory is not served, and that its refusal is indistinguishable
@@ -1120,9 +1123,10 @@ milestone it sits in — the mistake T-7 records paying for twice:
 | Retiring the manual burn-in in the CL that ships the recurrence query (decision 5) | [#368](https://github.com/theurian/theurian/issues/368) |
 | A non-public ingestion path refusing an embargoed finding uniformly at serve (decision 6) | [#575](https://github.com/theurian/theurian/issues/575) *(repointed to #575, 2026-09-05: [ADR-0030](0030-github-review-ingestion-spawns-gh.md) scoped [#479](https://github.com/theurian/theurian/issues/479) to public repositories, so #479 is no longer the change that would implement this control)*, which needs [#429](https://github.com/theurian/theurian/issues/429)'s fetch controls first |
 
-Every owner above was read on 2026-09-02 rather than assumed: #368, #479 and #429
-are open, and #479 carries `phase-b` — and #575, which the last row was repointed
-to on 2026-09-05, was read open and `phase-b` on that date. The six git-native items are **not** #479's:
+Every owner above was read rather than assumed. On 2026-09-02: #368 and #429
+open. On 2026-09-05, when the last row was repointed: #575 open and `phase-b`.
+#479 is **no longer an owner in this table** — ADR-0030 scoped it to public
+repositories — and it is named above only as the issue that moved. The six git-native items are **not** #479's:
 that issue is the GitHub-API arm, and an epic in the right milestone is not
 automatically the change that implements a control.
 
@@ -1146,8 +1150,9 @@ precondition bounds is the intersection of the read-sets, not any one
 repository's. On a clone of the private embargo fork the daemon
 therefore sits **inside** the embargo boundary, and the URL verification that
 would make that structural is still Amendment 1's D7 stated non-goal. Per-finding
-embargo control arrives with the GitHub arm, which is the path that has advisory
-context (decision 6). The acceptance, its conditions and its owners are audited
+embargo control arrives with the **private-repository arm**
+([#575](https://github.com/theurian/theurian/issues/575)), which is the path that
+has advisory context (decision 6). The acceptance, its conditions and its owners are audited
 in [`../security/threat-model.md`](../security/threat-model.md) — recorded there
 rather than here, because an acceptance is a security record with owners, not a
 sentence in an ADR.

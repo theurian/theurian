@@ -876,7 +876,7 @@ the ADR.
 | OQ-5 | Is `snapshotId` per-request or per-session? | Per-request and explicit. There is no server-side session state. **(ADR-0002)** |
 | OQ-6 | Multi-project search authorization model, locally? | The local token grants all registered Projects; per-Project ACL is a cloud-port concern with the interface defined now. |
 | OQ-7 | Do we support Git submodules as Project boundaries? | Not at 1.0. A submodule is registered as its own Project if wanted. |
-| OQ-8 | Where does the review cache live? | `.theurian/cache/reviews/`, git-ignored, rebuildable from the GitHub API. |
+| OQ-8 | Where does ingested review evidence live? | `.theurian/review/`, as durable structured files — **not** `.theurian/cache/`, and not rebuildable from the GitHub API: upstream comments are editable and deletable, so a discarded copy is data loss rather than a cache miss. The SQLite serving store is the derived, deletable half. **(ADR-0030 decision 3, which withdrew this answer's 2026-08 form and the ADR-0004 list entry behind it)** |
 | OQ-9 | Conventional-commit scope names? | `core`, `plugin`, `schemas`, `docs`, `ci`, `packaging`. |
 | OQ-10 | DCO or CLA? | DCO, enforced by a sign-off check. **(ADR-0015)** |
 | OQ-11 | Do knowledge bodies support transclusion/includes? | No at 1.0. Composition is a relation, not a text include — includes would break content hashing. |
