@@ -238,6 +238,17 @@ quirks are recorded (see [The filing filter](#the-filing-filter)).
 - Never wait on a pattern your own wait loop matches; the loop matches itself and
   never exits.
 - Confirm a daemon is gone by the port being free, not by a `kill` returning 0.
+- Run the whole suite from a **non-dot checkout**. `controls_discharge` drops
+  every path with a dot component, so a checkout under `.claude/worktrees/`
+  gives it an empty test population and two census audits fail on the walker
+  rather than on the tree
+  ([#558](https://github.com/theurian/theurian/issues/558)). Both pass from a
+  plain clone of the same commit — measured 2026-09-06.
+- Expect `test_bare_install`'s `daemon status` case to fail on a machine running
+  a resident daemon: it asserts `listening is False`, and a daemon answering the
+  default port makes that true-is-false. `lsof -nP -iTCP:7419 -sTCP:LISTEN` says
+  whether the failure is the machine or the code. Measured 2026-09-06: it fails
+  the same way at `75fe9b4f` with nothing applied.
 
 ## The learning loop
 
