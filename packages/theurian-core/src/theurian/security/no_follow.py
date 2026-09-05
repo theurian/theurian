@@ -48,10 +48,25 @@ if TYPE_CHECKING:
 #: swaps one for the other changes nothing but the refusal.
 WRITE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
 
-#: The creation mode ``open(path, "w")`` passes, and therefore the one that keeps
-#: a converted write's resulting permissions identical. It is ANDed with the
-#: umask, and it applies only when the open *creates* the file.
-_DEFAULT_CREATE_MODE: Final = 0o666
+#: The creation mode for a derived artefact, and **deliberately not the ``0o666``
+#: that** ``open(path, "w")`` **passes**.
+#:
+#: The two are identical under the usual ``022`` umask -- both create ``0644`` --
+#: so nothing moves for almost every reader. Where they differ is a umask looser
+#: than that, and there ``0o666`` creates a **world-writable** ``active.json``:
+#: any local account could then repoint the state pointer, which is the
+#: derived-state-trust class (GHSA-266v) reached through a permission bit instead
+#: of through a commit. Theurian is one process per user per machine (ADR-0002)
+#: and nothing needs group or other write on a file it rebuilds, so the
+#: conversion tightens rather than reproducing.
+#:
+#: Found by CodeQL (``py/overly-permissive-file``) on the first push of this
+#: branch, over the ``0o666`` an earlier cut carried for exact parity.
+#:
+#: ANDed with the umask, and applied only when the open *creates* the file: an
+#: artefact an older build left behind keeps the mode it was created with, and
+#: nothing here chmods a file it did not create.
+_DEFAULT_CREATE_MODE: Final = 0o644
 
 
 def open_without_following_a_link(path: Path, *, mode: int = _DEFAULT_CREATE_MODE) -> int:

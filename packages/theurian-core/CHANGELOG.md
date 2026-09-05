@@ -48,6 +48,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   refusal knows which file it is, and the derived directory to remove when the
   culprit can sit anywhere on the resolution chain.
 
+  The derived artefacts these writers *create* are now `0644 & ~umask` rather
+  than the `0666 & ~umask` an `open(path, "w")` passes. Identical under the usual
+  `022` umask; under a looser one the old mode created a world-writable
+  `active.json` that any local account could repoint, which is the
+  derived-state-trust class reached through a permission bit instead of through a
+  commit. A file an older build left behind keeps the mode it was created with.
+
   **The bound, recorded rather than claimed away:** `O_NOFOLLOW` covers the
   final path component only. A symbolic link at a *directory* above the target
   is still followed, and closing that needs `openat` against a directory

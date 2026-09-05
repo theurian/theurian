@@ -67,6 +67,31 @@ def test_an_ordinary_write_lands_and_reads_back(tmp_path: Path) -> None:
     assert not target.is_symlink()
 
 
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_created_artefact_is_not_group_or_world_writable(tmp_path: Path) -> None:
+    """The creation mode, driven under a umask that would expose the difference.
+
+    ``open(path, "w")`` passes ``0o666``, and under the usual ``022`` umask that
+    and ``0o644`` create the same file -- so a test run at the default umask
+    cannot tell the two apart, and this one would have passed against the
+    ``0o666`` an earlier cut of the writer carried. Set to ``0`` for the duration,
+    where ``0o666`` produces a world-writable ``active.json`` any local account
+    could repoint (CodeQL ``py/overly-permissive-file``, and the derived-state-
+    trust class reached through a permission bit rather than a commit).
+    """
+    target = tmp_path / "pointer.json"
+    previous = os.umask(0)
+    try:
+        write_text_without_following_a_link(target, "{}")
+    finally:
+        os.umask(previous)
+
+    assert target.stat().st_mode & 0o022 == 0, (
+        f"a derived artefact was created group- or world-writable: "
+        f"{target.stat().st_mode & 0o777:04o}"
+    )
+
+
 def test_an_existing_regular_file_is_truncated_not_appended(tmp_path: Path) -> None:
     """``O_TRUNC`` survives the conversion.
 
