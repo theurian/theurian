@@ -97,8 +97,9 @@ excluded from the published documentation site for that reason.
 - Route by what would settle the claim, not by file type. When the two tables
   disagree, the claims table wins: a prose file asserting a measured property is
   a disclosure-class claim in a light-class file.
-- Give round one all three reviewers at full scope. Narrow later rounds to what
-  the fixes newly claim, attacked through the same frozen perspective block.
+- Give round one all three reviewers at full scope — for a full-round change;
+  the blast-radius table above says which. Narrow later rounds to what the fixes
+  newly claim, attacked through the same frozen perspective block.
 - Sweep every fix diff for **new universal prose** before dispatching a
   re-review. Each fix-authored *covers / closes / cannot / all / never* sentence
   becomes a derivation, an enumeration with an escape table, or is deleted.
@@ -151,7 +152,8 @@ excluded from the published documentation site for that reason.
   it with a disposition, and do not let it hold the flip. A reproducible CRITICAL
   reports immediately regardless.
 - Ship at round three: everything that is not a reproducible CRITICAL or HIGH is
-  recorded and the PR flips. Reaching a third round is itself the finding.
+  filed as an issue, or recorded and closed, per the filing filter's
+  dispositions — and the PR flips. Reaching a third round is itself the finding.
 
 ## MERGE — landing a branch
 
@@ -199,12 +201,12 @@ excluded from the published documentation site for that reason.
   `git rev-list origin/main..HEAD --no-merges` subjects through that pattern
   before pushing; an issue or ADR number goes in the subject text or the body.
 - Re-read CodeQL alert numbers from the merge ref immediately before acting on
-  them. Alert identity is location-keyed, so code motion renumbers alerts: the
-  `py/overly-permissive-file` finding on
-  [#569](https://github.com/theurian/theurian/pull/569) moved 17 → 18, and on
-  2026-09-06 the repository's alert list holds 18 at `no_follow.py:166` with no
-  17 at all. An alert number from an earlier report addresses a different alert,
-  or none.
+  them. Alert identity is location-keyed, so moving code can retire one number
+  and raise another for the same rule in the same file: across
+  [#569](https://github.com/theurian/theurian/pull/569) the
+  `py/overly-permissive-file` finding on `no_follow.py` is alert 18 as of
+  2026-09-06, and 17 is gone from the list. A number carried over from an
+  earlier report may now address a different instance, or nothing at all.
 - Retarget a stack's dependents before merging its base. `--delete-branch` on the
   base closes the dependent PR.
 - Do not edit `Closes #N` out of a body expecting it to unlink; the squash still
@@ -273,7 +275,9 @@ quirks are recorded (see [The filing filter](#the-filing-filter)).
   gives it an empty test population and two census audits fail on the walker
   rather than on the tree
   ([#558](https://github.com/theurian/theurian/issues/558)). Both pass from a
-  plain clone of the same commit — measured 2026-09-06.
+  plain clone of the same tree at `386aba76` — a commit on this file's
+  introducing branch, so cite it as pull request #580 rather than as a `main`
+  ancestor. Measured 2026-09-06.
 - Expect `test_bare_install`'s `daemon status` case to fail on a machine running
   a resident daemon: it asserts `listening is False`, and a daemon answering the
   default port makes it true. `lsof -nP -iTCP:7419 -sTCP:LISTEN` says whether
