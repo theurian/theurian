@@ -274,13 +274,19 @@ Each brief must carry, explicitly:
 - what is *known* to be unfinished, so the reviewer spends its time elsewhere
 - the observable families the implementation brief enumerated — the claims the
   implementation says it already covers, handed over to be attacked
+- the **perspective block**, per reviewer: its standing mandate as one of its
+  perspectives, the lenses specific to this change, and the claims to attack —
+  the families above. Frozen at dispatch, for the PR's whole review lifecycle;
+  a later round adds only the fixes, what each now asserts, and what is settled.
 
 **The family list binds the implementer, not the adversarial reviewer.** The
-reviewer receives it as the set of claims the implementation says it already
-covers — to attack — and spends the rest of its mandate off-list, because its
-value is the family nobody enumerated. Handing the brief's checklist to the
-reviewer as its scope would converge review on the known families and delete
-that value.
+block is not that list alone: the mandate is inside it, so in round one the
+mandate lens runs off-list, on the family nobody enumerated — handing the
+checklist over as the reviewer's scope would delete that value. From round two
+onward the subject narrows: the scope is what the fixes newly claim, attacked
+through that same block. A finding outside it is tagged **out-of-perspective**
+and filed with a disposition rather than graded into the round, so it does not
+hold the flip to Ready; a reproducible CRITICAL reports immediately regardless.
 
 **An enumerated family is the implementer's to hold, and recurrence burns in.**
 A round-one finding on a family the brief enumerated is an implementation-stage
@@ -288,15 +294,13 @@ failure, not a review success — record it as one in the PR's round comment. Wh
 the same specialist is caught on the same family twice, that family is written
 into the **implementing** specialist's agent definition
 (`.claude/agents/theurian-{python,tests,docs,mcp,ci}.md` — never a reviewer's),
-so every future instance is born knowing it. Implementer agents are stateless:
-recurrence is a defect of the definition, not of the instance, and the
-definition is where learning lives. The loop this closes: a reviewer discovers
-a new family → the standing table; the brief selects the applicable ones per
+so every future instance is born knowing it: recurrence is a defect of the
+definition, not of the instance. The loop this closes: a reviewer discovers a
+new family → the standing table; the brief selects the applicable ones per
 change; a repeat against the same specialist → that specialist's own definition.
-Known families sink upstream, and review stays aimed at what nobody enumerated.
 
 Do not write these review briefs from memory each time — the agent definitions
-hold the standing context; the brief adds only what is specific to this change.
+hold the standing context; the brief names it and adds what this change needs.
 
 ### Round one is full; later rounds are not
 
@@ -304,10 +308,7 @@ hold the standing context; the brief adds only what is specific to this change.
 the blast-radius table above says which. Nothing it found in
 Milestone 5 — extraction oracles, a schema that rejected the product's own
 output, tests that stayed green with the code deleted — was findable by reading.
-
-**Later rounds review what the fixes newly claim, not the milestone again.** A
-round that re-reads from zero spends its attention where earlier rounds have
-looked. Give the brief the fixes, what each now asserts, and what is settled.
+A later round re-reading from zero only looks where round one already has.
 
 **Cap LOW at five per reviewer**; the rest goes in the PR description as one
 line. Round two produced thirteen and deferred nearly all of them.
@@ -342,9 +343,8 @@ Before dispatching any round after the first:
 - **Run the reviewers' own methods first.** The adversarial reviewer's is
   mutation over the whole suite — a surviving mutation is a finding you were
   about to receive. The security reviewer's is timing measurement across the
-  paths the change touches.
-- **Do not widen the surface mid-round.** A new mechanism is a new claim, and a
-  new claim is a new finding. Defer it and file it.
+  paths the change touches. And do not widen the surface mid-round: a mechanism
+  met late is a new claim, filed out-of-perspective rather than graded.
 
 What still comes back is a family nobody had enumerated, and that is the round
 doing its job.
