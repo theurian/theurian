@@ -316,6 +316,7 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     _PayloadMarker(ItemId("architecture.trigram-index-beside-the-word-index"), "#464", 2),
     _PayloadMarker(ItemId("architecture.a-purge-is-a-build"), "#426", 1),
     _PayloadMarker(ItemId("architecture.ports-and-adapters"), "#553", 1),
+    _PayloadMarker(ItemId("architecture.state-hash-partitioned-databases"), "#497", 1),
 )
 
 #: Frozen rather than ``datetime.now()``: a project row's ``registered_at`` is
