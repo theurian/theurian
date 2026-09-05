@@ -1,0 +1,39 @@
+apiVersion: theurian.dev/v1
+id: 01M1S6NW4Q9P1G97M2H61XDANR
+createdAt: '2026-09-05T16:33:26+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0004 twin from the current source ADR: the corpus pins docs/adr/0004-sqlite-is-a-derived-artifact.md
+  as it stood at fffa6b18, and PR #570 added the Milestone 8 amendment withdrawing the raw GitHub review
+  caches entry (#579).'
+operations:
+- op: createItem
+  itemId: architecture.sqlite-is-a-derived-artifact
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.sqlite-is-a-derived-artifact
+  revisionId: 01M1S6NW4Q9P1G97M2H61XDANS
+  expectedRevision: 01M1QMNC4YSFVPST9RA2FNHKDJ
+  contentFile: ../knowledge/architecture/sqlite-is-a-derived-artifact.01M1S6NW4Q9P1G97M2H61XDANS.md
+  contentSha256: b6a20b595d43d9175c7f0b849f4e8a0154cd6184205fb6a2aa17cf43a8ac185a
+  metadata:
+    title: 'ADR-0004: SQLite is a derived artifact, never a Git-tracked one'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0004
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 46d0e869b7a450ecf9a0820e327c40c9ee6c2f67
+      filePath: docs/adr/0004-sqlite-is-a-derived-artifact.md

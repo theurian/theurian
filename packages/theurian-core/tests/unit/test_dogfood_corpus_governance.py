@@ -564,13 +564,18 @@ def _requires_git_objects(what: str) -> Index:
 #: new item moves at least one of these numbers; the fix from here on is a
 #: one-line, deliberate update to this mapping in the same change that moves
 #: the corpus, not a sweep across however many places happened to narrate it.
+#: Moved on 2026-09-06 by the ADR-0004 re-seed
+#: (https://github.com/theurian/theurian/issues/579): one migration, one body and
+#: one evidence file joined, so ``tracked_paths`` moved by three and the two
+#: item-level counts did not move at all -- the re-seed supersedes a revision of an
+#: item the corpus already held, and that item already had more than one.
 EXPECTED_CORPUS_POPULATION: Final[Mapping[str, int]] = MappingProxyType(
     {
-        "tracked_migrations": 48,
-        "bodies": 48,
-        "evidence_files": 48,
+        "tracked_migrations": 49,
+        "bodies": 49,
+        "evidence_files": 49,
         "gitkeep_placeholders": 3,
-        "tracked_paths": 147,
+        "tracked_paths": 150,
         "distinct_items": 26,
         "multi_revision_items": 16,
     }

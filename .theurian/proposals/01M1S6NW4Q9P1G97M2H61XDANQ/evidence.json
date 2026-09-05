@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M1S6NW4Q9P1G97M2H61XDANQ",
+  "migrationId": "01M1S6NW4Q9P1G97M2H61XDANR",
+  "itemId": "architecture.sqlite-is-a-derived-artifact",
+  "agentId": "claude-code-theurian-docs",
+  "taskId": "579-reseed-adr-0004-twin",
+  "model": "claude-opus-5",
+  "reasoning": "Verbatim copy of the tracked ADR-0004 at 46d0e869, read from the working tree at that commit. The tracked document is the source of truth. The revision this supersedes pins the pre-amendment body, so Theurian own agents retrieve superseded text labelled approved and reviewed while the source carries the Milestone 8 amendment (#579).",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "46d0e869b7a450ecf9a0820e327c40c9ee6c2f67",
+      "filePath": "docs/adr/0004-sqlite-is-a-derived-artifact.md"
+    }
+  ]
+}
