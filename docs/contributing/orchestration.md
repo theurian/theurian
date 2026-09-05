@@ -186,6 +186,13 @@ excluded from the published documentation site for that reason.
     anchor**, returning 0 — and a 0 == 0 comparison false-passes.
 - Byte-compare commit messages after any rebase. `cleanup=strip` removes
   column-0 `#` lines — an issue reference in a body vanishes silently.
+- Grep your own commit body for `^Review-Finding:` before committing. Prose that
+  wraps the token to column 0 is indistinguishable from a trailer to every
+  collector, so it inflates the branch count, breaks the branch-versus-merge
+  comparison above, and enters the served findings corpus as a finding whose
+  text is half a sentence. This file's own introducing branch produced one and
+  had to rewrite the commit to remove it. Keep the token off column 0 anywhere
+  it is not a real trailer.
 - Re-sign after any history rewrite. An unsigned rewrite blocks the merge with no
   failing check to point at.
 - Check **where** each CHANGELOG entry landed after any rebase or merge across a
