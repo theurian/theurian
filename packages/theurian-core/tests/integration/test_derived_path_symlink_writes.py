@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -529,6 +530,96 @@ def test_the_out_of_tree_ingest_refusal_names_the_cache_directory(project: Path)
     envelope = _assert_refused_cleanly(_run("ingest"))
 
     _assert_names_the_derived_directory(envelope, ".theurian/cache", "theurian ingest")
+
+
+# -- The `mkdir` beside that write, which is not a link at all ---------------
+
+
+def test_ingest_answers_a_regular_file_where_the_cache_directory_belongs(project: Path) -> None:
+    """Round one, code review H-2: the `mkdir` sat outside the handler's ``try``.
+
+    ``init`` creates ``.theurian/cache`` as a directory, so this plant has to
+    *replace* it -- an earlier attempt wrote into it and measured nothing, which
+    is the shape a fixture failure takes when it looks like a passing test.
+
+    Measured on the branch before the fix: exit 1, **zero bytes on stdout**, and a
+    Rich traceback naming ``commands.py``'s ``mkdir`` line. ``exist_ok=True``
+    suppresses the error only when what is already there is a directory, so a
+    regular file raises ``FileExistsError`` one line above the ``except`` that
+    owed the caller a document.
+    """
+    cache = project / ".theurian/cache"
+    shutil.rmtree(cache, ignore_errors=True)
+    cache.write_text("not a directory\n", encoding="utf-8")
+
+    envelope = _assert_refused_cleanly(_run("ingest"))
+
+    assert ".theurian/cache" in envelope["remedy"], (
+        f"the cure does not name the directory in the way: {envelope['remedy']}"
+    )
+
+
+@_NEEDS_SYMLINKS
+def test_ingest_answers_a_committed_link_to_nowhere_at_the_cache_directory(project: Path) -> None:
+    """The same `mkdir`, reached by the artefact a clone actually delivers.
+
+    A regular file at ``.theurian/cache`` is something a person put there; a
+    symbolic link naming a path that does not exist is something a repository
+    carries, force-added past ADR-0004's ignore, and it is the shape #394 is
+    about. Both raise ``FileExistsError`` (errno 17, measured) through the same
+    call: ``exist_ok=True`` suppresses ``EEXIST`` only once ``is_dir()`` agrees,
+    and it follows the link to answer. Measured before the fix, this produced the
+    identical exit 1 with an empty machine channel.
+    """
+    cache = project / ".theurian/cache"
+    shutil.rmtree(cache, ignore_errors=True)
+    cache.symlink_to(Path("..") / "nowhere-at-all")
+
+    envelope = _assert_refused_cleanly(_run("ingest"))
+
+    assert ".theurian/cache" in envelope["remedy"]
+
+
+@_NEEDS_SYMLINKS
+def test_ingest_still_writes_through_a_contained_link_at_the_cache_directory(project: Path) -> None:
+    """The narrowness control: a *contained* directory link is not an escape.
+
+    ``.theurian/cache -> ../elsewhere`` resolves inside the working tree, so
+    containment passes it and the manifest lands at the link's target. Nothing is
+    destroyed and nothing leaves the tree, so refusing it would be a fix reaching
+    past its own class -- and without this row, tightening the two refusals above
+    into "any link at `.theurian/cache`" would read as green.
+
+    ``O_NOFOLLOW`` does not see this one either: it constrains the manifest's own
+    final component, and the link here is a *prefix* directory. That is the bound
+    ``no_follow``'s module docstring records, driven rather than asserted.
+    """
+    (project / "elsewhere").mkdir()
+    cache = project / ".theurian/cache"
+    shutil.rmtree(cache, ignore_errors=True)
+    cache.symlink_to(Path("..") / "elsewhere", target_is_directory=True)
+
+    ran = _run("ingest")
+
+    assert ran.exit_code == 0, f"a contained directory link was refused: {ran.stderr}"
+    assert json.loads((project / "elsewhere/ingestion.json").read_text(encoding="utf-8"))
+
+
+def test_ingest_answers_a_directory_where_the_manifest_belongs(project: Path) -> None:
+    """The third artefact this arm's remedy names, and the one that already worked.
+
+    Pinned beside the two the H-2 fix added because the remedy now names three
+    causes in one sentence, and a cure that lists a cause nothing produces is the
+    same defect as one that omits a cause that happens.
+    """
+    manifest = project / ".theurian/cache/ingestion.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.mkdir()
+
+    envelope = _assert_refused_cleanly(_run("ingest"))
+
+    assert "IsADirectoryError" in envelope["error"]
+    assert ".theurian/cache/ingestion.json" in envelope["remedy"]
 
 
 # -- AC4: the local access token ---------------------------------------------

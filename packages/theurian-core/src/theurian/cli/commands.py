@@ -2278,17 +2278,32 @@ class _Resolver:
 #: arm that is *not* a symbolic link, which names its own cure
 #: (:func:`~theurian.security.no_follow.symbolic_link_remedy`).
 #:
-#: Names removing the file as well as making the directory writable, because a
-#: directory at the manifest's own name refuses the write while
-#: `.theurian/cache/` is perfectly writable -- the shape
-#: ``_UNWRITABLE_INDEX_POINTER_REMEDY`` names for the pointer beside it. Nothing
-#: here instructs deleting anything authored: the whole subtree is derived
-#: (ADR-0004) and one `theurian ingest` rebuilds it.
+#: Names three places rather than one, because three different artefacts reach
+#: this arm and each is cured somewhere else. Measured against the real CLI
+#: 2026-09-05, one row per artefact:
+#:
+#: * a **directory at the manifest's own name** -- ``IsADirectoryError``, while
+#:   ``.theurian/cache/`` is perfectly writable;
+#: * **something that is not a directory at ``.theurian/cache``** -- a regular
+#:   file, or a committed link to a path that is not a directory (missing, or a
+#:   regular file). All three raise ``FileExistsError`` (errno 17, measured) from
+#:   the ``mkdir`` the round-one H-2 fix moved inside the handler's ``try``:
+#:   ``exist_ok=True`` suppresses ``EEXIST`` only after ``is_dir()`` agrees, and
+#:   it follows the link to answer. A link to a directory *inside* the tree is
+#:   therefore not in this set -- ``mkdir`` succeeds and the manifest lands at the
+#:   link's target, which is contained and correct;
+#: * a **``.theurian/cache/`` this process cannot write** -- ``PermissionError``.
+#:
+#: Telling a reader to check only the leaf would send them to a file that is not
+#: there for two of the three. Nothing here instructs deleting anything authored:
+#: the whole subtree is derived (ADR-0004) and one `theurian ingest` rebuilds it.
 _UNWRITABLE_MANIFEST_REMEDY: Final = (
-    "Make sure `.theurian/cache/ingestion.json` is a writable file or absent -- a "
-    "directory at that path refuses the write, and a `.theurian/cache/` this process "
-    "cannot write refuses it too -- then run `theurian ingest` again. The manifest only "
-    "records which sources have already been parsed, so nothing authored is at risk."
+    "Make sure `.theurian/cache` is a directory this user can write, and that "
+    "`.theurian/cache/ingestion.json` is a writable file or absent -- a regular file or a "
+    "broken symbolic link where the directory belongs refuses the write, and so does a "
+    "directory at the manifest's own name. Remove whatever is in the way, then run "
+    "`theurian ingest` again. The manifest only records which sources have already been "
+    "parsed, so nothing authored is at risk."
 )
 
 
@@ -2359,8 +2374,20 @@ def ingest_command(as_json: JsonOption = False) -> None:
         )
     )
 
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
     try:
+        # **Inside the `try`, and that is the whole of what a round-one finding
+        # moved** (code review H-2). The `mkdir` sat above it, so a regular file
+        # at `.theurian/cache` -- or a committed link to a path that does not
+        # exist, which a clone delivers just as easily -- raised `FileExistsError`
+        # or `NotADirectoryError` one line before the handler that owed it a
+        # document. Measured against the real CLI: exit 1, **zero bytes on
+        # stdout**, and a Rich traceback naming this line. Exactly the CP-2 shape
+        # the comment above claims this command no longer has, which is why the
+        # comment was as wrong as the code.
+        #
+        # `exist_ok=True` does not cover it: that suppresses the error only when
+        # what is already there is a *directory*.
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
         write_text_without_following_a_link(
             manifest_path,
             json.dumps(manifest_from(report, previous), indent=2, sort_keys=True) + "\n",
@@ -2368,7 +2395,8 @@ def ingest_command(as_json: JsonOption = False) -> None:
     except OSError as exc:
         # Two shapes, one `except`. A symbolic link at the manifest is the #394
         # face and names its own cure; anything else -- a read-only
-        # `.theurian/cache/`, a directory at the manifest's name, a full disk --
+        # `.theurian/cache/`, something that is not a directory at
+        # `.theurian/cache`, a directory at the manifest's name, a full disk --
         # is an ordinary write fault, and both used to end `--json` in a Rich
         # traceback with an empty machine channel (CP-2). The parse work is
         # already done and its report is lost either way, which is why the
@@ -2382,8 +2410,11 @@ def ingest_command(as_json: JsonOption = False) -> None:
                 code=EXIT_STATE_ERROR,
             )
             return
-        # The type name, never the message: an `OSError`'s `str` appends the
-        # operator's absolute path, which no payload in this module puts in.
+        # The type name, never the message. Not because "no payload in this module
+        # puts an absolute path in" -- that was false when it was written, and
+        # `_fail_a_path_escape` and every `_fail(str(exc), ...)` site here carry
+        # one. It follows the two payloads that *do* keep them out on purpose:
+        # `_purge_fields`' failure reason and `_record_the_scan`'s warning.
         _fail(
             f"The sources were parsed, but the ingestion manifest could not be written "
             f"({type(exc).__name__}), so the next run reparses every source rather than "
