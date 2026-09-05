@@ -169,30 +169,8 @@ async def run_bounded(
             spawned or does not finish inside ``timeout``. Both kill the child
             first, so no refusal leaves a process behind.
     """
-    try:
-        # The vector is the adapter's: an absolute binary path, literal flags, a
-        # literal GraphQL document, and `name=value` variable bindings. No
-        # element is derived by formatting a repository name into a path, and no
-        # shell is involved -- `create_subprocess_shell` appears nowhere here.
-        child = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=dict(env),
-        )
-    except OSError as exc:
-        raise ReviewIngestRefusedError(
-            RefusalGrade.TOOL_FAILED,
-            f"Review ingestion could not start the GitHub CLI: {exc.strerror or exc}.",
-        ) from exc
-
-    if child.stdout is None or child.stderr is None:  # pragma: no cover - PIPE is requested above
-        raise ReviewIngestRefusedError(
-            RefusalGrade.TOOL_FAILED,
-            "Review ingestion could not read the GitHub CLI's output streams.",
-        )
-
-    draining = asyncio.create_task(_drain_capped(child.stderr, MAX_CHILD_STDERR_BYTES))
+    child, stdout, errors = await _start(args, env)
+    draining = asyncio.create_task(_drain_capped(errors, MAX_CHILD_STDERR_BYTES))
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     chunks: list[bytes] = []
@@ -202,7 +180,7 @@ async def run_bounded(
             remaining = deadline - loop.time()
             if remaining <= 0:
                 raise TimeoutError
-            chunk = await asyncio.wait_for(child.stdout.read(_CHUNK_BYTES), remaining)
+            chunk = await asyncio.wait_for(stdout.read(_CHUNK_BYTES), remaining)
             if not chunk:
                 break
             total += len(chunk)
@@ -225,8 +203,43 @@ async def run_bounded(
             f"{timeout:g}-second request timeout (SEC-19), so it was stopped.",
         ) from exc
 
-    stderr = await draining
-    return ChildOutcome(returncode=child.returncode or 0, stdout=b"".join(chunks), stderr=stderr)
+    contained = await draining
+    return ChildOutcome(returncode=child.returncode or 0, stdout=b"".join(chunks), stderr=contained)
+
+
+async def _start(
+    args: Sequence[str], env: Mapping[str, str]
+) -> tuple[asyncio.subprocess.Process, asyncio.StreamReader, asyncio.StreamReader]:
+    """Spawn ``args`` and hand back the child with its two pipes, narrowed.
+
+    Split out of :func:`run_bounded` so that "start a process" and "read its
+    output against a cap" are two things a reader can check separately -- the
+    second is the property clause 10 is about, and it is easier to see when it is
+    not sharing a function with the spawn's own failure handling.
+    """
+    try:
+        # The vector is the adapter's: an absolute binary path, literal flags, a
+        # literal GraphQL document, and `name=value` variable bindings. No
+        # element is derived by formatting a repository name into a path, and no
+        # shell is involved -- `create_subprocess_shell` appears nowhere here.
+        child = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=dict(env),
+        )
+    except OSError as exc:
+        raise ReviewIngestRefusedError(
+            RefusalGrade.TOOL_FAILED,
+            f"Review ingestion could not start the GitHub CLI: {exc.strerror or exc}.",
+        ) from exc
+
+    if child.stdout is None or child.stderr is None:  # pragma: no cover - PIPE is requested above
+        raise ReviewIngestRefusedError(
+            RefusalGrade.TOOL_FAILED,
+            "Review ingestion could not read the GitHub CLI's output streams.",
+        )
+    return child, child.stdout, child.stderr
 
 
 async def _drain_capped(stream: asyncio.StreamReader, cap: int) -> str:

@@ -360,22 +360,7 @@ class GitHubReviewProvider:
         """One review thread, its comments, and its resolution if it has one."""
         external_id = _required_text(node.get("id"), "review thread id")
         comments = _mapping(node.get("comments"))
-        if _mapping(comments.get("pageInfo")).get("hasNextPage") is True:
-            raise ReviewIngestRefusedError(
-                RefusalGrade.LIMIT_EXCEEDED,
-                f"Review thread {external_id} on {event.repository}#{event.number} "
-                f"carries more than the recorded {MAX_COMMENTS_PER_THREAD}-comment cap. "
-                f"The read stopped rather than recording a thread that looks whole and "
-                f"is not.",
-            )
-        built = tuple(_comment(comment) for comment in _nodes(comments))
-        if not built:
-            raise ReviewIngestRefusedError(
-                RefusalGrade.TOOL_FAILED,
-                f"GitHub returned review thread {external_id} on "
-                f"{event.repository}#{event.number} with no comments, which is not a "
-                f"thread this adapter can record.",
-            )
+        built = self._comments_of(comments, external_id, event)
         resolved = node.get("isResolved") is True
         state = (
             ReviewThreadState.RESOLVED
@@ -409,6 +394,35 @@ class GitHubReviewProvider:
                 _mapping(_nodes(comments)[0].get("originalCommit")).get("oid")
             ),
         )
+
+    def _comments_of(
+        self, comments: Mapping[str, Any], external_id: str, event: ReviewEvent
+    ) -> tuple[ReviewComment, ...]:
+        """One thread's comments, refusing rather than recording a partial thread.
+
+        Two graded stops, and both exist because a record that *looks* whole and
+        is not is worse than a refusal that says which thread it was. The
+        provider paginates comments, so a thread past the recorded cap would
+        otherwise arrive silently truncated; and a thread with none at all is
+        not a shape ``ReviewThread`` can hold.
+        """
+        if _mapping(comments.get("pageInfo")).get("hasNextPage") is True:
+            raise ReviewIngestRefusedError(
+                RefusalGrade.LIMIT_EXCEEDED,
+                f"Review thread {external_id} on {event.repository}#{event.number} "
+                f"carries more than the recorded {MAX_COMMENTS_PER_THREAD}-comment cap. "
+                f"The read stopped rather than recording a thread that looks whole and "
+                f"is not.",
+            )
+        built = tuple(_comment(comment) for comment in _nodes(comments))
+        if not built:
+            raise ReviewIngestRefusedError(
+                RefusalGrade.TOOL_FAILED,
+                f"GitHub returned review thread {external_id} on "
+                f"{event.repository}#{event.number} with no comments, which is not a "
+                f"thread this adapter can record.",
+            )
+        return built
 
 
 # -- reading a response's shapes without trusting them ------------------------
