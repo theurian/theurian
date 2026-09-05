@@ -34,15 +34,20 @@ provably-sequential `subprocess.run`).
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import fcntl
 import json
+import os
 import re
 import shlex
 import shutil
 import subprocess
-from collections.abc import Iterator
+import sys
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pytest
 from migration_fixtures import body_pin
@@ -60,6 +65,11 @@ pytestmark = pytest.mark.integration
 runner = CliRunner()
 
 EXIT_STATE_ERROR = 4
+
+#: A `chmod` cannot refuse root, and Windows has no POSIX mode bits at all --
+#: the same guard `test_cli_commands.py` and `test_auth_rotate.py` use before a
+#: permission-refusal test. Offline CI runs as root, where a mode denies nothing.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
 MIGRATION_ID = "01K1EEEEEE01234567890ABCDE"
 REVISION_ID = "01K1EEEREV01234567890ABCDE"
@@ -394,6 +404,22 @@ def test_a_lock_file_symlinked_onto_a_file_in_the_tree_never_truncates_that_file
         f"generic fallback that lands here when a self-describing subtype's own "
         f"remedy is dropped sends them to their migration set instead: {remedy!r}"
     )
+    # M-B. The `ELOOP` branch is what makes this artefact describable, and
+    # deleting it survived the whole suite: a real symbolic link stopped being
+    # called one, and every assertion here was about the remedy. The sibling
+    # property -- that the *other* artefacts are never called links -- has been
+    # asserted since #520; this is the half that says the link still is.
+    #
+    # Keyed on the class's own clause and not on the words "symbolic link",
+    # because a first cut of this assertion passed under exactly the mutation it
+    # was written for: with the branch deleted, the generic shape publishes
+    # `strerror`, and the OS phrase for `ELOOP` is "Too many levels of symbolic
+    # links". The substring was in the message for the wrong reason.
+    assert "is a symbolic link, not a lock file" in str(error_payload.get("error", "")), (
+        f"a symbolic link at the lock path is no longer described as one, so the "
+        f"reader is told a file could not be opened and left to find the link "
+        f"themselves: {error_payload.get('error')!r}"
+    )
 
 
 def test_an_ordinary_lock_file_is_still_taken_and_the_apply_succeeds(
@@ -655,3 +681,393 @@ def test_a_directory_at_the_active_pointer_temp_path_fails_cleanly(project: Path
     assert "error" in error_payload
     assert "remedy" in error_payload
     assert not paths.active_pointer.exists()
+
+
+# -- A lock the open cannot take is a refusal, not a traceback (#520) ---------
+#
+# Both calls the write lock's own `held` makes before it has a descriptor now
+# translate their own `OSError` into `WriteLockUnusableError`: the open, and the
+# `mkdir` on the lock's parent beside it. Until this section landed the open translated exactly
+# one shape -- the `O_NOFOLLOW` `ELOOP` a symbolic link at the final component
+# produces -- and the `mkdir` translated none, while every handler that could
+# catch one narrows to `TheurianError`: `migrate apply`'s `except TheurianError`
+# around the whole critical section, `findings build`'s, and
+# `write_transaction`'s. So an ordinary filesystem condition at the lock path
+# left `--json` with a Rich traceback and an empty machine channel.
+#
+# Four artefacts a clone or a bad umask really delivers, each measured producing
+# exit 1, **zero bytes of stdout and zero bytes of stderr**, and an uncaught
+# exception -- the first three on `491bded6`, the fourth on the commit that added
+# it here:
+#
+#   - a directory at `.theurian/runtime/write.lock` -> `IsADirectoryError`;
+#   - a lock file at mode 0000 -> `PermissionError`;
+#   - `.theurian/runtime` at mode 0500 with no lock file yet -> `PermissionError`
+#     from the `O_CREAT`;
+#   - `.theurian/runtime` absent under a `.theurian` at mode 0500 ->
+#     `PermissionError` from the `mkdir`, one call earlier than the other three
+#     and found by a different key: reading `held`, not sweeping the lock path.
+#
+# **A FIFO is deliberately not among them.** `O_WRONLY` on a FIFO with no reader
+# blocks, so that artefact hangs inside the open rather than raising, and closing
+# it needs a different change (#526, the lock face). Nothing here plants one, and
+# every arm below passes without that fix.
+
+
+@dataclass(frozen=True, slots=True)
+class UnusableLock:
+    """One artefact at the lock path that the lock open cannot accept.
+
+    ``plant`` is handed the lock path and leaves the artefact there; ``restore``
+    puts the tree back far enough for the fixture teardown to remove it, which a
+    directory at mode 0500 otherwise refuses.
+    """
+
+    label: str
+    plant: Callable[[Path], None]
+    restore: Callable[[Path], None]
+    needs_a_mode_that_denies: bool
+    #: ``True`` for the artefact that stops the acquisition at the ``mkdir``, one
+    #: call before the open. It is the only one whose refusal must describe a
+    #: directory that could not be *prepared*; the other three describe a file
+    #: that could not be opened, and publishing that sentence here would be false
+    #: about a call that never ran.
+    stops_at_the_directory: bool = False
+
+
+def _plant_a_directory(lock: Path) -> None:
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.unlink(missing_ok=True)
+    lock.mkdir()
+
+
+def _plant_an_unreadable_lock_file(lock: Path) -> None:
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.unlink(missing_ok=True)
+    lock.touch()
+    lock.chmod(0o000)
+
+
+def _plant_a_runtime_directory_that_denies_creation(lock: Path) -> None:
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.unlink(missing_ok=True)
+    lock.parent.chmod(0o500)
+
+
+def _plant_a_knowledge_directory_that_denies_the_runtime_create(lock: Path) -> None:
+    """Take ``.theurian/runtime`` away and make ``.theurian`` refuse to recreate it.
+
+    The one artefact that stops the acquisition *before* the open: ``held`` runs
+    ``mkdir(parents=True, exist_ok=True)`` on the lock's parent first, and with
+    the parent absent that is a real create rather than the ``EEXIST`` the other
+    three plants produce. Mode ``0500`` on ``.theurian`` leaves every read the
+    command makes on the way here working -- the migration set and the state
+    directory are both still traversable -- so the first thing that fails is the
+    ``mkdir``.
+    """
+    shutil.rmtree(lock.parent, ignore_errors=True)
+    lock.parent.parent.chmod(0o500)
+
+
+UNUSABLE_LOCKS: Final = (
+    UnusableLock(
+        label="a directory where the lock file belongs",
+        plant=_plant_a_directory,
+        restore=lambda lock: shutil.rmtree(lock, ignore_errors=True),
+        needs_a_mode_that_denies=False,
+    ),
+    UnusableLock(
+        label="a lock file this process may not open",
+        plant=_plant_an_unreadable_lock_file,
+        restore=lambda lock: lock.chmod(0o600),
+        needs_a_mode_that_denies=True,
+    ),
+    UnusableLock(
+        label="a runtime directory that refuses the create",
+        plant=_plant_a_runtime_directory_that_denies_creation,
+        restore=lambda lock: lock.parent.chmod(0o700),
+        needs_a_mode_that_denies=True,
+    ),
+    UnusableLock(
+        label="a knowledge directory that refuses to recreate runtime",
+        plant=_plant_a_knowledge_directory_that_denies_the_runtime_create,
+        restore=lambda lock: lock.parent.parent.chmod(0o700),
+        needs_a_mode_that_denies=True,
+        stops_at_the_directory=True,
+    ),
+)
+
+
+def _the_acquisition_really_refuses(lock: Path) -> bool:
+    """Whether taking the lock actually fails over the planted artefact.
+
+    The positive control on the plant. A mode denies nothing to root and nothing
+    on a filesystem that ignores permission bits, and a plant that quietly
+    permitted the acquisition would leave the assertions below describing a
+    *successful* apply -- green, and about nothing.
+
+    Both calls ``held`` makes before it has a descriptor are issued here, in that
+    order and with the same arguments: the ``mkdir`` on the lock's parent, then
+    the ``open`` with the flags the write lock's own ``_open`` uses. Probing only
+    the open would answer ``True`` for the ``mkdir`` plant by accident -- the lock
+    file is missing, so the open fails with ``ENOENT`` whether or not the
+    ``mkdir`` was refused -- and a plant whose refusal the probe cannot attribute
+    is a plant that can go quietly wrong.
+
+    ``ELOOP`` is excluded because ``O_NOFOLLOW`` returns it for a symbolic link,
+    which is #481's artefact and has its own test above.
+    """
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return True
+    try:
+        handle = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        return exc.errno != errno.ELOOP
+    os.close(handle)
+    return False
+
+
+@pytest.mark.parametrize("artefact", UNUSABLE_LOCKS, ids=lambda case: case.label)
+def test_a_lock_the_open_cannot_take_is_refused_as_a_document(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artefact: UnusableLock
+) -> None:
+    """Issue #520 (CP-2). RED at ``491bded6``, GREEN since ``_open`` converts.
+
+    A ``--json`` caller receives one ``{error, remedy}`` document on stderr and
+    an empty stdout, whatever is at the lock path. Before the conversion widened
+    it received *nothing* on either channel for all three artefacts: the
+    ``OSError`` walked past ``migrate apply``'s ``except TheurianError`` and Typer
+    rendered it as a boxed traceback with absolute source paths -- a caller
+    parsing stdout could not tell a refusal from a crash, and the operator was
+    handed the product's internals instead of a cure.
+
+    **The assertions are observables, never the mechanism.** Which exception the
+    conversion raises, and whether ``_open`` widens its ``except`` or checks the
+    path first, is the implementation's business. What is pinned is what reaches
+    the caller: the exit code every other state-integrity refusal uses, a clean
+    machine channel, and a remedy naming the file to act on.
+
+    **The refusal must not describe the artefact as a symbolic link.** None of
+    these three is one, and ``WriteLockUnusableError``'s message said "is a
+    symbolic link, not a lock file" unconditionally -- correct for the #481 case
+    it was written for and false for every artefact here. A published sentence
+    that is false about the thing it describes sends the reader looking for a
+    link that is not there; a widened translation that reused the old wording was
+    the likely shape of the fix, and this is what refuses it. The shipped
+    conversion keys the sentence on the errno instead, so ``ELOOP`` still
+    publishes it and nothing else does.
+    """
+    if artefact.needs_a_mode_that_denies and _CANNOT_BE_REFUSED_BY_A_MODE:
+        pytest.skip("POSIX permission bits, and not as root")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _write_migration(project)
+    lock = _lock_path(project)
+    artefact.plant(lock)
+    try:
+        if not _the_acquisition_really_refuses(lock):
+            pytest.skip(f"this filesystem accepts the lock over {artefact.label}")
+
+        result = runner.invoke(app, ["migrate", "apply", "--json"])
+
+        escaped = None if isinstance(result.exception, SystemExit) else result.exception
+        assert escaped is None, (
+            f"the refusal over {artefact.label} escaped `--json` as a traceback "
+            f"rather than an envelope: {escaped!r}"
+        )
+        assert result.exit_code == EXIT_STATE_ERROR, (
+            "a lock this command cannot take is a knowledge-state problem the "
+            "user must repair, graded like every other one"
+        )
+        assert result.stdout == ""
+        payload = json.loads(result.stderr)
+        assert payload.get("error"), payload
+        remedy = str(payload.get("remedy", ""))
+        names_the_lock_file = lock.relative_to(project).as_posix()
+        assert names_the_lock_file in remedy, (
+            f"the remedy does not name {names_the_lock_file}, the file the operator "
+            f"has to deal with, so it is a sentence rather than a cure: {remedy!r}"
+        )
+        # M-C. `_refusal_text` publishes `strerror` and never `str(cause)`,
+        # because the `str` spelling appends the filename and the remedy beside
+        # it already prints the absolute path once. A mutation swapping the two
+        # survived the whole suite: the message read identically to a reader and
+        # carried the operator's absolute path into a second channel.
+        assert str(project) not in str(payload.get("error", "")), (
+            f"the published error carries the absolute path, which belongs in the "
+            f"remedy and nowhere else: {payload.get('error')!r}"
+        )
+        if artefact.stops_at_the_directory:
+            # M-A. The three-shape split is #520's whole point, and a mutation
+            # deleting the `creating_the_parent` branch collapsed shape 3 into
+            # shape 2 -- publishing "could not be opened" about an `open` that
+            # never ran, under a cure telling the reader to remove a lock file
+            # that is not there. The suite stayed green, because every assertion
+            # asked whether the remedy named the lock path, which shape 2 also
+            # does.
+            error = str(payload.get("error", ""))
+            assert "could not be opened" not in error, (
+                f"the refusal describes a failed `open` for an artefact that stopped "
+                f"the acquisition at the `mkdir`, one call earlier: {error!r}"
+            )
+            assert "directory holding the write lock" in error, (
+                f"the refusal does not say the directory could not be prepared, so a "
+                f"reader cannot tell which of the two calls refused: {error!r}"
+            )
+        if not (lock.exists() or lock.is_symlink()):
+            # Two of the four artefacts leave *nothing* at the lock path -- the
+            # `0500` runtime directory refusing the `O_CREAT`, and the
+            # `.theurian` that will not recreate `runtime/` -- and a cure that
+            # opens "remove whatever is at <lock path>" sends the reader to
+            # delete a file that is not there, past the permission that is the
+            # actual fix. Same defect as the symbolic-link sentence below, in the
+            # remedy rather than the message.
+            assert "Remove whatever is at" not in remedy, (
+                f"nothing is at {lock}, and the cure opens by telling the reader to "
+                f"remove it: {remedy!r}"
+            )
+        published = f"{payload.get('error', '')}\n{remedy}"
+        assert "symbolic link" not in published, (
+            f"the refusal calls {artefact.label} a symbolic link, which it is not; "
+            f"the reader is sent to look for a link that does not exist: {published!r}"
+        )
+    finally:
+        artefact.restore(lock)
+
+
+# -- A fault inside the transaction must not delete the state (#521) ----------
+
+
+def _state_database(project: Path) -> Path:
+    (database,) = (project / ".theurian/state").glob("theurian-state-*.sqlite")
+    return database
+
+
+def _apply_once(project: Path) -> Path:
+    """Build the corpus's canonical state, and return the provenanced database.
+
+    Provenance is asserted rather than assumed: the ``created is False`` arm of
+    ``migrate apply`` -- the one this section is about -- is reached only for a
+    database this installation built and recorded. Without the record, the apply
+    takes the *discard-untrusted-state* branch instead, deletes the file on
+    purpose, and a test written against that path would be pinning the opposite
+    behaviour.
+    """
+    _write_migration(project)
+    applied = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
+    assert applied.exit_code == 0, applied.stderr
+    state_hash = str(json.loads(applied.stdout)["stateHash"])
+    assert BuildProvenance.default().has_state(project, state_hash), (
+        "the corpus is not provenanced, so a re-apply would take the discard "
+        "branch and this pin would be about a different code path"
+    )
+    return _state_database(project)
+
+
+def _assert_the_state_survived(project: Path, database: Path, before: bytes) -> None:
+    """The whole property: a failed command is not allowed to become data loss."""
+    assert database.exists(), (
+        "the failed apply deleted the canonical state database it could not write "
+        "to -- every revision the project ever recorded, removed because an "
+        "unrelated fault interrupted one transaction"
+    )
+    assert database.read_bytes() == before, (
+        "the failed apply changed the canonical state database's bytes; a "
+        "transaction that could not proceed must leave the file as it found it"
+    )
+    after = runner.invoke(app, ["migrate", "status", "--json"], catch_exceptions=False)
+    assert after.exit_code == 0, after.stderr
+    assert json.loads(after.stdout)["stateBuilt"] is True, (
+        "the project no longer reports built state after a failed apply"
+    )
+
+
+def test_a_fault_inside_the_transaction_leaves_the_provenanced_state_untouched(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #521: pin the no-cleanup decision the transaction backstop records.
+
+    ``migrate apply``'s ``(OSError, sqlite3.Error)`` handler around
+    ``apply_migration_set`` deliberately does **not** unlink, and section A's
+    handler a few lines above deliberately does -- the asymmetry is the whole
+    point, and its reasoning is written into the code: section A may have left a
+    half-written file it just created, while here the database is very often one
+    this installation built and provenanced, so "deleting a live state because an
+    unrelated fault interrupted a write would turn a failed command into data
+    loss".
+
+    That reasoning was measured during #518 and pinned by nothing. Adding
+    ``_unlink_database_and_sidecars(database)`` to this handler passed the whole
+    suite: no test forced a fault at this point against a database worth keeping.
+    GREEN before and after, and RED under exactly that mutation.
+
+    The fault is injected at ``apply_migration_set`` rather than produced on
+    disk, so the arm runs everywhere -- including as root, where the read-only
+    companion below cannot. ``database_created`` is read off the call to prove the
+    injection landed in the ``created is False`` arm; a fixture that had not
+    applied first would inject into section A's territory and pin nothing.
+    """
+    database = _apply_once(project)
+    before = database.read_bytes()
+    created_flags: list[Any] = []
+
+    def raise_inside_the_transaction(**kwargs: Any) -> None:
+        created_flags.append(kwargs.get("database_created"))
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr("theurian.cli.commands.apply_migration_set", raise_inside_the_transaction)
+
+    result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
+
+    assert created_flags == [False], (
+        f"the fault did not land in the pre-existing-database arm: {created_flags}"
+    )
+    assert result.exit_code == EXIT_STATE_ERROR
+    assert result.stdout == ""
+    payload = json.loads(result.stderr)
+    assert payload.get("error")
+    assert payload.get("remedy")
+    _assert_the_state_survived(project, database, before)
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_real_write_fault_inside_the_transaction_leaves_the_state_untouched(
+    project: Path,
+) -> None:
+    """The same property with the fault produced on disk rather than injected.
+
+    A read-only canonical database: ``sqlite3.connect`` succeeds, ``_prepare``
+    runs, and ``BEGIN IMMEDIATE`` fails with SQLite's own "attempt to write a
+    readonly database" -- a ``sqlite3.Error`` reaching the same backstop by the
+    route a real filesystem produces, with no production symbol replaced. The
+    companion above is what covers the platforms where a mode denies nothing;
+    this is what proves the injected arm is not merely testing a mock.
+
+    Re-applying the *same* migration set on purpose: adding a migration would
+    move the state hash, and the apply would build a new database rather than
+    meeting the fault at the provenanced one this pin is about.
+    """
+    database = _apply_once(project)
+    for sidecar in ("-wal", "-shm"):
+        database.with_name(f"{database.name}{sidecar}").unlink(missing_ok=True)
+    before = database.read_bytes()
+    database.chmod(0o444)
+    try:
+        result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
+
+        assert result.exit_code == EXIT_STATE_ERROR, result.stdout + (result.stderr or "")
+        assert result.stdout == ""
+        payload = json.loads(result.stderr)
+        assert payload.get("error")
+        assert payload.get("remedy")
+        assert database.exists(), (
+            "the failed apply deleted a canonical state database it merely could not write to"
+        )
+        assert database.read_bytes() == before
+    finally:
+        # The file may be gone, which is the failure this test exists to catch --
+        # so a teardown that raised over its absence would replace that message
+        # with a `FileNotFoundError` from `chmod` and hide what went wrong.
+        with contextlib.suppress(OSError):
+            database.chmod(0o644)

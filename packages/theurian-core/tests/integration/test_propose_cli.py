@@ -21,6 +21,7 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 from types import FunctionType
 from typing import Any
@@ -32,6 +33,7 @@ from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from typer.testing import CliRunner
 
 from theurian.application import migration_alias_guards, migration_body_guards, migration_engine
+from theurian.application.project_service import KNOWLEDGE_DIR_ESCAPE_REMEDY
 from theurian.application.proposal_service import _AT_BODY_CONTENT
 from theurian.cli import commands, migration_pipeline, propose_commands
 from theurian.cli.main import app
@@ -114,6 +116,101 @@ def _invoke(*args: str) -> tuple[int, dict[str, Any]]:
 
 def _draft(root: Path, *extra: str) -> tuple[int, dict[str, Any]]:
     return _invoke(*DRAFT, "--body-file", str(root / "body.md"), "--reasoning", REASONING, *extra)
+
+
+@dataclass(frozen=True, slots=True)
+class Observation:
+    """What one command gave a caller: exit, stdout, the stderr envelope, any escape."""
+
+    exit_code: int
+    stdout: str
+    envelope: dict[str, Any] | None
+    escaped: str | None
+
+    @property
+    def remedy(self) -> str:
+        return str((self.envelope or {}).get("remedy", ""))
+
+
+def _observe(*args: str) -> Observation:
+    """Run a command and record what an operator receives, escape included.
+
+    ``catch_exceptions=True`` so an uncaught exception lands on
+    ``result.exception`` rather than raising -- that is the traceback surface, and
+    the containment arms are what keep it empty (the refusal arrives as an
+    envelope, not a boxed traceback).
+    """
+    result = runner.invoke(app, [*args, "--json"])
+    escaped = result.exception if not isinstance(result.exception, SystemExit) else None
+    stderr = (result.stderr or "").strip()
+    envelope: dict[str, Any] | None = None
+    if stderr:
+        try:
+            parsed = json.loads(stderr)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            envelope = parsed
+    return Observation(
+        exit_code=result.exit_code,
+        stdout=result.stdout,
+        envelope=envelope,
+        escaped=None if escaped is None else type(escaped).__name__,
+    )
+
+
+def _escape_the_proposals_directory(project: Path) -> Path:
+    """Replace ``.theurian/proposals`` with a symlink that leaves the working tree.
+
+    The shape a clone delivers: the directory is moved beside the tree and a
+    relative link committed in its place, force-added past the ADR-0004 ignore.
+    The target is genuinely outside the tree, which is what the containment
+    chokepoint refuses -- asserted, so the fixture cannot degrade into an in-tree
+    link that would pass containment and make the test vacuous.
+    """
+    outside = project.parent / "outside-proposals"
+    shutil.move(str(project / ".theurian" / "proposals"), str(outside))
+    (project / ".theurian" / "proposals").symlink_to(Path("..") / ".." / "outside-proposals")
+    assert not outside.resolve().is_relative_to(project.resolve()), (
+        "the fixture must place the proposals directory genuinely outside the tree"
+    )
+    return outside
+
+
+def _assert_refused_as_a_state_error(observation: Observation) -> None:
+    """The containment-refusal contract, shared by the draft and accept arms.
+
+    The exit code is the load-bearing assertion -- reverting either arm changes it
+    (draft 4->2, accept 4->1) and nothing else caught that (R2-I / R2-J). The cure
+    is held to the class remedy the refused path keys, which for
+    ``.theurian/proposals`` is :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`; asserting the
+    exact production constant rather than "non-empty" is what makes it fail on the
+    draft mis-cure, and the ``names_a_remedy`` shape (a runnable ``theurian``
+    command, per #554's burn-in) is asserted beside it so a reword that dropped the
+    action does not pass.
+    """
+    assert observation.escaped is None, (
+        f"the refusal escaped `--json` as a traceback rather than an envelope: "
+        f"{observation.escaped!r}"
+    )
+    assert observation.exit_code == EXIT_STATE_ERROR, (
+        f"a doctored `.theurian/proposals` graded exit {observation.exit_code}, not "
+        f"{EXIT_STATE_ERROR}. Exit 2 is the draft mis-cure's grade and exit 1 the "
+        f"accept fallback's -- either is the arm reverted or shadowed"
+    )
+    assert observation.stdout == "", "the machine channel is not empty on a refusal"
+    envelope = observation.envelope
+    assert envelope is not None and envelope.get("error"), (
+        f"the refusal did not arrive as a single JSON envelope on stderr: {envelope}"
+    )
+    assert observation.remedy == KNOWLEDGE_DIR_ESCAPE_REMEDY, (
+        f"the cure is not the containment class remedy the refused path keys; a "
+        f"reverted arm publishes a different one. Got: {observation.remedy!r}"
+    )
+    assert re.search(r"`theurian [a-z]", observation.remedy), (
+        f"the cure names nothing runnable (a `theurian <command>`), so it is a "
+        f"sentence rather than an action a caller can take: {observation.remedy!r}"
+    )
 
 
 # -- drafting --------------------------------------------------------------
@@ -2282,3 +2379,76 @@ def test_a_clean_acceptance_still_publishes_an_empty_finding_list(project: Path)
     assert code == 0, payload
     assert payload["secretScanPolicy"] == "block", "no config file must select block"
     assert payload["secretFindings"] == []
+
+
+# -- containment grading: a doctored `.theurian/proposals` is exit 4, not exit 2 --
+#
+# `_draft` and `propose_accept` each resolve the proposal directory through
+# `ProjectPaths`' containment chokepoint, and each carries an
+# `except ProjectPathEscapeError` arm that grades the refusal `EXIT_STATE_ERROR`
+# with the class cure (#525, via `_fail_a_path_escape`). The behaviour is
+# correct, but it rode a file-set seam: the fix wrote driving tests for `init`
+# and `findings build` -- already-swept files -- and none here, so reverting
+# either arm left the whole suite GREEN (round two's adversarial R2-I / R2-J).
+# These are those driving tests.
+#
+# The exit code is the primary assertion, and deliberately: reverting the
+# `_draft` arm falls to `except TheurianError`, which grades exit 2 with the
+# "Correct the option the message names" mis-cure -- the exact #227/#205 defect
+# the code records itself as having fixed; reverting the `propose_accept` arm
+# falls to *its* `except TheurianError`, which keeps `exc.remedy` (so the cure is
+# unchanged) but grades exit 1. Only the exit code catches the accept revert, and
+# the same assertion catches an arm *moved* below the broad `except TheurianError`
+# rather than deleted, because that shadowing produces the identical wrong grade.
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_propose_draft_over_an_escaping_proposals_symlink_is_a_state_error(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R2-I: a draft into a doctored `.theurian/proposals` grades 4 with the class cure.
+
+    A clone can force-add `.theurian/proposals` as a symbolic link out of the tree
+    past the ADR-0004 ignore; nothing the author passed is wrong and there is no
+    option to correct. Before its arm, `_draft` published exit 2 -- this command's
+    "invalid input" -- with the escape's own cure *overwritten* by "Correct the
+    option the message names", the #227/#205 mis-cure. This drives that arm: with
+    it, the refusal is `EXIT_STATE_ERROR` and the containment class cure; reverting
+    it (or moving it below `except TheurianError`) reddens here.
+    """
+    monkeypatch.setenv("HOME", str(project.parent / "home"))
+    _escape_the_proposals_directory(project)
+
+    observation = _observe(
+        *DRAFT, "--body-file", str(project / "body.md"), "--reasoning", REASONING
+    )
+
+    _assert_refused_as_a_state_error(observation)
+    assert "Correct the option the message names" not in observation.remedy, (
+        "the draft path published the #227/#205 mis-cure -- the escape's own remedy "
+        "was overwritten by the invalid-option advice for a doctored working tree"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_propose_accept_over_an_escaping_proposals_symlink_is_a_state_error(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R2-J: accepting a proposal whose directory is now a doctored symlink grades 4.
+
+    Drafted while the tree is honest, then `.theurian/proposals` is replaced by an
+    escaping symlink -- the shape a clone delivers -- and the accept resolves it
+    through the same chokepoint. Before its arm, `propose_accept` graded this exit
+    1, the code the help text reserves for "nothing landed, draft again", which is
+    false for a doctored tree the author cannot fix by re-drafting. The exit code
+    is what moves: reverting the arm keeps the cure (the fallback preserves
+    `exc.remedy`) but grades 1, so only asserting the code catches the revert.
+    """
+    monkeypatch.setenv("HOME", str(project.parent / "home"))
+    drafted_code, drafted = _draft(project)
+    assert drafted_code == 0, drafted
+    _escape_the_proposals_directory(project)
+
+    observation = _observe("propose", "accept", drafted["proposalId"])
+
+    _assert_refused_as_a_state_error(observation)

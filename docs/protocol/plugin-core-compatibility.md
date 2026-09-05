@@ -231,6 +231,43 @@ that read this code (`index.md`, `reindex.md`, `propose.md`) state the branch in
 the same change, which is the condition on taking this reading rather than the
 exemption route.
 
+A containment refusal's move from exit **1 to 4**
+([#525](https://github.com/theurian/theurian/issues/525),
+[PR #549](https://github.com/theurian/theurian/pull/549)) is the fourth decision
+recorded here, and the first that meets the *changing an exit code's meaning* row
+head-on and still declines the bump. A path under `.theurian/` that resolves
+outside the working tree used to be graded by whichever `ProjectPaths` helper
+resolved first — 0, 1 and 4 for one root cause — and now reports
+`EXIT_STATE_ERROR` at every position that was measured: the nine swept commands,
+and four more measured by hand beside them (`init`, `findings build`, `propose`,
+`propose accept`, which reported 1, 1, **2** and 1). "Uniformly" is not claimed
+for a route neither covers. The population is derived rather than listed:
+`CONTAINMENT_PLANTS` in
+`packages/theurian-core/tests/integration/test_contained_path_envelope.py` gives
+thirty-two (artefact × command) positions over the nine swept commands, six of
+which reach `theurian index build`; Core's changelog carries how many moved off 1
+and the sweep that measured them.
+
+**This is not #254's ground, and saying so is the point.** That exemption rested
+on the code having *zero* consumers. This one has three, so the "search-verified,
+plugins included" fact cannot be asserted for it. It rests instead on the
+condition #329 states one paragraph up — *the plugin commands that read this code
+state the branch in the same change* — discharged here by `index.md`,
+`reindex.md` and `propose.md` in the same commit that moves the code.
+`reindex.md` is why the condition is worth enforcing rather than reciting: it
+gated step 3, `theurian index gc`, on exit 1 alone, so an exit-4 build left the
+reclaim step ungated by the document.
+
+What supports declining the bump beyond that condition: the project is pre-1.0 on
+a `dev` line with no known external integration; the CP-2 envelope is unchanged,
+so the machine channel a client parses — one `{error, remedy}` document on
+stderr, stdout empty — does not move at all, only the number beside it; and the
+change *removes* a distinction rather than adding one, so a consumer branching on
+1-versus-4 for these refusals was branching on an inconsistency. **Scoped to
+containment refusals over a contained path**: it says nothing about `compat
+check`'s 0/2/3, which a plugin script does branch on, nor about exit 1 elsewhere
+in `index build`, which still means the build failed.
+
 On a bump: raise `CURRENT_PROTOCOL_VERSION` in Core, release Core, then update
 every client's `protocolVersion` and `coreCompatibility`, and release the
 clients. In that order — clients that stop working loudly are recoverable;

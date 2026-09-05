@@ -205,9 +205,10 @@ cannot approve knowledge"** rule below, not the front-matter
       merged is exactly how a credential reaches the corpus without a scan having
       refused it — a migration written by hand into `.theurian/migrations/` never
       passes `theurian propose accept`. Do not re-run the build; the value has to
-      be rotated and the revision superseded or the item retired. Exit 1 is the
-      other case entirely: nothing was published and the knowledge is not
-      searchable yet.
+      be rotated and the revision superseded or the item retired. Exit 1 and exit
+      4 are the other case entirely: nothing was published and the knowledge is
+      not searchable yet. On 4 the cause is the state of `.theurian/` rather than
+      the build — relay the `error` and `remedy` from stderr, and stop.
 
 ## Rules
 

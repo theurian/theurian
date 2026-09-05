@@ -97,6 +97,90 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   managed ignore cannot make a never-built machine report `clean` (ADR-0004,
   SEC-7).
 
+### Changed
+
+- **BREAKING: nineteen refusal positions over a path under `.theurian/` that
+  resolves outside the working tree move from exit 1 to exit 4**
+  ([#525](https://github.com/theurian/theurian/issues/525)). One root cause — a
+  clone carrying a symbolic link force-added past ADR-0004's ignore — was
+  answered three different exit codes, decided by which `ProjectPaths` helper
+  resolved first rather than by what was wrong: 0 from `theurian project status`
+  degrading over an escaping `active.json`, 1 from the active-pointer read over
+  the `.theurian/state`, `active.json` and `config.yaml` faces, and 4 from the
+  state-database faces closed in 0.1.0.dev18. A caller scripting against these
+  commands had to know *which file* was doctored to learn that anything was.
+
+  The counts are a measurement, not an estimate: a sweep of thirteen doctored
+  artefacts by nine commands, run at `491bded6`, and it is committed as
+  `tests/integration/test_contained_path_envelope.py` so the population stays
+  derived from the source rather than from a list.
+
+  `EXIT_STATE_ERROR` (4) is the survivor, and not by majority: it is the code
+  `theurian` already assigns to a `.theurian/migrations` symlinked out of the
+  tree — the same doctored-clone condition through a different guard. Exit 1 is
+  this CLI's "the command could not run here"; a working tree someone doctored
+  is a knowledge-state problem the user must repair, which is what 4 means. Exit
+  codes are a published contract (`docs/protocol/plugin-core-compatibility.md`),
+  so this is called out as breaking rather than carried as a detail.
+
+  **Four commands outside the sweep moved with them**, each measured against the
+  real CLI on 2026-09-05 over an escaping artefact: `theurian init` (was 1, over
+  a `.theurian/knowledge` symlink present at init time — `initialize_project`
+  reaches containment directly for every directory it creates), `theurian
+  findings build` (was 1, over `.theurian/runtime`), `theurian propose accept`
+  (was 1) and `theurian propose` (was **2** — its "invalid input" code, with the
+  escape's own cure replaced by *"Correct the option the message names, then run
+  this command again"*, advice for a flag the caller never got wrong).
+
+  **What did *not* move**, each with the test that holds it. A pointer file that
+  merely will not parse is derived state to delete, not a doctored tree: it keeps
+  exit 1, and `project status` keeps answering its full payload at exit 0 with
+  `statePointerCorrupt: true`
+  (`test_a_pointer_that_will_not_parse_still_degrades_rather_than_refusing`). So
+  does an escaping `.theurian` *itself*, which is refused a level earlier while
+  the command context is still resolving and is graded by each command's own
+  "could not resolve a project" contract
+  (`test_status_over_an_escaping_theurian_symlink_reads_nothing_from_outside_the_tree`,
+  green through this change at exit 1).
+
+  Six of the nineteen positions published no exit code worth reading anyway:
+  they escaped `--json` as a Rich traceback with **zero bytes on stdout and zero
+  on stderr**, over `.theurian/state/active-index.json` in `index build`,
+  `index gc`, `index status`, `migrate apply` and `project status`, and over
+  `.theurian/state/index-secret-scan.json` in `index build` — a sixth face the
+  driving sweep found and the issue had not listed. Each is now one
+  `{error, remedy}` document naming the artefact to repair, measured against the
+  real CLI on 2026-09-04.
+
+  **The sixth face also published a build while reporting that it had not**, and
+  that half was found in review rather than by the sweep. `theurian index build`
+  resolved the scan record's path inside the step that *writes* it, which runs
+  after the pointer swap and after the build is provenanced — so an escaping
+  `.theurian/state/index-secret-scan.json` exited 4, the code the plugin
+  documents describe as "nothing was published", with the new build published and
+  serving. The report never printed, so `secretFindings` was suppressed and the
+  default `block` policy's exit 6 never fired: a credential-bearing build served
+  while the caller was told a symlink was the problem. The path is now proved
+  contained before the build starts, so the refusal costs the caller nothing and
+  the documents' reading of exit 4 is true as written. A *directory* at that same
+  path still publishes and warns — an incidental write failure met after a
+  correct publish is a different root cause from a doctored tree, and the two
+  keep different answers. Introduced by the secret-scan build feature
+  ([#329](https://github.com/theurian/theurian/issues/329)), which merged after
+  the 0.1.0.dev18 cut and is in no released version. Taking the write lock joins them
+  ([#520](https://github.com/theurian/theurian/issues/520)): a directory at
+  `.theurian/runtime/write.lock`, a lock file this process may not open, a
+  `.theurian/runtime/` that refuses to create one, and a `.theurian/` that
+  refuses to recreate `runtime/` at all each ended `migrate apply --json` in a
+  traceback, and each now describes what was found rather than calling it a
+  symbolic link. The fourth is the `mkdir` one call before the open, and it says
+  so rather than borrowing the open's wording — "could not be opened" about a
+  call that never ran, with a cure leading "remove whatever is at
+  `.theurian/runtime/write.lock`" about a path where nothing is, would be the
+  same defect one line earlier. One neighbour is untouched and recorded as such:
+  a FIFO at that path still blocks inside the `open` rather than returning an
+  errno ([#526](https://github.com/theurian/theurian/issues/526)).
+
 ### Fixed
 
 - **A path that leaves the project through a symlink and comes back inside is

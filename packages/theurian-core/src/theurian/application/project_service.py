@@ -452,6 +452,62 @@ class ProjectError(TheurianError):
         super().__init__(message)
 
 
+class ProjectPathEscapeError(ProjectError):
+    """A path under ``.theurian/`` could not be proved to stay inside the tree.
+
+    The refusal :func:`_contain` raises, given a name so the CLI can grade it
+    without asking *which helper* raised (#525). Reproduce the population with
+    ``git grep -n 'raise ProjectPathEscapeError' -- packages/theurian-core/src``.
+    Run 2026-09-04 it returned three lines: this sentence quoting the key, and two
+    ``raise`` statements, both inside :func:`_contain`. The self-hit is why the
+    count is stated rather than the command's output pasted -- the claimant reads
+    itself, the trap
+    ``test_connection_claims.py::test_the_only_test_that_constructs_the_write_lock_runs_in_one_process``
+    records for its own key.
+
+    One root cause -- a working tree carrying a symbolic link force-added past
+    ADR-0004's ignore -- was answered exit 0, exit 1 and exit 4 by different
+    handlers, decided by whichever ``ProjectPaths`` helper resolved first rather
+    than by what was wrong; the sweep in
+    ``tests/integration/test_contained_path_envelope.py`` measured which, at
+    ``491bded6``. The handlers narrowed to ``ProjectError`` or to
+    ``TheurianError``, so none could tell this apart from an ``active.json``
+    holding four bytes of text -- a *different* root cause, derived state to
+    delete, whose exit 1 and whose ``project status`` degradation are correct and
+    had to survive the unification.
+
+    **Not :class:`~theurian.domain.errors.PathEscapeError`, which is a different
+    class with a different subject.** That one is the migration loader's and the
+    proposal service's, over a ``contentFile`` an author chose: its whole message
+    discipline exists because ``requested`` is attacker-controlled text (SEC-7),
+    and its remedy names no file to delete because the culprit can sit anywhere
+    on the resolution chain. This one is over a path *Theurian itself* built from
+    ``knowledge_dir`` and constant child names, so the path is safe to print and
+    the cure is keyed on it (:meth:`ProjectPaths._escape_remedy`).
+
+    Carries no fields of its own: the message and the remedy :class:`ProjectError`
+    already holds are the whole payload, and the type is what the CLI grades on.
+
+    **The join check in :meth:`ProjectPaths.of` is deliberately not this type**,
+    and that is a bound on the class rather than an oversight. It guards
+    ``knowledge_dir`` itself -- ``.theurian`` shipped as a symbolic link to
+    somewhere outside the tree -- with its own anchor, and it fires while the
+    command context is still resolving, so its refusal is graded by whatever its
+    caller already assigns to "could not resolve a project". That is a recorded
+    per-command decision, not one grading: ``_require_project``'s own comment
+    says so, and the four ``resolve_context()`` call sites in ``cli/commands.py``
+    handle it three different ways. Its callers are wider still --
+    ``git grep -n 'ProjectPaths.of(' -- packages/theurian-core/src`` returned
+    ten lines on 2026-09-04: eight call sites, reaching ``setup_steps``,
+    ``setup_commands``, ``migration_pipeline`` and ``mcp/tools`` as well as
+    ``cli/context``, plus a comment in the migration loader and this sentence.
+    None of the eight was measured for #525. What *was* measured is that the outermost escaping link
+    still reports ``1``:
+    ``test_cli_commands.py::test_status_over_an_escaping_theurian_symlink_reads_nothing_from_outside_the_tree``
+    asserts it and stayed green through this change. Recorded, not closed.
+    """
+
+
 def _contain(root: Path, path: Path, *, remedy: str = KNOWLEDGE_DIR_ESCAPE_REMEDY) -> Path:
     """Prove ``path`` stays inside ``root``, or refuse with the escape remedy.
 
@@ -511,12 +567,17 @@ def _contain(root: Path, path: Path, *, remedy: str = KNOWLEDGE_DIR_ESCAPE_REMED
         # with those: every path reaching here is built from the already-validated
         # `knowledge_dir` and constant child names, so this arm is a contract
         # guarantee, not a branch real data drives.
-        raise ProjectError(
+        #
+        # Graded as the escape it cannot rule out, not one grade softer: a path
+        # whose containment could not be *decided* is a path no read or write may
+        # be attempted through, and a caller reading the exit code has the same
+        # thing to do about it.
+        raise ProjectPathEscapeError(
             f"{path} does not resolve to a location inside {resolved_root}: {exc}",
             remedy=remedy,
         ) from exc
     if not resolved.is_relative_to(resolved_root):
-        raise ProjectError(
+        raise ProjectPathEscapeError(
             f"{path} resolves outside the project root {resolved_root}, so a read or write "
             f"through it would land outside the working tree.",
             remedy=remedy,
@@ -555,9 +616,9 @@ class ProjectPaths:
         Keyed on the refused path rather than fixed per raise site, so the
         remedy is chosen once for every helper that routes through
         :meth:`_contained` -- including helpers added later, and including the
-        call sites #525 will widen the *handling* of. That issue re-keys which
-        refusals reach a caller as an envelope; this decides what the envelope
-        says, so the two compose rather than collide.
+        call sites #525 widened the *handling* of. That issue re-keyed which
+        refusals reach a caller as an envelope and unified their exit code; this
+        decides what the envelope says, so the two compose rather than collide.
 
         Lexical, deliberately. ``path`` is the requested location, always built
         here as ``knowledge_dir / <child> / ...``, and reading its shape is a
@@ -580,13 +641,25 @@ class ProjectPaths:
         what gets published. Measured, and the branch's own CLI tests assert it:
         ``test_apply_refuses_an_escaping_state_symlink_and_writes_nothing_outside_the_tree``
         and its ``status`` sibling both expect
-        :func:`derived_escape_remedy`. So the CLI-reachable face of that plant is
-        the derived remedy, and the older text is reachable only by calling the
-        directory helper directly.
+        :func:`derived_escape_remedy`. So the CLI-reachable face of *that plant*
+        is the derived remedy.
 
-        Unifying the two texts, and the exit-code grading that differs beside
-        them, is #525's -- which is where the population is recorded, rather than
-        here where only this one seam is visible.
+        **The older text is reachable, and an earlier version of this paragraph
+        said it was not.** ``initialize_project`` calls :func:`_contain` directly
+        for each directory it creates, passing
+        :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`, so ``theurian init`` over an
+        escaping ``.theurian/knowledge`` publishes it -- measured 2026-09-05
+        against the real CLI. What is true is narrower: no *swept* command
+        produces it for a plant under ``state`` or ``runtime``, because a helper
+        resolving something beneath those raises first.
+
+        Unifying the two texts was left where it is; the exit-code grading that
+        differed beside them is #525's, and the sweep in
+        ``tests/integration/test_contained_path_envelope.py`` measures that the
+        refusals it reaches now report one code. The population that closure ranges over is
+        recorded on :class:`ProjectPathEscapeError` and driven by
+        ``tests/integration/test_contained_path_envelope.py``, rather than here
+        where only this one seam is visible.
         """
         if not path.is_relative_to(self.knowledge_dir):  # pragma: no cover - see docstring
             # No helper builds such a path; `initialize_project` calls `_contain`
@@ -1077,13 +1150,35 @@ def read_active_state(paths: ProjectPaths) -> ActiveState | None:
     that has one. It does not, in practice, get the chance to -- an unreadable
     parent surfaces through ``read_text`` as the ``OSError`` this now converts --
     and narrowing it further would be a guess about which errno means absent.
+
+    **A fourth way to fail arrives as a ``TypeError``, and the guard below is
+    what stops it.** ``json.loads`` answers any JSON value, not only an object:
+    ``[]``, ``null``, ``7`` and ``"hi"`` all parse, and
+    :meth:`ActiveState.from_json` then subscripts them. ``TypeError`` is in none
+    of the families above, so a pointer holding one of those -- a truncated
+    write, a hand edit, a restored fragment -- escaped every caller as a crash:
+    measured, seven CLI positions exited 1 with **both channels empty**, and the
+    MCP tools raised with no remedy at all.
+
+    Refused with the same message and the same cure as the parse failures, since
+    the file is derived and one cure covers all of them. The shape is taken from
+    :func:`read_active_index_pointer`, which has had this ``isinstance`` guard
+    since it was written -- the same defect, caught in the sibling and missed
+    here, and the whole reason a family is swept rather than reasoned about.
     """
     pointer = paths.active_pointer
     if not pointer.exists():
         return None
     try:
-        return ActiveState.from_json(json.loads(pointer.read_text(encoding="utf-8")))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError, TheurianError) as exc:
+        loaded = json.loads(pointer.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            # `raise ... from None` is not used: the `except` below re-raises with
+            # the message and the remedy every other failure here carries, so the
+            # one exit stays one exit.
+            msg = f"the pointer holds a JSON {type(loaded).__name__}, not an object"
+            raise TypeError(msg)
+        return ActiveState.from_json(loaded)
+    except (json.JSONDecodeError, OSError, TypeError, UnicodeDecodeError, TheurianError) as exc:
         raise ProjectError(f"{pointer} is unreadable: {exc}", remedy=ACTIVE_POINTER_REMEDY) from exc
 
 

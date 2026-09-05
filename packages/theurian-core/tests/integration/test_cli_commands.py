@@ -2438,13 +2438,26 @@ def test_apply_refuses_an_escaping_state_symlink_and_writes_nothing_outside_the_
     one, H-1): the older text named the operator's knowledge directory for a
     refusal about ``.theurian/state/`` and sent them to ``theurian init``, which
     meets the identical refusal.
+
+    ``EXIT_STATE_ERROR``, and this assertion **changed** with #525: the same
+    refusal reported 1 here and 4 through ``database_for`` until the refusals
+    ``test_contained_path_envelope.py`` sweeps were graded once. That sweep is
+    nine commands; four more were measured by hand and moved with them
+    (``init``, ``findings build``, ``propose``, ``propose accept``). No claim is
+    made here about a route neither covers. A working tree
+    carrying a symbolic link
+    force-added past ADR-0004's ignore is a knowledge-state problem the user must
+    repair, which is what 4 means; 1 is this CLI's "the command could not run
+    here". The move is a breaking change to a published exit code, named as one
+    in the changelog, and the whole class it applies to is swept by
+    ``test_contained_path_envelope.py``.
     """
     _invoke("init")
     shared_state = _escape_the_state_directory(project)
 
     code, payload = _invoke("migrate", "apply")
 
-    assert code == 1
+    assert code == EXIT_STATE_ERROR
     assert payload["remedy"] == derived_escape_remedy(".theurian", "state")
     assert _escaped_state_artefacts(shared_state) == [], (
         "migrate apply wrote state outside the tree"
@@ -2462,6 +2475,10 @@ def test_status_over_an_escaping_state_symlink_reads_nothing_from_outside_the_tr
     containment, ``migrate status`` followed the link and read ``stateBuilt:
     true`` back from outside the clone; ``_contained`` refuses when ``paths.state``
     is derived, so the read never leaves the tree.
+
+    Graded ``EXIT_STATE_ERROR`` since #525, for the reason its write-face sibling
+    above records: one root cause and one exit code across the swept nine and the
+    four measured beside them, whichever helper noticed it.
     """
     _invoke("init")
     assert _invoke("migrate", "apply")[0] == 0
@@ -2473,7 +2490,7 @@ def test_status_over_an_escaping_state_symlink_reads_nothing_from_outside_the_tr
 
     code, payload = _invoke("migrate", "status")
 
-    assert code == 1
+    assert code == EXIT_STATE_ERROR
     assert payload["remedy"] == derived_escape_remedy(".theurian", "state")
 
 
@@ -2494,6 +2511,14 @@ def test_init_refuses_an_escaping_knowledge_symlink_and_creates_nothing_outside(
     introduce the symlink. This one has the escaping symlink present AT init time,
     which is what a clone delivers. `init` must refuse before the first mkdir and
     create nothing outside; every write target now routes through `_contain`.
+
+    The code **changed** with #525's second round: this reported 1 while the
+    identical condition under a swept command reported 4, and `init` is outside
+    `CLI_SWEEP` (it writes `.theurian/` and appends to `.gitignore` in the working
+    directory), so the sweep could not see the disagreement -- a reviewer did.
+    `initialize_project` reaches the containment chokepoint directly, once per
+    directory it creates, which is the population the sweep's key was widened to
+    include.
     """
     (project / ".theurian").mkdir()
     outside = project.parent / "outside-knowledge"
@@ -2502,7 +2527,7 @@ def test_init_refuses_an_escaping_knowledge_symlink_and_creates_nothing_outside(
 
     code, payload = _invoke("init")
 
-    assert code == 1
+    assert code == EXIT_STATE_ERROR
     assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
     assert list(outside.iterdir()) == [], "init created directories outside the tree"
 

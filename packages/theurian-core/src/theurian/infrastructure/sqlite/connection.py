@@ -200,8 +200,25 @@ class WriteTransactionBusyError(TheurianError):
         )
 
 
+def _refusal_text(cause: OSError) -> str:
+    """The operating system's own account of a refused call, without the path.
+
+    ``strerror`` rather than ``str(cause)`` for the reason
+    :class:`WriteLockUnusableError` records: the ``str`` spelling appends the
+    filename, and the remedy beside it already prints the absolute path. The
+    fallbacks exist because both fields are ``Optional`` on ``OSError`` -- an
+    ``OSError`` raised without an errno is constructible, and a caller reading
+    ``error: None`` learns nothing.
+    """
+    if cause.strerror:
+        return cause.strerror
+    if cause.errno is not None:
+        return os.strerror(cause.errno)
+    return "the operating system refused the call"
+
+
 class WriteLockUnusableError(TheurianError):
-    """The write-lock path is a symbolic link, so taking the lock would write elsewhere.
+    """The write-lock path holds something the lock open cannot accept.
 
     A lock file is a synchronisation artefact and nothing else: its bytes are
     never read, and no caller asks for it to be emptied. Acquiring the lock
@@ -226,25 +243,108 @@ class WriteLockUnusableError(TheurianError):
     root resolves inside it and passes untouched, which is exactly the shape that
     does the damage to a working tree.
 
-    **Sets its own remedy** (the #205 rule): the cure is to remove a file, and no
+    **The message is a function of what actually failed** (#520). Three shapes,
+    and the branch that picks one is the whole point of the class carrying its own
+    text:
+
+    1. the ``ELOOP`` a symbolic link at the final component produces, which is
+       the sentence this class was written for;
+    2. any other errno from the ``open``, which says the file could not be opened
+       and carries the operating system's own account of why;
+    3. a refused ``mkdir`` of the lock's parent, which says so instead -- no open
+       was attempted, and nothing is at the lock path to remove.
+
+    The symbolic-link sentence was published for all of them until #520, and it
+    was false of the three artefacts measured there -- a directory at the lock
+    path, a lock file at mode ``0000``, a ``.theurian/runtime/`` that refuses the
+    ``O_CREAT``. Shape 3 is the same defect one call earlier: reusing shape 2 for
+    it would publish "could not be opened" about a call that never ran, and a
+    remedy leading "remove whatever is at <lock path>" about a path where nothing
+    is. It is a *fragment* of the OS message that travels in shapes 2 and 3, never
+    ``str(cause)``: that spelling repeats the absolute path the remedy already
+    prints, once per channel.
+
+    **Sets its own remedy** (the #205 rule): the cure is to act on a file, and no
     caller can infer that from the exception's type. It is a ``TheurianError``
-    rather than the raw ``OSError`` the refusal arrives as, because
-    ``migrate apply`` wraps its whole critical section in an ``except
-    TheurianError`` -- a bare ``OSError`` there escapes ``--json`` as a Rich
-    traceback with an empty machine channel, which is the reporting failure #483
-    and #484 close on the state-database path.
+    rather than the raw ``OSError`` the refusal arrives as, because the places
+    that enter the lock narrow to ``TheurianError``. Enumerate them with
+    ``git grep -n 'WriteLock(' -- packages/theurian-core/src`` rather than
+    trusting this sentence, and read the *constructions* out of what it returns:
+    three ``with WriteLock(...).held()`` sites -- ``cli/commands.py``
+    (``migrate apply``'s critical section), ``cli/findings_commands.py``
+    (``findings build``) and this module's :func:`write_transaction`. The rest of
+    the output is prose, this docstring included, so no total is stated here: the
+    total is a number this sentence changes by being written, which is how the
+    one it used to give came to be wrong. A
+    bare ``OSError`` at any of them escapes ``--json`` as a Rich traceback with
+    an empty machine channel, which is the reporting failure #483 and #484 close
+    on the state-database path.
     """
 
-    def __init__(self, path: Path) -> None:
-        self.remedy = (
-            f"Remove the symbolic link at {path} and retry. It is derived state "
-            f"(ADR-0004) that Theurian recreates, so nothing authored is lost -- and "
-            f"a repository that carries one has committed it past that ignore."
-        )
+    def __init__(self, path: Path, cause: OSError, *, creating_the_parent: bool = False) -> None:
+        if creating_the_parent:
+            # Shape 3. Named for the call rather than for the errno, because the
+            # errno does not distinguish it: `EACCES` arrives from the `mkdir`
+            # and from the `O_CREAT` alike, and only the caller knows which ran.
+            self.remedy = (
+                f"Make {path.parent.parent} writable, and make sure nothing but a directory "
+                f"sits at {path.parent}, so Theurian can take the lock at {path}. Then "
+                f"retry. Everything under that directory is derived state (ADR-0004) that "
+                f"Theurian rebuilds, so nothing authored is lost."
+            )
+            super().__init__(
+                f"The directory holding the write lock could not be prepared: "
+                f"{_refusal_text(cause)}. Theurian takes the lock at {path.name} before it "
+                f"writes, so it refuses to write rather than proceed without it."
+            )
+            return
+        if cause.errno == errno.ELOOP:
+            # `O_NOFOLLOW` reports `ELOOP` for a symbolic link at the final
+            # component, and `_open`'s docstring records why nothing else can
+            # deliver one here.
+            #
+            # The link this arm actually meets is an *in-tree* one, and that is
+            # the case #481 was about: `ProjectPaths.write_lock` routes through
+            # the containment chokepoint, which refuses a link resolving outside
+            # the project root before the open is ever issued. So a link out of
+            # the tree is answered by `ProjectPathEscapeError` and never reaches
+            # here; what does reach here is the link whose target is inside the
+            # root, which containment correctly waves through and which is
+            # exactly the shape that truncated a file in the user's own tree.
+            self.remedy = (
+                f"Remove the symbolic link at {path} and retry. It is derived state "
+                f"(ADR-0004) that Theurian recreates, so nothing authored is lost -- and "
+                f"a repository that carries one has committed it past that ignore."
+            )
+            super().__init__(
+                f"The write lock at {path.name} is a symbolic link, not a lock file. Opening "
+                f"it would write through the link to whatever it names, so Theurian refuses "
+                f"to take the lock rather than touching that file."
+            )
+            return
+        # Which clause leads is decided by what is actually there. The three
+        # artefacts #520 measured split two ways: a directory at the lock path and
+        # a lock file at mode 0000 are things to remove, while a
+        # `.theurian/runtime/` at mode 0500 refuses the `O_CREAT` with *nothing*
+        # at the path -- and leading "Remove whatever is at <lock path>" there
+        # sends the reader to delete a file that does not exist, past the
+        # permission that is the real cure.
+        if path.exists() or path.is_symlink():
+            self.remedy = (
+                f"Remove whatever is at {path}, and make sure the directory holding it is "
+                f"writable, then retry. It is derived state (ADR-0004) that Theurian "
+                f"recreates, so nothing authored is lost."
+            )
+        else:
+            self.remedy = (
+                f"Make the directory holding {path} writable so Theurian can create the "
+                f"lock file there, then retry. It is derived state (ADR-0004) that "
+                f"Theurian recreates, so nothing authored is lost."
+            )
         super().__init__(
-            f"The write lock at {path.name} is a symbolic link, not a lock file. Opening "
-            f"it would write through the link to whatever it names, so Theurian refuses "
-            f"to take the lock rather than touching that file."
+            f"The write lock at {path.name} could not be opened as a lock file: "
+            f"{_refusal_text(cause)}. Theurian takes that lock before it writes, so "
+            f"it refuses to write rather than proceed without it."
         )
 
 
@@ -470,7 +570,7 @@ class WriteLock:
 
     @contextmanager
     def held(self) -> Iterator[None]:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._prepare_the_directory()
         fileno = self._open()
         try:
             self._acquire(fileno)
@@ -480,6 +580,36 @@ class WriteLock:
                 fcntl.flock(fileno, fcntl.LOCK_UN)
         finally:
             os.close(fileno)
+
+    def _prepare_the_directory(self) -> None:
+        """Create the lock file's parent, converting a refusal like the open does.
+
+        Split out of :meth:`held` so the acquisition has no step left that raises
+        a bare ``OSError``. ``.theurian/runtime/`` is derived and git-ignored
+        (ADR-0004), so it is routinely absent -- a fresh clone has never had one --
+        and creating it is a real write into ``.theurian/`` rather than the
+        ``EEXIST`` the same call makes on every run after the first. A
+        ``.theurian/`` that refuses that write, or a regular file sitting where the
+        directory belongs, therefore reached ``migrate apply --json`` as a Rich
+        traceback with an empty machine channel: the same reporting failure #520
+        removed from the ``open`` one line below, met one call earlier and found by
+        a different key.
+
+        The conversion says which call failed rather than reusing the open's
+        wording. ``EACCES`` arrives from this ``mkdir`` and from the open's
+        ``O_CREAT`` alike, so the errno cannot tell them apart and only this call
+        site knows -- which is why ``creating_the_parent`` is passed here and
+        nowhere else.
+
+        ``findings build`` already graded this refusal through its own
+        ``_lock_write_section``; that handler stays, because it also spans the body
+        and the release, and it now receives a ``TheurianError`` that passes
+        through it to the command's own handler with a cure naming the directory.
+        """
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise WriteLockUnusableError(self._path, exc, creating_the_parent=True) from exc
 
     def _open(self) -> int:
         """Open the lock file without following a link and without emptying it.
@@ -546,18 +676,43 @@ class WriteLock:
         exclusion survives because every process follows the same link to the
         same file. It is a relocation, not the truncation #481 is about.
 
-        Every other ``OSError`` is left exactly as it was -- an unwritable
-        ``.theurian/`` and a directory at the lock path both still raise the same
-        errno to the same handlers, since neither is this class and neither has
-        this class's cure.
+        **The ``except`` below is unfiltered, so every errno this open returns
+        becomes** :class:`WriteLockUnusableError` (#520). An earlier cut
+        translated the ``ELOOP`` alone and re-raised the rest untouched, on the
+        reasoning that no other errno is *this class* -- true of the message,
+        false of the reporting contract. Three artefacts a clone or a bad umask
+        delivers were measured on ``491bded6`` ending a ``--json`` command in a
+        Rich traceback with **zero bytes on stdout and zero on stderr**: a
+        directory at the lock path (``EISDIR``), a lock file at mode ``0000``
+        (``EACCES``) and a ``.theurian/runtime/`` at mode ``0500`` refusing the
+        ``O_CREAT`` (``EACCES`` again). Re-measured 2026-09-04 against the real
+        CLI: each now exits 4 with a parseable ``{error, remedy}`` on stderr. The
+        errno still decides what is *said* -- see
+        :class:`WriteLockUnusableError`, which publishes the symbolic-link
+        sentence for ``ELOOP`` and the operating system's own account otherwise.
+
+        **A FIFO at the lock path is not among them, because it never reaches
+        this ``except``.** Measured 2026-09-04 on macOS 26.6.2, CPython 3.13.3,
+        with these exact flags against a FIFO nothing is reading:
+        ``O_NONBLOCK`` added returns ``ENXIO``; without it the call was still
+        inside ``open()`` when a 2-second ``SIGALRM`` fired. An ``except`` reads
+        a return that never happens. Issue #526 owns the flags; this conversion
+        cannot own it.
+
+        The other calls :meth:`held` makes are the ``mkdir``, ``flock`` and
+        ``os.close`` -- read them off that method, it is eleven lines. The
+        ``mkdir`` is converted by :meth:`_prepare_the_directory` and ``flock`` by
+        :meth:`_acquire`, so the two ``finally`` clauses are what is left raising
+        a bare ``OSError`` out of an acquisition, after the descriptor exists and
+        the work is done.
         """
         try:
             # `O_WRONLY`, not `O_RDWR`: `flock` locks the open file description
             # whatever its access mode, and nothing reads these bytes -- while
             # `O_RDWR` would refuse a lock file left at mode 0200, which
             # `Path.open("w")` opened without complaint (measured: EACCES against
-            # a success). Keeping the request no wider than the old one is what
-            # makes the sentence above about every other `OSError` true.
+            # a success). The flags are unchanged by #520 -- only the `except`
+            # below moved -- so nothing that opened before now refuses.
             #
             # 0o600 applies **only when this call creates the file**; a lock file
             # that already exists keeps the mode it was created with, including
@@ -565,9 +720,7 @@ class WriteLock:
             # chmods a file it did not create.
             return os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         except OSError as exc:
-            if exc.errno != errno.ELOOP:
-                raise
-            raise WriteLockUnusableError(self._path) from exc
+            raise WriteLockUnusableError(self._path, exc) from exc
 
     def _acquire(self, fileno: int) -> None:
         deadline = time.monotonic() + self._timeout
@@ -718,10 +871,13 @@ def write_transaction(
             path takes. Raised before the database is opened, so no transaction
             has begun -- see :meth:`WriteLock._acquire`. Never raised when
             ``already_locked`` is ``True``, since no acquisition happens here.
-        WriteLockUnusableError: If ``lock_path`` is a symbolic link, which taking
-            the lock would otherwise write through (#481). Raised in the same
-            place and never when ``already_locked`` is ``True``, for the same
-            reason -- see :meth:`WriteLock._open`.
+        WriteLockUnusableError: If the lock cannot be taken at all -- a
+            symbolic link taking it would otherwise write through (#481), a
+            directory at the path, a mode that denies this process, an unwritable
+            ``runtime`` directory, or a ``.theurian/`` that refuses to create one
+            (#520). Raised in the same place and never when ``already_locked`` is
+            ``True``, for the same reason -- see :meth:`WriteLock._open` and
+            :meth:`WriteLock._prepare_the_directory`.
         WriteTransactionBusyError: If another writer holds the database itself,
             which the advisory lock cannot mediate. Raised whatever
             ``already_locked`` says, since it comes from the transaction and not

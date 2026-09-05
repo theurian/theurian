@@ -46,6 +46,7 @@ from theurian.application.project_service import (
     INDEX_POINTER_REMEDY,
     UNBUILT_STATE_REMEDY,
     BuildProvenance,
+    ProjectPathEscapeError,
     ProjectPaths,
     read_active_index_pointer,
     write_active_index_pointer,
@@ -82,9 +83,34 @@ JsonOption = Annotated[bool, typer.Option("--json", help="Emit machine-readable 
 #: ``EXIT_NEEDS_CONSENT`` (5), each declared in the module that owns it.
 EXIT_SECRET_FOUND = 6
 
+#: Cure for an OS refusal *publishing* the pointer, met after the build itself
+#: succeeded (#525).
+#:
+#: Names the pointer rather than the index, because that is what is wrong: the
+#: build is complete and on disk under its final name (``os.replace`` ran before
+#: the publish), and the only thing that did not happen is the atomic swap that
+#: would make retrieval read it. So the precondition leads and the retry trails,
+#: the shape ``_STATE_DATABASE_FAULT_REMEDY`` and ``_LOCK_ACQUIRE_REMEDY`` both
+#: take: a reader sent straight back to ``theurian index build`` would spend the
+#: corpus scan again and land at the identical refusal.
+#:
+#: ``active-index.json`` is derived (ADR-0004) and a directory or an unwritable
+#: mode at its path is something a person put there, so the instruction is to
+#: clear the path -- never to delete `.theurian/state/`, which holds the
+#: canonical database beside it.
+_UNWRITABLE_INDEX_POINTER_REMEDY: Final = (
+    "Make sure `.theurian/state/active-index.json` is a writable file or absent -- a "
+    "directory at that path is what refuses the swap, and a `.theurian/state/` this "
+    "process cannot write refuses it too -- then run `theurian index build` again. The "
+    "build that just ran is still on disk and nothing authored is at risk."
+)
+
 
 @index_app.command("build")
-def index_build(
+def index_build(  # noqa: PLR0911 -- one early return per distinguishable failure shape, the
+    # precedent `migrate_apply` sets: three preconditions, an empty build, and the two ways
+    # publishing can be refused. Folding the last three into one `try` would make an `OSError`
+    # from the provenance record read as "the pointer could not be written" (#525).
     include_unapproved: Annotated[
         bool,
         typer.Option(
@@ -136,7 +162,13 @@ def index_build(
     channel needs: a new `upsertRevision` for a body, a title or a source anchor,
     `removeRelation` for a note on an edge, `deprecateItem` for any of them.
     """
-    from theurian.cli.commands import _emit, _require_project  # noqa: PLC0415 - cycle
+    from theurian.cli.commands import (  # noqa: PLC0415 - cycle
+        EXIT_STATE_ERROR,
+        _emit,
+        _fail,
+        _fail_a_path_escape,
+        _require_project,
+    )
 
     # The second value is the state database, not the repository root. The
     # context already carries resolved paths, so deriving them again from a
@@ -151,6 +183,8 @@ def index_build(
         return
     policy = _secret_scan_policy(paths, as_json)
     if policy is None:
+        return
+    if not _the_scan_record_path_is_contained(paths, as_json):
         return
 
     # The context already carries the generator every other command uses, so
@@ -194,14 +228,45 @@ def index_build(
     os.replace(request.index_path, final_path)  # noqa: PTH105 - the atomic primitive
     report = {**report, "indexPath": str(final_path)}
 
-    _publish(
-        paths,
-        index_build_id=index_build_id,
-        state_hash=str(active.state_hash),
-        project_id=context.project_id.value,
-        indexes_unapproved=include_unapproved,
-        indexed_sensitivities=grant.sensitivities,
-    )
+    # Two refusals the pointer swap made were measured escaping to a `--json`
+    # caller as a Rich traceback with an empty machine channel at `491bded6`, and
+    # both are graded here (#525): the containment refusal resolving
+    # `active_index_pointer`, and the `IsADirectoryError` from the `os.replace`
+    # over a directory planted at that path. The build has already been renamed
+    # into place at this point, so what is being reported is "the index exists
+    # and is not published", which is why the remedy names the pointer rather
+    # than the corpus.
+    try:
+        _publish(
+            paths,
+            index_build_id=index_build_id,
+            state_hash=str(active.state_hash),
+            project_id=context.project_id.value,
+            indexes_unapproved=include_unapproved,
+            indexed_sensitivities=grant.sensitivities,
+        )
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
+    except OSError as exc:
+        # A directory at `.theurian/state/active-index.json` is not a containment
+        # failure -- nothing escapes the tree, and the chokepoint correctly waves
+        # it through -- but it reaches the same `--json` surface and owes the same
+        # document. The type name and never the message, and the reason is not
+        # the one this comment used to give: `strerror` is the bare OS phrase
+        # ("Is a directory") and carries no path -- measured. What carries the
+        # operator's absolute paths is `str(exc)`, which appends the filename,
+        # and `type(exc).__name__` avoids both. The same correction applies to
+        # `_record_the_scan`'s warning below.
+        _fail(
+            f"The index was built, but the pointer that publishes it could not be written "
+            f"({type(exc).__name__}), so this build is not published and what retrieval "
+            f"reads is unchanged.",
+            remedy=_UNWRITABLE_INDEX_POINTER_REMEDY,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
     # Record that this installation built this index, out of the repository tree,
     # the instant it is published (ADR-0004, SEC-7). The serve-side index gate
     # stands aside any build id it does not find here, so this is what lets the
@@ -234,6 +299,58 @@ def index_build(
         raise typer.Exit(EXIT_SECRET_FOUND)
 
 
+def _the_scan_record_path_is_contained(paths: ProjectPaths, as_json: bool) -> bool:
+    """Prove the SEC-11 record's path stays in the tree, before anything is built.
+
+    A precondition rather than a write. Resolving the property *is* the check:
+    ``ProjectPaths.index_secret_scan`` routes through the containment chokepoint,
+    which resolves non-strict and compares against the project root, so it opens
+    nothing and creates nothing -- the same call ``_record_the_scan`` makes later,
+    made early enough that its refusal costs the caller nothing.
+
+    **Where it sits is the whole point, and it was found the hard way.** The
+    refusal used to arrive at ``_record_the_scan``, which runs *after* ``_publish``
+    has swapped the pointer and after ``record_index`` has provenanced the build.
+    So an escaping ``.theurian/state/index-secret-scan.json`` ended the command at
+    exit 4 with **the new build already published and serving** -- and because the
+    ``_emit`` below was never reached, ``secretFindings`` never printed and the
+    ``block`` policy's ``EXIT_SECRET_FOUND`` never fired. Under the default policy
+    with a credential in the corpus that is a credential-bearing build serving,
+    reported as a containment failure: the SEC-11 signal replaced by a message
+    about a symlink. The three plugin documents this cluster wrote say exit 4
+    means nothing was published; here it meant the opposite.
+
+    Proving the path first is what makes that sentence true rather than reworded.
+    Nothing is built, nothing is published, and the operator clears the doctored
+    tree (ADR-0004 remediation) and re-runs -- where the full report and the
+    policy exit fire normally. Deferred behind a loud refusal, never dropped.
+
+    **The residual, recorded rather than closed.** This proves the path at
+    precondition time; ``_record_the_scan`` resolves it again at write time. A
+    tree doctored *between* the two -- by someone who already has write access to
+    ``.theurian/state/`` -- raises a containment refusal there that no handler
+    converts, so it would reach a ``--json`` caller as a traceback. Closing that
+    needs the record write to hold a descriptor opened before the build, which is
+    a larger change than the exposure earns; the disposition is recorded on
+    [#551](https://github.com/theurian/theurian/issues/551) (2026-09-05).
+
+    ``_record_the_scan``'s ``except OSError`` is deliberately left alone. A
+    directory at the record path is an incidental write failure met after a
+    correct publish, and degrading it to a warning keeps the findings reaching
+    the caller; a path that leaves the working tree is a doctored tree, and the
+    two are different root causes with different answers. That distinction is the
+    reason this check exists here rather than a widened ``except`` there.
+    """
+    from theurian.cli.commands import _fail_a_path_escape  # noqa: PLC0415 - cycle
+
+    try:
+        paths.index_secret_scan  # noqa: B018 - resolving the property is the check
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        return False
+    return True
+
+
 def _record_the_scan(
     paths: ProjectPaths, *, index_build_id: str, policy: SecretScanPolicy, findings: int
 ) -> str | None:
@@ -252,11 +369,23 @@ def _record_the_scan(
     the build reports what it found, says the signal will not survive the
     terminal, and still exits on the policy.
 
-    The exception's type name, never its message: an ``OSError``'s ``strerror``
-    carries the operator's absolute paths, which no payload here puts in (the rule
-    ``_purge_fields``' failure reason already holds). ``theurian doctor`` answers
+    The exception's type name, never its message. The reason is not the one this
+    paragraph used to give: an ``OSError``'s ``strerror`` is the bare OS phrase
+    and carries no path (measured -- ``'Is a directory'``); it is ``str(exc)``
+    that appends the filename, and the type name avoids both. No payload here
+    puts an operator's absolute path in (the rule ``_purge_fields``' failure
+    reason already holds), and
+    :func:`~theurian.infrastructure.sqlite.connection._refusal_text` states the
+    distinction correctly where it publishes ``strerror`` on purpose. ``theurian doctor`` answers
     ``unrecorded`` for this build afterwards -- honest ignorance, and never a clean
     bill -- which is what makes degrading safe rather than convenient.
+
+    **``OSError`` and nothing wider, on purpose.** A path that leaves the working
+    tree is not an incidental write failure met after a correct publish; it is a
+    doctored tree, and it is proved absent before this command builds anything
+    (:func:`_the_scan_record_path_is_contained`, which records why the two get
+    different answers). Widening this ``except`` to cover it is what would put a
+    published build behind a containment refusal.
     """
     try:
         write_index_secret_scan(
@@ -379,10 +508,19 @@ def _secret_scan_policy(paths: ProjectPaths, as_json: bool) -> SecretScanPolicy 
     than after the corpus has been read. Its own ``remedy`` names the file and the
     three values, which is why it is preferred over a generic one.
     """
-    from theurian.cli.commands import _fail  # noqa: PLC0415 - cycle
+    from theurian.cli.commands import _fail, _fail_a_path_escape  # noqa: PLC0415 - cycle
 
     try:
         return read_secret_scan_policy(paths.root, paths.config)
+    except ProjectPathEscapeError as exc:
+        # `paths.config` is resolved on the way in, so a `.theurian/config.yaml`
+        # that leaves the working tree refuses here rather than inside the
+        # reader. That is a doctored tree, not a configuration this command can
+        # be told to fix, and it takes the containment class's one grading
+        # (#525) -- the generic branch below graded it 1 while the same tree's
+        # state-database face graded 4.
+        _fail_a_path_escape(exc, as_json=as_json)
+        return None
     except TheurianError as exc:
         _fail(
             str(exc),
@@ -533,7 +671,12 @@ def index_status(as_json: JsonOption = False) -> None:
     answering one fact used to compute it twice, and one of them computed it
     from the wrong file.
     """
-    from theurian.cli.commands import _emit, _read_active, _require_project  # noqa: PLC0415 - cycle
+    from theurian.cli.commands import (  # noqa: PLC0415 - cycle
+        _emit,
+        _fail_a_path_escape,
+        _read_active,
+        _require_project,
+    )
 
     context, _ = _require_project(as_json)
     paths = context.paths
@@ -553,7 +696,21 @@ def index_status(as_json: JsonOption = False) -> None:
     # canonical-state half of this payload.
     needs_apply = built != current
 
-    index = index_staleness(paths, project_id=context.project_id.value, current_state_hash=current)
+    # The verdict resolves `active_index_pointer`, so a doctored `.theurian/
+    # state/` refuses here rather than reaching the payload -- and the refusal is
+    # a document with the class's one exit code, not the Rich traceback with an
+    # empty machine channel it published at `491bded6` (#525). This command's
+    # contract is to *report* on a broken index, and it keeps it for the pointer
+    # shapes `read_active_index_pointer` absorbs into `indexPointerCorrupt`; a
+    # path that leaves the working tree is not one of those, because nothing here
+    # can say what it points at.
+    try:
+        index = index_staleness(
+            paths, project_id=context.project_id.value, current_state_hash=current
+        )
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
 
     _emit(
         {
@@ -632,11 +789,26 @@ def index_gc(
       command cannot parse is not evidence that any particular build is
       unreferenced.
     """
-    from theurian.cli.commands import _emit, _fail, _require_project  # noqa: PLC0415 - cycle
+    from theurian.cli.commands import (  # noqa: PLC0415 - cycle
+        _emit,
+        _fail,
+        _fail_a_path_escape,
+        _require_project,
+    )
 
     context, _ = _require_project(as_json)
     paths = context.paths
-    pointer = read_active_index_pointer(paths)
+    # `read_active_index_pointer` absorbs the ways the pointer's *contents* can
+    # be wrong -- that is what `unreadable` below reports -- but it resolves the
+    # path first, and a path that leaves the working tree is not a contents
+    # problem. Left uncaught it ended this command in a Rich traceback with an
+    # empty machine channel (#525); refusing here is the same answer the
+    # unreadable branch gives, with the class's own grading and cure.
+    try:
+        pointer = read_active_index_pointer(paths)
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
     if pointer.unreadable:
         _fail(
             "This project's active index pointer cannot be read, so nothing can be shown to "

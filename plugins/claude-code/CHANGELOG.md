@@ -33,6 +33,41 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--local` hides the proposal rather than the knowledge, so accepting it still
   writes the body into `.theurian/knowledge/`.
 
+### Changed
+
+- **The three commands that run `theurian index build` state its exit 4.** Core
+  now grades every containment refusal — a path under `.theurian/` that resolves
+  outside the working tree, which a clone can deliver as a symbolic link
+  force-added past the ignore `theurian init` writes — as `EXIT_STATE_ERROR` (4)
+  where such a refusal used to exit 1, and Core's changelog carries the count and
+  the sweep that measured it
+  ([#525](https://github.com/theurian/theurian/issues/525)). `/theurian:index`,
+  `/theurian:reindex` and `/theurian:propose` each say what to do with it: 1 and
+  4 both mean nothing was published, and on 4 the repair is to the working tree,
+  so the agent relays the `{error, remedy}` document Core puts on stderr and
+  stops rather than re-running the build.
+
+  **`/theurian:reindex` is the one where this had a consequence.** It gated
+  step 3 — `theurian index gc` — on exit 1 alone, so an exit-4 build left the
+  reclaim step ungated by the document. Both of the `index gc` refusals that
+  command already describes are unaffected and still exit 1: the pointer naming a
+  build whose file is missing, and the pointer that cannot be parsed.
+
+  **`/theurian:index` also carried an enumeration that was already wrong**, and
+  it is repaired in the same edit rather than left as the half that still
+  disagrees. It said the build "has two non-zero exits" and that "only exit 1
+  means nothing was published". Exit 4 has been reachable from `theurian index
+  build` since long before #525, by a different route — `_require_project`
+  grades the migration loader's `PathEscapeError` at 4
+  ([#233](https://github.com/theurian/theurian/issues/233)) — so the claim was
+  false when it was written and #525 only widened it. The rule now names the
+  three exits the command selects (1, 4, 6) and says to treat a non-zero exit
+  outside them as a failure.
+
+  The compatibility decision — a changed exit-code meaning taken on the #329
+  condition rather than on an exemption or a protocol bump — is recorded in
+  [`docs/protocol/plugin-core-compatibility.md`](../../docs/protocol/plugin-core-compatibility.md).
+
 ### Fixed
 
 - **Three commands read `theurian index build`'s exit 6 as a failed build.**

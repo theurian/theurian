@@ -58,9 +58,11 @@ is step 3 below, not the front-matter
    SEC-11 signal that something in the published content looks like a credential,
    not a failed build: relay every `secretFindings` line and the `remedy` beside
    them, report the build id as usual, and carry on. Do not re-run the build —
-   the finding is in the content and comes back. Exit 1 is the one that means
-   nothing was published, and step 3 must not run after it: reclaiming while the
-   pointer still names the *previous* build is not what this command is for.
+   the finding is in the content and comes back. Exit 1 and exit 4 both mean
+   nothing was published, and step 3 must not run after either: reclaiming while
+   the pointer still names the *previous* build is not what this command is for.
+   On 4 the cause is the state of `.theurian/` rather than the build — relay the
+   `error` and `remedy` the refusal puts on stderr, and stop.
 
 3. Show what would be reclaimed, ask, then reclaim:
 
@@ -96,12 +98,16 @@ is step 3 below, not the front-matter
   whose id sorts above it (a writer that has finished and not published yet), nor
   anything under a `.building` suffix.
 - It refuses the whole run rather than treating every build on disk as
-  unreferenced, in two cases: the pointer names a build whose file is missing,
-  and the pointer cannot be read at all. Both exit 1 having reclaimed nothing,
-  with `--dry-run` too. Relay the remedy it prints instead of retrying; for the
-  missing file that remedy is ``Run `theurian index build` to publish a build
-  that exists. Reclaiming now would delete every build on disk, because none of
-  them is the published one.``
+  unreferenced, in three cases. Two exit **1** having reclaimed nothing, with
+  `--dry-run` too: the pointer names a build whose file is missing, and the
+  pointer cannot be read at all. The third exits **4** — the pointer's own path
+  resolves outside the working tree, which is a doctored checkout rather than a
+  reclaim decision, and it is graded like every other containment refusal. Relay
+  the remedy it prints instead of retrying; for the missing file that remedy is
+  ``Run `theurian index build` to publish a build that exists. Reclaiming now
+  would delete every build on disk, because none of them is the published one.``
+  For the exit-4 case the remedy names the path to remove, and re-running before
+  removing it meets the identical refusal.
 - Reach for this when the index is suspected to be inconsistent, after changing
   an embedding or summarization provider, or after a Theurian upgrade that
   changes the index format. The provider case is the one where step 1 matters

@@ -31,7 +31,11 @@ from theurian.application.findings_builder import (
     FindingsBuildRequest,
     WriteSection,
 )
-from theurian.application.project_service import FINDINGS_STORE_ID, BuildProvenance
+from theurian.application.project_service import (
+    FINDINGS_STORE_ID,
+    BuildProvenance,
+    ProjectPathEscapeError,
+)
 from theurian.domain.errors import TheurianError
 from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
 from theurian.infrastructure.sqlite.connection import WriteLock
@@ -48,10 +52,16 @@ JsonOption = Annotated[bool, typer.Option("--json", help="Emit machine-readable 
 #: ``WriteLock.held`` runs ``mkdir`` + ``os.open`` on ``.theurian/runtime/``,
 #: which raise a bare ``OSError`` -- not a ``TheurianError`` -- so on a first build
 #: whose state area is unwritable the raw traceback escaped the command's handler.
-#: One shape of that refusal is no longer bare: a symbolic link at the lock path
-#: is refused by ``O_NOFOLLOW`` and arrives as ``WriteLockUnusableError``, a
-#: ``TheurianError`` carrying its own cure, so it reaches the command's
-#: ``except TheurianError`` below rather than this constant (#481).
+#: **Nothing in the acquisition reaches this constant any more.** Both calls
+#: ``WriteLock.held`` makes before it has a descriptor now convert their own
+#: ``OSError`` into ``WriteLockUnusableError`` -- the ``open`` since #520, the
+#: ``mkdir`` beside it -- each carrying a cure that names the lock file or the
+#: directory holding it, so both reach the command's ``except TheurianError``
+#: below rather than this text. It is kept as the backstop for the release
+#: clauses ``_lock_write_section`` also spans, and for a future acquisition step
+#: that forgets to convert; a remedy nothing can currently produce is recorded
+#: here rather than deleted, because deleting it is what makes the next bare
+#: ``OSError`` a traceback again.
 #: Names the precondition to fix first (a writable ``.theurian``), with the retry
 #: as the trailing clause, the same shape ``FindingsStoreError``'s write remedy
 #: takes.
@@ -75,13 +85,24 @@ _PROVENANCE_REMEDY: Final = (
 def _lock_write_section(lock_path: Path) -> WriteSection:
     """A write-section factory whose lock-acquisition ``OSError`` arrives graded.
 
-    ``WriteLock(lock_path).held`` is the real section, but its ``__enter__``
-    ``mkdir``/``os.open`` raise a bare ``OSError`` the command's ``except
-    TheurianError`` cannot see (#404 R1-2). The ``except OSError`` below spans the
-    whole ``with`` -- acquisition, body **and** release -- and converts any bare
+    ``WriteLock(lock_path).held`` is the real section, and its ``__enter__``
+    ``mkdir`` raised a bare ``OSError`` the command's ``except TheurianError``
+    could not see (#404 R1-2). The ``except OSError`` below spans the whole
+    ``with`` -- acquisition, body **and** release -- and converts any bare
     ``OSError`` from it into a :class:`FindingsStoreError` a ``TheurianError``
-    handler catches. Acquisition is the only live source of one; the other two
-    phases are covered but do not raise here:
+    handler catches.
+
+    **The acquisition no longer produces one**, so this handler now guards the
+    other two phases and a future third acquisition step. Each phase is quiet for
+    its own reason:
+
+    - **Acquisition.** Both calls ``held`` makes before it has a descriptor
+      convert their own ``OSError`` into ``WriteLockUnusableError`` -- the
+      ``open`` since #520, the ``mkdir`` in ``_prepare_the_directory`` beside it.
+      Each is a ``TheurianError`` naming the lock file or the directory holding
+      it, so it passes this handler untouched and is graded by the command's own
+      ``except TheurianError`` with a better cure than
+      :data:`_LOCK_ACQUIRE_REMEDY` could give it.
 
     - **Body.** The one thing run inside is ``replace_all``, which converts its own
       ``(sqlite3.Error, OSError)`` before any escapes, and a
@@ -132,7 +153,12 @@ def findings_build(as_json: JsonOption = False) -> None:
     (#404 R1-5), so ``_fail`` below carries "wait for the other process", never the
     generic doctor cure and never a raw traceback.
     """
-    from theurian.cli.commands import _emit, _fail, _require_project  # noqa: PLC0415 - cycle
+    from theurian.cli.commands import (  # noqa: PLC0415 - cycle
+        _emit,
+        _fail,
+        _fail_a_path_escape,
+        _require_project,
+    )
 
     context, _ = _require_project(as_json)
     paths = context.paths
@@ -173,6 +199,15 @@ def findings_build(as_json: JsonOption = False) -> None:
         # refuses, so a failure here is a failed build reported with the precondition
         # to fix -- not a success whose artifact nothing will serve.
         BuildProvenance.default().record_findings(paths.root, FINDINGS_STORE_ID)
+    except ProjectPathEscapeError as exc:
+        # Both `findings_for` and `write_lock` are composed inside this `try` and
+        # both route through the containment chokepoint, so a doctored
+        # `.theurian/state/` or `.theurian/runtime/` refuses here. Measured at
+        # exit 1 until this arm, against 4 for the same tree under any swept
+        # command; this command is outside `CLI_SWEEP` because it reads
+        # `refs/remotes/origin/main`, which is why the sweep could not see it.
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
     except TheurianError as exc:
         # Each failure carries its own remedy: a path that cannot be contained
         # names the escape, unreachable git history (a fresh clone) names the

@@ -26,6 +26,7 @@ from typing import Annotated, Final, NoReturn
 
 import typer
 
+from theurian.application.project_service import ProjectPathEscapeError
 from theurian.application.proposal_service import (
     AcceptedProposal,
     ApprovedSetUnusableError,
@@ -459,6 +460,7 @@ def propose_accept(
         EXIT_STATE_ERROR,
         _emit,
         _fail,
+        _fail_a_path_escape,
         _require_project,
     )
 
@@ -475,6 +477,15 @@ def propose_accept(
     context, _ = _require_project(as_json)
     try:
         accepted = _service(context).accept(parsed)
+    except ProjectPathEscapeError as exc:
+        # Measured at exit 1 until this arm, over an escaping
+        # `.theurian/proposals`: the service resolves it through the containment
+        # chokepoint, and the generic branch below graded it the way it grades a
+        # proposal this command cannot use. It is neither -- it is the doctored
+        # tree #525 unifies, and `_require_project` a few lines up already
+        # answers 4 for the same condition met at the state database.
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
     except ChangeAlreadyInPlaceError as exc:
         # Both faces of "already in place" -- a taken migration name and a
         # proposal whose migration has already moved out -- are knowledge state,
@@ -783,7 +794,12 @@ def _refuse_unusable_labels(labels: tuple[str, ...], *, as_json: bool) -> None:
 
 def _draft(inputs: _Inputs, *, as_json: bool) -> None:
     """Read the body, build the request, and report what was written."""
-    from theurian.cli.commands import _emit, _fail, _require_project  # noqa: PLC0415 - cycle
+    from theurian.cli.commands import (  # noqa: PLC0415 - cycle
+        _emit,
+        _fail,
+        _fail_a_path_escape,
+        _require_project,
+    )
 
     body, content_type = _read_body(inputs.body_file, as_json=as_json)
     context, _ = _require_project(as_json)
@@ -792,6 +808,17 @@ def _draft(inputs: _Inputs, *, as_json: bool) -> None:
         drafted = _service(context).draft(
             _request(inputs, body=body, content_type=content_type), local=inputs.local
         )
+    except ProjectPathEscapeError as exc:
+        # The worst of the four positions this arm closes, and the reason it is a
+        # fix rather than a recorded gap. Measured over an escaping
+        # `.theurian/proposals`: exit 2 -- this command's "invalid input" -- with
+        # the escape's own cure *overwritten* by "Correct the option the message
+        # names, then run this command again". Nothing the author passed is
+        # wrong, and there is no option to correct; the working tree is doctored.
+        # That is the exact defect the branch below records itself as having
+        # fixed for the accept path (#227, #205), reappearing at the draft path.
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
     except ProposalError as exc:
         _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_INVALID_INPUT)
         return

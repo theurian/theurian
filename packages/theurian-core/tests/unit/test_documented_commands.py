@@ -17,6 +17,16 @@ argument asked for: one mechanism over the instructional surfaces named below,
 resolved against the app the CLI actually runs, so a command added or removed
 tomorrow is covered without anyone remembering to add a test.
 
+A second class, over the same surface (#525/#329)
+-------------------------------------------------
+**A user-facing string states an exit code the command does not select.** The
+same shape as the first -- prose about the CLI, checked against the source
+rather than against a list kept here -- and it lives beside it because it reads
+the same shipped-file population through :data:`command_population.REPO_ROOT`.
+It is the narrower of the two: the first ranges over every instructional surface
+in the repository, this one over one document, and the last section of this file
+says exactly what that leaves unread.
+
 The population
 --------------
 Four readers over four file families, walked from the repository root:
@@ -90,9 +100,16 @@ the thing that goes stale, and it is what made #42's fix incomplete.
 
 from __future__ import annotations
 
+import ast
+import importlib
+import inspect
+import pathlib
+import re
+import sys
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Final
 
 import pytest
@@ -706,4 +723,485 @@ def _count_spans(chunks: Iterable[tuple[int, str]]) -> int:
         Span(line, _unwrap(span.group("body"), _COMMENT_MARKER))
         for line, chunk in chunks
         for span in _CODE_SPAN.finditer(chunk)
+    )
+
+
+# -- the exit codes a command document enumerates ---------------------------
+#
+# The second class this module holds (see its docstring): a user-facing string
+# states an exit code the command does not select. Its recorded face is
+# `plugins/claude-code/commands/index.md`, which told an agent `theurian index
+# build` "has two non-zero exits" and that "Only exit 1 means nothing was
+# published". Both were false, and had been since #233 gave the build a second
+# route to `EXIT_STATE_ERROR` -- so an agent that met exit 4 was reading a
+# document which said that could not happen. #525 widened the gap (the
+# unwritable-pointer refusal), and the repair and this pin landed together, which
+# is the condition #329 states for moving a code a plugin reads.
+#
+# **Nothing pinned any plugin document's exit-code prose before this.** The
+# reach is one document and one command, stated here rather than implied:
+# `reindex.md` and `propose.md` name exit codes too and are *not* pinned, because
+# each speaks about several commands at once and the union of their codes is not
+# a set any single walk derives. Widening the pin to them needs a per-command key
+# they do not currently carry.
+
+
+#: The document under this pin, repository-relative.
+INDEX_COMMAND_DOCUMENT: Final = "plugins/claude-code/commands/index.md"
+
+#: Where the walk starts. `index.md` is a document about `theurian index build`,
+#: so the derivation is rooted at that command's function rather than at its
+#: module: `index_commands.py` also registers `index gc` and `index status`, and
+#: a module-wide union would demand this document enumerate a code that belongs
+#: to a command it never runs.
+INDEX_BUILD_MODULE: Final = "theurian.cli.index_commands"
+INDEX_BUILD_FUNCTION: Final = "index_build"
+
+#: The two call shapes that end a Theurian command with a chosen code. `_fail`
+#: writes the `{error, remedy}` envelope and raises; `typer.Exit` is the bare
+#: form the secret-scan verdict uses, because that path has a payload to publish
+#: on stdout and must not replace it with an envelope.
+#:
+#: Anything else that could end the process is deliberately outside the key, and
+#: :func:`test_the_index_build_walk_sees_every_way_that_module_ends_the_process`
+#: is what stops that being a silent hole rather than a stated bound.
+_EXIT_CALLS: Final = frozenset({"_fail", "Exit"})
+
+#: Other ways a module could end the process, none of which `index_commands.py`
+#: uses. Held as an absence so the key above cannot quietly go incomplete.
+_UNREAD_EXIT_CONSTRUCTS: Final = ("sys.exit", "os._exit", "SystemExit")
+
+#: `exit 4`, `Exit 6`, `exits 1` -- every place prose names a code by number.
+_A_NAMED_EXIT: Final = re.compile(r"\bexits?\s+(\d+)\b", re.IGNORECASE)
+
+#: The enumerating sentence: "selects three non-zero exits — 1, 4 and 6 —".
+#:
+#: The count and the list are captured separately on purpose. "has two non-zero
+#: exits" beside a list of three is the exact shape that shipped, and a pattern
+#: that read only the list would have called it correct.
+#: The dashes are written as escapes rather than as themselves: an em dash and an
+#: en dash are indistinguishable in a diff, and this pattern has to accept either
+#: because the document's typography is not the claim being pinned.
+_A_DASH: Final = r"[\u2014\u2013-]"
+
+_THE_ENUMERATION: Final = re.compile(
+    rf"selects\s+(?P<count>[a-z]+|\d+)\s+non-zero\s+exits?\s*{_A_DASH}\s*"
+    rf"(?P<codes>[^\u2014\u2013]+?)\s*{_A_DASH}"
+)
+
+#: Number words an enumeration may spell out. A count outside this map is not
+#: silently accepted -- :func:`enumerated_exits` returns ``None`` for it and the
+#: test reports the sentence rather than passing over it.
+_COUNT_WORDS: Final = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+}
+
+#: The sentence #525 replaced, kept as a literal so its return is reported as
+#: itself rather than only through the set equality above it. It was false from
+#: #233 onward: exit 4 also means nothing was published.
+_THE_SUPERSEDED_CLAIM: Final = "Only exit 1 means nothing was published"
+
+
+@dataclass(frozen=True)
+class SelectedExits:
+    """The codes a command selects, and the names the walk could not resolve.
+
+    ``unresolved`` is not an error the walk swallows. A constant that has been
+    renamed resolves to nothing, the set silently shrinks, and the document then
+    looks like it over-enumerates -- a failure pointing at the wrong file. Naming
+    them separately makes the walk report its own blindness.
+    """
+
+    codes: frozenset[int]
+    unresolved: tuple[str, ...]
+
+
+def _module_tree(module_name: str) -> tuple[ast.Module, ModuleType]:
+    module = importlib.import_module(module_name)
+    source = inspect.getsourcefile(module)
+    assert source is not None, f"{module_name} is not importable from source"
+    return ast.parse(pathlib.Path(source).read_text(encoding="utf-8")), module
+
+
+def _module_functions(tree: ast.Module) -> Mapping[str, ast.FunctionDef]:
+    return {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+
+
+def _reached_from(functions: Mapping[str, ast.FunctionDef], root: str) -> frozenset[str]:
+    """``root`` and every module-level function it can reach, transitively.
+
+    A call graph over plain ``Name`` calls, which is what this module's helpers
+    are: `index_build` calls `_run_build`, which calls `_refuse_if_empty`, and
+    the exit code the reader meets is chosen three frames down. Rooting the walk
+    at the command and closing over its own module is what makes the derived set
+    "what `theurian index build` selects" rather than "what this file contains".
+    """
+    reached = {root}
+    pending = [root]
+    while pending:
+        for node in ast.walk(functions[pending.pop()]):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+                continue
+            name = node.func.id
+            if name in functions and name not in reached:
+                reached.add(name)
+                pending.append(name)
+    return frozenset(reached)
+
+
+def _exit_code_expressions(node: ast.AST) -> frozenset[str]:
+    """Every expression handed to one of :data:`_EXIT_CALLS` as its code."""
+    found: set[str] = set()
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call):
+            continue
+        target = call.func
+        name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", None)
+        if name not in _EXIT_CALLS:
+            continue
+        arguments = [keyword.value for keyword in call.keywords if keyword.arg == "code"]
+        if name == "Exit":
+            arguments.extend(call.args)
+        found.update(ast.unparse(argument) for argument in arguments)
+    return frozenset(found)
+
+
+def _import_origins(tree: ast.Module) -> Mapping[str, str]:
+    """Which module each imported name came from, function-local imports included.
+
+    ``EXIT_STATE_ERROR`` reaches `index_build` through an import *inside* the
+    function -- `index_commands.py` imports it there to break a cycle -- so it is
+    not an attribute of the module object and ``getattr`` alone cannot resolve
+    it. Walking every ``ImportFrom`` in the tree finds it where it actually is.
+    """
+    origins: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                origins[alias.asname or alias.name] = node.module
+    return origins
+
+
+def selected_non_zero_exits(module_name: str, root: str) -> SelectedExits:
+    """The non-zero codes ``root`` and its module-local helpers select.
+
+    Zero is dropped rather than never collected: nothing in this module passes
+    it, and a rule that collected it would make every document enumerate
+    success as an outcome.
+    """
+    tree, module = _module_tree(module_name)
+    functions = _module_functions(tree)
+    origins = _import_origins(tree)
+
+    expressions: set[str] = set()
+    for name in _reached_from(functions, root):
+        expressions |= _exit_code_expressions(functions[name])
+
+    codes: set[int] = set()
+    unresolved: list[str] = []
+    for expression in sorted(expressions):
+        try:
+            value = ast.literal_eval(expression)
+        except (ValueError, SyntaxError):
+            owner = origins.get(expression)
+            source = importlib.import_module(owner) if owner else module
+            value = getattr(source, expression, None)
+        if isinstance(value, int):
+            codes.add(value)
+        else:
+            unresolved.append(expression)
+    return SelectedExits(frozenset(code for code in codes if code), tuple(unresolved))
+
+
+def _document(relative: str) -> str:
+    """One shipped document, with its line breaks flattened.
+
+    Flattened because the enumerating sentence wraps, and a pattern that had to
+    survive re-wrapping would be a pattern about the formatter rather than about
+    the claim.
+    """
+    return " ".join((REPO_ROOT / relative).read_text(encoding="utf-8").split())
+
+
+def named_exits(text: str) -> frozenset[int]:
+    """Every non-zero code the prose names by number, anywhere in the document."""
+    return frozenset(code for code in (int(m) for m in _A_NAMED_EXIT.findall(text)) if code)
+
+
+def enumerated_exits(text: str) -> tuple[int | None, frozenset[int]]:
+    """The count and the codes the enumerating sentence states, or ``(None, ...)``."""
+    match = _THE_ENUMERATION.search(text)
+    if match is None:
+        return None, frozenset()
+    spelled = match.group("count").lower()
+    count = _COUNT_WORDS.get(spelled, int(spelled) if spelled.isdigit() else None)
+    return count, frozenset(int(digits) for digits in re.findall(r"\d+", match.group("codes")))
+
+
+def test_the_index_command_document_enumerates_exactly_the_exits_the_build_selects() -> None:
+    """The fact side of the pin (#525, #329). RED when a fourth code joins.
+
+    ``plugins/claude-code/commands/index.md`` is read by an agent deciding what
+    to do with a non-zero exit, so a code it does not name is a branch the agent
+    does not have. Set equality both ways, against a derivation rather than a
+    list: a code the build gains and the document does not name fails here, and
+    so does a code the document names that the build cannot produce.
+
+    The derivation is demonstrably able to move -- the same walk returns
+    ``{1, 6}`` on ``origin/main`` and ``{1, 4, 6}`` on this branch, the
+    difference being the unwritable-pointer refusal this cluster added.
+
+    **What the walk cannot see, stated rather than implied.** It closes over
+    `index_commands.py` only, so a code selected *solely* inside a helper in
+    `cli/commands.py` -- `_require_project`, which grades a containment refusal
+    ``EXIT_STATE_ERROR`` -- is invisible to it. Exit 4 reaches this command by
+    both routes, and the walk sees one of them: delete the in-module site and
+    this test would go RED asking the document to drop a code the command still
+    produces. The other route is pinned from the other side, by running it --
+    ``test_contained_path_envelope.py`` measures ``index build`` exiting 4 over
+    six planted artefacts -- so the pair of tests disagreeing is what a reader
+    would see, not a quiet hole.
+    """
+    selected = selected_non_zero_exits(INDEX_BUILD_MODULE, INDEX_BUILD_FUNCTION)
+    text = _document(INDEX_COMMAND_DOCUMENT)
+    _count, enumerated = enumerated_exits(text)
+
+    assert not selected.unresolved, (
+        f"the walk could not resolve {list(selected.unresolved)} to a number, so the "
+        f"set it derived is smaller than what {INDEX_BUILD_FUNCTION} really selects"
+    )
+    assert selected.codes, "the walk found no exit code at all, so this test asserts nothing"
+    assert enumerated, (
+        f"{INDEX_COMMAND_DOCUMENT} no longer states an enumerating sentence this "
+        f"pattern can read, so nothing here is checking its exit-code prose"
+    )
+    assert enumerated == selected.codes, (
+        f"{INDEX_COMMAND_DOCUMENT} enumerates {sorted(enumerated)} and "
+        f"`theurian {INDEX_BUILD_FUNCTION.replace('_', ' ')}` selects "
+        f"{sorted(selected.codes)}. Named and not selected: "
+        f"{sorted(enumerated - selected.codes)}; selected and not named: "
+        f"{sorted(selected.codes - enumerated)}"
+    )
+    assert named_exits(text) == selected.codes, (
+        f"the codes {INDEX_COMMAND_DOCUMENT} discusses in prose "
+        f"({sorted(named_exits(text))}) and the codes it enumerates in the rule "
+        f"({sorted(enumerated)}) have come apart from what the command selects "
+        f"({sorted(selected.codes)})"
+    )
+
+
+def test_the_index_command_document_counts_the_exits_it_lists() -> None:
+    """The prose side. RED on a drift back to a two-code enumeration.
+
+    The set equality above does not catch the sentence that actually shipped.
+    "``theurian index build`` **has two non-zero exits**" sat beside a list, and
+    a reader who trusted the count stopped reading after the second entry; an
+    agent that branched on "the only other outcome" took the wrong branch on the
+    third. So the number the sentence claims is checked against the number of
+    codes the sentence itself lists.
+
+    The superseded claim is asserted absent by literal, beside that. It is the
+    weaker of the two -- a reworded version of the same falsehood passes it --
+    which is why it is one line under a property rather than a test of its own.
+    Its value is that the specific sentence #525 removed is reported as itself if
+    it returns.
+    """
+    text = _document(INDEX_COMMAND_DOCUMENT)
+
+    count, enumerated = enumerated_exits(text)
+
+    assert enumerated, f"{INDEX_COMMAND_DOCUMENT} states no enumeration to check"
+    assert count is not None, (
+        f"{INDEX_COMMAND_DOCUMENT} enumerates {sorted(enumerated)} behind a count "
+        f"this test cannot read, so the count and the list are unchecked"
+    )
+    assert count == len(enumerated), (
+        f"{INDEX_COMMAND_DOCUMENT} says the build selects {count} non-zero exits "
+        f"and then lists {len(enumerated)} of them: {sorted(enumerated)}"
+    )
+    assert _THE_SUPERSEDED_CLAIM not in text, (
+        f"{INDEX_COMMAND_DOCUMENT} has gone back to {_THE_SUPERSEDED_CLAIM!r}, which "
+        f"is false for exit 4 as well and has been since #233"
+    )
+
+
+def test_the_index_build_walk_stops_at_the_command_the_document_is_about() -> None:
+    """RED means the derived set has quietly become "every exit in the module".
+
+    The bound that makes the equality above sound. ``index_commands.py`` also
+    registers ``index gc``, whose refusals are its own -- ``reindex.md``
+    documents two of them -- and a walk that included them would demand
+    ``index.md`` enumerate codes for a command it never runs. Asserted with a
+    positive control on the exclusion: ``index_gc`` really does select a code, so
+    its absence from the closure is a decision rather than an empty set.
+    """
+    tree, _module = _module_tree(INDEX_BUILD_MODULE)
+    functions = _module_functions(tree)
+    reached = _reached_from(functions, INDEX_BUILD_FUNCTION)
+
+    assert "index_gc" in functions, "the module no longer registers `index gc` under that name"
+    assert _exit_code_expressions(functions["index_gc"]), (
+        "`index_gc` selects no exit code, so excluding it from the closure proves nothing"
+    )
+    assert "index_gc" not in reached, (
+        "the walk now reaches `index gc`, so the derived set is no longer what "
+        "`index build` selects and `index.md` is being held to another command's codes"
+    )
+    assert "_run_build" in reached, (
+        "the walk no longer reaches `_run_build`, where exit 1 is chosen, so it is "
+        "reading the command's own body and nothing below it"
+    )
+
+
+def test_the_index_build_walk_sees_every_way_that_module_ends_the_process() -> None:
+    """RED means a code is chosen by a construct :data:`_EXIT_CALLS` does not read.
+
+    The key is two call shapes, and a module that started calling ``sys.exit``
+    would select codes the walk cannot see -- the set would shrink, and the
+    document would look like it over-enumerates. Held as an absence over the
+    source text, so the bound is checked rather than described.
+    """
+    source = pathlib.Path(inspect.getsourcefile(importlib.import_module(INDEX_BUILD_MODULE)) or "")
+    text = source.read_text(encoding="utf-8")
+
+    present = [construct for construct in _UNREAD_EXIT_CONSTRUCTS if construct in text]
+
+    assert not present, (
+        f"{INDEX_BUILD_MODULE} now ends the process through {present}, which the "
+        f"exit-code walk does not read; the derived set is incomplete until "
+        f"`_EXIT_CALLS` covers it"
+    )
+
+
+#: A module whose exit codes exercise every arm of the resolver at once.
+#:
+#: Written to disk and imported rather than parsed in place, because
+#: :func:`selected_non_zero_exits` takes a *module name*: it imports the module
+#: to resolve names ``ast.literal_eval`` cannot, and a tree with no module behind
+#: it can only drive the collector.
+_RESOLVER_FIXTURE: Final = (
+    "LOCAL = 7\n"
+    "def root() -> None:\n"
+    "    from theurian.cli.commands import EXIT_STATE_ERROR\n"
+    "    _fail('a', code=1)\n"
+    "    _fail('b', code=LOCAL)\n"
+    "    _fail('c', code=EXIT_STATE_ERROR)\n"
+    "    _fail('d', code=NOT_A_THING)\n"
+    "    raise typer.Exit(0)\n"
+)
+
+
+def test_the_exit_walk_resolves_a_literal_a_local_constant_and_an_imported_one(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED means the resolver stopped resolving, and every derived set is short.
+
+    Driven by synthetic source, because the shipped module cannot drive it: its
+    three expressions all resolve today, so a resolver that had lost an arm would
+    look identical to one that never needed it. All three arms are exercised --
+    a bare literal, a module-level constant, and a name imported inside a
+    function, which is the shape ``EXIT_STATE_ERROR`` really has -- plus the
+    negative case, a name that resolves to nothing and must be reported rather
+    than dropped.
+
+    **Through :func:`selected_non_zero_exits`, and that is the correction.** An
+    earlier cut asserted over ``_exit_code_expressions`` and ``_import_origins``
+    and then checked the two facts by hand, which drives the *collector* and
+    leaves the resolution loop -- ``literal_eval``, the ``origins`` lookup, the
+    ``getattr`` fallback, and the int-or-``unresolved`` split -- unexecuted. A
+    mutation replacing that fallback with a value the ``if code`` filter drops
+    left the whole module green while a name that resolved to nothing vanished
+    instead of being reported, which is the one behaviour the docstring's last
+    sentence promises. Calling the real entry point is what makes the promise
+    checkable.
+
+    The fixture module is written under ``tmp_path`` and imported from there, so
+    the arms are exercised against the same code path the shipped module takes
+    rather than against a hand-walked copy of it.
+    """
+    module_name = "theurian_resolver_fixture"
+    (tmp_path / f"{module_name}.py").write_text(_RESOLVER_FIXTURE, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, module_name, raising=False)
+    importlib.invalidate_caches()
+
+    selected = selected_non_zero_exits(module_name, "root")
+
+    assert selected.codes == frozenset({1, 7, 4}), (
+        f"the resolver no longer turns a literal, a module-level constant and a "
+        f"function-local import into the numbers they name: {sorted(selected.codes)}"
+    )
+    assert selected.unresolved == ("NOT_A_THING",), (
+        f"a name that resolves to nothing is no longer reported as unresolved, so a "
+        f"derived set can be short without saying so: {selected.unresolved}"
+    )
+
+    synthetic = ast.parse(
+        "LOCAL = 7\n"
+        "def root() -> None:\n"
+        "    from theurian.cli.commands import EXIT_STATE_ERROR\n"
+        "    _fail('a', code=1)\n"
+        "    _fail('b', code=LOCAL)\n"
+        "    _fail('c', code=EXIT_STATE_ERROR)\n"
+        "    _fail('d', code=NOT_A_THING)\n"
+        "    raise typer.Exit(0)\n"
+    )
+    functions = _module_functions(synthetic)
+    origins = _import_origins(synthetic)
+
+    expressions = _exit_code_expressions(functions["root"])
+
+    # The collector's own half, kept beside the resolver's: these say *which
+    # expressions were seen*, where the assertions above say what they resolved
+    # to. A collector that stopped seeing `NOT_A_THING` would make the
+    # `unresolved` assertion above pass for the wrong reason -- an empty tuple
+    # because nothing was collected, rather than because everything resolved.
+    assert expressions == {"1", "LOCAL", "EXIT_STATE_ERROR", "NOT_A_THING", "0"}
+    assert origins["EXIT_STATE_ERROR"] == "theurian.cli.commands", (
+        "a function-local `ImportFrom` is no longer read, so the one constant the "
+        "real walk cannot reach by `getattr` would resolve to nothing"
+    )
+    declaring = importlib.import_module(origins["EXIT_STATE_ERROR"])
+    assert declaring.EXIT_STATE_ERROR == 4, (
+        "`EXIT_STATE_ERROR` no longer names 4 in the module that declares it"
+    )
+
+
+def test_every_function_the_exit_walk_must_see_is_one_it_looks_at() -> None:
+    """MEDIUM-2: the walk reads ``tree.body``, so a nested helper is invisible to it.
+
+    :func:`_module_functions` collects top-level ``FunctionDef`` nodes and nothing
+    else. Two shapes escape it -- a function defined inside another function, and
+    an ``async def`` -- and either would take its exit codes out of the derived
+    set silently: the document would look like it over-enumerates, and the fix
+    a reader reached for would be to delete a code the command still produces.
+
+    Held as a structural fact about the module rather than as a promise about the
+    collector, because that is the assumption the collector actually rests on.
+    ``index_commands.py`` has sixteen functions and all sixteen are top-level and
+    synchronous; the day one is not, this fails and someone decides whether the
+    walk should follow it.
+    """
+    tree, _module = _module_tree(INDEX_BUILD_MODULE)
+    collected = frozenset(_module_functions(tree))
+    every = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+
+    assert collected, "the collector found no function at all, so this compares nothing"
+    assert every - collected == set(), (
+        f"{INDEX_BUILD_MODULE} now defines functions the exit walk cannot see -- nested "
+        f"or `async def`, both outside `tree.body`'s `FunctionDef` filter: "
+        f"{sorted(every - collected)}. Any exit code chosen inside one is missing from "
+        f"the derived set, and `index.md` would be held to a set smaller than what the "
+        f"command selects"
     )
