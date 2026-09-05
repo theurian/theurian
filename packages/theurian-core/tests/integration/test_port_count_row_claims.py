@@ -805,9 +805,17 @@ def test_a_population_key_carrying_an_unlisted_flag_is_refused_before_it_runs(
     ``subprocess.run`` is replaced with a tripwire that raises
     :class:`RuntimeError` -- deliberately not an :class:`AssertionError`, so
     :func:`pytest.raises` below cannot absorb it and report a fence that
-    refused *after* running as a pass. The claim is that the fence refuses
-    rather than executes, and that is only observable by watching for the
-    execution.
+    refused *after* running as a pass. **Against this tree it cannot fire**:
+    :func:`_population_argv` holds no ``subprocess`` call site at all, so
+    deleting the ``monkeypatch`` line leaves both parameters green, and a
+    counting stand-in installed in the tripwire's place records zero calls for
+    each. It is forward defence, and that it defends was measured rather than
+    assumed -- 2026-09-05 on #557's branch, by moving ``subprocess.run`` ahead
+    of the flag check inside :func:`_population_argv`: both parameters then fail
+    on the :class:`RuntimeError`, where an :class:`AssertionError` tripwire
+    would have been absorbed as a satisfied :func:`pytest.raises`. So what this
+    guards is a refactor that moves execution into or ahead of the fence, not
+    anything the shipped code does today.
 
     **The naming claim is held against the fence's own message, not against
     pytest's.** :func:`pytest.raises` searches the whole
