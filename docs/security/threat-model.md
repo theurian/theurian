@@ -3104,26 +3104,39 @@ three surfaces to the probe's words. That cross-surface pin is **owned by
 it: the gap is accurate and was left unowned by the correction that found it,
 which is a residue and not a closure.
 
-**Recorded as an accepted non-goal for 0.1.0, decided by the maintainer on
-2026-09-05: install-time artifact verification is not a 0.1.0 goal.** This
-paragraph used to open "Recorded as unmet, not accepted — unlike T-17a, no
-argument is offered that this is tolerable", and that contrast is what the
-decision retires. The argument is offered now, and it rests on records this
-repository already carries rather than on a new measurement:
+**Recorded as an accepted non-goal for 0.1.0, decided by the maintainer
+[on 2026-09-05](https://github.com/theurian/theurian/issues/80#issuecomment-5548686344):
+install-time artifact verification is not a 0.1.0 goal.** That comment is the
+decision record, and it is also what carries the scope: the acceptance is for
+0.1.0 and is re-taken before 0.2.0. This paragraph used to open "Recorded as
+unmet, not accepted — unlike T-17a, no argument is offered that this is
+tolerable", and that contrast is what the decision retires. The argument is
+offered now, and it rests on records this repository already carries rather
+than on a new measurement:
 
 1. **The publication half ships.** The Controls paragraphs above are the record
-   of what it covers, and of the ordering that fixes the checksums and the SBOM
-   before the artifact is installable. That list is cited here, not restated.
+   of what it covers and of the ordering it fixes. That record is cited here,
+   not restated.
 2. **Checking a download against `SHA256SUMS` is a manual step until the
    install-time control lands**, which is what
    [`docs/contributing/release.md`](../contributing/release.md) tells a releaser
-   today. The decision accepts that manual step as the 0.1.0 answer.
-3. **The unbuilt client-side control has a standing owner.**
-   [#80](https://github.com/theurian/theurian/issues/80) holds it, carries
-   `post-1.0`, diagnoses the split #39 was closed across, and records both that
-   a successor issue for the control itself is still owed and the standing-owner
-   clause of
-   [2026-08-31](https://github.com/theurian/theurian/issues/80#issuecomment-5484550422).
+   today — and, as measured above in this entry, a step whose reach is
+   narrower than the control it stands in for. It defends against the
+   substituted download: a mirror, a proxy, or a wrong URL, where the artifact
+   changes and the record does not. It gains nothing against someone who can
+   push a `core-v*` tag, because the same run produces both the artifact and
+   the record. So the 0.1.0 answer on the consuming side is that narrow manual
+   step for the substituted-download case, and nothing against the tag-push
+   actor. What the decision accepts is therefore the install-time residual as
+   the Residual paragraph above prices it — unmitigated, and knowingly so —
+   rather than a claim that the manual step covers it. That paragraph keeps
+   standing.
+3. **The gap has a live owner; the control itself does not have one yet.**
+   [#80](https://github.com/theurian/theurian/issues/80) holds the gap, carries
+   `post-1.0`, and diagnoses the split #39 was closed across. It also records
+   that a successor issue for the control itself is
+   [still owed](https://github.com/theurian/theurian/issues/80#issuecomment-5484550422),
+   so what this leg cites is an owner for the record, not scheduled work.
 
 The requirement it stands against has not moved: OSS-11 requires the checksums
 and `requirements-analysis.md`'s threat table maps T-16 to OSS-7, OSS-11 and
