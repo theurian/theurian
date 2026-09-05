@@ -809,6 +809,17 @@ def test_a_population_key_carrying_an_unlisted_flag_is_refused_before_it_runs(
     rather than executes, and that is only observable by watching for the
     execution.
 
+    **The naming claim is held against the fence's own message, not against
+    pytest's.** :func:`pytest.raises` searches the whole
+    :class:`AssertionError` string, and pytest's assertion rewriting appends its
+    own ``assert not ['-O']`` on a following line -- so a bare
+    ``re.escape(offending_flag)`` is satisfied by that addendum alone and passes
+    over a fence whose message names nothing at all. The ``match`` is therefore
+    anchored on the fence's own word ``carries`` and has to reach the flag on
+    that same line, which the addendum cannot supply. Measured 2026-09-05 on
+    #557's branch: emptying the refusal's message of the flag it refused leaves
+    the bare match green and reddens this one, for both parameters.
+
     The patterns are spelled ``anything`` rather than the phrase the row greps
     for: a doctored key quoting that phrase would make this file a member of
     the population it measures, which is the constraint the module docstring
@@ -824,7 +835,7 @@ def test_a_population_key_carrying_an_unlisted_flag_is_refused_before_it_runs(
     monkeypatch.setattr(subprocess, "run", _tripwire)
     row = f"| 4 | a doctored known-defect row | Population: {doctored_key} |"
 
-    with pytest.raises(AssertionError, match=re.escape(offending_flag)):
+    with pytest.raises(AssertionError, match=rf"carries[^\n]*{re.escape(offending_flag)}"):
         _population_argv(row)
 
 
