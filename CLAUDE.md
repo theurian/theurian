@@ -11,6 +11,12 @@ receives one and quietly downgrades it is not.
 **This file grows net-zero: added lines are paid for by compressing
 elsewhere** — its weight falls on every session and specialist on every load.
 
+Its act-level form — the DISPATCH, REVIEW, MERGE and INSTRUMENT checklists, the
+learning loop, the filing filter and the tracker scheme — is
+[docs/contributing/orchestration.md](docs/contributing/orchestration.md). It
+operationalizes this file and never overrides it; where the two could be read as
+disagreeing, this file wins.
+
 ## The orchestrator does not implement
 
 **Claude Code in the main session orchestrates. It does not write the change
@@ -188,9 +194,8 @@ A finished, reviewed, CI-green PR left open is flow debt: the milestone is not
 done until it is merged (step 6 above), and the next class is started on top of
 work that has not landed. When closing an assignment and when opening the next,
 run `gh pr list --state open --draft=false` and merge anything green and
-mergeable before dispatching new work. A round is recorded as a PR comment at
-the flip to Ready, but this workflow never posts a GitHub *review* — so Ready
-plus a clean checks list is the merge signal; do not wait for an approval.
+mergeable first. This workflow never posts a GitHub *review*, so Ready plus a
+clean checks list is the merge signal; do not wait for an approval.
 
 ## The review round
 
@@ -320,10 +325,9 @@ before assigning it.** Three times this milestone the reviewer's stated mechanis
 was wrong while the finding was real, and a brief built on an unverified
 mechanism sends the fix at the wrong cause.
 
-Do not read a slow round as a failed one. Retrieval is a domain where defects are
-invisible until something runs, so the time a round spends running things is the
-round working. The next section cuts the *number* of rounds, not the wall clock
-inside one; nothing in it is a reason to end a round before its checks have run.
+Do not read a slow round as a failed one: retrieval defects are invisible until
+something runs, so time spent running things is the round working. The next
+section cuts the *number* of rounds, never a round's checks.
 
 ### Round two onward: run the reviewers' methods before they do
 
@@ -429,16 +433,14 @@ places" question by inference, and each was wrong. One `grep` settled it. An
 independent reader helps when the question is whether a claim holds; it does not
 help when the question is how many, because a second reader reasons too.
 
-State the population as well as the count. A search answers "how many" only once
-the key is chosen, and choosing the key is inference — which is where Milestone 5
-got it wrong twice, counting symptoms and then counting the wrong method. A
-reader given the key can attack the key; a reader given only the list can attack
-only the number.
-
-Four of Milestone 5's orchestrator claims were false; the
+State the population as well as the count: a search answers "how many" only once
+the key is chosen, and choosing the key is inference — Milestone 5 got it wrong
+twice, counting symptoms and then counting the wrong method. A reader given the
+key can attack the key; given only the list, only the number. Four of that
+milestone's orchestrator claims were false; the
 [work log](docs/work-logs/2026-08-03-milestone-5-review-rounds.md) names all
-four. Cost is not the reason to skip the check. Latency is the reason to keep it
-narrow: a check before dispatch serialises assignments this file otherwise
+four. Cost is not the reason to skip the check — latency is what keeps it
+narrow, and a check before dispatch serialises assignments this file otherwise
 launches together, so spend it on the rows above and not on every brief.
 
 **Not over the reviewers' findings.** They already are independent readers who
@@ -611,16 +613,15 @@ its language is the point.
   up for the flip to Ready; the full gate runs once before the Draft PR opens,
   and a report names the scope it ran — an unqualified "GREEN" means the full
   gate. Milestone 5 held 16,300 uncommitted lines for 28 hours; slicing them
-  afterwards took three attempts, and the one that built
-  opens with a 13,434-line commit. Size was not the cause: a port signature
-  change spread across layers, and a commit that removes an API without moving
-  its consumers does not build — once they have landed separately, no ordering
-  works. Committing at the green keeps them together. It also bounds review:
-  rounds four to six were handed `git diff main...HEAD`, which showed 7,792
-  lines of a larger change — four production modules and three schemas were
-  untracked, and so invisible to it. An uncommitted tree has no boundary a
-  reviewer can check. The same green pushes to origin and opens a Draft PR — see
-  *Early push and Draft PRs*.
+  afterwards took three attempts, and the one that built opens with a
+  13,434-line commit. Size was not the cause: a port signature change spread
+  across layers, and a commit that removes an API without moving its consumers
+  does not build — once they have landed separately, no ordering works.
+  Committing at the green also bounds review: rounds four to six were handed
+  `git diff main...HEAD`, which showed 7,792 lines of a larger change — four
+  production modules and three schemas were untracked, and so invisible to it.
+  An uncommitted tree has no boundary a reviewer can check. The same green
+  pushes to origin and opens a Draft PR — see *Early push and Draft PRs*.
 - A cluster PR ships at its planned scope: reaching the planned commits or 8
   elapsed hours closes the batch — flip what is green, box-split the rest. A
   5-commit plan that lands 12 has traded closure latency for review surface.
@@ -656,11 +657,10 @@ Review-Finding: <reviewer> <SEVERITY> — <one-line finding>
 ```
 
 for example `Review-Finding: adversarial HIGH — byte-identical body accepted
-under a second item id`. The trailer is deliberately machine-parseable:
-`git log --grep 'Review-Finding:'` reconstructs the review history, and it is
-the form a future review-ingestion surface consumes as governed knowledge. The
-round comment and the `Review-Finding:` trailer are English, like every other
-PR-surface text — the reviewer's findings are summarised, not pasted.
+under a second item id`. The trailer is machine-parseable:
+`git log --grep 'Review-Finding:'` reconstructs the review history, and a
+review-ingestion surface will consume it as governed knowledge. The round
+comment and the trailer are English; findings are summarised, not pasted.
 
 **Embargoed disclosure work follows the same pattern on the private fork.**
 Nothing — branch, PR, or CHANGELOG hint — touches public origin until the

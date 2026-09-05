@@ -7,11 +7,12 @@ edit_uri: edit/main/docs/
 
 # Pages that stay in the repository and out of the published site.
 #
-# Four are project-process documents — how this project is run, rather than how
-# Theurian works: the work logs, the ADR template, the repository strategy and
-# the release procedure. architecture/cloud-ready-design.md is excluded for a
-# different reason: it is forward-looking design for a deployment that does not
-# exist yet, and is curated out of the site rather than published as current.
+# Five are project-process documents — how this project is run, rather than how
+# Theurian works: the work logs, the ADR template, the repository strategy, the
+# release procedure and the orchestration checklists.
+# architecture/cloud-ready-design.md is excluded for a different reason: it is
+# forward-looking design for a deployment that does not exist yet, and is
+# curated out of the site rather than published as current.
 #
 # The leading slash on /work-logs/ anchors the pattern to the top of docs/.
 # These are gitignore patterns, so an unanchored work-logs/ would also exclude a
@@ -33,6 +34,7 @@ exclude_docs: |
   adr/0000-adr-template.md
   architecture/cloud-ready-design.md
   architecture/repository-strategy.md
+  contributing/orchestration.md
   contributing/release.md
 
 # A relative link MkDocs cannot classify — a directory-form link such as
