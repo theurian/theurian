@@ -476,15 +476,19 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
     been substituted, and tightening the directory does not undo that -- so this
     arm asks for `theurian auth rotate` the way the readable-file arm does.
 
-    **The symlink half of that surface is closed, and this paragraph used to name
-    it as live.** Planting a link at the token's name is what #371 was, and it had
-    two directions: the next mint writing through it, and a later read handing
-    back what the attacker had already put there. ``FileSecretStore`` opens with
-    ``O_NOFOLLOW`` on both sides and refuses, and the ``is_symlink()`` arm at the
-    top of this probe reports the plant instead of stat-ing through it. What is
-    left is the substitution above, which is a *different* mechanism -- an
-    attacker's own regular file, indistinguishable from Theurian's by mode -- and
-    it is why this arm survived that fix. The
+    **The symlink half of that surface is closed at the token's own name, and this
+    paragraph used to name it as live.** Planting a link *at* ``mcp-token`` is what
+    #371 was, and it had two directions: the next mint writing through it, and a
+    later read handing back what the attacker had already put there.
+    ``FileSecretStore`` opens with ``O_NOFOLLOW`` on both sides and refuses, and
+    the ``is_symlink()`` arm at the top of this probe reports the plant instead of
+    stat-ing through it. That is the **final component** and nothing wider: a link
+    at ``auth/`` itself is followed by every call here, the same prefix bound
+    :mod:`theurian.security.no_follow` records
+    ([#577](https://github.com/theurian/theurian/issues/577)). What is left inside
+    the leaf's own scope is the substitution above, which is a *different*
+    mechanism -- an attacker's own regular file, indistinguishable from Theurian's
+    by mode -- and it is why this arm survived that fix. The
     original single directory arm dropped rotation on the write bit too, telling
     an operator whose 0770 ``auth/`` an attacker could rewrite that nothing needed
     replacing.

@@ -10,19 +10,38 @@ spelled.
 
 **Two guards, and neither replaces the other.** A path derived from a contained
 one must *also* be proved contained (``ProjectPaths._contained``): ``O_NOFOLLOW``
-refuses the link, but a caller that never asked whether the path stays inside the
-working tree has not asked the containment question at all -- and containment
-alone waves through a link whose target is *inside* the tree, which is the shape
-that truncates a file in the user's own checkout.
+refuses a link **at the final component**, but a caller that never asked whether
+the path stays inside the working tree has not asked the containment question at
+all -- and containment alone waves through a link whose target is *inside* the
+tree, which is the shape that truncates a file in the user's own checkout.
 
 **The refusal covers the final component only**, which is the bound
 ``WriteLock._open`` already records for #481 and this module does not widen:
 ``O_NOFOLLOW`` constrains the last path component, so an ordinary directory
-symlink in the prefix is followed. Every caller here ``mkdir(parents=True,
-exist_ok=True)``s the parent first, which resolves that same prefix and returns
-before the open, so an ``ELOOP`` arriving from the open is the final component's
--- by ordering, not by errno. Closing the prefix needs ``openat`` against a
-directory descriptor at every level, which nothing in this codebase does.
+symlink in the *prefix* is followed. That is not a corner case: a clone carrying
+``.theurian/cache -> ../docs`` still relocates the ingestion manifest onto a
+tracked ``docs/ingestion.json`` at exit 0 (measured 2026-09-05, and pinned as a
+fact by
+``test_derived_path_symlink_writes.py::test_a_contained_directory_link_still_relocates_the_manifest``).
+Nothing here refuses it, containment does not either -- the target resolves
+inside the tree -- and closing it needs ``openat`` against a directory descriptor
+at every level, which nothing in this codebase does. Recorded as
+[#577](https://github.com/theurian/theurian/issues/577).
+
+**Why an ``ELOOP`` from one of these opens is the final component's**, stated the
+way the measurements came out rather than the way the first draft guessed. Every
+caller ``mkdir(parents=True, exist_ok=True)``s the parent before the open, so the
+prefix has already been walked by the time the open runs -- but that ``mkdir``
+does not always *return*: with a self-referential prefix
+(``.theurian/state -> state``) it raises ``FileExistsError`` (errno 17, measured),
+not ``ELOOP``, and the open never happens at all. The conclusion survives the
+correction because it only needs the weaker premise: the open runs **only when
+the mkdir succeeded**, and a mkdir that succeeded resolved that prefix, so an
+``ELOOP`` reaching the open cannot be from it. What the mkdir's own failure does
+*not* get is a cure keyed on the real cause -- ``migrate apply`` publishes "Check
+that ``.theurian/state/`` is writable", which is a non-cause for a symlink loop.
+That is a wrong-remedy residual, not a write escape, and it is recorded rather
+than fixed here.
 
 A refusal arrives as a plain :class:`OSError` and is deliberately not translated
 into a :class:`~theurian.domain.errors.TheurianError` here. Every caller of these

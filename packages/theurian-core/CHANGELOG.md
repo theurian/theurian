@@ -63,8 +63,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
   **The bound, recorded rather than claimed away:** `O_NOFOLLOW` covers the
   final path component only. A symbolic link at a *directory* above the target
-  is still followed, and closing that needs `openat` against a directory
-  descriptor at every level, which this release does not do. The substitution
+  is still followed — a clone carrying `.theurian/cache -> ../docs` relocates the
+  ingestion manifest onto a tracked `docs/ingestion.json` at exit 0, measured —
+  and closing that needs `openat` against a directory descriptor at every level,
+  which this release does not do. Recorded as
+  [#577](https://github.com/theurian/theurian/issues/577) and pinned as a fact by
+  a test that goes RED the day the hardening lands. The substitution
   face of #371 is likewise unchanged and is a different mechanism rather than a
   remaining corner of this one: an attacker's own **regular file** at the token's
   name is not a link, so no `O_NOFOLLOW` sees it and it is indistinguishable from

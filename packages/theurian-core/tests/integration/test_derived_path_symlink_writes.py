@@ -288,6 +288,37 @@ def _assert_names_a_removable_link(envelope: dict[str, Any], link: Path) -> None
     assert "Remove the symbolic link" in envelope["remedy"]
 
 
+def _assert_the_error_names(envelope: dict[str, Any], *, artifact: str, link: Path) -> None:
+    """The ``error`` field says *which* artefact, by its leaf, with no absolute path.
+
+    Round one, adversarial M-1: only ``envelope["error"]`` being truthy was
+    asserted anywhere, and four mutations lived in that gap --
+
+    * the whole message replaced by ``"a write was refused"``, the exact string
+      :func:`~theurian.cli.commands._symbolic_link_write_refusal`'s own docstring
+      calls useless, since the reader is left to guess which file to look at;
+    * the message replaced by ``f"{path} could not be written"``, which puts the
+      operator's absolute path in the field this module keeps them out of;
+    * ``index build`` naming "The ingestion manifest" for the *index pointer's*
+      temporary, and again for the *scan record* -- one command sending a reader
+      to a different command's file.
+
+    Three assertions, because the mutations fail three different ways: the phrase
+    that says which artefact, the leaf that says which file, and the absence that
+    keeps the absolute path out. The leaf is asserted rather than the whole path
+    for the reason the production docstring gives -- the ``error`` field is what
+    gets quoted into a bug report, and the ``remedy`` beside it carries the full
+    path because a cure has to be typeable.
+    """
+    message = envelope["error"]
+    assert artifact in message, f"the error does not say which artefact: {message}"
+    assert link.name in message, f"the error does not name the leaf: {message}"
+    assert str(link) not in message, (
+        f"the error carries the operator's absolute path, which belongs in the "
+        f"remedy and not here: {message}"
+    )
+
+
 def _assert_names_the_derived_directory(
     envelope: dict[str, Any], subdirectory: str, rebuild: str
 ) -> None:
@@ -358,7 +389,11 @@ def test_the_in_tree_apply_refusal_names_the_temporary_to_remove(project: Path) 
 
     envelope = _assert_refused_cleanly(_run("migrate", "apply"))
 
-    _assert_names_a_removable_link(envelope, project / ".theurian/state/active.json.tmp")
+    link = project / ".theurian/state/active.json.tmp"
+    _assert_names_a_removable_link(envelope, link)
+    _assert_the_error_names(
+        envelope, artifact="The active-state pointer's temporary file", link=link
+    )
 
 
 @_NEEDS_SYMLINKS
@@ -374,6 +409,44 @@ def test_the_out_of_tree_apply_refusal_names_the_state_directory(project: Path) 
     envelope = _assert_refused_cleanly(_run("migrate", "apply"))
 
     _assert_names_the_derived_directory(envelope, ".theurian/state", "theurian migrate apply")
+
+
+@_NEEDS_SYMLINKS
+def test_the_apply_refusal_names_the_file_that_actually_refused(
+    project: Path, tmp_path: Path
+) -> None:
+    """Round one, adversarial L-2: the envelope blamed a file that does not exist.
+
+    Two writes run inside ``migrate apply``'s section-B ``try``:
+    ``provenance.record_state``, which writes ``<data_dir>/provenance.json.tmp``,
+    and ``write_active_state``. The handler named ``active.json.tmp``
+    unconditionally, so a symbolic-link loop at the *provenance* temporary
+    produced exit 4 with a remedy telling the operator to remove a path that was
+    never created -- measured against the real CLI.
+
+    The plant is a **self-referential link**, which is the shape that reaches
+    ``ELOOP`` at a write this command does not guard: the provenance write is
+    ``Path.write_text``, which follows an ordinary link happily. That path is the
+    per-user data directory and is outside this class (#523 records it as no
+    capability increase); what is fixed here is only the *naming*, and this pins
+    it.
+    """
+    data_dir = tmp_path / "datadir"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    loop = data_dir / "provenance.json.tmp"
+    loop.unlink(missing_ok=True)
+    loop.symlink_to("provenance.json.tmp")
+
+    ran = _run("migrate", "apply")
+
+    envelope = _assert_refused_cleanly(ran)
+    assert str(loop) in envelope["remedy"], (
+        f"the cure names a file other than the one that refused: {envelope['remedy']}"
+    )
+    assert "active.json.tmp" not in envelope["remedy"], (
+        "the cure still blames the pointer's temporary, which was never created"
+    )
+    assert not (project / ".theurian/state/active.json.tmp").exists()
 
 
 @_NEEDS_SYMLINKS
@@ -422,7 +495,9 @@ def test_the_in_tree_index_pointer_refusal_names_the_temporary_to_remove(built: 
 
     envelope = _assert_refused_cleanly(_run("index", "build"))
 
-    _assert_names_a_removable_link(envelope, built / ".theurian/state/active-index.json.tmp")
+    link = built / ".theurian/state/active-index.json.tmp"
+    _assert_names_a_removable_link(envelope, link)
+    _assert_the_error_names(envelope, artifact="The index pointer's temporary file", link=link)
 
 
 @_NEEDS_SYMLINKS
@@ -461,7 +536,9 @@ def test_the_in_tree_scan_record_refusal_names_the_temporary_to_remove(built: Pa
 
     envelope = _assert_refused_cleanly(_run("index", "build"))
 
-    _assert_names_a_removable_link(envelope, built / ".theurian/state/index-secret-scan.json.tmp")
+    link = built / ".theurian/state/index-secret-scan.json.tmp"
+    _assert_names_a_removable_link(envelope, link)
+    _assert_the_error_names(envelope, artifact="The secret-scan record's temporary file", link=link)
 
 
 @_NEEDS_SYMLINKS
@@ -554,7 +631,9 @@ def test_the_in_tree_ingest_refusal_names_the_link_to_remove(project: Path) -> N
 
     envelope = _assert_refused_cleanly(_run("ingest"))
 
-    _assert_names_a_removable_link(envelope, project / ".theurian/cache/ingestion.json")
+    link = project / ".theurian/cache/ingestion.json"
+    _assert_names_a_removable_link(envelope, link)
+    _assert_the_error_names(envelope, artifact="The ingestion manifest", link=link)
 
 
 @_NEEDS_SYMLINKS
@@ -626,14 +705,16 @@ def test_ingest_still_writes_through_a_contained_link_at_the_cache_directory(pro
     """The narrowness control: a *contained* directory link is not an escape.
 
     ``.theurian/cache -> ../elsewhere`` resolves inside the working tree, so
-    containment passes it and the manifest lands at the link's target. Nothing is
-    destroyed and nothing leaves the tree, so refusing it would be a fix reaching
-    past its own class -- and without this row, tightening the two refusals above
-    into "any link at `.theurian/cache`" would read as green.
+    containment passes it and the manifest lands at the link's target. Nothing
+    leaves the tree, so refusing it would be a fix reaching past its own class --
+    and without this row, tightening the two refusals above into "any link at
+    `.theurian/cache`" would read as green.
 
     ``O_NOFOLLOW`` does not see this one either: it constrains the manifest's own
     final component, and the link here is a *prefix* directory. That is the bound
-    ``no_follow``'s module docstring records, driven rather than asserted.
+    ``no_follow``'s module docstring records, driven rather than asserted. What
+    that bound costs when the target is not an empty scratch directory is the
+    separate fact-pin below.
     """
     (project / "elsewhere").mkdir()
     cache = project / ".theurian/cache"
@@ -644,6 +725,53 @@ def test_ingest_still_writes_through_a_contained_link_at_the_cache_directory(pro
 
     assert ran.exit_code == 0, f"a contained directory link was refused: {ran.stderr}"
     assert json.loads((project / "elsewhere/ingestion.json").read_text(encoding="utf-8"))
+
+
+@_NEEDS_SYMLINKS
+def test_a_contained_directory_link_still_relocates_the_manifest(project: Path) -> None:
+    """The recorded bound, pinned as a **fact** rather than described in prose (#577).
+
+    This test asserts today's behaviour and today's behaviour is a gap: a clone
+    carrying ``.theurian/cache -> ../docs`` writes the ingestion manifest onto a
+    *tracked* ``docs/ingestion.json``, at exit 0, and nothing refuses it.
+    Containment is satisfied -- the target resolves inside the working tree -- and
+    ``O_NOFOLLOW`` constrains the manifest's own final component, not the
+    directory above it. Measured 2026-09-05 against the real CLI (round one,
+    adversarial M-2).
+
+    **It is written to go RED the day the bound is closed**, which is the point of
+    pinning a gap rather than a guarantee. Three sentences in the shipped source
+    claimed the in-tree-link shape was refused without saying "at the final
+    component"; each is now qualified, and each points here. If prefix hardening
+    lands (``openat`` against a directory descriptor at every level) this test
+    fails, and whoever lands it deletes it along with those qualifiers -- rather
+    than discovering that three docstrings had quietly become true and one
+    describes a world that no longer exists.
+
+    The victim's prior bytes are asserted gone, not merely that a file exists at
+    the target: "the manifest was written somewhere" is satisfied by the honest
+    path too, and what makes this a gap is that it landed on content somebody
+    authored.
+    """
+    tracked = project / "docs" / "ingestion.json"
+    tracked.parent.mkdir()
+    tracked.write_bytes(VICTIM)
+    cache = project / ".theurian/cache"
+    shutil.rmtree(cache, ignore_errors=True)
+    cache.symlink_to(Path("..") / "docs", target_is_directory=True)
+
+    ran = _run("ingest")
+
+    assert ran.exit_code == 0, (
+        f"the prefix-link bound may have been closed -- if so, delete this test and "
+        f"the qualifiers that point at it (#577): {ran.stderr}"
+    )
+    assert tracked.read_bytes() != VICTIM, (
+        "the tracked file survived, so this test no longer pins the gap it was written for"
+    )
+    assert json.loads(tracked.read_text(encoding="utf-8")), (
+        "the manifest did not land here, so the relocation this pins did not happen"
+    )
 
 
 def test_ingest_answers_a_directory_where_the_manifest_belongs(project: Path) -> None:

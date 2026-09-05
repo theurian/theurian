@@ -1639,16 +1639,35 @@ def _fail_the_state_publish(exc: OSError, paths: ProjectPaths, *, as_json: bool)
       Making a 38th site withhold would add a third convention rather than
       complete a second.
 
+    **The culprit is taken from the exception, not assumed** (round one,
+    adversarial L-2). Two writes run inside the ``try`` this converts:
+    ``provenance.record_state``, which writes ``<data_dir>/provenance.json.tmp``
+    with ``Path.write_text``, and ``write_active_state``. Naming
+    ``active.json.tmp`` unconditionally made the envelope describe a file that
+    does not exist -- measured with a symbolic-link loop at the provenance
+    temporary: exit 4, and a remedy telling the operator to remove
+    ``.theurian/state/active.json.tmp``, which was never created. ``OSError``
+    carries the path the call actually failed on, and that is what gets named;
+    the ``artifact`` phrase narrows only when the two agree.
+
     Does not return -- :func:`_fail` raises -- but is typed like this module's
     other callers of it, so the call site keeps its explicit ``return``.
     """
     if is_a_symbolic_link_refusal(exc):
         temporary = paths.active_pointer_temporary
+        # `exc.filename` is `str | None`; a refusal that carries no filename can
+        # only be described by the write this function is *for*, which is the
+        # pointer. Falling back to it is the honest floor rather than a guess:
+        # the alternative is a refusal that names nothing at all.
+        culprit = Path(exc.filename) if exc.filename else temporary
+        artifact = (
+            "The active-state pointer's temporary file"
+            if culprit == temporary
+            else "A file this command writes before publishing the pointer"
+        )
         _fail(
-            _symbolic_link_write_refusal(
-                temporary, artifact="The active-state pointer's temporary file"
-            ),
-            remedy=symbolic_link_remedy(temporary),
+            _symbolic_link_write_refusal(culprit, artifact=artifact),
+            remedy=symbolic_link_remedy(culprit),
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )

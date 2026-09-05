@@ -842,7 +842,17 @@ class ProjectPaths:
         force-added ``.theurian/cache -> ../../shared`` put the manifest outside
         the working tree at exit 0 (measured, both faces). A helper rather than a
         join at the call site is what puts it in the swept population; the write
-        refuses an in-tree link on its own.
+        refuses an in-tree link **at this leaf** on its own.
+
+        A link at ``cache`` *itself* pointing somewhere inside the tree is refused
+        by neither guard, and that is the recorded bound rather than an oversight:
+        ``O_NOFOLLOW`` constrains the manifest's own final component, and
+        containment is satisfied because the target resolves inside the root. A
+        clone carrying ``.theurian/cache -> ../docs`` therefore still writes the
+        manifest onto ``docs/ingestion.json`` at exit 0
+        ([#577](https://github.com/theurian/theurian/issues/577), measured and
+        pinned as a fact by
+        ``test_derived_path_symlink_writes.py::test_a_contained_directory_link_still_relocates_the_manifest``).
         """
         return self._contained(self.knowledge_dir / "cache" / "ingestion.json")
 

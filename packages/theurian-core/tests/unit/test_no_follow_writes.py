@@ -14,9 +14,13 @@ on the *open*, not on the path.
 source rather than listed, and both carry their exclusions with a measured
 reason:
 
-1. *Every ``os.replace`` caller* -- the atomic publishers by definition. A
-   publisher whose temporary is written with a following open, or whose temporary
-   it derives itself with ``with_suffix``, is the defect. Five exclusions.
+1. *Every rename-into-place* -- the atomic publishers by definition, in **both**
+   spellings: ``os.replace(temporary, final)`` and ``temporary.replace(final)``.
+   The second was missing until round one, and it hid two real publishers
+   (``launchagent.py`` and ``systemd_user.py``, both ``with_suffix`` + write +
+   rename); they are recorded exclusions now rather than invisible. A publisher
+   whose temporary is written with a following open, or whose temporary it
+   derives itself with ``with_suffix``, is the defect. Seven exclusions.
 2. *Every function that names a ``ProjectPaths`` helper and opens something for
    writing.* This is the universal the module actually claims, and the first key
    is not it: membership there is an *atomicity* property, so ``ingest_command``
@@ -396,6 +400,21 @@ _PUBLISHERS_OUTSIDE_THE_CLASS: Final[dict[str, str]] = {
         "the same method on the other class, for the same reason, and named "
         "separately because the two are two decisions."
     ),
+    "infrastructure/services/launchagent.py::LaunchAgentManager.install": (
+        "its temporary is not clone-deliverable: `plist_path` is "
+        "`self._home / 'Library/LaunchAgents' / f'{LABEL}.plist'` (read "
+        "2026-09-05), so the `.plist.tmp` beside it sits in the user's own "
+        "`$HOME` and no repository reaches it. This one is a genuine "
+        "`with_suffix` + write + rename publisher and was **invisible** to the "
+        "key until it learned the `Path.replace` spelling (round one, "
+        "adversarial M-3) -- it is recorded here rather than left unseen, which "
+        "is the difference between a bound and a hole."
+    ),
+    "infrastructure/services/systemd_user.py::SystemdUserManager.install": (
+        "the same shape and the same reason on Linux: `unit_path` is "
+        "`self._home / '.config/systemd/user' / UNIT_NAME`, so its "
+        "`.service.tmp` is a per-user path outside any project tree."
+    ),
 }
 
 #: The derivation that produced the uncontained leaf. ``pointer.with_suffix(
@@ -436,8 +455,22 @@ _PROJECT_WRITERS_OUTSIDE_THE_CLASS: Final[dict[str, str]] = {
 }
 
 
-def _enclosing_functions_of_os_replace(tree: ast.Module) -> set[str]:
-    """Every function in ``tree`` whose body calls ``os.replace``, by qualified name.
+def _enclosing_functions_of_an_atomic_replace(tree: ast.Module) -> set[str]:
+    """Every function in ``tree`` that publishes by rename, by qualified name.
+
+    **Two spellings, because the key saw only one** (round one, adversarial M-3).
+    ``os.replace(temporary, final)`` is what the state and index publishers use;
+    ``temporary.replace(final)`` is ``Path.replace``, the same syscall through the
+    other API, and it is what the two service-unit publishers use. Keyed on
+    ``os.replace`` alone, ``launchagent.py::install`` and
+    ``systemd_user.py::install`` were invisible: ``with_suffix(".plist.tmp")`` +
+    ``write_bytes`` + rename, the exact shape #523 is about, and neither a member
+    nor a recorded exclusion.
+
+    ``Path.replace`` cannot be told from an unrelated ``x.replace(...)`` -- a
+    string replace, say -- by AST alone, so this over-includes on purpose: a
+    false member has to be classified by a human, which is the completeness
+    guarantee, while a false *non*-member is a silent hole.
 
     Nested and method definitions are reported under the dotted path that reaches
     them, which is what makes two same-named methods on two classes two entries
@@ -446,15 +479,32 @@ def _enclosing_functions_of_os_replace(tree: ast.Module) -> set[str]:
     return {
         qualname
         for qualname, node in _qualified_functions(tree).items()
-        if any(
-            isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Attribute)
-            and call.func.attr == "replace"
-            and isinstance(call.func.value, ast.Name)
-            and call.func.value.id == "os"
-            for call in ast.walk(node)
-        )
+        if any(_is_an_atomic_replace(call) for call in ast.walk(node))
     }
+
+
+def _is_an_atomic_replace(node: ast.AST) -> bool:
+    """Whether ``node`` is a rename-into-place, in either spelling.
+
+    ``os.replace(temporary, final)`` -- two arguments, on the ``os`` module -- and
+    ``temporary.replace(final)`` -- ``Path.replace``, one argument, on anything.
+
+    **The arity is the discriminator, and it is exact rather than heuristic.**
+    ``str.replace`` takes two arguments and ``re.Pattern.sub`` is a different
+    name, so a one-positional-argument ``.replace`` on this tree is a
+    ``Path.replace``; keying on the attribute name alone pulled in thirteen string
+    replaces (``_escape_like``, ``redact``, ``excerpt`` and the rest) and would
+    have made the exclusion list a place to bury them. ``dataclasses.replace`` is
+    excluded by the same clause from the other side: it is called with keywords,
+    and this requires none.
+    """
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return False
+    if node.func.attr != "replace":
+        return False
+    if isinstance(node.func.value, ast.Name) and node.func.value.id == "os":
+        return True
+    return len(node.args) == 1 and not node.keywords
 
 
 def _qualified_functions(
@@ -541,9 +591,24 @@ def test_the_publisher_key_hits_a_planted_positive(tmp_path: Path) -> None:
     )
     tree = ast.parse(planted.read_text(encoding="utf-8"))
 
-    assert _enclosing_functions_of_os_replace(tree) == {"Publisher.publish"}, (
+    assert _enclosing_functions_of_an_atomic_replace(tree) == {"Publisher.publish"}, (
         "the qualified key does not reach a method, so every method is invisible to it"
     )
+    assert _enclosing_functions_of_an_atomic_replace(
+        ast.parse(
+            "class Service:\n"
+            "    def install(self, plist, body):\n"
+            '        temporary = plist.with_suffix(".plist.tmp")\n'
+            "        temporary.write_bytes(body)\n"
+            "        temporary.replace(plist)\n"
+        )
+    ) == {"Service.install"}, (
+        "the key misses `Path.replace`, which is the spelling the two service-unit "
+        "publishers use and the one it was blind to in round one"
+    )
+    assert not _enclosing_functions_of_an_atomic_replace(
+        ast.parse('def clean(text):\n    return text.replace("a", "b")\n')
+    ), "the key counts a string replace as a publisher, so its exclusions bury them"
     function = _qualified_functions(tree)["Publisher.publish"]
     assert _DERIVES_ITS_OWN_TEMPORARY in _calls_by_attribute(function)
     assert "write_text_without_following_a_link" not in _calls_by_name(function)
@@ -575,7 +640,7 @@ def test_two_methods_sharing_a_name_are_two_entries(tmp_path: Path) -> None:
     )
     tree = ast.parse(planted.read_text(encoding="utf-8"))
 
-    assert _enclosing_functions_of_os_replace(tree) == {"A._write", "B._write"}
+    assert _enclosing_functions_of_an_atomic_replace(tree) == {"A._write", "B._write"}
 
 
 def test_project_service_still_defines_exactly_the_two_write_methods_excluded() -> None:
@@ -620,7 +685,7 @@ def test_every_atomic_publisher_writes_its_temporary_without_following_a_link() 
     publishers = {
         f"{path.relative_to(_SOURCE_ROOT)}::{qualname}": _qualified_functions(tree)[qualname]
         for path, tree in _module_sources().items()
-        for qualname in _enclosing_functions_of_os_replace(tree)
+        for qualname in _enclosing_functions_of_an_atomic_replace(tree)
     }
 
     assert publishers, "no atomic publisher was found at all, so this asserts nothing"
