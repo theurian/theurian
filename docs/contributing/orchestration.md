@@ -168,10 +168,14 @@ excluded from the published documentation site for that reason.
   [#402](https://github.com/theurian/theurian/pull/402) (`0bd5857`) carries the
   6 that were lost.
 - Count landed trailers with
-  `git log --format='%B' <sha> | grep -c '^Review-Finding:'`. The bare
-  `git log <sha> | grep -c '^Review-Finding:'` form reads indented body lines
-  and returns 0 — measured against `75fe9b4f`, 27 by the first form and 0 by the
-  second — so a 0 == 0 comparison false-passes the check.
+  `git log -1 --format='%B' <sha> | grep -c '^Review-Finding:'`. There are two
+  ways to get a wrong number here and both of them read as success:
+  - **Omit the `-1` and you have counted the whole reachable history.** The same
+    key over `75fe9b4f` gives 27 with `-1` and 869 without; over `9d17a41`, the
+    squash that dropped its trailers, it gives 0 with `-1` and 92 without. The
+    check meant to catch a squash drop stops detecting it at all.
+  - **Omit `--format='%B'` and `git log`'s indented body defeats the `^`
+    anchor**, returning 0 — and a 0 == 0 comparison false-passes.
 - Byte-compare commit messages after any rebase. `cleanup=strip` removes
   column-0 `#` lines — an issue reference in a body vanishes silently.
 - Re-sign after any history rewrite. An unsigned rewrite blocks the merge with no
