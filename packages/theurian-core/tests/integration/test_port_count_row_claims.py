@@ -209,6 +209,11 @@ CORRECTION_MARKERS: Final = ("re-seeded", "no longer")
 #: un-re-seeded; [#557] re-seeded it on 2026-09-05`` and its marker sits **9**
 #: characters past the state it corrects, so 20 admits it with margin and a
 #: reach of 8 or less would report the shipped roadmap as the defect.
+#:
+#: Bounded from **above** as well, in
+#: :func:`test_the_un_re_seeded_claim_is_caught_when_it_comes_back`: widening
+#: this constant is the direction the shipped roadmap cannot detect, since a
+#: wider window only ever excuses more.
 MARKER_REACH_CHARS: Final = 20
 
 _GIT_TIMEOUT_SECONDS: Final = 60
@@ -567,6 +572,15 @@ def test_the_un_re_seeded_claim_is_caught_when_it_comes_back() -> None:
     rule that failed on them would report the shipped roadmap as the defect, and
     the discriminator this module claims to use -- a recorded ending, not a
     tense -- would be fiction.
+
+    The last input pins :data:`MARKER_REACH_CHARS` from **above**, which the
+    three before it do not: each of them passes at every reach from 8 to 100000,
+    so widening the window is a change none of them can see. That direction is
+    not hypothetical -- a wide enough window reaches a marker belonging to some
+    other sentence and excuses the claim by proximity alone, which is the same
+    failure ``test_roadmap_claims.py``'s
+    :func:`test_a_correction_marker_in_another_clause_does_not_excuse_the_claim`
+    exists for, and this is that pattern applied to this module's rule.
     """
     retired = _normalised(
         "**The served-corpus twin is un-re-seeded.** "
@@ -594,6 +608,28 @@ def test_the_un_re_seeded_claim_is_caught_when_it_comes_back() -> None:
         f"{MARKER_REACH_CHARS} characters either side of `un-re-seeded`, taken from "
         f"the shipped sentence's own marker at 9 -- tightened below that, this rule "
         f"reports the roadmap's corrected cell as the defect it exists to protect"
+    )
+
+    # The ceiling. Measured 2026-09-05 at `e1a665f2`, by rebinding the constant
+    # in-process: a full revert of row 4 -- the corrected sentence replaced by
+    # the retired one outright -- is still caught at a reach of 512 and goes
+    # unreported at 513, because the next `re-seeded` in that block sits exactly
+    # 513 characters past the claim. The input below carries its marker 149
+    # characters past the claim -- the collapsed ". ", twenty filler words and
+    # "it was " -- so it is an offender up to 148 and clean from 149, holding
+    # the window far below that vacuity threshold. The three inputs above pin
+    # nothing here: each passes at every reach from 8 to 100000.
+    too_far = _normalised(
+        "The served-corpus twin is un-re-seeded. " + "filler " * 20 + "It was re-seeded later."
+    )
+
+    assert _offending_claims(too_far), (
+        f"a marker 149 characters past the claim excused it, so the reach is wide "
+        f"enough to be satisfied by a marker belonging to another sentence. This "
+        f"input is an offender at every reach up to 148 and clean from 149, and "
+        f"{MARKER_REACH_CHARS} is the shipped value; the roadmap's own next "
+        f"`re-seeded` is 513 characters past row 4's claim, so a window grown that "
+        f"far would report a full revert of that row as clean"
     )
 
 
