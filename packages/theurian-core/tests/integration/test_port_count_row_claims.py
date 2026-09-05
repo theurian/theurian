@@ -93,13 +93,14 @@ applied, three lines of this file carried one of them -- the locator constant
 and two docstrings -- and the *unexcluded* figure the row publishes went from
 14 to 17 the moment this file was tracked. That figure is the dated motivation
 (measured 2026-09-05, on #557's branch, in a clean clone) and not the
-authority: what holds the constraint now is the **self-membership assertion**
-in
-:func:`test_the_port_count_row_inventories_the_population_its_own_key_returns`,
-which runs the row's own key against this file's path and requires ``(0, 0)``.
-Named rather than placed -- this sentence used to call it that test's *first*
-assertion, which ``277e4a26`` falsified by inserting a separator check above
-it, and any ordinal is falsified the same way by the next insertion.
+authority: the **self-membership assertion** in
+:func:`test_the_port_count_row_inventories_the_population_its_own_key_returns`
+is what holds the constraint now -- it runs the row's own key against this
+file's path and requires ``(0, 0)``. Named rather than placed: this sentence
+used to call it that test's *first* assertion, which ``277e4a26`` -- a commit
+on #557's branch and not on ``main`` -- falsified by inserting a separator
+check above it, and any ordinal is falsified the same way by the next
+insertion.
 The pathspec'd figure never moved, because ``packages/theurian-core/tests/`` is
 what the row excludes; the wider one is exactly the count of what the exclusion
 removes, so an instrument that joins it falsifies the claim it was written to
