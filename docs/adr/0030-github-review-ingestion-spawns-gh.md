@@ -82,8 +82,9 @@ Its process-spawn arm was added precisely because a `gh api` adapter "would
 contain no client module at all" — a mutation that replaced a fetch with
 `subprocess.run(["curl", ...])` survived the entire suite with the network
 enumeration green. That file states the admission checklist this ADR has to
-satisfy, and it is quoted here verbatim rather than paraphrased
-(`test_network_call_sites.py:653-661`):
+satisfy, and it is quoted here rather than paraphrased — the source is a
+concatenated Python string, joined here into prose with its `--` set as an em
+dash and nothing else changed (`test_network_call_sites.py:653-661`):
 
 > If you added a site, establish before listing it: the argument vector is fixed
 > by the adapter rather than taken from a document or a configuration file; the
@@ -115,8 +116,8 @@ the absence was already better than.
 | 2 | **The endpoint is the literal `graphql`.** Repository identity travels as typed GraphQL variables, never in the URL position. | The `gh api <path>` form interpolates caller data into a path; the GraphQL form has no path segment an owner or repo name can escape into. It also means no raw URL exists for T-7's scheme allowlist to be needed on. | A test that the argument vector's endpoint element equals `graphql` byte-for-byte, and that no element is derived by string-formatting a repository name. Slice 1. |
 | 3 | **The destination host is pinned by an explicit `--hostname github.com`.** | An inherited `GH_HOST` silently moving the request to another host — measured to move it (run B). | A test asserting the flag and its value are present in every spawned vector. Slice 1. |
 | 4 | **The child environment is CONSTRUCTED from an explicit allowlist** (`env={...}` passed to the spawn), never inherited and never merely scrubbed. | The measured attack class below: *destination and identity taken from inherited environment*. A scrub is a blocklist, and a blocklist has to be right about every variable `gh` and its transport stack read; a constructed environment has to be right about the few Theurian deliberately passes. | A test that the spawn is called with an explicit `env` mapping whose keys equal a named constant, and a negative test that a destination-bearing variable set in the parent does not appear in the child. Slice 1. |
-| 5 | **The `gh` binary is resolved to an absolute path, and the vector is passed with `shell=False`.** | SEC-9 verbatim: "Never build a shell command by string concatenation. `git` and `gh` are invoked as argument vectors with `shell=False`" (`requirements-analysis.md:236`). An unresolved name is also a `PATH` question, and clause 4 removes `PATH` from the question by constructing the environment. | A test that the first vector element is an absolute path and that `shell=True` appears nowhere in the module. Slice 1. |
-| 6 | **No `--paginate`.** Pagination is GraphQL cursors only. | `--paginate` follows a `Link`/cursor URL that the *response* supplies — a server-controlled destination, which is the SSRF shape T-7 names, arriving through a flag rather than through a document. With cursors, the only thing that crosses is an opaque string in a typed variable, and the vector still names `graphql`. | A test that `--paginate` is absent from every spawned vector, and a cursor-pagination test over a recorded fixture. Slice 1. |
+| 5 | **The `gh` binary is resolved to an absolute path, and the vector is passed with `shell=False`.** | SEC-9 verbatim: "Never build a shell command by string concatenation. `git` and `gh` are invoked as argument vectors with `shell=False`" (`requirements-analysis.md:236`). An unresolved name would also let the child's `PATH` choose the executable; clause 4 means whatever `PATH` the child sees is one this project constructed, and clause 5 means it is not consulted for the executable at all. | A test that the first vector element is an absolute path and that `shell=True` appears nowhere in the module. Slice 1. |
+| 6 | **No `--paginate`.** Every page after the first is requested by handing back a GraphQL cursor in a typed variable, with the vector otherwise unchanged. | `--paginate` exists to follow a next-page reference the **response** supplies. Exactly what it follows, and how, is behaviour of a binary this design does not pin (clause 8 bounds only its version) — and that is the reason the flag is excluded rather than characterised: a destination the response chooses is the shape T-7 names, and a cursor in a typed variable cannot become one. | A test that `--paginate` is absent from every spawned vector, and a cursor-pagination test over a recorded fixture. Slice 1. |
 | 7 | **A request timeout (SEC-19) and recorded ingest cost bounds: a page cap and a PR-count cap, each a named constant.** Exceeding a cap is a reported, graded stop, never a silent truncation and never an unbounded loop. | A caller — or a large repository — making the system spend work no recorded limit bounds. The severity table grades exactly that as HIGH, and [#26](https://github.com/theurian/theurian/issues/26)'s T-6 concurrency cap is the precedent for how such a bound is recorded: a constant, a test, and prose that names the number. | A test per cap that the constant is the value the adapter uses, and a test that a fixture exceeding the cap stops with a report. Slice 1. |
 | 8 | **A `gh` version floor, expressed as a constant with a test, not as prose.** | `gh` is not a Python dependency, so [ADR-0014](0014-dependency-pinning-and-pre-1-0-isolation.md)'s exact pinning does not reach it; the behaviours clauses 2–6 rely on are flag and config behaviours of a binary the operator upgrades independently. Prose asking for "a recent gh" is not a control. | A test that the adapter refuses to spawn below the floor, and that the floor is the constant the refusal message names. Slice 1. Measured against 2.86.0 — the floor is chosen at implementation, not asserted here. |
 | 9 | **`gh` absent, or present and unauthenticated, is a graded refusal envelope with a remedy — never a traceback.** | The failure the product already has a shape for: `requirements-analysis.md:328-329` records `Degraded` as "a success-with-warnings terminal state, not a failure: a missing `gh` token must not prevent local knowledge from working." Ingestion is the optional capability; the rest of the product keeps working. | A test for each of the two states asserting a refusal envelope carrying a remedy, and that no traceback reaches the caller. Slice 1. |
@@ -227,10 +228,12 @@ Normalized evidence records land as **structured JSON files under
 `.theurian/cache/`. The SQLite serving store (slice 3) is built from those files
 and is deletable.
 
-**This settles a contradiction that is live in the documentation today.**
-`docs/architecture/review-knowledge.md` (Privacy) says "The review cache is a
-derived artifact under `.theurian/cache/`, git-ignored and rebuildable." That
-sentence is safe for an artifact whose source outlives it. It is not safe here:
+**This settles a contradiction that was live in the documentation until this
+change.** `docs/architecture/review-knowledge.md` (Privacy) said "The review cache
+is a derived artifact under `.theurian/cache/`, git-ignored and rebuildable" —
+corrected in the same commit that adds this ADR, and quoted here because the
+reasoning, not the corrected sentence, is what a later reader needs. That sentence
+is safe for an artifact whose source outlives it. It is not safe here:
 **GitHub review comments are editable and deletable upstream**, so a deleted local
 copy of a comment that has since been deleted upstream is **data loss, not a cache
 miss**, and no refetch recovers it. "Rebuildable" would be asserting a property
@@ -255,8 +258,11 @@ source." Review evidence has no such replayable source. So:
 ingestion run updates what upstream still returns and does not delete what it no
 longer does; a record that vanished upstream stays in the evidence files, marked
 with the run that last saw it. Whether a project commits `.theurian/review/` is
-the project's decision — the directory is not written into the ignore block, and
-redaction at ingestion (review-knowledge.md, Privacy) governs what lands in it.
+the project's decision — the directory is not written into the ignore block. What
+lands in it is also subject to the configurable ingestion-time redaction
+review-knowledge.md's Privacy section describes, which is design and not shipped
+behaviour: no review ingestion path exists to perform it — the GitHub package
+holds no adapter, measured in *Context* — and this ADR does not build it.
 
 ### 4. The secret scan runs at ingestion, per record, like `propose accept`
 
@@ -276,7 +282,8 @@ rather than refuses:
 > A landed secret is readable through `knowledge.search` and `knowledge.get` the
 > moment `theurian migrate apply` writes it, before any index exists at all …
 > So a build that refused to publish would deny *ranking* without un-disclosing
-> anything.
+> anything, and on a project that has never built one it would deny ranking for
+> ever.
 
 That premise is false pre-landing. Review ingestion runs **before** the content
 exists anywhere in Theurian, so refusing genuinely un-discloses: nothing is
@@ -299,7 +306,7 @@ finds the answer instead of re-deciding it.
 ### 5. The domain model bends to what GitHub can answer
 
 The `ReviewResolution` model as built requires two fields GitHub does not
-guarantee. Three changes, all slice 1 work:
+guarantee. Three fields, two of them changing, all slice 1 work:
 
 | Field | Today | Becomes | Why |
 | :-- | :-- | :-- | :-- |
@@ -318,11 +325,12 @@ viewerCanUnresolve
 ```
 
 There is no resolution-timestamp field in that list, and `resolvedBy` is
-nullable. A required field the provider cannot fill has exactly one
-implementation: the adapter fabricates a value — the ingestion time, or the last
-comment's time — and every consumer downstream reads a real timestamp that
-nobody measured. Making the field optional is the change that keeps *unknown*
-expressible.
+nullable. A required field the provider cannot fill leaves the adapter only bad
+options: fabricate a value — the ingestion time, or the last comment's time — and
+every consumer downstream reads as a measurement something nobody measured; or
+drop the whole resolution record, losing the resolution state the model exists to
+carry. Making the field optional is the change that keeps *unknown* expressible,
+which is the thing neither bad option can express.
 
 **This is a breaking change to the domain model, and it costs nothing today.**
 Measured 2026-09-05 against `origin/main` @ `1fe3302b`, with the population key
@@ -361,9 +369,9 @@ failing.
 ### 6. Serving is `review.search`, under the SEC-15 triple, with its own disclosure round
 
 The serving surface is **`review.search`**, taken from the already-published
-planned table in `docs/protocol/mcp-tools.md` (7 `review.*` rows, measured above).
-No eighth name is invented: a tool name is a wire contract, and the table has
-been publishing this one as planned.
+planned table in `docs/protocol/mcp-tools.md` (7 `review.*` rows — the grep and
+its output are in *Compliance*). No eighth name is invented: a tool name is a wire
+contract, and the table has been publishing this one as planned.
 
 **Every body-derived field is untrusted content (T-3, SEC-15); only structural
 fields are validated and normalized.**
@@ -379,8 +387,9 @@ a filesystem path — the containment SEC-7 requires is not weakened by a string
 that arrived over the network.
 
 **The disclosure closure is its own round, and its test is built with the serving
-change.** ADR-0029 records that a second surface does not inherit the first's
-disclosure round. The closure form this project uses is one query against two
+change.** ADR-0029's closure argument says it in four words — "a **new surface
+owes its own**" — so `review.search` inherits nothing from `review.findings`'
+round. The closure form this project uses is one query against two
 corpora: an index that **held** withheld rows and an index that **never did** must
 return identical responses. Because public-only v1 makes real withheld rows
 absent, **the fixture is synthetic** — that is not a weaker test, it is the only
@@ -401,19 +410,24 @@ Two inherited controls are named so the serve slice does not rediscover them:
 
 ### Positive
 
-- **T-7's repository allowlist stops being owed and starts running.** Three
-  successive documents have promised this control; slice 1 is the first change
-  that can carry it, and the threat-model entry is rewritten per control rather
-  than repointed at another epic.
+- **T-7's repository allowlist stops being owed and starts running.** Four places
+  promise this control today and each says in the same breath that nothing
+  enforces it — the schema description ("Not in force"), the
+  `infrastructure/github/` docstring ("owed with the adapter rather than in
+  force"), the T-7 threat-model row ("owed with the first external fetch path"),
+  and `review-knowledge.md` ("the design obligation on the adapter, not current
+  behaviour"). Slice 1 is the first change that can carry it, and the
+  threat-model entry is rewritten per control rather than repointed at another
+  epic.
 - **No new production dependency and no token custody.** The core's runtime
   dependencies are six (`jsonschema`, `pydantic`, `python-ulid`, `pyyaml`,
   `referencing`, `typer` — `packages/theurian-core/pyproject.toml`, measured
   2026-09-05). Spawning `gh` keeps that number, and keeps GitHub credentials in
   the operator's own credential store.
-- **The absence control is replaced by something strictly more informative.**
-  "Nothing can reach out" is a true sentence that stops being true forever the
-  first time it is false. Nine clauses with nine tests keep saying something after
-  the first fetch path exists.
+- **The absence control is replaced by something that keeps working after the
+  first fetch lands.** "Nothing can reach out" is a sentence with no successor:
+  the first time it is false it is retired, and whatever it was protecting is
+  unprotected. Nine clauses with nine tests still say something on the day after.
 - **Evidence outlives the upstream.** Files-as-source means a deleted upstream
   comment is still in the record, which is the whole point of ingesting review
   history rather than querying it live.
@@ -524,13 +538,23 @@ serve — is the *plan*, not a class that kept producing siblings. A later sessi
 counting PRs in this milestone should read them against the plan, not against the
 three-siblings budget.
 
-**Corpus membership: ADR-0030 does not seed a dogfood twin in this PR.** Measured
-2026-09-05, no existing committed corpus item's `sourceAnchors[].filePath` names a
-review-ingestion or T-7 document, so nothing drifts and no re-seed is owed;
+**Corpus membership: ADR-0030 does not seed a dogfood twin in this PR, and no
+re-seed is owed.** The committed corpus anchors at 26 documents — ADR-0001 to
+ADR-0024 and two work logs — and none of them is a review-ingestion or T-7
+document, so nothing this change touches drifts:
+
+```console
+$ git grep -h "filePath" -- '.theurian/migrations/*.yaml' | sort -u | wc -l
+      26
+$ git grep -h "filePath" -- '.theurian/migrations/*.yaml' | sort -u | grep -c "docs/adr/002[5-9]\|threat-model\|review-knowledge"
+0
+```
+
 `tools/corpus_drift.py` walks the committed migrations and compares each anchor to
-its source, so a new `docs/` file with no twin is outside its population by
-construction. Stated because every repo-wide claim in this repository declares
-which side of the frozen corpus it stands on.
+its live source, so a new `docs/` file with no twin is outside its population by
+construction — the same way ADR-0025 through ADR-0029 already are. Stated because
+every repo-wide claim in this repository declares which side of the frozen corpus
+it stands on.
 
 **The serve slice's real-run verification data source is decided now, not at slice
 3.** Verification runs against a **named disposable public fixture repository
@@ -569,9 +593,9 @@ exercised.
 | :-- | :-- |
 | **An in-process HTTP client (`httpx` plus a token from the environment)** | Three costs at once. It adds a production dependency to a core whose runtime dependency list is six packages, none of them an HTTP client. It puts **token custody** inside Theurian — reading, holding and possibly logging a credential the operator currently keeps in their own credential store. And it creates a **raw-URL surface**, which makes all three of SEC-10's controls live checks that must be built and kept correct, where the `gh api graphql` form has no URL for a scheme allowlist or a private-network check to be applied to. The `gh` spawn trades a process boundary for all three. |
 | **Inherit the parent environment and scrub the dangerous variables** | A scrub is a blocklist over a set the adapter does not control. Run C measured that `HTTPS_PROXY` moves the request even with `--hostname` pinned, so the blocklist would have to be complete over destination variables, proxy variables, and whatever the next `gh` release reads. Constructing the environment inverts the burden onto a set this project chooses and pins. |
-| **`gh api --paginate`** | Pagination by `--paginate` follows a destination the *response* supplies. That is precisely T-7's shape arriving through a flag instead of through a document, and it would reintroduce the raw-URL surface the `graphql` endpoint removes. GraphQL cursors carry an opaque string in a typed variable and leave the vector unchanged. |
+| **`gh api --paginate`** | Whatever the flag follows, the *response* chooses it rather than the adapter — and this design pins no version-specific semantics for it (clause 8 bounds the binary's version, not its behaviour). Excluding the flag is cheaper than characterising it: a GraphQL cursor is an opaque string in a typed variable, so the adapter still decides every destination it reaches. |
 | **`gh api repos/{owner}/{repo}/pulls/...` (the REST path form)** | Repository identity would travel in the URL position, where it is string-interpolated into a path. The GraphQL form carries the same identity as typed variables with no path to escape into, which is what makes clause 2 a checkable property rather than a promise about quoting. |
-| **Keep the review data under `.theurian/cache/` as the existing document says** | Upstream review comments are editable and deletable, so a discarded cache entry for a deleted comment is unrecoverable. Calling that a cache asserts a rebuild property GitHub does not provide. |
+| **Keep the review data under `.theurian/cache/`, as `review-knowledge.md` said before this change** | Upstream review comments are editable and deletable, so a discarded cache entry for a deleted comment is unrecoverable. Calling that a cache asserts a rebuild property GitHub does not provide. |
 | **Scan for secrets at index-build time only, in `index build`'s signal mode (land and report, never refuse)** | This was the Codex reader's recommendation, and it was rejected on the source's own premise: `index_secret_scan.py` records rather than refuses because its content is *already in the canonical store and already served*, so refusal "would deny ranking without un-disclosing anything". Pre-landing, refusal genuinely un-discloses — nothing has been written and nothing served — so the `propose accept` gate is the matching one. |
 | **Make `resolved_at` required and fill it with the ingestion time or the last comment's time** | The API object carries no resolution timestamp (decision 5's introspection). A required field filled by the adapter is a fabricated measurement that every downstream consumer reads as real. `None` is the honest value for a quantity the provider does not record. |
 | **Invent a new tool name for review-evidence search** | `review.search` has been published as planned in `docs/protocol/mcp-tools.md` since before this design. A tool name is a wire contract; adding an eighth name would leave a published one orphaned and make clients choose between them. |

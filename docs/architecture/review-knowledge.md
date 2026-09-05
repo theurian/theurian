@@ -190,7 +190,9 @@ Review data contains author identity and opinions.
   editable and deletable, so a discarded local copy of a deleted comment is data
   loss and no refetch recovers it. [ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md)
   decision 3 lands it as durable files under `.theurian/review/` and makes the
-  SQLite serving store the derived, deletable half.
+  SQLite serving store the derived, deletable half. Nothing in `src/` names that
+  path yet, so this sentence has no fact-side constant to be pinned against until
+  ADR-0030's slice 2 introduces one.
 - The approved knowledge that results is a *rule*, not a quotation — attributed
   to evidence rather than to a person's opinion.
 
