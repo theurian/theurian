@@ -102,7 +102,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
     `UnexpectedToolError` — "Error executing tool", carrying no remedy — because
     the tool boundary catches `TheurianError` and not `OSError`. A
     260-character `databaseFilename` did the same through the canonical
-    pointer's own path join;
+    pointer's own path join, and through the FR-K5 history check that runs
+    inside `_require_project` — so `migrate status`, `migrate apply` and `index
+    build` too;
   - `.theurian/state` at mode `000` ended **seven of the nine swept commands**
     the same way: `index build`, `index gc`, `index status`, `migrate status`,
     `migrate validate`, `migrate apply` and `project status`. Six of the seven
@@ -118,10 +120,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   while the directory holding it is writable, so that remedy names the `chmod`
   as well.
 
-  The population is derived from the source rather than listed: every caller of
-  `ProjectPaths.index_for` must grade `OSError` beside `TheurianError` at the
-  probe, or carry a recorded reason, and a call site added later fails that test
-  by name.
+  The population is derived from the source rather than listed, on two keys:
+  every caller of `ProjectPaths.index_for`, and every function that joins
+  `databaseFilename` onto a path. Each must grade `OSError` at the probe or carry
+  a recorded reason, and a call site added later fails that test by name. The
+  second key is what found the history check, after the first two joins had
+  already been converted.
 
 - **`theurian init` no longer writes the managed `.gitignore` block through a
   symbolic link** ([#571](https://github.com/theurian/theurian/issues/571),
