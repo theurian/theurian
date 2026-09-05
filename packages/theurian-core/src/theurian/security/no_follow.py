@@ -86,6 +86,12 @@ READ_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW
 #: did not create.
 _DEFAULT_CREATE_MODE: Final = 0o644
 
+#: The mode :func:`open_for_reading_without_following_a_link` passes and never
+#: applies. Kept beside the create mode rather than inlined, so the two are read
+#: together and the difference between them is visible: this one is unreachable
+#: by construction, and the comment at the call site says why it is written at all.
+_SECRET_READ_MODE: Final = 0o600
+
 
 def open_without_following_a_link(path: Path, *, mode: int = _DEFAULT_CREATE_MODE) -> int:
     """``os.open`` for a truncating write, refusing a link at the final component.
@@ -112,7 +118,14 @@ def open_for_reading_without_following_a_link(path: Path) -> int:
             ``ENOENT`` for a path that is not there, and whatever else the open
             refuses with.
     """
-    return os.open(path, READ_FLAGS)
+    # The mode is passed and is never applied: `READ_FLAGS` carries no `O_CREAT`,
+    # so this call cannot create a file and the argument reaches nothing. It is
+    # written out because `os.open`'s own default is `0o777`, and a reader -- a
+    # person or a static analyser, and CodeQL's `py/overly-permissive-file` did --
+    # takes an omitted mode for the mode this call would create with. Spelling the
+    # restrictive one costs nothing and says which answer is intended if a future
+    # edit ever adds the flag that would use it.
+    return os.open(path, READ_FLAGS, _SECRET_READ_MODE)
 
 
 def write_text_without_following_a_link(
