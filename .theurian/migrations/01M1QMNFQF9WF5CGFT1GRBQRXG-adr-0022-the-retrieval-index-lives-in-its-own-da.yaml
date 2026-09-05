@@ -1,0 +1,38 @@
+apiVersion: theurian.dev/v1
+id: 01M1QMNFQF9WF5CGFT1GRBQRXG
+createdAt: '2026-09-05T01:59:24+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0022 twin from the current source ADR: the corpus pins docs/adr/0022-index-lives-in-its-own-database.md
+  as it stood at 2a98d4c, and the tracked document has moved since (#315).'
+operations:
+- op: createItem
+  itemId: architecture.index-lives-in-its-own-database
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.index-lives-in-its-own-database
+  revisionId: 01M1QMNFQF9WF5CGFT1GRBQRXH
+  expectedRevision: 01M0D5H43RJPAA543PDVGN2M6D
+  contentFile: ../knowledge/architecture/index-lives-in-its-own-database.01M1QMNFQF9WF5CGFT1GRBQRXH.md
+  contentSha256: cfbd71c81b1a14b1e7d4021ebc9681b5147c0f94f905a74b5e011bdda26e31f2
+  metadata:
+    title: 'ADR-0022: The retrieval index lives in its own database file'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0022
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: fffa6b18ca46834eac2b92a6c6b3773835bd4af1
+      filePath: docs/adr/0022-index-lives-in-its-own-database.md

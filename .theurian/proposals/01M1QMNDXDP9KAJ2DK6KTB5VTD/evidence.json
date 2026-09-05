@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M1QMNDXDP9KAJ2DK6KTB5VTD",
+  "migrationId": "01M1QMNDXDP9KAJ2DK6KTB5VTE",
+  "itemId": "architecture.raptor-forest",
+  "agentId": "claude-code-theurian-python",
+  "taskId": "315-reseed-seven-drifted-twins",
+  "model": "claude-opus-5",
+  "reasoning": "Verbatim copy of the tracked ADR-0008 at fffa6b18, read with `git cat-file blob`. The tracked document is the source of truth. The revision this supersedes pins a body that docs/adr/0008-raptor-forest.md no longer matches, so Theurian's own agents retrieve superseded text labelled approved and reviewed (#315).",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "fffa6b18ca46834eac2b92a6c6b3773835bd4af1",
+      "filePath": "docs/adr/0008-raptor-forest.md"
+    }
+  ]
+}

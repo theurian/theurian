@@ -52,7 +52,20 @@ id again without this test's other assertions changing at all.
 **The same class recurs, and every re-seed pays the same toll.** #199 unit C's
 second wave (#471) re-seeded three more items the same way #416 re-seeded
 ADR-0013 -- ``propose``/``accept`` through the real write path -- and #315's
-drift sweep re-seeded eleven more. The #440 round's ADV-RC MEDIUM-1 lesson
+drift sweep re-seeded another wave again. **How many is not recorded here**, for
+the reason :data:`_RESEED_PAYLOAD_MARKERS` states for its own population: the
+number moves with every re-seed, and a count narrated in prose goes stale on the
+first one nobody re-narrates. The entries of that constant, **together with
+:data:`_RESEEDED_ITEM`** -- carved out of the constant because the ``#414``
+assertions pin that item by hand -- are the live answer, and the census
+assertion holds that *union* to exactly the set of items the **loaded migration
+set** gives more than one revision. The loaded set, not a store query: the two
+are measured identical (2026-09-05 on #557's branch, the store asked directly
+by ``SELECT item_id ... GROUP BY item_id HAVING COUNT(*) > 1``), and what ties
+them is the nothing-was-skipped assertion the same test makes first -- every
+loaded migration applied, so every ``upsertRevision`` the loaded set folds is a
+revision row the store holds. A reader sent to the entries alone would read one
+short. The #440 round's ADV-RC MEDIUM-1 lesson
 generalises to every one of them, but **only at one revert depth**, and saying
 so precisely is the point -- an earlier version of this paragraph claimed the
 whole class was invisible to everything else, and the adversarial round
@@ -88,7 +101,7 @@ That used to be handled by skipping the whole test whenever an untracked
 ``.yaml`` sat in the directory, which put this file to sleep exactly where it
 is needed most: the maintainer's dogfooding machine keeps machine-local vault
 notes under ``.theurian/`` (fenced in ``.git/info/exclude``), so every
-assertion here -- the twelve payload markers included -- was disabled on the
+assertion here -- every payload marker included -- was disabled on the
 one tree where re-seeds are authored and a mis-measured marker would first be
 written. Filtering serves the original concern strictly better than skipping
 did: the draft is not stepped around, it is never loaded (#490 round two).
@@ -143,7 +156,10 @@ MIGRATIONS_DIRECTORY: Final = REPO_ROOT / ".theurian" / "migrations"
 #: A lower bound, not an exact count -- the corpus is expected to grow, and
 #: every item a future migration adds is fully governed whether or not this
 #: number is ever updated. Mirrors ``test_dogfood_corpus_governance.py``'s
-#: ``MINIMUM_MIGRATIONS`` (26) as an independent measurement, not an import.
+#: ``MINIMUM_MIGRATIONS`` as an independent measurement, not an import -- and
+#: without narrating its value, which is a live constant over there and would
+#: go stale here silently; the dated sentence below says what the two shared on
+#: the day they were set, which is the only claim that stays true.
 #:
 #: **The two floors coincide by history, not by mechanism** -- the same
 #: account ``tools/corpus_drift.py``'s own floor constant records for its
@@ -164,8 +180,8 @@ MIGRATIONS_DIRECTORY: Final = REPO_ROOT / ".theurian" / "migrations"
 #: point measurement, frozen at the commit named beside it: measured
 #: 2026-09-01 at ``7b2ca67``, four items carried two revisions each -- the
 #: ADR-0013 re-seed (#416) plus the three #199 unit C second-wave re-seeds
-#: (#471) -- over 26 distinct items. #315's eleven-item drift sweep moved both
-#: of those figures afterwards, and moved them in the live record.
+#: (#471) -- over 26 distinct items. #315's drift sweep moved both of those
+#: figures afterwards, and moved them in the live record rather than here.
 MINIMUM_KNOWLEDGE_ITEMS: Final = 26
 
 #: The item the #416 re-seed gave a second revision -- the one member of this
@@ -235,20 +251,21 @@ class _PayloadMarker:
 #: shipped" trap the ADR-0013 check above works around by checking two
 #: substrings rather than one contiguous phrase). An issue reference is one
 #: instance of that property rather than the only one, which matters because
-#: five of #315's items carry no ``#NNN`` whose count is unique to their
-#: current text; those are keyed on a backticked identifier or a measured
-#: figure the same correction introduced.
+#: several items carry no ``#NNN`` whose count is unique to their current
+#: text; those are keyed on a backticked identifier or a measured figure the
+#: same correction introduced. How many is not recorded here -- it moves with
+#: every re-seed, and the entries below are the live answer.
 #:
-#: **One drifted twin deliberately absent, and one clean twin deliberately
-#: left alone -- they are not the same case.**
-#: ``architecture.index-lives-in-its-own-database`` (ADR-0022) *is* drifted:
-#: ``f706329`` moved its source and the corpus still pins the older digest, so
-#: ``tools/corpus_drift.py`` reports it, on purpose, until the further
-#: correction its document is due lands and one revision can carry both halves.
-#: ``architecture.a-purge-is-a-build`` (ADR-0024) is **not** drifted -- its pin
-#: is byte-identical to its source as measured 2026-09-02 -- and is left alone
-#: only because that document is likewise due a correction; there is nothing to
-#: re-seed yet. Calling both "drifted" is the error this paragraph replaces.
+#: **The two twins that waited have landed.** ADR-0022
+#: (``architecture.index-lives-in-its-own-database``) and ADR-0024
+#: (``architecture.a-purge-is-a-build``) were each held back for a correction
+#: their documents were due, and for different reasons: ADR-0022 was drifted,
+#: reported by ``tools/corpus_drift.py`` on purpose, while ADR-0024 was
+#: byte-identical to its source with nothing yet to re-seed. Treating those as
+#: the same case was the error the paragraph here previously replaced. Both
+#: corrections are now aboard -- ``d70dc219`` for ADR-0022, ``491bded6`` for
+#: ADR-0024 -- so each re-seeds with one revision carrying both halves, which
+#: is what waiting was for.
 #:
 #: **No clean negative twin for any entry, and the reason generalises.** A
 #: ``not in`` pin needs a token present in the superseded body and absent from
@@ -281,38 +298,42 @@ class _PayloadMarker:
 #: such commit, so it names the correction whose absence a reverted payload
 #: would show rather than a word that happens to be new.
 #:
-#: **The per-item selection matrix is not narrated here.** Twelve rows of
-#: item/token/count/points, hand-carried in a docstring, is the #458 stale-count
-#: shape exactly: a dozen numbers no rule recomputes, going stale on the first
-#: re-seed nobody re-narrated. The rows are archived in PR #490's round-two
-#: record. What is *live* is below and in the test: the counts themselves, and
+#: **The per-item selection matrix is not narrated here.** A row per entry of
+#: item/token/count/points, hand-carried in a docstring, is the #458
+#: stale-count shape exactly: a block of numbers no rule recomputes, going
+#: stale on the first re-seed nobody re-narrated. The rows are archived in PR
+#: #490's round-two record. What is *live* is below and in the test: the counts themselves, and
 #: the boundary rule that recomputes each token's count in the revision its
 #: item's latest re-seed replaced and fails when it equals the pin.
 #:
 #: **``raptor-forest`` re-keyed for the same reason, one commit later.** It
 #: shipped ``#426`` at 2, and #487 (``f706329``) moved the document again
 #: without touching that count: measured 2026-09-02, ``#426`` is 2 in both
-#: the #471 body (``3749581``) and #315's re-seed of it (``f706329``). A
+#: the #471 body (``3749581``) and the #490 re-seed of it (``f706329``). A
 #: presence check and a count keyed on ``#426`` are equally blind there, so
 #: the entry moved to ``#464`` -- the issue #487's own correction cites -- at
-#: 1 against 0 everywhere before. ``a-purge-is-a-build`` keeps ``#426``: #487
-#: did not touch ADR-0024, so nothing about that row moved. The general rule
-#: this makes concrete: **a re-seed re-measures its item's marker**, because
-#: the token that discriminated the previous revision need not discriminate
-#: the next one.
+#: 1 against 0 everywhere before. The general rule this makes concrete:
+#: **a re-seed re-measures its item's marker**, because the token that
+#: discriminated the previous revision need not discriminate the next one.
+#: Both of those keys have since been re-measured in turn, which is that rule
+#: applied rather than an exception to it; the entries below are what each
+#: item is keyed on now.
 _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     _PayloadMarker(ItemId("architecture.monorepo-with-independent-artifacts"), "`Core`", 1),
-    _PayloadMarker(ItemId("architecture.sqlite-is-a-derived-artifact"), "#87", 1),
+    _PayloadMarker(ItemId("architecture.sqlite-is-a-derived-artifact"), "`FINDINGS_STORE_ID`", 1),
     _PayloadMarker(ItemId("architecture.yaml-knowledge-migrations"), "#245", 1),
     _PayloadMarker(ItemId("architecture.dependency-pinning-and-pre-1-0-isolation"), "`3.13`", 1),
     _PayloadMarker(ItemId("architecture.dco-over-cla"), "30/30", 1),
     _PayloadMarker(ItemId("architecture.state-hash-covers-the-working-tree"), "`contentSha256`", 1),
     _PayloadMarker(ItemId("architecture.sqlite-schema-versioning"), "#117", 3),
-    _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#468", 5),
+    _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#497", 1),
     _PayloadMarker(ItemId("architecture.rank-fusion-over-score-normalisation"), "T-17a's", 1),
-    _PayloadMarker(ItemId("architecture.raptor-forest"), "#464", 1),
+    _PayloadMarker(ItemId("architecture.raptor-forest"), "#145", 1),
     _PayloadMarker(ItemId("architecture.trigram-index-beside-the-word-index"), "#464", 2),
-    _PayloadMarker(ItemId("architecture.a-purge-is-a-build"), "#426", 1),
+    _PayloadMarker(ItemId("architecture.a-purge-is-a-build"), "#499", 4),
+    _PayloadMarker(ItemId("architecture.ports-and-adapters"), "#553", 1),
+    _PayloadMarker(ItemId("architecture.state-hash-partitioned-databases"), "#497", 1),
+    _PayloadMarker(ItemId("architecture.index-lives-in-its-own-database"), "#497", 1),
 )
 
 #: Frozen rather than ``datetime.now()``: a project row's ``registered_at`` is
@@ -338,8 +359,8 @@ def _tracked_corpus_paths() -> tuple[str, ...]:
     whenever an untracked one sat in the directory. That is dormancy exactly
     where it hurts most: the maintainer's own dogfooding machine keeps
     machine-local vault notes under ``.theurian/`` (fenced in
-    ``.git/info/exclude``), so every assertion in this file -- the twelve
-    payload markers included -- was disabled on the one tree where re-seeds are
+    ``.git/info/exclude``), so every assertion in this file -- every payload
+    marker included -- was disabled on the one tree where re-seeds are
     authored and where a mis-measured marker would first be committed. Copying
     the tracked set out and loading *that* serves the original concern strictly
     better: an untracked draft is not skipped around, it is never loaded.
@@ -435,9 +456,12 @@ def _revision_chain(loaded: LoadedMigrations) -> dict[ItemId, tuple[RevisionId, 
 def _bodies_by_revision(database: Path, project_id: ProjectId) -> dict[str, str]:
     """Every applied revision's body, in one connection and one query.
 
-    One read for the whole test rather than the two-hop read once per marker:
-    twelve markers each needing a current *and* a superseded body was twenty-four
-    connection open/close pairs for data that does not change between them.
+    One read for the whole test rather than the two-hop read once per marker.
+    Every entry of :data:`_RESEED_PAYLOAD_MARKERS` needs a current *and* a
+    superseded body, so the per-marker form cost two connection open/close
+    pairs per entry -- growing with the corpus, and for data that does not
+    change between them. Stated as the ratio rather than as a product of two
+    counts, because the entry count moves with every re-seed.
     Keyed by revision id, because that is what :func:`_revision_chain` hands
     back; the current-revision pointer is cross-checked separately, so nothing
     here has to re-read ``knowledge_items``.

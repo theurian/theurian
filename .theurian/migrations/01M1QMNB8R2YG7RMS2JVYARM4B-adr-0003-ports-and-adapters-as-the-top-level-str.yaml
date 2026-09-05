@@ -1,0 +1,38 @@
+apiVersion: theurian.dev/v1
+id: 01M1QMNB8R2YG7RMS2JVYARM4B
+createdAt: '2026-09-05T01:59:20+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0003 twin from the current source ADR: the corpus pins docs/adr/0003-ports-and-adapters.md
+  as it stood at 2a98d4c, and the tracked document has moved since (#315).'
+operations:
+- op: createItem
+  itemId: architecture.ports-and-adapters
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.ports-and-adapters
+  revisionId: 01M1QMNB8R2YG7RMS2JVYARM4C
+  expectedRevision: 01M0D5GTH18F2YV32VN4GZGYYA
+  contentFile: ../knowledge/architecture/ports-and-adapters.01M1QMNB8R2YG7RMS2JVYARM4C.md
+  contentSha256: 32ada523c73ab5438b5eaf3f6adf1836d4b7820051a42c489387685317405beb
+  metadata:
+    title: 'ADR-0003: Ports and adapters as the top-level structure'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0003
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: fffa6b18ca46834eac2b92a6c6b3773835bd4af1
+      filePath: docs/adr/0003-ports-and-adapters.md
