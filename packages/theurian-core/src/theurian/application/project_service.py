@@ -32,6 +32,7 @@ from theurian.domain.project import (
     Project,
 )
 from theurian.domain.state import ActiveState, StateHash, compute_state_hash, state_inputs_from
+from theurian.security.no_follow import write_text_without_following_a_link
 from theurian.security.project_config import PROJECT_CONFIG_FILE
 
 #: Directories `theurian init` creates. The derived ones are created too, so a
@@ -167,11 +168,16 @@ _MIN_PARTS_UNDER_A_DERIVED_SUBDIRECTORY: Final = 2
 #: first cut of this remedy did for every subdirectory alike -- sends a reader to
 #: rebuild something that was never lost.
 #:
-#: ``cache`` and ``generated`` are members of ``DERIVED_SUBDIRECTORIES`` that no
-#: ``ProjectPaths`` helper resolves under today, so no refusal can reach this
-#: mapping for them. They fall through to no tail, which is the safe direction:
-#: an absent sentence tells a reader nothing false, and a wrong rebuild command
-#: would.
+#: ``cache`` joined on #394's fix, which gave it the first ``ProjectPaths``
+#: helper resolving under it (:attr:`ProjectPaths.ingestion_manifest`). Until
+#: then no refusal could reach this mapping for it, and the note here said so;
+#: leaving that sentence standing would have published the no-tail fallback for
+#: a subdirectory that now has a cure to name.
+#:
+#: ``generated`` is still a member of ``DERIVED_SUBDIRECTORIES`` that no helper
+#: resolves under, so no refusal can reach this mapping for it. It falls through
+#: to no tail, which is the safe direction: an absent sentence tells a reader
+#: nothing false, and a wrong rebuild command would.
 _REBUILD_AFTER_REMOVING: Final[dict[str, str]] = {
     "state": (
         " Then run `theurian migrate apply` to rebuild the canonical state. If this "
@@ -181,6 +187,11 @@ _REBUILD_AFTER_REMOVING: Final[dict[str, str]] = {
     "runtime": (
         " Nothing needs rebuilding afterwards: the only thing Theurian keeps there is "
         "the advisory lock file, and the next command recreates it."
+    ),
+    "cache": (
+        " Then run `theurian ingest` to rebuild the manifest. Nothing is lost by "
+        "removing it: it records which sources have already been parsed, so the "
+        "next run reparses them all and rewrites it."
     ),
 }
 
@@ -519,11 +530,17 @@ def _contain(root: Path, path: Path, *, remedy: str = KNOWLEDGE_DIR_ESCAPE_REMED
     directory a clone tracked, or a leaf a clone force-added past the ADR-0004
     ignore -- cannot redirect a read or write outside the working tree the clone
     gave the user (#237, T-5). That closes the *authored-symlink* class: a link
-    delivered as tracked repository content. The derived-cache face the ``ingest``
-    manifest opens through ``.theurian/cache`` (git-ignored state a repository
-    should not carry at all) is a different root cause -- the GHSA-266v
-    derived-state-trust class -- and is tracked separately as #394, not closed
-    here.
+    delivered as tracked repository content.
+
+    The **derived**-symlink class -- a link force-added past ADR-0004's ignore,
+    the GHSA-266v derived-state-trust root cause -- reaches this same chokepoint
+    through the helpers added for it: :attr:`ProjectPaths.ingestion_manifest`
+    (#394) and the three ``*_temporary`` leaves the atomic publishers build
+    (#523). Containment is only half of that one, and the half it is not covers
+    the shape that does the damage in a user's own checkout: a link whose target
+    is *inside* the tree resolves inside it and passes here, correctly. The write
+    itself refuses that one, with ``O_NOFOLLOW``
+    (:mod:`theurian.security.no_follow`).
 
     Anchored to ``root``, never to a nearer ancestor. ``index_for`` compared a
     candidate to ``self.state.resolve()``, but when ``.theurian/state`` is itself
@@ -604,9 +621,10 @@ class ProjectPaths:
         containment is a property of one chokepoint (:func:`_contain`) rather than
         a check duplicated per helper -- a helper added later that forgets it is
         caught by ``tests/unit/test_project_paths_containment.py``'s reflection
-        sweep. The mechanism, the anchoring, and the class it closes (the
-        authored-symlink #237/T-5 class, not the derived-cache #394 face) are all
-        recorded on :func:`_contain`.
+        sweep. The mechanism, the anchoring, and the two classes that reach it --
+        the authored-symlink #237/T-5 class, and the derived one #394 and #523
+        route here through helpers of their own -- are recorded on
+        :func:`_contain`, which also states the half containment does *not* cover.
         """
         return _contain(self.root, path, remedy=self._escape_remedy(path))
 
@@ -780,6 +798,63 @@ class ProjectPaths:
         live in :mod:`theurian.application.index_secret_scan`.
         """
         return self._contained(self.knowledge_dir / "state" / "index-secret-scan.json")
+
+    # -- The temporary leaves the atomic writers create --------------------------
+    #
+    # Every write-to-temp-then-`os.replace` publisher below used to derive its
+    # temporary with `pointer.with_suffix(".json.tmp")`, which produces a
+    # *different* leaf -- `active.json.tmp` next to `active.json` -- that no
+    # containment check ever saw. `Path.write_text` then followed a symbolic link
+    # planted there and truncated whatever it named, at exit 0 with a success
+    # report: measured on all three, in-tree and out (#523). They are helpers now
+    # so the derived leaf is proved contained by the same chokepoint the published
+    # name is, and so the reflection sweep in
+    # `tests/unit/test_project_paths_containment.py` enumerates them -- the write
+    # itself refuses the in-tree link separately, through
+    # `theurian.security.no_follow`.
+    #
+    # The name is spelled here and nowhere else. A writer that recomputed
+    # `with_suffix` beside this would be back to two definitions of one path, and
+    # the one that skipped containment would be the one doing the writing.
+
+    @property
+    def active_pointer_temporary(self) -> Path:
+        """Where :func:`write_active_state` builds the pointer before publishing it."""
+        return self._contained(self.knowledge_dir / "state" / "active.json.tmp")
+
+    @property
+    def active_index_pointer_temporary(self) -> Path:
+        """Where :func:`write_active_index_pointer` builds the pointer."""
+        return self._contained(self.knowledge_dir / "state" / "active-index.json.tmp")
+
+    @property
+    def index_secret_scan_temporary(self) -> Path:
+        """Where :func:`~theurian.application.index_secret_scan.write_index_secret_scan` builds."""
+        return self._contained(self.knowledge_dir / "state" / "index-secret-scan.json.tmp")
+
+    @property
+    def ingestion_manifest(self) -> Path:
+        """The content-hash manifest ``theurian ingest`` writes (#394).
+
+        ``.theurian/cache/`` is derived and git-ignored (ADR-0004), and the
+        command built this path by joining ``knowledge_dir`` directly -- so it
+        never passed the containment chokepoint, and a clone carrying a
+        force-added ``.theurian/cache -> ../../shared`` put the manifest outside
+        the working tree at exit 0 (measured, both faces). A helper rather than a
+        join at the call site is what puts it in the swept population; the write
+        refuses an in-tree link **at this leaf** on its own.
+
+        A link at ``cache`` *itself* pointing somewhere inside the tree is refused
+        by neither guard, and that is the recorded bound rather than an oversight:
+        ``O_NOFOLLOW`` constrains the manifest's own final component, and
+        containment is satisfied because the target resolves inside the root. A
+        clone carrying ``.theurian/cache -> ../docs`` therefore still writes the
+        manifest onto ``docs/ingestion.json`` at exit 0
+        ([#577](https://github.com/theurian/theurian/issues/577), measured and
+        pinned as a fact by
+        ``test_derived_path_symlink_writes.py::test_a_contained_directory_link_still_relocates_the_manifest``).
+        """
+        return self._contained(self.knowledge_dir / "cache" / "ingestion.json")
 
     def index_for(self, index_build_id: str) -> Path:
         """Where one index build lives.
@@ -1311,8 +1386,13 @@ def write_active_index_pointer(  # noqa: PLR0913 - one keyword per published poi
     """
     pointer = paths.active_index_pointer
     pointer.parent.mkdir(parents=True, exist_ok=True)
-    temporary = pointer.with_suffix(".json.tmp")
-    temporary.write_text(
+    # `paths.active_index_pointer_temporary`, never `pointer.with_suffix(...)`:
+    # the property is the contained one, and the derivation is what skipped the
+    # check (#523). `write_text_without_following_a_link` refuses the in-tree
+    # link containment is right to wave through.
+    temporary = paths.active_index_pointer_temporary
+    write_text_without_following_a_link(
+        temporary,
         json.dumps(
             {
                 "indexBuildId": index_build_id,
@@ -1324,8 +1404,10 @@ def write_active_index_pointer(  # noqa: PLR0913 - one keyword per published poi
             },
             indent=2,
         ),
-        encoding="utf-8",
     )
+    # `os.replace` renames the temporary over the pointer; `rename(2)` operates on
+    # the link itself and never follows one, so a link at *this* name is replaced
+    # rather than written through.
     os.replace(temporary, pointer)  # noqa: PTH105 - os.replace is the atomic primitive
 
 
@@ -1412,6 +1494,13 @@ def write_active_state(
     Write-to-temp then ``os.replace``, which is atomic on POSIX. A reader must
     never observe a half-written pointer, because that would send it to a
     database that does not exist (ADR-0007).
+
+    The temporary is :attr:`ProjectPaths.active_pointer_temporary` and is written
+    with ``O_NOFOLLOW`` for the reason recorded on
+    :func:`write_active_index_pointer`: the derived ``.json.tmp`` leaf passed no
+    containment check and no open refused a link at it, so ``migrate apply``
+    truncated whatever a planted one named -- out of the tree and in it -- and
+    reported success (#523).
     """
     active = ActiveState(
         state_hash=state_hash,
@@ -1421,8 +1510,8 @@ def write_active_state(
     )
 
     paths.state.mkdir(parents=True, exist_ok=True)
-    temporary = paths.active_pointer.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(active.to_json(), indent=2) + "\n", encoding="utf-8")
+    temporary = paths.active_pointer_temporary
+    write_text_without_following_a_link(temporary, json.dumps(active.to_json(), indent=2) + "\n")
     os.replace(temporary, paths.active_pointer)  # noqa: PTH105 -- atomic replace
     return active
 

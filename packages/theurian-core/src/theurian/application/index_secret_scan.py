@@ -43,6 +43,7 @@ from theurian.application.project_service import (
     ProjectPaths,
     read_active_index_pointer,
 )
+from theurian.security.no_follow import write_text_without_following_a_link
 from theurian.security.project_config import SecretScanPolicy
 
 #: What to do about a secret that has already landed in the canonical store.
@@ -226,14 +227,18 @@ def write_index_secret_scan(
     """
     record = paths.index_secret_scan
     record.parent.mkdir(parents=True, exist_ok=True)
-    temporary = record.with_suffix(".json.tmp")
+    # The contained property, never `record.with_suffix(...)`: the derived leaf is
+    # a path no containment check saw, and the write through it followed a planted
+    # symbolic link out of the tree at exit 0 (#523, the same shape as the two
+    # pointers beside it).
+    temporary = paths.index_secret_scan_temporary
     counted = 0 if policy is SecretScanPolicy.OFF else findings
-    temporary.write_text(
+    write_text_without_following_a_link(
+        temporary,
         json.dumps(
             {"indexBuildId": index_build_id, "policy": policy.value, "findings": counted},
             indent=2,
         ),
-        encoding="utf-8",
     )
     os.replace(temporary, record)  # noqa: PTH105 - os.replace is the atomic primitive
 

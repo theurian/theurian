@@ -27,6 +27,7 @@ from theurian.domain.ports.daemon_manager import ServiceState
 from theurian.infrastructure.secrets.file_store import (
     TOKEN_KEY,
     FileSecretStore,
+    SecretPathIsASymbolicLinkError,
     default_data_dir,
 )
 from theurian.infrastructure.services import detect_manager
@@ -47,13 +48,27 @@ def auth_rotate(
     pasted into an issue, a shared machine. Tightening a file's mode is not
     enough once its contents have been readable by someone else.
     """
-    from theurian.cli.commands import _emit  # noqa: PLC0415 - avoids a circular import
+    from theurian.cli.commands import _emit, _fail  # noqa: PLC0415 - avoids a circular import
 
     data_dir = default_data_dir()
     store = FileSecretStore(data_dir)
 
     token = generate_token()
-    asyncio.run(store.set(TOKEN_KEY, token))
+    try:
+        asyncio.run(store.set(TOKEN_KEY, token))
+    except SecretPathIsASymbolicLinkError as exc:
+        # The one command that reaches `FileSecretStore.set` with no handler
+        # above it (#371). `setup` runs it through `SetupService._apply`, whose
+        # `except Exception` records a FAILED step, and `daemon start
+        # --foreground` has an `except TheurianError` that publishes `exc.remedy`
+        # -- so this is where the refusal would otherwise have become a Rich
+        # traceback with an empty machine channel under `--json` (CP-2).
+        #
+        # Exit 1 rather than a state code: nothing about the caller's knowledge
+        # state is wrong, and this command has no `EXIT_STATE_ERROR` vocabulary of
+        # its own -- the data directory is the thing to repair.
+        _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=1)
+        return
 
     # Brought up to date too. Not because rotation moves anything it names --
     # the block references the token by *path*, and rotation changes the value

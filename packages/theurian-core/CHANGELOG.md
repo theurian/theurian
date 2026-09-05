@@ -12,7 +12,73 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **A symbolic link planted where Theurian writes derived state no longer
+  redirects the write** ([#523](https://github.com/theurian/theurian/issues/523),
+  [#394](https://github.com/theurian/theurian/issues/394),
+  [#371](https://github.com/theurian/theurian/issues/371), ADR-0004, SEC-7).
+  `Path.write_text` and `open(path, "w")` follow a symbolic link and then
+  truncate whatever it names, so a link a clone can deliver — force-added past
+  ADR-0004's ignore — turned a routine command into a destructive write
+  somewhere else, **at exit 0 with a success report**. Measured against the real
+  CLI on `1fe3302b`, nine faces: `theurian migrate apply` through
+  `.theurian/state/active.json.tmp`, `theurian index build` through
+  `active-index.json.tmp` and `index-secret-scan.json.tmp`, `theurian ingest`
+  through `.theurian/cache/ingestion.json`, and `FileSecretStore.set` through
+  `<data_dir>/auth/mcp-token` — each with the victim's body replaced, in the
+  working tree and outside it. The token case wrote the freshly minted
+  credential into the attacker's own file at 0600, and — the half a first cut of
+  this fix left open — **read one back through the same link**: `get` returned
+  the attacker's value, the daemon accepted it as its bearer token because
+  `ensure_token` re-mints only when there is no token, and `theurian doctor`
+  reported the arrangement satisfied. Both directions refuse now, and **both** of
+  `doctor`'s token steps report a link at that name as a conflict rather than
+  stat-ing through it — `token-storage`, and `token` itself, which went on
+  publishing `satisfied` about an attacker-owned file until it got the same arm
+  (three reviewers converged on it in round two). The population is the four
+  production sites that access the file: `set`, `get`, `probe_token_storage`,
+  `probe_token`.
+
+  **One root cause, fixed in two halves that do not cover each other.** Every
+  one of these writes now opens with `O_NOFOLLOW`
+  (`theurian.security.no_follow`), which refuses the link whose target is
+  *inside* the working tree — the shape containment is right to wave through and
+  the one that truncates a file in the user's own checkout. And the derived leaf
+  each atomic publisher writes to is now a `ProjectPaths` helper rather than a
+  `with_suffix(".json.tmp")` derivation, so it passes the same containment
+  chokepoint as the published name; a derived leaf was a path no check had ever
+  seen. `theurian ingest`'s manifest joins that chokepoint for the first time,
+  which is why `.theurian/cache` now has a rebuild remedy of its own.
+
+  This is the class [#481](https://github.com/theurian/theurian/issues/481)
+  fixed one member of (the write lock, 0.1.0.dev-era). The refusals are reported
+  as `{error, remedy}` documents at a non-zero exit on every command that
+  reaches one, `--json` included; the cure names the link to remove when the
+  refusal knows which file it is, and the derived directory to remove when the
+  culprit can sit anywhere on the resolution chain.
+
+  The derived artefacts these writers *create* are now `0644 & ~umask` rather
+  than the `0666 & ~umask` an `open(path, "w")` passes. Identical under the usual
+  `022` umask; under a looser one the old mode created a world-writable
+  `active.json` that any local account could repoint, which is the
+  derived-state-trust class reached through a permission bit instead of through a
+  commit. A file an older build left behind keeps the mode it was created with.
+
+  **The bound, recorded rather than claimed away:** `O_NOFOLLOW` covers the
+  final path component only. A symbolic link at a *directory* above the target
+  is still followed — a clone carrying `.theurian/cache -> ../docs` relocates the
+  ingestion manifest onto a tracked `docs/ingestion.json` at exit 0, measured —
+  and closing that needs `openat` against a directory descriptor at every level,
+  which this release does not do. Recorded as
+  [#577](https://github.com/theurian/theurian/issues/577) and pinned as a fact by
+  a test that goes RED the day the hardening lands. The substitution
+  ([#573](https://github.com/theurian/theurian/issues/573))
+  face of #371 is likewise unchanged and is a different mechanism rather than a
+  remaining corner of this one: an attacker's own **regular file** at the token's
+  name is not a link, so no `O_NOFOLLOW` sees it ([#573](https://github.com/theurian/theurian/issues/573)) and it is indistinguishable from
+  Theurian's own by mode. `theurian doctor` continues to demand rotation for a
+  group- or other-writable `auth/` directory, which is the signal that face has.
 
 ## [0.1.0] - 2026-09-05
 

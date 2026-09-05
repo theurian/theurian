@@ -407,7 +407,45 @@ def apply_data_directory(context: SetupContext) -> None:
 
 
 def probe_token(context: SetupContext) -> SetupStep:
+    """Whether a local access token is present, and whether it is Theurian's.
+
+    **The ``lstat`` runs before anything that follows the link**, the same arm
+    :func:`probe_token_storage` carries and for the same reason (security round
+    two, H-A). ``is_file()`` and ``read_text()`` both follow, so with a link at
+    the token's name pointing at an attacker-owned file of at least
+    ``MIN_TOKEN_LENGTH`` characters this step published ``satisfied`` -- measured
+    2026-09-05, and a shorter target reached the "too short" arm instead, which
+    is the same read-through wearing a different verdict.
+
+    CONFLICTING rather than MISSING, for the reason recorded on
+    :func:`probe_token_storage`'s own arm: ``MISSING`` is the status that makes
+    setup *act*, and acting here means ``apply_token`` minting into the link --
+    which ``FileSecretStore.set`` refuses, so the run would end in a failed step
+    describing a write nobody asked for. The cure is a person removing a link
+    they did not create.
+
+    This step and ``token-storage`` are deliberately two probes over one file:
+    this one is about *what the token is*, that one about *who can read it*. The
+    link defeats both, so both refuse it, and neither can be relied on to cover
+    the other -- ``token-storage`` was already refusing while this one answered
+    ``satisfied``.
+    """
     path = context.auth_dir / TOKEN_KEY
+    if path.is_symlink():
+        return SetupStep(
+            step_id=StepId.TOKEN,
+            status=StepStatus.CONFLICTING,
+            summary="The token file is a symbolic link.",
+            detail=(
+                f"{path} is a symbolic link, not the token file Theurian wrote, so this "
+                f"step cannot say what token is in use -- reading it would report on "
+                f"whatever the link names. Remove it with `rm {path}` and run `theurian "
+                f"auth rotate` to mint a fresh token. Something with write access to "
+                f"{context.auth_dir} put it there, so check that directory's permissions "
+                f"(it should be 0700), and treat any token in use since it appeared as "
+                f"compromised."
+            ),
+        )
     if not path.is_file():
         return SetupStep(
             step_id=StepId.TOKEN,
@@ -471,15 +509,62 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
     asked for. A *writable* directory is the third case, and it splits from the
     readable one because ``is_world_accessible`` is ``st_mode & 0o077`` -- which
     includes the write bits. A directory another user can write is not a listing
-    exposure: they can unlink the token and drop in their own, or plant a symlink
-    the next mint writes the token through (#371). The credential may already have
+    exposure: they can unlink the token and drop in their own 0600 file, which
+    every probe here then reads as satisfied. The credential may already have
     been substituted, and tightening the directory does not undo that -- so this
-    arm asks for `theurian auth rotate` the way the readable-file arm does. The
+    arm asks for `theurian auth rotate` the way the readable-file arm does.
+
+    **The symlink half of that surface is closed at the token's own name, and this
+    paragraph used to name it as live.** Planting a link *at* ``mcp-token`` is what
+    #371 was, and it had two directions: the next mint writing through it, and a
+    later read handing back what the attacker had already put there.
+    Four production sites access that file -- ``git grep -n "TOKEN_KEY" --
+    packages/theurian-core/src``, filtered to the ones that open or stat it -- and
+    each is closed by name rather than by a claim about the class:
+    ``FileSecretStore.set`` and ``.get`` open with ``O_NOFOLLOW`` and refuse, and
+    both :func:`probe_token` and this probe carry an ``is_symlink()`` arm that
+    reports the plant instead of stat-ing through it. Naming three of the four is
+    what an earlier version of this paragraph did, while ``probe_token`` was still
+    publishing ``satisfied`` about an attacker-owned file (round two, H-A).
+
+    That is the **final component** and nothing wider: a link
+    at ``auth/`` itself is followed by every call here, the same prefix bound
+    :mod:`theurian.security.no_follow` records
+    ([#577](https://github.com/theurian/theurian/issues/577)). What is left inside
+    the leaf's own scope is the substitution above (#573), which is a *different*
+    mechanism -- an attacker's own regular file, indistinguishable from Theurian's
+    by mode -- and it is why this arm survived that fix. The
     original single directory arm dropped rotation on the write bit too, telling
     an operator whose 0770 ``auth/`` an attacker could rewrite that nothing needed
     replacing.
     """
     path = context.auth_dir / TOKEN_KEY
+    # `lstat` before anything that follows the link, and *before* the
+    # `is_file()` arm below, which does follow it (security round one, HIGH-1).
+    # With a link here naming an attacker-owned 0600 file, all three of this
+    # probe's predicates passed -- `is_file()` true, target not world-accessible,
+    # `auth` 0700 -- and the report read `satisfied` about a token somebody else
+    # wrote. The store refuses to read or write through it now, so `doctor`
+    # saying "converged" would be the one surface still claiming otherwise.
+    #
+    # CONFLICTING rather than MISSING, and that is the SEC-18 rule rather than a
+    # preference: `MISSING` is the status that makes setup *act*, and acting here
+    # means writing the token, which is the operation the store declines. The
+    # remedy is a person removing a link they did not create.
+    if path.is_symlink():
+        return SetupStep(
+            step_id=StepId.TOKEN_STORAGE,
+            status=StepStatus.CONFLICTING,
+            summary="The token file is a symbolic link.",
+            detail=(
+                f"{path} is a symbolic link, not the token file Theurian wrote. Anything "
+                f"reading it gets whatever the link names, so remove it with `rm {path}` "
+                f"and run `theurian auth rotate` to mint a fresh token. Something with "
+                f"write access to {context.auth_dir} put it there -- check that directory's "
+                f"permissions (it should be 0700), and treat any token in use since it "
+                f"appeared as compromised."
+            ),
+        )
     if not path.is_file():
         return SetupStep(
             step_id=StepId.TOKEN_STORAGE,
@@ -503,12 +588,21 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
         directory_mode = context.auth_dir.stat().st_mode & 0o777
         if directory_mode & 0o022:
             # The group/other *write* bit, split from the readable case because a
-            # writable directory is a substitution surface, not a listing one: an
-            # attacker who can write `auth/` can unlink the token and replace it,
-            # or plant a symlink the next `apply_token` mints through (#371, the
-            # O_NOFOLLOW write-through mechanism). Tightening the mode does not
-            # undo a swap that may already have happened, so this arm asks for
-            # rotation as well -- the same reason the world-readable-file arm does.
+            # writable directory is a substitution surface (#573), not a listing one: an
+            # attacker who can write `auth/` can unlink the token and replace it
+            # with a 0600 file of their own, which every probe here reads as
+            # satisfied. Tightening the mode does not undo a swap that may already
+            # have happened, so this arm asks for rotation as well -- the same
+            # reason the world-readable-file arm does.
+            #
+            # The *symlink* half of that surface is closed and no longer belongs
+            # in this sentence: `FileSecretStore` opens with `O_NOFOLLOW` on both
+            # sides and refuses rather than minting through -- or reading back
+            # through -- a planted link (#371, and the read side from security
+            # round one), and the `is_symlink()` arm at the top of this probe
+            # reports one rather than stating it away. The substitution above (#573) is
+            # what is left, and it is why this arm survives that fix rather than
+            # being deleted with it.
             return SetupStep(
                 step_id=StepId.TOKEN_STORAGE,
                 status=StepStatus.CONFLICTING,
