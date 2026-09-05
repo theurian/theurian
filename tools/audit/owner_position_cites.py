@@ -451,6 +451,7 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "sets `_SUPERSESSION_REACH`.",
     ),
     # The three rows below are one member of a class this ledger did not have
+    # (one in ADR-0029, two in ADR-0030):
     # before: a cite whose owner is **open**, read as dead only because the
     # offline snapshot is older than the issue. `tracker_state` answers from
     # `tracker-state.json` under `--offline` (which the census test forces, for
@@ -461,6 +462,13 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     # under this audit, filed as
     # https://github.com/theurian/theurian/issues/576; these rows record the
     # reading, they do not fix that.
+    #
+    # **They are deleted by the commit that refreshes the snapshot.** Once
+    # `tracker-state.json` carries #575 as open, the sweep stops producing these
+    # rows and the reconciliation reports all three in the *stale* direction --
+    # exit 1, the good direction failing. So the refresh and this deletion are one
+    # commit, not two, and #576 carries the same note so whoever does the refresh
+    # meets it there rather than discovering it from a red gate.
     (
         "docs/adr/0030-github-review-ingestion-spawns-gh.md",
         "575",
@@ -474,15 +482,17 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "replaced the unnamed follow-up round one graded HIGH.",
     ),
     (
-        "docs/adr/0030-github-review-ingestion-spawns-gh.md",
+        "docs/adr/0029-review-findings-are-governed-knowledge.md",
         "575",
-        "cannot disagree",
+        "which has advisory context), not to this source",
         "correct -- open owner, snapshot-age false positive",
-        "The sibling sentence saying ADR-0029's owed table is repointed to #575 in the "
-        "same commit, so the row and the paragraph cannot disagree. Same number, same "
-        "file, different sentence -- so it carries its own fragment rather than being "
-        "absorbed by the row above (the R2-A rule). Same reading: #575 open and "
-        "`phase-b` on 2026-09-05, absent from the 2026-09-03 snapshot.",
+        "ADR-0029's owed-item prose, repointed from the GitHub arm to the "
+        "private-repository arm in the same pass that repointed its table. Same reading "
+        "as the two rows below: #575 open and `phase-b` on 2026-09-05, absent from the "
+        "2026-09-03 snapshot because it postdates it. This row replaced one on a "
+        "`cannot disagree` sentence in ADR-0030 that round two had rewritten -- the "
+        "sweep stopped producing it, and a ledger row the sweep no longer produces is "
+        "the stale direction, which is red too.",
     ),
     (
         "docs/adr/0030-github-review-ingestion-spawns-gh.md",
@@ -492,9 +502,10 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "The *What this does not close* item for the same arm. Third sentence, third "
         "fragment, same reading: #575 filed 2026-09-05, read OPEN and `phase-b` that "
         "day, absent from the 2026-09-03 snapshot because it postdates it. ADR-0029's "
-        "own repointed row is **not** a member -- `_in_owner_position` is False for it, "
+        "owed *table* row is **not** a member -- `_in_owner_position` is False for it, "
         "the cite sitting in a table's owner column with no owner phrase within "
-        "`_PROXIMITY` -- so no row is owed there and adding one would read as stale.",
+        "`_PROXIMITY` -- so no row is owed for the table, and adding one would read as "
+        "stale. Its owed-item *prose* at :735 is a member, and has its own row above.",
     ),
     (
         "docs/security/threat-model.md",
