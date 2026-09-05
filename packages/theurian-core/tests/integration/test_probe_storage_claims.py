@@ -291,11 +291,17 @@ def test_a_group_writable_directory_demands_rotation_not_only_a_chmod(tmp_path: 
     ``is_world_accessible`` is ``st_mode & 0o077``, which includes the *write*
     bits, so the single directory arm treated a group-writable 0770 ``auth/``
     exactly like a readable 0750 one and dropped the rotation demand. But another
-    user who can write the directory can unlink the token and drop in their own,
-    or plant a symlink the next mint writes the token through (#371) -- so the
-    credential may already have been substituted, and a ``chmod`` does not undo
-    that. Rotation is asked for here, the way the world-readable-file arm asks for
-    it.
+    user who can write the directory can unlink the token and drop in their own
+    0600 file, which every probe here reads as satisfied -- so the credential may
+    already have been substituted, and a ``chmod`` does not undo that. Rotation is
+    asked for here, the way the world-readable-file arm asks for it.
+
+    This paragraph used to give a second mechanism, "or plant a symlink the next
+    mint writes the token through (#371)", and that half is closed:
+    ``FileSecretStore.set`` opens with ``O_NOFOLLOW`` and refuses rather than
+    minting through a link
+    (``test_derived_path_symlink_writes.py::test_the_secret_store_refuses_to_write_a_token_through_a_link``).
+    The substitution above is the mechanism that keeps this arm alive.
     """
     data_dir = tmp_path / "data"
     _stored_token(data_dir, token_mode=0o600, directory_mode=0o770)

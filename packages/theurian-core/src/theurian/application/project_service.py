@@ -621,9 +621,10 @@ class ProjectPaths:
         containment is a property of one chokepoint (:func:`_contain`) rather than
         a check duplicated per helper -- a helper added later that forgets it is
         caught by ``tests/unit/test_project_paths_containment.py``'s reflection
-        sweep. The mechanism, the anchoring, and the class it closes (the
-        authored-symlink #237/T-5 class, not the derived-cache #394 face) are all
-        recorded on :func:`_contain`.
+        sweep. The mechanism, the anchoring, and the two classes that reach it --
+        the authored-symlink #237/T-5 class, and the derived one #394 and #523
+        route here through helpers of their own -- are recorded on
+        :func:`_contain`, which also states the half containment does *not* cover.
         """
         return _contain(self.root, path, remedy=self._escape_remedy(path))
 

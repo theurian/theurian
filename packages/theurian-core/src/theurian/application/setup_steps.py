@@ -471,10 +471,17 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
     asked for. A *writable* directory is the third case, and it splits from the
     readable one because ``is_world_accessible`` is ``st_mode & 0o077`` -- which
     includes the write bits. A directory another user can write is not a listing
-    exposure: they can unlink the token and drop in their own, or plant a symlink
-    the next mint writes the token through (#371). The credential may already have
+    exposure: they can unlink the token and drop in their own 0600 file, which
+    every probe here then reads as satisfied. The credential may already have
     been substituted, and tightening the directory does not undo that -- so this
-    arm asks for `theurian auth rotate` the way the readable-file arm does. The
+    arm asks for `theurian auth rotate` the way the readable-file arm does.
+
+    **The symlink half of that surface is closed, and this paragraph used to name
+    it as live.** Planting a link at the token's name and letting the next mint
+    write through it is what #371 was; ``FileSecretStore.set`` opens with
+    ``O_NOFOLLOW`` and refuses. What is left is the substitution above, which is
+    a *different* mechanism -- an attacker's own regular file, indistinguishable
+    from Theurian's by mode -- and it is why this arm survived that fix. The
     original single directory arm dropped rotation on the write bit too, telling
     an operator whose 0770 ``auth/`` an attacker could rewrite that nothing needed
     replacing.
@@ -504,11 +511,17 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
         if directory_mode & 0o022:
             # The group/other *write* bit, split from the readable case because a
             # writable directory is a substitution surface, not a listing one: an
-            # attacker who can write `auth/` can unlink the token and replace it,
-            # or plant a symlink the next `apply_token` mints through (#371, the
-            # O_NOFOLLOW write-through mechanism). Tightening the mode does not
-            # undo a swap that may already have happened, so this arm asks for
-            # rotation as well -- the same reason the world-readable-file arm does.
+            # attacker who can write `auth/` can unlink the token and replace it
+            # with a 0600 file of their own, which every probe here reads as
+            # satisfied. Tightening the mode does not undo a swap that may already
+            # have happened, so this arm asks for rotation as well -- the same
+            # reason the world-readable-file arm does.
+            #
+            # The *symlink* half of that surface is closed and no longer belongs
+            # in this sentence: `FileSecretStore.set` opens with `O_NOFOLLOW` and
+            # refuses rather than minting through a planted link (#371). The
+            # substitution above is what is left, and it is why this arm survives
+            # that fix rather than being deleted with it.
             return SetupStep(
                 step_id=StepId.TOKEN_STORAGE,
                 status=StepStatus.CONFLICTING,
