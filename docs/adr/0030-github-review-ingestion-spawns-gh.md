@@ -1033,10 +1033,15 @@ brief (*Demoted populations*, below):
 | **History** | the line describes something Milestone 7 actually did — for example `tests/unit/test_config_key_call_sites.py:42`, "the Milestone 7 diff that added the first reader of `.theurian/config.yaml`", which is true |
 | **Unrelated** | Milestone 7 named about the write path, the ports register or the corpus seed |
 
-The three classes partition the 27: **12 movers, 1 history, 14 unrelated**, which
-is the reconciliation identity a re-measurement has to satisfy.
+The three classes partition the key's output, and the reconciliation identity a
+re-measurement has to satisfy is: movers + history + unrelated = the key's line
+count. The counts themselves are the demoted population's, not this record's —
+the last annotation and its numbers live in the round-5 record on this PR, which
+also found two members the previous annotation had misjudged (a mover filed as
+unrelated, a second history line), so the re-measurement judges every line
+against the rule rather than trusting a prior split.
 
-The remaining 14 lines are Milestone 7 references to the write path, the ports
+The unrelated class is Milestone 7 references to the write path, the ports
 register and the corpus seed — different subjects entirely. **Slice 1 dispatches
 on the union above**, re-measured at brief time; the unfiltered key is what makes
 that re-measurement reproducible, at the cost of a hand pass over 27 lines.
@@ -1165,9 +1170,9 @@ figure written weeks earlier.
 
 | Demoted population | What stays in this ADR | New home | Re-measured by |
 | :-- | :-- | :-- | :-- |
-| Flag-sites annotated population (M/N/D per line, and its composition) | the key, both frames, the exclusions with measured drops, the three-class judgment rule | slice-1 assignment brief | the standing dispatch re-measurement rule; last full annotation: the round-4 record comment on this PR |
+| Flag-sites annotated population (M/N/D per line, and its composition) | the key, both frames, the exclusions with measured drops, the three-class judgment rule | slice-1 assignment brief | the assignment-brief counting rule (CLAUDE.md, *The orchestrator has no reviewer*: a "how many places" claim is answered by a search command with its output pasted into the brief); last full annotation: PR #570 comment 5552854865 |
 | Fetch-absence prose population | the key and its stated width, and the binding sequencing (it moves in the same PR as the first spawn site) | slice-1 assignment brief | the same rule |
-| Milestone-7 attribution union | the unfiltered key, the three-class rule, and the partition identity (12 + 1 + 14 = 27) | slice-1 assignment brief | the same rule |
+| Milestone-7 attribution union | the unfiltered key, the three-class rule, and the partition identity (movers + history + unrelated = the key's line count) | slice-1 assignment brief | the same rule |
 | `providers.review.repositories` promise population | the key, its recorded limit (it misses the differently-spelled promises), and the commit-split reason | slice-1 assignment brief | the same rule |
 | Line-anchored citations converted to quoted sentences | the quoted sentence and its file | — (it travels with the quote) | a quote survives renumbering; a line number does not |
 
@@ -1206,7 +1211,7 @@ the two commits are **sequenced serially in one worktree**, never fanned out.
 
 | Alternative | Why rejected |
 | :-- | :-- |
-| **An in-process HTTP client (`httpx` plus a token from the environment)** | Three costs at once. It adds a production dependency to a core whose runtime dependency list is six packages, none of them an HTTP client. It puts **token custody** inside Theurian — reading, holding and possibly logging a credential the operator currently keeps in their own credential store. And it creates a **raw-URL surface**, which makes all three of SEC-10's controls live checks that must be built and kept correct. The `gh api graphql` form does not make the SSRF class disappear — run C and runs D–F show the destination moving under a pinned hostname — it removes the *input* those two checks read: there is no URL in the argument vector to apply a scheme allowlist to, and the private-network reach is **reduced** by constructing the environment (clause 4) rather than by inspecting a destination, **with the config-family residuals recorded** (decision 1 derives the two that survive slice 1's pre-spawn refusal). The `gh` spawn trades a process boundary for that, and buys a smaller reduction than an earlier draft of this row claimed. |
+| **An in-process HTTP client (`httpx` plus a token from the environment)** | Three costs at once. It adds a production dependency to a core whose runtime dependency list is six packages, none of them an HTTP client. It puts **token custody** inside Theurian — reading, holding and possibly logging a credential the operator currently keeps in their own credential store. And it creates a **raw-URL surface**, which makes all three of SEC-10's controls live checks that must be built and kept correct. The `gh api graphql` form does not make the SSRF class disappear — run C and runs D–F show the destination moving under a pinned hostname — it removes the *input* those two checks read: there is no URL in the argument vector to apply a scheme allowlist to, and the private-network reach is **reduced** by constructing the environment (clause 4) rather than by inspecting a destination, **with the config-family residuals recorded** (decision 1 derives the four-member divergence class that survives slice 1's pre-spawn refusal). The `gh` spawn trades a process boundary for that, and buys a smaller reduction than an earlier draft of this row claimed. |
 | **Inherit the parent environment and scrub the dangerous variables** | A scrub is a blocklist over a set the adapter does not control. Run C measured that `HTTPS_PROXY` moves the request even with `--hostname` pinned, so the blocklist would have to be complete over destination variables, proxy variables, and whatever the next `gh` release reads. Constructing the environment inverts the burden onto a set this project chooses and pins. |
 | **`gh api --paginate`** | Whatever the flag follows, the *response* chooses it rather than the adapter — and this design pins no version-specific semantics for it (clause 8 bounds the binary's version, not its behaviour). Excluding the flag is cheaper than characterising it: a GraphQL cursor is an opaque string in a typed variable, so the adapter still decides every destination it reaches. |
 | **`gh api repos/{owner}/{repo}/pulls/...` (the REST path form)** | Repository identity would travel in the URL position, where it is string-interpolated into a path. The GraphQL form carries the same identity as typed variables with no path to escape into, which is what makes clause 2 a checkable property rather than a promise about quoting. |
@@ -1250,8 +1255,9 @@ Measured now, and reproducible from this ADR (2026-09-05, `origin/main` @
 - Three populations slice 1 must move, each with its key in *Dispositions* and
   each a dispatch input to be re-measured then: the **fetch-absence prose**
   (**30** files, wide phrase key), the **`providers.review.repositories`** key
-  (**15** files), and the **Milestone-7 attribution** (**10** lines across
-  **7** files). The first two overlap in **12** files on this branch (**11** at
+  (**15** files), and the **Milestone-7 attribution** (the demoted union above —
+  its numbers live with the annotation, per *Demoted populations*). The first
+  two overlap in **12** files on this branch (**11** at
   `1fe3302b`), which is why the allowlist reader's commit is sequenced serially
   before the adapter's rather than fanned out — the split is justified by
   `test_config_key_call_sites.py`'s pinned absence, not by disjointness.
@@ -1265,7 +1271,7 @@ Measured now, and reproducible from this ADR (2026-09-05, `origin/main` @
   keeps holding:
 
   ```console
-  $ git diff origin/main...HEAD --name-only -- 'packages/*/src' 'plugins' 'schemas' | wc -l
+  $ git diff origin/main...HEAD --name-only -- ':(glob)packages/*/src/**' 'plugins' 'schemas' | wc -l
          0
   ```
 
