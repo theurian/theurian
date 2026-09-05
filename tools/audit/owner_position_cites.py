@@ -463,12 +463,23 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     # https://github.com/theurian/theurian/issues/576; these rows record the
     # reading, they do not fix that.
     #
-    # **They are deleted by the commit that refreshes the snapshot.** Once
-    # `tracker-state.json` carries #575 as open, the sweep stops producing these
-    # rows and the reconciliation reports all three in the *stale* direction --
-    # exit 1, the good direction failing. So the refresh and this deletion are one
-    # commit, not two, and #576 carries the same note so whoever does the refresh
-    # meets it there rather than discovering it from a red gate.
+    # **They are stale under a live run today, not at some future refresh.** With
+    # #575 and #579 read open -- which any run without `--offline` does -- the sweep
+    # stops producing the three rows and the reconciliation reports them in the
+    # *stale* direction. Driven through :func:`ledger_drift` against a state table
+    # with those two open::
+    #
+    #     unrecorded=0 stale=3 drift=0 ambiguous=0
+    #       STALE -> docs/adr/0030-...md #575 'it is owned by'
+    #       STALE -> docs/adr/0029-...md #575 'which has advisory context), not to this source'
+    #       STALE -> docs/adr/0030-...md #575 'owed table names #575 rather than this ADR'
+    #
+    # So the documented no-flag invocation in this module's own header exits 1 on
+    # this branch **now**; `--offline` is the form the census test runs and the form
+    # these rows are true under. The rows are deleted by the commit that refreshes
+    # `tracker-state.json` -- refresh and deletion are one commit, not two -- and
+    # #576 carries the same note so whoever does the refresh meets it there rather
+    # than discovering it from a red gate.
     #
     # **A fourth cite of the same shape gets no row, and the reason is
     # over-determined.** ADR-0030's corpus disposition names #579 -- filed
@@ -476,23 +487,30 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     # post-merge corpus re-seed, in owner position (`it is owned by`). The sweep
     # produces no row for it, so adding one here would land in the stale direction.
     # It is cleared by the `_HISTORICAL` over-clear this module measures above, and
-    # **not by one marker**: that sentence carries four.
+    # **not by one marker**: that sentence carries **four occurrences of three
+    # distinct markers** (`after`, `recorded`, `were`, `after`).
     #
     # Driven through :func:`classify` on the sentence **as it stands in the file**
     # (the number absent, matching the offline snapshot)::
     #
-    #     as written              verdict=history  markers=[after, recorded, were, after]
-    #     after -> once           verdict=history  markers=[recorded, were, after]
-    #     + recorded -> noted     verdict=history  markers=[were, after]
-    #     all four removed        verdict=SUSPECT  markers=[]   <- positive control
+    #     as written            verdict=history  markers=[after, recorded, were, after]
+    #     after -> once         verdict=history  markers=[recorded, were, after]
+    #     + recorded -> noted   verdict=history  markers=[were, after]      <- two left
+    #     all four removed      verdict=SUSPECT  markers=[]                 <- positive control
     #
-    # `owner_pos=True` in all four, so the owner key is not what varies. **The
-    # remedy is #576's refresh, not a reword**: with three markers still standing
-    # after two substitutions, no realistic edit to that sentence makes a row owed,
-    # and an earlier version of this note said the opposite on the strength of a
-    # drive against a shortened paraphrase rather than the real sentence. Two
-    # reviewers reproduced the correct reading independently before it was fixed.
-    # The refresh in #576 clears #579 the same way it clears #575.
+    # `owner_pos=True` in all four. **What a reword does, measured rather than
+    # asserted**: five natural rewordings of that same claim were driven, and
+    # **four of the five yield SUSPECT** -- only the one carrying an incidental
+    # `was` clears. So the superseded note's conclusion ("reword and a row becomes
+    # owed") was **right**, and what was wrong with it was its instrument: it drove
+    # a shortened paraphrase and reported a single marker. The round-3 correction
+    # threw out the true conclusion with the false measurement, which is the same
+    # fix-right-reason-wrong shape one level up.
+    #
+    # **The standing remedy is still #576's refresh**, because that is what clears
+    # the rows for every cite at once rather than one sentence at a time. Three
+    # independent drives (two reviewers and this module's own) agree on the table
+    # above.
     (
         "docs/adr/0030-github-review-ingestion-spawns-gh.md",
         "575",
