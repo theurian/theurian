@@ -30,6 +30,7 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -124,14 +125,19 @@ def _setup_context(tmp_path: Path, data_dir: Path) -> SetupContext:
     )
 
 
+@dataclass(frozen=True, slots=True)
 class Ran:
-    """One command's result, in the shape the assertions here ask about."""
+    """One command's result, in the shape the assertions here ask about.
 
-    def __init__(self, exit_code: int, stdout: str, stderr: str, escaped: str | None) -> None:
-        self.exit_code = exit_code
-        self.stdout = stdout
-        self.stderr = stderr
-        self.escaped = escaped
+    Frozen, like every value in this codebase: an assertion helper that could
+    reassign ``exit_code`` on the object it was handed would make a failure
+    report describe a run that never happened.
+    """
+
+    exit_code: int
+    stdout: str
+    stderr: str
+    escaped: str | None
 
     @property
     def envelope(self) -> dict[str, Any] | None:

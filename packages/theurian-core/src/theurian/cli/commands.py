@@ -231,10 +231,22 @@ def _symbolic_link_write_refusal(path: Path, *, artifact: str) -> str:
     the misdescription :func:`~theurian.security.no_follow.is_a_symbolic_link_refusal`
     records the errno's real meaning under these flags for.
 
-    Names the leaf rather than its absolute path for the reason every payload in
-    this module keeps operators' absolute paths out; the ``remedy`` beside it
+    **Names the leaf rather than its absolute path, and the reason is narrower
+    than the one written here first.** That sentence said "every payload in this
+    module keeps operators' absolute paths out", which is false of this module:
+    :func:`_fail_a_path_escape` publishes ``str(exc)`` from a refusal whose whole
+    message is two absolute paths, and ``git grep -n '_fail(str(exc)'
+    packages/theurian-core/src/theurian/cli/commands.py`` returned ten more sites
+    on 2026-09-05. What is true is that **two payloads keep them out on purpose**
+    -- ``_purge_fields``' failure reason and ``_record_the_scan``'s warning, each
+    recording why at its own definition -- and this follows those two rather than
+    a module-wide rule that does not exist.
+
+    The ``remedy`` beside it
     (:func:`~theurian.security.no_follow.symbolic_link_remedy`) carries the full
-    path, because a cure has to be typeable.
+    path regardless, because a cure has to be typeable. So the pair is deliberate
+    rather than accidental: the ``error`` field is the thing quoted into a bug
+    report, and the ``remedy`` is the thing pasted into a shell.
     """
     return (
         f"{artifact} is a symbolic link ({path.name}), not a file Theurian wrote. Writing "
@@ -1597,6 +1609,35 @@ def _fail_the_state_publish(exc: OSError, paths: ProjectPaths, *, as_json: bool)
     permission bit that was never wrong is exactly what
     :func:`~theurian.domain.errors._read_failure_remedy`'s own ``ELOOP`` branch
     exists to avoid, one layer down.
+
+    **The two arms publish differently, and it is recorded rather than
+    reconciled** (round one, code review H-3 and its security twin). The link arm
+    names the leaf; the fall-through publishes ``str(exc)``, which appends the
+    operator's absolute path. Three things decide that this stays:
+
+    * The fall-through is a **verbatim extraction**, not new code. ``git show
+      origin/main:.../cli/commands.py | grep -n 'remedy=_LOCKED_WRITE_FAULT_REMEDY' -B 3``
+      returns two hits, both ``_fail(str(exc), ...)`` -- section A's around
+      ``create_database`` and section B's here. Converting one splits the two
+      sections apart; converting both reaches into section A, which this change
+      does not touch.
+    * The two arms differ **in kind**, not only in wording. The link arm's message
+      is composed here and describes an artefact in words, so it has a leaf to
+      name. The fall-through hands over the operating system's own account of a
+      fault this code cannot classify, and the file already keeps both
+      conventions on purpose --
+      :func:`~theurian.infrastructure.sqlite.connection._refusal_text` publishes
+      ``strerror`` deliberately, ``_record_the_scan`` publishes the type name
+      deliberately.
+    * There is **no module-wide rule to be consistent with**. Absolute paths reach
+      this module's payloads from every ``_fail(str(exc), ...)`` site, and there
+      are **37** of them (measured 2026-09-05 by walking this file's AST for a
+      ``_fail`` call whose first argument is ``str(exc)``; a line-based grep
+      answers 10, because it sees only the single-line spelling -- the count is
+      stated with its key for exactly that reason). The two payloads that withhold
+      absolute paths do so as a local decision each records at its own definition.
+      Making a 38th site withhold would add a third convention rather than
+      complete a second.
 
     Does not return -- :func:`_fail` raises -- but is typed like this module's
     other callers of it, so the call site keeps its explicit ``return``.
