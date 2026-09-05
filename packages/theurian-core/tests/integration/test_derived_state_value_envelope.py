@@ -431,7 +431,14 @@ def test_every_swept_command_is_one_the_app_still_ships() -> None:
             node = node.commands[word]
 
 
-# -- The MCP refusal the fallback table cannot reach --------------------------
+# -- The second value on the axis: `databaseFilename` -------------------------
+#
+# Three joins build a path from it -- reproduce with `git grep -n
+# 'active.database_filename' -- packages/theurian-core/src`, four lines on
+# 2026-09-05, three joins and one message. Each is measured here or recorded:
+# `mcp/tools.py`'s and `cli/commands.py::_verify_history`'s stat it and are
+# driven below; `cli/index_commands.py`'s hands it to `IndexRequest` and is
+# graded by `_run_build`'s `except (TheurianError, sqlite3.Error, OSError)`.
 
 
 def _publish_a_database_filename(root: Path, filename: str) -> None:
@@ -440,6 +447,61 @@ def _publish_a_database_filename(root: Path, filename: str) -> None:
     payload = json.loads(pointer.read_text(encoding="utf-8"))
     payload["databaseFilename"] = filename
     pointer.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _move_the_state_hash(root: Path) -> None:
+    """Add a migration, so the recorded hash and the derived one disagree.
+
+    ``_verify_history`` returns early while they match -- there is no *previous*
+    state to check against -- so a plant made without this measures the early
+    return rather than the join below it. Asserted rather than assumed by the
+    tests that use it: they require the refusal, which cannot arrive from the
+    early return.
+    """
+    second = MIGRATION.replace(MIGRATION_ID, "01K1BBBBBB01234567890ABCDE")
+    second = second.replace("01K1AREVAA01234567890ABCDE", "01K1BREVBB01234567890ABCDE")
+    second = second.replace("architecture.auth\n", "architecture.auth2\n")
+    (root / ".theurian/migrations/01K1BBBBBB01234567890ABCDE-b.yaml").write_text(
+        second, encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [("migrate", "status"), ("migrate", "apply"), ("index", "build")],
+    ids=["migrate-status", "migrate-apply", "index-build"],
+)
+def test_a_database_filename_the_os_will_not_answer_for_refuses_the_history_check(
+    project: Path, command: tuple[str, ...]
+) -> None:
+    """The third join, and the one a subset would have missed.
+
+    ``_verify_history`` runs inside ``_require_project``, so this reaches every
+    command routed through it. It stats ``paths.state / active.database_filename``
+    -- a value ``ActiveState.from_json`` only ``str()``s -- and a 260-character
+    one raised ``ENAMETOOLONG`` through all three of these at exit 1 with **zero
+    bytes on stdout**, measured after the two joins above were already converted.
+
+    A **refusal** and not an early return, which is the property worth pinning:
+    the early returns there are for "there is genuinely nothing to check
+    against", and treating a name the OS will not answer for as absent would
+    report a clean FR-K5 history at exit 0 for a project whose evidence was
+    never read.
+    """
+    _move_the_state_hash(project)
+    _publish_a_database_filename(project, "B" * 260 + ".sqlite")
+
+    envelope = _refused_cleanly(_run(*command), code=4)
+
+    assert "FR-K5" in envelope["error"], (
+        f"the refusal does not say which guarantee went unconfirmed: {envelope['error']}"
+    )
+    assert "active.json" in envelope["remedy"], (
+        f"the cure does not name the pointer that carries the bad value: {envelope['remedy']}"
+    )
+
+
+# -- The MCP refusal the fallback table cannot reach --------------------------
 
 
 async def _search(registry: ProjectRegistry) -> Any:
@@ -527,16 +589,120 @@ def _index_for_callers() -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     return found
 
 
-def _caught_names(node: ast.AST) -> frozenset[str]:
-    """Every exception name any ``except`` inside ``node`` catches, flattened."""
+def _names_a_call_to(node: ast.AST, method: str) -> bool:
+    return any(
+        isinstance(child, ast.Call)
+        and isinstance(child.func, ast.Attribute)
+        and child.func.attr == method
+        for child in ast.walk(node)
+    )
+
+
+def _caught_around(node: ast.AST, method: str) -> frozenset[str]:
+    """The exception names guarding a call to ``method``, flattened.
+
+    Only the handlers of a ``try`` whose **body** holds that call, and that
+    narrowness is the point. Collecting every ``except`` in the function instead
+    would pass a function whose handler sits somewhere else entirely -- which is
+    the exact defect being swept: a probe one line above the ``try`` written for
+    it. Both faces of #389 had that shape, so a key that could not see it would
+    have called them closed.
+    """
     caught: set[str] = set()
     for child in ast.walk(node):
-        if not isinstance(child, ast.ExceptHandler) or child.type is None:
+        if not isinstance(child, ast.Try):
             continue
-        clause = child.type
-        listed = clause.elts if isinstance(clause, ast.Tuple) else [clause]
-        caught |= {name.id for name in listed if isinstance(name, ast.Name)}
+        if not any(_names_a_call_to(statement, method) for statement in child.body):
+            continue
+        for handler in child.handlers:
+            if handler.type is None:
+                continue
+            listed = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+            caught |= {name.id for name in listed if isinstance(name, ast.Name)}
     return frozenset(caught)
+
+
+#: Every function that joins ``database_filename`` onto a path and does not
+#: grade an ``OSError`` itself, with the reason it does not have to.
+_JOIN_GRADED_ELSEWHERE: Final = {
+    "cli/index_commands.py::index_build": (
+        "the join is handed to `IndexRequest` and never stat-ed here; the read that "
+        "does touch it is `_run_build`'s, whose "
+        "`except (TheurianError, sqlite3.Error, OSError)` converts it"
+    ),
+    "application/project_service.py::database_for": (
+        "a different `database_filename`: `StateHash`'s, computed from the migration "
+        "set rather than read from a pointer, so it carries no attacker-chosen bytes "
+        "-- and this helper returns the path without stat-ing it, so each caller's "
+        "own probe is where the mode failure is graded"
+    ),
+}
+
+
+def _database_filename_joins() -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Every function in ``src`` that builds a path out of ``database_filename``.
+
+    The second key, and it is a *different* one from the ``index_for`` sweep
+    rather than a widening of it: this value never passes through a
+    ``ProjectPaths`` helper at all -- the three call sites join it onto
+    ``paths.state`` directly -- so no reflection over that class can see them and
+    a sweep keyed on the helper would have called the class closed with this
+    third of it live.
+
+    The key is the *attribute name*, so it catches a fourth function whose
+    ``database_filename`` is a different one: ``StateHash``'s, computed from the
+    migration set. That is not a narrowing to add -- a key that told the two
+    apart would be keying on what it is trying to prove -- so it is recorded in
+    :data:`_JOIN_GRADED_ELSEWHERE` with the reason, where a reader can attack it.
+    """
+    found: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for path in sorted(_SOURCE_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            joins = any(
+                isinstance(child, ast.BinOp)
+                and isinstance(child.op, ast.Div)
+                and isinstance(child.right, ast.Attribute)
+                and child.right.attr == "database_filename"
+                for child in ast.walk(node)
+            )
+            if joins:
+                found[f"{path.relative_to(_SOURCE_ROOT)}::{node.name}"] = node
+    return found
+
+
+def test_every_database_filename_join_grades_the_stat_that_follows_it() -> None:
+    """The closure argument for the pointer's other value, derived the same way.
+
+    ``ActiveState.from_json`` only ``str()``s ``databaseFilename``, and
+    ``verify_state_provenance`` binds ``(root, state_hash)`` rather than the
+    filename, so nothing between the pointer and these joins has read what it
+    says. Reproduce the population with ``git grep -n 'active.database_filename'
+    -- packages/theurian-core/src``: four lines on 2026-09-05, three joins and
+    one message.
+
+    The key demonstrably hits: it is what found ``_verify_history`` after the
+    other two joins had already been converted, which is the "a guard covers the
+    whole set, never a convenient subset" failure caught before it shipped.
+    """
+    joins = _database_filename_joins()
+    assert joins, "the AST key found no `database_filename` join at all"
+
+    stale = frozenset(_JOIN_GRADED_ELSEWHERE) - frozenset(joins)
+    assert not stale, f"an exclusion names a join that no longer exists: {sorted(stale)}"
+
+    ungraded = sorted(
+        position
+        for position, node in joins.items()
+        if position not in _JOIN_GRADED_ELSEWHERE
+        and "OSError" not in _caught_around(node, "exists")
+    )
+    assert not ungraded, (
+        "a function joins `databaseFilename` onto a path and does not grade the "
+        f"`OSError` the stat that follows can raise: {ungraded}"
+    )
 
 
 def test_every_index_for_caller_grades_the_stat_beside_the_call() -> None:
@@ -565,8 +731,8 @@ def test_every_index_for_caller_grades_the_stat_beside_the_call() -> None:
         position
         for position, node in callers.items()
         if position not in _GRADED_ELSEWHERE
-        and not _caught_names(node) >= _BOTH_FAMILIES
-        and "Exception" not in _caught_names(node)
+        and not (guarding := _caught_around(node, "index_for")) >= _BOTH_FAMILIES
+        and "Exception" not in guarding
     )
     assert not ungraded, (
         "a caller of `index_for` stats what it hands back without grading both "

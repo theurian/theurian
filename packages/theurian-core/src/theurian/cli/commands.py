@@ -2728,7 +2728,34 @@ def _verify_history(context: CommandContext, as_json: bool) -> None:
         return
 
     previous = context.paths.state / active.database_filename
-    if not previous.exists():
+    try:
+        there = previous.exists()
+    except OSError as exc:
+        # `databaseFilename` is a value out of `active.json`, and `ActiveState
+        # .from_json` only `str()`s it -- so the join above builds whatever the
+        # pointer says and this is the first line that asks the OS about it. A
+        # 260-character one made `exists()` raise `ENAMETOOLONG`, which
+        # `pathlib` does not swallow, through `migrate status`, `migrate apply`
+        # and `index build` -- every command `_require_project` routes -- as a
+        # Rich traceback at exit 1 with zero bytes on stdout (measured at
+        # `75fe9b4f`; the same class as the `indexBuildId` faces and the third
+        # of the three joins on this value).
+        #
+        # Refused rather than returned, for this function's own recorded reason:
+        # the early returns are for "there is genuinely nothing to check
+        # against", and a name the OS will not answer for is not that. Treating
+        # it as absent would report a clean history at exit 0 for a project
+        # whose FR-K5 evidence was never read.
+        _fail(
+            f"Theurian cannot confirm that no applied migration has been edited "
+            f"(FR-K5): the previously active state pointer names a database the "
+            f"operating system will not answer for ({type(exc).__name__}).",
+            remedy=ACTIVE_POINTER_REMEDY,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
+    if not there:
         return
 
     try:
