@@ -47,8 +47,11 @@ from theurian.application.project_service import (
     ProjectPaths,
     ProjectRegistry,
     read_active_index_pointer,
+    write_active_index_pointer,
 )
 from theurian.application.setup_service import SetupService
+from theurian.cli import index_commands
+from theurian.cli.index_commands import EXIT_SECRET_FOUND
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.setup import SetupReport, SetupState
@@ -1702,3 +1705,71 @@ def test_doctor_still_answers_when_the_state_directory_escapes_the_project(
         "findings": 0,
     }
     assert code == 1, "an escaping tree is still an unhealthy machine"
+
+
+# -- The window between the precondition and the record write (#551) -----------
+
+
+def test_a_state_directory_that_escapes_after_the_publish_still_reports_the_findings(
+    planted: Path, tmp_path: Path
+) -> None:
+    """The TOCTOU residual's *escape*, closed; the window itself stays open.
+
+    ``_the_scan_record_paths_are_usable`` proves the record's two paths contained
+    before anything is built, and ``_record_the_scan`` resolves them again after
+    ``_publish`` has swapped the pointer. A co-resident local process that
+    redirects ``.theurian/state`` between the two makes the second resolution
+    raise ``ProjectPathEscapeError`` -- a ``TheurianError``, which the handler's
+    ``except OSError`` does not catch.
+
+    That is worse than the crash it looks like, which is why it is driven at all:
+    the raise lands *after* the publish and *before* ``_emit``, so under the
+    default ``block`` policy the credential-bearing build is serving while
+    ``secretFindings`` never prints and ``EXIT_SECRET_FOUND`` never fires --
+    exactly the shape the precondition was added to prevent, met one step later.
+
+    The window is planted rather than raced: ``write_active_index_pointer`` is
+    the publish, so wrapping it puts the redirect at the one instant that
+    matters. A race would be flaky and would prove less -- what is asserted is
+    the *handling*, and the window's own closure is recorded as follow-up on
+    #551 rather than attempted here.
+    """
+    outside = tmp_path / "state-elsewhere"
+    published: list[bool] = []
+    real = write_active_index_pointer
+
+    def redirecting(*args: Any, **kwargs: Any) -> None:
+        real(*args, **kwargs)
+        state = planted / ".theurian/state"
+        shutil.move(str(state), str(outside))
+        state.symlink_to(outside)
+        published.append(True)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(index_commands, "write_active_index_pointer", redirecting)
+        code, payload = _in(planted, "index", "build")
+
+    assert published, "the publish never ran, so the window was never opened"
+    assert code == EXIT_SECRET_FOUND, (
+        f"the block policy's exit code did not fire, so the escape reached the "
+        f"caller instead of the findings: exit {code}, payload {payload}"
+    )
+    assert payload["published"] is True
+    assert _findings(payload), "the findings the caller is owed were not published"
+    warning = payload.get("recordWarning", "")
+    assert "working tree" in warning, (
+        f"the warning does not say what went wrong with the record: {warning!r}"
+    )
+    assert "Remove" in warning, (
+        f"the warning carries no cure for the escape it reports: {warning!r}"
+    )
+    # The two arms keep different cures, because the causes are different: an
+    # incidental write failure is met with `chmod`, and a path that left the tree
+    # is met by removing what redirected it -- `chmod` on a directory that is no
+    # longer the directory cures nothing. Asserted here rather than in a test of
+    # its own, which would repeat this whole build for one absence; the offline
+    # CI job's budget is what decides that, and the assertion is about the very
+    # string above it.
+    assert "writable" not in warning, (
+        f"the escape took the write-failure cure, which is a non-cause here: {warning!r}"
+    )

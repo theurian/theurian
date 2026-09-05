@@ -1043,7 +1043,34 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             raise ToolError(msg)
 
         database = paths.state / active.database_filename
-        if not database.exists():
+        # `databaseFilename` is a *value* out of `active.json`, which is derived,
+        # git-ignored and unsigned (SEC-7): `ActiveState.from_json` only `str()`s
+        # it, and `verify_state_provenance` binds `(root, state_hash)` rather
+        # than the filename, so nothing above this line has looked at what it
+        # says. A 260-character one made `exists()` raise `ENAMETOOLONG` past the
+        # `except TheurianError` boundary every tool is wrapped in, and
+        # `knowledge.search` answered the SDK's `UnexpectedToolError` -- "Error
+        # executing tool", no remedy (measured at `75fe9b4f`; the same class as
+        # #388's `indexBuildId` face, on the pointer beside it).
+        #
+        # A filename carrying `../` is a separate question and is deliberately
+        # *not* answered here: it is refused when the target does not exist and
+        # otherwise met by the provenance gate below, whose own docstring records
+        # local filesystem write access as outside what that record covers.
+        try:
+            present = database.exists()
+        except OSError as exc:
+            # The exception's type name and never `str(exc)`, which appends the
+            # filename and so the operator's absolute path -- the rule
+            # `_purge_fields`' failure reason already holds on this surface.
+            msg = (
+                f"Project {project_id!r} names a state database the operating system "
+                f"will not answer for ({type(exc).__name__}). Delete "
+                f".theurian/state/active.json and run `theurian migrate apply`; the "
+                f"pointer is derived, so nothing is lost."
+            )
+            raise ToolError(msg) from exc
+        if not present:
             msg = (
                 f"Project {project_id!r} points at a state database that is missing "
                 f"({active.database_filename}). Run `theurian migrate apply` to rebuild it; "

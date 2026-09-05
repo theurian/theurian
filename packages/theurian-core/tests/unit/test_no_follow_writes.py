@@ -31,11 +31,12 @@ reason:
 writers in this class name no ``ProjectPaths`` helper and are covered elsewhere:
 ``FileSecretStore`` writes under the per-user data directory, driven by
 ``tests/integration/test_derived_path_symlink_writes.py``; and
-``initialize_project`` writes the repository's own ``.gitignore``, reached as
-``root / ".gitignore"``. That last one **does** still follow a planted link
-(measured), and it is deliberately out of scope here -- ``.gitignore`` is
-authored, Git-tracked content, the #237 authored-symlink root cause rather than
-this one. The gap is named on the test that would otherwise be read as covering
+``ensure_gitignore`` writes the repository's own ``.gitignore``, reached as
+``root / ".gitignore"``. Both are still invisible to this key, and neither is a
+gap any more: the ``.gitignore`` escape this paragraph used to record as live was
+filed as #571 and closed there, under the #237 authored-symlink root cause rather
+than this one, with its own refusal type and its own cure. The bound is stated so
+nobody reads this file as covering them; where each *is* covered is named beside
 it.
 """
 
@@ -894,12 +895,16 @@ def test_every_writer_of_a_project_path_opens_it_without_following_a_link() -> N
       M-3). The real one: ``ensure_gitignore(root: Path)`` takes a bare ``Path``
       parameter and never touches ``ProjectPaths`` at all, so no reflection over
       that class can reach it, and widening the key to the plain fields does not
-      change that. Its write **does** follow a planted link (measured 2026-09-05:
-      ``theurian init --json`` exit 0, the managed block appended to a file
-      outside the working tree), and it is deliberately not fixed here:
-      ``.gitignore`` is authored, Git-tracked content, which is the #237
-      authored-symlink root cause rather than this one. Named here so the gap is
-      recorded rather than implied by an absence.
+      change that. **It is still invisible to this key and is no longer a gap**:
+      the escape this paragraph recorded (measured 2026-09-05: ``theurian init
+      --json`` exit 0, the managed block appended to a file outside the working
+      tree) was filed as #571 for its own root cause -- ``.gitignore`` is
+      authored, Git-tracked content, the #237 class rather than this one -- and
+      is closed there, with both faces driven by
+      ``test_init_gitignore_block.py::test_init_refuses_a_gitignore_that_is_a_symbolic_link``.
+      Its refusal carries its own cure and deliberately not
+      :func:`~theurian.security.no_follow.symbolic_link_remedy`, whose every
+      clause is false of an authored file.
     """
     helpers = _project_paths_helpers()
     assert helpers, "the helper reflection returned nothing, so this key matches nothing"

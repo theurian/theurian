@@ -80,6 +80,81 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   Theurian's own by mode. `theurian doctor` continues to demand rotation for a
   group- or other-writable `auth/` directory, which is the signal that face has.
 
+- **A value read out of `.theurian/state/` no longer reaches a caller as a
+  traceback** ([#551](https://github.com/theurian/theurian/issues/551),
+  [#388](https://github.com/theurian/theurian/issues/388),
+  [#389](https://github.com/theurian/theurian/issues/389), ADR-0004, SEC-7).
+  Everything under `.theurian/state/` is derived, git-ignored and unsigned: any
+  local process can rewrite it, and a clone can deliver a doctored one
+  force-added past that ignore. The values in it — `indexBuildId`,
+  `databaseFilename` — and the *mode* of the directory holding them were trusted
+  as far as an `os.stat`, and the stat's failure had no handler. Measured
+  against the real CLI on `75fe9b4f`:
+
+  - an `indexBuildId` that resolves outside the state directory, and one of 234
+    characters or more, each ended `theurian index gc --json` (`--dry-run`
+    included) at exit 1 with **zero bytes on stdout** and a Rich traceback. The
+    second is the one no existing guard could see: `Path.resolve()` in
+    non-strict mode never stats, so the containment refusal that catches the
+    first hands the second back as an ordinary path and the caller's own stat
+    raises `ENAMETOOLONG`;
+  - the same length reached `knowledge.search` as the MCP SDK's
+    `UnexpectedToolError` — "Error executing tool", carrying no remedy — because
+    the tool boundary catches `TheurianError` and not `OSError`. A
+    260-character `databaseFilename` did the same through the canonical
+    pointer's own path join, and through the FR-K5 history check that runs
+    inside `_require_project` — so `migrate status`, `migrate apply` and `index
+    build` too;
+  - `.theurian/state` at mode `000` ended **seven of the nine swept commands**
+    the same way: `index build`, `index gc`, `index status`, `migrate status`,
+    `migrate validate`, `migrate apply` and `project status`. Six of the seven
+    raised through one probe that sat above the `try` written for that errno.
+
+  Every one of them now refuses or degrades through its own surface's envelope:
+  a `{error, remedy}` document at a non-zero exit on the CLI, a graded fallback
+  (`index-pointer-invalid`) or a `ToolError` with a cure over MCP. `theurian
+  project status` publishes `stateBuilt: null` — "cannot know", the spelling
+  `registered` beside it already uses — rather than claiming a project has no
+  built state because it was refused permission to look. The cure for a pointer
+  the operating system declined is its own: deleting the file is a cure only
+  while the directory holding it is writable, so that remedy names the `chmod`
+  as well.
+
+  The population is derived from the source rather than listed, on two keys:
+  every caller of `ProjectPaths.index_for`, and every function that joins
+  `databaseFilename` onto a path. Each must grade `OSError` at the probe or carry
+  a recorded reason, and a call site added later fails that test by name. The
+  second key is what found the history check, after the first two joins had
+  already been converted.
+
+- **`theurian init` no longer writes the managed `.gitignore` block through a
+  symbolic link** ([#571](https://github.com/theurian/theurian/issues/571),
+  #237, SEC-7). Git tracks a symlinked `.gitignore` like any other file, so a
+  clone can deliver one — and `init` read the rules through it, merged its own
+  block in, and wrote the result back through it: measured at exit 0 with
+  `gitignoreUpdated: true`, the victim's body replaced, the link intact, for a
+  target outside the working tree and for a tracked file inside it. Both are
+  refused now. This is the *authored*-file class rather than the derived-path
+  one above it, so the cure is its own: it says to inspect the link and replace
+  it with a regular file holding the rules, and never that the file is derived
+  state to delete. A clone carrying a **dangling** `.theurian/cache` link ended
+  the same command in a traceback from the `mkdir` beside it; that, a regular
+  file at a derived directory's name, and a `.gitignore` the filesystem will not
+  let `init` write now all reach the caller as documents naming the path in the
+  way.
+
+- **A build's secret-scan record can no longer take its findings down with it**
+  ([#551](https://github.com/theurian/theurian/issues/551), SEC-11). The record's
+  paths are proved contained before the build starts and resolved again after
+  the index publishes. A local process that redirects `.theurian/state` between
+  the two made the second resolution raise a containment refusal that the
+  handler's `except OSError` did not catch — after the publish and before the
+  report, so a build carrying a credential served while `secretFindings` never
+  printed and `block`'s exit 6 never fired. It degrades to a `recordWarning`
+  beside the findings now, carrying the escape's own cure. The window itself is
+  unchanged and recorded on the issue: closing it needs the record write to hold
+  a descriptor opened before the build.
+
 ## [0.1.0] - 2026-09-05
 
 ### Added

@@ -407,25 +407,30 @@ def _the_scan_record_paths_are_usable(paths: ProjectPaths, as_json: bool) -> boo
     tree (ADR-0004 remediation) and re-runs -- where the full report and the
     policy exit fire normally. Deferred behind a loud refusal, never dropped.
 
-    **The residual, recorded rather than closed.** This proves the paths at
-    precondition time; ``_record_the_scan`` resolves and opens them again at write
-    time. A tree doctored *between* the two -- by someone who already has write
-    access to ``.theurian/state/`` -- raises a containment refusal there that no
-    handler converts, so it would reach a ``--json`` caller as a traceback.
-    Closing that needs the record write to hold a descriptor opened before the
-    build, which is a larger change than the exposure earns; the disposition is
-    recorded on [#551](https://github.com/theurian/theurian/issues/551)
-    (2026-09-05). A link planted in that same window does *not* escape: the write
-    refuses it with ``O_NOFOLLOW`` and ``_record_the_scan``'s ``except OSError``
-    degrades it to a ``recordWarning``, so the residual there is a worse message,
-    never a write through the link.
+    **The residual, and which half of it is now closed.** This proves the paths
+    at precondition time; ``_record_the_scan`` resolves and opens them again at
+    write time, and a tree doctored *between* the two -- by someone who already
+    has write access to ``.theurian/state/`` -- raises a containment refusal
+    there. Until #551 no handler converted it, so it reached a ``--json`` caller
+    as a traceback *after* the publish: ``_emit`` unreached, ``secretFindings``
+    unprinted, ``block``'s exit code unfired. That escape is closed --
+    ``_record_the_scan`` now degrades it to a ``recordWarning`` carrying the
+    escape's own cure, the way it already degraded an ``OSError``.
 
-    ``_record_the_scan``'s ``except OSError`` is deliberately left alone. A
-    directory at the record path is an incidental write failure met after a
-    correct publish, and degrading it to a warning keeps the findings reaching
-    the caller; a path that leaves the working tree is a doctored tree, and the
-    two are different root causes with different answers. That distinction is the
-    reason this check exists here rather than a widened ``except`` there.
+    The **window** is not closed and is not this function's to close: it needs
+    the record write to hold a descriptor opened before the build, which is a
+    larger change than the exposure earns. Recorded as follow-up on
+    [#551](https://github.com/theurian/theurian/issues/551) (2026-09-05). A link
+    planted in that same window has never escaped: the write refuses it with
+    ``O_NOFOLLOW`` and the same ``except OSError`` degrades it.
+
+    The two failures still get **different answers**, which is why this check
+    exists here rather than only in that handler. Here, before anything is
+    built, a doctored tree is a refusal: nothing is built and nothing is
+    published, which is the sentence the paragraphs above are about. There,
+    after a correct publish, it is a warning: the findings are the caller's only
+    account of what the build holds, and replacing them with a refusal is the
+    shape that started this.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         EXIT_STATE_ERROR,
@@ -489,16 +494,48 @@ def _record_the_scan(
     ``unrecorded`` for this build afterwards -- honest ignorance, and never a clean
     bill -- which is what makes degrading safe rather than convenient.
 
-    **``OSError`` and nothing wider, on purpose.** A path that leaves the working
-    tree is not an incidental write failure met after a correct publish; it is a
-    doctored tree, and it is proved absent before this command builds anything
-    (:func:`_the_scan_record_paths_are_usable`, which records why the two get
-    different answers). Widening this ``except`` to cover it is what would put a
-    published build behind a containment refusal.
+    **A containment refusal degrades here too, and it did not until #551.** The
+    paragraph this replaces said "``OSError`` and nothing wider, on purpose",
+    reasoning that a path leaving the working tree is a doctored tree proved
+    absent before the build starts
+    (:func:`_the_scan_record_paths_are_usable`) and that widening the ``except``
+    would put a published build behind a containment refusal. The first half is
+    still true and the second half had it backwards. The precondition resolves
+    the record's paths *before* the build; this function resolves them again
+    after ``_publish`` has swapped the pointer and ``record_index`` has
+    provenanced the build. A tree doctored between the two -- by a co-resident
+    process that already has write access to ``.theurian/state/`` -- raises
+    ``ProjectPathEscapeError``, which is a ``TheurianError`` and not an
+    ``OSError``, so it escaped this handler entirely: not "a published build
+    behind a refusal" but the CRITICAL-1 shape the precondition exists to
+    prevent, met one step later. ``_emit`` below is never reached, so
+    ``secretFindings`` never prints and ``block``'s ``EXIT_SECRET_FOUND`` never
+    fires, and a credential-bearing build serves while the caller reads a
+    traceback. The residual was recorded on
+    [#551](https://github.com/theurian/theurian/issues/551) rather than closed;
+    this closes the *escape*, and the window itself stays open --
+    closing that needs the record write to hold a descriptor opened before the
+    build, which is larger than the exposure earns and is recorded as follow-up
+    on the same issue.
+
+    The two arms keep different cures, because the causes are different: an
+    incidental write failure is met with `chmod`, and a path that left the tree
+    is met by removing what redirected it. A single message covering both would
+    name a non-cause for one of them.
     """
     try:
         write_index_secret_scan(
             paths, index_build_id=index_build_id, policy=policy, findings=findings
+        )
+    except ProjectPathEscapeError as exc:
+        # `exc.remedy` rather than a sentence of this function's own: the cure is
+        # keyed on the refused path by `ProjectPaths._escape_remedy`, and a copy
+        # here would be the drift `_fail_a_path_escape`'s docstring records.
+        return (
+            f"The index published, but this build's secret-scan record could not be "
+            f"written: its path no longer stays inside the working tree, so `theurian "
+            f"doctor` will report `unrecorded` for this build rather than what is "
+            f"listed above. {exc.remedy}"
         )
     except OSError as exc:
         return (
@@ -929,17 +966,7 @@ def index_gc(
         return
 
     published = str((pointer.payload or {}).get("indexBuildId", ""))
-    if published and not paths.index_for(published).is_file():
-        _fail(
-            f"The published index pointer names build {published}, and that build's file is "
-            f"not there. Nothing was reclaimed.",
-            remedy=(
-                "Run `theurian index build` to publish a build that exists. Reclaiming now "
-                "would delete every build on disk, because none of them is the published one."
-            ),
-            as_json=as_json,
-            code=1,
-        )
+    if published and not _the_published_build_is_on_disk(paths, published, as_json=as_json):
         return
 
     reclaimable = _reclaimable(paths, published=published)
@@ -962,6 +989,80 @@ def index_gc(
         },
         as_json=as_json,
     )
+
+
+def _the_published_build_is_on_disk(paths: ProjectPaths, published: str, *, as_json: bool) -> bool:
+    """Whether the pointer's build has a file, refusing rather than raising if it cannot tell.
+
+    Returns ``True`` only when the file is there. Every other answer has already
+    published its own ``{error, remedy}`` through :func:`_fail`, which raises, so
+    the ``return False`` lines are how this reads rather than how it exits.
+
+    **Three outcomes, three cures, and collapsing them is what this exists to
+    stop.** The `is_file()` probe used to sit bare in `index_gc`, and two of the
+    three reached a `--json` caller as a Rich traceback with **zero bytes on
+    stdout** -- measured against the real CLI at ``75fe9b4f``, both from
+    ``index_commands.py:932``:
+
+    - an `indexBuildId` of ``"../../../../../../tmp/evil"``, which `index_for`
+      refuses as a `ProjectError` (#551);
+    - an `indexBuildId` of 234 characters or more, which `index_for` accepts --
+      ``Path.resolve()`` in non-strict mode never stats -- and which then makes
+      the caller's own `os.stat` raise ``OSError`` errno 63, ``ENAMETOOLONG``
+      (#388). ``pathlib``'s ignored-errno set is
+      ``{ENOENT, EBADF, ENOTDIR, ELOOP}`` on CPython 3.13 (measured), so nothing
+      below swallows it;
+    - the build's file simply not being there, which was the one case this
+      already answered.
+
+    The pointer is derived, git-ignored and unsigned (ADR-0004, SEC-7), so all
+    three are whatever a local process or a doctored clone left behind. They keep
+    **separate** messages because they are separate states to an operator: "the
+    pointer names a build that is not on disk" is cured by a rebuild, while a
+    pointer naming a path the OS will not accept has to be deleted first. That is
+    the same split :data:`INDEX_POINTER_REMEDY` already draws for the *unreadable*
+    pointer one branch up, and the message here is worded from the same file.
+    """
+    from theurian.cli.commands import _fail, _fail_a_path_escape  # noqa: PLC0415 - cycle
+
+    try:
+        names_a_file = paths.index_for(published).is_file()
+    except ProjectPathEscapeError as exc:
+        # `index_for` resolves `paths.state` before it looks at the id, so a
+        # `.theurian/state` that leaves the working tree refuses here as the
+        # doctored tree it is -- #525's grading, not this function's exit 1.
+        _fail_a_path_escape(exc, as_json=as_json)
+        return False
+    except TheurianError as exc:
+        _fail(str(exc), remedy=INDEX_POINTER_REMEDY, as_json=as_json, code=1)
+        return False
+    except OSError:
+        # The type is not published and neither is the message: `str(exc)` on an
+        # `OSError` appends the filename, which is the operator's absolute path,
+        # and the id is already in the sentence. What a reader needs is that the
+        # *pointer* is the thing to repair, which is what the remedy says.
+        _fail(
+            f"The published index pointer names build {published!r}, and the operating "
+            f"system will not answer whether that build's file exists. Nothing was reclaimed.",
+            remedy=INDEX_POINTER_REMEDY,
+            as_json=as_json,
+            code=1,
+        )
+        return False
+
+    if not names_a_file:
+        _fail(
+            f"The published index pointer names build {published}, and that build's file is "
+            f"not there. Nothing was reclaimed.",
+            remedy=(
+                "Run `theurian index build` to publish a build that exists. Reclaiming now "
+                "would delete every build on disk, because none of them is the published one."
+            ),
+            as_json=as_json,
+            code=1,
+        )
+        return False
+    return True
 
 
 def _reclaim(paths_to_remove: list[Path], *, as_json: bool) -> bool:

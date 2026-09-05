@@ -36,6 +36,7 @@ from theurian.application.migration_engine import (
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
     BuildProvenance,
+    ProjectError,
     ProjectPathEscapeError,
     ProjectPaths,
     ensure_gitignore,
@@ -883,6 +884,28 @@ def _discard_untrusted_state(database: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _layout_refusal(exc: OSError) -> str:
+    """Why the ``.theurian/`` layout could not be created, naming the path in the way.
+
+    ``exc.filename`` and not ``exc.strerror``, and not ``type(exc).__name__``
+    either. ``strerror`` is the bare OS phrase -- ``'File exists'`` for the
+    dangling-link plant -- which tells an operator nothing about *which* of the
+    thirteen paths ``initialize_project`` creates stopped it, and the remedy
+    beside this message sends them to that path. Both are published: the phrase
+    says what the OS refused, the filename says where.
+
+    An absolute path is correct on this surface. ``init`` is a terminal command
+    whose whole subject is the working directory, every sibling refusal here
+    already prints one (``_fail_a_path_escape``, the ``.gitignore`` arms), and
+    the rule that keeps operators' paths out is the *MCP* one.
+    """
+    where = exc.filename or "a path under .theurian/"
+    return (
+        f"The .theurian/ layout could not be created: {exc.strerror or type(exc).__name__} "
+        f"at {where}."
+    )
+
+
 def init_command(as_json: JsonOption = False) -> None:
     """Create ``.theurian/`` in the current repository.
 
@@ -924,12 +947,34 @@ def init_command(as_json: JsonOption = False) -> None:
             code=1,
         )
         return
+    except OSError as exc:
+        # The `mkdir` itself, which containment cannot speak for: a clone
+        # carrying a *dangling* `.theurian/cache` link makes `exists()` answer
+        # `False` and `mkdir(parents=True)` then raise `FileExistsError`
+        # (errno 17) -- `exist_ok` is not passed here and would not help, since
+        # it suppresses `EEXIST` only once `is_dir()` agrees, and it follows the
+        # link to answer. Measured at `75fe9b4f` against the real CLI: exit 1,
+        # **zero bytes on stdout**, a Rich traceback naming this line (#571's
+        # second face). A regular file at one of those paths, and a read-only
+        # `.theurian/`, arrive the same way.
+        _fail(
+            _layout_refusal(exc),
+            remedy=(
+                "Remove or repair whatever sits at the path the message names -- a "
+                "clone can deliver it as a symbolic link to nowhere -- then re-run "
+                "`theurian init`."
+            ),
+            as_json=as_json,
+            code=1,
+        )
+        return
 
     try:
         gitignore_changed, _ = ensure_gitignore(context.paths.root)
     except TheurianError as exc:
-        # Markers that do not delimit one block, which `ensure_gitignore`
-        # refuses rather than guessing at -- the .gitignore half of #128. It
+        # Two refusals now, both raised by `ensure_gitignore` with their own
+        # cures: markers that do not delimit one block (the .gitignore half of
+        # #128), and a symbolic link at `.gitignore` itself (#571). Either
         # arrived here as a Typer traceback with the remedy buried in it,
         # because the only `except` in this command wraps `resolve_context`.
         # The directories above are already created and are not undone: they are
@@ -938,6 +983,26 @@ def init_command(as_json: JsonOption = False) -> None:
         _fail(
             str(exc),
             remedy=_context_remedy(exc, default="Repair the .gitignore block, then re-run."),
+            as_json=as_json,
+            code=1,
+        )
+        return
+    except OSError as exc:
+        # Every other way the read or the write fails, which `ensure_gitignore`
+        # deliberately leaves as an `OSError` (the contract `security.no_follow`
+        # records for its openers): a read-only `.gitignore`, a directory in its
+        # place, a full disk. All of them ended `init --json` in a traceback with
+        # an empty machine channel until this arm, the same CP-2 shape the
+        # dangling-link plant above produces one step earlier.
+        _fail(
+            f"The Theurian block could not be written to .gitignore: "
+            f"{exc.strerror or type(exc).__name__}. The `.theurian/` directories were "
+            f"created; nothing else was changed.",
+            remedy=(
+                "Make .gitignore a writable regular file, then re-run `theurian init`. "
+                "Until it carries the Theurian block, `git status` will show derived "
+                "state that ADR-0004 means to keep out of the repository."
+            ),
             as_json=as_json,
             code=1,
         )
@@ -1213,6 +1278,40 @@ def _pointer_failure_fields(failure: TheurianError | None) -> dict[str, str]:
     }
 
 
+def _state_database_is_built(database: Path) -> tuple[bool | None, TheurianError | None]:
+    """Whether the state database is on disk, or ``None`` when the OS would not say.
+
+    Returns the answer and, when there is none, the failure to publish beside it.
+
+    ``Path.exists()`` swallows the errnos ``pathlib`` reads as "not there" --
+    ``{ENOENT, EBADF, ENOTDIR, ELOOP}`` on CPython 3.13, measured -- and
+    re-raises everything else, so a ``.theurian/state`` at mode ``000`` reached
+    ``project status`` as a ``PermissionError`` from inside its payload literal
+    (#389, measured at ``75fe9b4f``: exit 1, zero bytes on stdout). Converted
+    rather than swallowed into ``False``: this command's contract is to report
+    what it can and name what it could not, and "no built state" is a claim
+    whose cure -- `theurian migrate apply` -- cannot run in the condition that
+    produced it either.
+
+    The message names the OS's reason and the file; the remedy names the
+    directory to make readable, because that is the cause a mode failure has and
+    :data:`ACTIVE_POINTER_REMEDY`'s "delete the pointer" is not a thing the
+    operator can do through an unreadable parent.
+    """
+    try:
+        return database.exists(), None
+    except OSError as exc:
+        failure = ProjectError(
+            f"Whether {database.name} exists could not be established: "
+            f"{exc.strerror or type(exc).__name__}.",
+            remedy=(
+                f"Make {database.parent} readable -- `chmod u+rx` on it and every "
+                f"directory above it -- then run `theurian project status` again."
+            ),
+        )
+        return None, failure
+
+
 def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
     """``project status`` for a repository whose project could not be resolved.
 
@@ -1380,6 +1479,16 @@ def project_status(as_json: JsonOption = False) -> None:
         _fail_a_path_escape(exc, as_json=as_json)
         return
 
+    # Hoisted for the reason `index_stale` above it was, and met the same way:
+    # `Path.exists()` re-raises `EACCES` rather than answering "not there"
+    # (CPython 3.13's ignored set is `{ENOENT, EBADF, ENOTDIR, ELOOP}`), so a
+    # `.theurian/state` at mode 000 raised `PermissionError` from inside the
+    # payload literal below -- exit 1, zero bytes on stdout, measured at
+    # `75fe9b4f` (#389's third face). This is the one probe of the three that
+    # `read_active_state`'s own fix does not cover: it stats the database, not
+    # the pointer.
+    state_built, probe_failure = _state_database_is_built(database)
+
     _emit(
         {
             "projectId": context.project_id.value,
@@ -1400,7 +1509,12 @@ def project_status(as_json: JsonOption = False) -> None:
             "initialized": context.paths.knowledge_dir.is_dir(),
             "stateHash": str(context.state_hash),
             "activeStateHash": None if active is None else str(active.state_hash),
-            "stateBuilt": database.exists(),
+            # `None` is "cannot know", the spelling `registered` above already
+            # uses for the file it could not read. `False` would be a claim --
+            # "this project has no built state" -- about a question the probe
+            # was refused an answer to, and its cure (`migrate apply`) is one
+            # that cannot run either.
+            "stateBuilt": state_built,
             "indexStale": index_stale,
             # `activeStateHash: null` alone cannot say which of two things
             # happened, and the two have opposite cures: `migrate apply` for a
@@ -1431,7 +1545,13 @@ def project_status(as_json: JsonOption = False) -> None:
             # lost when it wins -- `statePointerCorrupt` above carries the
             # pointer failure whatever happens, and its cure is a fixed string
             # both this command and `theurian index status` print.
-            **_pointer_failure_fields(pointer_failure),
+            # The probe's own failure is the fallback and never the winner: a
+            # `stateBuilt: null` with no `reason` beside it is the unactionable
+            # "cannot know" `_RegistryRead.failure_fields` exists to prevent,
+            # and in every arrangement measured the pointer read has already
+            # failed on the same directory -- but this command must not depend
+            # on that to publish a cure.
+            **_pointer_failure_fields(pointer_failure or probe_failure),
             **read.failure_fields,
         },
         as_json=as_json,
@@ -2608,7 +2728,34 @@ def _verify_history(context: CommandContext, as_json: bool) -> None:
         return
 
     previous = context.paths.state / active.database_filename
-    if not previous.exists():
+    try:
+        there = previous.exists()
+    except OSError as exc:
+        # `databaseFilename` is a value out of `active.json`, and `ActiveState
+        # .from_json` only `str()`s it -- so the join above builds whatever the
+        # pointer says and this is the first line that asks the OS about it. A
+        # 260-character one made `exists()` raise `ENAMETOOLONG`, which
+        # `pathlib` does not swallow, through `migrate status`, `migrate apply`
+        # and `index build` -- every command `_require_project` routes -- as a
+        # Rich traceback at exit 1 with zero bytes on stdout (measured at
+        # `75fe9b4f`; the same class as the `indexBuildId` faces and the third
+        # of the three joins on this value).
+        #
+        # Refused rather than returned, for this function's own recorded reason:
+        # the early returns are for "there is genuinely nothing to check
+        # against", and a name the OS will not answer for is not that. Treating
+        # it as absent would report a clean history at exit 0 for a project
+        # whose FR-K5 evidence was never read.
+        _fail(
+            f"Theurian cannot confirm that no applied migration has been edited "
+            f"(FR-K5): the previously active state pointer names a database the "
+            f"operating system will not answer for ({type(exc).__name__}).",
+            remedy=ACTIVE_POINTER_REMEDY,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
+    if not there:
         return
 
     try:
