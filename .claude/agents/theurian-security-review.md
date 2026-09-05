@@ -25,6 +25,13 @@ The requirements are in `docs/security/threat-model.md` and
 `docs/architecture/requirements-analysis.md`. Read the relevant ones rather than
 working from memory.
 
+Work from the perspective block the brief declares; that set is frozen at
+dispatch. Absent a declared block, this definition's own standing scope is the
+perspective: the SEC-* requirements and the checklist below. A finding outside
+the block is still reported — tag it **out-of-perspective**, and it is routed for
+filing rather than graded into the round. The exception is a reproducible
+CRITICAL, which is reported as one whatever perspective it came from.
+
 ## Checklist
 
 **Boundary and transport**
@@ -74,6 +81,9 @@ working from memory.
 Severity, `file:line`, the concrete attack or disclosure, and a specific fix.
 State explicitly which categories are clean — "no injection findings" is useful
 information. Do not manufacture findings; do not soften a real one.
+
+Out-of-perspective findings go in their own list after the graded ones, tagged,
+one line each — they are routed for filing, not graded.
 
 Severity comes from the rubric in `CLAUDE.md` (*What "green" means*), not from
 which SEC-* requirement is involved. The line this review blurs is **disclosure
