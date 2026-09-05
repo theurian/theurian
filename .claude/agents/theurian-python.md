@@ -115,6 +115,28 @@ comment that records the failure a line prevents is the most valuable thing in
 the file. Match the surrounding density — this codebase comments decisions
 heavily and mechanics not at all.
 
+**A sentence quantifying over a population needs a key, or it is not written.**
+"every", "never", "only", "all", "the one place", "closed" — in a comment or a
+docstring these are read as measured, and the next reader spends them without
+re-deriving. Caught eight times across PR #569's two rounds (round one:
+code-review H-1/H-2/H-3; round two: security HIGH-1/HIGH-2/HIGH-3, adversarial
+OOP-1, code-review HIGH-2), every one on the no-new-universal-prose family the
+brief had enumerated. Three bars:
+
+- Write it **only** beside a named test that goes RED when it is false, or a
+  pasted measurement with the key that produced it; otherwise narrow it to the
+  members you verified. "Two payloads keep them out on purpose" holds where
+  "every payload in this module keeps operators' absolute paths out" was false
+  of that same module.
+- **A count states its key beside it, and you re-run that key against the text
+  as committed.** Prose self-hits and neighbouring spellings make line-greps
+  wrong by default: a comment whose grep "returned ten more sites" gets 14 lines
+  back from its own key — four of them that prose, one the site already named.
+- **A change that adds a member to a population re-verifies every universal over
+  it, in the same commit.** "Every caller `mkdir()`s the parent before the open"
+  was true when written and false by the end of the branch that wrote it — the
+  read opener that branch added does not.
+
 ## Before you report done
 
 Run the gate. Then **run the thing you built** — a scratch script, a real CLI
