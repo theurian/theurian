@@ -612,22 +612,15 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
         "names no verb and no object, so it is in this sweep as its own shape and is "
         "cleared by hand rather than by a pattern.",
     ),
-    (
-        "packages/theurian-core/tests/unit/test_config_key_call_sites.py",
-        "Nothing reads it, its description says so",
-        "true",
-        "`it` is `providers.review.repositories`, named in the sentence before. A "
-        "key-scoped claim, and the correct one.",
-    ),
-    (
-        "packages/theurian-core/tests/unit/test_config_key_call_sites.py",
-        "those documents say so",
-        "true",
-        "The same key-scoped claim inside the pin's own failure message, explaining why "
-        "six documents describe `providers.review.repositories` as reserved. `it` is that "
-        "key, named in the clause before. It reached the ledger when `_RECORD_MARKERS` "
-        "stopped clearing a sentence for carrying the bare verb `read` (round one's M-i).",
-    ),
+    # `test_config_key_call_sites.py`'s two rows -- "Nothing reads it, its
+    # description says so" and "those documents say so" -- stood here as `true`
+    # while `providers.review.repositories` had no reader. ADR-0030 decision 2
+    # shipped one, so both sentences went false and the same commit rewrote them:
+    # the module docstring now says the key is in force and names the two modules
+    # that carry it, and the pin's failure message names the *new*-site and
+    # *missing*-site directions. The sweep produces no row for either, so the
+    # ledger carries none. A sentence returning to "nothing reads it" is an
+    # unrecorded suspect again, which is the direction that has to stay RED.
     # `plugins/claude-code/CHANGELOG.md`'s "nothing reads that file, so the
     # allowlist protects no one yet" stood here as a `DEFECT` until #199 unit B's
     # prose assignment corrected it. It was the first row this ledger ever
@@ -753,18 +746,13 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     # `providers.review.repositories`, so the sweep produces no row for it and
     # the ledger carries none: a file-wide claim returning to that paragraph is
     # an unrecorded suspect again, which is the direction that has to stay RED.
-    (
-        "schemas/config/project-config.schema.json",
-        "Nothing reads it today; owed with",
-        "true",
-        "`providers.review.repositories`' own description, and the claim is key-scoped "
-        "and correct. It is a suspect only because the JSON reader's block is one source "
-        "line, so the enclosing key name is not in the block and the home rule supplies "
-        "the file object instead -- a limitation whose direction is a false RED, never a "
-        "false clear. Its owner cite was repointed #129 -> #429 in the same commit that "
-        "rewrote the root description, because class 2's open-owner rule is what "
-        "`controls_discharge.py` reported dead here.",
-    ),
+    # `project-config.schema.json`'s "Nothing reads it today; owed with" stood
+    # here as `true` -- a key-scoped claim about `providers.review.repositories`,
+    # correct while nothing read the key. ADR-0030 decision 2's reader made it
+    # false, and the same commit rewrote the description to say the key is in
+    # force, who reads it, and that the refusal happens before a spawn. The sweep
+    # produces no row for it and the ledger carries none; a description returning
+    # to "nothing reads it" is an unrecorded suspect again.
 )
 
 #: Planted sentences, one per shape, run instead of the tree under
