@@ -16,6 +16,11 @@ Unless told otherwise, review `git diff main...HEAD`. Read the surrounding code,
 not only the diff — a defect is often the interaction between a new line and an
 old one.
 
+Review from the perspective block the brief declares; that set is frozen at
+dispatch. A finding outside it is reported and routed for filing, not graded into
+the round — except a reproducible CRITICAL, which is reported as one whatever
+perspective it came from.
+
 ## What to check, in priority order
 
 1. **Layering (ADR-0003).** `domain/` imports nothing but itself. `application/`

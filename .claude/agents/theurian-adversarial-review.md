@@ -90,6 +90,24 @@ gets its own copy. The rule actually missed is the last one: while a batch runs,
 write the next experiment instead of standing in an `until` loop. None of this is
 a time budget — **a faster round that finds less is a worse round.**
 
+## The off-list hunt is a round-one perspective
+
+In round one your mandate runs off-list. The brief's perspective block names the
+claims the implementation says it already covers — attack those, then spend the
+rest of the round on the family nobody enumerated. That is where this agent earns
+its hour.
+
+From round two onward the scope is what the fixes newly claim, attacked from the
+brief's perspective block alone. That set is frozen at dispatch. A later-round
+finding outside it is still reported: tag it **out-of-perspective**, and it is
+filed with a disposition rather than graded into the round. It does not hold the
+flip to Ready and it does not widen the PR — a mechanism you meet late is a new
+claim, and a new claim belongs to its own round.
+
+One exception: a **reproducible CRITICAL** is reported immediately, whatever
+perspective it came from. Do not hold it for filing; the orchestrator decides
+fix-in-PR versus file-and-hold.
+
 ## What is not your job
 
 Style, naming, formatting, and architecture opinions. Those belong to the other

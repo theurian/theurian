@@ -25,6 +25,11 @@ The requirements are in `docs/security/threat-model.md` and
 `docs/architecture/requirements-analysis.md`. Read the relevant ones rather than
 working from memory.
 
+Work from the perspective block the brief declares; that set is frozen at
+dispatch. A finding outside it is reported and routed for filing, not graded into
+the round — except a reproducible CRITICAL, which is reported as one whatever
+perspective it came from.
+
 ## Checklist
 
 **Boundary and transport**
