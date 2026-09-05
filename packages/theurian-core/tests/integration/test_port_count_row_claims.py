@@ -79,13 +79,17 @@ measures**, and that is a rule with a measurement behind it rather than a
 preference. The row's key matches three phrases; before this constraint was
 applied, three lines of this file carried one of them -- the locator constant
 and two docstrings -- and the *unexcluded* figure the row publishes went from
-14 to 17 the moment this file was tracked (measured 2026-09-05 at ``3e7011b4``,
-in a clean clone). The pathspec'd figure never moved, because
-``packages/theurian-core/tests/`` is what the row excludes; the wider one is
-exactly the count of what the exclusion removes, so an instrument that joins it
-falsifies the claim it was written to hold. :data:`_CLAIM_TAIL` is where the
-constraint is discharged, and a RED on the wider figure is the first thing to
-read as "something in this file rejoined the population".
+14 to 17 the moment this file was tracked. That figure is the dated motivation
+(measured 2026-09-05, on #557's branch, in a clean clone) and not the
+authority: what holds the constraint now is the first assertion in
+:func:`test_the_port_count_row_inventories_the_population_its_own_key_returns`,
+which runs the row's own key against this file's path and requires ``(0, 0)``.
+The pathspec'd figure never moved, because ``packages/theurian-core/tests/`` is
+what the row excludes; the wider one is exactly the count of what the exclusion
+removes, so an instrument that joins it falsifies the claim it was written to
+hold. :data:`_CLAIM_TAIL` is where the constraint is discharged, and that
+``(0, 0)`` is what fails first when something in this file rejoins the
+population.
 
 **Integration, not unit**: two real subprocesses. The roadmap-only prose pin
 sits with them because the three pins are one record over one table cell, which
