@@ -288,9 +288,9 @@ quirks are recorded (see [The filing filter](#the-filing-filter)).
   gives it an empty test population and two census audits fail on the walker
   rather than on the tree
   ([#558](https://github.com/theurian/theurian/issues/558)). Both pass from a
-  plain clone of the same tree at `386aba76` — a commit on this file's
-  introducing branch, so cite it as pull request #580 rather than as a `main`
-  ancestor. Measured 2026-09-06.
+  plain clone of the same tree at `386aba76` — a branch commit of pull request
+  #580, not reachable from `main` and never going to be, since the squash
+  replaces it. Measured 2026-09-06.
 - Expect `test_bare_install`'s `daemon status` case to fail on a machine running
   a resident daemon: it asserts `listening is False`, and a daemon answering the
   default port makes it true. `lsof -nP -iTCP:7419 -sTCP:LISTEN` says whether
