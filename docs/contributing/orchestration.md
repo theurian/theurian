@@ -255,7 +255,15 @@ quirks are recorded (see [The filing filter](#the-filing-filter)).
 - Check a cited SHA with `git merge-base --is-ancestor <sha> origin/main`.
   Reachability from `HEAD` approves the defect it is meant to catch: a squash
   replaces the branch, so every SHA `HEAD` vouches for today resolves on no ref
-  once the PR lands.
+  once the PR lands. `tools/audit/sha_anchors.py` enforces this over governed
+  prose and runs in the suite, so an unqualified branch sha in a document is a
+  RED gate, not a style note. Its qualifier route wants a phrase asserting
+  unreachability **about the token** — "branch commit", "on the branch",
+  "before the squash", "unmerged", "not reachable from `main`" — and a
+  determiner separated from "branch" by other words misses the key. Do not
+  write "landed as" unless the commit you name is genuinely on `main`: that
+  spelling turns on the route's content check, which holds the named sha to the
+  same reachability test.
 - Keep both sides of a comparison on the same instrument. A `tracemalloc` figure
   against a clean wall-clock figure is a fabricated ratio, and naming the
   instrument on one side only is the same defect.
