@@ -31,6 +31,24 @@ login without them. So identity never comes from a caller's environment.
 Headless environment-token authentication is a recorded non-goal (ADR-0030),
 not an omission.
 
+**One platform question is open, and it is recorded here because it could not be
+measured rather than because nobody looked.** On Linux ``gh``'s default
+credential store is the Secret Service, reached over a session bus through
+``DBUS_SESSION_BUS_ADDRESS`` and ``XDG_RUNTIME_DIR`` -- neither of which is in
+the table below. ADR-0030 owed slice 1 that measurement **in CI, on Linux**, and
+CI cannot answer it: a GitHub-hosted runner authenticates ``gh`` from an
+environment token, so it holds no keyring credential that could fail to be
+found, and a green run there says nothing about a desktop that does. The
+constant therefore gains **no** platform member, because adding one on reasoning
+rather than measurement is exactly the admission this table refuses.
+
+**What that costs, named:** on a Linux desktop whose ``gh`` credential lives in
+the Secret Service, the spawned child may not find it and the run ends in the
+``TOOL_UNAUTHENTICATED`` refusal envelope -- a graded refusal naming
+``gh auth status``, not a wrong answer and not a silent one. The measurement is
+owed to whoever first runs this on such a machine; the rule is unchanged either
+way, because the equality test pins whatever the constant records.
+
 **An empty string is a present key, not an absent one.** ``gh`` treats an empty
 config-locating variable as absent and falls through to the next in its
 precedence chain, so the two are behaviourally the same *to gh* and are not the
