@@ -597,10 +597,13 @@ Ingested review history contains author identity and opinions.
 - Author identity is stored as the provider's stable ID plus a display name, so
   a display name can be redacted without breaking the identity graph.
 - Redaction at ingestion is configurable.
-- Review data is a derived artifact under `.theurian/cache/`, git-ignored and
-  rebuildable from the source system.
-- Deleting a project's cache removes the ingested copy; the source system remains
-  the record.
+- Ingested review evidence is durable, under `.theurian/review/` — not a cache.
+  Upstream comments can be edited or deleted, so a discarded local copy may be
+  unrecoverable: the source system is **not** guaranteed to still hold it
+  ([ADR-0030](docs/adr/0030-github-review-ingestion-spawns-gh.md) decision 3).
+- Deleting that directory can therefore be data loss rather than a cache miss.
+  The SQLite serving store built from it is the deletable, derived half, and it
+  rebuilds from those files.
 
 If you operate Theurian somewhere with data-protection obligations, treat the
 canonical store as containing personal data and apply your normal retention

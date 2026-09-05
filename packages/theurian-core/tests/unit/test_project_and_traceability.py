@@ -112,7 +112,7 @@ def test_project_exposes_its_standard_subdirectories() -> None:
     "path",
     [
         ".theurian/state/theurian-state-a1b2c3.sqlite",
-        ".theurian/cache/reviews/pr-431.json",
+        ".theurian/cache/embeddings/a1b2c3.bin",
         ".theurian/runtime/daemon.pid",
         ".theurian/generated/reviews/pr-431.md",
         "somewhere/else/index.sqlite",
