@@ -23,7 +23,9 @@ says where.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -38,9 +40,18 @@ pytestmark = pytest.mark.integration
 
 runner = CliRunner()
 
+_NEEDS_SYMLINKS = pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks need privileges on Windows"
+)
+
 #: A rule of the user's, distinctive enough that finding it in the file
 #: afterwards -- or failing to -- cannot be a coincidence.
 USER_RULE = "secrets/sentinel-gitignore-rule-zzzz/\n"
+
+#: What a file a planted link names holds before the command runs. Compared byte
+#: for byte afterwards, because a truncation to zero and an overwrite are both
+#: "the file is still there" and both are the defect.
+VICTIM = b"VICTIM BODY THAT MUST SURVIVE\n"
 
 
 @pytest.fixture
@@ -295,3 +306,131 @@ def test_a_crlf_gitignore_keeps_its_line_endings_through_a_rewrite(project: Path
     assert written.startswith(keep), "their line ending is theirs"
     assert written.count(GITIGNORE_BLOCK_START.encode("utf-8")) == 1, "the block was replaced"
     assert b"*.log\n" not in written, "and nothing of theirs was translated on the way through"
+
+
+# -- A symbolic link at `.gitignore`, and the layout `init` cannot create ------
+#
+# #571, and a different root cause from every marker case above: nothing here is
+# about what the file *says*. `.gitignore` is authored, Git-tracked content, so
+# this is the #237 authored-symlink class rather than the derived-path class
+# #569 closed -- which is why the refusal below must not borrow that class's
+# "remove the link, it is derived state" cure.
+
+
+def _plant_a_gitignore_link(root: Path, victim: Path) -> bytes:
+    """Point ``.gitignore`` at ``victim`` and hand back the bytes to compare.
+
+    Relative, because that is what a clone carries: Git tracks a symbolic link
+    by its target string, and an absolute one would not survive a checkout
+    anywhere else.
+    """
+    victim.write_bytes(VICTIM)
+    link = root / ".gitignore"
+    link.unlink(missing_ok=True)
+    link.symlink_to(Path(os.path.relpath(victim, root)))
+    assert link.resolve() == victim.resolve(), "the plant does not name the victim"
+    return VICTIM
+
+
+@_NEEDS_SYMLINKS
+@pytest.mark.parametrize("face", ["out-of-tree", "in-tree"])
+def test_init_refuses_a_gitignore_that_is_a_symbolic_link(project: Path, face: str) -> None:
+    """Both faces, because containment refuses neither and only ``O_NOFOLLOW`` can.
+
+    ``.gitignore`` sits at the repository root, so a link there escapes nothing
+    that ``ProjectPaths._contain`` guards -- it is not under ``.theurian/`` at
+    all -- and the in-tree face is the one a reader expects some other check to
+    catch. Neither did. Measured at ``75fe9b4f`` against the real CLI: exit 0,
+    ``gitignoreUpdated: true``, the managed block merged into the victim, and the
+    link still a link.
+
+    Asserted on the victim's **bytes**: "the file is still there" is satisfied by
+    a truncation, and "the link is gone" by an unlink-then-write.
+    """
+    victim = (project.parent / "victim.txt") if face == "out-of-tree" else (project / "runbook.md")
+    before = _plant_a_gitignore_link(project, victim)
+
+    code, payload = _init_json()
+
+    assert code == 1, payload
+    assert victim.read_bytes() == before, f"the {face} victim was written through the link"
+    assert (project / ".gitignore").is_symlink(), "the link was replaced rather than refused"
+    assert GITIGNORE_BLOCK_START not in victim.read_text(encoding="utf-8")
+
+
+@_NEEDS_SYMLINKS
+def test_the_link_refusal_names_the_file_and_never_calls_it_derived(project: Path) -> None:
+    """The remedy trap this issue exists to avoid, pinned as three assertions.
+
+    ``no_follow.symbolic_link_remedy`` -- the cure #569 published for the derived
+    paths under ``.theurian/`` -- says to *remove* the link because Theurian
+    recreates the artefact, and that a repository carrying one force-added it
+    past ADR-0004's ignore. Every clause is false of ``.gitignore``: it is
+    authored, it is tracked, no ignore covers it, and Theurian cannot recreate
+    the rules a person wrote in it. Publishing that text here would tell an
+    operator to delete their own file.
+
+    So: the cure names the path (something to act on), names a command
+    (something to run), and says none of the three false things.
+    """
+    _plant_a_gitignore_link(project, project.parent / "victim.txt")
+
+    _, payload = _init_json()
+
+    remedy = payload["remedy"]
+    assert str(project / ".gitignore") in remedy, f"the cure names no file to act on: {remedy}"
+    assert "theurian init" in remedy, f"the cure names nothing to run: {remedy}"
+    for borrowed in ("Remove the symbolic link", "derived state", "past that ignore"):
+        assert borrowed not in remedy, (
+            f"the authored file took the derived path's cure ({borrowed!r}): {remedy}"
+        )
+    assert "refused" in payload["error"], (
+        f"the message does not say the write was refused, so it does not tell a "
+        f"refusal from a write that went through: {payload['error']}"
+    )
+
+
+@_NEEDS_SYMLINKS
+def test_init_answers_a_committed_link_to_nowhere_at_a_derived_directory(project: Path) -> None:
+    """#571's second face: the ``mkdir`` inside ``initialize_project``.
+
+    A clone carrying ``.theurian/cache -> ../nowhere`` makes ``exists()`` answer
+    ``False`` -- it follows the link to decide -- and ``mkdir(parents=True)`` then
+    raises ``FileExistsError``. Measured at ``75fe9b4f``: exit 1, **zero bytes on
+    stdout**, a Rich traceback at ``commands.py``'s ``initialize_project`` call.
+
+    The message must name *which* path stopped it: ``strerror`` here is ``'File
+    exists'``, which is true of thirteen directories and useful about none.
+    """
+    cache = project / ".theurian/cache"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.symlink_to(Path("..") / "nowhere-at-all")
+
+    code, payload = _init_json()
+
+    assert code == 1, payload
+    assert str(cache) in payload["error"], (
+        f"the message names no path, so the remedy's 'the path the message names' "
+        f"points at nothing: {payload['error']}"
+    )
+    assert "theurian init" in payload["remedy"]
+
+
+def test_init_answers_a_gitignore_the_filesystem_will_not_let_it_write(project: Path) -> None:
+    """The neighbouring OS failures, which had no handler either.
+
+    A read-only ``.gitignore`` is not a link and not a marker problem, and it
+    ended ``init --json`` in the same traceback with an empty machine channel.
+    Driven with a *directory* at the path rather than a mode, so the plant works
+    as root too -- ``EISDIR`` is not something a permission bit can waive, and
+    this file has no not-as-root skip.
+    """
+    (project / ".gitignore").mkdir()
+
+    code, payload = _init_json()
+
+    assert code == 1, payload
+    assert payload["error"], "the refusal is reported rather than swallowed"
+    assert ".gitignore" in payload["remedy"], (
+        f"the cure does not name the file in the way: {payload['remedy']}"
+    )

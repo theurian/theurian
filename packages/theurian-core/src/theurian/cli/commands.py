@@ -884,6 +884,28 @@ def _discard_untrusted_state(database: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _layout_refusal(exc: OSError) -> str:
+    """Why the ``.theurian/`` layout could not be created, naming the path in the way.
+
+    ``exc.filename`` and not ``exc.strerror``, and not ``type(exc).__name__``
+    either. ``strerror`` is the bare OS phrase -- ``'File exists'`` for the
+    dangling-link plant -- which tells an operator nothing about *which* of the
+    thirteen paths ``initialize_project`` creates stopped it, and the remedy
+    beside this message sends them to that path. Both are published: the phrase
+    says what the OS refused, the filename says where.
+
+    An absolute path is correct on this surface. ``init`` is a terminal command
+    whose whole subject is the working directory, every sibling refusal here
+    already prints one (``_fail_a_path_escape``, the ``.gitignore`` arms), and
+    the rule that keeps operators' paths out is the *MCP* one.
+    """
+    where = exc.filename or "a path under .theurian/"
+    return (
+        f"The .theurian/ layout could not be created: {exc.strerror or type(exc).__name__} "
+        f"at {where}."
+    )
+
+
 def init_command(as_json: JsonOption = False) -> None:
     """Create ``.theurian/`` in the current repository.
 
@@ -925,12 +947,34 @@ def init_command(as_json: JsonOption = False) -> None:
             code=1,
         )
         return
+    except OSError as exc:
+        # The `mkdir` itself, which containment cannot speak for: a clone
+        # carrying a *dangling* `.theurian/cache` link makes `exists()` answer
+        # `False` and `mkdir(parents=True)` then raise `FileExistsError`
+        # (errno 17) -- `exist_ok` is not passed here and would not help, since
+        # it suppresses `EEXIST` only once `is_dir()` agrees, and it follows the
+        # link to answer. Measured at `75fe9b4f` against the real CLI: exit 1,
+        # **zero bytes on stdout**, a Rich traceback naming this line (#571's
+        # second face). A regular file at one of those paths, and a read-only
+        # `.theurian/`, arrive the same way.
+        _fail(
+            _layout_refusal(exc),
+            remedy=(
+                "Remove or repair whatever sits at the path the message names -- a "
+                "clone can deliver it as a symbolic link to nowhere -- then re-run "
+                "`theurian init`."
+            ),
+            as_json=as_json,
+            code=1,
+        )
+        return
 
     try:
         gitignore_changed, _ = ensure_gitignore(context.paths.root)
     except TheurianError as exc:
-        # Markers that do not delimit one block, which `ensure_gitignore`
-        # refuses rather than guessing at -- the .gitignore half of #128. It
+        # Two refusals now, both raised by `ensure_gitignore` with their own
+        # cures: markers that do not delimit one block (the .gitignore half of
+        # #128), and a symbolic link at `.gitignore` itself (#571). Either
         # arrived here as a Typer traceback with the remedy buried in it,
         # because the only `except` in this command wraps `resolve_context`.
         # The directories above are already created and are not undone: they are
@@ -939,6 +983,26 @@ def init_command(as_json: JsonOption = False) -> None:
         _fail(
             str(exc),
             remedy=_context_remedy(exc, default="Repair the .gitignore block, then re-run."),
+            as_json=as_json,
+            code=1,
+        )
+        return
+    except OSError as exc:
+        # Every other way the read or the write fails, which `ensure_gitignore`
+        # deliberately leaves as an `OSError` (the contract `security.no_follow`
+        # records for its openers): a read-only `.gitignore`, a directory in its
+        # place, a full disk. All of them ended `init --json` in a traceback with
+        # an empty machine channel until this arm, the same CP-2 shape the
+        # dangling-link plant above produces one step earlier.
+        _fail(
+            f"The Theurian block could not be written to .gitignore: "
+            f"{exc.strerror or type(exc).__name__}. The `.theurian/` directories were "
+            f"created; nothing else was changed.",
+            remedy=(
+                "Make .gitignore a writable regular file, then re-run `theurian init`. "
+                "Until it carries the Theurian block, `git status` will show derived "
+                "state that ADR-0004 means to keep out of the repository."
+            ),
             as_json=as_json,
             code=1,
         )
