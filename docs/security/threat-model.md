@@ -158,10 +158,14 @@ weaker than what holds.
   there must already be inside the embargo.
 - **Owners, read on 2026-09-02 rather than assumed.** Per-finding embargo
   control — marking a finding where advisory state is available, then refusing it
-  *uniformly* at serve — belongs to the GitHub arm,
-  [#479](https://github.com/theurian/theurian/issues/479) (open, `phase-b`),
-  which needs [#429](https://github.com/theurian/theurian/issues/429)'s fetch
-  controls (open) first. Neither is a control this offline source can run, and
+  *uniformly* at serve — belongs to the **private-repository arm**,
+  [#575](https://github.com/theurian/theurian/issues/575) *(repointed to #575,
+  2026-09-05: [ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) scoped
+  [#479](https://github.com/theurian/theurian/issues/479) to public repositories,
+  so #479 is no longer the change that would implement this control; #575 read
+  open and `phase-b` on that date)*, which needs
+  [#429](https://github.com/theurian/theurian/issues/429)'s fetch controls (open)
+  first. Neither is a control this offline source can run, and
   ADR-0029 decision 6 records why.
 - **Recorded here as an acceptance rather than as its own graded entry**, because
   what it states is a condition on the deployment, not a defect in the shipped

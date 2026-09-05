@@ -450,6 +450,106 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "member whose retraction sits two blocks down rather than one, and it is what "
         "sets `_SUPERSESSION_REACH`.",
     ),
+    # The three rows below -- one in ADR-0029, two in ADR-0030 -- are one member of
+    # a class this ledger did not have before: a cite whose owner is **open**, read
+    # as dead only because the offline snapshot is older than the issue.
+    # `tracker_state` answers from
+    # `tracker-state.json` under `--offline` (which the census test forces, for
+    # reproducibility), that file was measured 2026-09-03 at `01aa2479`, and
+    # `states()` returns `(absent from the tracker)` for anything filed since --
+    # which `classify` treats exactly like `issue:closed`. A live run verdicts
+    # all three correct. The standing problem is the snapshot ageing out from
+    # under this audit, filed as
+    # https://github.com/theurian/theurian/issues/576; these rows record the
+    # reading, they do not fix that.
+    #
+    # **They are stale under a live run today, not at some future refresh.** With
+    # #575 and #579 read open -- which any run without `--offline` does -- the sweep
+    # stops producing the three rows and the reconciliation reports them in the
+    # *stale* direction. Driven through :func:`ledger_drift` against a state table
+    # with those two open::
+    #
+    #     unrecorded=0 stale=3 drift=0 ambiguous=0
+    #       STALE -> docs/adr/0030-...md #575 'it is owned by'
+    #       STALE -> docs/adr/0029-...md #575 'which has advisory context), not to this source'
+    #       STALE -> docs/adr/0030-...md #575 'owed table names #575 rather than this ADR'
+    #
+    # So the documented no-flag invocation in this module's own header exits 1 on
+    # this branch **now**; `--offline` is the form the census test runs and the form
+    # these rows are true under. The rows are deleted by the commit that refreshes
+    # `tracker-state.json` -- refresh and deletion are one commit, not two -- and
+    # #576 carries the same note so whoever does the refresh meets it there rather
+    # than discovering it from a red gate.
+    #
+    # **A fourth cite of the same shape gets no row, and the reason is
+    # over-determined.** ADR-0030's corpus disposition names #579 -- filed
+    # 2026-09-05, open, absent from the same snapshot -- as the owner of the
+    # post-merge corpus re-seed, in owner position (`it is owned by`). The sweep
+    # produces no row for it, so adding one here would land in the stale direction.
+    # It is cleared by the `_HISTORICAL` over-clear this module measures above, and
+    # **not by one marker**: that sentence carries **four occurrences of three
+    # distinct markers** (`after`, `recorded`, `were`, `after`).
+    #
+    # Driven through :func:`classify` on the sentence **as it stands in the file**
+    # (the number absent, matching the offline snapshot)::
+    #
+    #     as written            verdict=history  markers=[after, recorded, were, after]
+    #     after -> once         verdict=history  markers=[recorded, were, after]
+    #     + recorded -> noted   verdict=history  markers=[were, after]      <- two left
+    #     all four removed      verdict=SUSPECT  markers=[]                 <- positive control
+    #
+    # `owner_pos=True` in all four. **What a reword does, measured rather than
+    # asserted**: five natural rewordings of that same claim were driven, and
+    # **four of the five yield SUSPECT** -- only the one carrying an incidental
+    # `was` clears. So the superseded note's conclusion ("reword and a row becomes
+    # owed") was **right**, and what was wrong with it was its instrument: it drove
+    # a shortened paraphrase and reported a single marker. The round-3 correction
+    # threw out the true conclusion with the false measurement, which is the same
+    # fix-right-reason-wrong shape one level up.
+    #
+    # **The standing remedy is still #576's refresh**, because that is what clears
+    # the rows for every cite at once rather than one sentence at a time. Three
+    # independent drives (two reviewers and this module's own) agree on the table
+    # above.
+    (
+        "docs/adr/0030-github-review-ingestion-spawns-gh.md",
+        "575",
+        "it is owned by",
+        "correct -- open owner, snapshot-age false positive",
+        "ADR-0030 decision 2 hands the private-repository embargo arm to #575. #575 was "
+        "filed 2026-09-05 and read OPEN, `phase-b`, the same day (`gh issue view 575`). "
+        "It is absent from the 2026-09-03 snapshot because it postdates it, so the "
+        "offline run reads a live owner as no owner. Not an owner defect: the sentence "
+        "is exactly the recorded-owner form this audit exists to require, and it "
+        "replaced the unnamed follow-up round one graded HIGH.",
+    ),
+    (
+        "docs/adr/0029-review-findings-are-governed-knowledge.md",
+        "575",
+        "which has advisory context), not to this source",
+        "correct -- open owner, snapshot-age false positive",
+        "ADR-0029's owed-item prose, repointed from the GitHub arm to the "
+        "private-repository arm in the same pass that repointed its table. Same reading "
+        "as the row above and the row below: #575 open and `phase-b` on 2026-09-05, absent "
+        "from the "
+        "2026-09-03 snapshot because it postdates it. This row replaced one on a "
+        "`cannot disagree` sentence in ADR-0030 that round two had rewritten -- the "
+        "sweep stopped producing it, and a ledger row the sweep no longer produces is "
+        "the stale direction, which is red too.",
+    ),
+    (
+        "docs/adr/0030-github-review-ingestion-spawns-gh.md",
+        "575",
+        "owed table names #575 rather than this ADR",
+        "correct -- open owner, snapshot-age false positive",
+        "The *What this does not close* item for the same arm. Third sentence, third "
+        "fragment, same reading: #575 filed 2026-09-05, read OPEN and `phase-b` that "
+        "day, absent from the 2026-09-03 snapshot because it postdates it. ADR-0029's "
+        "owed *table* row is **not** a member -- `_in_owner_position` is False for it, "
+        "the cite sitting in a table's owner column with no owner phrase within "
+        "`_PROXIMITY` -- so no row is owed for the table, and adding one would read as "
+        "stale. Its owed-item *prose* at :735 is a member, and has its own row above.",
+    ),
     (
         "docs/security/threat-model.md",
         "349",

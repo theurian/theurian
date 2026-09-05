@@ -295,7 +295,7 @@ def test_the_roadmap_raptor_row_counts_the_forest_sites_it_names() -> None:
 
 
 def test_the_roadmap_still_owed_row_counts_the_literal_sections() -> None:
-    """Row 10's literal ``15 of 29`` is recomputed under its own exact-string key.
+    """Row 10's literal ``15 of 30`` is recomputed under its own exact-string key.
 
     Row 10 states two figures — a literal ``Still owed`` count under an exact
     heading, and a wider concept count across seven opener spellings. Only the

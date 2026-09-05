@@ -80,6 +80,36 @@ through a migration — not rescued from a git-ignored directory.
 > needs to keep, and on the dogfood machine it is not — the operator's vault is
 > the source and Theurian holds a copy.
 
+> **Amended in Milestone 8, by the review-ingestion design CL
+> ([#479](https://github.com/theurian/theurian/issues/479),
+> [ADR-0030](0030-github-review-ingestion-spawns-gh.md)). The
+> "raw GitHub review caches" entry in the *Never Git-tracked (derived)* list
+> above is withdrawn, and a fourth category joins the three the Milestone 7
+> amendment names.**
+>
+> The list above is kept as authored — an accepted ADR is amended, not
+> rewritten — but *that entry* no longer states this ADR's position. What
+> designing the GitHub arm revealed is that "review cache" was a guess about an
+> artifact nobody had built: ingested review evidence is **authored upstream,
+> and upstream can edit or delete it**, so a local copy that is thrown away is
+> not recoverable by re-fetching. Calling it derived asserts a rebuild property
+> GitHub does not provide.
+>
+> So the categories are now **four**: Git-tracked inputs; derived artifacts;
+> authored-but-local content (ADR-0028); and **ingested content — authored
+> upstream, committable, and not rebuildable**. ADR-0030 decision 3 places
+> review evidence in the fourth: durable files under `.theurian/review/`, from
+> which the SQLite serving store *is* rebuilt. The controlling requirement is
+> untouched, and so is the property that makes a `*.sqlite` file safe to
+> delete — what changes is which artifact the property is claimed of. The store
+> is derived from the evidence files; the evidence files are not derived from
+> anything.
+>
+> The corollary applies here with the same force as it does to a local
+> proposal: ingested evidence must not be the only home for something a human
+> needs to keep, and it is *not* rescued by a refetch. ADR-0030 records the
+> retention residual and the manual remediation path that follows from it.
+
 ## Consequences
 
 ### Positive

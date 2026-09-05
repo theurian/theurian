@@ -86,7 +86,7 @@ fields that coverage and drift detection read.
 | Proposals | `.theurian/proposals/` | ✅ (optional) | — |
 | Canonical store | `.theurian/state/*.sqlite` | ❌ | ✅ |
 | Index, embeddings, RAPTOR | `.theurian/state/` | ❌ | ✅ |
-| Review cache | `.theurian/cache/` | ❌ | ✅ |
+| Review evidence | `.theurian/review/` | ✅ (project's choice) | ❌ — it is the source, not a cache ([ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) decision 3) |
 | Generated Markdown views | `.theurian/generated/` | ❌ | ✅ |
 | Daemon runtime files | `.theurian/runtime/` | ❌ | ✅ |
 | Token, registry, service | `~/.theurian/` | ❌ | partly |
