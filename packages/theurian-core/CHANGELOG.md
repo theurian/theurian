@@ -12,6 +12,28 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — `ReviewResolution` records an unknown resolver and an unknown
+  resolution time rather than requiring both** (ADR-0030 decision 5, part of
+  [#479](https://github.com/theurian/theurian/issues/479)). Was
+  `ReviewResolution(resolved_by: ReviewParticipant, resolved_at: datetime,
+  state: ReviewThreadState, fix_commit: str | None = None)`; is now
+  `ReviewResolution(state: ReviewThreadState, resolved_by: ReviewParticipant |
+  None = None, resolved_at: datetime | None = None, fix_commit: str | None =
+  None)`. GitHub's `PullRequestReviewThread` carries **no resolution timestamp
+  at all** and a nullable `resolvedBy` (measured by schema introspection,
+  2026-09-05), so a required field would force the adapter either to fabricate a
+  value every consumer reads as a measurement, or to drop the resolution record
+  and lose the state it exists to carry. `state` leads the field order because
+  it is the one field the provider always answers and the two optional fields
+  must follow a field with no default; a **positional** construction therefore
+  moves. Keyword construction is unaffected. Measured at `583e79b2`, `git grep
+  -n "ReviewResolution" -- packages/theurian-core/src` returned two hits, both
+  inside `domain/review.py`: no consumer exists to migrate. That answers the
+  migration cost and not whether the record is honest, which is why the break is
+  named here rather than waved through.
+
 ### Fixed
 
 - **A symbolic link planted where Theurian writes derived state no longer

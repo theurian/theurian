@@ -1,4 +1,4 @@
-"""ReviewProvider port: GitHub adapter first (unbuilt -- M7), GitLab later (FR-V1)."""
+"""ReviewProvider port: the GitHub adapter first, GitLab later (FR-V1)."""
 
 from __future__ import annotations
 
@@ -36,8 +36,11 @@ class ReviewProvider(Protocol):
         refetch the entire history.
 
         Implementations must apply a request timeout (SEC-19), respect rate
-        limits, and validate ``repository`` against an allowlist before building
-        a URL (SEC-10).
+        limits, and validate ``repository`` against an allowlist **before any
+        request** (SEC-10) -- which is not the same as "before building a URL",
+        the wording this said until ADR-0030: the shipped adapter builds no URL
+        at all, and an allowlist consulted after the request has already been
+        made is not a control.
         """
         ...
 

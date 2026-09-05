@@ -430,6 +430,33 @@ def test_resolution_cannot_claim_the_thread_is_open() -> None:
         ReviewResolution(resolved_by=REVIEWER, resolved_at=NOW, state=ReviewThreadState.OPEN)
 
 
+def test_a_resolution_records_unknown_rather_than_a_fabricated_who_and_when() -> None:
+    """ADR-0030 decision 5: GitHub answers neither field, so both must be omittable.
+
+    ``PullRequestReviewThread`` carries no resolution timestamp and a nullable
+    ``resolvedBy``. Requiring either would force an adapter to invent one -- and
+    an invented timestamp is read downstream as a measurement. The resolution
+    *state*, which the provider does answer, survives on its own.
+    """
+    resolution = ReviewResolution(state=ReviewThreadState.RESOLVED)
+
+    assert resolution.resolved_by is None
+    assert resolution.resolved_at is None
+    assert resolution.fix_commit is None
+
+    thread = ReviewThread(
+        external_id="PRRT-2",
+        project_id=PROJECT,
+        event_key="github:acme/backend-service#431",
+        file_path=None,
+        comments=(_comment(),),
+        state=ReviewThreadState.RESOLVED,
+        resolution=resolution,
+    )
+
+    assert thread.resolution is resolution
+
+
 def _gate(**overrides: object) -> PromotionGate:
     base: dict[str, object] = dict.fromkeys(
         (
