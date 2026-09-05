@@ -193,8 +193,14 @@ excluded from the published documentation site for that reason.
   text is half a sentence. This file's own introducing branch produced one and
   had to rewrite the commit to remove it. Keep the token off column 0 anywhere
   it is not a real trailer.
-- Re-sign after any history rewrite. An unsigned rewrite blocks the merge with no
-  failing check to point at.
+- After any history rewrite, re-check **both** trailers on every commit — the
+  signature and the `Signed-off-by`. `git commit --amend -F <file>` replaces the
+  whole message, so a sign-off that `-s` had added is gone unless `-s` is passed
+  again; this file's own branch lost one exactly that way, and CI caught it
+  because the local check had verified subjects only. An unsigned rewrite blocks
+  the merge with no failing check to point at; a missing sign-off fails the DCO
+  half loudly. They are two steps of one job — run both, not the one that broke
+  last time.
 - Check **where** each CHANGELOG entry landed after any rebase or merge across a
   release cut, not that the operation succeeded. Git context-matches the hunk into
   the just-released section with no conflict at all
