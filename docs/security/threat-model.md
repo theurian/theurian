@@ -1672,23 +1672,30 @@ in `tests/unit/test_network_call_sites.py` cover each other's blind spots.
   resolves attribute chains — `urllib.request.…` after a bare `import urllib` —
   and constant-string dynamic imports such as `__import__("_socket")`.
 - **Process spawns, structurally.**
-  `test_no_module_outside_the_git_and_service_adapters_can_spawn_a_process` asks
-  the same question of the other way out of this process, since `curl`, `gh` and
-  `git fetch` reach the network without Theurian importing a client. It watches
-  `subprocess`, the `os` spawn/exec family — `system`, `popen`, `spawn*`,
+  `test_no_module_outside_the_recorded_spawn_sites_can_start_another_program`
+  asks the same question of the other way out of this process, since `curl`, `gh`
+  and `git fetch` reach the network without Theurian importing a client. It
+  watches `subprocess`, the `os` spawn/exec family — `system`, `popen`, `spawn*`,
   `posix_spawn*` and `exec*` — and `asyncio.create_subprocess_*`, and permits
-  **three** sites, none of which takes its argument vector from a document: the
-  `git` context reads in `cli/context.py`; the service runner in
+  **four** sites. Three take no argument vector from a document: the `git`
+  context reads in `cli/context.py`; the service runner in
   `infrastructure/services/runner.py`; and, since ADR-0029's trailer source
   landed, `infrastructure/git/trailer_source.py`, which runs `git log` over the
   pinned `refs/remotes/origin/main` to read `Review-Finding:` trailers. That
   third one is a spawn and **not** a network client — `git log` reads local
   object storage and the local remote-tracking ref, contacting no remote — and
   its argument vector is four constants with the ref pinned rather than passed,
-  so nothing a document or a config carries reaches it. This entry said "two
-  sites" and named the first two until 2026-09-02; the pinned set
-  (`PROCESS_SPAWN_SITES` in `tests/unit/test_network_call_sites.py`) has held
-  three since the trailer source landed.
+  so nothing a document or a config carries reaches it.
+
+  **The fourth reaches GitHub on purpose**, and its arrival is what retired this
+  entry's absence argument: `infrastructure/github/gh_cli.py` spawns the
+  operator's `gh` as `gh api graphql --hostname github.com` (ADR-0030). Its
+  destination *does* come from configuration, which is exactly the moment SEC-10's
+  repository allowlist stopped being owed and started running — see *Controls*
+  above. This entry said "two sites" and named the first two until 2026-09-02, and
+  "three" until ADR-0030's adapter landed; the pinned set (`PROCESS_SPAWN_SITES`
+  in `tests/unit/test_network_call_sites.py`) is what the count is held against,
+  by `test_threat_model_t7_claims.py`.
 - **The socket layer, behaviourally.**
   `test_parsing_a_hostile_document_opens_no_socket` watches
   `socket.create_connection`, `socket.socket` and `socket.getaddrinfo` while

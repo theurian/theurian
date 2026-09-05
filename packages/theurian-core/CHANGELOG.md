@@ -12,6 +12,28 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **A GitHub review-ingestion adapter, and the SEC-10 controls that had to land
+  with it** (ADR-0030, part of
+  [#479](https://github.com/theurian/theurian/issues/479)).
+  `infrastructure/github/` fetches pull requests, review threads, comments and
+  resolution state by spawning the operator's own `gh` — no HTTP client, no new
+  dependency, no token custody. `providers.review.repositories` in
+  `.theurian/config.yaml` is now **read and enforced**: a repository the list
+  does not name produces no process at all, an empty or absent list allows
+  nothing, and public repositories only — an allowlisted repository that
+  resolves as private, or that GitHub redirects to a different name, is refused
+  at ingestion. The child environment is constructed from a closed set rather
+  than inherited, the endpoint is the literal `graphql` with repository identity
+  in typed variables, `--hostname github.com` is pinned, `--paginate` is absent,
+  and a request timeout, page cap, pull-request cap, per-thread comment cap and
+  per-response byte cap are named constants with graded stops. A `gh` that is
+  absent, below the 2.86.0 version floor, or unauthenticated is a refusal
+  envelope carrying a remedy, with the child's stderr contained inside it.
+  **Nothing is exposed yet**: no CLI command and no MCP tool reaches this code,
+  and `system.capabilities` still reports `reviewIngestion: false`.
+
 ### Changed
 
 - **BREAKING — `ReviewResolution` records an unknown resolver and an unknown

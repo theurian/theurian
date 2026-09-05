@@ -4,16 +4,22 @@ T-7 is SSRF: a hostile Git remote or an external ``$ref`` inside an ingested
 document persuading Theurian to issue a request on its behalf. The threat model
 records three controls for it -- a scheme allowlist, private-network rejection,
 and the repository allowlist in ``.theurian/config.yaml`` -- and #129 established
-that none of the three is built. What stands in for them until review ingestion
-lands (Milestone 7) is not a filter but an **absence**: outside the daemon's
-health probe against its own loopback port, nothing in the shipped package can
-open a connection at all.
+that none of the three was built. What stood in for them was not a filter but an
+**absence**: outside the daemon's health probe against its own loopback port,
+nothing in the shipped package could open a connection at all.
 
-That absence is asserted outright by ``docs/security/threat-model.md`` (T-7) and
-by the ``infrastructure/github/`` package docstring, and it is what every other
-"the allowlist is not protecting you yet" note in #129 rests on. Until now it was
-enforced by nothing. The adversarial review of #129 proved that: a mutation that
-kept
+**That absence has been retired, at the commit that admitted the ``gh`` review
+adapter** (ADR-0030). An absence has no successor -- the first time it is false,
+whatever it was protecting is unprotected -- so what replaced it is the ADR's ten
+clauses, each a property with its own test, and the **repository allowlist** it
+required in the same change: ``providers.review.repositories`` is read by
+``security/project_config.py`` and enforced by ``security/review_allowlist.py``
+before any process is spawned. What this file still holds is narrower and still
+worth holding: **which** modules may start a program or reach a client at all,
+by equality over the whole package.
+
+Until #129's round nothing enforced even that. The adversarial review proved it:
+a mutation that kept
 ``_external_refs`` recording every ref exactly as before and *added* a real
 ``urllib.request.urlopen`` beside the recording SURVIVED the whole suite --
 2493 passed, with the parser demonstrably issuing HTTP requests against a local
@@ -28,12 +34,12 @@ Three arms, because each has a blind spot the others cover:
   fetch added anywhere in the package, including on a path no test exercises --
   but it reads names, so it cannot see one reached dynamically under a name it
   cannot resolve.
-- :func:`test_no_module_outside_the_git_and_service_adapters_can_spawn_a_process`
+- :func:`test_no_module_outside_the_recorded_spawn_sites_can_start_another_program`
   asks the same question about the other way out of this process. ``curl``,
   ``gh`` and ``git fetch`` are network clients Theurian never has to import: the
-  Milestone 7 review-ingestion adapter is most naturally built on ``gh api``, and
-  that diff would contain no client module at all. A mutation doing exactly that
-  -- ``subprocess.run(["curl", ...])`` beside the ref recording -- survived the
+  review-ingestion adapter this file predicted **is** built on ``gh api``, and
+  its diff contains no client module at all. A mutation doing exactly that --
+  ``subprocess.run(["curl", ...])`` beside the ref recording -- survived the
   whole suite while the arm above passed.
 - :func:`test_parsing_a_hostile_document_opens_no_socket` watches the socket layer
   while *every parser the registry ships* handles a document carrying an
@@ -70,8 +76,16 @@ structural pair bound *what may be added anywhere in the package*, by name. The
 behavioural one bounds *what may happen while a document is parsed*, in this
 process. A fetch that is both spelled at runtime and issued from a child process
 is outside all three, and
-:func:`test_no_module_outside_the_git_and_service_adapters_can_spawn_a_process`
+:func:`test_no_module_outside_the_recorded_spawn_sites_can_start_another_program`
 says so where a reader deciding whether to trust this file will see it.
+
+**And one site is now meant to reach the network**, which is a fourth thing none
+of the three arms can see: what ``gh`` does once the vector is handed to it. The
+properties that bound *that* are ADR-0030's clauses, tested in
+``tests/unit/test_gh_child_environment.py``,
+``tests/unit/test_gh_argument_vector.py``,
+``tests/unit/test_gh_transport_guard.py`` and
+``tests/integration/test_gh_review_provider.py`` -- not here.
 
 Pure in the sense the other structural tests are: the scan parses ``.py`` files
 as text, and the socket watch refuses every connection it records, so neither
@@ -240,7 +254,10 @@ NETWORK_CLIENT_SITES = {
 #: Every place in the shipped package that may start another program, in the same
 #: ``(module path under theurian/, the listed name it reaches)`` shape.
 #:
-#: Three modules, and none takes its command from a document:
+#: Four modules. Three take no command from a document, and the fourth is the
+#: one this pin existed to make visible -- it reaches GitHub on purpose, and what
+#: bounds it is ADR-0030's clauses rather than the absence this file used to
+#: hold:
 #:
 #: - ``cli/context.py`` runs ``git rev-parse`` and friends to locate the working
 #:   tree and read the current commit. Fixed argument vectors, no shell, and a
@@ -263,16 +280,34 @@ NETWORK_CLIENT_SITES = {
 #:   ``test_source_reads_only_origin_main_not_local_branches`` catches -- swapping
 #:   ``origin/main`` for ``--all`` fails it (verified by mutation).
 #:
-#: A GitHub-reaching entry is the change this pin still exists to make visible.
-#: Milestone 7's *remote* review ingestion has to reach GitHub, and ``gh api`` or
-#: ``git fetch`` is the cheapest way to do it -- a diff that adds no client module,
-#: that this file's network scan reads as clean, and whose destination *does* come
-#: from configuration. That is T-7's repository allowlist becoming load-bearing, so
-#: the change that adds *that* entry is the change that owes the allowlist. The
-#: git-history trailer read above is the offline arm and owes no such allowlist.
+#: - ``infrastructure/github/gh_cli.py`` spawns the operator's ``gh`` to reach
+#:   GitHub (ADR-0030). It is the one site here whose **destination is the
+#:   network on purpose**, and the four properties this pin's failure message
+#:   asks for are established, each by a named test rather than by this comment:
+#:
+#:   * the **argument vector is fixed by the adapter** -- an absolute binary
+#:     path, literal flags, a literal GraphQL document and ``name=value``
+#:     variable bindings whose names come from a closed set
+#:     (``test_gh_argument_vector.py``);
+#:   * **it cannot be handed a URL or a remote** -- the endpoint element is the
+#:     literal ``graphql`` and no element is built by formatting a repository
+#:     name into a path, so there is no URL in the vector at all
+#:     (``test_gh_argument_vector.py``);
+#:   * **there is a timeout**, ``REQUEST_TIMEOUT_SECONDS``, together with a page
+#:     cap, a pull-request cap, a per-thread comment cap and a per-response byte
+#:     cap read incrementally (``test_gh_bounded_read.py``);
+#:   * **the repository allowlist is in force**, in the same change -- SEC-10's
+#:     ``providers.review.repositories``, consulted before any process exists
+#:     (``test_review_allowlist.py``, ``test_gh_review_provider.py``).
+#:
+#: A **fifth** entry is what this pin still exists to make visible: a second path
+#: to GitHub, or any other program started from a page nobody re-reads. The
+#: equality catches an addition *and* a removal, and the message below says what
+#: each direction means.
 PROCESS_SPAWN_SITES = {
     ("cli/context.py", "subprocess"),
     ("infrastructure/git/trailer_source.py", "subprocess"),
+    ("infrastructure/github/gh_cli.py", "asyncio.create_subprocess_exec"),
     ("infrastructure/services/runner.py", "subprocess"),
 }
 
@@ -588,11 +623,11 @@ def test_the_process_scan_sees_each_spawning_form_and_no_other(
         f"the process scan read `{source}` as {sorted(found)}, expected "
         f"{sorted({expected} if expected else set())}. The scanner is broken, not "
         f"the product: fix `_module_uses` before trusting a green result from "
-        f"`test_no_module_outside_the_git_and_service_adapters_can_spawn_a_process`."
+        f"`test_no_module_outside_the_recorded_spawn_sites_can_start_another_program`."
     )
 
 
-def test_no_module_outside_the_git_and_service_adapters_can_spawn_a_process() -> None:
+def test_no_module_outside_the_recorded_spawn_sites_can_start_another_program() -> None:
     """A spawned program is a network client Theurian never imports (SEC-10, T-7).
 
     The network scan above answers "who can open a connection" by reading which
@@ -603,10 +638,12 @@ def test_no_module_outside_the_git_and_service_adapters_can_spawn_a_process() ->
     ``subprocess.run(["curl", ...])`` -- a real fetch, verified against a local
     listener -- survived the whole suite, with the network enumeration green.
 
-    It is also the shape Milestone 7 is most likely to arrive in. Review
-    ingestion has to reach GitHub, ``gh api`` is the obvious way, and at that
-    point the destination *does* come from configuration, which is exactly when
-    T-7's repository allowlist stops being owed and starts being load-bearing.
+    It is also the shape this file predicted review ingestion would arrive in,
+    and it did: ``infrastructure/github/gh_cli.py`` spawns ``gh api graphql``,
+    contains no client module, and its destination *does* come from
+    configuration. That is the moment T-7's repository allowlist stopped being
+    owed and started being load-bearing, and ADR-0030 is the change that carried
+    it (:data:`PROCESS_SPAWN_SITES` records which test holds each property).
 
     Same equality-against-the-whole-set reckoning as its twin, so it fails when a
     site is added *and* when one is removed, and :data:`PROCESS_SPAWN_SITES`
@@ -644,21 +681,23 @@ def test_no_module_outside_the_git_and_service_adapters_can_spawn_a_process() ->
         + "\n".join(f"  {module} :: {name}" for module, name in sorted(PROCESS_SPAWN_SITES))
         + "\n\nA spawned program is an outbound client the network scan in this "
         "file cannot see: `curl`, `gh` and `git fetch` reach the network without "
-        "Theurian importing anything. T-7's controls -- a scheme allowlist, "
-        "private-network rejection, and the repository allowlist in "
-        "`.theurian/config.yaml` -- are owed against the first external fetch "
-        "path (#429) and "
-        "enforce nothing today, so what stands in for them is that nothing here "
-        "can reach out at all.\n\n"
+        "Theurian importing anything. One recorded site reaches GitHub on "
+        "purpose (ADR-0030), so what bounds this class is no longer an absence: "
+        "it is that ten clauses hold on that one site and nothing else here "
+        "starts a program at all.\n\n"
         "If you added a site, establish before listing it: the argument vector "
         "is fixed by the adapter rather than taken from a document or a "
         "configuration file; the command cannot be handed a URL or a remote; "
         "there is a timeout; and a test goes red when any of those stops "
-        "holding. If the command *is* meant to reach the network -- the "
-        "Milestone 7 `gh api` shape -- then the repository allowlist is due in "
-        "the same change, along with the documents that currently promise "
-        "nothing fetches: docs/security/threat-model.md (T-7) and the "
-        "infrastructure/github/ package docstring."
+        "holding. If the command *is* meant to reach the network, then SEC-10's "
+        "repository allowlist is due in the same change, along with every "
+        "document that describes the reach of the fetch that already exists: "
+        "docs/security/threat-model.md (T-7) and the infrastructure/github/ "
+        "package docstring at least.\n\n"
+        "If a site is MISSING, ask which one. `infrastructure/github/gh_cli.py` "
+        "going means the review-ingestion fetch path left, and ADR-0030's "
+        "clauses, the allowlist's reason for being in force, and the "
+        "`reviewIngestion` prose all describe a path that is gone."
     )
 
 

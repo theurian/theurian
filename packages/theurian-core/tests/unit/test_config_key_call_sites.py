@@ -359,7 +359,11 @@ SCANNER_CASES: tuple[tuple[str, frozenset[str]], ...] = (
         'raise ValueError(f"repositories on this machine; {_SEE_THE_VALUES}.")',
         frozenset(),
     ),
-    ('"""Repositories must be allowlisted in `.theurian/config.yaml`."""', frozenset()),
+    (
+        '"""`providers.review.repositories` in `.theurian/config.yaml` is read by '
+        '`security/project_config.py`."""',
+        frozenset(),
+    ),
     # -- the real prose the `raptor` block's keys collide with ---------------
     # All four occurrences of `enabled` in `src/` (population key in the module
     # docstring), transcribed. The first two use it as an ordinary English word;
@@ -430,9 +434,11 @@ def test_the_config_key_scan_sees_each_naming_form_and_no_other(
 
     The negative cases carry the more interesting half. Three of them are
     transcribed from ``src/`` as it stands — a docstring about someone's
-    repositories, an f-string that opens with the word, and the
+    repositories, an f-string that opens with the word, and a sentence from the
     ``infrastructure/github`` package docstring — and each would be a false red on
-    a clean tree under a substring scan.
+    a clean tree under a substring scan. The third moved with ADR-0030: that
+    docstring used to say the allowlist was owed and now says who reads it, and a
+    transcription is only worth having while it is a transcription.
     """
     found = {spelling for _, spelling in _key_references(source, "snippet.py")}
 
