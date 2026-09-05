@@ -771,7 +771,7 @@ def test_the_port_count_row_inventories_the_population_its_own_key_returns() -> 
 @pytest.mark.parametrize(
     ("doctored_key", "offending_flag"),
     [
-        pytest.param("`git grep -n -O/bin/sh anything`", "-O/bin/sh", id="a-pager-of-its-choosing"),
+        pytest.param("`git grep -n -O anything`", "-O", id="a-pager-of-its-choosing"),
         pytest.param("`git grep -n -f evil anything`", "-f", id="a-pattern-file-of-its-choosing"),
     ],
 )
@@ -787,12 +787,20 @@ def test_a_population_key_carrying_an_unlisted_flag_is_refused_before_it_runs(
     only allowed flags and no other input ever reached the branch. A guard no
     input reaches survives its own deletion.
 
-    Both parameters are the two the fence's own comment names. ``git grep -O``
-    hands each match to a pager of the row's choosing, and ``-f`` reads the
-    pattern list from a file of the row's choosing; neither is in
-    :data:`_ALLOWED_GREP_FLAGS`, and each must be named in the refusal rather
-    than merely rejected, so that whoever widened the row learns which element
-    was refused.
+    Both parameters are the two the fence's own comment names, and each is
+    spelled as the **bare** flag. ``git grep -O`` hands each match to a pager of
+    the row's choosing, and ``-f`` reads the pattern list from a file of the
+    row's choosing; neither is in :data:`_ALLOWED_GREP_FLAGS`, and each must be
+    named in the refusal rather than merely rejected, so that whoever widened
+    the row learns which element was refused.
+
+    **The bare spelling is what makes the allowlist the reason for the
+    refusal.** A flag written with its argument attached -- ``-O/bin/sh``, one
+    ``shlex`` word, which this case carried until PR #557's round two -- is
+    refused by *every* allowlist, since membership is whole-word and no set
+    holds that word. Measured 2026-09-05 on #557's branch: adding ``"-O"`` to
+    :data:`_ALLOWED_GREP_FLAGS` leaves the attached spelling green and reddens
+    the bare one, so only the bare spelling holds the fence to its set.
 
     ``subprocess.run`` is replaced with a tripwire that raises
     :class:`RuntimeError` -- deliberately not an :class:`AssertionError`, so
