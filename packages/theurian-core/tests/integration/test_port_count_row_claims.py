@@ -10,8 +10,10 @@ whether that twin is still un-re-seeded. All three were fresh, all three were
 derived, and at ``204f9036`` nothing recomputed any of them -- ``git grep -n
 "test_port_count_row" -- packages tests`` returned nothing before this module.
 That is the shape row 6 already paid for twice by hand (``f702736``'s 34,
-``394c850``'s 35) and that ``test_documented_tool_set.py`` closed for row 6
-alone; this module is the same instrument aimed at row 4.
+``394c850``'s 35 -- the second a commit on #504's branch rather than this one,
+squash-merged and so on ``main`` only as ``11376830``) and that
+``test_documented_tool_set.py`` closed for row 6 alone; this module is the same
+instrument aimed at row 4.
 
 **The three pins, and the direction each fails from.**
 
@@ -224,10 +226,11 @@ CORRECTION_MARKERS: Final = ("re-seeded", "no longer")
 #: length of the marker.
 #:
 #: Derived from the shipped sentence rather than chosen: in the
-#: :func:`_normalised` roadmap at ``204f9036``, the correction reads ``twin was
-#: un-re-seeded; [#557] re-seeded it on 2026-09-05`` and its marker sits **9**
-#: characters past the state it corrects, so 20 admits it with margin and a
-#: reach of 8 or less would report the shipped roadmap as the defect.
+#: :func:`_normalised` roadmap at ``204f9036``, a commit on #557's branch and
+#: not on ``main``, the correction reads ``twin was un-re-seeded; [#557]
+#: re-seeded it on 2026-09-05`` and its marker sits **9** characters past the
+#: state it corrects, so 20 admits it with margin and a reach of 8 or less
+#: would report the shipped roadmap as the defect.
 #:
 #: Bounded from **above** as well, in
 #: :func:`test_the_un_re_seeded_claim_is_caught_when_it_comes_back`: widening
@@ -572,7 +575,8 @@ def _offending_claims(text: str) -> list[str]:
 def test_no_roadmap_block_says_the_ports_twin_is_still_un_re_seeded() -> None:
     """RED means the roadmap has gone back to a claim #557 falsified.
 
-    Row 4 said *"The served-corpus twin is un-re-seeded"* until ``204f9036``,
+    Row 4 said *"The served-corpus twin is un-re-seeded"* until ``204f9036``, a
+    commit on #557's branch and not on ``main``,
     and it was true when it was written: the twin mirrored ADR-0003 as it stood
     at ``2a98d4c`` while #534's branch moved the source. #557 re-seeded it on
     2026-09-05 through propose/accept, so the sentence is now a record of
@@ -582,7 +586,8 @@ def test_no_roadmap_block_says_the_ports_twin_is_still_un_re_seeded() -> None:
     Applied to every block of the roadmap, not to the located row. The same
     claim written three sections away is the same defect, and a row-scoped rule
     would report the document clean while it sat there. Measured 2026-09-05 at
-    ``204f9036``: ``un-re-seeded`` appears once in the whole file, and ``twin``
+    ``204f9036``, a commit on #557's branch and not on ``main``:
+    ``un-re-seeded`` appears once in the whole file, and ``twin``
     five times, all of them in this row.
     """
     offenders = {
@@ -607,7 +612,8 @@ def test_the_un_re_seeded_claim_is_caught_when_it_comes_back() -> None:
     Driven with synthetic text, because the shipped document is compliant and a
     rule measured only against a compliant document is indistinguishable from
     one that answers "nothing is wrong". The first input is the sentence as it
-    stood before ``204f9036`` made it false, verbatim.
+    stood before ``204f9036`` -- a commit on #557's branch and not on ``main``
+    -- made it false, verbatim.
 
     The rest is what stops the assertion being satisfiable by a rule that
     refuses every mention of a twin and ``un-re-seeded`` together: both
@@ -653,7 +659,8 @@ def test_the_un_re_seeded_claim_is_caught_when_it_comes_back() -> None:
         f"reports the roadmap's corrected cell as the defect it exists to protect"
     )
 
-    # The ceiling. Measured 2026-09-05 at `e1a665f2`, by rebinding the constant
+    # The ceiling. Measured 2026-09-05 at `e1a665f2`, a commit on #557's branch
+    # and not on `main`, by rebinding the constant
     # in-process: a full revert of row 4 -- the corrected sentence replaced by
     # the retired one outright -- is still caught at a reach of 512 and goes
     # unreported at 513, because the next `re-seeded` in that block sits exactly
@@ -722,8 +729,9 @@ def test_the_port_count_row_inventories_the_population_its_own_key_returns() -> 
     part of the key, not a convenience" is an argument that rests on the wider
     count being wider.
 
-    Measured 2026-09-05 at ``204f9036``: 11 lines across 7 files under the
-    pathspec, 14 across 8 without it.
+    Measured 2026-09-05 at ``204f9036``, a commit on #557's branch and not on
+    ``main``: 11 lines across 7 files under the pathspec, 14 across 8 without
+    it.
 
     The **self-membership assertion** -- the one running the row's own key
     against this file's own path and requiring ``(0, 0)``, named rather than
