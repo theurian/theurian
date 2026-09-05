@@ -235,20 +235,21 @@ class _PayloadMarker:
 #: shipped" trap the ADR-0013 check above works around by checking two
 #: substrings rather than one contiguous phrase). An issue reference is one
 #: instance of that property rather than the only one, which matters because
-#: five of #315's items carry no ``#NNN`` whose count is unique to their
-#: current text; those are keyed on a backticked identifier or a measured
-#: figure the same correction introduced.
+#: several items carry no ``#NNN`` whose count is unique to their current
+#: text; those are keyed on a backticked identifier or a measured figure the
+#: same correction introduced. How many is not recorded here -- it moves with
+#: every re-seed, and the entries below are the live answer.
 #:
-#: **One drifted twin deliberately absent, and one clean twin deliberately
-#: left alone -- they are not the same case.**
-#: ``architecture.index-lives-in-its-own-database`` (ADR-0022) *is* drifted:
-#: ``f706329`` moved its source and the corpus still pins the older digest, so
-#: ``tools/corpus_drift.py`` reports it, on purpose, until the further
-#: correction its document is due lands and one revision can carry both halves.
-#: ``architecture.a-purge-is-a-build`` (ADR-0024) is **not** drifted -- its pin
-#: is byte-identical to its source as measured 2026-09-02 -- and is left alone
-#: only because that document is likewise due a correction; there is nothing to
-#: re-seed yet. Calling both "drifted" is the error this paragraph replaces.
+#: **The two twins that waited have landed.** ADR-0022
+#: (``architecture.index-lives-in-its-own-database``) and ADR-0024
+#: (``architecture.a-purge-is-a-build``) were each held back for a correction
+#: their documents were due, and for different reasons: ADR-0022 was drifted,
+#: reported by ``tools/corpus_drift.py`` on purpose, while ADR-0024 was
+#: byte-identical to its source with nothing yet to re-seed. Treating those as
+#: the same case was the error the paragraph here previously replaced. Both
+#: corrections are now aboard -- ``d70dc219`` for ADR-0022, ``491bded6`` for
+#: ADR-0024 -- so each re-seeds with one revision carrying both halves, which
+#: is what waiting was for.
 #:
 #: **No clean negative twin for any entry, and the reason generalises.** A
 #: ``not in`` pin needs a token present in the superseded body and absent from
@@ -281,25 +282,26 @@ class _PayloadMarker:
 #: such commit, so it names the correction whose absence a reverted payload
 #: would show rather than a word that happens to be new.
 #:
-#: **The per-item selection matrix is not narrated here.** Twelve rows of
-#: item/token/count/points, hand-carried in a docstring, is the #458 stale-count
-#: shape exactly: a dozen numbers no rule recomputes, going stale on the first
-#: re-seed nobody re-narrated. The rows are archived in PR #490's round-two
-#: record. What is *live* is below and in the test: the counts themselves, and
+#: **The per-item selection matrix is not narrated here.** A row per entry of
+#: item/token/count/points, hand-carried in a docstring, is the #458
+#: stale-count shape exactly: a block of numbers no rule recomputes, going
+#: stale on the first re-seed nobody re-narrated. The rows are archived in PR
+#: #490's round-two record. What is *live* is below and in the test: the counts themselves, and
 #: the boundary rule that recomputes each token's count in the revision its
 #: item's latest re-seed replaced and fails when it equals the pin.
 #:
 #: **``raptor-forest`` re-keyed for the same reason, one commit later.** It
 #: shipped ``#426`` at 2, and #487 (``f706329``) moved the document again
 #: without touching that count: measured 2026-09-02, ``#426`` is 2 in both
-#: the #471 body (``3749581``) and #315's re-seed of it (``f706329``). A
+#: the #471 body (``3749581``) and the #490 re-seed of it (``f706329``). A
 #: presence check and a count keyed on ``#426`` are equally blind there, so
 #: the entry moved to ``#464`` -- the issue #487's own correction cites -- at
-#: 1 against 0 everywhere before. ``a-purge-is-a-build`` keeps ``#426``: #487
-#: did not touch ADR-0024, so nothing about that row moved. The general rule
-#: this makes concrete: **a re-seed re-measures its item's marker**, because
-#: the token that discriminated the previous revision need not discriminate
-#: the next one.
+#: 1 against 0 everywhere before. The general rule this makes concrete:
+#: **a re-seed re-measures its item's marker**, because the token that
+#: discriminated the previous revision need not discriminate the next one.
+#: Both of those keys have since been re-measured in turn, which is that rule
+#: applied rather than an exception to it; the entries below are what each
+#: item is keyed on now.
 _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     _PayloadMarker(ItemId("architecture.monorepo-with-independent-artifacts"), "`Core`", 1),
     _PayloadMarker(ItemId("architecture.sqlite-is-a-derived-artifact"), "#87", 1),
@@ -313,6 +315,7 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     _PayloadMarker(ItemId("architecture.raptor-forest"), "#464", 1),
     _PayloadMarker(ItemId("architecture.trigram-index-beside-the-word-index"), "#464", 2),
     _PayloadMarker(ItemId("architecture.a-purge-is-a-build"), "#426", 1),
+    _PayloadMarker(ItemId("architecture.ports-and-adapters"), "#553", 1),
 )
 
 #: Frozen rather than ``datetime.now()``: a project row's ``registered_at`` is
