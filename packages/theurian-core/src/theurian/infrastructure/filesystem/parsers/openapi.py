@@ -8,9 +8,13 @@ everything.
 
 External ``$ref`` targets are recorded, never fetched. Resolving one would turn
 every ingested document into a potential SSRF request (SEC-10, T-7). What gets
-recorded has to be faithful for the same reason: the scheme allowlist Milestone 7
-owes will read that record, so a target destined for a host must never arrive
-under a label that reads like a file on this machine (#203).
+recorded has to be faithful for the same reason: the scheme allowlist T-7 still
+owes on this path will read that record, so a target destined for a host must
+never arrive under a label that reads like a file on this machine (#203).
+Milestone 7 was named here as its owner and built no such gate; the owner is
+`#429 <https://github.com/theurian/theurian/issues/429>`_, against this ``$ref``
+fetcher -- and ADR-0030's ``gh`` adapter does not carry it either, because that
+path has no URL for a scheme allowlist to read.
 """
 
 from __future__ import annotations

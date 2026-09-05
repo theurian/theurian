@@ -492,9 +492,11 @@ def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_one
 
     ``security.secretScan`` publishes ``default: "block"`` *because* code applies
     it (#198, ADR-0027 decision 3), and ``providers.review.repositories`` is
-    published as an allowlist that is "not in force" (#129). Six surfaces tell a
-    reader how far to trust each: ``SECURITY.md``'s bullet on secrets already in
-    a repository, ``docs/security/threat-model.md`` at T-15 and T-7, the T-15 row
+    published as an allowlist that is **"in force"** -- consulted before any
+    process is spawned (ADR-0030 decision 2), where it read "not in force" until
+    that change. Six surfaces tell a reader how far to trust each:
+    ``SECURITY.md``'s bullet on secrets already in a repository,
+    ``docs/security/threat-model.md`` at T-15 and T-7, the T-15 row
     in ``docs/architecture/requirements-analysis.md``,
     ``docs/architecture/review-knowledge.md``,
     ``plugins/claude-code/commands/ingest.md``, and the annotated keys in
