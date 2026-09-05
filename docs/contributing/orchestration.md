@@ -203,6 +203,12 @@ quirks are recorded (see [The filing filter](#the-filing-filter)).
   means nothing until the instrument has been heard to speak.
 - State the key, the instrument and the scope beside every count, and keep any
   content filter out of the population key — a filter is not a population.
+- Diff the classified set against the population **by script** before posting a
+  triage or classification table. A total carrying a ✓ that no script produced
+  is asserted, not computed: the 2026-09-06 tracker sweep's own arithmetic was
+  wrong twice — one band short by two rows, and six open issues missing from the
+  table altogether — and a scripted diff found both
+  ([correction](https://github.com/theurian/theurian/issues/551#issuecomment-5553088853)).
 - Use `git grep` for repository populations. `rg` honours `.git/info/exclude`
   even for tracked files, and skips dot directories without `--hidden`.
 - Do not write `\b` in `git grep -E`. POSIX ERE has no word boundary and the
@@ -238,6 +244,10 @@ quirks are recorded (see [The filing filter](#the-filing-filter)).
 - Never wait on a pattern your own wait loop matches; the loop matches itself and
   never exits.
 - Confirm a daemon is gone by the port being free, not by a `kill` returning 0.
+- Run bulk tracker mutations from a **background, resumable, idempotent**
+  script. Past roughly a hundred close or edit calls the run exceeds a
+  ten-minute foreground window, and one that dies part-way has to be safe to
+  start again from the top (2026-09-06 sweep execution).
 - Run the whole suite from a **non-dot checkout**. `controls_discharge` drops
   every path with a dot component, so a checkout under `.claude/worktrees/`
   gives it an empty test population and two census audits fail on the walker
@@ -350,7 +360,10 @@ whose `value` is the option **name** as a string — not the numeric option id.
 Type is GitHub's native issue type. The scheme's first application across the
 whole tracker, with the field ids and the positive control each instrument was
 set under, is the
-[2026-09-06 sweep record](https://github.com/theurian/theurian/issues/551#issuecomment-5553070490).
+[2026-09-06 sweep record](https://github.com/theurian/theurian/issues/551#issuecomment-5553070490)
+— read it with its
+[correction](https://github.com/theurian/theurian/issues/551#issuecomment-5553088853),
+which recomputed the record's own band totals by script and supersedes them.
 
 ### Priority
 
@@ -362,9 +375,22 @@ set under, is the
 | **Low** | Deliberately kept with no horizon — contributor-friendly, or an opportunistic batch | Used sparingly |
 
 An item that is neither Low-worth-keeping nor Medium-schedulable **closes with
-its record**, per the filing filter. The effective-count query is issues filtered
-by Priority in {Urgent, High}; everything else is horizoned or parked, and
-counting it as backlog overstates what is actually queued.
+its record**, per the filing filter. What is actually queued is Urgent plus
+High; counting the rest as backlog overstates it, because everything else is
+either horizoned or deliberately parked.
+
+**Reading that set back is not a search-bar qualifier.** Issue search does not
+support org-field qualifiers: `gh issue list --search 'priority:High'` returns 0
+while the same command without the qualifier returns the full open list
+(measured 2026-09-06). Two routes do work:
+
+- **The issues UI's Priority filter and group-by panel**, which renders from the
+  org field. This is the one that answers "what is queued" at a glance.
+- **`GET /repos/{owner}/{repo}/issues/{n}/issue-field-values`**, per issue. Note
+  the asymmetry: it returns Priority as the numeric **option id** while the
+  write above takes the option **name**, and `GET /orgs/{org}/issue-fields` is
+  the mapping between them. An issue with the field unset simply omits it from
+  the response.
 
 ### Type
 
