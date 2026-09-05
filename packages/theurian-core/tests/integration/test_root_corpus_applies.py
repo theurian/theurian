@@ -52,7 +52,12 @@ id again without this test's other assertions changing at all.
 **The same class recurs, and every re-seed pays the same toll.** #199 unit C's
 second wave (#471) re-seeded three more items the same way #416 re-seeded
 ADR-0013 -- ``propose``/``accept`` through the real write path -- and #315's
-drift sweep re-seeded eleven more. The #440 round's ADV-RC MEDIUM-1 lesson
+drift sweep re-seeded another wave again. **How many is not recorded here**, for
+the reason :data:`_RESEED_PAYLOAD_MARKERS` states for its own population: the
+number moves with every re-seed, and a count narrated in prose goes stale on the
+first one nobody re-narrates. The entries of that constant are the live answer,
+and the census assertion holds them to exactly the set of items the applied
+store gives more than one revision. The #440 round's ADV-RC MEDIUM-1 lesson
 generalises to every one of them, but **only at one revert depth**, and saying
 so precisely is the point -- an earlier version of this paragraph claimed the
 whole class was invisible to everything else, and the adversarial round
@@ -88,7 +93,7 @@ That used to be handled by skipping the whole test whenever an untracked
 ``.yaml`` sat in the directory, which put this file to sleep exactly where it
 is needed most: the maintainer's dogfooding machine keeps machine-local vault
 notes under ``.theurian/`` (fenced in ``.git/info/exclude``), so every
-assertion here -- the twelve payload markers included -- was disabled on the
+assertion here -- every payload marker included -- was disabled on the
 one tree where re-seeds are authored and a mis-measured marker would first be
 written. Filtering serves the original concern strictly better than skipping
 did: the draft is not stepped around, it is never loaded (#490 round two).
@@ -164,8 +169,8 @@ MIGRATIONS_DIRECTORY: Final = REPO_ROOT / ".theurian" / "migrations"
 #: point measurement, frozen at the commit named beside it: measured
 #: 2026-09-01 at ``7b2ca67``, four items carried two revisions each -- the
 #: ADR-0013 re-seed (#416) plus the three #199 unit C second-wave re-seeds
-#: (#471) -- over 26 distinct items. #315's eleven-item drift sweep moved both
-#: of those figures afterwards, and moved them in the live record.
+#: (#471) -- over 26 distinct items. #315's drift sweep moved both of those
+#: figures afterwards, and moved them in the live record rather than here.
 MINIMUM_KNOWLEDGE_ITEMS: Final = 26
 
 #: The item the #416 re-seed gave a second revision -- the one member of this
@@ -343,8 +348,8 @@ def _tracked_corpus_paths() -> tuple[str, ...]:
     whenever an untracked one sat in the directory. That is dormancy exactly
     where it hurts most: the maintainer's own dogfooding machine keeps
     machine-local vault notes under ``.theurian/`` (fenced in
-    ``.git/info/exclude``), so every assertion in this file -- the twelve
-    payload markers included -- was disabled on the one tree where re-seeds are
+    ``.git/info/exclude``), so every assertion in this file -- every payload
+    marker included -- was disabled on the one tree where re-seeds are
     authored and where a mis-measured marker would first be committed. Copying
     the tracked set out and loading *that* serves the original concern strictly
     better: an untracked draft is not skipped around, it is never loaded.
@@ -440,9 +445,12 @@ def _revision_chain(loaded: LoadedMigrations) -> dict[ItemId, tuple[RevisionId, 
 def _bodies_by_revision(database: Path, project_id: ProjectId) -> dict[str, str]:
     """Every applied revision's body, in one connection and one query.
 
-    One read for the whole test rather than the two-hop read once per marker:
-    twelve markers each needing a current *and* a superseded body was twenty-four
-    connection open/close pairs for data that does not change between them.
+    One read for the whole test rather than the two-hop read once per marker.
+    Every entry of :data:`_RESEED_PAYLOAD_MARKERS` needs a current *and* a
+    superseded body, so the per-marker form cost two connection open/close
+    pairs per entry -- growing with the corpus, and for data that does not
+    change between them. Stated as the ratio rather than as a product of two
+    counts, because the entry count moves with every re-seed.
     Keyed by revision id, because that is what :func:`_revision_chain` hands
     back; the current-revision pointer is cross-checked separately, so nothing
     here has to re-read ``knowledge_items``.
