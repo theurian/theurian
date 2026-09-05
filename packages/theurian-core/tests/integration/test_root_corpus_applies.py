@@ -55,9 +55,17 @@ ADR-0013 -- ``propose``/``accept`` through the real write path -- and #315's
 drift sweep re-seeded another wave again. **How many is not recorded here**, for
 the reason :data:`_RESEED_PAYLOAD_MARKERS` states for its own population: the
 number moves with every re-seed, and a count narrated in prose goes stale on the
-first one nobody re-narrates. The entries of that constant are the live answer,
-and the census assertion holds them to exactly the set of items the applied
-store gives more than one revision. The #440 round's ADV-RC MEDIUM-1 lesson
+first one nobody re-narrates. The entries of that constant, **together with
+:data:`_RESEEDED_ITEM`** -- carved out of the constant because the ``#414``
+assertions pin that item by hand -- are the live answer, and the census
+assertion holds that *union* to exactly the set of items the **loaded migration
+set** gives more than one revision. The loaded set, not a store query: the two
+are measured identical (2026-09-05 on #557's branch, the store asked directly
+by ``SELECT item_id ... GROUP BY item_id HAVING COUNT(*) > 1``), and what ties
+them is the nothing-was-skipped assertion the same test makes first -- every
+loaded migration applied, so every ``upsertRevision`` the loaded set folds is a
+revision row the store holds. A reader sent to the entries alone would read one
+short. The #440 round's ADV-RC MEDIUM-1 lesson
 generalises to every one of them, but **only at one revert depth**, and saying
 so precisely is the point -- an earlier version of this paragraph claimed the
 whole class was invisible to everything else, and the adversarial round
@@ -148,7 +156,10 @@ MIGRATIONS_DIRECTORY: Final = REPO_ROOT / ".theurian" / "migrations"
 #: A lower bound, not an exact count -- the corpus is expected to grow, and
 #: every item a future migration adds is fully governed whether or not this
 #: number is ever updated. Mirrors ``test_dogfood_corpus_governance.py``'s
-#: ``MINIMUM_MIGRATIONS`` (26) as an independent measurement, not an import.
+#: ``MINIMUM_MIGRATIONS`` as an independent measurement, not an import -- and
+#: without narrating its value, which is a live constant over there and would
+#: go stale here silently; the dated sentence below says what the two shared on
+#: the day they were set, which is the only claim that stays true.
 #:
 #: **The two floors coincide by history, not by mechanism** -- the same
 #: account ``tools/corpus_drift.py``'s own floor constant records for its
