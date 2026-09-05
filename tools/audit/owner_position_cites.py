@@ -470,18 +470,29 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     # commit, not two, and #576 carries the same note so whoever does the refresh
     # meets it there rather than discovering it from a red gate.
     #
-    # **A fourth cite of the same shape gets no row, and that is the finding.**
-    # ADR-0030's corpus disposition names #579 -- filed 2026-09-05, open, and
-    # absent from the same snapshot -- as the owner of the post-merge corpus
-    # re-seed, in owner position (`it is owned by`). The sweep produces no row for
-    # it, so adding one here would land in the stale direction. It is spared by the
-    # `_HISTORICAL` over-clear this module measures above: the sentence says the
-    # re-seed runs *after* the squash commit exists, and one incidental `after`
-    # outranks the owner key. Measured by driving :func:`classify` on that sentence
-    # with the number absent -- `after` gives `history`, the same sentence with
-    # `after` replaced by `once` gives `SUSPECT`. So this cite's exemption is an
-    # accident of wording, not a verdict: reword that sentence and a row becomes
-    # owed. The refresh in #576 clears #579 the same way it clears #575.
+    # **A fourth cite of the same shape gets no row, and the reason is
+    # over-determined.** ADR-0030's corpus disposition names #579 -- filed
+    # 2026-09-05, open, absent from the same snapshot -- as the owner of the
+    # post-merge corpus re-seed, in owner position (`it is owned by`). The sweep
+    # produces no row for it, so adding one here would land in the stale direction.
+    # It is cleared by the `_HISTORICAL` over-clear this module measures above, and
+    # **not by one marker**: that sentence carries four.
+    #
+    # Driven through :func:`classify` on the sentence **as it stands in the file**
+    # (the number absent, matching the offline snapshot)::
+    #
+    #     as written              verdict=history  markers=[after, recorded, were, after]
+    #     after -> once           verdict=history  markers=[recorded, were, after]
+    #     + recorded -> noted     verdict=history  markers=[were, after]
+    #     all four removed        verdict=SUSPECT  markers=[]   <- positive control
+    #
+    # `owner_pos=True` in all four, so the owner key is not what varies. **The
+    # remedy is #576's refresh, not a reword**: with three markers still standing
+    # after two substitutions, no realistic edit to that sentence makes a row owed,
+    # and an earlier version of this note said the opposite on the strength of a
+    # drive against a shortened paraphrase rather than the real sentence. Two
+    # reviewers reproduced the correct reading independently before it was fixed.
+    # The refresh in #576 clears #579 the same way it clears #575.
     (
         "docs/adr/0030-github-review-ingestion-spawns-gh.md",
         "575",
@@ -501,7 +512,8 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "correct -- open owner, snapshot-age false positive",
         "ADR-0029's owed-item prose, repointed from the GitHub arm to the "
         "private-repository arm in the same pass that repointed its table. Same reading "
-        "as the two rows below: #575 open and `phase-b` on 2026-09-05, absent from the "
+        "as the row above and the row below: #575 open and `phase-b` on 2026-09-05, absent "
+        "from the "
         "2026-09-03 snapshot because it postdates it. This row replaced one on a "
         "`cannot disagree` sentence in ADR-0030 that round two had rewritten -- the "
         "sweep stopped producing it, and a ledger row the sweep no longer produces is "
