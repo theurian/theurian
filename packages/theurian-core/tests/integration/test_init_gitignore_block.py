@@ -46,6 +46,11 @@ _NEEDS_SYMLINKS = pytest.mark.skipif(
     sys.platform == "win32", reason="symlinks need privileges on Windows"
 )
 
+#: Skipped where a mode cannot refuse anything: Windows has no POSIX bits, and
+#: root is not stopped by them. Offline CI runs as root, where a mode-000 file
+#: denies nothing and the plant would measure its own absence.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
+
 #: A rule of the user's, distinctive enough that finding it in the file
 #: afterwards -- or failing to -- cannot be a coincidence.
 USER_RULE = "secrets/sentinel-gitignore-rule-zzzz/\n"
@@ -501,32 +506,48 @@ def test_init_answers_a_gitignore_that_is_not_utf_8(project: Path) -> None:
 
 
 @_NEEDS_SYMLINKS
-def test_the_link_refusal_and_the_write_refusal_do_not_share_a_message(project: Path) -> None:
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_the_link_refusal_and_an_ordinary_open_failure_do_not_share_a_message(
+    project: Path,
+) -> None:
     """Round one, adversarial M-5: the errno discrimination was unpinned.
 
     ``_gitignore_link_refusal`` re-raises everything that is not ``ELOOP`` and
     converts only the link. Nothing asserted the two apart: the directory-face
     test checked ``".gitignore" in remedy``, which both texts satisfy, so a
     mutation making the helper convert *every* ``OSError`` -- publishing the
-    link's cure for a read-only file -- survived. The two are asserted distinct
-    here, by the phrase each one owns.
+    link's cure for a file that is merely unreadable -- survived.
+
+    **A mode-``000`` file and not a directory, which is what a first cut of this
+    test got wrong and the mutation then survived anyway.** A directory at
+    ``.gitignore`` never reaches the helper: ``os.open`` on a directory with
+    ``O_RDONLY`` *succeeds*, and the failure surfaces from the read one line
+    below, outside the ``except`` the helper is called from. Only an open that
+    fails -- ``EACCES`` here -- puts a non-``ELOOP`` errno through the branch
+    under test.
     """
-    directory_at = project / ".gitignore"
-    directory_at.mkdir()
-    _, from_directory = _init_json()
-    shutil.rmtree(directory_at)
+    unreadable = project / ".gitignore"
+    unreadable.write_text("*.log\n", encoding="utf-8")
+    unreadable.chmod(0o000)
+    try:
+        with pytest.raises(PermissionError):
+            unreadable.open(encoding="utf-8")
+        _, from_mode = _init_json()
+    finally:
+        unreadable.chmod(0o600)
+    unreadable.unlink()
 
     _plant_a_gitignore_link(project, project.parent / "victim.txt")
     _, from_link = _init_json()
 
     assert "symbolic link" in from_link["error"], from_link["error"]
-    assert "symbolic link" not in from_directory["error"], (
-        f"a directory took the link's message, so the errno arm converts too much: "
-        f"{from_directory['error']}"
+    assert "symbolic link" not in from_mode["error"], (
+        f"an unreadable file took the link's message, so the errno arm converts "
+        f"too much: {from_mode['error']}"
     )
     assert "ls -l" in from_link["remedy"], from_link["remedy"]
-    assert "ls -l" not in from_directory["remedy"], (
-        f"a directory took the link's cure: {from_directory['remedy']}"
+    assert "ls -l" not in from_mode["remedy"], (
+        f"an unreadable file took the link's cure: {from_mode['remedy']}"
     )
 
 
