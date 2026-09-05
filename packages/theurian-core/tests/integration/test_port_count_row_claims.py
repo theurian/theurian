@@ -61,11 +61,20 @@ twice, so it states which side of the frozen corpus each walk reaches.
   fenced in ``.git/info/exclude``, and a filesystem glob would read them. 48
   tracked migrations, measured 2026-09-05 at ``204f9036``.
 
-**Both walks fail safe.** Git exports ``GIT_INDEX_FILE`` and friends to hooks,
-and an inherited override makes git answer for a different index -- but here
-that costs matches and migrations, never adds them, so every such run lands on a
-count mismatch or an empty revision history and reddens. There is no
-environment scrubbing because there is no silent-green direction to scrub.
+**Both walks fail safe, and not because an override can only subtract.** Git
+exports ``GIT_INDEX_FILE`` and friends to hooks, and an inherited override makes
+git answer for a different index -- which can just as easily *add* matches and
+migrations, since a larger index carries more entries. What makes that safe here
+is not the direction but the shape of the assertions: every figure is held by an
+**equality** -- the two population pairs against the pair the row itself states,
+the terminal revision against the three ULIDs the row names -- so an override
+that moves a count or a derived revision moves it away from the stated value
+whichever way it moves, and reddens. Measured 2026-09-05 at ``e1a665f2``, both
+directions run under the real suite: an empty ``GIT_INDEX_FILE`` reddens both
+walks on git exiting 128, and a ``GIT_DIR`` pointed at an unrelated repository
+reddens them on the key matching nothing and on nothing being tracked under the
+migrations prefix. There is no environment scrubbing because there is no
+silent-green direction to scrub.
 
 **Running a command read out of a document is fenced, not trusted.** The row's
 key is parsed with :func:`shlex.split` and never a shell, its first two words
@@ -141,9 +150,7 @@ _CLAIM_TAIL: Final = "fourteen"
 #: How row 4 is located: a table row carrying the struck-through claim it is the
 #: known-defect record *for*. Not its number -- an inserted row moves that -- and
 #: not either figure, since a key made of a figure stops matching precisely when
-#: that figure drifts, which is the event these pins exist for. The leading pipe
-#: is what separates it from ``docs/roadmap.md``'s own Phase-0 bullet, which
-#: writes the same claim in lower case and outside any table.
+#: that figure drifts, which is the event these pins exist for.
 ROW_KEY: Final = f"The port set is exactly these {_CLAIM_TAIL}"
 
 #: A Crockford base32 ULID: 26 characters, no ``I``, ``L``, ``O`` or ``U``.
@@ -245,6 +252,16 @@ def _row() -> str:
     scanned for the row's anchor rather than indexed by row number, because a
     row inserted above it would silently move the index while the anchor follows
     the row it names.
+
+    The leading-pipe test is the locator's second, independent guard. The one
+    other place ``docs/roadmap.md`` writes this claim is its Phase-0 bullet --
+    named by its content rather than its line number, which any edit above it
+    falsifies -- and today the case-sensitive :data:`ROW_KEY` already excludes
+    that bullet on its own, because it writes the claim in lower case.
+    Requiring a table row keeps the locator correct if that ever stops being
+    true: a re-cased bullet, or a key relaxed to match case-insensitively,
+    would otherwise make the uniqueness assertion below fail on a line that is
+    not a row.
     """
     rows = [
         line
@@ -695,6 +712,14 @@ def test_the_port_count_row_inventories_the_population_its_own_key_returns() -> 
     """
     row = _row()
     argv = _population_argv(row)
+
+    assert "--" in argv, (
+        f"the row's population key `{shlex.join(argv)}` carries no `--` separator, so "
+        f"there is no pathspec for this test to drop: the excluded and unexcluded runs "
+        f"below would be the same command, and the row's two figures would be held to "
+        f"one measurement reported twice. A bare ValueError here would say only that "
+        f"`--` is missing, not that the comparison had collapsed"
+    )
     separator = argv.index("--")
 
     own_path = Path(__file__).resolve().relative_to(REPO_ROOT).as_posix()
