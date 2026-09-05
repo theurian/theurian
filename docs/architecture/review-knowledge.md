@@ -26,9 +26,15 @@ holds no adapter, `theurian ingest` reads local files only, and no code path
 generates a candidate; `system.capabilities` reports `reviewIngestion: false`,
 pinned by `test_capabilities_report_what_is_and_is_not_built`. So the sections
 below that describe *collection* — the stages, classification, candidate
-generation, provider access and privacy handling — describe what Milestone 7
-([#368](https://github.com/theurian/theurian/issues/368)) implements, not what
-runs today.
+generation, provider access and privacy handling — describe a **design**, not
+what runs today. Collection is
+[#479](https://github.com/theurian/theurian/issues/479)'s, designed in
+[ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) and sliced there;
+[#368](https://github.com/theurian/theurian/issues/368) is the other arm of FR-V
+and builds no fetch path at all — it reads `Review-Finding:` trailers out of
+local git history ([ADR-0029](../adr/0029-review-findings-are-governed-knowledge.md)).
+Candidate generation (FR-V2, FR-V3) is out of ADR-0030's scope too, so nothing
+below is scheduled by this sentence alone.
 
 ## Evidence is not knowledge
 
@@ -180,8 +186,11 @@ Review data contains author identity and opinions.
 - Identity is the provider's stable ID plus a display name, so redacting the name
   does not break the identity graph.
 - Redaction at ingestion is configurable.
-- The review cache is a derived artifact under `.theurian/cache/`, git-ignored
-  and rebuildable.
+- Ingested review evidence is the **source**, not a cache: upstream comments are
+  editable and deletable, so a discarded local copy of a deleted comment is data
+  loss and no refetch recovers it. [ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md)
+  decision 3 lands it as durable files under `.theurian/review/` and makes the
+  SQLite serving store the derived, deletable half.
 - The approved knowledge that results is a *rule*, not a quotation — attributed
   to evidence rather than to a person's opinion.
 
