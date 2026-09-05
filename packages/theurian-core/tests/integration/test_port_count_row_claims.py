@@ -723,11 +723,19 @@ def test_the_port_count_row_inventories_the_population_its_own_key_returns() -> 
         f"it returns {wide_lines} across {wide_files}. That figure is what the row's "
         f"claim that the pathspec is part of the key rests on"
     )
-    assert (wide_lines, wide_files) >= (lines, files), (
+    # A redundant sanity check on the superset relation, and nothing more. The
+    # unexcluded run is the same key with a pathspec removed, so it matches a
+    # superset by construction and neither comparison can fail on a tree where
+    # `git grep` behaves. What actually holds the exclusion's effect is the pair
+    # of exact-equality assertions above -- doctoring the row's 11 to a 12
+    # reddens the first of them. Componentwise rather than as a tuple: a tuple
+    # compares lexicographically, so a wider run with *more* lines and *fewer*
+    # files would satisfy `>=` on the strength of the line count alone.
+    assert wide_lines >= lines and wide_files >= files, (
         f"dropping the row's exclusion returned {wide_lines} lines across {wide_files} "
-        f"files, no more than the {lines} across {files} the exclusion left -- so the "
-        f"pathspec is excluding nothing and the two figures are not measuring what the "
-        f"row says they measure"
+        f"files, against {lines} across {files} with it. Removing a pathspec cannot "
+        f"match less, so this is not a stale figure -- it means the two runs are not "
+        f"the same key, or `git grep` did not answer for the same tree twice"
     )
 
 
