@@ -450,6 +450,52 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "member whose retraction sits two blocks down rather than one, and it is what "
         "sets `_SUPERSESSION_REACH`.",
     ),
+    # The three rows below are one member of a class this ledger did not have
+    # before: a cite whose owner is **open**, read as dead only because the
+    # offline snapshot is older than the issue. `tracker_state` answers from
+    # `tracker-state.json` under `--offline` (which the census test forces, for
+    # reproducibility), that file was measured 2026-09-03 at `01aa2479`, and
+    # `states()` returns `(absent from the tracker)` for anything filed since --
+    # which `classify` treats exactly like `issue:closed`. A live run verdicts
+    # all three correct. The standing problem is the snapshot ageing out from
+    # under this audit, filed as
+    # https://github.com/theurian/theurian/issues/576; these rows record the
+    # reading, they do not fix that.
+    (
+        "docs/adr/0030-github-review-ingestion-spawns-gh.md",
+        "575",
+        "it is owned by",
+        "correct -- open owner, snapshot-age false positive",
+        "ADR-0030 decision 2 hands the private-repository embargo arm to #575. #575 was "
+        "filed 2026-09-05 and read OPEN, `phase-b`, the same day (`gh issue view 575`). "
+        "It is absent from the 2026-09-03 snapshot because it postdates it, so the "
+        "offline run reads a live owner as no owner. Not an owner defect: the sentence "
+        "is exactly the recorded-owner form this audit exists to require, and it "
+        "replaced the unnamed follow-up round one graded HIGH.",
+    ),
+    (
+        "docs/adr/0030-github-review-ingestion-spawns-gh.md",
+        "575",
+        "cannot disagree",
+        "correct -- open owner, snapshot-age false positive",
+        "The sibling sentence saying ADR-0029's owed table is repointed to #575 in the "
+        "same commit, so the row and the paragraph cannot disagree. Same number, same "
+        "file, different sentence -- so it carries its own fragment rather than being "
+        "absorbed by the row above (the R2-A rule). Same reading: #575 open and "
+        "`phase-b` on 2026-09-05, absent from the 2026-09-03 snapshot.",
+    ),
+    (
+        "docs/adr/0030-github-review-ingestion-spawns-gh.md",
+        "575",
+        "owed table names #575 rather than this ADR",
+        "correct -- open owner, snapshot-age false positive",
+        "The *What this does not close* item for the same arm. Third sentence, third "
+        "fragment, same reading: #575 filed 2026-09-05, read OPEN and `phase-b` that "
+        "day, absent from the 2026-09-03 snapshot because it postdates it. ADR-0029's "
+        "own repointed row is **not** a member -- `_in_owner_position` is False for it, "
+        "the cite sitting in a table's owner column with no owner phrase within "
+        "`_PROXIMITY` -- so no row is owed there and adding one would read as stale.",
+    ),
     (
         "docs/security/threat-model.md",
         "349",
