@@ -23,7 +23,8 @@ alone; this module is the same instrument aimed at row 4.
   rule ``test_roadmap_claims.py`` states for the retired T-16 claim.
 - The **population pin** re-runs the row's *own* recorded key -- the backticked
   ``git grep`` command the cell publishes -- and holds the row's four figures to
-  what it returns. Measured 2026-09-05 at ``204f9036``: 11 lines across 7 files
+  what it returns. Measured 2026-09-05 at ``204f9036``, a commit on #557's
+  branch and not on ``main``: 11 lines across 7 files
   under the row's pathspec, 14 across 8 without it. Not a key written here: the
   cell publishes one, and what this checks is that *that* key over *this* tree
   yields *those* numbers. A key spelled here instead would hold the row to an
@@ -59,7 +60,8 @@ twice, so it states which side of the frozen corpus each walk reaches.
   ``tools/corpus_drift.py`` records and for the same measured reason: on the
   maintainer's dogfooding machine that directory holds local-only vault notes
   fenced in ``.git/info/exclude``, and a filesystem glob would read them. 48
-  tracked migrations, measured 2026-09-05 at ``204f9036``.
+  tracked migrations, measured 2026-09-05 at ``204f9036``, a commit on #557's
+  branch and not on ``main``.
 
 **Both walks fail safe, and not because an override can only subtract.** Git
 exports ``GIT_INDEX_FILE`` and friends to hooks, and an inherited override makes
@@ -69,7 +71,8 @@ is not the direction but the shape of the assertions: every figure is held by an
 **equality** -- the two population pairs against the pair the row itself states,
 the terminal revision against the three ULIDs the row names -- so an override
 that moves a count or a derived revision moves it away from the stated value
-whichever way it moves, and reddens. Measured 2026-09-05 at ``e1a665f2``, both
+whichever way it moves, and reddens. Measured 2026-09-05 at ``e1a665f2``, a
+commit on #557's branch and not on ``main``, both
 directions run under the real suite: an empty ``GIT_INDEX_FILE`` reddens both
 walks on git exiting 128, and a ``GIT_DIR`` pointed at an unrelated repository
 reddens them on the key matching nothing and on nothing being tracked under the
@@ -90,9 +93,13 @@ applied, three lines of this file carried one of them -- the locator constant
 and two docstrings -- and the *unexcluded* figure the row publishes went from
 14 to 17 the moment this file was tracked. That figure is the dated motivation
 (measured 2026-09-05, on #557's branch, in a clean clone) and not the
-authority: what holds the constraint now is the first assertion in
+authority: what holds the constraint now is the **self-membership assertion**
+in
 :func:`test_the_port_count_row_inventories_the_population_its_own_key_returns`,
 which runs the row's own key against this file's path and requires ``(0, 0)``.
+Named rather than placed -- this sentence used to call it that test's *first*
+assertion, which ``277e4a26`` falsified by inserting a separator check above
+it, and any ordinal is falsified the same way by the next insertion.
 The pathspec'd figure never moved, because ``packages/theurian-core/tests/`` is
 what the row excludes; the wider one is exactly the count of what the exclusion
 removes, so an instrument that joins it falsifies the claim it was written to
@@ -717,7 +724,10 @@ def test_the_port_count_row_inventories_the_population_its_own_key_returns() -> 
     Measured 2026-09-05 at ``204f9036``: 11 lines across 7 files under the
     pathspec, 14 across 8 without it.
 
-    The first thing asserted is that **this file** is not in either population.
+    The **self-membership assertion** -- the one running the row's own key
+    against this file's own path and requiring ``(0, 0)``, named rather than
+    placed because an ordinal is falsified by anything inserted above it --
+    holds that **this file** is not in either population.
     It is the one member the pin can add by existing, and while the row's
     pathspec keeps it out of the narrower figure, nothing keeps it out of the
     wider one -- so the constraint the module docstring records is checked here
