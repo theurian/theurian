@@ -101,6 +101,11 @@ from theurian.infrastructure.sqlite.connection import (
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
+from theurian.security.no_follow import (
+    is_a_symbolic_link_refusal,
+    symbolic_link_remedy,
+    write_text_without_following_a_link,
+)
 
 #: Exit code for a knowledge-state problem the user must resolve: a checksum
 #: mismatch, a revision conflict, a dependency cycle. Distinct from 1 so a script
@@ -208,6 +213,34 @@ def _fail_a_path_escape(exc: ProjectPathEscapeError, *, as_json: bool) -> None:
     ``return``.
     """
     _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
+
+
+def _symbolic_link_write_refusal(path: Path, *, artifact: str) -> str:
+    """What to publish when ``O_NOFOLLOW`` declined a link at a derived write target.
+
+    One spelling for the three commands whose writers were converted for #523 and
+    #394 -- ``migrate apply``'s active pointer, ``index build``'s index pointer
+    and secret-scan record, and ``ingest``'s manifest. ``artifact`` names which
+    of them it was, because the errno cannot: every one of them arrives here as
+    ``ELOOP`` from the same flags, and a message that said only "a write was
+    refused" would leave the reader to guess which file to look at.
+
+    ``str(exc)`` is deliberately not what gets published. The platform's own text
+    for ``ELOOP`` is "Too many levels of symbolic links", which describes a chain
+    that never terminates and is false of the single link this actually refuses --
+    the misdescription :func:`~theurian.security.no_follow.is_a_symbolic_link_refusal`
+    records the errno's real meaning under these flags for.
+
+    Names the leaf rather than its absolute path for the reason every payload in
+    this module keeps operators' absolute paths out; the ``remedy`` beside it
+    (:func:`~theurian.security.no_follow.symbolic_link_remedy`) carries the full
+    path, because a cure has to be typeable.
+    """
+    return (
+        f"{artifact} is a symbolic link ({path.name}), not a file Theurian wrote. Writing "
+        f"through it would replace whatever it names, so Theurian refused rather than "
+        f"touching that file."
+    )
 
 
 #: Cure for a canonical state database this build cannot open or interpret.
@@ -1549,6 +1582,39 @@ _LOCKED_WRITE_FAULT_REMEDY = (
 )
 
 
+def _fail_the_state_publish(exc: OSError, paths: ProjectPaths, *, as_json: bool) -> None:
+    """Grade section B's ``OSError``, keyed on whether a symbolic link caused it.
+
+    Split out of :func:`migrate_apply` rather than inlined: the branch is the
+    thirteenth in a function whose early returns are already one per
+    distinguishable failure shape, and a helper keeps that list readable where a
+    ``noqa`` would only silence the count.
+
+    ``_LOCKED_WRITE_FAULT_REMEDY`` tells the reader to check that
+    ``.theurian/state/`` is writable, which is a **non-cause** for the link face
+    (#523): the directory is writable, and what refused is ``O_NOFOLLOW``
+    declining the link at ``active.json.tmp``. Sending a reader to inspect a
+    permission bit that was never wrong is exactly what
+    :func:`~theurian.domain.errors._read_failure_remedy`'s own ``ELOOP`` branch
+    exists to avoid, one layer down.
+
+    Does not return -- :func:`_fail` raises -- but is typed like this module's
+    other callers of it, so the call site keeps its explicit ``return``.
+    """
+    if is_a_symbolic_link_refusal(exc):
+        temporary = paths.active_pointer_temporary
+        _fail(
+            _symbolic_link_write_refusal(
+                temporary, artifact="The active-state pointer's temporary file"
+            ),
+            remedy=symbolic_link_remedy(temporary),
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
+    _fail(str(exc), remedy=_LOCKED_WRITE_FAULT_REMEDY, as_json=as_json, code=EXIT_STATE_ERROR)
+
+
 @migrate_app.command("apply")
 def migrate_apply(  # noqa: PLR0911 -- one early return per distinguishable failure shape; the single critical section (#468) is kept as one function on purpose, so "does everything really sit under the one lock" stays answerable by reading top to bottom rather than by trusting a call graph
     as_json: JsonOption = False,
@@ -1791,12 +1857,7 @@ def migrate_apply(  # noqa: PLR0911 -- one early return per distinguishable fail
             except OSError as exc:
                 # `sqlite3.Error` is unreachable here: neither `record_state`
                 # nor `write_active_state` opens a database connection.
-                _fail(
-                    str(exc),
-                    remedy=_LOCKED_WRITE_FAULT_REMEDY,
-                    as_json=as_json,
-                    code=EXIT_STATE_ERROR,
-                )
+                _fail_the_state_publish(exc, context.paths, as_json=as_json)
                 return
     except TheurianError as exc:
         # Reached by the `with` statement itself, above every section, and by
@@ -2213,6 +2274,24 @@ class _Resolver:
         return self._registry.for_media_type(media_type)
 
 
+#: Cure for an ordinary write fault at ``.theurian/cache/ingestion.json`` -- the
+#: arm that is *not* a symbolic link, which names its own cure
+#: (:func:`~theurian.security.no_follow.symbolic_link_remedy`).
+#:
+#: Names removing the file as well as making the directory writable, because a
+#: directory at the manifest's own name refuses the write while
+#: `.theurian/cache/` is perfectly writable -- the shape
+#: ``_UNWRITABLE_INDEX_POINTER_REMEDY`` names for the pointer beside it. Nothing
+#: here instructs deleting anything authored: the whole subtree is derived
+#: (ADR-0004) and one `theurian ingest` rebuilds it.
+_UNWRITABLE_MANIFEST_REMEDY: Final = (
+    "Make sure `.theurian/cache/ingestion.json` is a writable file or absent -- a "
+    "directory at that path refuses the write, and a `.theurian/cache/` this process "
+    "cannot write refuses it too -- then run `theurian ingest` again. The manifest only "
+    "records which sources have already been parsed, so nothing authored is at risk."
+)
+
+
 def ingest_command(as_json: JsonOption = False) -> None:
     """Parse and normalize this project's knowledge and specification sources.
 
@@ -2225,10 +2304,23 @@ def ingest_command(as_json: JsonOption = False) -> None:
     hundred must not make the other 199 unavailable. The exit code reflects
     whether every document parsed, so a script can tell a clean run from a
     partial one.
+
+    **The manifest's path is resolved before anything is parsed** (#394). It used
+    to be joined here from ``knowledge_dir`` directly, which is the one route
+    around the containment chokepoint, so a clone carrying a force-added
+    ``.theurian/cache -> ../../shared`` wrote the manifest outside the working
+    tree and reported success. Refusing at the top rather than at the write is
+    what makes the exit code mean "nothing was written": by the write, the whole
+    corpus has been parsed and the payload the caller wanted is already formed.
     """
     context, _ = _require_project(as_json)
 
-    manifest_path = context.paths.knowledge_dir / "cache" / "ingestion.json"
+    try:
+        manifest_path = context.paths.ingestion_manifest
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
+
     previous: dict[str, str] = {}
     if manifest_path.exists():
         try:
@@ -2244,12 +2336,16 @@ def ingest_command(as_json: JsonOption = False) -> None:
             # disposable file blocking the command this comment says it must not
             # be able to block. Same file, same price, same reparse.
             #
-            # Bounded to *reading* it on purpose. A manifest this process cannot
-            # write still ends the run, at the `write_text` below, and that is a
-            # different family with more members than this line -- every atomic
-            # write in `project_service` is in it. One of them fixed here would
-            # be a family half-closed, which is worse than a family named: it is
-            # tracked for Milestone 6 with the canonical-store read failures.
+            # Bounded to *reading* it on purpose, and the write it defers to is
+            # now graded rather than deferred: a manifest this process cannot
+            # write still ends the run, at the write below, but as a `{error,
+            # remedy}` envelope instead of a traceback -- the family this comment
+            # used to hand to Milestone 6 is the one #523 and #394 close together.
+            #
+            # Reading through an in-tree link is deliberately still allowed. The
+            # manifest's contents decide only whether a source is reparsed, so a
+            # redirected read costs a reparse and discloses nothing; it is the
+            # *write* that destroys what the link names.
             previous = {}
 
     service = IngestionService(_Resolver())
@@ -2264,10 +2360,39 @@ def ingest_command(as_json: JsonOption = False) -> None:
     )
 
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(
-        json.dumps(manifest_from(report, previous), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    try:
+        write_text_without_following_a_link(
+            manifest_path,
+            json.dumps(manifest_from(report, previous), indent=2, sort_keys=True) + "\n",
+        )
+    except OSError as exc:
+        # Two shapes, one `except`. A symbolic link at the manifest is the #394
+        # face and names its own cure; anything else -- a read-only
+        # `.theurian/cache/`, a directory at the manifest's name, a full disk --
+        # is an ordinary write fault, and both used to end `--json` in a Rich
+        # traceback with an empty machine channel (CP-2). The parse work is
+        # already done and its report is lost either way, which is why the
+        # *containment* half of this refusal is taken at the top of the command
+        # instead.
+        if is_a_symbolic_link_refusal(exc):
+            _fail(
+                _symbolic_link_write_refusal(manifest_path, artifact="The ingestion manifest"),
+                remedy=symbolic_link_remedy(manifest_path),
+                as_json=as_json,
+                code=EXIT_STATE_ERROR,
+            )
+            return
+        # The type name, never the message: an `OSError`'s `str` appends the
+        # operator's absolute path, which no payload in this module puts in.
+        _fail(
+            f"The sources were parsed, but the ingestion manifest could not be written "
+            f"({type(exc).__name__}), so the next run reparses every source rather than "
+            f"skipping the unchanged ones.",
+            remedy=_UNWRITABLE_MANIFEST_REMEDY,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
 
     _emit(
         {

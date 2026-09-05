@@ -64,6 +64,7 @@ from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
 from theurian.infrastructure.secrets.file_store import default_data_dir
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore, fts5_available
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
+from theurian.security.no_follow import is_a_symbolic_link_refusal, symbolic_link_remedy
 from theurian.security.project_config import SecretScanPolicy, read_secret_scan_policy
 
 index_app = typer.Typer(help="Build and inspect the retrieval index.", no_args_is_help=True)
@@ -168,6 +169,7 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
         _fail,
         _fail_a_path_escape,
         _require_project,
+        _symbolic_link_write_refusal,
     )
 
     # The second value is the state database, not the repository root. The
@@ -184,7 +186,7 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
     policy = _secret_scan_policy(paths, as_json)
     if policy is None:
         return
-    if not _the_scan_record_path_is_contained(paths, as_json):
+    if not _the_scan_record_can_be_written(paths, as_json):
         return
 
     # The context already carries the generator every other command uses, so
@@ -258,6 +260,23 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
         # operator's absolute paths is `str(exc)`, which appends the filename,
         # and `type(exc).__name__` avoids both. The same correction applies to
         # `_record_the_scan`'s warning below.
+        #
+        # An in-tree symbolic link at `active-index.json.tmp` arrives here too,
+        # since `O_NOFOLLOW` refuses it as an `OSError` (#523), and it is graded
+        # apart: `_UNWRITABLE_INDEX_POINTER_REMEDY` says to check that the
+        # *pointer* is writable, which is a non-cause when what refused is a link
+        # at the temporary beside it.
+        if is_a_symbolic_link_refusal(exc):
+            temporary = paths.active_index_pointer_temporary
+            _fail(
+                _symbolic_link_write_refusal(
+                    temporary, artifact="The index pointer's temporary file"
+                ),
+                remedy=symbolic_link_remedy(temporary),
+                as_json=as_json,
+                code=EXIT_STATE_ERROR,
+            )
+            return
         _fail(
             f"The index was built, but the pointer that publishes it could not be written "
             f"({type(exc).__name__}), so this build is not published and what retrieval "
@@ -299,14 +318,32 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
         raise typer.Exit(EXIT_SECRET_FOUND)
 
 
-def _the_scan_record_path_is_contained(paths: ProjectPaths, as_json: bool) -> bool:
-    """Prove the SEC-11 record's path stays in the tree, before anything is built.
+def _the_scan_record_can_be_written(paths: ProjectPaths, as_json: bool) -> bool:
+    """Prove the SEC-11 record is writable in place, before anything is built.
 
-    A precondition rather than a write. Resolving the property *is* the check:
+    Two questions, one precondition, because both have the same answer -- refuse
+    now rather than after publishing -- and both are asked of the same two paths:
+    the record and the ``.json.tmp`` leaf the write builds it at.
+
+    **Containment.** Resolving the property *is* the check:
     ``ProjectPaths.index_secret_scan`` routes through the containment chokepoint,
     which resolves non-strict and compares against the project root, so it opens
     nothing and creates nothing -- the same call ``_record_the_scan`` makes later,
     made early enough that its refusal costs the caller nothing.
+    ``index_secret_scan_temporary`` is resolved beside it: it is the path the
+    write actually opens, it is a *different* leaf the published name's check
+    never covered, and an escaping one used to send the record outside the tree
+    at exit 0 (#523).
+
+    **A symbolic link at either name.** ``lstat``, not a resolution: a link whose
+    target is inside the tree is contained, correctly, and is exactly the shape
+    that truncated a file in the operator's own checkout. This probe decides only
+    *when and how* that is reported -- the refusal that makes it safe is
+    ``O_NOFOLLOW`` inside the write itself, which has no window between deciding
+    and acting. Asked here so the answer is "nothing was built and nothing was
+    published", which is the sentence the paragraphs below are about; asked at
+    the write, the same link would degrade to a ``recordWarning`` beside a
+    build that had already published.
 
     **Where it sits is the whole point, and it was found the hard way.** The
     refusal used to arrive at ``_record_the_scan``, which runs *after* ``_publish``
@@ -325,14 +362,18 @@ def _the_scan_record_path_is_contained(paths: ProjectPaths, as_json: bool) -> bo
     tree (ADR-0004 remediation) and re-runs -- where the full report and the
     policy exit fire normally. Deferred behind a loud refusal, never dropped.
 
-    **The residual, recorded rather than closed.** This proves the path at
-    precondition time; ``_record_the_scan`` resolves it again at write time. A
-    tree doctored *between* the two -- by someone who already has write access to
-    ``.theurian/state/`` -- raises a containment refusal there that no handler
-    converts, so it would reach a ``--json`` caller as a traceback. Closing that
-    needs the record write to hold a descriptor opened before the build, which is
-    a larger change than the exposure earns; the disposition is recorded on
-    [#551](https://github.com/theurian/theurian/issues/551) (2026-09-05).
+    **The residual, recorded rather than closed.** This proves the paths at
+    precondition time; ``_record_the_scan`` resolves and opens them again at write
+    time. A tree doctored *between* the two -- by someone who already has write
+    access to ``.theurian/state/`` -- raises a containment refusal there that no
+    handler converts, so it would reach a ``--json`` caller as a traceback.
+    Closing that needs the record write to hold a descriptor opened before the
+    build, which is a larger change than the exposure earns; the disposition is
+    recorded on [#551](https://github.com/theurian/theurian/issues/551)
+    (2026-09-05). A link planted in that same window does *not* escape: the write
+    refuses it with ``O_NOFOLLOW`` and ``_record_the_scan``'s ``except OSError``
+    degrades it to a ``recordWarning``, so the residual there is a worse message,
+    never a write through the link.
 
     ``_record_the_scan``'s ``except OSError`` is deliberately left alone. A
     directory at the record path is an incidental write failure met after a
@@ -341,13 +382,31 @@ def _the_scan_record_path_is_contained(paths: ProjectPaths, as_json: bool) -> bo
     two are different root causes with different answers. That distinction is the
     reason this check exists here rather than a widened ``except`` there.
     """
-    from theurian.cli.commands import _fail_a_path_escape  # noqa: PLC0415 - cycle
+    from theurian.cli.commands import (  # noqa: PLC0415 - cycle
+        EXIT_STATE_ERROR,
+        _fail,
+        _fail_a_path_escape,
+        _symbolic_link_write_refusal,
+    )
 
     try:
-        paths.index_secret_scan  # noqa: B018 - resolving the property is the check
+        record = paths.index_secret_scan
+        temporary = paths.index_secret_scan_temporary
     except ProjectPathEscapeError as exc:
         _fail_a_path_escape(exc, as_json=as_json)
         return False
+    for path, artifact in (
+        (record, "The secret-scan record"),
+        (temporary, "The secret-scan record's temporary file"),
+    ):
+        if path.is_symlink():
+            _fail(
+                _symbolic_link_write_refusal(path, artifact=artifact),
+                remedy=symbolic_link_remedy(path),
+                as_json=as_json,
+                code=EXIT_STATE_ERROR,
+            )
+            return False
     return True
 
 
@@ -383,7 +442,7 @@ def _record_the_scan(
     **``OSError`` and nothing wider, on purpose.** A path that leaves the working
     tree is not an incidental write failure met after a correct publish; it is a
     doctored tree, and it is proved absent before this command builds anything
-    (:func:`_the_scan_record_path_is_contained`, which records why the two get
+    (:func:`_the_scan_record_can_be_written`, which records why the two get
     different answers). Widening this ``except`` to cover it is what would put a
     published build behind a containment refusal.
     """

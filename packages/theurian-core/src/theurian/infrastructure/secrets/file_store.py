@@ -14,6 +14,10 @@ from typing import Final, final
 
 from theurian.domain.errors import SecurityError
 from theurian.security.env_file import TOKEN_KEY as _TOKEN_KEY
+from theurian.security.no_follow import (
+    is_a_symbolic_link_refusal,
+    open_without_following_a_link,
+)
 from theurian.security.paths import ensure_private_mode, is_world_accessible
 
 #: The token file, relative to the data directory. Re-exported from
@@ -23,6 +27,47 @@ TOKEN_KEY: Final = _TOKEN_KEY
 
 _SECRET_MODE: Final = 0o600
 _DIRECTORY_MODE: Final = 0o700
+
+
+class SecretPathIsASymbolicLinkError(SecurityError):
+    """The secret's path is a symbolic link, so writing would write through it.
+
+    ``FileSecretStore.set`` opened with ``O_WRONLY | O_CREAT | O_TRUNC`` and no
+    ``O_NOFOLLOW``, so an attacker who could write to ``<data_dir>/auth`` at the
+    moment a token was minted planted a dangling link there and received the
+    freshly minted token in a file of their choosing -- ``theurian setup``'s own
+    ``apply_token`` doing the writing, and ``theurian doctor`` afterwards
+    reporting ``satisfied`` because the file it stat'ed was 0600 (#371, measured).
+    Tightening ``auth`` to 0700 first does not defend it: the tightening happens
+    after the attacker's write bit has already been used.
+
+    Refused rather than repaired. Unlinking the link and writing the real file
+    would put the token where it belongs but leave the operator unaware that
+    something with write access to their data directory had been waiting for it;
+    the refusal is what makes that visible, and it is the posture
+    :class:`InsecureSecretPermissionsError` beside it already takes about a mode.
+
+    **Not the whole of #371.** The *substitution* face -- an attacker unlinking
+    ``mcp-token`` and leaving their own 0600 regular file, which ``set`` then
+    truncates and overwrites -- is not a symbolic link and nothing here refuses
+    it. What that face needs is ``setup`` declining to mint into a group- or
+    other-writable ``auth`` directory at all, which is a different guard in a
+    different place.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.remedy = (
+            f"Remove the symbolic link at {path} and run `theurian auth rotate` to mint a "
+            f"fresh token. Something with write access to {path.parent} put it there to "
+            f"receive the token Theurian was about to write, so check that directory's "
+            f"permissions (it should be 0700) before rotating."
+        )
+        super().__init__(
+            f"{path.name} is a symbolic link, not a secret file. Writing the token would "
+            f"send it through the link to whatever it names, so Theurian refuses to write "
+            f"it at all."
+        )
 
 
 class InsecureSecretPermissionsError(SecurityError):
@@ -77,17 +122,42 @@ class FileSecretStore:
         return path.read_text(encoding="utf-8").strip()
 
     async def set(self, key: str, value: str) -> None:
-        """Write a secret with restrictive permissions.
+        """Write a secret with restrictive permissions, refusing a symbolic link.
 
         The file is created with 0600 *before* anything is written to it. Writing
         first and chmod-ing after leaves a window in which the secret exists at
         the default umask.
+
+        ``O_NOFOLLOW`` is what keeps that mode meaningful (#371): without it the
+        open followed a link planted at the secret's name and created the 0600
+        file wherever the link pointed, so every guarantee this method makes was
+        about a file in somebody else's directory. The refusal is the open itself
+        rather than an ``is_symlink()`` check beside it, because a check is a
+        decision taken before the call it describes and the window between the two
+        is one an attacker with the directory's write bit picks.
+
+        It covers the final component only, the bound
+        :mod:`theurian.security.no_follow` records: a symlinked ``auth``
+        directory is still followed. No containment check applies here at all --
+        this is the per-user data directory, not a project tree -- so the link at
+        the leaf is the whole of what is refused.
+
+        Raises:
+            SecretPathIsASymbolicLinkError: If the secret's own name is a
+                symbolic link.
+            OSError: For every other way the open or the write can fail, which is
+                what it was before.
         """
         self._root.mkdir(parents=True, exist_ok=True, mode=_DIRECTORY_MODE)
         ensure_private_mode(self._root, mode=_DIRECTORY_MODE)
 
         path = self._path(key)
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _SECRET_MODE)
+        try:
+            descriptor = open_without_following_a_link(path, mode=_SECRET_MODE)
+        except OSError as exc:
+            if is_a_symbolic_link_refusal(exc):
+                raise SecretPathIsASymbolicLinkError(path) from exc
+            raise
         try:
             os.write(descriptor, value.encode("utf-8"))
         finally:
@@ -122,5 +192,6 @@ __all__ = [
     "TOKEN_KEY",
     "FileSecretStore",
     "InsecureSecretPermissionsError",
+    "SecretPathIsASymbolicLinkError",
     "default_data_dir",
 ]

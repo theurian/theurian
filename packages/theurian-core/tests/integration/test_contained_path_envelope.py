@@ -45,7 +45,7 @@ derivation beside the reflection over member *shapes* in
 exposes, this one asks the source what routes through the chokepoint.
 
 **The reach this sweep does not have, stated so nobody reads it as closed.**
-Four of the plantable artefacts reach no swept command, and their exclusions are
+Five of the plantable artefacts reach no swept command, and their exclusions are
 recorded coverage gaps rather than non-membership. Re-run the key rather than
 trusting the sentences below::
 
@@ -53,6 +53,7 @@ trusting the sentences below::
     git grep -n '_paths\\.proposals\\b\\|_paths\\.proposals_local\\b' -- packages/theurian-core/src
     git grep -n '_paths\\.knowledge\\b' -- packages/theurian-core/src
     git grep -n '\\.findings_for(' -- packages/theurian-core/src
+    git grep -n '\\.ingestion_manifest\\b' -- packages/theurian-core/src
 
 Run 2026-09-04, with ``project_service.py``'s own definitions discounted:
 
@@ -69,7 +70,12 @@ Run 2026-09-04, with ``project_service.py``'s own definitions discounted:
   ``refs/remotes/origin/main``) and ``mcp/tools.py`` (``review.findings``). The
   second is a *different envelope contract* -- an MCP transport error, not a
   ``--json`` document on stderr -- so it is not merely unswept here, it is
-  outside what this file can assert about at all.
+  outside what this file can assert about at all;
+- ``ingestion_manifest`` (added 2026-09-05 for #394) returned **one** consumer,
+  ``cli/commands.py::ingest_command``. ``ingest`` is outside ``CLI_SWEEP`` for
+  ``CLI_NOT_SWEPT``'s own reason -- it writes a derived file into the corpus --
+  so this plant reaches nothing here and is measured against the real command in
+  ``test_derived_path_symlink_writes.py`` instead.
 
 **The lock open is the class's other member, and it lives next door.** The write
 lock's own ``_open`` is not a ``_contained`` call site, so the AST key above does
@@ -356,6 +362,7 @@ class Plant:
 
 _DERIVED_STATE: Final = derived_escape_remedy(".theurian", "state")
 _DERIVED_RUNTIME: Final = derived_escape_remedy(".theurian", "runtime")
+_DERIVED_CACHE: Final = derived_escape_remedy(".theurian", "cache")
 
 _EVERY_STATE_READER: Final = frozenset(
     {
@@ -370,14 +377,20 @@ _EVERY_STATE_READER: Final = frozenset(
 )
 
 #: Every member the key derives, each with the artefact a clone can deliver at its
-#: path and the commands that artefact is measured to reach. Thirteen are
+#: path and the commands that artefact is measured to reach. Seventeen are
 #: ``ProjectPaths`` helpers with a path to plant at; ``initialize_project`` is the
-#: fourteenth and has none, so it carries its measured reason and sits out the
+#: eighteenth and has none, so it carries its measured reason and sits out the
 #: sweeps (:data:`SWEPT_PLANTS`).
 #:
 #: Every number here was measured on ``491bded6`` (macOS 26.6, CPython 3.13.3) by
 #: running the whole matrix; none was inferred from reading a call graph, which is
 #: how ``index_secret_scan``'s traceback face came to be missing from the issue.
+#: The four members added for #523 and #394 -- the three ``.json.tmp`` leaves and
+#: the ingestion manifest -- were measured the same way against this branch
+#: (macOS 26.6, CPython 3.13.3), and two of the answers were not the obvious
+#: ones: a *directory* at ``index-secret-scan.json.tmp`` refuses nothing, and
+#: ``ingestion_manifest`` reaches no swept command at all because ``ingest`` is
+#: not in ``CLI_SWEEP``. Both are recorded on the plants themselves.
 PLANTS: Final = (
     Plant(
         helper="knowledge",
@@ -487,6 +500,51 @@ PLANTS: Final = (
         refuses=frozenset({"index build"}),
     ),
     Plant(
+        helper="active_pointer_temporary",
+        relative="state/active.json.tmp",
+        is_directory=False,
+        remedy=_DERIVED_STATE,
+        refuses=frozenset({"migrate apply"}),
+        directory_refuses=frozenset({"migrate apply"}),
+    ),
+    Plant(
+        helper="active_index_pointer_temporary",
+        relative="state/active-index.json.tmp",
+        is_directory=False,
+        remedy=_DERIVED_STATE,
+        refuses=frozenset({"index build"}),
+        directory_refuses=frozenset({"index build"}),
+    ),
+    Plant(
+        helper="index_secret_scan_temporary",
+        relative="state/index-secret-scan.json.tmp",
+        is_directory=False,
+        remedy=_DERIVED_STATE,
+        refuses=frozenset({"index build"}),
+        # Measured empty, and it is the one asymmetry among the three temporary
+        # leaves. The escaping *symlink* is refused before anything is built, by
+        # `_the_scan_record_can_be_written`; a *directory* here is not a
+        # containment failure and not a symbolic link either, so it reaches
+        # `_record_the_scan`'s `except OSError` after a correct publish and
+        # degrades to a `recordWarning` at exit 0. That degradation is the
+        # recorded contract (the findings are the caller's only account of what
+        # was scanned), not a gap this branch left.
+        directory_refuses=frozenset(),
+    ),
+    Plant(
+        helper="ingestion_manifest",
+        relative="cache/ingestion.json",
+        is_directory=False,
+        remedy=_DERIVED_CACHE,
+        outside_the_class_because=(
+            "no swept command reaches it: `ingest` is its only consumer and is "
+            "outside `CLI_SWEEP`. Not a claim that nothing reaches it -- the "
+            "escaping plant is measured against the real `ingest` in "
+            "`test_derived_path_symlink_writes.py`, which is where #394's two "
+            "faces are pinned."
+        ),
+    ),
+    Plant(
         helper="findings_for",
         relative=f"state/theurian-findings-{FINDINGS_STORE_ID}.sqlite",
         is_directory=False,
@@ -551,7 +609,7 @@ PLANT_BY_HELPER: Final = {plant.helper: plant for plant in PLANTS}
 #: class and must arrive as a failure, and a plant that stops being reached has
 #: quietly hollowed out every property below.
 REACHES_NO_SWEPT_COMMAND: Final = frozenset(
-    {"specifications", "proposals", "proposals_local", "findings_for"}
+    {"specifications", "proposals", "proposals_local", "findings_for", "ingestion_manifest"}
 )
 
 #: The plants whose refusals are ``_contained``'s own -- the class #525 closes,
@@ -806,7 +864,7 @@ def test_every_contained_derived_helper_is_planted_or_excluded_with_a_reason() -
 
     Every plant kept out of the class carries the measured reason it is out, so an
     exclusion is a recorded coverage gap rather than a silent one -- and the two
-    kinds of exclusion are told apart, because they fail differently. Four helpers
+    kinds of exclusion are told apart, because they fail differently. Five helpers
     no swept command reaches (a gap in this sweep's reach); ``knowledge`` is
     reached and refused by a different guard (a gap in attribution, which an exit
     code alone reads as coverage).
@@ -912,7 +970,7 @@ def test_an_undoctored_corpus_answers_every_swept_command(corpus: Path) -> None:
 
 @_NEEDS_SYMLINKS
 def test_exactly_these_plants_reach_a_swept_command(escaping_symlinks: Matrix) -> None:
-    """The vacuity guard. Four of the plantable artefacts reach nothing at all.
+    """The vacuity guard. Five of the plantable artefacts reach nothing at all.
 
     Every property below is quantified over the matrix, and every one of them is
     satisfied perfectly by a sweep whose plants no command ever touches. Stating

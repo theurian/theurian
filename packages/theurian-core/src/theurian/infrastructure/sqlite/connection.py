@@ -48,6 +48,7 @@ from theurian.infrastructure.sqlite.schema import (
     SCHEMA_VERSION,
     is_supported,
 )
+from theurian.security.no_follow import symbolic_link_remedy
 
 #: How long to wait for the write lock before giving up. Long enough for a
 #: normal migration run to finish, short enough that a wedged process is
@@ -311,11 +312,11 @@ class WriteLockUnusableError(TheurianError):
             # here; what does reach here is the link whose target is inside the
             # root, which containment correctly waves through and which is
             # exactly the shape that truncated a file in the user's own tree.
-            self.remedy = (
-                f"Remove the symbolic link at {path} and retry. It is derived state "
-                f"(ADR-0004) that Theurian recreates, so nothing authored is lost -- and "
-                f"a repository that carries one has committed it past that ignore."
-            )
+            #
+            # The sentence is shared rather than spelled here, because #523 and
+            # #394 gave this class four more members and a cure that deletes
+            # something must have one spelling across them.
+            self.remedy = symbolic_link_remedy(path)
             super().__init__(
                 f"The write lock at {path.name} is a symbolic link, not a lock file. Opening "
                 f"it would write through the link to whatever it names, so Theurian refuses "

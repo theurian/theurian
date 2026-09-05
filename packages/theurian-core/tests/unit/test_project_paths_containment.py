@@ -198,9 +198,24 @@ def test_a_symlinked_ancestor_of_the_knowledge_dir_that_escapes_is_refused(tmp_p
 #   2. `initialize_project` -- a writer that is not a member, routed through the
 #      same `_contain` chokepoint and pinned by its own integration test
 #      (`test_cli_commands.py::test_init_refuses_an_escaping_knowledge_symlink_*`).
-#   3. Out of scope, named not silently dropped: the `ingest` manifest's
-#      `.theurian/cache` write is a *different* root cause -- derived, git-ignored
-#      state a repository should not carry (the GHSA-266v class), filed #394.
+#   3. The `ingest` manifest's `.theurian/cache/ingestion.json`, which used to be
+#      named here as out of scope: a *different* root cause -- derived,
+#      git-ignored state a repository should not carry (the GHSA-266v class),
+#      filed #394 and closed by giving it a helper. It joins (1) as
+#      `ingestion_manifest`, which is why this entry now reads as a member rather
+#      than as an exclusion.
+#   4. The three `.json.tmp` leaves the atomic publishers build. A derivation
+#      (`pointer.with_suffix(".json.tmp")`) produces a leaf the published name's
+#      containment never covered, and the write through it followed a planted
+#      link out of the tree at exit 0 (#523). They join (1) as the
+#      `*_temporary` helpers.
+#
+# **Containment is half of (3) and (4), and the sweep below proves only that
+# half.** A link whose target is inside the tree resolves inside it and passes
+# `_contain`, correctly -- what refuses that one is `O_NOFOLLOW` inside the write
+# (`theurian.security.no_follow`), driven by
+# `tests/unit/test_no_follow_writes.py` and by the CLI plants in
+# `tests/integration/test_derived_path_symlink_writes.py`.
 #
 # A new writer joins (1) by reflection, or gets its own named containment plus a
 # test as (2) does -- never a silent exclusion, the treatment `migrations` gets.
@@ -222,6 +237,10 @@ _HELPER_CALLS: dict[str, Callable[[ProjectPaths], Path]] = {
     "active_pointer": lambda p: p.active_pointer,
     "active_index_pointer": lambda p: p.active_index_pointer,
     "index_secret_scan": lambda p: p.index_secret_scan,
+    "active_pointer_temporary": lambda p: p.active_pointer_temporary,
+    "active_index_pointer_temporary": lambda p: p.active_index_pointer_temporary,
+    "index_secret_scan_temporary": lambda p: p.index_secret_scan_temporary,
+    "ingestion_manifest": lambda p: p.ingestion_manifest,
     "write_lock": lambda p: p.write_lock,
     "index_for": lambda p: p.index_for("01K1AAAAAA01234567890ABCDE"),
     "database_for": lambda p: p.database_for(_SAMPLE_STATE_HASH),
@@ -243,6 +262,10 @@ _ESCAPING_CHILD: dict[str, str] = {
     "active_pointer": "state",
     "active_index_pointer": "state",
     "index_secret_scan": "state",
+    "active_pointer_temporary": "state",
+    "active_index_pointer_temporary": "state",
+    "index_secret_scan_temporary": "state",
+    "ingestion_manifest": "cache",
     "write_lock": "runtime",
     "index_for": "state",
     "database_for": "state",
@@ -267,10 +290,10 @@ _READER_CONTAINED: set[str] = {"migrations"}
 #: Written out as a judgement rather than recomputed from
 #: ``DERIVED_SUBDIRECTORIES``, which would be this test asking production the
 #: question production is being tested on. Read off the helper list by hand: each
-#: of these asks for something *inside* ``state`` or ``runtime``, while ``state``
-#: and ``runtime`` themselves ask for the directory and keep the older text --
-#: the same wrong-artifact shape one level up, which belongs to #525's population
-#: rather than to this fix's.
+#: of these asks for something *inside* ``state``, ``runtime`` or ``cache``, while
+#: ``state`` and ``runtime`` themselves ask for the directory and keep the older
+#: text -- the same wrong-artifact shape one level up, which belongs to #525's
+#: population rather than to this fix's.
 #:
 #: ``index_for`` is deliberately absent even though it reads under ``state``: its
 #: own escape check raises before ``_contained`` sees the leaf, with
@@ -286,10 +309,22 @@ _READER_CONTAINED: set[str] = {"migrations"}
 #: been composed -- so it publishes :func:`derived_escape_remedy` and belongs
 #: here. Neither side changed production: #483's fix already answered this way for
 #: it, and only this set had not been told.
+#:
+#: The three ``*_temporary`` leaves and ``ingestion_manifest`` joined on #523 and
+#: #394, classified the same way and for the same reason: each asks for a leaf
+#: inside a derived subdirectory. ``ingestion_manifest`` is the first member under
+#: ``cache`` rather than ``state`` or ``runtime``, which is why the sentence above
+#: names three subdirectories now and why ``_REBUILD_AFTER_REMOVING`` grew a
+#: ``cache`` tail in the same change -- without it the remedy would have named a
+#: subdirectory to remove and then said nothing about rebuilding it.
 _NAMES_A_DERIVED_ARTIFACT: set[str] = {
     "active_pointer",
     "active_index_pointer",
     "index_secret_scan",
+    "active_pointer_temporary",
+    "active_index_pointer_temporary",
+    "index_secret_scan_temporary",
+    "ingestion_manifest",
     "write_lock",
     "database_for",
     "findings_for",
