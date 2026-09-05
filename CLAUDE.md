@@ -439,9 +439,9 @@ twice, counting symptoms and then counting the wrong method. A reader given the
 key can attack the key; given only the list, only the number. Four of that
 milestone's orchestrator claims were false; the
 [work log](docs/work-logs/2026-08-03-milestone-5-review-rounds.md) names all
-four. Cost is not the reason to skip the check — latency is, and a check before
-dispatch serialises assignments this file otherwise launches together, so spend
-it on the rows above and not on every brief.
+four. Cost is not the reason to skip the check — latency is what keeps it
+narrow, and a check before dispatch serialises assignments this file otherwise
+launches together, so spend it on the rows above and not on every brief.
 
 **Not over the reviewers' findings.** They already are independent readers who
 go to the source. This is for the node they do not cover.
@@ -616,12 +616,12 @@ its language is the point.
   afterwards took three attempts, and the one that built opens with a
   13,434-line commit. Size was not the cause: a port signature change spread
   across layers, and a commit that removes an API without moving its consumers
-  does not build — once they have landed separately, no ordering works. It also
-  bounds review: rounds four to six were handed `git diff main...HEAD`, which
-  showed 7,792 lines of a larger change — four production modules and three
-  schemas were untracked, and so invisible to it. An uncommitted tree has no
-  boundary a reviewer can check. The same green pushes to origin and opens a
-  Draft PR — see *Early push and Draft PRs*.
+  does not build — once they have landed separately, no ordering works.
+  Committing at the green also bounds review: rounds four to six were handed
+  `git diff main...HEAD`, which showed 7,792 lines of a larger change — four
+  production modules and three schemas were untracked, and so invisible to it.
+  An uncommitted tree has no boundary a reviewer can check. The same green
+  pushes to origin and opens a Draft PR — see *Early push and Draft PRs*.
 - A cluster PR ships at its planned scope: reaching the planned commits or 8
   elapsed hours closes the batch — flip what is green, box-split the rest. A
   5-commit plan that lands 12 has traded closure latency for review surface.
