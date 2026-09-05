@@ -731,6 +731,58 @@ def test_the_port_count_row_inventories_the_population_its_own_key_returns() -> 
     )
 
 
+@pytest.mark.parametrize(
+    ("doctored_key", "offending_flag"),
+    [
+        pytest.param("`git grep -n -O/bin/sh anything`", "-O/bin/sh", id="a-pager-of-its-choosing"),
+        pytest.param("`git grep -n -f evil anything`", "-f", id="a-pattern-file-of-its-choosing"),
+    ],
+)
+def test_a_population_key_carrying_an_unlisted_flag_is_refused_before_it_runs(
+    doctored_key: str, offending_flag: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED means a row can name a flag and this module will run it.
+
+    :func:`_population_argv` executes a command read out of ``docs/roadmap.md``,
+    so the flag fence is the whole of what stands between an edited row and an
+    arbitrary process. It had no driving test until this one: deleting the
+    refusal's body left the entire suite green, because the shipped row carries
+    only allowed flags and no other input ever reached the branch. A guard no
+    input reaches survives its own deletion.
+
+    Both parameters are the two the fence's own comment names. ``git grep -O``
+    hands each match to a pager of the row's choosing, and ``-f`` reads the
+    pattern list from a file of the row's choosing; neither is in
+    :data:`_ALLOWED_GREP_FLAGS`, and each must be named in the refusal rather
+    than merely rejected, so that whoever widened the row learns which element
+    was refused.
+
+    ``subprocess.run`` is replaced with a tripwire that raises
+    :class:`RuntimeError` -- deliberately not an :class:`AssertionError`, so
+    :func:`pytest.raises` below cannot absorb it and report a fence that
+    refused *after* running as a pass. The claim is that the fence refuses
+    rather than executes, and that is only observable by watching for the
+    execution.
+
+    The patterns are spelled ``anything`` rather than the phrase the row greps
+    for: a doctored key quoting that phrase would make this file a member of
+    the population it measures, which is the constraint the module docstring
+    records and :data:`_CLAIM_TAIL` discharges.
+    """
+
+    def _tripwire(*arguments: object, **keywords: object) -> object:
+        raise RuntimeError(
+            f"the flag fence let {arguments!r} reach subprocess.run, so a row naming "
+            f"{offending_flag} is executed rather than refused"
+        )
+
+    monkeypatch.setattr(subprocess, "run", _tripwire)
+    row = f"| 4 | a doctored known-defect row | Population: {doctored_key} |"
+
+    with pytest.raises(AssertionError, match=re.escape(offending_flag)):
+        _population_argv(row)
+
+
 def test_the_port_count_row_names_the_twins_current_revision() -> None:
     """RED means the roadmap names a revision of the twin that is no longer current.
 
