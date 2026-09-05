@@ -225,6 +225,20 @@ CORRECTION_MARKERS: Final = ("re-seeded", "no longer")
 #: :func:`test_the_un_re_seeded_claim_is_caught_when_it_comes_back`: widening
 #: this constant is the direction the shipped roadmap cannot detect, since a
 #: wider window only ever excuses more.
+#:
+#: **The slack is measured, not implied.** An exhaustive integer sweep of
+#: 0--1199 -- this constant rebound in-process, then the shipped roadmap and
+#: every synthetic input in this module re-evaluated at each reach -- accepts
+#: exactly ``[9, 148]`` and nothing outside it: at 8 the shipped roadmap and the
+#: first ``recording_the_end`` input redden together, and at 149 the ``too_far``
+#: ceiling stops being reported as an offender. Vacuity is further off again --
+#: a *full revert* of row 4, its corrected sentence replaced by the retired one
+#: outright, is caught up to 512 and unreported from 513, which is where the
+#: next ``re-seeded`` in that block sits. So the shipped 20 clears the floor by
+#: 11 and the ceiling by 128. Measured 2026-09-05 on #557's branch; recorded
+#: here rather than driven by a sweep of its own, because both edges of the
+#: interval already have a driver below and what a sweep would add is the
+#: *width*, which no behaviour depends on.
 MARKER_REACH_CHARS: Final = 20
 
 _GIT_TIMEOUT_SECONDS: Final = 60
@@ -595,7 +609,7 @@ def test_the_un_re_seeded_claim_is_caught_when_it_comes_back() -> None:
     tense -- would be fiction.
 
     The last input pins :data:`MARKER_REACH_CHARS` from **above**, which the
-    three before it do not: each of them passes at every reach from 8 to 100000,
+    three before it do not: each of them passes at every reach from 9 to 100000,
     so widening the window is a change none of them can see. That direction is
     not hypothetical -- a wide enough window reaches a marker belonging to some
     other sentence and excuses the claim by proximity alone, which is the same
@@ -639,7 +653,7 @@ def test_the_un_re_seeded_claim_is_caught_when_it_comes_back() -> None:
     # characters past the claim -- the collapsed ". ", twenty filler words and
     # "it was " -- so it is an offender up to 148 and clean from 149, holding
     # the window far below that vacuity threshold. The three inputs above pin
-    # nothing here: each passes at every reach from 8 to 100000.
+    # nothing here: each passes at every reach from 9 to 100000.
     too_far = _normalised(
         "The served-corpus twin is un-re-seeded. " + "filler " * 20 + "It was re-seeded later."
     )
