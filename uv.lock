@@ -1214,7 +1214,7 @@ wheels = [
 
 [[package]]
 name = "theurian"
-version = "0.1.0.dev18"
+version = "0.1.0"
 source = { editable = "packages/theurian-core" }
 dependencies = [
     { name = "jsonschema" },

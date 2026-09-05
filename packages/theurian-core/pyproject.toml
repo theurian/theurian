@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "theurian"
-version = "0.1.0.dev18"
+version = "0.1.0"
 description = "Git-native engineering knowledge platform: versioned, traceable context for AI agents."
 readme = "README.md"
 requires-python = ">=3.13"
