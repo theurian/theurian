@@ -126,7 +126,7 @@ the absence was already better than.
 | 1 | **Exactly one module may reach GitHub.** The spawn site lives in `infrastructure/github/`, and the pinned spawn-site set grows by exactly that one entry. | A second fetch path added later on a page nobody re-reads; the equality pin catches an addition *and* a removal. | The existing `PROCESS_SPAWN_SITES` equality assertion, extended by one entry, plus a test that no other module in the shipped package names the adapter's spawn helper. Slice 1. |
 | 2 | **The endpoint is the literal `graphql`.** Repository identity travels as typed GraphQL variables, never in the URL position. | The `gh api <path>` form interpolates caller data into a path; the GraphQL form has no path segment an owner or repo name can escape into. It also means no raw URL exists for T-7's scheme allowlist to be needed on. | A test that the argument vector's endpoint element equals `graphql` byte-for-byte, and that no element is derived by string-formatting a repository name. Slice 1. |
 | 3 | **The destination host is pinned by an explicit `--hostname github.com`.** | An inherited `GH_HOST` silently moving the request to another host — measured to move it (run B). | A test asserting the flag and its value are present in every spawned vector. Slice 1. |
-| 4 | **The child environment is CONSTRUCTED from a closed enumerated constant** (`env={...}` passed to the spawn), never inherited and never merely scrubbed. The membership is the table below, derived from its own `Value` column; the one open platform question — a Linux credential-store member — is reconciled there by a slice-1 CI measurement, not left to an implementer's judgement. | The measured attack class below: *destination and identity taken from inherited environment*. A scrub is a blocklist, and a blocklist has to be right about every variable `gh` and its transport stack read; a constructed environment has to be right about the few Theurian deliberately passes. | **(i)** an **equality** test — the child's environment mapping equals the expected mapping **written out test-side**, not imported. It is a strong assertion: it goes RED for every wrong mapping, including a passed-through parent variable, a missing member and a wrong value, and round two's adversarial review drove it RED five ways. **The test-side restatement is what makes it killable, and this is the correction of an inverted claim**: a test that *reads* the production constant moves with it, so mutating the constant changes both sides and the test SURVIVES — measured by round three's adversarial review with toy models, 2026-09-05. The killable forms are a test-side expectation or a source scan, which is the shape `PROCESS_SPAWN_SITES` already uses in this repository (clause 1). **(ii)** the run-D-shaped fixture — a config directory carrying `http_unix_socket`, reached through a forwarded config-locating variable — **split in two, because its halves have different requirements**. **(ii-a) the refusal driver**: with the fixture in place the adapter refuses **before spawning**, so it needs no `gh` at all and is never skipped — a pre-spawn refusal that never reaches the binary is testable on any machine. **(ii-b) the residual demonstration**: with the refusal disabled, the request leaves through the socket. That half needs a real `gh`, so it is skipped where the binary is absent and the skip is reported rather than counted as a pass. Only (ii-b) is skippable, and the driver for the control is not. Slice 1. |
+| 4 | **The child environment is CONSTRUCTED from a closed enumerated constant** (`env={...}` passed to the spawn), never inherited and never merely scrubbed. The membership is the table below, derived from its own `Value` column; the one open platform question — a Linux credential-store member — is reconciled there by a slice-1 CI measurement, not left to an implementer's judgement. | The measured attack class below: *destination and identity taken from inherited environment*. A scrub is a blocklist, and a blocklist has to be right about every variable `gh` and its transport stack read; a constructed environment has to be right about the few Theurian deliberately passes. | **(i)** an **equality** test — the child's environment mapping equals the expected mapping **written out test-side**, not imported. Membership is by key **and** value, and an **empty string is a present key, not an absent one**: `gh` treats an empty config-locating variable as absent and falls through (decision 1, member (d)), so the two are not interchangeable and the test pins which one the constant carries. It is a strong assertion: it goes RED for every wrong mapping, including a passed-through parent variable, a missing member and a wrong value, and round two's adversarial review drove it RED five ways. **The test-side restatement is what makes it killable, and this is the correction of an inverted claim**: a test that *reads* the production constant moves with it, so mutating the constant changes both sides and the test SURVIVES — measured by round three's adversarial review with toy models, 2026-09-05. The killable forms are a test-side expectation or a source scan, which is the shape `PROCESS_SPAWN_SITES` already uses in this repository (clause 1). **(ii)** the run-D-shaped fixture — a config directory carrying `http_unix_socket`, reached through a forwarded config-locating variable — **split in two, because its halves have different requirements**. **(ii-a) the refusal driver**: with the fixture in place the adapter refuses **before spawning**, so it needs no `gh` at all and is never skipped — a pre-spawn refusal that never reaches the binary is testable on any machine. **(ii-b) the residual demonstration**: with the refusal bypassed **through a test seam — an injection point the test supplies, never a shipped flag or configuration key** (a runtime switch that disables a security check is a second way to reach the exposure) — the request leaves through the socket. That half needs a real `gh`, so it is skipped where the binary is absent and the skip is reported rather than counted as a pass. Only (ii-b) is skippable, and the driver for the control is not. Slice 1. |
 | 5 | **The `gh` binary is resolved to an absolute path, and the vector is passed with `shell=False`.** | SEC-9 verbatim: "Never build a shell command by string concatenation. `git` and `gh` are invoked as argument vectors with `shell=False`" (`requirements-analysis.md:236`). An unresolved name would also let the child's `PATH` choose the executable; clause 4 means whatever `PATH` the child sees is one this project constructed, and clause 5 means it is not consulted for the executable at all. | A test that the first vector element is an absolute path and that `shell=True` appears nowhere in the module. Slice 1. |
 | 6 | **No `--paginate`.** Every page after the first is requested by handing back a GraphQL cursor in a typed variable, with the vector otherwise unchanged. | `--paginate` exists to follow a next-page reference the **response** supplies. Exactly what it follows, and how, is behaviour of a binary this design does not pin (clause 8 bounds only its version) — and that is the reason the flag is excluded rather than characterised: a destination the response chooses is the shape T-7 names, and a cursor in a typed variable cannot become one. | A test that `--paginate` is absent from every spawned vector, and a cursor-pagination test over a recorded fixture. Slice 1. |
 | 7 | **A request timeout (SEC-19) and recorded ingest cost bounds: a page cap and a PR-count cap, each a named constant.** Exceeding a cap is a reported, graded stop, never a silent truncation and never an unbounded loop. | A caller — or a large repository — making the system spend work no recorded limit bounds. The severity table grades exactly that as HIGH, and [#26](https://github.com/theurian/theurian/issues/26)'s T-6 concurrency cap is the precedent for how such a bound is recorded: a constant, a test, and prose that names the number. | A test per cap that the constant is the value the adapter uses, and a test that a fixture exceeding the cap stops with a report. Slice 1. |
@@ -176,38 +176,49 @@ environment, the second half of the class clause 4 exists to close — and then
 passed the config-locating variables anyway, which runs D–F show to be
 destination-bearing. **It excluded exactly the variables it admitted.** The third
 replaced it with a single necessity test ("admitted only if `gh` cannot locate the
-operator's persisted authentication without it"), which excludes four of the eight
-rows it governs: `NO_COLOR`, the three notifier and prompt variables, and `PATH`.
+operator's persisted authentication without it") and then admitted five rows that
+fail it: `NO_COLOR`, the three notifier and prompt variables, and `PATH`.
 
 So the rule is not written over the table and then checked against it. **It is
-derived from the table's `Value` column**, which has exactly two forms, and each
-form carries its own admission ground:
+derived from the table's `Value` column**, and that column has **three** forms —
+which is what the table shows, not two:
 
 | `Value` form | Admission ground | Rows |
 | :-- | :-- | :-- |
-| **forwarded by value** — the parent's value crosses into the child | **necessity**: admitted only if `gh` cannot locate the operator's persisted authentication, or its platform credential store, without it | `HOME`, `GH_CONFIG_DIR`, `XDG_CONFIG_HOME` |
-| **set to a literal** — a constant this project writes, carrying no parent data | **a named operational property**, stated per row, with its transport reach enumerated beside it | `NO_COLOR`, `GH_NO_UPDATE_NOTIFIER`, `GH_PROMPT_DISABLED`, `GH_NO_EXTENSION_UPDATE_NOTIFIER`, and `PATH` as a Theurian-constructed value |
+| **forwarded by value** — the parent's value crosses into the child unchanged | **necessity**: admitted only if `gh` cannot locate the operator's persisted authentication, or its platform credential store, without it | `HOME`, `GH_CONFIG_DIR`, `XDG_CONFIG_HOME` |
+| **set to the literal `1`** — a constant carrying no parent data and no value choice | **a named operational property**, stated per row, with its transport reach enumerated beside it | `NO_COLOR`, `GH_NO_UPDATE_NOTIFIER`, `GH_PROMPT_DISABLED`, `GH_NO_EXTENSION_UPDATE_NOTIFIER` |
+| **set by Theurian to a fixed value that is not forwarded** — a value this project chooses, where the choice itself is the decision | the operational property **plus a pinned value**: the value is fixed in the constant and **never derived from the parent's**, because a derived value would re-admit the parent's input through a row that reads as a literal | `PATH` |
+
+**`PATH`'s ground is the third form, and the load-bearing half is the
+never-derived.** An implementer may satisfy "a Theurian-constructed value" by
+building it *from* the parent's `PATH` — filtering it, prepending to it — and every
+word of the earlier wording would still be honoured while the parent chose the
+helper binaries again. So this ADR fixes the rule (**a fixed literal, never
+derived from the parent's `PATH`**) and leaves the exact literal to slice 1, which
+is also what makes clause 4(i)'s test-side expected mapping writable: an unpinned
+value has no expectation to write.
 
 The grounds are asymmetric because the risks are: a forwarded value is an input
-the parent controls, so it has to be *necessary*; a literal this project writes is
-not an input at all, so it has to be *useful and bounded*. Reach is enumerated for
-every row either way, in the open — reduced where a check exists, recorded as a
-residual where none does. **The derivation cannot contradict the table**, because
-every row's ground is read off the row.
+the parent controls, so it has to be *necessary*; a literal carries no input at
+all, so it has to be *useful and bounded*; a chosen value is neither, so it needs
+both the property and the pin. Reach is enumerated for every row either way, in
+the open — reduced where a check exists, recorded as a residual where none does.
+**The derivation cannot contradict the table**, because every row's ground is read
+off that row's own `Value`.
 
 **The closed enumerated constant.** The child environment is exactly the rows
 below, and the table is the constant — there is no "and similar":
 
 | Variable | Value | Why it is admitted | Transport reach |
 | :-- | :-- | :-- | :-- |
-| `HOME` | forwarded by value | `gh` locates its config directory and the operator's persisted login through it | reaches the config file — **reduced** by slice 1's pre-spawn refusal, with the two residuals derived below |
+| `HOME` | forwarded by value | `gh` locates its config directory and the operator's persisted login through it | reaches the config file — **reduced** by slice 1's pre-spawn refusal for the accidental single-well-formed-file case only, with the divergence class derived below |
 | `GH_CONFIG_DIR` | forwarded by value | the same, when the operator sets it explicitly | the same |
 | `XDG_CONFIG_HOME` | forwarded by value | the same, on the XDG path | the same |
 | `NO_COLOR` | `1` | machine-readable output | none |
 | `GH_NO_UPDATE_NOTIFIER` | `1` | **set, not merely absent**: without it `gh` performs its own 24-hour release check — an outbound request no argument vector of ours chose (`gh` 2.86.0's documented environment, read in round two) | removes an outbound request |
 | `GH_PROMPT_DISABLED` | `1` | a spawned `gh` must never block on an interactive prompt | none |
 | `GH_NO_EXTENSION_UPDATE_NOTIFIER` | `1` | same class as the update notifier: a check nobody asked for | removes an outbound request |
-| `PATH` | a **Theurian-constructed** value, not the parent's | `gh` shells out (`git`, credential helpers); an inherited `PATH` would let the parent environment choose those binaries | it selects which helper binaries `gh` runs — enumerated here as reach, not claimed to be harmless: a helper this project's own `PATH` value resolves is one this project chose |
+| `PATH` | a **fixed literal chosen by Theurian**, never derived from the parent's (the literal is slice 1's; the *never-derived* is this ADR's) | `gh` shells out (`git`, credential helpers); an inherited `PATH` would let the parent environment choose those binaries | it selects which helper binaries `gh` runs — enumerated here as reach, not claimed to be harmless: a helper this project's own `PATH` value resolves is one this project chose |
 
 **Nothing else.** `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and
 `GITHUB_ENTERPRISE_TOKEN` would have to enter as *forwarded by value*, and they
@@ -246,30 +257,50 @@ So the exposure is not "an attacker who could already read the token". It is: **
 actor able to write the operator's own `gh` config directory can redirect an
 authenticated request and capture what it carries, without holding the credential
 themselves.** Slice 1's pre-spawn refusal of known transport-override keys reduces
-that exposure. **What survives is two residuals, not one**, and they are derived
-rather than listed — from the gap between *what the check reads* and *what `gh`
-reads*:
+that exposure — but only some of it. **The residual is a class, not a list**, and
+it is derived from one fact: *the check's read cannot be `gh`'s read*. Every way
+those two reads can diverge is a member, and four are measured:
 
-| Derived from | Residual | Why the check does not reach it |
+| The two reads diverge on | Member | Why the check cannot reach it |
 | :-- | :-- | :-- |
-| The check reads the file **at check time**; `gh` reads it **at spawn time** | **(a) The TOCTOU race** — a writer landing a *known* key in that window | Two reads of a mutable file, and nothing holds it still between them. A writer with the directory and the timing still wins |
-| The check reads a **known key set**; `gh` reads **whatever its version understands** | **(b) An unknown transport-override key** — one outside the set, needing no race at all | Clause 8's version floor bounds the binary **only below**: a newer `gh` may honour a setting this check has never heard of, and the check cannot refuse what it does not know |
+| **when** — the check reads at check time, `gh` at spawn time | **(a) the race** — a writer landing a known key in that window | Two reads of a mutable file with nothing holding it still between them |
+| **which keys** — the check knows a fixed set, `gh` honours what its version understands | **(b) an unknown or future key**, needing no race at all | Clause 8's floor bounds the binary **only below**: a newer `gh` may honour a setting this check has never heard of |
+| **which bytes parse, and how** — both read the same file and disagree about it | **(c) parser divergence.** Measured, adversarial round 4, `gh` 2.86.0: with `http_unix_socket` present **twice**, PyYAML `safe_load` takes the **last** occurrence (the check sees no override) while `gh` dials the **first** occurrence's socket. A parse error is the same class in the other direction: a naive best-effort check **fails open** | A YAML reader is not `gh`'s reader; agreeing on the bytes is not agreeing on the value |
+| **which file** — the check reads what `os.environ.get` suggests, `gh` resolves one directory by precedence | **(d) resolution divergence.** Measured: `gh` reads exactly **one** directory — `GH_CONFIG_DIR` > `$XDG_CONFIG_HOME/gh` > `$HOME/.config/gh` — an **empty-string** variable **falls through** to the next, and a **relative** value resolves against the **child's** cwd | Runs D–F moved one variable at a time and never measured the precedence, so a check that reads all three, or reads them in the wrong order, checks a file `gh` will not open |
 
-Neither is closed, and they fail differently: (a) needs timing, (b) needs only a
-key. **Slice 1 therefore owes a re-take of the known-key set whenever the version
-floor moves** — the floor is what makes (b) bounded at all, so raising it without
-re-reading `gh`'s configuration surface widens (b) silently.
+Members (c) and (d) need neither timing nor an unknown key: the same file, the
+same moment, and the check still answers a different question.
+
+**So the check is priced honestly, in one sentence: it reduces the accidental,
+pre-existing, single-well-formed-file case, and nothing above it.** That is worth
+having — a typo'd or inherited `http_unix_socket` is the case an operator actually
+meets — and it is not a control against an adversary. The class above is the
+recorded residual.
+
+**The parse-error arm is a decision, not an oversight: the check fails open.** An
+unparseable config is refused by nothing here. Refusing to spawn on any config the
+check cannot parse would deny the ingest to precisely the operator this check
+exists to help — someone whose config has a typo — and it would make a YAML
+reader's strictness a gate on an unrelated capability. The exposure that decision
+accepts is member (c), recorded above.
+
+**What the check's own spec must therefore say**, all of it owed to slice 1: it
+resolves **the same precedence chain `gh` does**, treating an empty-string variable
+as absent and falling through exactly as `gh` does (measured); and it runs
+**before any binary probe** — ahead of clause 8's version read and clause 9's
+authentication probe — because a probe is itself a spawn, and a check that runs
+after one has already handed the config a request.
 
 **The precondition, named because it is the operator's trust and not Theurian's
-check.** The directory in question is the operator's own, user-owned by
-construction; Theurian does not inspect its permissions or ownership, and does not
-propose to. Nor is the exposure limited to one variable: **any** of the three
-forwarded config-locating variables resolves that directory (runs D–F measured all
-three), so the reach is the union of what they resolve, not `GH_CONFIG_DIR` alone.
-(Measured on 2.86.0, `http_unix_socket` is a real configuration key while
-`api_host` is not — which is why both the refusal and residual (b) name the *class*
-of transport-override settings and not one key.) Clause 4's test (ii) keeps
-residual (a) demonstrated rather than argued, and drives the refusal.
+check.** The directory is the operator's own, user-owned by construction; Theurian
+does not inspect its permissions or ownership, and does not propose to. **Which
+directory it is, is decided by precedence and not by union**: exactly one is read,
+by the order in member (d) — an earlier draft of this paragraph said the reach was
+"the union of what they resolve", which is not what `gh` does. (Measured on 2.86.0,
+`http_unix_socket` is a real configuration key while `api_host` is not — which is
+why both the refusal and member (b) name the *class* of transport-override settings
+and not one key.) Clause 4's tests keep member (a) demonstrated rather than argued,
+in the split clause 4 specifies.
 
 **Theurian borrows the operator's ambient GitHub identity, and holds no token.**
 Ingestion runs with **whatever scopes the operator's `gh` login already has**,
@@ -371,11 +402,14 @@ have shipped two slices earlier while the flag was still `false`. Redefining a
 published flag without moving what cites it is how a security statement becomes
 false, so slice 1 moves the sites that record the old meaning.
 
-**The population is a key, and the frame it is measured in is stated because this
-branch is inside it.** An earlier draft named six sites and claimed they were every
-one; round two found eight more; round three found two unjudged lines, a live
-member the CHANGELOG exclusion dropped, and a false universal saying the branch
-touched none of these files. The key, at `origin/main` @ `1fe3302b`:
+**The population is a key, and what lives here is the key, its frame and the rule
+that judges a line — not the annotated population.** Four rounds tried to keep a
+member table inside this ADR in bijection with a moving tree, and each round found
+a mispointed anchor, an unjudged line or a stale frame beside a correct run. The
+table is therefore demoted (see *Demoted populations* in *Dispositions*); what a
+design record owes is the key and the judgment rule, both of which are stable.
+
+The key, at `origin/main` @ `1fe3302b`:
 
 ```console
 $ git grep -n "reviewIngestion" 1fe3302b -- . ':!.claude' ':!.theurian' ':!docs/work-logs' | wc -l
@@ -384,9 +418,32 @@ $ git grep -l "reviewIngestion" 1fe3302b -- . ':!.claude' ':!.theurian' ':!docs/
       14
 ```
 
-**Two frames, because they differ.** The line numbers cited below are the
-`1fe3302b` frame. This branch **edits three of those fourteen files**, so its own
-frame differs and the difference is derived rather than asserted:
+**The exclusions, measured rather than asserted** — `git grep -n "reviewIngestion"
+1fe3302b -- <path>` for each: `.claude/` drops **0**, `.theurian/` drops **0**,
+`docs/adr/0030-*` drops **0** at that frame. Only `docs/work-logs/` drops
+anything — **1** line — and it stays excluded because a work log is a dated record
+of what was believed then. **CHANGELOGs are not excluded by path**, because that
+dropped a live member: `claim_surfaces.dated_lines` — the audit tooling's own
+answer to "is this line inside a dated section?" — puts five `reviewIngestion`
+lines inside dated sections of `packages/theurian-core/CHANGELOG.md` and
+`plugins/claude-code/CHANGELOG.md:281` outside one. The rule is
+`owner_position_cites`'s, quoted from its `_RELEASE_RECORDS` docstring:
+
+> `[Unreleased]` is **not** one of those entries … It describes the tree a reader
+> has checked out, it is rewritten on every merge, and a dead owner written into it
+> is a live claim in a governed file.
+
+**The judgment rule, which is what a slice-1 brief applies to each line.** Every
+line in the key's output is exactly one of:
+
+| Class | Rule | Moves in slice 1 |
+| :-- | :-- | :-- |
+| **Mover** | the line states what the flag **means** — that nothing reaches GitHub, that this is the flag that would, or that no adapter exists | **yes** |
+| **Non-mover** | the line states the flag's **value**, or names it as a key in a list, or is another record's own recorded prose about its own decision | no — the value flips at slice 3 |
+| **Dated record** | the line is inside a dated release section | no — correcting a release record would falsify it |
+
+**Two frames, because they differ.** Line anchors are `1fe3302b`; this branch
+edits three of those fourteen files, so its own frame differs:
 
 ```console
 $ comm -12 <(git grep -l "reviewIngestion" 1fe3302b -- . ':!.claude' ':!.theurian' ':!docs/work-logs' \
@@ -397,80 +454,11 @@ docs/roadmap.md
 docs/security/threat-model.md
 ```
 
-The one citation the branch actually moves is the threat model's, because this
-PR's own owner repoint inserted lines above it: `:1703` and `:1712-1715` at
-`1fe3302b` are **`:1707` and `:1717`** on the branch. Both are given in the table.
-
-**The exclusions, measured rather than asserted** — `git grep -n "reviewIngestion"
-1fe3302b -- <path>` for each: `.claude/` drops **0**, `.theurian/` drops **0**,
-`docs/adr/0030-*` drops **0** (it does not exist at `1fe3302b`; on the branch it
-drops this ADR, which is a member of the population it measures). Only
-`docs/work-logs/` drops anything — **1** line — and it stays excluded because a
-work log is a dated record of what was believed then.
-
-**CHANGELOGs are no longer excluded by path, because that dropped a live member.**
-`git grep -n "reviewIngestion" 1fe3302b -- '*CHANGELOG.md'` returns **6** lines,
-and `claim_surfaces.dated_lines` — the audit tooling's own answer to "is this line
-inside a dated section?" — puts five of them inside dated sections of
-`packages/theurian-core/CHANGELOG.md` and **`plugins/claude-code/CHANGELOG.md:281`
-outside one**. The rule is `owner_position_cites`'s, quoted from its
-`_RELEASE_RECORDS` docstring:
-
-> `[Unreleased]` is **not** one of those entries … It describes the tree a reader
-> has checked out, it is rewritten on every merge, and a dead owner written into it
-> is a live claim in a governed file.
-
-So the five dated lines stay excluded — correcting a release record would falsify
-it — and `:281` joins the movers below. Both of its halves are falsified by slice
-1: it says no review history is ingested *and* that `infrastructure/github/` holds
-no adapter.
-
-**What a person then judged.** Sites recording the old *meaning* — these move in
-slice 1, one row per `file:line` site:
-
-| Site | Kind | What it says today |
-| :-- | :-- | :-- |
-| `docs/security/threat-model.md:1703` (branch `:1707`) | document | the flag is `false`, pinned by `test_capabilities_report_what_is_and_is_not_built` |
-| `docs/security/threat-model.md:1712` (branch `:1717`) | document | the flag "that has to move before this entry's controls become load-bearing" |
-| `docs/protocol/mcp-tools.md:344` | document | "still planned, not shipped: the server reports `reviewIngestion: false`" |
-| `docs/protocol/mcp-tools.md:346` | document | "`reviewIngestion` is the one that reaches GitHub" |
-| `docs/roadmap.md:46` | document | "still `false`: nothing reaches GitHub" |
-| `docs/roadmap.md:247` | document | the same `false` cited as a build property |
-| `README.md:205` | document | the flag quoted in the AI-proposes-humans-approve row |
-| `docs/architecture/review-knowledge.md:26` | document | "`system.capabilities` reports `reviewIngestion: false`" |
-| `plugins/claude-code/commands/ingest.md:29` | document | the same sentence, in the plugin's own command page |
-| `plugins/claude-code/CHANGELOG.md:281` | document | an `[Unreleased]` entry saying no review history is ingested and the adapter package is empty |
-| `packages/theurian-core/src/theurian/mcp/tools.py:1900` | production source | the inline capability comment beside the flag |
-| `packages/theurian-core/src/theurian/infrastructure/github/__init__.py:5` | production source | the adapter package's own docstring |
-| `packages/theurian-core/src/theurian/review/__init__.py:6` | production source | the same, in the review package |
-| `packages/theurian-core/src/theurian/review/__init__.py:16` | production source | "`reviewIngestion` is still `false`" |
-| `packages/theurian-core/tests/integration/test_mcp_tools.py:2060` | test | the docstring calling the flag a security statement |
-| `packages/theurian-core/tests/integration/test_mcp_tools.py:1975` | test | an assertion message describing what the flag stays false for |
-| `packages/theurian-core/tests/integration/test_mcp_tools.py:1980` | test | the assertion message on the flag itself |
-| `packages/theurian-core/tests/unit/test_config_key_call_sites.py:739` | test | `INGEST_CONFIG_BULLET`, which pins the plugin sentence above **byte for byte** — the page and this constant move together or the test goes RED |
-
-**Composition, derived from the table rather than counted by hand** (the unit is
-one `file:line` site, in this sentence and everywhere else it is stated):
-
-```console
-$ sed -n '/^| Site | Kind | What it says today |/,/^$/p' docs/adr/0030-github-review-ingestion-spawns-gh.md \
-    | awk -F'|' 'NR>2 && NF>3 {gsub(/^ +| +$/,"",$3); print $3}' | sort | uniq -c
-  10 document
-   4 production source
-   4 test
-```
-
-Slice 1 is therefore not a prose pass: a byte-pinned constant and two assertion
-messages are code changes, and the plugin page cannot move without its pin.
-
-**What is in the key's output and does *not* move in slice 1**, judged rather than
-silently dropped: `docs/roadmap.md:26`, `docs/protocol/mcp-tools.md:17` and
-`packages/theurian-core/src/theurian/mcp/tools.py:1905` — the published value
-itself — state the flag's **value**, which flips at slice 3, not its meaning;
-`docs/adr/0026-evidence-plane-not-control-plane.md:111` is another ADR's recorded
-prose about its own decision; `test_mcp_tools.py:1887`, `:2078` and
-`docs/roadmap.md:650` name the flag as a key in a list rather than describing what
-it promises; the five dated CHANGELOG lines are release records, above.
+**Slice 1 is not a prose pass**: movers include production-source docstrings, two
+assertion messages, and `INGEST_CONFIG_BULLET` in
+`tests/unit/test_config_key_call_sites.py`, which pins the plugin's `ingest.md`
+sentence **byte for byte** — the page and the constant move together or the test
+goes RED.
 
 The flag itself does not flip until slice 3, because until then there is nothing
 for a client to call; the two facts are separated in the documents rather than
@@ -500,27 +488,45 @@ Normalized evidence records land as **structured JSON files under
 and is deletable.
 
 **This withdraws a position that was live in the documentation, and the closure is
-a key's output rather than a list.** Three rounds enumerated the records carrying
-it by hand — one, then four, then five — and each enumeration missed one. So the
-claim is a key, and it excludes this ADR: a document that withdraws a position has
-to quote the position, so its own lines match any key about that position and a
-paste of an unfiltered run can never be current in the file it is pasted into.
+a key on the position's own words.** Three rounds enumerated the records carrying
+it by hand — one, then four, then five — and each missed one; a fourth round found
+that a key on the *path token* could not see the served corpus at all. So the key
+is the position string itself:
 
 ```console
-$ git grep -n '\.theurian/cache' -- . ':!docs/adr/0030-*' | grep -i review
-docs/architecture/requirements-analysis.md:879:| OQ-8 | Where does ingested review evidence live? | `.theurian/review/`, as durable structured files — **not** `.theurian/cache/`, and not rebuildable from the GitHub API: …
+$ git grep -n "raw GitHub review caches" -- . ':!docs/adr/0030-*'
+.theurian/knowledge/architecture/sqlite-is-a-derived-artifact.01M0D5GTZN1YPYAPJ18TAP7NAD.md:41:- raw GitHub review caches, normalized temporary documents
+.theurian/knowledge/architecture/sqlite-is-a-derived-artifact.01M1EVBH96EE1X6Z9KTA5EZ95K.md:41:- raw GitHub review caches, normalized temporary documents
+.theurian/knowledge/architecture/sqlite-is-a-derived-artifact.01M1QMNC4YSFVPST9RA2FNHKDJ.md:41:- raw GitHub review caches, normalized temporary documents
+docs/adr/0004-sqlite-is-a-derived-artifact.md:41:- raw GitHub review caches, normalized temporary documents
+docs/adr/0004-sqlite-is-a-derived-artifact.md:86:> "raw GitHub review caches" entry in the *Never Git-tracked (derived)* list
 ```
 
-**One line, and it is the corrected one** — OQ-8 names `.theurian/cache/` only to
-say *not* there. No record outside this ADR asserts the withdrawn position; inside
-it, the position appears only in quotations that say so.
+**This ADR is excluded from the key by pathspec, for the reason round three
+recorded and round four upheld**: a document that withdraws a position must quote
+it, so its own lines match any key about that position and an unfiltered paste can
+never be current in the file it sits in.
 
-Dropping the `review` filter widens the output to the tree's other cache
-mentions, none of them about review evidence — the *ingestion manifest*
-(`.theurian/cache/ingestion.json`), the git-ignore entry, and
-`DERIVED_SUBDIRECTORIES`. No count is written here: this ADR is inside that
-population, so any figure moves when this paragraph is edited. The cache directory
-is still a cache; this decision does not touch it.
+**Corpus membership, stated because this is a repo-wide key** (the standing rule
+for any walker here): **the served corpus is IN**, and it is where three of the five
+hits are. Those three are `sqlite-is-a-derived-artifact` twins — one current, two
+superseded revisions — and they carry the withdrawn line **because a governed
+snapshot moves by re-seed and never by edit**. They are
+[#579](https://github.com/theurian/theurian/issues/579)'s: the same re-seed that
+clears the drift this PR causes brings the amendment across.
+
+**So the claim is qualified, not universal.** No record outside this ADR **and
+outside the frozen corpus twins #579 re-seeds** asserts the position: `ADR-0004:41`
+is the as-authored line the amendment at `:86` withdraws in place — the repository
+retracts by amending, never by rewriting.
+
+**Two measured limits of this key, recorded rather than discovered later.** It
+matches one physical line, so a straddled form — the phrase split across a wrap —
+is invisible to it; and it is **invariant under deletion of the amendment**: delete
+`ADR-0004:86` and this key still returns the corpus twins and `:41`. What guards the amendment's
+presence is not this key but #579's re-seed, which byte-pins the amended body into
+the corpus, plus `test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit`
+comparing that body against its anchor.
 
 The withdrawn wording is quoted above because the reasoning, not the corrected
 sentence, is what a later reader needs. It is safe for an artifact whose source
@@ -948,7 +954,7 @@ owed in the raw-URL context that is #429's:
 | T-7 control | On the `gh` path (slice 1) | In the raw-URL context |
 | :-- | :-- | :-- |
 | Repository allowlist | **Discharged** — a live check consulted before the spawn, with a pinning test. The only discharged control on this path | n/a |
-| Private-network rejection | **Split by family, and neither half is discharged as a whole.** The **proxy family** is closed by construction: it is absent from the child by the equality of clause 4's constant, and run C is what shows it would otherwise move the request. The **config family** is **reduced, not closed**: the config file is *reached* by the child through the three forwarded variables (runs D–F, re-run by round two under exactly the enumerated constant — the request still dialled the unix socket), and slice 1 adds a **pre-spawn best-effort refusal** of known transport-override keys in the file those variables resolve to. **Two residuals survive**, derived in decision 1 from what the check reads against what `gh` reads: a race on a known key, and an unknown key that needs no race. The check defeats a pre-existing or accidental override, not an attacker with write access and timing, and not a setting it has never heard of | **still #429's** |
+| Private-network rejection | **Split by family, and neither half is discharged as a whole.** The **proxy family** is closed by construction: it is absent from the child by the equality of clause 4's constant, and run C is what shows it would otherwise move the request. The **config family** is **reduced, not closed**: the config file is *reached* by the child through the three forwarded variables (runs D–F, re-run by round two under exactly the enumerated constant — the request still dialled the unix socket), and slice 1 adds a **pre-spawn best-effort refusal** of known transport-override keys in the file those variables resolve to. **What survives is decision 1's divergence class** — four measured members, derived there from the fact that the check's read cannot be `gh`'s read (when, which keys, which bytes-parse, which file). The check reduces the accidental, pre-existing, single-well-formed-file case and nothing above it | **still #429's** |
 | Scheme allowlist | not applicable — there is no URL in the argument vector to check a scheme on (clause 2) | **still #429's** |
 
 **What holds this row is clause 4's tests, in the split clause 4 specifies —
@@ -962,8 +968,9 @@ fetcher, where a URL taken from an ingested document is the input, and there bot
 the scheme allowlist and a destination check are live checks with something to
 check. T-7 is therefore rewritten **per control** in slice 1 — the absence control
 retired at a named commit, the repository allowlist recorded as discharged with
-the test that pins it, private-network rejection recorded as **reduced with a
-named residual** (never discharged), and the rest still owed with #429 named. The
+the test that pins it, private-network rejection recorded as **reduced with its
+residual class named** (decision 1's four-member divergence class), never as
+discharged, and the rest still owed with #429 named. The
 threat model's own lesson is the reason this is spelled out — "an owner has to be
 the change that would implement the control" — and this entry has had the wrong
 owner twice.
@@ -1015,32 +1022,19 @@ $ git grep -l "Milestone 7" -- packages/theurian-core/src packages/theurian-core
       18
 ```
 
-**27 lines across 18 files** at `origin/main` @ `1fe3302b` (same on this branch — it edits none of them), of which a person judged **12 lines
-across 7 files** to be review-ingestion or fetch-control attributions, each moving
-in slice 1:
+**27 lines across 18 files** at `origin/main` @ `1fe3302b` (same on this branch —
+it edits none of them). A person classifies each line into one of three, and the
+rule is what lives here; **the annotated member list is demoted** to the slice-1
+brief (*Demoted populations*, below):
 
-| Line | What it attributes to Milestone 7 |
+| Class | Rule |
 | :-- | :-- |
-| `src/theurian/infrastructure/github/__init__.py:4` | where "the ingestion work will land" |
-| `src/theurian/review/__init__.py:6` | the arrival of review ingestion |
-| `src/theurian/infrastructure/filesystem/parsers/openapi.py:11` | "the scheme allowlist Milestone 7" — a *fetch control*, not collection |
-| `tests/unit/test_network_call_sites.py:8` | "until review ingestion lands (Milestone 7)" |
-| `tests/unit/test_network_call_sites.py:34` | "the Milestone 7 review-ingestion adapter" |
-| `tests/unit/test_network_call_sites.py:267` | "Milestone 7's *remote* review ingestion" |
-| `tests/unit/test_network_call_sites.py:547` | "review ingestion in Milestone 7" |
-| `tests/unit/test_network_call_sites.py:606` | "the shape Milestone 7 is most likely to arrive in" |
-| `tests/unit/test_network_call_sites.py:658` | "the Milestone 7 `gh api` shape" |
-| `tests/unit/test_ref_recording.py:162` | "the Milestone 7 scheme allowlist" |
-| `tests/unit/test_config_key_call_sites.py:742` | the byte-pinned plugin sentence, "(Milestone 7)" inside it |
-| `plugins/claude-code/commands/ingest.md:32` | "When it lands (Milestone 7)" |
+| **Mover** | the line attributes review **collection** or a T-7 **fetch control** to Milestone 7 — false, since that milestone closed and built no fetch path |
+| **History** | the line describes something Milestone 7 actually did — for example `tests/unit/test_config_key_call_sites.py:42`, "the Milestone 7 diff that added the first reader of `.theurian/config.yaml`", which is true |
+| **Unrelated** | Milestone 7 named about the write path, the ports register or the corpus seed |
 
-**One member is named and judged *not* to move:**
-`tests/unit/test_config_key_call_sites.py:42` — "The Milestone 7 diff that added
-the first reader of `.theurian/config.yaml` made this file red". That is a true
-statement about a past change (the `secretScan` reader did land in Milestone 7),
-so it is history, not an attribution of unbuilt work. It is listed because a
-reader re-deriving this population will meet it and needs the verdict rather than
-a silent omission.
+The three classes partition the 27: **12 movers, 1 history, 14 unrelated**, which
+is the reconciliation identity a re-measurement has to satisfy.
 
 The remaining 14 lines are Milestone 7 references to the write path, the ports
 register and the corpus seed — different subjects entirely. **Slice 1 dispatches
@@ -1158,6 +1152,29 @@ live — one arrived mid-round. The rejected alternative is recorded: an externa
 public repository, rejected for the same reason one step further out, its content
 being owned by someone else entirely.
 
+### Demoted populations
+
+**A design record states decisions; it cannot stay in bijection with a moving
+tree.** Four review rounds each found a correct pasted key standing beside a
+hand-maintained member list that had gone stale — a mispointed anchor, an unjudged
+line, a count under two different units. The lists are therefore **relocated, not
+deleted**: each one below keeps its key, its frame and its judgment rule *here*,
+and its annotated membership lives in the **slice-1 assignment brief**, where the
+standing dispatch rule re-measures it at assignment time rather than trusting a
+figure written weeks earlier.
+
+| Demoted population | What stays in this ADR | New home | Re-measured by |
+| :-- | :-- | :-- | :-- |
+| Flag-sites annotated population (M/N/D per line, and its composition) | the key, both frames, the exclusions with measured drops, the three-class judgment rule | slice-1 assignment brief | the standing dispatch re-measurement rule; last full annotation: the round-4 record comment on this PR |
+| Fetch-absence prose population | the key and its stated width, and the binding sequencing (it moves in the same PR as the first spawn site) | slice-1 assignment brief | the same rule |
+| Milestone-7 attribution union | the unfiltered key, the three-class rule, and the partition identity (12 + 1 + 14 = 27) | slice-1 assignment brief | the same rule |
+| `providers.review.repositories` promise population | the key, its recorded limit (it misses the differently-spelled promises), and the commit-split reason | slice-1 assignment brief | the same rule |
+| Line-anchored citations converted to quoted sentences | the quoted sentence and its file | — (it travels with the quote) | a quote survives renumbering; a line number does not |
+
+**Rows that quote their anchor sentence carry no line number**, deliberately: this
+PR's own owner repoint moved two cited line numbers inside its own branch, which
+is the whole argument.
+
 ### Slicing plan
 
 | Slice | Contents | Notable ordering |
@@ -1241,9 +1258,25 @@ Measured now, and reproducible from this ADR (2026-09-05, `origin/main` @
 - **This ADR is a member of both prose populations it measures**, which is why
   every one of those counts is stated against a named commit rather than as a
   property of the repository.
-- The no-code scope of this change: `git diff origin/main...HEAD --stat` shows
-  only paths under `docs/`, and
-  `git diff origin/main...HEAD -- '*.py' '*.schema.json'` is empty.
+- **The scope claim is a stable property, not a snapshot.** "Only paths under
+  `docs/`" was true when it was written and false by the next fix commit — a
+  branch-scope measurement is invalidated by the commits that answer the review,
+  which is what made it wrong for four rounds. What holds for the whole branch and
+  keeps holding:
+
+  ```console
+  $ git diff origin/main...HEAD --name-only -- 'packages/*/src' 'plugins' 'schemas' | wc -l
+         0
+  ```
+
+  No shipped source, no plugin, no schema. The branch does touch four non-`docs/`
+  files, each non-behavioural and each named here rather than counted:
+  `SECURITY.md` (a governed record, decision 3);
+  `tests/unit/test_phase0_exit_records.py` (one docstring word, `29`→`30`);
+  `tests/unit/test_project_and_traceability.py` (a parametrised illustration
+  string, target unchanged — `is_derived` keys on the first path segment); and
+  `tools/audit/owner_position_cites.py` (ledger rows and their reasoning, which
+  the audit reads as data).
 
 Quoted, not re-run here — **design consult**, 2026-09-05, `gh` 2.86.0: runs A, B
 and C; the `PullRequestReviewThread` field list; the observation that
@@ -1269,11 +1302,13 @@ Owed at implementation, each tied to the slice that discharges it:
   the version floor's refusal, the two graded refusal envelopes for absent and
   unauthenticated `gh` with no stderr escaping them, and the per-response byte cap
   with its incremental read.
-- **Clause 4's tests (i) and (ii), and (i)'s companion, exactly as clause 4
-  specifies them.** The rationale lives there and is not restated here: round two
-  corrected it in the clause and left this bullet carrying the superseded version
-  byte-unchanged, which is the two-places class this ADR keeps meeting. What this
-  list adds is the count and the owner — three tests, slice 1.
+- **Clause 4's tests (i), (ii-a) and (ii-b), exactly as clause 4 specifies them —
+  three tests, slice 1.** The rationale lives there and is not restated here:
+  round two corrected it in the clause and left this bullet carrying the
+  superseded version byte-unchanged, which is the two-places class this ADR keeps
+  meeting. (An earlier version of this bullet cited "(i)'s companion" as a fourth
+  item; the companion is a property of (i)'s form, not a separate test, so the
+  citation resolved to nothing.)
 - **The allowlist is consulted before the spawn** — a synthetic-input test that a
   repository outside `providers.review.repositories` produces **no process
   spawn**, not a filtered result.
@@ -1289,23 +1324,27 @@ Owed at implementation, each tied to the slice that discharges it:
   that admits the site**, with the pinned set growing by exactly one and the file's
   own admission checklist satisfied clause by clause.
 - **A pre-spawn refusal of transport-override keys** in the gh config the
-  forwarded variables resolve to — best effort, leaving decision 1's two derived
-  residuals, with clause 4's tests as its drivers.
+  precedence-resolved gh config — best effort, reducing only the accidental
+  single-well-formed-file case and leaving decision 1's four-member divergence
+  class, with clause 4's tests as its drivers. Its spec: the same precedence chain
+  `gh` resolves (empty-string variable treated as absent), and the check runs
+  **before** any binary probe.
 - **The known-key set is re-taken whenever clause 8's version floor moves** —
-  residual (b) is bounded only by what that version of `gh` understands.
+  member (b) is bounded only by what that version of `gh` understands.
 - **Every T-7 sentence is rewritten per control** — `threat-model.md:6454`,
   `requirements-analysis.md:1352` and `roadmap.md:272`, which carries the same
   allowlist-owner sentence outside the two entries — recording the repository
   allowlist as **discharged** on the `gh` path and private-network rejection as
-  **reduced with its residuals named** (decision 1's two), never as discharged, with
-  #429 still owning the raw-URL context.
+  **reduced with its residual class named** (decision 1's four-member divergence
+  class), never as discharged, with #429 still owning the raw-URL context.
 - **The three populations move in this PR**: the fetch-absence prose, the
   `providers.review.repositories` sentences, and the Milestone-7 attributions.
 - **The sites recording the old `reviewIngestion` meaning are rewritten** — the
   key, its exclusions and its output are in decision 2 — two slices before the
-  flag flips. Under the same unit the table uses — one `file:line` site — four are
-  test sites and one of those is a byte-pinned constant, so the sweep is not a
-  prose pass.
+  flag flips. Test sites are among the movers, one of them a byte-pinned constant,
+  so the sweep is not a prose pass. The annotated population and its composition
+  live where the brief does (*Demoted populations*), not in a count here that
+  would go stale beside a correct key.
 - **The domain-model break is recorded** — a CHANGELOG entry under `#### Changed`
   with a `BREAKING` marker naming the old shape and the new one, and a
   `BREAKING CHANGE:` trailer on the commit.
