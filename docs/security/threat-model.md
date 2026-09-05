@@ -3104,23 +3104,44 @@ three surfaces to the probe's words. That cross-surface pin is **owned by
 it: the gap is accurate and was left unowned by the correction that found it,
 which is a residue and not a closure.
 
-**Recorded as unmet, not accepted** — unlike T-17a, no argument is offered that
-this is tolerable. The requirement stands: OSS-11 requires the checksums and
-`requirements-analysis.md`'s threat table maps T-16 to OSS-7, OSS-11 and setup
-step 3. Filed as [#39](https://github.com/theurian/theurian/issues/39), which is
-now **closed** — on its documentation half, on 2026-08-07, while the install-time
-control it also named stayed unbuilt: `application/setup_steps.py`'s
-`probe_artifact_integrity` returns an unconditional `NOT_APPLICABLE`. The live
-owner is [#80](https://github.com/theurian/theurian/issues/80), which diagnoses
-exactly that split and records that a successor issue for the control itself is
-still owed. **The code no longer states a schedule**, and that is the lesson
-rather than a tidy-up: the retired `detail` promised "Artifact verification
-arrives with the first tagged release", which came due the moment
-`release-core.yml` landed, since a first tagged release is what that workflow
-exists to cut. An issue has an owner and can be reassigned; a string in a probe
-is read by users and paged by nobody. The severity stays Critical: the harm is
-unchanged, an attacker who substitutes an artifact runs code as the user, and
-every control above acts on production rather than on what a user installs.
+**Recorded as an accepted non-goal for 0.1.0, decided by the maintainer on
+2026-09-05: install-time artifact verification is not a 0.1.0 goal.** This
+paragraph used to open "Recorded as unmet, not accepted — unlike T-17a, no
+argument is offered that this is tolerable", and that contrast is what the
+decision retires. The argument is offered now, and it rests on records this
+repository already carries rather than on a new measurement:
+
+1. **The publication half ships.** The Controls paragraphs above are the record
+   of what it covers, and of the ordering that fixes the checksums and the SBOM
+   before the artifact is installable. That list is cited here, not restated.
+2. **Checking a download against `SHA256SUMS` is a manual step until the
+   install-time control lands**, which is what
+   [`docs/contributing/release.md`](../contributing/release.md) tells a releaser
+   today. The decision accepts that manual step as the 0.1.0 answer.
+3. **The unbuilt client-side control has a standing owner.**
+   [#80](https://github.com/theurian/theurian/issues/80) holds it, carries
+   `post-1.0`, diagnoses the split #39 was closed across, and records both that
+   a successor issue for the control itself is still owed and the standing-owner
+   clause of
+   [2026-08-31](https://github.com/theurian/theurian/issues/80#issuecomment-5484550422).
+
+The requirement it stands against has not moved: OSS-11 requires the checksums
+and `requirements-analysis.md`'s threat table maps T-16 to OSS-7, OSS-11 and
+setup step 3. Filed as [#39](https://github.com/theurian/theurian/issues/39),
+which is now **closed** — on its documentation half, on 2026-08-07, while the
+install-time control it also named stayed unbuilt: `application/setup_steps.py`'s
+`probe_artifact_integrity` returns an unconditional `NOT_APPLICABLE`. **The code
+no longer states a schedule**, and that is the lesson rather than a tidy-up: the
+retired `detail` promised "Artifact verification arrives with the first tagged
+release", which came due the moment `release-core.yml` landed, since a first
+tagged release is what that workflow exists to cut. An issue has an owner and can
+be reassigned; a string in a probe is read by users and paged by nobody. The
+severity stays Critical: the harm is unchanged, an attacker who substitutes an
+artifact runs code as the user, and every control above acts on production rather
+than on what a user installs. What the 2026-09-05 decision moves is the
+acceptance status of the unmet half — an accepted, recorded non-goal for 0.1.0
+where it was an unaccepted gap. The half is still unmet, the grade is still
+Critical, and the control is still unbuilt.
 
 ### TB-3: the retrieval result
 
