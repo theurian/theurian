@@ -186,7 +186,7 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
     policy = _secret_scan_policy(paths, as_json)
     if policy is None:
         return
-    if not _the_scan_record_can_be_written(paths, as_json):
+    if not _the_scan_record_paths_are_usable(paths, as_json):
         return
 
     # The context already carries the generator every other command uses, so
@@ -318,14 +318,16 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
         raise typer.Exit(EXIT_SECRET_FOUND)
 
 
-def _the_scan_record_can_be_written(paths: ProjectPaths, as_json: bool) -> bool:
-    """Prove the SEC-11 record is writable in place, before anything is built.
+def _the_scan_record_paths_are_usable(paths: ProjectPaths, as_json: bool) -> bool:
+    """Prove the SEC-11 record's two paths are ones this build may write, before it builds.
 
-    Two questions, one precondition, because both have the same answer -- refuse
-    now rather than after publishing -- and both are asked of the same two paths:
-    the record and the ``.json.tmp`` leaf the write builds it at.
+    Named for what it asks and not for what a caller might hope it asks. It is
+    **not** a writability check: nothing here opens anything, so a read-only
+    ``.theurian/state/``, a directory at the record's name and a full disk all
+    pass it and are met later by ``_record_the_scan``'s ``except OSError``. What
+    it proves is that neither path is one this build must refuse outright.
 
-    **Containment.** Resolving the property *is* the check:
+    **Containment, on both paths.** Resolving the property *is* the check:
     ``ProjectPaths.index_secret_scan`` routes through the containment chokepoint,
     which resolves non-strict and compares against the project root, so it opens
     nothing and creates nothing -- the same call ``_record_the_scan`` makes later,
@@ -335,15 +337,31 @@ def _the_scan_record_can_be_written(paths: ProjectPaths, as_json: bool) -> bool:
     never covered, and an escaping one used to send the record outside the tree
     at exit 0 (#523).
 
-    **A symbolic link at either name.** ``lstat``, not a resolution: a link whose
-    target is inside the tree is contained, correctly, and is exactly the shape
-    that truncated a file in the operator's own checkout. This probe decides only
-    *when and how* that is reported -- the refusal that makes it safe is
-    ``O_NOFOLLOW`` inside the write itself, which has no window between deciding
-    and acting. Asked here so the answer is "nothing was built and nothing was
-    published", which is the sentence the paragraphs below are about; asked at
-    the write, the same link would degrade to a ``recordWarning`` beside a
-    build that had already published.
+    **A symbolic link at the temporary, and deliberately not at the record.**
+    ``lstat``, not a resolution: a link whose target is inside the tree is
+    contained, correctly, and is exactly the shape that truncated a file in the
+    operator's own checkout. That is true of the ``.json.tmp`` leaf, which is
+    ``open``-ed; it is **false of the published record**, which is only ever the
+    destination of ``os.replace``. Measured 2026-09-05, standalone: with the
+    record a link to a tracked file, ``os.replace(temporary, record)`` left the
+    link's target byte-identical and turned the record into a regular file --
+    ``rename(2)`` operates on the link, never through it.
+
+    An earlier cut of this function refused on the record too, and did it with
+    text claiming "writing through it would replace whatever it names", which is
+    false of that path (round one, code review H-1). It also made this command
+    inconsistent with its own sibling: measured, the identical in-tree link at
+    ``active-index.json`` is consumed at exit 0 by ``_publish``, while the record
+    gave exit 4 with nothing built. The refusal is now over the one path
+    ``O_NOFOLLOW`` actually backs, and the record's link is consumed exactly as
+    the pointer's is.
+
+    This probe decides only *when and how* the temporary's link is reported -- the
+    refusal that makes it safe is ``O_NOFOLLOW`` inside the write itself, which
+    has no window between deciding and acting. Asked here so the answer is
+    "nothing was built and nothing was published", which is the sentence the
+    paragraphs below are about; asked at the write, the same link would degrade
+    to a ``recordWarning`` beside a build that had already published.
 
     **Where it sits is the whole point, and it was found the hard way.** The
     refusal used to arrive at ``_record_the_scan``, which runs *after* ``_publish``
@@ -390,23 +408,25 @@ def _the_scan_record_can_be_written(paths: ProjectPaths, as_json: bool) -> bool:
     )
 
     try:
-        record = paths.index_secret_scan
+        # `index_secret_scan` is resolved for its containment check and for nothing
+        # else -- the published name is never opened, so it carries no symlink
+        # refusal. Assigning it would read as an unused local; the bare access is
+        # the whole of what this line does.
+        paths.index_secret_scan  # noqa: B018 - resolving the property is the check
         temporary = paths.index_secret_scan_temporary
     except ProjectPathEscapeError as exc:
         _fail_a_path_escape(exc, as_json=as_json)
         return False
-    for path, artifact in (
-        (record, "The secret-scan record"),
-        (temporary, "The secret-scan record's temporary file"),
-    ):
-        if path.is_symlink():
-            _fail(
-                _symbolic_link_write_refusal(path, artifact=artifact),
-                remedy=symbolic_link_remedy(path),
-                as_json=as_json,
-                code=EXIT_STATE_ERROR,
-            )
-            return False
+    if temporary.is_symlink():
+        _fail(
+            _symbolic_link_write_refusal(
+                temporary, artifact="The secret-scan record's temporary file"
+            ),
+            remedy=symbolic_link_remedy(temporary),
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return False
     return True
 
 
@@ -442,7 +462,7 @@ def _record_the_scan(
     **``OSError`` and nothing wider, on purpose.** A path that leaves the working
     tree is not an incidental write failure met after a correct publish; it is a
     doctored tree, and it is proved absent before this command builds anything
-    (:func:`_the_scan_record_can_be_written`, which records why the two get
+    (:func:`_the_scan_record_paths_are_usable`, which records why the two get
     different answers). Widening this ``except`` to cover it is what would put a
     published build behind a containment refusal.
     """

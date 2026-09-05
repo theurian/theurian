@@ -388,7 +388,7 @@ def test_the_in_tree_index_pointer_refusal_names_the_temporary_to_remove(built: 
 def test_index_build_refuses_a_link_at_the_scan_record_temporary(built: Path, plant: Any) -> None:
     """AC2, the secret-scan record's temporary leaf.
 
-    Refused *before* anything is built, by ``_the_scan_record_can_be_written``, so
+    Refused *before* anything is built, by ``_the_scan_record_paths_are_usable``, so
     the exit code means what the three plugin documents say it means: nothing was
     published. Reaching this at write time instead would degrade it to a
     ``recordWarning`` beside a build that had already published -- which is why the
@@ -410,7 +410,7 @@ def test_index_build_refuses_a_link_at_the_scan_record_temporary(built: Path, pl
 def test_the_in_tree_scan_record_refusal_names_the_temporary_to_remove(built: Path) -> None:
     """The precondition's own wording, which the containment arm cannot supply.
 
-    An in-tree link is contained, so ``_the_scan_record_can_be_written``'s
+    An in-tree link is contained, so ``_the_scan_record_paths_are_usable``'s
     ``lstat`` is what sees it, and the cure it publishes names the leaf. That probe
     decides only *when* the refusal is reported -- what makes the write safe is
     ``O_NOFOLLOW`` inside it, which has no window between deciding and acting.
@@ -423,24 +423,56 @@ def test_the_in_tree_scan_record_refusal_names_the_temporary_to_remove(built: Pa
 
 
 @_NEEDS_SYMLINKS
-def test_index_build_refuses_a_link_at_the_scan_record_itself(built: Path) -> None:
-    """The published name, not only the temporary, on the in-tree face.
+def test_a_link_at_the_published_scan_record_is_consumed_rather_than_refused(built: Path) -> None:
+    """The published name is *not* guarded, and the reason is what it is written to by.
 
-    ``os.replace`` renames the temporary over this path and ``rename(2)`` never
-    follows a link, so nothing is written *through* one here -- but the swap would
-    silently consume the link and leave the record where the attacker chose to
-    have the *next* reader look. Refused with the temporary, in one precondition.
+    Only ``os.replace`` ever names this path, and ``rename(2)`` operates on the
+    link rather than through it: measured standalone, replacing over a linked
+    record left the link's target byte-identical and turned the record into a
+    regular file. So there is nothing here for ``O_NOFOLLOW`` to back, and the
+    build proceeds.
 
-    The out-of-tree face of this same path is already swept by
-    ``test_contained_path_envelope.py``'s ``index_secret_scan`` plant; what is new
-    here is the contained link, which that sweep's containment key cannot see.
+    **This test replaces one that asserted the opposite** (round one, code review
+    H-1). The earlier precondition refused on this path with text claiming
+    "writing through it would replace whatever it names" -- false of a
+    ``rename(2)`` destination -- and blocked ``index build`` at exit 4 with
+    nothing built, while the identical plant at ``active-index.json`` was consumed
+    at exit 0 by ``_publish``. Two paths written the same way, answered two
+    different ways, on a mechanism that was not real.
+
+    What is asserted instead is the behaviour that *is* real, and it is asserted
+    in three parts because two of them alone would pass over a build that never
+    ran: the command succeeds, the link is gone, and the record is a regular file
+    holding this build's own id.
     """
     victim = _plant_inside(built, "state/index-secret-scan.json")
+    record = built / ".theurian/state/index-secret-scan.json"
 
     ran = _run("index", "build")
 
-    envelope = _assert_refused_cleanly(ran)
-    _assert_names_a_removable_link(envelope, built / ".theurian/state/index-secret-scan.json")
+    assert ran.exit_code == 0, f"the build was refused: {ran.stderr}"
+    assert victim.read_bytes() == VICTIM, "the replace wrote through the link"
+    assert not record.is_symlink(), "the link survived the replace"
+    assert json.loads(record.read_text(encoding="utf-8"))["indexBuildId"], (
+        "the record is not this build's own"
+    )
+
+
+@_NEEDS_SYMLINKS
+def test_an_escaping_published_scan_record_is_still_refused(built: Path) -> None:
+    """Dropping the symlink guard did not drop the containment one.
+
+    The published name keeps its ``_contained`` check, which is the half that
+    answers "this path leaves the working tree" -- a question ``rename(2)``'s
+    behaviour says nothing about. Held here as well as in
+    ``test_contained_path_envelope.py``'s ``index_secret_scan`` plant, because the
+    change above is exactly the kind that takes a neighbouring guard with it.
+    """
+    victim = _plant_outside(built, "state/index-secret-scan.json")
+
+    ran = _run("index", "build")
+
+    _assert_refused_cleanly(ran)
     assert victim.read_bytes() == VICTIM
 
 

@@ -523,7 +523,7 @@ PLANTS: Final = (
         refuses=frozenset({"index build"}),
         # Measured empty, and it is the one asymmetry among the three temporary
         # leaves. The escaping *symlink* is refused before anything is built, by
-        # `_the_scan_record_can_be_written`; a *directory* here is not a
+        # `_the_scan_record_paths_are_usable`; a *directory* here is not a
         # containment failure and not a symbolic link either, so it reaches
         # `_record_the_scan`'s `except OSError` after a correct publish and
         # degrades to a `recordWarning` at exit 0. That degradation is the
