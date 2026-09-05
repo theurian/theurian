@@ -243,6 +243,7 @@ _HELPER_CALLS: dict[str, Callable[[ProjectPaths], Path]] = {
     "ingestion_manifest": lambda p: p.ingestion_manifest,
     "write_lock": lambda p: p.write_lock,
     "index_for": lambda p: p.index_for("01K1AAAAAA01234567890ABCDE"),
+    "state_database_named": lambda p: p.state_database_named("theurian-state-abc123.sqlite"),
     "database_for": lambda p: p.database_for(_SAMPLE_STATE_HASH),
     "findings_for": lambda p: p.findings_for("01K1AAAAAA01234567890ABCDE"),
 }
@@ -268,6 +269,7 @@ _ESCAPING_CHILD: dict[str, str] = {
     "ingestion_manifest": "cache",
     "write_lock": "runtime",
     "index_for": "state",
+    "state_database_named": "state",
     "database_for": "state",
     "findings_for": "state",
 }
@@ -328,6 +330,7 @@ _NAMES_A_DERIVED_ARTIFACT: set[str] = {
     "write_lock",
     "database_for",
     "findings_for",
+    "state_database_named",
 }
 
 

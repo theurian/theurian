@@ -575,6 +575,29 @@ PLANTS: Final = (
         directory_refuses=frozenset({"index build", "migrate status", "migrate apply"}),
     ),
     Plant(
+        helper="state_database_named",
+        relative="state/theurian-state-*.sqlite",
+        is_directory=False,
+        remedy=_DERIVED_STATE,
+        derives_a_path=False,
+        outside_the_class_because=(
+            "it derives the *same leaf* `database_for` does -- both name "
+            "`state/theurian-state-<hash>.sqlite` -- so a plant at its path is "
+            "`database_for`'s plant, and every refusal it would measure is that "
+            "helper's. What differs is the argument: `database_for` takes a "
+            "`StateHash` this build computed, while this one takes `active.json`'s "
+            "`databaseFilename` verbatim (#551 round one). Its only consumer is "
+            "`mcp/tools._resolve`, and an MCP refusal is a different envelope "
+            "contract -- a `ToolError`, not a `--json` document on stderr -- so it "
+            "is not merely unswept here but outside what this file can assert "
+            "about, the same position `findings_for`'s `review.findings` consumer "
+            "is in. Driven instead by "
+            "`test_derived_state_value_envelope.py`'s escaping-`databaseFilename` "
+            "row, where the refusal it produces is measured on the surface that "
+            "publishes it."
+        ),
+    ),
+    Plant(
         helper="initialize_project",
         relative="",
         is_directory=True,
@@ -618,6 +641,15 @@ REACHES_NO_SWEPT_COMMAND: Final = frozenset(
 #: ``knowledge`` is measured out of it rather than reasoned out: it refuses six
 #: commands, and every refusal is the migration loader's.
 CONTAINMENT_PLANTS: Final = tuple(plant for plant in PLANTS if plant.in_the_containment_class)
+
+#: Plants outside the containment class for a reason of their own, rather than
+#: because no swept command reaches them. Each carries that reason on its
+#: ``outside_the_class_because``; naming them here as a set keeps the partition
+#: exact -- a new one has to be classified rather than absorbed into whichever
+#: half the assertion happens to read first.
+_OUTSIDE_FOR_THEIR_OWN_REASON: Final = frozenset(
+    {"knowledge", "initialize_project", "state_database_named"}
+)
 
 
 # -- The corpus and the sweep -----------------------------------------------
@@ -878,7 +910,7 @@ def test_every_contained_derived_helper_is_planted_or_excluded_with_a_reason() -
     )
     assert planted >= REACHES_NO_SWEPT_COMMAND
     outside = {plant.helper for plant in PLANTS if not plant.in_the_containment_class}
-    assert outside == REACHES_NO_SWEPT_COMMAND | {"knowledge", "initialize_project"}, (
+    assert outside == REACHES_NO_SWEPT_COMMAND | _OUTSIDE_FOR_THEIR_OWN_REASON, (
         f"the plants held outside the containment class have moved: {sorted(outside)}"
     )
     assert all(PLANT_BY_HELPER[helper].outside_the_class_because for helper in outside), (
