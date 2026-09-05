@@ -18,7 +18,7 @@ uv tool install --python 3.13 'theurian[daemon]'
 ```
 
 `[daemon]` carries the MCP daemon; without it you get the CLI and the migration
-engine only. Every published version so far is a pre-release.
+engine only. Pre-1.0, a MINOR bump may change the protocol.
 
 **Nothing verifies the artifact you just downloaded, including Theurian.** Each
 release carries a `SHA256SUMS` on

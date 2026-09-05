@@ -215,9 +215,8 @@ adopted roadmap.
 
 ## Quick start
 
-Core is on PyPI as [`theurian`](https://pypi.org/project/theurian/), and every
-version published so far is a pre-release. That page is what says which ones
-exist; this file does not track it.
+Core is on PyPI as [`theurian`](https://pypi.org/project/theurian/). That page
+is what says which versions exist; this file does not track it.
 
 ```sh
 uv tool install --python 3.13 'theurian[daemon]'   # puts `theurian` on your PATH
