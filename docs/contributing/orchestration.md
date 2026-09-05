@@ -125,7 +125,13 @@ excluded from the published documentation site for that reason.
 - Grade an **unmerged design document's** side matter — counts, anchors, table
   contents, scope claims — at a MEDIUM ceiling: fix-in-pass or file, never
   round-generating. The severity table's "a published claim is false is HIGH"
-  was written for shipped surfaces.
+  was written for shipped surfaces; applied to an unmerged draft it makes every
+  side-matter drift gate-blocking and manufactures rounds. Standing order of
+  2026-09-05, with its measured ground and its scope recorded in
+  [the ruling on this file's introducing pull request](https://github.com/theurian/theurian/pull/580#issuecomment-5553419251).
+  **Scope it narrowly:** unmerged design side matter only, never a shipped
+  surface — and where this ceiling and CLAUDE.md's severity table conflict, the
+  severity table governs.
 - Pre-commit the ending of any arc approaching round four — what merges, what
   files — before the round runs. Per-round concurrences that are each locally
   sound do not substitute for the campaign brake.
@@ -256,9 +262,12 @@ quirks are recorded (see [The filing filter](#the-filing-filter)).
   never exits.
 - Confirm a daemon is gone by the port being free, not by a `kill` returning 0.
 - Run bulk tracker mutations from a **background, resumable, idempotent**
-  script. Past roughly a hundred close or edit calls the run exceeds a
-  ten-minute foreground window, and one that dies part-way has to be safe to
-  start again from the top (2026-09-06 sweep execution).
+  script. At roughly 4 s an API call a foreground pass hits a ten-minute ceiling
+  after about two dozen items: the 2026-09-06 sweep landed 23 closes that way
+  and the remaining 115 from a regenerated background script, script-diffed
+  against the live open set before it resumed — zero failures, zero
+  double-closes
+  ([execution record](https://github.com/theurian/theurian/issues/551#issuecomment-5553412781)).
 - Run the whole suite from a **non-dot checkout**. `controls_discharge` drops
   every path with a dot component, so a checkout under `.claude/worktrees/`
   gives it an empty test population and two census audits fail on the walker
@@ -376,6 +385,14 @@ set under, is the
 [correction](https://github.com/theurian/theurian/issues/551#issuecomment-5553088853),
 which recomputed the record's own band totals by script and supersedes them.
 
+**The `issue_field_values` PATCH replaces the issue's entire field-value set.**
+A later call carrying only the two date fields silently wiped a Priority an
+earlier call had set — caught by this file's own light pass and restored in one
+combined call
+([execution record](https://github.com/theurian/theurian/issues/551#issuecomment-5553412781)).
+Write all of an issue's fields in every PATCH, not just the ones you are
+changing.
+
 ### Priority
 
 | Value | Means | Consequence |
@@ -397,11 +414,11 @@ while the same command without the qualifier returns the full open list
 
 - **The issues UI's Priority filter and group-by panel**, which renders from the
   org field. This is the one that answers "what is queued" at a glance.
-- **`GET /repos/{owner}/{repo}/issues/{n}/issue-field-values`**, per issue. Note
-  the asymmetry: it returns Priority as the numeric **option id** while the
-  write above takes the option **name**, and `GET /orgs/{org}/issue-fields` is
-  the mapping between them. An issue with the field unset simply omits it from
-  the response.
+- **`GET /repos/{owner}/{repo}/issues/{n}/issue-field-values`**, per issue. Read
+  the name off `single_select_option.name` in the same row: `value` carries the
+  numeric option id, and projecting only `value` is what makes the name look
+  absent — no second call is needed. An issue with the field unset simply omits
+  it from the response.
 
 ### Type
 
