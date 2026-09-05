@@ -75,6 +75,7 @@ from typing import Any, Final
 import pytest
 import typer.main
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from mcp.types import CallToolResult, TextContent
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -577,6 +578,90 @@ def test_a_database_filename_the_os_will_not_answer_for_is_refused_with_a_cure(
     assert "active.json" in message, f"the refusal names no artefact to act on: {message}"
     assert str(project) not in message, (
         f"the refusal carries the operator's absolute path to a client: {message}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "filename"),
+    [
+        ("lone-surrogate", "\udcff.sqlite"),
+        ("embedded-nul", "a\x00b.sqlite"),
+        ("very-long", "B" * 200 + ".sqlite"),
+    ],
+)
+def test_a_refusal_naming_a_derived_value_can_always_reach_the_wire(
+    project: Path, case: str, filename: str
+) -> None:
+    """The refusal has to *serialise*, and a lone surrogate is where it did not.
+
+    Round one, adversarial H-D. The missing-database arm interpolated
+    ``databaseFilename`` verbatim, and ``json.dumps`` writes a lone surrogate as
+    ``\\udcff`` while ``json.loads`` reads it straight back -- so a hand edit or a
+    partially-decoded copy puts one in a pointer that parses. On the wire the
+    encoder then dies: ``CallToolResult.model_dump_json()`` raises
+    ``PydanticSerializationError`` ("surrogates not allowed"), the stream ends
+    mid-message, and the client gets a 200 with an **empty body** -- no
+    ``isError``, no text, no remedy. Strictly worse than the
+    ``UnexpectedToolError`` the issue was filed for, because nothing on the wire
+    says anything went wrong at all.
+
+    Asserted by serialising the content the transport builds from the refusal,
+    which is the exact step that raised; driving a real ASGI stream would assert
+    the same thing through three more layers. The other two rows are the
+    neighbours that already answered (NUL, and a length under the
+    ``ENAMETOOLONG`` bound so it reaches *this* arm rather than the one above
+    it) -- without them a fix that refused every unusual filename would read as
+    green.
+    """
+    registry = ProjectRegistry.default(project.parent / "datadir")
+    _publish_a_database_filename(project, filename)
+
+    with pytest.raises(SdkToolError) as raised:
+        asyncio.run(_search(registry))
+
+    content = TextContent(type="text", text=str(raised.value))
+    encoded = CallToolResult(content=[content], is_error=True).model_dump_json()
+
+    assert "migrate apply" in encoded, f"{case}: the refusal lost its next action"
+    assert len(str(raised.value)) < 400, (
+        f"{case}: the refusal quotes the value back unbounded, so a pointer "
+        f"holding a whole file becomes the reply: {len(str(raised.value))} chars"
+    )
+
+
+def test_every_derived_value_a_reply_quotes_goes_through_the_one_sanitiser() -> None:
+    """The population for H-D, read out of ``mcp/tools.py``'s own AST.
+
+    The key is an f-string field with **no conversion** -- no ``!r``, no ``!s``
+    -- whose expression names a value this daemon did not produce: the pointer's
+    ``database_filename`` or the registry entry's ``rootPath``. Those are the two
+    the sweep returned on 2026-09-06, and both now go through
+    :func:`~theurian.mcp.tools._publishable`. ``{project_id!r}`` and
+    ``{type(exc).__name__}`` are outside the key by construction, which is the
+    point of keying on the conversion rather than on the name.
+
+    A message added later that interpolates one of these raw fails here rather
+    than reaching a client, which is what makes "every published field" a
+    checkable sentence in this module and not a claim.
+    """
+    source = (_SOURCE_ROOT / "mcp" / "tools.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    untrusted = ("database_filename", "rootPath")
+
+    raw = [
+        f"line {node.lineno}: {{{ast.unparse(part.value)}}}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.JoinedStr)
+        for part in node.values
+        if isinstance(part, ast.FormattedValue)
+        and part.conversion == -1
+        and "_publishable" not in ast.unparse(part.value)
+        and any(name in ast.unparse(part.value) for name in untrusted)
+    ]
+
+    assert not raw, (
+        "a reply interpolates a derived-state value the daemon did not produce "
+        f"without routing it through `_publishable`: {raw}"
     )
 
 

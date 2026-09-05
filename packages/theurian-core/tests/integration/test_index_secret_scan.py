@@ -30,6 +30,7 @@ holds that line.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import shutil
@@ -58,6 +59,17 @@ from theurian.domain.setup import SetupReport, SetupState
 from theurian.security.content_secrets import MAX_FINDINGS, REDACTED_PREFIX_CHARS
 
 pytestmark = pytest.mark.integration
+
+_SOURCE = Path(__file__).resolve().parents[2] / "src" / "theurian"
+
+#: The two helpers in `index_build`'s post-publish window that convert their own
+#: failure into a warning beside the report. Named rather than inferred, so a
+#: third one has to be classified here before it can sit in the window.
+_CONVERTS_ITS_OWN_FAILURE = frozenset({"_record_the_provenance", "_record_the_scan"})
+
+#: Builtins the window may call: they read what is already in memory and cannot
+#: touch the filesystem, so they carry no failure to convert.
+_BUILTINS_IN_THE_WINDOW = frozenset({"list", "len", "sorted", "str"})
 
 runner = CliRunner()
 
@@ -1772,4 +1784,99 @@ def test_a_state_directory_that_escapes_after_the_publish_still_reports_the_find
     # string above it.
     assert "writable" not in warning, (
         f"the escape took the write-failure cure, which is a non-cause here: {warning!r}"
+    )
+
+
+# -- The rest of the same window: everything between publish and emit ----------
+
+
+def test_a_provenance_record_that_cannot_be_written_still_reports_the_findings(
+    planted: Path, tmp_path: Path
+) -> None:
+    """Round one, security H-B: `record_index` sat in the window unguarded.
+
+    It runs between ``_publish``'s pointer swap and the ``_emit`` below it, so
+    anything it raises lands after the build is serving and before the caller is
+    told anything. Measured at ``8f975d50`` with a *directory* at
+    ``<data_dir>/provenance.json.tmp`` -- a path no ``ProjectPaths`` helper
+    guards and nothing in this repository owns -- ``index build --json`` exited 1
+    with **zero bytes on stdout**, an ``IsADirectoryError`` traceback at
+    ``index_commands.py:293``, and ``active-index.json`` already naming the new
+    build: the exact shape ``_the_scan_record_paths_are_usable`` exists to
+    prevent, one line earlier.
+
+    Planted *after* ``migrate apply``, which writes the record itself -- planting
+    before it would fail the apply and never reach the window.
+
+    The warning is asserted on what the failure **costs**, not on bookkeeping:
+    ``mcp/search`` stands aside a build id it cannot find in the record, so an
+    unrecorded build degrades every ``knowledge.search`` to the substring scan
+    and reports ``index-unbuilt`` about a build that is on disk and published.
+    """
+    (tmp_path / "datadir" / "provenance.json.tmp").mkdir(parents=True)
+
+    code, payload = _in(planted, "index", "build")
+
+    assert code == EXIT_SECRET_FOUND, (
+        f"the block policy's exit code did not fire, so the failure reached the "
+        f"caller instead of the findings: exit {code}, payload {payload}"
+    )
+    assert payload["published"] is True
+    assert _findings(payload), "the findings the caller is owed were not published"
+    warning = payload.get("provenanceWarning", "")
+    assert "index-unbuilt" in warning, (
+        f"the warning describes bookkeeping rather than what the caller will "
+        f"actually observe: {warning!r}"
+    )
+    assert "theurian index build" in warning, f"the warning carries no cure: {warning!r}"
+
+
+def test_no_step_between_the_publish_and_the_report_can_raise_past_it() -> None:
+    """The source-level pin for that window, because two members of it were found one at a time.
+
+    Read off ``index_build``'s own body: every statement between the ``try`` that
+    publishes the pointer and the ``_emit`` that reports must make no call except
+    to a helper that converts its own failure, or to a builtin. The two helpers
+    are named in :data:`_CONVERTS_ITS_OWN_FAILURE`; inlining either one's body
+    back into the command -- which is exactly how ``record_index`` came to sit
+    there bare -- fails this by name.
+
+    Keyed on *calls* rather than on "is wrapped in a ``try``", because a `try`
+    around the window would satisfy the letter and lose the property: the point
+    is that each failure degrades into the report with a cure of its own, not
+    that one handler swallows them all into a single message.
+    """
+    tree = ast.parse((_SOURCE / "cli" / "index_commands.py").read_text(encoding="utf-8"))
+    body = next(
+        node.body
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "index_build"
+    )
+    publishes = [i for i, st in enumerate(body) if isinstance(st, ast.Try)]
+    emits = [
+        i
+        for i, st in enumerate(body)
+        if any(
+            isinstance(call.func, ast.Name) and call.func.id == "_emit"
+            for call in ast.walk(st)
+            if isinstance(call, ast.Call)
+        )
+    ]
+    assert publishes and emits, "the publish/emit landmarks moved, so this pins nothing"
+    window = body[publishes[-1] + 1 : emits[0]]
+    assert window, "the window is empty, so this asserts nothing"
+
+    unguarded = {
+        ast.unparse(call)[:80]
+        for statement in window
+        for call in ast.walk(statement)
+        if isinstance(call, ast.Call)
+        and not (
+            isinstance(call.func, ast.Name)
+            and call.func.id in {*_CONVERTS_ITS_OWN_FAILURE, *_BUILTINS_IN_THE_WINDOW}
+        )
+    }
+    assert not unguarded, (
+        "a step between publishing the pointer and reporting the build can raise "
+        f"past the report -- the H-B shape: {sorted(unguarded)}"
     )

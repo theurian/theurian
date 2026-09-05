@@ -33,6 +33,7 @@ holds the two together rather than trusting them to stay in step.
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -486,3 +487,70 @@ def test_the_block_the_probe_accepts_is_the_one_the_sections_describe(tmp_path: 
     # The renderer's own output, so a disagreement is reported as the two
     # strings rather than as a probe verdict three layers away.
     assert ensure_gitignore(_repository(tmp_path, "rendered"))[1] == _rendered_block()
+
+
+# -- A symbolic link at `.gitignore`, which Git does not follow (#571) ---------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_symlinked_gitignore_is_not_satisfied_however_perfect_the_block_is(
+    tmp_path: Path,
+) -> None:
+    """Round one, three reviewers: the probe read the block *through* the link.
+
+    The plant is the block ``theurian init`` itself wrote, moved out of the tree
+    and symlinked back -- so every predicate this file tests answers "perfect",
+    and the file Git actually reads is nothing at all. Measured at ``8f975d50``:
+    ``theurian doctor`` **and** ``theurian setup --dry-run`` both published
+    ``satisfied``, while ``git check-ignore .theurian/state/`` exited 1 and one
+    ``git add -A`` tracked ``.theurian/``. Git refuses a symlinked ``.gitignore``
+    rather than following it ("unable to access '.gitignore': Too many levels of
+    symbolic links"), which is why block identity cannot answer this question.
+
+    ``_probe`` is called directly rather than through the CLI because the claim
+    is about the step, and both surfaces publish this same step.
+    """
+    root = _repository(tmp_path)
+    ensure_gitignore(root)
+    outside = root.parent / "carried-elsewhere"
+    (root / ".gitignore").rename(outside)
+    (root / ".gitignore").symlink_to(Path("..") / outside.name)
+
+    status, summary, action = _probe(tmp_path, root)
+
+    assert status is not StepStatus.SATISFIED, (
+        f"the probe read the block through the link and called it converged: {summary}"
+    )
+    assert "symbolic link" in summary, f"the summary does not say what is wrong: {summary}"
+    assert action != _ADD_THE_BLOCK, (
+        "the link took the add-the-block action, whose `theurian init` refuses this "
+        "very file -- the round trip that teaches the reader nothing"
+    )
+    assert "ls -l" in action and "replace it" in action, (
+        f"the action does not carry the two acts that resolve a link: {action}"
+    )
+    assert action.index("replace it") < action.index("theurian init"), (
+        "the action names `theurian init` before the replacement it depends on, so a "
+        "reader following it in order meets the refusal first"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_dangling_gitignore_link_is_reported_as_the_link_and_not_as_absence(
+    tmp_path: Path,
+) -> None:
+    """The narrowness control for the arm above, and a different wrong answer.
+
+    A link to nothing makes ``is_file()`` answer ``False``, so without the
+    symlink arm this file reports "does not exist" -- true of the target and
+    false of the repository, whose ``.gitignore`` is very much there and is what
+    a contributor has to fix. The two arms must not collapse into one.
+    """
+    root = _repository(tmp_path, name="dangling")
+    (root / ".gitignore").symlink_to(Path("..") / "nothing-here")
+
+    status, summary, action = _probe(tmp_path, root)
+
+    assert status is not StepStatus.SATISFIED
+    assert "symbolic link" in summary, f"a dangling link was reported as absence: {summary}"
+    assert action != _ADD_THE_BLOCK

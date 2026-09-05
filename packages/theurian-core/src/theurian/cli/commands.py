@@ -987,21 +987,28 @@ def init_command(as_json: JsonOption = False) -> None:
             code=1,
         )
         return
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         # Every other way the read or the write fails, which `ensure_gitignore`
-        # deliberately leaves as an `OSError` (the contract `security.no_follow`
+        # deliberately leaves untranslated (the contract `security.no_follow`
         # records for its openers): a read-only `.gitignore`, a directory in its
         # place, a full disk. All of them ended `init --json` in a traceback with
         # an empty machine channel until this arm, the same CP-2 shape the
         # dangling-link plant above produces one step earlier.
+        #
+        # `UnicodeDecodeError` beside `OSError` and **not folded into it**: it is
+        # a `ValueError`, so an `except OSError` does not see it, and a
+        # `.gitignore` holding one non-UTF-8 byte went on producing the traceback
+        # this arm exists to stop (round one, adversarial M-7; #367's `init`
+        # face). `propose --local` has caught the pair together since it was
+        # written, which is where the shape is taken from.
+        reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else "it is unreadable"
         _fail(
-            f"The Theurian block could not be written to .gitignore: "
-            f"{exc.strerror or type(exc).__name__}. The `.theurian/` directories were "
-            f"created; nothing else was changed.",
+            f"The Theurian block could not be written to .gitignore: {reason}. "
+            f"The `.theurian/` directories were created; nothing else was changed.",
             remedy=(
-                "Make .gitignore a writable regular file, then re-run `theurian init`. "
-                "Until it carries the Theurian block, `git status` will show derived "
-                "state that ADR-0004 means to keep out of the repository."
+                "Make .gitignore a writable, UTF-8 regular file, then re-run "
+                "`theurian init`. Until it carries the Theurian block, `git status` will "
+                "show derived state that ADR-0004 means to keep out of the repository."
             ),
             as_json=as_json,
             code=1,

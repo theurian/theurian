@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -433,4 +434,96 @@ def test_init_answers_a_gitignore_the_filesystem_will_not_let_it_write(project: 
     assert payload["error"], "the refusal is reported rather than swallowed"
     assert ".gitignore" in payload["remedy"], (
         f"the cure does not name the file in the way: {payload['remedy']}"
+    )
+
+
+@pytest.mark.parametrize("leaf", ["cache", "state"])
+def test_init_refuses_a_regular_file_where_a_derived_directory_belongs(
+    project: Path, leaf: str
+) -> None:
+    """Round one, adversarial H-C: the probe asked whether *something* was there.
+
+    ``initialize_project`` skipped a path that already ``exists()``, so a regular
+    file at ``.theurian/cache`` or ``.theurian/state`` -- a clone can track
+    either -- read as "already created". Measured at ``8f975d50``: exit 0,
+    ``changed: true``, the path absent from ``createdPaths``, and the file
+    untouched, after which nothing ignores the derived artefacts that belong
+    there and the next command writes into a directory that does not exist.
+
+    Only a *prefix* file reached the ``mkdir``'s own refusal, which is why the
+    arm added for the dangling link answered one face of two, and why both
+    leaves are driven rather than one.
+    """
+    occupied = project / ".theurian" / leaf
+    # `.theurian/` itself is what a clone delivers around the plant; this
+    # fixture's repository has not been initialised, so the parent is made here
+    # rather than assumed. `exist_ok` because the two parameters share nothing.
+    occupied.parent.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(occupied, ignore_errors=True)
+    occupied.write_text("not a directory\n", encoding="utf-8")
+
+    code, payload = _init_json()
+
+    assert code == 1, f"a file where a directory belongs was reported as done: {payload}"
+    assert occupied.read_text(encoding="utf-8") == "not a directory\n", (
+        "the refusal wrote over the file it refused"
+    )
+    assert str(occupied) in payload["error"], (
+        f"the message does not say which path is occupied: {payload['error']}"
+    )
+    assert "theurian init" in payload["remedy"]
+
+
+def test_init_answers_a_gitignore_that_is_not_utf_8(project: Path) -> None:
+    """Round one, adversarial M-7: `UnicodeDecodeError` is a `ValueError`, not an `OSError`.
+
+    The arm added for the filesystem failures listed only ``OSError``, and its
+    ``Raises:`` section said that covered "any other way the read fails" -- false
+    of a decode. One non-UTF-8 byte in ``.gitignore`` went on ending `theurian
+    init --json` in a traceback with an empty machine channel (measured at
+    ``8f975d50``). This is #367's ``init`` face; its ``setup`` face is that
+    issue's own and is untouched here.
+
+    ``propose --local`` has caught the pair together since it was written, which
+    is where the shape is taken from -- so this also pins the two callers of
+    ``ensure_gitignore`` answering the same input the same way.
+    """
+    (project / ".gitignore").write_bytes(b"*.log\n\xff\xfe\x00bad\n")
+
+    code, payload = _init_json()
+
+    assert code == 1, payload
+    assert payload["error"], "the decode failure is reported rather than swallowed"
+    assert "UTF-8" in payload["remedy"], (
+        f"the cure does not name the encoding that is the actual cause: {payload['remedy']}"
+    )
+
+
+@_NEEDS_SYMLINKS
+def test_the_link_refusal_and_the_write_refusal_do_not_share_a_message(project: Path) -> None:
+    """Round one, adversarial M-5: the errno discrimination was unpinned.
+
+    ``_gitignore_link_refusal`` re-raises everything that is not ``ELOOP`` and
+    converts only the link. Nothing asserted the two apart: the directory-face
+    test checked ``".gitignore" in remedy``, which both texts satisfy, so a
+    mutation making the helper convert *every* ``OSError`` -- publishing the
+    link's cure for a read-only file -- survived. The two are asserted distinct
+    here, by the phrase each one owns.
+    """
+    directory_at = project / ".gitignore"
+    directory_at.mkdir()
+    _, from_directory = _init_json()
+    shutil.rmtree(directory_at)
+
+    _plant_a_gitignore_link(project, project.parent / "victim.txt")
+    _, from_link = _init_json()
+
+    assert "symbolic link" in from_link["error"], from_link["error"]
+    assert "symbolic link" not in from_directory["error"], (
+        f"a directory took the link's message, so the errno arm converts too much: "
+        f"{from_directory['error']}"
+    )
+    assert "ls -l" in from_link["remedy"], from_link["remedy"]
+    assert "ls -l" not in from_directory["remedy"], (
+        f"a directory took the link's cure: {from_directory['remedy']}"
     )

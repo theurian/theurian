@@ -184,6 +184,17 @@ KNOWLEDGE_DIR_ESCAPE_REMEDY: Final = (
 #: at where it points, and replace it with a real file if those rules belong to
 #: this repository. Both are runnable and neither destroys authored content.
 #: ``{path}`` is filled by the caller so the cure names the file to act on.
+#:
+#: **Published to the whole reader population, not to the writer alone.** Round
+#: one caught the class enumerated at two of three members: reproduce it with
+#: ``git grep -n '\.gitignore' -- packages/theurian-core/src``, which on
+#: 2026-09-06 returned three functions that *open* the file --
+#: :func:`ensure_gitignore` (the writer), ``setup_steps.probe_gitignore`` (what
+#: ``theurian doctor`` and ``theurian setup`` report), and
+#: ``proposal_service._ensure_local_is_ignored`` (which calls the writer). The
+#: probe was the missed one, and it published ``satisfied`` for a repository
+#: where Git ignores nothing; it now takes this text as its action, so no reader
+#: of the file sends an operator to a different cure than another.
 GITIGNORE_LINK_REMEDY: Final = (
     "Inspect {path} with `ls -l` to see what it points at, then replace it with a "
     "regular file holding the rules this repository should ignore -- copy them from "
@@ -1104,14 +1115,44 @@ def initialize_project(paths: ProjectPaths) -> tuple[str, ...]:
     ``mkdir`` the knowledge subtree at the link's target and report the paths as
     if in-tree (#237, T-5). Refusing before the create keeps a partial run inside
     the tree: nothing is created outside it, whichever target the link sits on.
+
+    **``is_dir()`` and not ``exists()``, which is what round one caught.** The
+    probe used to ask whether *something* was there, so a regular file at
+    ``.theurian/cache`` or ``.theurian/state`` -- a clone can track either -- was
+    read as "already created": `theurian init` skipped it, left the file where it
+    was, and reported ``changed: true`` at exit 0 with the path absent from
+    ``createdPaths`` (measured at ``8f975d50``, both leaves). Nothing then
+    ignores the derived artefacts that belong there, and the next command writes
+    into a directory that does not exist. Only a *prefix* file reached the
+    ``mkdir``'s own refusal, so the arm added for the dangling link answered one
+    face of two.
+
+    Raises:
+        ProjectError: A path the layout needs is occupied by something that is
+            not a directory. Named rather than skipped, because "it is already
+            there" and "something else is there" have opposite cures.
     """
     created: list[str] = []
 
     for relative in INITIAL_DIRECTORIES:
         directory = _contain(paths.root, paths.knowledge_dir / relative)
-        if not directory.exists():
-            directory.mkdir(parents=True)
-            created.append(str(Path(paths.knowledge_dir.name) / relative))
+        if directory.is_dir():
+            continue
+        if directory.exists() or directory.is_symlink():
+            # `is_symlink` beside `exists`: a *dangling* link answers `False` to
+            # both `is_dir` and `exists` -- `exists` follows it to decide -- and
+            # would otherwise fall through to the `mkdir`, which refuses it as a
+            # bare `FileExistsError` carrying no cure of its own.
+            raise ProjectError(
+                f"{directory} is not a directory, so Theurian cannot create the "
+                f"`.theurian/` layout there. Nothing was changed.",
+                remedy=(
+                    f"Remove or rename {directory} -- a clone can deliver it as a regular "
+                    f"file or as a symbolic link -- then re-run `theurian init`."
+                ),
+            )
+        directory.mkdir(parents=True)
+        created.append(str(Path(paths.knowledge_dir.name) / relative))
 
     # `.gitkeep` only where Git must carry an otherwise-empty directory. Derived
     # directories are git-ignored, so marking them would commit a path that is
@@ -1280,10 +1321,19 @@ def ensure_gitignore(root: Path) -> tuple[bool, str]:
         ProjectError: The markers do not delimit exactly one block, as
             :func:`locate_gitignore_block` describes; or ``.gitignore`` is a
             symbolic link, which this refuses rather than writes through.
-        OSError: Any other way the read or the write fails -- a read-only file,
-            a directory in its place. Left as it is and graded by the callers,
-            which is the contract :mod:`theurian.security.no_follow` records for
-            every user of these openers.
+        OSError: The read or the write fails at the *filesystem* -- a read-only
+            file, a directory in its place, a full disk. Left as it is and graded
+            by the callers, which is the contract
+            :mod:`theurian.security.no_follow` records for every user of these
+            openers.
+        UnicodeDecodeError: The file is not UTF-8. **Not an ``OSError``** -- it
+            is a ``ValueError`` -- which is what an earlier version of this
+            section got wrong by folding it into "any other way the read fails":
+            a ``.gitignore`` holding one non-UTF-8 byte ended `theurian init
+            --json` in a traceback with an empty machine channel (measured at
+            ``8f975d50``; #571's own filing note said to check #367 and this is
+            its ``init`` face). ``propose --local`` already caught it beside
+            ``OSError``; ``init`` now does too.
     """
     block = render_gitignore_block()
     gitignore = root / ".gitignore"
@@ -1318,6 +1368,10 @@ def _read_authored_file(gitignore: Path) -> str:
     Raises:
         ProjectError: The path is a symbolic link.
         OSError: Anything else the open or the read refuses with.
+        UnicodeDecodeError: The file is not UTF-8 (#367's ``init`` face). A
+            ``ValueError`` and not an ``OSError``, so a caller listing only the
+            latter does not catch it -- which is what
+            :func:`ensure_gitignore`'s ``Raises:`` section now says.
     """
     try:
         descriptor = open_for_reading_without_following_a_link(gitignore)
@@ -1325,7 +1379,16 @@ def _read_authored_file(gitignore: Path) -> str:
         return ""
     except OSError as exc:
         raise _gitignore_link_refusal(gitignore, exc) from exc
-    with os.fdopen(descriptor, encoding="utf-8", newline="") as handle:
+    try:
+        handle = os.fdopen(descriptor, encoding="utf-8", newline="")
+    except BaseException:
+        # `os.fdopen` takes ownership of the descriptor only once it returns, so
+        # this arm is the one place the descriptor would leak -- the same guard
+        # `write_text_without_following_a_link` carries for its own `fdopen`
+        # (round one, LOW).
+        os.close(descriptor)
+        raise
+    with handle:
         return handle.read()
 
 

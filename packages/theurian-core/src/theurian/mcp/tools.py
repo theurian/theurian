@@ -265,6 +265,52 @@ DEFERRED_RESULT_REFUSAL: Final = (
     "logs name it. Nothing was read and nothing was changed."
 )
 
+#: How much of a derived-state value a refusal may quote back. Long enough to
+#: recognise a filename, short enough that a 260-character one -- or a whole
+#: file pasted into the pointer -- is a bounded echo rather than the payload.
+_MAX_QUOTED_VALUE_CHARS: Final = 120
+
+#: What :func:`_publishable` appends when it cuts. Never a prefix of what a cut
+#: value can end with, so "the value ended here" and "the value was cut" are
+#: distinguishable in a transcript.
+_CUT_MARKER: Final = "… (cut)"
+
+
+def _publishable(value: str) -> str:
+    """A derived-state value rendered safe to interpolate into a reply.
+
+    **The failure this exists for is an empty response body, not an ugly one.**
+    ``databaseFilename`` is a value out of ``active.json`` -- derived,
+    git-ignored, unsigned (SEC-7) -- and ``ActiveState.from_json`` only ``str()``s
+    it, so a hand edit or a partially-decoded copy can put a lone surrogate in a
+    file that still parses (``json.dumps`` writes ``\\udcff`` and ``json.loads``
+    reads it straight back). Interpolated verbatim into a refusal, that surrogate
+    reaches the wire encoder: measured, ``CallToolResult.model_dump_json()``
+    raises ``PydanticSerializationError`` -- *"'utf-8' codec can't encode
+    character '\\udcff' … surrogates not allowed"* -- and the client receives a
+    200 with an empty body: no ``isError``, no message, no remedy. That is worse
+    than the ``UnexpectedToolError`` #388 was filed for, because nothing on the
+    wire says anything went wrong.
+
+    ``repr`` and not ``str.encode(errors=...)``, one spelling for every site:
+    ``repr`` escapes the surrogate, the NUL and the C0 controls in one operation
+    the reader already knows how to undo, and it leaves printable non-ASCII alone
+    -- a Japanese filename stays legible, which the ``ascii`` spelling would
+    destroy for no gain. The length bound is here rather than at the call sites
+    for the reason the escaping is: a rule applied per site is a rule that drifts.
+
+    **The CLI is deliberately not routed through this**, and that is measured
+    rather than assumed: ``_fail``'s JSON channel goes through ``json.dumps``,
+    whose ``ensure_ascii`` default escapes a surrogate, and its text channel
+    reaches ``sys.stderr.write`` only after the same value has been through
+    ``!r`` at the construction site. A surrogate ``indexBuildId`` through
+    ``theurian index gc`` answered cleanly on both channels (measured 2026-09-06).
+    """
+    quoted = repr(value)
+    if len(quoted) <= _MAX_QUOTED_VALUE_CHARS:
+        return quoted
+    return quoted[:_MAX_QUOTED_VALUE_CHARS] + _CUT_MARKER
+
 
 def _forwarding[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     """Let a deliberate refusal raised *below* this module still reach the caller.
@@ -1038,7 +1084,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         if active is None:
             msg = (
                 f"Project {project_id!r} has no built knowledge state. "
-                f"Run `theurian migrate apply` in {entry['rootPath']}."
+                f"Run `theurian migrate apply` in {_publishable(entry['rootPath'])}."
             )
             raise ToolError(msg)
 
@@ -1073,8 +1119,9 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         if not present:
             msg = (
                 f"Project {project_id!r} points at a state database that is missing "
-                f"({active.database_filename}). Run `theurian migrate apply` to rebuild it; "
-                f"the canonical state is reconstructible from Git-tracked migrations."
+                f"({_publishable(active.database_filename)}). Run `theurian migrate apply` "
+                f"to rebuild it; the canonical state is reconstructible from Git-tracked "
+                f"migrations."
             )
             raise ToolError(msg)
 

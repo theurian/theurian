@@ -290,11 +290,13 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
     # the instant it is published (ADR-0004, SEC-7). The serve-side index gate
     # stands aside any build id it does not find here, so this is what lets the
     # ranked path use the build that was just published.
-    BuildProvenance.default().record_index(paths.root, index_build_id)
+    provenance_warning = _record_the_provenance(paths, index_build_id)
     findings: list[str] = list(report["secretFindings"])
     warning = _record_the_scan(
         paths, index_build_id=index_build_id, policy=policy, findings=len(findings)
     )
+    if provenance_warning is not None:
+        report = {**report, "provenanceWarning": provenance_warning}
     if findings:
         # A remedy on a success result, the shape `AcceptedProposal
         # .cleanup_remedy` already has: the build did publish, and telling the
@@ -463,6 +465,50 @@ def _the_scan_record_paths_are_usable(paths: ProjectPaths, as_json: bool) -> boo
         )
         return False
     return True
+
+
+def _record_the_provenance(paths: ProjectPaths, index_build_id: str) -> str | None:
+    """Record that this installation built this index, or say what it costs that it could not.
+
+    **The same window as :func:`_record_the_scan`, and it was unguarded** (round
+    one, security H-B). This call sits between ``_publish``'s pointer swap and
+    the ``_emit`` below it, so anything it raises lands after the build is
+    serving and before the caller is told anything: measured at ``8f975d50``
+    against the real CLI with a *directory* at ``<data_dir>/provenance.json.tmp``
+    -- a path no ``ProjectPaths`` helper guards and nothing in this repository
+    owns -- ``theurian index build --json`` exited 1 with **zero bytes on
+    stdout**, an ``IsADirectoryError`` traceback, and ``active-index.json``
+    already naming the new build. That is the shape the precondition beside it
+    exists to prevent, one line earlier: ``secretFindings`` never printed and
+    ``block``'s ``EXIT_SECRET_FOUND`` never fired.
+
+    **What the failure actually costs is worse than a missing record**, and the
+    warning says so rather than describing bookkeeping: ``mcp/search`` stands
+    aside any build id it does not find here, so an unrecorded build degrades
+    every ``knowledge.search`` to the unranked substring scan and reports
+    ``index-unbuilt`` -- "no index has been built" about a build that is on disk
+    and published. One rebuild records it.
+
+    ``TheurianError`` beside ``OSError`` because the data directory is resolved
+    rather than fixed: ``default_data_dir`` reads ``THEURIAN_DATA_DIR``, and a
+    value that cannot be made a path refuses as this project's own error type
+    rather than the OS's.
+
+    Degraded and never raised, for :func:`_record_the_scan`'s reason: after a
+    correct publish the report is the operator's only account of what the build
+    holds, and replacing it with a refusal is exactly the defect.
+    """
+    try:
+        BuildProvenance.default().record_index(paths.root, index_build_id)
+    except (TheurianError, OSError) as exc:
+        return (
+            f"The index published, but this installation's record of having built it could "
+            f"not be written ({type(exc).__name__}), so `knowledge.search` will stand aside "
+            f"this build and answer from the unranked substring scan, reporting "
+            f"`index-unbuilt`. Make the Theurian data directory writable and run "
+            f"`theurian index build` again to record it."
+        )
+    return None
 
 
 def _record_the_scan(
