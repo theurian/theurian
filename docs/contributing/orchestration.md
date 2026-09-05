@@ -32,11 +32,18 @@ excluded from the published documentation site for that reason.
   sets → parallel worktrees.
 - Put any change touching `SCHEMA_VERSION` or the CHANGELOG's `[Unreleased]`
   section on the serial spine, whatever cluster it belongs to.
-- Query the project's own failure history for the files being touched:
-  `knowledge.search` for the failure families, `review.findings` for the landed
-  `Review-Finding:` trailers on those paths. This closes the loop through the
-  product — failures become governed knowledge, surfaced at the next Definition
-  of Ready.
+- Query the project's own failure history before the ACs are written.
+  `knowledge.search` for the failure families; `review.findings` for the landed
+  `Review-Finding:` trailers, filtered by `family`, `specialist` or `severity`.
+  This closes the loop through the product — failures become governed knowledge,
+  surfaced at the next Definition of Ready.
+  - **`review.findings` takes no path.** Its filters are `projectId`,
+    `reviewer`, `severity`, `family`, `specialist`, `commitSha`, `pullRequest`,
+    `q` and `limit`, and no field of its response carries a path either. To get
+    from a file to its findings, bridge through history yourself:
+    `git log --format=%H -- <path>` for the commits that touched it, then one
+    `commitSha` query per commit. A path filter on the tool is a product gap for
+    a future phase, not something this line can promise.
   - Honest caveat: retrieval quality here is **unmeasured**. There is no
     golden-query baseline until [Phase A](../roadmap.md) ships one, and
     `review.findings` serves trailers from git history — it is not review
