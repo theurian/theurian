@@ -1349,7 +1349,7 @@ flowchart TB
 | T-4 | A crafted `contentFile` path reads `~/.ssh/id_ed25519` | Information disclosure | Critical | SEC-7, FR-S6 |
 | T-5 | A symlink inside the repo points outside it | Information disclosure | Critical | SEC-7 |
 | T-6 | A zip/YAML bomb at ingestion, or a search query that burns seconds of CPU | DoS | Medium | SEC-8 |
-| T-7 | A hostile Git URL triggers an internal request | SSRF | Medium | SEC-10 — `$ref` recorded-never-fetched only; scheme allowlist, private-network rejection and repository allowlist owed with the first external fetch path, owned by [#429](https://github.com/theurian/theurian/issues/429) (#129 closed on the wording, not the controls) |
+| T-7 | A hostile Git URL triggers an internal request | SSRF | Medium | SEC-10 — per control: the **repository allowlist is discharged** on the `gh` review-ingestion path (read before any spawn, ADR-0030); **private-network rejection is reduced** there, with a four-member divergence class recorded as the residual; the **scheme allowlist** does not apply there (no URL in the vector). On the `$ref` path, recorded-never-fetched only, and both remaining controls are owed to [#429](https://github.com/theurian/theurian/issues/429) (#129 closed on the wording, not the controls) |
 | T-8 | The token is written into a config file that gets committed | Information disclosure | High | SEC-5, ADR-0011 |
 | T-9 | The token appears in a log or a crash report | Information disclosure | High | SEC-6 |
 | T-10 | Confidential and public knowledge merge into one summary | Information disclosure | High | SEC-14, R-14 |

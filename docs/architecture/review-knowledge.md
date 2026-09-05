@@ -21,13 +21,20 @@ and the promotion invariants below are held by three different mechanisms
   `test_candidate_without_evidence_is_rejected_at_generation` and its two
   siblings.
 
-What is missing is everything that would fill that model. `infrastructure/github/`
-holds no adapter, `theurian ingest` reads local files only, and no code path
-generates a candidate; `system.capabilities` reports `reviewIngestion: false`,
-pinned by `test_capabilities_report_what_is_and_is_not_built`. So the sections
-below that describe *collection* — the stages, classification, candidate
+What fills that model has begun to arrive, and it is worth being exact about how
+much. `infrastructure/github/` **holds the adapter now**
+([ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) slice 1): it
+fetches pull requests, review threads, inline comments and resolution state by
+spawning the operator's `gh`, over public repositories the project has
+allowlisted. What is still missing is everything after the fetch — nothing lands
+on disk, `theurian ingest` reads local files only, no code path generates a
+candidate, and no CLI command or MCP tool reaches the adapter, so
+`system.capabilities` reports `reviewIngestion: false`, pinned by
+`test_capabilities_report_what_is_and_is_not_built`. So the sections below that
+describe *collection* — the landing stages, classification, candidate
 generation, provider access and privacy handling — describe a **design**, not
-what runs today. Collection is
+what runs today; the fetch half of the first stage is the exception, and it is
+named as such where it appears. Collection is
 [#479](https://github.com/theurian/theurian/issues/479)'s, designed in
 [ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) and sliced there;
 [#368](https://github.com/theurian/theurian/issues/368) is the other arm of FR-V

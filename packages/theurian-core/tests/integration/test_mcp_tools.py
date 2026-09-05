@@ -1887,8 +1887,8 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
     ones: `knowledgeSearch` and the seven booleans. `reviewIngestion`,
     `traceability` and `knowledgeSearch` were all unpinned until #129 -- mutations
     flipping each boolean to `True` and rewriting `"hybrid"` to `"substring"`
-    survived the whole suite, and the first two are what Milestone 7 flips.
-    That the block holds *only* those eight is the sibling test below.
+    survived the whole suite. That the block holds *only* those eight is the
+    sibling test below.
 
     `sensitivityEnforcement` is the eighth, added in #119 phase 6, and it arrives
     with two assertions rather than one. The second says what the flag must *not*
@@ -1978,17 +1978,18 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "let it get right."
     )
     assert result["capabilities"]["reviewIngestion"] is False, (
-        "no review *history* is ingested: `infrastructure/github/` holds no "
-        "adapter, so no thread, inline comment or resolution state is read, and a "
-        "client reading `true` would offer a feature no code path performs. "
-        "`reviewFindings` above is the narrower thing that did land -- an offline "
-        "read of local git trailers -- and does not make this one true. Flipping "
-        "*this* flag is the change that reaches GitHub, which is why the T-7 entry "
-        "in docs/security/threat-model.md cites its `false` as what stands in for "
-        "the repository allowlist while SEC-10's reader is owed (#429): the change "
-        "that adds a GitHub-reaching call site owes the allowlist, and the offline "
-        "trailer read owes none (`test_network_call_sites.py`'s own record of the "
-        "same split)."
+        "no tool ingests review *history*: `infrastructure/github/` holds the "
+        "ADR-0030 adapter, but no CLI command and no MCP tool reaches it, nothing "
+        "lands on disk, and a client reading `true` would offer a call this "
+        "server does not answer. Read the `false` narrowly -- it says no "
+        "ingestion call surface is callable, **not** that this build cannot reach "
+        "GitHub, which it can. `reviewFindings` above is a different thing "
+        "entirely: an offline read of local git trailers. What made T-7's "
+        "repository allowlist load-bearing was the adapter landing, not this flag "
+        "moving, and the allowlist is enforced now (`security/review_allowlist.py`, "
+        "consulted before any spawn); the scheme allowlist and private-network "
+        "rejection stay owed in the raw-URL context (#429). Flip this in the serve "
+        "slice, beside the scope field, not ahead of it."
     )
     assert result["capabilities"]["traceability"] is False, (
         "no tool answers FR-T3's questions -- which code implements a spec, which "
@@ -2059,8 +2060,9 @@ async def test_the_capability_block_holds_exactly_the_flags_that_are_pinned(
     after it was written. A new capability would ship declared-but-unasserted,
     which is the state `reviewIngestion`, `traceability` and `knowledgeSearch`
     were each found in (#129) -- and a capability flag is a security statement
-    when it is `reviewIngestion`, because T-7's threat-model entry cites its
-    `false` as what stands in for the repository allowlist.
+    when it is `reviewIngestion`, whose published meaning narrowed with ADR-0030:
+    the `false` now says no ingestion call surface is callable, not that nothing
+    reaches GitHub.
 
     So this fails when a flag is added *and* when one is removed, and its message
     says what to do about it. The value of a new flag belongs in the test above;
