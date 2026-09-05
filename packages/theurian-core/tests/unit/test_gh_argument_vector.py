@@ -40,7 +40,7 @@ _SPAWN_HELPER: Final = "run_bounded"
 PAGINATE_FLAG: Final = "--paginate"
 
 
-def _vector(document: str, variables: dict[str, str]) -> tuple[str, ...]:
+def _vector(document: str, variables: dict[str, str | int]) -> tuple[str, ...]:
     """The production vector, built by the adapter rather than transcribed here.
 
     ``GhCli.graphql_vector`` exists so this file asserts on the thing that is
@@ -92,13 +92,15 @@ def test_every_variable_binding_names_a_variable_the_documents_declare() -> None
     """A binding whose name is not in the closed set is a variable nobody declared."""
     vector = _vector(
         queries.REVIEW_THREADS,
-        {"owner": "acme", "name": "order-service", "number": "1", "first": "50"},
+        {"owner": "acme", "name": "order-service", "number": 1, "first": 50},
     )
     bindings = [
-        element for index, element in enumerate(vector) if index and vector[index - 1] == "-f"
+        element
+        for index, element in enumerate(vector)
+        if index and vector[index - 1] in {"-f", "-F"}
     ]
 
-    assert bindings, "the vector carries no `-f` bindings, so this asserts nothing"
+    assert bindings, "the vector carries no variable bindings, so this asserts nothing"
     for binding in bindings:
         assert binding.split("=", 1)[0] in queries.VARIABLE_NAMES, binding
 
@@ -125,7 +127,7 @@ def test_paginate_is_absent_from_every_vector() -> None:
 
 def test_a_second_page_changes_only_the_cursor() -> None:
     """The pagination property: same vector, one variable's value different."""
-    base = {"owner": "acme", "name": "order-service", "first": "50"}
+    base: dict[str, str | int] = {"owner": "acme", "name": "order-service", "first": 50}
     first = _vector(queries.PULL_REQUESTS, base)
     second = _vector(queries.PULL_REQUESTS, {**base, "after": "CURSOR"})
 
@@ -267,3 +269,42 @@ def test_the_pull_request_cap_bites_before_the_page_cap_on_that_read() -> None:
     stops a thread read, which is how each has an input that reaches it.
     """
     assert limits.MAX_PULL_REQUESTS < limits.MAX_PAGES * limits.PAGE_SIZE
+
+
+def test_an_integer_variable_is_typed_and_every_caller_derived_value_is_raw() -> None:
+    """The flag is chosen by the value's type, and both directions are load-bearing.
+
+    **The `-F` direction was found by running it.** With every variable on `-f`,
+    `gh` sends them all as GraphQL `String`s and the API answers
+    ``Variable $first of type Int! was provided invalid value`` -- measured
+    against the live API on 2026-09-06, and invisible to every test that answers
+    with a canned payload, because a stand-in child does not type-check a
+    document.
+
+    **The `-f` direction is the security half.** A ``-F`` value opening with
+    ``@`` is read by ``gh`` as a *filename to send*, so a caller-derived string
+    -- an owner, a repository name, a pagination cursor -- must never travel on
+    it. Every such value here is a `str` and every `str` goes on ``-f``.
+    """
+    vector = _vector(
+        queries.REVIEW_THREADS,
+        {"owner": "acme", "name": "order-service", "number": 12, "first": 50, "after": "CUR"},
+    )
+    flagged = {
+        vector[index]: vector[index - 1]
+        for index in range(1, len(vector))
+        if vector[index - 1] in {"-f", "-F"}
+    }
+
+    assert flagged["number=12"] == "-F"
+    assert flagged["first=50"] == "-F"
+    assert flagged["owner=acme"] == "-f"
+    assert flagged["name=order-service"] == "-f"
+    assert flagged["after=CUR"] == "-f"
+
+    typed = [binding for binding, flag in flagged.items() if flag == "-F"]
+    assert all(binding.split("=", 1)[1].isdigit() for binding in typed), (
+        f"a non-integer value reached `-F`: {typed}. `gh` reads a `-F` value "
+        f"opening with `@` as a filename to send, so nothing a caller chose may "
+        f"travel on that flag."
+    )

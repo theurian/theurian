@@ -147,7 +147,11 @@ class GitHubReviewProvider:
         events: list[ReviewEvent] = []
         cursor: str | None = None
         for _page in range(MAX_PAGES):
-            variables = {"owner": owner, "name": name, "first": str(min(PAGE_SIZE, limit))}
+            variables: dict[str, str | int] = {
+                "owner": owner,
+                "name": name,
+                "first": min(PAGE_SIZE, limit),
+            }
             if cursor is not None:
                 variables["after"] = cursor
             repo = self._repository_of(
@@ -183,11 +187,11 @@ class GitHubReviewProvider:
         threads: list[ReviewThread] = []
         cursor: str | None = None
         for _page in range(MAX_PAGES):
-            variables = {
+            variables: dict[str, str | int] = {
                 "owner": owner,
                 "name": name,
-                "number": str(event.number),
-                "first": str(PAGE_SIZE),
+                "number": event.number,
+                "first": PAGE_SIZE,
             }
             if cursor is not None:
                 variables["after"] = cursor
@@ -235,7 +239,7 @@ class GitHubReviewProvider:
     # -- the response ---------------------------------------------------------
 
     async def _request(
-        self, cli: GhCli, document: str, variables: Mapping[str, str]
+        self, cli: GhCli, document: str, variables: Mapping[str, str | int]
     ) -> Mapping[str, Any]:
         """One page, as parsed JSON, or a graded refusal carrying the child's stderr."""
         outcome = await cli.graphql(document=document, variables=variables)

@@ -351,7 +351,9 @@ class GhCli:
                 detail=outcome.stderr,
             )
 
-    def graphql_vector(self, *, document: str, variables: Mapping[str, str]) -> tuple[str, ...]:
+    def graphql_vector(
+        self, *, document: str, variables: Mapping[str, str | int]
+    ) -> tuple[str, ...]:
         """The exact vector one ``gh api graphql`` request is spawned as.
 
         Separate from :meth:`graphql` so the properties clauses 2, 3, 5 and 6
@@ -359,10 +361,21 @@ class GhCli:
         a test's transcription of it: a transcribed vector agrees with itself
         however the adapter changes.
 
-        ``<binary> api graphql --hostname github.com`` followed by one
-        ``-f name=value`` pair per variable. ``-f`` is ``gh``'s **raw** field
-        form, which sends the value as a string: ``-F`` would coerce it, and a
-        ``-F`` value opening with ``@`` would be read as a filename to send.
+        ``<binary> api graphql --hostname github.com`` followed by one flag pair
+        per variable, and **the flag is chosen by the value's type**:
+
+        * a **string** goes on ``-f``, ``gh``'s raw-field form, which sends the
+          value verbatim. Every caller-derived value -- the owner, the repository
+          name, a pagination cursor -- is a string, and this is the form that
+          keeps it one: a ``-F`` value opening with ``@`` is read as a *filename
+          to send*, which is not a shape a repository name may reach.
+        * an **integer** goes on ``-F``, the typed form, because the documents
+          declare ``$first`` and ``$number`` as ``Int!`` and a raw field arrives
+          as a ``String``. Measured against the live API on 2026-09-06: with
+          every variable on ``-f``, ``gh`` answers ``Variable $first of type
+          Int! was provided invalid value`` and the request fails. ``-F`` is safe
+          for exactly these because the value is an integer this adapter
+          produced -- ``str(int)`` can never open with ``@``.
 
         ``--paginate`` is absent, deliberately (clause 6): every page after the
         first is this adapter handing back a cursor in ``after``.
@@ -380,10 +393,12 @@ class GhCli:
             f"query={document}",
         ]
         for name in sorted(variables):
-            arguments += ["-f", f"{name}={variables[name]}"]
+            value = variables[name]
+            flag = "-F" if isinstance(value, int) and not isinstance(value, bool) else "-f"
+            arguments += [flag, f"{name}={value}"]
         return self.vector(*arguments)
 
-    async def graphql(self, *, document: str, variables: Mapping[str, str]) -> ChildOutcome:
+    async def graphql(self, *, document: str, variables: Mapping[str, str | int]) -> ChildOutcome:
         """One ``gh api graphql`` request, spawned as :meth:`graphql_vector` describes."""
         return await run_bounded(
             self.graphql_vector(document=document, variables=variables), env=self._environment
