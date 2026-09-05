@@ -37,6 +37,7 @@ from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from theurian import __protocol_version__, __version__
 from theurian.application.authorization import DEPLOYMENT_TENANT, AuthorizationGrant
 from theurian.application.project_service import (
+    ACTIVE_POINTER_REMEDY,
     FINDINGS_STORE_ID,
     BuildProvenance,
     ProjectError,
@@ -1088,7 +1089,6 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             )
             raise ToolError(msg)
 
-        database = paths.state / active.database_filename
         # `databaseFilename` is a *value* out of `active.json`, which is derived,
         # git-ignored and unsigned (SEC-7): `ActiveState.from_json` only `str()`s
         # it, and `verify_state_provenance` binds `(root, state_hash)` rather
@@ -1099,10 +1099,34 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # executing tool", no remedy (measured at `75fe9b4f`; the same class as
         # #388's `indexBuildId` face, on the pointer beside it).
         #
-        # A filename carrying `../` is a separate question and is deliberately
-        # *not* answered here: it is refused when the target does not exist and
-        # otherwise met by the provenance gate below, whose own docstring records
-        # local filesystem write access as outside what that record covers.
+        # **A filename carrying `../` is answered here now, and the sentence this
+        # replaces was wrong twice.** It said the escape was "met by the
+        # provenance gate below": provenance binds the hash, not the filename, so
+        # it passes. What actually fires is the *read-back integrity* guard, and
+        # only when the content differs -- measured 2026-09-06, a doctored copy
+        # outside the tree refused with `InvariantViolationError` while a
+        # **byte-identical** copy outside the tree was served at exit 0. Nothing
+        # bounded the escape itself, which is what `state_database_named`'s
+        # containment does; the guards below still bound what it can say.
+        try:
+            database = paths.state_database_named(active.database_filename)
+        except ProjectError as exc:
+            # **Neither the refusal's message nor its remedy is passed through**,
+            # and the two have separate reasons. The message names the resolved
+            # absolute path -- correct on a terminal, the operator's machine
+            # layout on this surface (GHSA-97q9), and routing this call through
+            # containment added a member to that population. The remedy is keyed
+            # by `ProjectPaths._escape_remedy` on the assumption that a *link* on
+            # the path is what escaped, so it says to remove `.theurian/state`:
+            # true of the plants #525 closes, and a non-cause here, where the
+            # directory is intact and it is the pointer's own field that carries
+            # `../`. Only this call site knows which of the two it asked with.
+            msg = (
+                f"Project {project_id!r} points at a state database outside its own "
+                f"working tree ({_publishable(active.database_filename)}). "
+                f"{ACTIVE_POINTER_REMEDY}"
+            )
+            raise ToolError(msg) from exc
         try:
             present = database.exists()
         except OSError as exc:

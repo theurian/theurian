@@ -7,6 +7,7 @@ the Claude Code plugin depends on (CP-2), validated by ``tests/contract/``.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import sqlite3
 import sys
@@ -1285,6 +1286,20 @@ def _pointer_failure_fields(failure: TheurianError | None) -> dict[str, str]:
     }
 
 
+def _state_built_failure_fields(failure: TheurianError | None) -> dict[str, str]:
+    """Why ``stateBuilt`` is ``null`` and what clears it, or nothing.
+
+    Its own two keys rather than the pointer's ``reason``/``remedy``, because the
+    two failures are independent and either can happen without the other -- and
+    sharing one pair meant the loser's text was published nowhere. Named for the
+    field they explain, so a reader does not have to know which of several
+    "cannot know"s a bare ``reason`` was about.
+    """
+    if failure is None:
+        return {}
+    return {"stateBuiltReason": str(failure), "stateBuiltRemedy": failure.remedy}
+
+
 def _state_database_is_built(database: Path) -> tuple[bool | None, TheurianError | None]:
     """Whether the state database is on disk, or ``None`` when the OS would not say.
 
@@ -1300,23 +1315,52 @@ def _state_database_is_built(database: Path) -> tuple[bool | None, TheurianError
     whose cure -- `theurian migrate apply` -- cannot run in the condition that
     produced it either.
 
-    The message names the OS's reason and the file; the remedy names the
-    directory to make readable, because that is the cause a mode failure has and
-    :data:`ACTIVE_POINTER_REMEDY`'s "delete the pointer" is not a thing the
-    operator can do through an unreadable parent.
+    **Two errnos reach here and they have opposite cures**, which is why the
+    remedy is chosen rather than fixed. ``EACCES`` is a mode on some directory
+    above the file, and the cure is the ``chmod``;
+    :data:`ACTIVE_POINTER_REMEDY`'s "delete the pointer" is not something the
+    operator can do through an unreadable parent either, which is why that text
+    is not borrowed. ``ENAMETOOLONG`` is a checkout whose path is simply too deep
+    -- reachable with the state directory perfectly readable, which is how the
+    limb is driven -- and `chmod` cures nothing there. Publishing one cure for
+    both is the "a remedy that names a non-cause" defect this project has shipped
+    three times.
     """
     try:
         return database.exists(), None
     except OSError as exc:
-        failure = ProjectError(
+        return None, ProjectError(
             f"Whether {database.name} exists could not be established: "
             f"{exc.strerror or type(exc).__name__}.",
-            remedy=(
-                f"Make {database.parent} readable -- `chmod u+rx` on it and every "
-                f"directory above it -- then run `theurian project status` again."
-            ),
+            remedy=_state_probe_remedy(database, exc),
         )
-        return None, failure
+
+
+def _state_probe_remedy(database: Path, exc: OSError) -> str:
+    """The cure for the errno that actually stopped the probe.
+
+    Keyed on ``errno`` rather than on the message, for the reason
+    :func:`~theurian.security.no_follow.is_a_symbolic_link_refusal` records: the
+    kernel's answer for *this* call is the only thing that is not a guess. The
+    fallback names neither cure and says what is known instead -- a wrong cure
+    costs a reader more than an honest "the OS refused, here is its reason".
+    """
+    if exc.errno == errno.ENAMETOOLONG:
+        return (
+            "Move this repository to a shorter path -- the state database's full path "
+            "is past the limit the operating system accepts -- then run "
+            "`theurian project status` again."
+        )
+    if exc.errno == errno.EACCES:
+        return (
+            f"Make {database.parent} readable -- `chmod u+rx` on it and every directory "
+            f"above it -- then run `theurian project status` again."
+        )
+    return (
+        f"Inspect {database.parent} and the directories above it: the operating system "
+        f"refused the question rather than answering it. Then run `theurian project "
+        f"status` again."
+    )
 
 
 def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
@@ -1552,13 +1596,17 @@ def project_status(as_json: JsonOption = False) -> None:
             # lost when it wins -- `statePointerCorrupt` above carries the
             # pointer failure whatever happens, and its cure is a fixed string
             # both this command and `theurian index status` print.
-            # The probe's own failure is the fallback and never the winner: a
-            # `stateBuilt: null` with no `reason` beside it is the unactionable
-            # "cannot know" `_RegistryRead.failure_fields` exists to prevent,
-            # and in every arrangement measured the pointer read has already
-            # failed on the same directory -- but this command must not depend
-            # on that to publish a cure.
-            **_pointer_failure_fields(pointer_failure or probe_failure),
+            # The probe publishes under **its own keys**, never by borrowing the
+            # pointer's (round one, code review M-3 / adversarial M-2). Folding
+            # it into `reason`/`remedy` meant its text was published only when
+            # the pointer read had *not* failed -- and under the mode plant the
+            # pointer always fails first, so the probe's own strings reached no
+            # payload the suite produced, and two mutations rewriting them
+            # survived. They are reachable: a project root long enough that the
+            # database path passes `PATH_MAX`, with the state directory readable
+            # and no pointer written yet.
+            **_state_built_failure_fields(probe_failure),
+            **_pointer_failure_fields(pointer_failure),
             **read.failure_fields,
         },
         as_json=as_json,

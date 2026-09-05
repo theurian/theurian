@@ -937,6 +937,32 @@ class ProjectPaths:
         """
         return self._contained(self.knowledge_dir / "cache" / "ingestion.json")
 
+    def state_database_named(self, database_filename: str) -> Path:
+        """The canonical store a *pointer* names, proved to stay inside the tree.
+
+        The sibling of :meth:`index_for` for the other derived value.
+        :meth:`database_for` takes a :class:`StateHash` this build computed and so
+        needs no such proof; this one takes ``active.json``'s ``databaseFilename``
+        verbatim -- ``ActiveState.from_json`` only ``str()``s it -- and any local
+        process can put ``../`` in that file (SEC-7).
+
+        **What the escape actually costs, measured rather than reasoned
+        (2026-09-06, real CLI plus the MCP entry point).** Provenance binds
+        ``(root, state_hash)`` and not the filename, so it passes; the read-back
+        integrity guard is what fires, and only when the *content* differs. With
+        the pointer aimed at a doctored copy outside the tree,
+        ``knowledge.search`` refused with ``InvariantViolationError``. With it
+        aimed at a **byte-identical** copy outside the tree, nothing refused at
+        all: exit 0, one result served, out of a file the working tree does not
+        contain. So the bound is on what an escape can *say*, never on whether it
+        happens -- which is the gap this method closes, and the reason a comment
+        at the call site naming provenance as the refuser was wrong twice over.
+
+        Raises:
+            ProjectPathEscapeError: The filename resolves outside the project.
+        """
+        return self._contained(self.knowledge_dir / "state" / database_filename)
+
     def index_for(self, index_build_id: str) -> Path:
         """Where one index build lives.
 
@@ -1306,6 +1332,14 @@ def ensure_gitignore(root: Path) -> tuple[bool, str]:
     the read that decides what gets written back: through a link, the merge is
     computed over somebody else's file.
 
+    **The bound: ``O_NOFOLLOW`` does not see a hard link**, and nothing here
+    does. A second directory entry for the same inode is indistinguishable from
+    the file itself at every syscall this uses, so a hard link at ``.gitignore``
+    still merges the block into whatever else names that inode. It is recorded
+    rather than closed because a clone cannot deliver one -- Git stores no hard
+    links, only regular files, symbolic links and gitlinks -- so the delivery
+    route this whole class turns on does not exist for it.
+
     **The refusal's cure is this function's own and never
     :func:`~theurian.security.no_follow.symbolic_link_remedy`.** That text says
     the link is derived state Theurian recreates and that a repository carrying
@@ -1420,6 +1454,21 @@ def resolve_state_hash(loaded: LoadedMigrations, schema_version: int) -> StateHa
     )
 
 
+def _under_the_project(path: Path, root: Path) -> str:
+    """``path`` written relative to ``root``, or its bare name if it is not under it.
+
+    For messages that reach an MCP client, where an absolute path is the
+    operator's machine layout and not the reader's business (GHSA-97q9). The
+    fallback is the leaf rather than the absolute path: a path outside the root
+    has its own refusal with its own wording, and this helper is not the place to
+    decide that a caller reached it by mistake.
+    """
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return path.name
+
+
 def read_active_state(paths: ProjectPaths) -> ActiveState | None:
     """Read the active state pointer, or ``None`` if there is none.
 
@@ -1497,7 +1546,17 @@ def read_active_state(paths: ProjectPaths) -> ActiveState | None:
         cure = (
             ACTIVE_POINTER_UNREADABLE_REMEDY if isinstance(exc, OSError) else ACTIVE_POINTER_REMEDY
         )
-        raise ProjectError(f"{pointer} is unreadable: {exc}", remedy=cure) from exc
+        # **Project-relative, and the cause without its filename** (round one,
+        # LOW). This message reaches MCP clients verbatim -- `_resolve` publishes
+        # it through `_with_remedy` -- and both halves used to carry the
+        # operator's absolute path: `{pointer}` directly, and `{exc}`, because an
+        # `OSError`'s `str` appends the filename its `strerror` leaves out. The
+        # rule the diff around this states three times (GHSA-97q9) is that a
+        # reply keeps them out; the relative path names the same file and reads
+        # the same to whoever has the checkout.
+        where = _under_the_project(pointer, paths.root)
+        cause = exc.strerror if isinstance(exc, OSError) and exc.strerror else exc
+        raise ProjectError(f"{where} is unreadable: {cause}", remedy=cure) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -1550,9 +1609,19 @@ def read_active_index_pointer(paths: ProjectPaths) -> ActiveIndexPointer:
     third face, and a ``.theurian/state`` at mode ``000`` made it raise
     ``PermissionError`` past the ``except`` written for exactly that errno one
     line down -- ``pathlib`` re-raises ``EACCES``. A probe that cannot be
-    answered is now ``unreadable`` rather than a crash: not "there is no
-    pointer", which would publish `theurian index build` as the cure for a
-    directory no process can read.
+    answered is now ``unreadable`` rather than a crash.
+
+    **``unreadable`` over ``None``, and the reason is not that one cure works
+    here** (round one, code review M-5, correcting the sentence this replaces).
+    Neither does: ``INDEX_POINTER_REMEDY`` says to delete the pointer, and under
+    a mode-``000`` directory the delete is refused exactly as the read was, so
+    the contrast this paragraph drew -- one honest cure against one misleading
+    one -- was false. What actually separates them is what each *claims*.
+    ``None`` is the assertion "this project has no index", which the probe did
+    not establish and which sends a reader to build one they may already have;
+    ``unreadable`` asserts only that the file could not be interpreted, which is
+    exactly what happened. The cure being imperfect for one errno is a smaller
+    fault than the report being wrong for every reader.
     """
     pointer = paths.active_index_pointer
     try:
@@ -2342,10 +2411,21 @@ class BuildProvenance:
         rewrites it. The file is derived and lives in the user's own data
         directory, so `migrate apply` is always the cure and losing it costs only
         a re-apply -- the same trade the registry and the state pointer make.
+
+        **The ``exists`` probe is inside the ``try``, swept here with the three
+        pointer readers under ``.theurian/state/``** (round one, MEDIUM-4). Same
+        shape: ``pathlib`` re-raises ``EACCES`` rather than answering "not
+        there", so an unreadable *data* directory would raise past the ``except``
+        written for it. Unreachable today -- every caller resolves the registry
+        out of the same directory first, and that read refuses earlier -- so this
+        is the one member of the family that is a guard rather than a fix, moved
+        because a class swept at three of four members is a class whose next
+        edit reopens it. The **data**-directory mode axis is otherwise untested
+        here: ``.theurian/state``'s is driven end to end, this one is not.
         """
-        if not self.path.exists():
-            return {}
         try:
+            if not self.path.exists():
+                return {}
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             return {}

@@ -62,12 +62,14 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import errno
 import json
 import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Iterator
+import textwrap
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -80,6 +82,7 @@ from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.project_service import INDEX_POINTER_REMEDY, ProjectRegistry
+from theurian.cli.commands import EXIT_STATE_ERROR
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 
@@ -412,6 +415,15 @@ def test_a_state_directory_no_process_can_read_never_reaches_a_traceback(
     if ran.exit_code == 0:
         assert ran.payload is not None, f"{' '.join(command)} published no payload at exit 0"
     else:
+        # `code=ran.exit_code` would compare the run with itself (round one,
+        # LOW). The *value* is deliberately not pinned per command here -- this
+        # sweep's claim is the envelope, and the individual codes belong to the
+        # commands' own suites -- but it must be one of this CLI's, so a run that
+        # ended in some other way cannot pass by defining its own expectation.
+        assert ran.exit_code in {1, EXIT_STATE_ERROR}, (
+            f"{' '.join(command)} exited {ran.exit_code}, which is neither of this "
+            f"CLI's refusal codes"
+        )
         _refused_cleanly(ran, code=ran.exit_code)
 
 
@@ -446,9 +458,16 @@ def test_project_status_says_it_cannot_know_rather_than_reporting_no_built_state
         f"{payload['stateBuilt']!r}"
     )
     assert payload.get("reason"), "a `cannot know` with no reason beside it is unactionable"
+    # The cure names the delete *and* the `chmod`, in that order, because which
+    # of the two is in the way depends on where the mode sits: `unlink` is
+    # governed by the parent's bits, so a mode-000 *file* in a writable
+    # directory really is deletable. The assertion message said "not the pointer
+    # deletion", which contradicted the text it was asserting about (round one,
+    # LOW); what it is actually about is that the delete is not published
+    # *alone*.
     assert "chmod" in payload.get("remedy", ""), (
-        f"the cure must name the act that clears a mode failure, not the pointer "
-        f"deletion that cannot be carried out through it: {payload.get('remedy')!r}"
+        f"the cure names the delete without the `chmod` that a mode failure may "
+        f"require before it can be carried out: {payload.get('remedy')!r}"
     )
 
 
@@ -665,6 +684,150 @@ def test_every_derived_value_a_reply_quotes_goes_through_the_one_sanitiser() -> 
     )
 
 
+def _the_state_path_is_too_long(root: Path) -> bool:
+    """Whether the OS refuses to stat this root's state database *by name*.
+
+    The stat is what decides, so the stat is what is asked -- a length
+    comparison here would be this file guessing at a platform constant. Nothing
+    needs to exist: a name past the limit is refused before the lookup, which is
+    what lets the search below run without touching the filesystem.
+    """
+    probe = root / ".theurian/state/theurian-state-000000000000.sqlite"
+    try:
+        probe.exists()
+    except OSError as exc:
+        return exc.errno == errno.ENAMETOOLONG
+    return False
+
+
+#: Long enough to reach the path limit in few components, short enough to stay
+#: under ``NAME_MAX`` (255): a single component sized to the whole shortfall is
+#: refused by the *name* limit rather than the path one, which is a different
+#: platform bound and not the one under test.
+_COMPONENT_CHARS: Final = 200
+
+
+def _a_root_whose_state_path_is_just_too_long(base: Path) -> Path | None:
+    """The *shortest* root under ``base`` whose state stat is refused, or ``None``.
+
+    Shortest, because the window is narrow and one component too many closes it:
+    ``git init`` creates its own tree under the root, so a depth chosen by
+    stepping in fixed-size components overshoots what the checkout itself
+    accepts -- measured, a 40-character step lands past it every time. Grown one
+    character at a time within a bounded number of ``NAME_MAX``-safe components,
+    and searched on the *name* rather than on disk: a path past the limit is
+    refused before any lookup, so nothing here has to be created to find the
+    boundary.
+    """
+    root = base
+    for _ in range(16):
+        for extra in range(1, _COMPONENT_CHARS + 1):
+            candidate = root / ("d" * extra)
+            if _the_state_path_is_too_long(candidate):
+                return candidate
+        root = root / ("d" * _COMPONENT_CHARS)
+    return None
+
+
+def test_the_state_probes_own_failure_is_published_under_its_own_keys(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Round one, code review M-3 / adversarial M-2: the limb's text reached no payload.
+
+    ``_state_database_is_built``'s message and remedy were folded into the
+    pointer's ``reason``/``remedy`` pair, published only when the pointer read
+    had *not* failed. Under the mode plant the pointer always fails first, so the
+    probe's own strings were produced by nothing the suite ran and two mutations
+    rewriting them survived; the plant that was supposed to drive them was
+    satisfied by the pointer's text instead.
+
+    The limb is reachable without a mode at all, which is what this recipe is: a
+    checkout deep enough that the state database's full path passes ``PATH_MAX``
+    while every component stays under ``NAME_MAX``, with the state directory
+    perfectly readable and no pointer written yet. ``ENAMETOOLONG`` and
+    ``EACCES`` also take **different cures** -- `chmod` fixes nothing here -- so
+    the remedy is asserted for the errno that actually stopped the probe.
+    """
+    # Grown until the *database* path is the one the OS refuses, and no further:
+    # the limit is the platform's, not a constant this file may assume, and one
+    # component too many puts `git init` itself past it. Measured rather than
+    # computed, in the smallest step that lands inside the window (macOS 26.6
+    # accepts the checkout and refuses the stat at a root of about 970).
+    found = _a_root_whose_state_path_is_just_too_long(tmp_path_factory.mktemp("deep"))
+    if found is None:  # pragma: no cover - a platform with no such limit
+        pytest.skip("this platform accepts a state path no single component here can exceed")
+    root = found
+    root.mkdir(parents=True)
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "T"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("THEURIAN_DATA_DIR", str(root / "datadir"))
+        patch.setenv("HOME", str(root / "home"))
+        patch.chdir(root)
+        assert _run("init").exit_code == 0
+        assert _run("project", "register").exit_code == 0
+        ran = _run("project", "status")
+
+    payload = ran.payload
+    assert payload is not None, f"exit {ran.exit_code}, stderr: {ran.stderr}"
+    assert payload["stateBuilt"] is None, (
+        f"the probe answered a question the OS refused: {payload['stateBuilt']!r}"
+    )
+    assert payload.get("reason") is None, (
+        "the pointer read succeeded here, so a `reason` means the probe borrowed "
+        "the pointer's keys again -- which is what kept its own text unpublished"
+    )
+    assert "could not be established" in payload["stateBuiltReason"], (
+        f"the probe's own message was not published: {payload.get('stateBuiltReason')!r}"
+    )
+    assert "shorter path" in payload["stateBuiltRemedy"], (
+        f"the cure names something other than the length that actually stopped it: "
+        f"{payload.get('stateBuiltRemedy')!r}"
+    )
+    assert "chmod" not in payload["stateBuiltRemedy"], (
+        "the length failure took the mode failure's cure, which fixes nothing here"
+    )
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_doctor_reports_rather_than_raises_over_an_unreadable_state_directory(
+    project: Path,
+) -> None:
+    """Round one, adversarial M-8: `doctor` was the eighth red command and pinned by nothing.
+
+    It is outside ``CLI_SWEEP`` -- it exits non-zero on a healthy corpus, because
+    the fixture installs no Claude Code -- so the nine-command sweep above could
+    not see it. It raised through ``index_secret_scan._loaded_mapping``'s probe,
+    which this branch moved inside its ``try`` for the pointer readers' reason;
+    without a row here that fix is incidental rather than driven.
+
+    ``--port 7420`` for the reason every dev-time invocation takes it: 7419 is
+    where a resident daemon lives, and a probe that reached one would be
+    describing something other than this fixture.
+    """
+    state = project / ".theurian/state"
+    state.chmod(0o000)
+    try:
+        with pytest.raises(OSError, match="Permission denied"):
+            (state / "active.json").read_text(encoding="utf-8")
+
+        ran = _run("doctor", "--port", "7420")
+    finally:
+        state.chmod(0o700)
+
+    assert ran.escaped is None, (
+        f"doctor let an exception reach the caller instead of a report: {ran.escaped}"
+    )
+    assert ran.payload is not None, (
+        f"doctor published no report at exit {ran.exit_code}: {ran.stderr[:200]}"
+    )
+
+
 # -- The population, read out of the source ----------------------------------
 
 _SOURCE_ROOT: Final = Path(__file__).resolve().parents[2] / "src" / "theurian"
@@ -672,6 +835,111 @@ _SOURCE_ROOT: Final = Path(__file__).resolve().parents[2] / "src" / "theurian"
 #: What a caller must catch at the probe: the refusal ``index_for`` raises, and
 #: the ``OSError`` it cannot convert because ``resolve()`` never stats.
 _BOTH_FAMILIES: Final = frozenset({"TheurianError", "OSError"})
+
+#: Every way this codebase asks the filesystem about a path. The key below wants
+#: the *stat*, not the path construction: a function that builds a path and hands
+#: it on has nothing to grade, and one that asks about it does.
+_ASKS_THE_FILESYSTEM: Final = frozenset(
+    {
+        "exists",
+        "glob",
+        "is_dir",
+        "is_file",
+        "iterdir",
+        "lstat",
+        "open",
+        "read_bytes",
+        "read_text",
+        "stat",
+        "touch",
+    }
+)
+
+#: The two spellings of a path join. ``joinpath`` was outside the first cut of
+#: key 2 and is a one-character-cheaper evasion of it (round one, MEDIUM-1).
+_JOIN_SPELLINGS: Final = frozenset({"joinpath"})
+
+
+def _own_statements(node: ast.AST) -> Iterator[ast.AST]:
+    """Every node inside ``node``, **not** descending into a nested definition.
+
+    ``ast.walk`` descends into everything, which grades an outer function by an
+    inner one's ``try``: ``mcp/tools.py``'s ``register`` scored as guarded
+    because ``_resolve``, defined inside it, carries the handler (round one,
+    MEDIUM-1). A nested function is its own unit of grading, so the walk stops
+    at its ``def``.
+    """
+    stack: list[ast.AST] = [node]
+    while stack:
+        current = stack.pop()
+        for child in ast.iter_child_nodes(current):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+                continue
+            yield child
+            stack.append(child)
+
+
+def _functions(tree: ast.AST, module: str) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Every function in ``tree``, keyed ``<module>::<name>``, nested ones included.
+
+    Nested definitions are *members* of the population -- ``_resolve`` is the
+    site that matters in ``mcp/tools.py`` -- while :func:`_own_statements` keeps
+    each one's grading to its own body. Those are two different questions and
+    conflating them is what MEDIUM-1 caught.
+    """
+    return {
+        f"{module}::{node.name}": node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+
+
+def _self_and_own(node: ast.AST) -> Iterator[ast.AST]:
+    """``node`` itself, then everything under it that is not a nested definition.
+
+    ``_own_statements`` yields only descendants, and a key handed an *expression*
+    -- the ``BinOp`` of a join, say -- would then never test the node it was
+    given. That is a silent always-false, so the two are separate names.
+    """
+    yield node
+    yield from _own_statements(node)
+
+
+def _calls_named(node: ast.AST, names: frozenset[str] | set[str]) -> bool:
+    """Whether ``node``'s own body calls any of ``names`` as a method or a function."""
+    return any(
+        isinstance(child, ast.Call)
+        and (
+            (isinstance(child.func, ast.Attribute) and child.func.attr in names)
+            or (isinstance(child.func, ast.Name) and child.func.id in names)
+        )
+        for child in _self_and_own(node)
+    )
+
+
+def _handlers_over(node: ast.AST, guarded: Callable[[ast.AST], bool]) -> frozenset[str]:
+    """The exception names caught by every ``try`` whose body satisfies ``guarded``.
+
+    ``try`` blocks are found in ``node``'s own body only, and each one's *body*
+    is what ``guarded`` is asked about -- not the handlers, not the ``else``. The
+    defect this file sweeps is a probe sitting one line above the handler written
+    for it, so a key that accepted "somewhere in this function there is a
+    ``try``" could not see its own subject.
+    """
+    caught: set[str] = set()
+    for child in _own_statements(node):
+        if not isinstance(child, ast.Try):
+            continue
+        if not any(guarded(statement) for statement in child.body):
+            continue
+        for handler in child.handlers:
+            if handler.type is None:
+                caught.add("BareExcept")
+                continue
+            listed = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+            caught |= {name.id for name in listed if isinstance(name, ast.Name)}
+    return frozenset(caught)
+
 
 #: Every function that reaches ``index_for`` and whose stat is graded by
 #: something other than an ``except`` naming both families, with the reason.
@@ -688,55 +956,50 @@ _GRADED_ELSEWHERE: Final = {
 }
 
 
-def _index_for_callers() -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
-    """Every function in ``src`` that calls ``index_for``, keyed by position.
+def _index_for_callers(
+    tree: ast.AST, module: str
+) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Every function in ``tree`` that calls ``index_for`` in its own body."""
+    return {
+        position: node
+        for position, node in _functions(tree, module).items()
+        if _calls_named(node, {"index_for"})
+    }
 
-    Read out of the source rather than listed, so a call site added later joins
-    this key by failing the test below instead of sitting silently outside it.
+
+def _grades_the_index_stat(node: ast.AST) -> frozenset[str]:
+    """What guards the ``index_for`` call **and** the stat that follows it.
+
+    Both in one ``try`` body, which is the strengthening MEDIUM-1 asked for: the
+    first cut asked only that the ``index_for`` call was inside a ``try``, so
+    moving the ``is_file()`` one line below the handler -- the exact shape of
+    every #389 face -- passed the key while reopening the defect.
     """
-    found: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
-    for path in sorted(_SOURCE_ROOT.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
-            calls = {
-                child.func.attr
-                for child in ast.walk(node)
-                if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
-            }
-            if "index_for" in calls:
-                found[f"{path.relative_to(_SOURCE_ROOT)}::{node.name}"] = node
-    return found
 
+    def guarded(statement: ast.AST) -> bool:
+        return _calls_named(statement, {"index_for"}) and _calls_named(
+            statement, _ASKS_THE_FILESYSTEM
+        )
 
-def _names_a_call_to(node: ast.AST, method: str) -> bool:
-    return any(
-        isinstance(child, ast.Call)
-        and isinstance(child.func, ast.Attribute)
-        and child.func.attr == method
-        for child in ast.walk(node)
-    )
+    over_the_statement = _handlers_over(node, guarded)
+    if over_the_statement:
+        return over_the_statement
 
-
-def _caught_around(node: ast.AST, method: str) -> frozenset[str]:
-    """The exception names guarding a call to ``method``, flattened.
-
-    Only the handlers of a ``try`` whose **body** holds that call, and that
-    narrowness is the point. Collecting every ``except`` in the function instead
-    would pass a function whose handler sits somewhere else entirely -- which is
-    the exact defect being swept: a probe one line above the ``try`` written for
-    it. Both faces of #389 had that shape, so a key that could not see it would
-    have called them closed.
-    """
+    # The two calls may be separate statements in one `try` body, which is the
+    # ordinary spelling: `path = paths.index_for(id)` then `present =
+    # path.is_file()`. Asked as a property of the body rather than of a single
+    # statement, and still of the *same* body.
     caught: set[str] = set()
-    for child in ast.walk(node):
+    for child in _own_statements(node):
         if not isinstance(child, ast.Try):
             continue
-        if not any(_names_a_call_to(statement, method) for statement in child.body):
+        body_calls_index_for = any(_calls_named(st, {"index_for"}) for st in child.body)
+        body_stats = any(_calls_named(st, _ASKS_THE_FILESYSTEM) for st in child.body)
+        if not (body_calls_index_for and body_stats):
             continue
         for handler in child.handlers:
             if handler.type is None:
+                caught.add("BareExcept")
                 continue
             listed = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
             caught |= {name.id for name in listed if isinstance(name, ast.Name)}
@@ -753,62 +1016,115 @@ _JOIN_GRADED_ELSEWHERE: Final = {
     ),
     "application/project_service.py::database_for": (
         "a different `database_filename`: `StateHash`'s, computed from the migration "
-        "set rather than read from a pointer, so it carries no attacker-chosen bytes "
-        "-- and this helper returns the path without stat-ing it, so each caller's "
-        "own probe is where the mode failure is graded"
+        "set rather than read from a pointer. The guard on *that* one is upstream and "
+        "is not this class's: `StateHash` is built from a 64-hex `ContentHash`, so the "
+        "filename cannot carry an attacker's bytes at all -- provenance says nothing "
+        "about it. And this helper returns the path without stat-ing it, so each "
+        "caller's own probe is where a mode failure is graded"
     ),
 }
 
 
-def _database_filename_joins() -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
-    """Every function in ``src`` that builds a path out of ``database_filename``.
+def _joins_database_filename(node: ast.AST) -> bool:
+    """Whether ``node``'s own body builds a path out of ``.database_filename``.
 
-    The second key, and it is a *different* one from the ``index_for`` sweep
-    rather than a widening of it: this value never passes through a
-    ``ProjectPaths`` helper at all -- the three call sites join it onto
-    ``paths.state`` directly -- so no reflection over that class can see them and
-    a sweep keyed on the helper would have called the class closed with this
-    third of it live.
-
-    The key is the *attribute name*, so it catches a fourth function whose
-    ``database_filename`` is a different one: ``StateHash``'s, computed from the
-    migration set. That is not a narrowing to add -- a key that told the two
-    apart would be keying on what it is trying to prove -- so it is recorded in
-    :data:`_JOIN_GRADED_ELSEWHERE` with the reason, where a reader can attack it.
+    Both spellings: ``base / value.database_filename`` and
+    ``base.joinpath(value.database_filename)``. The second was outside the first
+    cut of this key and is the cheaper evasion of the two (round one, MEDIUM-1).
     """
+    for child in _self_and_own(node):
+        if (
+            isinstance(child, ast.BinOp)
+            and isinstance(child.op, ast.Div)
+            and isinstance(child.right, ast.Attribute)
+            and child.right.attr == "database_filename"
+        ):
+            return True
+        if (
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and child.func.attr in _JOIN_SPELLINGS
+            and any(
+                isinstance(arg, ast.Attribute) and arg.attr == "database_filename"
+                for arg in child.args
+            )
+        ):
+            return True
+    return False
+
+
+def _join_targets(node: ast.AST) -> frozenset[str]:
+    """The local names bound to a path built from ``.database_filename``.
+
+    Tracking the *target* is what makes the stat requirement mean something: the
+    first cut asked only that some ``exists()`` in the function was inside a
+    ``try``, so a function that joined the value, bound it, and stat-ed a
+    *different* path inside a handler read as graded (round one, MEDIUM-1).
+    """
+    targets: set[str] = set()
+    for child in _own_statements(node):
+        if not isinstance(child, ast.Assign):
+            continue
+        if not _joins_database_filename(child.value):
+            continue
+        targets |= {t.id for t in child.targets if isinstance(t, ast.Name)}
+    return frozenset(targets)
+
+
+def _grades_the_join_stat(node: ast.AST) -> frozenset[str]:
+    """What guards a stat **on the joined path itself**, not on some other path."""
+    targets = _join_targets(node)
+    if not targets:
+        return frozenset()
+
+    def guarded(statement: ast.AST) -> bool:
+        return any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr in _ASKS_THE_FILESYSTEM
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id in targets
+            for call in ast.walk(statement)
+        )
+
+    return _handlers_over(node, guarded)
+
+
+def _swept(
+    key: Callable[[ast.AST, str], dict[str, ast.FunctionDef | ast.AsyncFunctionDef]],
+) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Run one population key over every module under ``src``."""
     found: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
     for path in sorted(_SOURCE_ROOT.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
-            joins = any(
-                isinstance(child, ast.BinOp)
-                and isinstance(child.op, ast.Div)
-                and isinstance(child.right, ast.Attribute)
-                and child.right.attr == "database_filename"
-                for child in ast.walk(node)
-            )
-            if joins:
-                found[f"{path.relative_to(_SOURCE_ROOT)}::{node.name}"] = node
+        found |= key(tree, str(path.relative_to(_SOURCE_ROOT)))
     return found
+
+
+def _join_sites(tree: ast.AST, module: str) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    return {
+        position: node
+        for position, node in _functions(tree, module).items()
+        if _joins_database_filename(node)
+    }
 
 
 def test_every_database_filename_join_grades_the_stat_that_follows_it() -> None:
     """The closure argument for the pointer's other value, derived the same way.
 
-    ``ActiveState.from_json`` only ``str()``s ``databaseFilename``, and
-    ``verify_state_provenance`` binds ``(root, state_hash)`` rather than the
-    filename, so nothing between the pointer and these joins has read what it
-    says. Reproduce the population with ``git grep -n 'active.database_filename'
-    -- packages/theurian-core/src``: four lines on 2026-09-05, three joins and
-    one message.
+    ``ActiveState.from_json`` only ``str()``s ``databaseFilename``, and nothing
+    between the pointer and these joins has read what it says. Reproduce the
+    population with ``git grep -n 'active.database_filename' --
+    packages/theurian-core/src``: four lines on 2026-09-05, three joins and one
+    message.
 
     The key demonstrably hits: it is what found ``_verify_history`` after the
-    other two joins had already been converted, which is the "a guard covers the
-    whole set, never a convenient subset" failure caught before it shipped.
+    other two joins had already been converted -- the "a guard covers the whole
+    set, never a convenient subset" failure caught before it shipped -- and
+    :func:`test_the_population_keys_catch_what_defeated_their_first_cut` runs it
+    against the evasions round one measured.
     """
-    joins = _database_filename_joins()
+    joins = _swept(_join_sites)
     assert joins, "the AST key found no `database_filename` join at all"
 
     stale = frozenset(_JOIN_GRADED_ELSEWHERE) - frozenset(joins)
@@ -817,8 +1133,7 @@ def test_every_database_filename_join_grades_the_stat_that_follows_it() -> None:
     ungraded = sorted(
         position
         for position, node in joins.items()
-        if position not in _JOIN_GRADED_ELSEWHERE
-        and "OSError" not in _caught_around(node, "exists")
+        if position not in _JOIN_GRADED_ELSEWHERE and "OSError" not in _grades_the_join_stat(node)
     )
     assert not ungraded, (
         "a function joins `databaseFilename` onto a path and does not grade the "
@@ -830,19 +1145,21 @@ def test_every_index_for_caller_grades_the_stat_beside_the_call() -> None:
     """The closure argument for the value axis, derived rather than asserted.
 
     ``index_for`` hands back a path whose *stat* can still raise, so the function
-    that stats it owes both families a handler. The population is read out of the
-    source here; reproduce it with ``git grep -n 'index_for(' --
-    packages/theurian-core/src``, which returned seven lines on 2026-09-05 -- the
-    definition and six call sites, sitting in five functions because
-    ``withdrawal_purge`` holds two of them: ``publish_purge_for_withdrawal``,
-    ``index_build``, ``_the_published_build_is_on_disk``,
-    ``index_schema_version`` and ``_searchable_file``.
+    that stats it owes both families a handler. Reproduce the population with
+    ``git grep -n 'index_for(' -- packages/theurian-core/src``, which returned
+    seven lines on 2026-09-05 -- the definition and six call sites, sitting in
+    five functions because ``withdrawal_purge`` holds two of them:
+    ``publish_purge_for_withdrawal``, ``index_build``,
+    ``_the_published_build_is_on_disk``, ``index_schema_version`` and
+    ``_searchable_file``.
 
-    The key demonstrably hits: dropping ``OSError`` from
-    ``_the_published_build_is_on_disk``'s handlers fails this by name, which is
-    how the exclusions below were checked rather than assumed.
+    The key requires the ``index_for`` call and the stat in the **same** ``try``
+    body, which round one's MEDIUM-1 is: the first cut asked only about the call,
+    so moving the ``is_file()`` below the handler passed while reopening the
+    defect. :func:`test_the_population_keys_catch_what_defeated_their_first_cut`
+    plants exactly that.
     """
-    callers = _index_for_callers()
+    callers = _swept(_index_for_callers)
     assert callers, "the AST key found no `index_for` caller at all, so this asserts nothing"
 
     stale = frozenset(_GRADED_ELSEWHERE) - frozenset(callers)
@@ -852,10 +1169,131 @@ def test_every_index_for_caller_grades_the_stat_beside_the_call() -> None:
         position
         for position, node in callers.items()
         if position not in _GRADED_ELSEWHERE
-        and not (guarding := _caught_around(node, "index_for")) >= _BOTH_FAMILIES
-        and "Exception" not in guarding
+        and not (guarding := _grades_the_index_stat(node)) >= _BOTH_FAMILIES
+        and not {"Exception", "BaseException", "BareExcept"} & guarding
     )
     assert not ungraded, (
         "a caller of `index_for` stats what it hands back without grading both "
         f"`TheurianError` and `OSError`, and is not excluded with a reason: {ungraded}"
     )
+
+
+#: The four evasions round one measured against the first cut of these keys, as
+#: source a key can be run over. Each one is code the key **must** report; a key
+#: that passes any of them is a key whose green means nothing, which is what
+#: "zero only counts with a positive control" is about.
+_EVASIONS: Final = {
+    "stat-below-the-handler": (
+        _grades_the_index_stat,
+        """
+def gc(paths, published):
+    try:
+        path = paths.index_for(published)
+    except (TheurianError, OSError):
+        return None
+    return path.is_file()
+""",
+    ),
+    "graded-by-a-nested-def": (
+        _grades_the_index_stat,
+        """
+def register(paths, published):
+    def resolve():
+        try:
+            return paths.index_for(published).is_file()
+        except (TheurianError, OSError):
+            return None
+
+    return paths.index_for(published).is_file()
+""",
+    ),
+    "joined-with-joinpath": (
+        _grades_the_join_stat,
+        """
+def resolve(paths, active):
+    database = paths.state.joinpath(active.database_filename)
+    return database.exists()
+""",
+    ),
+    "stat-on-a-different-path": (
+        _grades_the_join_stat,
+        """
+def resolve(paths, active, other):
+    database = paths.state / active.database_filename
+    try:
+        other.exists()
+    except OSError:
+        return None
+    return database.exists()
+""",
+    ),
+}
+
+
+@pytest.mark.parametrize("evasion", sorted(_EVASIONS), ids=sorted(_EVASIONS))
+def test_the_population_keys_catch_what_defeated_their_first_cut(evasion: str) -> None:
+    """The vacuity control for both keys, planted rather than argued.
+
+    Each snippet is a shape that passed the first cut of one of the keys while
+    leaving the defect open -- measured by round one, not imagined here. What is
+    asserted is that the key no longer reports the guard it would need: the
+    function is *in* the population and its grading comes back short, which is
+    what makes the sweep above report it by name.
+
+    Both keys are exercised, so strengthening one and not the other cannot read
+    as green.
+    """
+    grades, source = _EVASIONS[evasion]
+    tree = ast.parse(textwrap.dedent(source))
+    body = next(node for node in tree.body if isinstance(node, ast.FunctionDef))
+
+    # Membership first, because two of the four evaded by not being *in* the
+    # population: a `joinpath` join was outside key 2's shape entirely, so its
+    # grading was never asked. A key that cannot see a shape reports a smaller
+    # set than the sentence beside it claims, and its green is about that set.
+    population = _join_sites if grades is _grades_the_join_stat else _index_for_callers
+    assert population(tree, "planted.py"), (
+        f"`{evasion}` is not in the population at all, so the sweep would never "
+        f"reach it -- the shape is invisible rather than graded"
+    )
+
+    guarding = grades(body)
+
+    assert not guarding >= _BOTH_FAMILIES and "OSError" not in guarding, (
+        f"the key still reads `{evasion}` as guarded, so its green says nothing "
+        f"about the shape it was written to catch: caught {sorted(guarding)}"
+    )
+
+
+def test_the_evasion_controls_pass_the_shape_they_are_a_control_for() -> None:
+    """The other half of the control: the keys must still accept correct code.
+
+    A key that reported *everything* would satisfy every assertion above while
+    being useless, so the two guarded spellings this codebase actually uses are
+    run through the same functions and must come back guarded.
+    """
+    correct_index = ast.parse(
+        textwrap.dedent("""
+def on_disk(paths, published):
+    try:
+        names_a_file = paths.index_for(published).is_file()
+    except TheurianError:
+        return False
+    except OSError:
+        return False
+    return names_a_file
+""")
+    ).body[0]
+    correct_join = ast.parse(
+        textwrap.dedent("""
+def resolve(paths, active):
+    database = paths.state / active.database_filename
+    try:
+        return database.exists()
+    except OSError:
+        return None
+""")
+    ).body[0]
+
+    assert _grades_the_index_stat(correct_index) >= _BOTH_FAMILIES
+    assert "OSError" in _grades_the_join_stat(correct_join)

@@ -1074,9 +1074,16 @@ def _the_published_build_is_on_disk(paths: ProjectPaths, published: str, *, as_j
     try:
         names_a_file = paths.index_for(published).is_file()
     except ProjectPathEscapeError as exc:
-        # `index_for` resolves `paths.state` before it looks at the id, so a
-        # `.theurian/state` that leaves the working tree refuses here as the
-        # doctored tree it is -- #525's grading, not this function's exit 1.
+        # **Defensive, and unreachable through the shipped command** (round one,
+        # adversarial M-4, correcting a comment that read as observed
+        # behaviour). `index_for` resolves `paths.state` before it looks at the
+        # id, so an escaping `.theurian/state` would refuse here -- but
+        # `read_active_index_pointer` two branches up resolves the same
+        # directory first and refuses there, measured over five commands. Kept
+        # because it costs nothing and the ordering it depends on is a property
+        # of this function's *caller*: a future arm that reads the pointer some
+        # other way loses that guarantee silently, and #525's grading is not
+        # something this function should have to re-derive.
         _fail_a_path_escape(exc, as_json=as_json)
         return False
     except TheurianError as exc:

@@ -34,6 +34,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from theurian.application import project_service
 from theurian.cli.main import app
 from theurian.domain.project import GITIGNORE_BLOCK_END, GITIGNORE_BLOCK_START
 
@@ -527,3 +528,82 @@ def test_the_link_refusal_and_the_write_refusal_do_not_share_a_message(project: 
     assert "ls -l" not in from_directory["remedy"], (
         f"a directory took the link's cure: {from_directory['remedy']}"
     )
+
+
+@_NEEDS_SYMLINKS
+def test_the_read_guard_is_what_refuses_before_any_merge_is_computed(project: Path) -> None:
+    """Round one, adversarial M-1: the two halves masked each other.
+
+    ``ensure_gitignore`` refuses a link on the read **and** on the write, so
+    deleting either guard alone left the other refusing and every test above
+    green -- both single-sided deletions survived. This is the read half's own
+    direction: the victim already holds a *well-formed Theurian block*, so a run
+    that read through the link would find it, decide the file was current, and
+    return ``changed: false`` at exit 0 without ever reaching the write.
+
+    A refusal here therefore cannot have come from the write guard: the write is
+    not reached at all on that path.
+    """
+    victim = project.parent / "victim.txt"
+    # A block that is byte-for-byte what `init` writes, so the read half's
+    # no-op branch is what a following read would take.
+    scratch = project.parent / "scratch"
+    scratch.mkdir()
+    subprocess.run(
+        ["git", "init", "-q", "-b", "main"],  # noqa: S607 - `git` from PATH, as every fixture here
+        cwd=scratch,
+        check=True,
+        capture_output=True,
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(scratch)
+        assert _init_json()[0] == 0
+    victim.write_bytes((scratch / ".gitignore").read_bytes())
+
+    link = project / ".gitignore"
+    link.unlink(missing_ok=True)
+    link.symlink_to(Path(os.path.relpath(victim, project)))
+
+    code, payload = _init_json()
+
+    assert code == 1, (
+        "a converged block behind the link was read through it and reported as "
+        f"nothing to do, so the read half is not refusing: {payload}"
+    )
+    assert "symbolic link" in payload["error"]
+
+
+@_NEEDS_SYMLINKS
+def test_the_write_guard_is_what_refuses_when_the_link_appears_after_the_read(
+    project: Path,
+) -> None:
+    """The other direction: the link exists only for the write.
+
+    Planted between the read and the write by wrapping the reader, so the read
+    sees an ordinary file and the write meets the link. Without the write guard
+    this appends the managed block to the victim -- which is the escape #571 is
+    -- and no assertion in this file about the read half would notice.
+    """
+    victim = project.parent / "victim.txt"
+    victim.write_bytes(VICTIM)
+    gitignore = project / ".gitignore"
+    gitignore.write_text("*.log\n", encoding="utf-8")
+
+    real = project_service._read_authored_file
+
+    def planting(path: Path) -> str:
+        content = real(path)
+        path.unlink()
+        path.symlink_to(Path(os.path.relpath(victim, project)))
+        return content
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(project_service, "_read_authored_file", planting)
+        code, payload = _init_json()
+
+    assert victim.read_bytes() == VICTIM, (
+        "the managed block was written through a link planted after the read, so "
+        "the write half is not refusing"
+    )
+    assert code == 1, payload
+    assert "symbolic link" in payload["error"]
