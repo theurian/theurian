@@ -17,9 +17,11 @@ not only the diff — a defect is often the interaction between a new line and a
 old one.
 
 Review from the perspective block the brief declares; that set is frozen at
-dispatch. A finding outside it is reported and routed for filing, not graded into
-the round — except a reproducible CRITICAL, which is reported as one whatever
-perspective it came from.
+dispatch. Absent a declared block, this definition's own standing scope is the
+perspective: the diff above, read against the priorities below. A finding outside
+the block is still reported — tag it **out-of-perspective**, and it is routed for
+filing rather than graded into the round. The exception is a reproducible
+CRITICAL, which is reported as one whatever perspective it came from.
 
 ## What to check, in priority order
 
@@ -61,6 +63,9 @@ Group by severity: **CRITICAL / HIGH / MEDIUM / LOW**. For each:
 - the concrete failure it produces — inputs and observed result, not "may cause
   issues"
 - a specific fix
+
+Out-of-perspective findings go in their own list after the severity groups,
+tagged, one line each — they are routed for filing, not graded.
 
 Severity comes from the rubric in `CLAUDE.md` (*What "green" means*), not from
 how central the code is. The line this review blurs is **wrong behaviour versus

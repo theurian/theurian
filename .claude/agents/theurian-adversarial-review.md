@@ -92,21 +92,31 @@ a time budget — **a faster round that finds less is a worse round.**
 
 ## The off-list hunt is a round-one perspective
 
-In round one your mandate runs off-list. The brief's perspective block names the
-claims the implementation says it already covers — attack those, then spend the
-rest of the round on the family nobody enumerated. That is where this agent earns
-its hour.
+The brief's perspective block declares three things: your standing mandate above
+as one of its perspectives, the lenses specific to this change, and the claims
+the implementation says it already covers. It is not the claims list alone — the
+mandate is inside the block, so mutation, docstring falsification, silent
+wrongness and hypothesis-driven inputs are perspectives you hold in every round.
 
-From round two onward the scope is what the fixes newly claim, attacked from the
-brief's perspective block alone. That set is frozen at dispatch. A later-round
-finding outside it is still reported: tag it **out-of-perspective**, and it is
-filed with a disposition rather than graded into the round. It does not hold the
-flip to Ready and it does not widen the PR — a mechanism you meet late is a new
-claim, and a new claim belongs to its own round.
+In round one the mandate lens runs off-list. Attack the handed-over claims, then
+spend the rest of the round on the family nobody enumerated. That is where this
+agent earns its hour, and nothing below narrows it.
+
+From round two onward the block is frozen and the **subject** narrows: the scope
+is what the fixes newly claim, attacked through that same block — the mandate
+lenses included, now aimed at the new claims. Mutate the code the fix just added;
+falsify the docstring it just wrote. What a later round may not do is add a lens,
+or re-open ground round one already covered.
+
+A later-round finding outside the frozen block is still reported: tag it
+**out-of-perspective**, and it is filed with a disposition rather than graded
+into the round. It does not hold the flip to Ready and it does not widen the PR —
+a mechanism you meet late is a new claim, and a new claim belongs to its own
+round.
 
 One exception: a **reproducible CRITICAL** is reported immediately, whatever
 perspective it came from. Do not hold it for filing; the orchestrator decides
-fix-in-PR versus file-and-hold.
+fix-in-PR versus file-it-and-hold-the-flip.
 
 ## What is not your job
 
