@@ -148,6 +148,12 @@ excluded from the published documentation site for that reason.
   [#578](https://github.com/theurian/theurian/pull/578).
 - Post the round record as a PR comment **before** any fix dispatch cites it.
   "Recorded" means a URL exists.
+- Honor an exclusion, discharge or coverage claim that cites a test, row or
+  record only after the citation **resolves** to an existing artifact — a grep
+  hit or a node id, pasted. Second instance of the unresolved-citation family:
+  unit B's T-5 pins, and PR #581 round two's exclusion citing a test row that
+  does not exist
+  ([pull/581#issuecomment-5556028168](https://github.com/theurian/theurian/pull/581#issuecomment-5556028168)).
 - Tag a finding outside the frozen perspective block **out-of-perspective**, file
   it with a disposition, and do not let it hold the flip. A reproducible CRITICAL
   reports immediately regardless.
@@ -283,6 +289,12 @@ quirks are recorded (see [The filing filter](#the-filing-filter)).
   reported `HUNG`, which cost PR #581's round about 90 minutes.
 - Clean up a mutation run by the PIDs and paths recorded at spawn. A
   `pkill -f` pattern reaches other lanes.
+- The session scratchpad is **shared across concurrent lanes**. A scratch file
+  feeding a cross-lane-visible surface — a PR body, a comment — gets a unique
+  name (`prNNN-*`), and its content is verified immediately before any
+  `--body-file` send. Source: this rule's own near-miss, 2026-09-06, when a
+  generic `pr-body.md` was overwritten by another lane between `gh pr create`
+  and a later `gh pr edit`, and one PR briefly carried another's description.
 - Treat a red test as proof a failure exists, not as its location. Get the
   mechanism before grading.
 - Verify what the reader ends up with, not that the command resolves. A
@@ -300,10 +312,13 @@ quirks are recorded (see [The filing filter](#the-filing-filter)).
 - A checkout's own path is not supposed to change what a walker over it finds.
   `controls_discharge` keyed its dot filter on the absolute path until
   [#558](https://github.com/theurian/theurian/issues/558), so a checkout under
-  `.claude/worktrees/` handed it an empty test population — 0 files kept of the
-  260 `rglob` found, against 204 from a plain clone — and two census audits
-  failed on the walker rather than on the tree. Fixed; the rule that outlives it
-  is the one a new walker inherits, so state each new repo-wide walker's key
+  `.claude/worktrees/` handed it an empty test population — of the 260 files
+  `rglob` found, the absolute key kept **0** against the relative key's **204**,
+  and two census audits failed on the walker rather than on the tree. Measured
+  2026-09-06 at `522ff9a3` from a worktree under `.claude/worktrees/`, key
+  `root.rglob("test_*.py")`; fixed in
+  [#584](https://github.com/theurian/theurian/pull/584). The rule that outlives
+  it is the one a new walker inherits, so state each new repo-wide walker's key
   (absolute or relative) when it lands.
 - Expect `test_bare_install`'s `daemon status` case to fail on a machine running
   a resident daemon: it asserts `listening is False`, and a daemon answering the
