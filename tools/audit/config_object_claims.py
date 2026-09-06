@@ -688,11 +688,20 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     (
         "docs/adr/0027-accept-validates-before-it-moves.md",
         "Nothing reads it today",
-        "DEFECT, outside this unit's fix set",
-        "ADR-0027's own decision 3 shipped the reader this sentence denies. The paragraph "
-        "was written while the diff was in flight and reads as the present tense now that "
-        "it has landed -- the prose-written-at-RED-time family. Recorded for filing; the "
-        "ADR is not in #199 unit B's measured file set.",
+        "record (amended in place)",
+        "ADR-0027's own decision 3 shipped the reader this sentence denies, and the "
+        "paragraph was written while that diff was in flight -- the prose-written-at-RED-"
+        "time family. It stood here as `DEFECT, outside this unit's fix set` while the ADR "
+        "sat outside #199 unit B's measured file set. ADR-0030 slice 1 gave the file its "
+        "second key and put the allowlist in force before any spawn, and the ADR was "
+        "amended on 2026-09-07 rather than rewritten: an accepted ADR retracts by "
+        "amendment (ADR-0004's precedent), so the paragraph stays as the record of this "
+        "ADR's date and the block directly under it names both keys and both modules. The "
+        "row stays because the sweep still produces the sentence, and it must -- this "
+        "ledger is where the judgement that it is a record lives. What the row cannot see "
+        "is the amendment being deleted underneath it: the fact side is "
+        "`test_config_key_call_sites.py`'s reader scan, which is derived from `src/`, and "
+        "the ADR's prose side is unpinned.",
     ),
     (
         "packages/theurian-core/src/theurian/application/forest_builder.py",
@@ -723,6 +732,11 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     # the #461 treatment one surface over -- so the sweep produces no row for it
     # and the ledger carries none. A file-wide claim returning to that entry is
     # an unrecorded suspect again, which is the direction that has to stay RED.
+    # Both of those sentences went false with ADR-0030 slice 1 and are now marked
+    # in the entry as what it said when it was written, with the current fact --
+    # two keys, the allowlist enforced before any spawn -- in the correction
+    # paragraph below them. They keep their published wording because
+    # `test_census_record_claims.py` holds the pair whole.
     # The rows below arrived with two round-one fixes and are the evidence that
     # both reach the tree rather than only the controls. The delimiter run (H-F)
     # brought in every quotation written in the RST house style, which a single

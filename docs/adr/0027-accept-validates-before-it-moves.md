@@ -649,6 +649,21 @@ as "a Milestone 7 diff" and lists what must happen in the same change. **A
 reviewer seeing that test fail is seeing it work**, and the implementation
 commit updates it rather than silencing it.
 
+> **Amended 2026-09-07, by ADR-0030 slice 1. The paragraph above records this
+> ADR's date, with decision 3's reader still in flight. It is a record now, not
+> a description of the tree.**
+>
+> Decision 3 shipped that reader: `security/project_config.py` has opened
+> `.theurian/config.yaml` for `security.secretScan` ever since.
+> [ADR-0030](0030-github-review-ingestion-spawns-gh.md) decision 2 added the
+> second key — the same module reads `providers.review.repositories` out of the
+> same file, and `security/review_allowlist.py` enforces it: a repository the
+> list does not name produces no spawn at all, so the allowlist this ADR could
+> only describe is a control in force. The file is therefore read for two keys,
+> and `test_config_key_call_sites.py`'s reader scan records those sites rather
+> than their absence. The paragraph above stays as the state this decision was
+> taken against, which is what an amendment keeps and a rewrite loses.
+
 ## Consequences
 
 ### Positive
