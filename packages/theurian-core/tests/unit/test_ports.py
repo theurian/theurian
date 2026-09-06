@@ -23,8 +23,9 @@ from write_lock_claims import REPO_ROOT, collapsed
 from theurian.application.index_builder import IndexBuilder
 from theurian.application.retrieval_service import ResultGate, RetrievalService
 from theurian.domain import ports
-from theurian.domain.ports import ReviewFindingSource
+from theurian.domain.ports import ReviewFindingSource, ReviewProvider
 from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
+from theurian.infrastructure.github.review_provider import GitHubReviewProvider
 
 #: The closed set. Growing it requires an ADR, so this list is the enforcement.
 #:
@@ -763,6 +764,31 @@ def test_the_git_trailer_source_satisfies_the_review_finding_source_port() -> No
     future injection site.
     """
     assert isinstance(GitTrailerFindingSource(Path("/nonexistent")), ReviewFindingSource)
+
+
+def test_the_github_adapter_satisfies_the_review_provider_port() -> None:
+    """The concrete ``gh`` adapter satisfies :class:`ReviewProvider` structurally.
+
+    ``GitHubReviewProvider``'s own docstring opens by asserting this, and until
+    now nothing checked it. Nothing else could: no composition root wires the
+    adapter yet -- ADR-0030 slice 1 builds the adapter and slice 2 lands what it
+    produces -- so a renamed ``get_threads`` or a ``limit`` that stopped being
+    keyword-only would pass the adapter's own tests, which construct it directly,
+    and fail at the injection site a later slice adds.
+
+    Constructed rather than checked as a class, for the reason
+    :func:`test_port_documents_itself`'s neighbours are: ``provider_id`` is a
+    property, and a property is a member of an *instance*. The paths are never
+    opened -- ``__init__`` stores them -- so this stays as pure as the rest of
+    this module.
+    """
+    provider = GitHubReviewProvider(
+        project_root=Path("/nonexistent"),
+        config_file=Path("/nonexistent/.theurian/config.yaml"),
+        parent_environment={},
+    )
+
+    assert isinstance(provider, ReviewProvider)
 
 
 def test_the_fake_review_finding_source_satisfies_its_port() -> None:

@@ -31,9 +31,43 @@ GH_CLI_SOURCE: Final = pathlib.Path(gh_cli.__file__)
 #: scan a directory with no spawn in it whatever the source did.
 SRC: Final = pathlib.Path(theurian.__file__).resolve().parent
 
-#: The function every request leaves through. One name, so the scan below asks
-#: one question.
-_SPAWN_HELPER: Final = "run_bounded"
+#: The two names a module has to reach to make a request through this adapter:
+#: the function every request leaves through, and the class that builds the
+#: vectors and holds the probed binary.
+#:
+#: ``GhCli`` is the half a scan on ``run_bounded`` alone cannot see. A second
+#: module constructing one spawns through the recorded site, calls the recorded
+#: helper from inside ``gh_cli.py``, and names neither -- so it adds no entry to
+#: ``PROCESS_SPAWN_SITES`` and no entry to a ``run_bounded`` scan, while being a
+#: second path to GitHub.
+_REACHES_GITHUB: Final[frozenset[str]] = frozenset({"GhCli", "run_bounded"})
+
+#: Where each of those names may appear, as ``(module path under theurian/, the
+#: name)``. Three entries: ``gh_cli.py`` declares both, and
+#: ``review_provider.py`` is the one consumer -- it imports ``GhCli`` and
+#: annotates with it, and reaches ``run_bounded`` only through it.
+GITHUB_REACHING_SITES: Final[frozenset[tuple[str, str]]] = frozenset(
+    {
+        ("infrastructure/github/gh_cli.py", "GhCli"),
+        ("infrastructure/github/gh_cli.py", "run_bounded"),
+        ("infrastructure/github/review_provider.py", "GhCli"),
+    }
+)
+
+#: The syntax nodes that *introduce* a name: a call or an annotation, a dotted
+#: reach, an import, and the ``def``/``class`` that declares it.
+#:
+#: ``Constant`` is deliberately absent, and that is what keeps prose out of the
+#: population: two modules name ``gh_cli.run_bounded`` in a docstring, and a scan
+#: reading string constants would list both and have to be silenced.
+_NAMING_NODES: Final = (
+    ast.Name,
+    ast.Attribute,
+    ast.alias,
+    ast.ClassDef,
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+)
 
 #: What ``gh`` would be told to do if this adapter ever followed a next-page
 #: reference the *response* supplies rather than a cursor of its own choosing.
@@ -384,39 +418,59 @@ def test_each_recorded_bound_is_the_value_the_prose_names(name: str, value: obje
     )
 
 
-def test_only_the_spawn_module_names_the_spawn_helper() -> None:
+def _github_reaching_sites() -> set[tuple[str, str]]:
+    """Every ``(module, name)`` in the imported package naming one of :data:`_REACHES_GITHUB`.
+
+    :data:`_NAMING_NODES` is the population key. Declarations are read as well as
+    uses, so the two modules are described symmetrically -- ``gh_cli.py``
+    declares both names, ``review_provider.py`` imports one -- and so a module
+    that *redefines* either name is a site rather than a silence.
+    """
+    return {
+        (path.relative_to(SRC).as_posix(), name)
+        for path in sorted(SRC.rglob("*.py"))
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=path.name))
+        if isinstance(node, _NAMING_NODES)
+        for name in (
+            getattr(node, "id", None),
+            getattr(node, "attr", None),
+            getattr(node, "name", None),
+        )
+        if name in _REACHES_GITHUB
+    }
+
+
+def test_only_the_recorded_modules_name_the_spawn_helper_or_the_class_that_calls_it() -> None:
     """Clause 1's second half: exactly one module may reach GitHub.
 
     The equality in ``test_network_call_sites.py`` pins which modules can start a
-    program at all. This pins the layer above it: a second module calling
-    ``run_bounded`` would spawn through the recorded site while adding no new
-    entry to that set -- a fetch path that is invisible to the pin meant to catch
-    exactly this.
+    program at all. This pins the layer above it: a second module reaching this
+    adapter spawns through the recorded site while adding no new entry to that
+    set -- a fetch path that is invisible to the pin meant to catch exactly this.
+
+    **Two names, because one of them is not enough.** A scan on ``run_bounded``
+    alone is satisfied by a module that constructs a ``GhCli`` and calls
+    ``graphql`` on it: the spawn happens inside ``gh_cli.py``, the helper is
+    named inside ``gh_cli.py``, and the new module names neither. That is a
+    second path to GitHub passing both this pin and ``PROCESS_SPAWN_SITES``,
+    which is why the population here is ``{GhCli, run_bounded}`` and the
+    assertion is an equality over ``(module, name)`` pairs rather than over
+    modules.
 
     The scan reads names over the whole imported package, which is the same bound
     ``test_network_call_sites.py`` records for itself: a helper reached under a
     name assembled at run time passes.
     """
-    naming = sorted(
-        path.relative_to(SRC).as_posix()
-        for path in sorted(SRC.rglob("*.py"))
-        if any(
-            isinstance(node, ast.Name | ast.Attribute | ast.alias)
-            and _SPAWN_HELPER
-            in (
-                getattr(node, "id", None),
-                getattr(node, "attr", None),
-                getattr(node, "name", None),
-            )
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=path.name))
-        )
-    )
+    sites = _github_reaching_sites()
 
-    assert naming == ["infrastructure/github/gh_cli.py"], (
-        f"`{_SPAWN_HELPER}` is named in {naming}, and exactly one module may reach "
-        f"GitHub (ADR-0030 clause 1). A second caller spawns through the recorded "
-        f"site and adds no entry to `PROCESS_SPAWN_SITES`, so the equality there "
-        f"cannot see it."
+    assert sites == GITHUB_REACHING_SITES, (
+        f"the modules naming {sorted(_REACHES_GITHUB)} are "
+        f"{sorted(sites)}, and this pin records {sorted(GITHUB_REACHING_SITES)}.\n\n"
+        f"Exactly one module may reach GitHub (ADR-0030 clause 1). A second caller "
+        f"spawns through the recorded site and adds no entry to "
+        f"`PROCESS_SPAWN_SITES`, so the equality there cannot see it. If a site is "
+        f"MISSING instead, the adapter has been moved or removed and ADR-0030's "
+        f"clauses describe a path that is gone."
     )
 
 
