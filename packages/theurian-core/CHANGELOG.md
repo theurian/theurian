@@ -27,9 +27,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   unchanged: `doctor` and `theurian migrate validate` still refuse on exactly the
   same errors, so the two cannot disagree about a directory
   ([#91](https://github.com/theurian/theurian/issues/91)).
-- **The remaining reads of a derived-state or auth path no longer wait on what
-  somebody planted there** ([#586](https://github.com/theurian/theurian/issues/586),
-  ADR-0004, SEC-4, SEC-7, T-6), completing the class the entry below opened:
+- **Five reads of a derived-state or auth path no longer wait on what somebody
+  planted there** ([#586](https://github.com/theurian/theurian/issues/586),
+  ADR-0004, SEC-4, SEC-7, T-6). The population is named rather than called
+  complete: the two state pointers, every index-database opener, the token
+  accessors, `<data_dir>/env`, and the ingestion manifest. `<data_dir>`'s
+  registry and provenance readers keep the same shape and are
+  [#589](https://github.com/theurian/theurian/issues/589)'s — one named pipe at
+  `projects.json` still ends seven of eight commands in a kill.
 
   - a named pipe at `.theurian/state/active.json` sat on every project-resolving
     command's path, so `migrate status`, `project status`, `index status` and
@@ -45,14 +50,35 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   - a 0600 named pipe at `<data_dir>/auth/mcp-token` held `daemon start
     --foreground --json` and `auth rotate --json` with both channels empty — the
     daemon starter *after* taking `daemon.lock`, so every later starter read a
-    stale holder — while `doctor` reported the token as simply absent.
+    stale holder — while `doctor` reported the token as simply absent. A
+    **directory** at the same name was worse: it was reported as an absent token
+    by both probes, which is the status that makes `setup` mint into it, and
+    reached `auth rotate --json` as an `IsADirectoryError` traceback;
+  - `<data_dir>/env`'s two writers followed a **symbolic link** out of the data
+    directory and overwrote whatever it named at exit 0, and a named pipe there
+    held `auth rotate` after the token had already been replaced;
+  - `.theurian/cache/ingestion.json` held `theurian ingest --json` for 12
+    seconds with both channels empty.
 
   Both pointers are read through a descriptor whose shape is checked, every
   index open in `index_store` passes one function (pinned by reading the syntax
-  tree, not by a maintained list), and the token's openers gained `O_NONBLOCK`
-  and the same descriptor check. #569's write-side semantics are unchanged and
-  now pinned: a reader-less pipe still answers `ENXIO`, a link `ELOOP`, a
-  directory `EISDIR`, and a fresh create still lands at the mode it was given.
+  tree, not by a maintained list), the token's and the env file's openers gained
+  `O_NONBLOCK` and the same descriptor check, and the probes that decide whether
+  `setup` acts ask a shape vocabulary that names a directory.
+
+  **`O_NONBLOCK` is the behaviour change on the write side, not an unchanged
+  detail.** A reader-less named pipe now answers `ENXIO` where the open used to
+  wait; what is *unchanged* and newly pinned is everything around it — a link
+  still refuses `ELOOP`, a directory `EISDIR`, a fresh create still lands at the
+  mode it was given, and `O_TRUNC` still truncates.
+
+  **A symbolic link at `<data_dir>/env` is now refused rather than followed.** A
+  home directory whose dotfiles repository owns that file through a link is a
+  real arrangement, and `theurian setup` will now report it as a conflict
+  instead of writing the block through it: the file is 0600 and names the
+  token's location, so it takes the same posture `mcp-token` beside it has taken
+  since #371. Point the shell profile at `<data_dir>/env` directly, or source it
+  from the dotfiles file.
 - **An admission permit whose holder never returns is reclaimed, and outstanding
   reclaims are capped so parked threads plateau at twice the permit count.** A
   thread inside an unbounded `open` held one of four permits for the life of the

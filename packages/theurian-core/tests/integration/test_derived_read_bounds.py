@@ -661,3 +661,36 @@ def test_a_token_that_cannot_be_rewritten_is_a_document_and_not_a_traceback(
     assert token.read_text(encoding="utf-8").strip() == (
         "an-existing-token-value-long-enough-to-pass"
     ), "and the old token is still in place, which is what the remedy tells the reader"
+
+
+# -- The ingestion manifest ---------------------------------------------------
+
+
+@pytest.mark.skipif(not _CAN_MAKE_A_NAMED_PIPE, reason="os.mkfifo is POSIX-only")
+def test_a_named_pipe_at_the_ingestion_manifest_does_not_hold_the_command(built: Path) -> None:
+    """#586 round two, H-4. The member the "completing the class" claim missed.
+
+    ``.theurian/cache/ingestion.json`` is derived state *inside the project
+    tree* -- ``cache`` is one of ``DERIVED_SUBDIRECTORIES`` -- carrying the same
+    exists-then-``read_text`` shape the two state pointers had. Measured RED:
+    ``theurian ingest --json`` sat inside ``read()`` until a 12-second kill with
+    zero bytes on stdout and on stderr.
+
+    What is asserted is that the command *returns* with a document. The read is
+    a cache miss and costs a reparse, exactly as the handler beside it records;
+    the run then stops on the manifest's own **write**, which refuses the pipe
+    and publishes the artefact and a cure. Both halves are the contract: an
+    unbounded read publishes nothing at all, and that is the state this closes.
+    """
+    cache = built / ".theurian/cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    _plant_a_named_pipe(cache / "ingestion.json")
+    argv = ["ingest", "--json"]
+    payload = _published(_run_in_a_child(built, argv), argv)
+    remedy = str(payload["remedy"])
+    assert ".theurian/cache/ingestion.json" in remedy, (
+        f"the cure does not name the artefact standing in the way: {remedy!r}"
+    )
+    assert "`theurian ingest`" in remedy, (
+        f"the cure names nothing the reader can run once it is gone: {remedy!r}"
+    )
