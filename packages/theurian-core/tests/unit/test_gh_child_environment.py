@@ -18,6 +18,20 @@ measured as able to move the destination or the identity -- ``GH_HOST`` (run B),
 ``api`` value makes ``gh`` print request detail. None of them reaches the child,
 and the equality is what says so rather than five separate absence assertions
 that would each have to be remembered.
+
+**A parent that does not set a variable cannot observe it crossing**, and that is
+the direction the equality used to be blind in. It fails for a member *removed*
+from ``FORWARDED_BY_VALUE`` and for a value changed, because the parent sets
+those three. It could not fail for a member **added** that the parent happened
+not to set: the constant would forward a variable, the parent would have none to
+forward, and the child would come out identical. That is exactly the direction
+``environment.py``'s recorded Linux gap points in -- ``DBUS_SESSION_BUS_ADDRESS``
+and ``XDG_RUNTIME_DIR``, the two the Secret Service credential store is reached
+through, whose admission the constant refuses on measurement grounds. So the
+parent carries both as decoys, and
+:func:`test_the_hostile_parent_sets_every_variable_the_child_may_forward` closes
+the same direction for a name nobody has thought of: a member added to the
+forwarded set that the parent does not set fails there before it can pass here.
 """
 
 from __future__ import annotations
@@ -33,7 +47,16 @@ pytestmark = pytest.mark.unit
 #: A parent environment carrying every measured destination- and identity-moving
 #: input, so the equality below is asserted against something that would be a
 #: leak if any of it crossed.
+#:
+#: ``DBUS_SESSION_BUS_ADDRESS`` and ``XDG_RUNTIME_DIR`` are here for the other
+#: direction, and they are not destination-movers: they are the two variables
+#: ``environment.py`` records *declining* to forward, because ``gh``'s Linux
+#: credential store reaches the Secret Service through them and no measurement
+#: exists. A parent that did not set them could not tell an unforwarded variable
+#: from a forwarded one, so admitting either to ``FORWARDED_BY_VALUE`` would
+#: leave the equality below green. With them set, it reddens.
 PARENT: Final[dict[str, str]] = {
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/parent/run/bus",
     "GH_CONFIG_DIR": "/parent/gh-config",
     "GH_DEBUG": "api",
     "GH_ENTERPRISE_TOKEN": "enterprise-parent-value",
@@ -46,6 +69,7 @@ PARENT: Final[dict[str, str]] = {
     "LANG": "en_US.UTF-8",
     "PATH": "/parent/bin:/somewhere/else",
     "XDG_CONFIG_HOME": "/parent/xdg",
+    "XDG_RUNTIME_DIR": "/parent/run/1000",
 }
 
 #: The whole environment the child must receive, written out here.
@@ -75,6 +99,32 @@ TOKEN_VARIABLES: Final[tuple[str, ...]] = (
     "GITHUB_ENTERPRISE_TOKEN",
     "GITHUB_TOKEN",
 )
+
+
+def test_the_hostile_parent_sets_every_variable_the_child_may_forward() -> None:
+    """The fixture guard that makes the equality below able to fail in *both* directions.
+
+    Forwarding is observable only for a variable the parent sets. A member added
+    to ``FORWARDED_BY_VALUE`` that :data:`PARENT` does not carry crosses nothing,
+    so the child comes out byte-identical and the equality stays green while the
+    constant has grown -- the direction ``environment.py``'s Linux gap points in,
+    and the direction a reviewer found the pin blind in.
+
+    The two decoys close it for the two names that gap is about. This closes it
+    for the ones nobody has named: whatever is added to the forwarded set, the
+    parent has to gain a value for it in the same change, and only then does the
+    equality below get to judge whether it crossed.
+    """
+    forwarded = set(environment.FORWARDED_BY_VALUE)
+
+    assert forwarded <= set(PARENT), (
+        f"`FORWARDED_BY_VALUE` carries {sorted(forwarded - set(PARENT))}, which the "
+        f"hostile parent does not set. A variable the parent has no value for cannot "
+        f"be seen crossing, so the equality below would pass with the constant "
+        f"forwarding it. Give `PARENT` a decoy value for each new member -- and if "
+        f"the member is meant to reach the child, `EXPECTED` gains a row and "
+        f"ADR-0030 decision 1's table gains its admission ground."
+    )
 
 
 def test_the_child_environment_is_exactly_the_recorded_mapping() -> None:
@@ -114,8 +164,24 @@ def test_the_child_environment_is_exactly_the_recorded_mapping() -> None:
             "FORWARDED_BY_VALUE",
             ("GH_CONFIG_DIR", "GH_TOKEN", "HOME", "XDG_CONFIG_HOME"),
         ),
+        (
+            "a platform variable added to the forwarded set",
+            "FORWARDED_BY_VALUE",
+            (
+                "DBUS_SESSION_BUS_ADDRESS",
+                "GH_CONFIG_DIR",
+                "HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_RUNTIME_DIR",
+            ),
+        ),
     ),
-    ids=("a wrong PATH", "a missing literal member", "a token forwarded from the parent"),
+    ids=(
+        "a wrong PATH",
+        "a missing literal member",
+        "a token forwarded from the parent",
+        "a platform variable added to the forwarded set",
+    ),
 )
 def test_the_expected_mapping_can_fail(
     monkeypatch: pytest.MonkeyPatch, label: str, attribute: str, value: object
