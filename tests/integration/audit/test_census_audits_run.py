@@ -648,13 +648,13 @@ def test_a_citation_resolves_against_this_repository_and_not_its_dependencies() 
     assert not any(
         part.startswith(".")
         for path in controls_discharge._repository_tests(root)
-        for part in path.parts
+        for part in path.relative_to(root).parts
     ), "no dotted directory -- .venv above all -- contributes a name"
 
     dependency_only = {
         path.name
         for path in root.rglob("test_*.py")
-        if any(part.startswith(".") for part in path.parts)
+        if any(part.startswith(".") for part in path.relative_to(root).parts)
     } - ours
     assert dependency_only, "the control needs a dependency test to exist to be meaningful"
     planted = sorted(dependency_only)[0]
@@ -665,4 +665,43 @@ def test_a_citation_resolves_against_this_repository_and_not_its_dependencies() 
     real = sorted(functions)[0]
     assert not controls_discharge._unresolvable(f"`::{real}`", files, functions), (
         "and the key still hits a name this repository really defines"
+    )
+
+
+def test_the_population_survives_a_checkout_whose_own_path_holds_a_dot_component(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The dot filter must ask about the tree, not about where the tree is (#558).
+
+    ``rglob`` yields absolute paths, so filtering dot components over
+    ``path.parts`` keys on the checkout's *location*: every agent worktree in
+    this project lives under ``.claude/worktrees/``, and that single component
+    discarded all 204 repository tests, leaving 0. Every citation then read as
+    unresolvable and both this module's ``controls_discharge`` rows went RED in
+    every worktree lane while a plain clone stayed green -- an instrument whose
+    verdict depends on which directory it was run from.
+
+    Both directions, and neither is optional. Keying on the relative path alone
+    would be satisfied by a filter that stopped excluding anything, which is the
+    hole ``_repository_tests`` exists to close: a dependency's ``test_*.py``
+    under ``.venv`` must still be dropped even when the root itself is dotted.
+    Synthetic files rather than the real tree, because the real tree cannot be
+    moved under a second dot component to ask the question.
+    """
+    sys.path.insert(0, str(AUDIT_DIR))
+    import controls_discharge
+
+    root = tmp_path / ".claude" / "worktrees" / "lane"
+    kept = root / "tests" / "unit" / "test_kept.py"
+    inside_a_dot_directory = root / ".venv" / "lib" / "test_dependency.py"
+    in_node_modules = root / "node_modules" / "pkg" / "test_vendored.py"
+    for path in (kept, inside_a_dot_directory, in_node_modules):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("def test_planted() -> None:\n    pass\n", encoding="utf-8")
+
+    found = controls_discharge._repository_tests(root)
+
+    assert [path.relative_to(root).as_posix() for path in found] == ["tests/unit/test_kept.py"], (
+        "the dotted root must not exclude the tree, and the dotted directory "
+        "inside it must still be excluded"
     )

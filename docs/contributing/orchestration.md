@@ -148,6 +148,12 @@ excluded from the published documentation site for that reason.
   [#578](https://github.com/theurian/theurian/pull/578).
 - Post the round record as a PR comment **before** any fix dispatch cites it.
   "Recorded" means a URL exists.
+- Honor an exclusion, discharge or coverage claim that cites a test, row or
+  record only after the citation **resolves** to an existing artifact — a grep
+  hit or a node id, pasted. Second instance of the unresolved-citation family:
+  unit B's T-5 pins, and PR #581 round two's exclusion citing a test row that
+  does not exist
+  ([pull/581#issuecomment-5556028168](https://github.com/theurian/theurian/pull/581#issuecomment-5556028168)).
 - Tag a finding outside the frozen perspective block **out-of-perspective**, file
   it with a disposition, and do not let it hold the flip. A reproducible CRITICAL
   reports immediately regardless.
@@ -275,8 +281,20 @@ quirks are recorded (see [The filing filter](#the-filing-filter)).
   reports the unmutated behaviour.
 - Pass `--with-git` to the mutation driver, quote the scope argument, and guard
   against "no tests ran" — pytest's exit 4 otherwise reads as a `KILLED`.
+- Read a batch of `HUNG` verdicts over a control that named no failing test as a
+  clock, not a finding. The driver's default `--timeout` scales with `--workers`
+  and its summary now says `timed out … (no failing test)`
+  ([#566](https://github.com/theurian/theurian/issues/566)); before that a green
+  walk at `--workers 4` ran past the flat 1800 s bound and every survivor
+  reported `HUNG`, which cost PR #581's round about 90 minutes.
 - Clean up a mutation run by the PIDs and paths recorded at spawn. A
   `pkill -f` pattern reaches other lanes.
+- The session scratchpad is **shared across concurrent lanes**. A scratch file
+  feeding a cross-lane-visible surface — a PR body, a comment — gets a unique
+  name (`prNNN-*`), and its content is verified immediately before any
+  `--body-file` send. Source: this rule's own near-miss, 2026-09-06, when a
+  generic `pr-body.md` was overwritten by another lane between `gh pr create`
+  and a later `gh pr edit`, and one PR briefly carried another's description.
 - Treat a red test as proof a failure exists, not as its location. Get the
   mechanism before grading.
 - Verify what the reader ends up with, not that the command resolves. A
@@ -291,19 +309,26 @@ quirks are recorded (see [The filing filter](#the-filing-filter)).
   against the live open set before it resumed — zero failures, zero
   double-closes
   ([execution record](https://github.com/theurian/theurian/issues/551#issuecomment-5553412781)).
-- Run the whole suite from a **non-dot checkout**. `controls_discharge` drops
-  every path with a dot component, so a checkout under `.claude/worktrees/`
-  gives it an empty test population and two census audits fail on the walker
-  rather than on the tree
-  ([#558](https://github.com/theurian/theurian/issues/558)). Both pass from a
-  plain clone of the same tree at `386aba76` — a branch commit of pull request
-  #580, not reachable from `main` and never going to be, since the squash
-  replaces it. Measured 2026-09-06.
+- A checkout's own path is not supposed to change what a walker over it finds.
+  `controls_discharge` keyed its dot filter on the absolute path until
+  [#558](https://github.com/theurian/theurian/issues/558), so a checkout under
+  `.claude/worktrees/` handed it an empty test population — of the 260 files
+  `rglob` found, the absolute key kept **0** against the relative key's **204**,
+  and two census audits failed on the walker rather than on the tree. Measured
+  2026-09-06 at `522ff9a3` from a worktree under `.claude/worktrees/`, key
+  `root.rglob("test_*.py")`; fixed in
+  [#584](https://github.com/theurian/theurian/pull/584). The rule that outlives
+  it is the one a new walker inherits, so state each new repo-wide walker's key
+  (absolute or relative) when it lands.
 - Expect `test_bare_install`'s `daemon status` case to fail on a machine running
   a resident daemon: it asserts `listening is False`, and a daemon answering the
   default port makes it true. `lsof -nP -iTCP:7419 -sTCP:LISTEN` says whether
   the failure is the machine or the code. Measured 2026-09-06: it fails the same
-  way at `75fe9b4f` with nothing applied.
+  way at `75fe9b4f` with nothing applied. Under the mutation driver that failure
+  turns the control `control-red` and voids the batch, so name it —
+  `--deselect 'packages/theurian-core/tests/integration/test_bare_install.py::test_daemon_status_answers_normally_without_the_extra'`
+  — rather than losing the run; the id is printed with the summary, so the batch
+  still says what it did not cover.
 
 ## The learning loop
 

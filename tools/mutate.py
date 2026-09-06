@@ -104,6 +104,19 @@ advance.
 and stops, so anything you run inside it is yours, unlabelled, and never
 reported as a verdict by this tool.
 
+**``--deselect NODEID`` is the one subtraction, and it is not a narrowing.**
+Repeatable, and applied to every run in the batch *including the control*, for
+a test this **machine** cannot pass -- one that binds a fixed port a resident
+daemon already owns, one that wants a network. Such a test turns the control
+``control-red``, which correctly voids every verdict in the batch, so the
+alternative it is measured against is not a narrower run but no run at all:
+PR #569's round lost every batch on this machine to the resident dogfood
+daemon on 7419 before the option existed. It differs from ``--tests`` in both
+directions that matter -- it can only take tests away, never choose the ones
+that answer the question, and the ids it took are printed with the summary, so
+a reader can tell a batch that stepped around a broken environment from one
+that stepped around the test that would have caught the mutation.
+
 **``-x`` by default -- and drop it more often than that sounds.**
 ``--no-fail-fast`` reads as being for when you want the complete failure list.
 In practice it is what you want *whenever the question is which test catches a
@@ -277,7 +290,72 @@ _COPY_IGNORE: Final = shutil.ignore_patterns(
 )
 
 _CONTROL_LABEL: Final = "__control__"
+
+#: The floor under the per-run timeout, and the value every default was before
+#: ``--workers`` entered the calculation. Kept as a floor rather than replaced,
+#: so no worker count can ever shorten the bound this harness has always had.
 _DEFAULT_TIMEOUT_SECONDS: Final = 1800
+
+#: A green full walk, modelled as ``base + per_worker * workers`` seconds.
+#:
+#: Two measurements fix the line, both from PR #581's adversarial round on an
+#: Apple silicon laptop at 5498 tests (2026-09-06, recorded on #566): ~1400 s at
+#: ``--workers 2`` and ~1640 s at ``--workers 3``. What grows is contention
+#: between concurrent suites sharing one machine, so the walk grows *with* the
+#: worker count while a fixed timeout does not -- and at the default
+#: ``--workers 4`` the line predicts 1880 s, past the 1800 s the timeout used
+#: to be. That is what happened: every survivor reported HUNG and the control
+#: reported at 1800 s with no failing test, which is a whole batch of findings
+#: that were not findings. The extrapolation past three workers is a straight
+#: line through two points and nothing more, which is what the headroom below
+#: is for; re-measure and move these two numbers rather than reasoning about
+#: them.
+#:
+#: **The two numbers are fully-contended walks, and a lighter batch measures
+#: much faster** -- so a re-measurement that comes in low has not falsified
+#: them. Same machine, 2026-09-06, at 5571 tests, on ``556035b3`` (pull request
+#: #584): a solo ``pytest -q`` outside the harness took 542.9 s, and a two-job
+#: batch under ``--workers 2`` -- one control plus one mutation, where the
+#: mutation was killed at 271.5 s and left the control walking alone for the
+#: rest -- took 750.4 s, both recorded at
+#: https://github.com/theurian/theurian/pull/584#issuecomment-5556266602.
+#: Neither is the case the timeout has to survive: that is the batch whose
+#: workers are *all* still walking full suites, which is what the two anchors
+#: above measured and what the default has to clear.
+_WALK_BASE_SECONDS: Final = 920
+_WALK_PER_WORKER_SECONDS: Final = 240
+
+#: How much longer than a green walk a run may take before it is called hung.
+#: A mutation legitimately makes the suite slower, and the timeout must not
+#: convict it of hanging for that.
+_TIMEOUT_HEADROOM: Final = 1.5
+
+
+def _default_timeout(workers: int) -> int:
+    """The per-run timeout when ``--timeout`` was not given.
+
+    Never below :data:`_DEFAULT_TIMEOUT_SECONDS`, so this only ever grants more
+    time than the harness used to. A timeout that is shorter than a green walk
+    does not report "slow" -- it reports HUNG for every survivor and takes the
+    control down with it, and both read exactly like real findings.
+
+    ``workers`` is not clamped, and does not need to be. Nothing validates
+    ``--workers``, so a zero or a negative reaches here -- and those are the
+    *only* values a clamp would change, because for every ``workers >= 1`` the
+    clamped and unclamped lines are the same expression. At ``workers <= 0`` the
+    unclamped line is at most ``920 * 1.5 = 1380`` and falls further from there,
+    so the 1800 s floor answers every one of them; the clamp would hand the
+    floor 1740 s instead, and ``max`` returns 1800 either way. A
+    ``max(workers, 1)`` was written here and removed once it survived its own
+    deletion against the whole ``tools`` suite -- no argument can reach it.
+
+    Note that the floor is *not* what decides the shipped value at ordinary
+    worker counts: at two the line gives 2100 s and at three 2460 s, both above
+    it. The floor only binds at one worker and below.
+    """
+    walk = _WALK_BASE_SECONDS + _WALK_PER_WORKER_SECONDS * workers
+    return max(_DEFAULT_TIMEOUT_SECONDS, int(walk * _TIMEOUT_HEADROOM))
+
 
 # Dropped into a prepared tree. Dot-prefixed to stay clear of anything in the
 # suite that walks the repository root.
@@ -666,11 +744,42 @@ def _execute(mutations: tuple[Mutation, ...], options: Options) -> list[Outcome]
             shutil.rmtree(root, ignore_errors=True)
 
 
+def _batch_options(options: Options) -> dict[str, object]:
+    """The flags that decide what a verdict in this batch *means*.
+
+    Not every field of :class:`Options`: ``json_path``, ``work_dir`` and
+    ``keep_trees`` say where the run put its files, which changes nothing about
+    how a KILLED or a SURVIVED should be read. These six do -- and ``deselect``
+    most of all, because it is the one that makes the batch's verdicts cover
+    less than the whole suite.
+    """
+    return {
+        "workers": options.workers,
+        "failFast": options.fail_fast,
+        "control": options.control,
+        "timeout": options.timeout,
+        "withGit": options.with_git,
+        "deselect": list(options.deselect),
+    }
+
+
 def _persist(outcomes: list[Outcome], options: Options) -> None:
-    """Write after every result, so a long batch is inspectable while it runs."""
+    """Write after every result, so a long batch is inspectable while it runs.
+
+    **The document is an object, not the bare list it used to be** (#566). The
+    list carried the verdicts and nothing about the run that produced them, so a
+    batch that subtracted tests with ``--deselect`` wrote a file whose "0
+    SURVIVED" is a stronger claim than the run made -- and the caveat lived only
+    on a terminal line that has scrolled away by the time anyone reads the JSON.
+    Anything that reads these files takes ``["outcomes"]`` now; nothing in this
+    repository did, checked with
+    ``git grep -n '_persist\\|asdict(outcome)' -- tools tests packages``, which
+    finds only this function and its one call site.
+    """
     if options.json_path is None:
         return
-    payload = json.dumps([asdict(outcome) for outcome in outcomes], indent=2, ensure_ascii=False)
+    document = {"options": _batch_options(options), "outcomes": [asdict(o) for o in outcomes]}
+    payload = json.dumps(document, indent=2, ensure_ascii=False)
     options.json_path.write_text(payload + "\n", encoding="utf-8")
 
 
@@ -738,9 +847,20 @@ def _apply_to_prepared(tree: Path, mutation: Mutation | None) -> tuple[Applied, 
 
 
 def _describe_prepared(
-    tree: Path, root: Path, mutation: Mutation | None, land: tuple[Applied, ...] | None
+    tree: Path,
+    root: Path,
+    mutation: Mutation | None,
+    land: tuple[Applied, ...] | None,
+    deselect: tuple[str, ...] = (),
 ) -> None:
     _note("prepared tree ready -- nothing has been run in it")
+    if deselect:
+        # Said out loud rather than honoured. A prepared tree runs whatever
+        # selection its user types, and pre-subtracting from that would quietly
+        # change the answer to a question the harness is not the one asking.
+        # Silence here would be worse than either: the flag was accepted.
+        _note(f"  --deselect IGNORED in this mode ({len(deselect)} id(s)); the runner below")
+        _note("             forwards its own arguments, so pass them to it directly")
     _note(f"  path       {tree}")
     if mutation is not None and land:
         _note(f"  mutation   {mutation.label}")
@@ -770,7 +890,7 @@ def _prepare_mode(args: argparse.Namespace, options: Options) -> int:
         shutil.rmtree(root, ignore_errors=True)
         raise
     _write_runner(tree, cache_dir)
-    _describe_prepared(tree, root, mutation, land)
+    _describe_prepared(tree, root, mutation, land, options.deselect)
     print(tree)
     return 0
 
@@ -800,7 +920,28 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_false",
         help="skip the unmutated baseline run (not recommended)",
     )
-    parser.add_argument("--timeout", type=int, default=_DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--deselect",
+        action="append",
+        default=[],
+        metavar="NODEID",
+        help=(
+            "remove one node id from every run in the batch, control included -- for a "
+            "test this MACHINE cannot pass (a bound port, no network), never to narrow "
+            "the question. Repeatable. Printed with the summary. Ignored by "
+            "--prepare-tree, whose runner takes pytest arguments of its own"
+        ),
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help=(
+            "seconds one suite run may take before it is called hung; "
+            f"default scales with --workers, from {_default_timeout(1)}s at one worker "
+            f"to {_default_timeout(4)}s at four"
+        ),
+    )
     parser.add_argument("--json", dest="json_path", help="write results here after every mutation")
     parser.add_argument("--work-dir", help="where to build the isolated trees")
     parser.add_argument("--keep-trees", action="store_true", help="do not delete the copies")
@@ -824,20 +965,55 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _report_summary(outcomes: list[Outcome], elapsed: float, workers: int) -> None:
+def _report_summary(outcomes: list[Outcome], elapsed: float, options: Options) -> None:
+    """The block a reader pastes into a PR, so what was *not* run belongs in it.
+
+    Every deselected node id is named here rather than only at the invocation.
+    A summary is what survives into a review comment, and one that says
+    "12 KILLED, 0 SURVIVED" while three tests were subtracted from every run is
+    a stronger claim than the batch made. The line is printed only when
+    something was deselected, so the ordinary batch's output does not move.
+    """
     survivors = [item for item in outcomes if item.verdict == "SURVIVED"]
     hung = [item for item in outcomes if item.verdict == "HUNG"]
     print(
-        f"\n{len(outcomes)} run(s) in {elapsed:.1f}s across {workers} worker(s): "
+        f"\n{len(outcomes)} run(s) in {elapsed:.1f}s across {options.workers} worker(s): "
         f"{len(survivors)} SURVIVED, "
         f"{len(hung)} HUNG, "
         f"{len([i for i in outcomes if i.verdict == 'KILLED'])} KILLED, "
         f"{len([i for i in outcomes if i.verdict == 'ERROR'])} ERROR"
     )
+    if options.deselect:
+        print(
+            "  deselected from every run, control included: "
+            f"{', '.join(options.deselect)}  -- no verdict here covers them"
+        )
     for survivor in survivors:
         print(f"  SURVIVED  {survivor.label}")
     for item in hung:
-        print(f"  HUNG      {item.label}  -- the suite cannot report this as a failure")
+        print(
+            f"  HUNG      {item.label}  -- the suite cannot report this as a failure "
+            f"(timeout {options.timeout}s)"
+        )
+
+
+def _timed_out_control(outcomes: list[Outcome]) -> Outcome | None:
+    """The unmutated baseline, when it ran out of clock rather than finishing.
+
+    Returned rather than answered yes/no, because "it timed out" is not on its
+    own enough to name a remedy: a suite killed by the clock may have been
+    perfectly green up to that moment or may already have printed ``FAILED``,
+    and those two need opposite advice. The caller reads ``failures`` to tell
+    them apart -- the same discriminator :func:`mutate_run._hung_summary` uses
+    one layer down.
+
+    Both cases end the batch at exit 2 and neither yields a usable verdict, so
+    the exit code cannot tell any of this apart on its own.
+    """
+    for item in outcomes:
+        if item.label == _CONTROL_LABEL and item.timed_out:
+            return item
+    return None
 
 
 def _verdict_mode(args: argparse.Namespace, options: Options) -> int:
@@ -855,28 +1031,57 @@ def _verdict_mode(args: argparse.Namespace, options: Options) -> int:
     # Printed before the integrity verdict, not after: the old order threw the
     # whole summary away whenever the checkout check tripped, which is exactly
     # when someone most needs to see that the verdicts themselves were fine.
-    _report_summary(outcomes, elapsed, options.workers)
+    _report_summary(outcomes, elapsed, options)
     if _report_checkout(mutations, before_targets, before_status):
         return 2
     if any(item.verdict == "control-red" for item in outcomes):
         print("the unmutated control was RED: no KILLED verdict here means anything")
+        print(
+            "  if the failing test is one this MACHINE cannot pass -- a bound port, "
+            "no network -- name it with --deselect and run again"
+        )
         return 2
     if any(item.verdict == "ERROR" for item in outcomes):
+        # A control that timed out lands here, not in `control-red` above: a
+        # hung run produces no verdict at all. Said out loud because the two
+        # look alike in a summary and only one of them means the tree is broken
+        # -- see `_hung_summary`, which puts "timed out" on the line itself.
+        #
+        # Two remedies, and the wrong one costs the timeout again to find out.
+        # A suite can print `FAILED` and *then* run past the clock, and telling
+        # that operator to raise --timeout is advice that cannot work: the
+        # baseline is red whatever the bound. `failures` is what separates them.
+        timed_out = _timed_out_control(outcomes)
+        if timed_out is not None and timed_out.failures:
+            print(
+                f"the unmutated control was already RED when it ran out of clock at "
+                f"{options.timeout}s: raising --timeout will not fix it. Fix the tree, or "
+                "--deselect a test this MACHINE cannot pass"
+            )
+            for failure in timed_out.failures[:6]:
+                print(f"  {failure[:120]}")
+        elif timed_out is not None:
+            print(
+                f"the unmutated control did not finish within {options.timeout}s: the tree is "
+                "not RED, the clock ran out. Raise --timeout or lower --workers"
+            )
         return 2
     return 1 if any(item.verdict in {"SURVIVED", "HUNG"} for item in outcomes) else 0
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
+    workers = int(args.workers)
     options = Options(
-        workers=int(args.workers),
+        workers=workers,
         fail_fast=bool(args.fail_fast),
         control=bool(args.control),
-        timeout=int(args.timeout),
+        timeout=int(args.timeout) if args.timeout is not None else _default_timeout(workers),
         keep_trees=bool(args.keep_trees),
         json_path=Path(args.json_path) if args.json_path else None,
         work_dir=Path(args.work_dir) if args.work_dir else None,
         with_git=bool(args.with_git),
+        deselect=tuple(args.deselect),
     )
     try:
         if args.prepare_tree:

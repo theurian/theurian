@@ -61,7 +61,8 @@ class SuiteHungError(HarnessError):
     Carries whatever partial output the suite had already produced before it
     was killed, because a hung job showing no test name is exactly the gap
     this verdict exists to close, and re-obtaining it costs the timeout again
-    -- up to 1800s by default.
+    -- at least 1800s, and more once ``--workers`` raises the default
+    (``mutate._default_timeout``).
     """
 
     def __init__(self, seconds: int, tree: Path, output: str = "") -> None:
@@ -80,6 +81,16 @@ class Outcome:
     failures: tuple[str, ...] = ()
     detail: str = ""
     digests: dict[str, str] = field(default_factory=dict)
+    #: The run was killed by the timeout rather than reaching a summary line.
+    #:
+    #: Carried as a field rather than read back out of ``summary``, because the
+    #: one caller that needs it -- ``mutate._verdict_mode``, telling a control
+    #: that ran out of clock from a control that produced an unreadable summary
+    #: -- would otherwise be matching on a human-facing string that exists to be
+    #: rewritten. A mutation's timeout already has its own verdict (``HUNG``);
+    #: the control's does not, because a control that never finished produced no
+    #: baseline, which is ``ERROR``.
+    timed_out: bool = False
 
 
 @dataclass(frozen=True)
@@ -92,6 +103,40 @@ class Options:
     json_path: Path | None
     work_dir: Path | None
     with_git: bool = False
+    #: Node ids removed from *every* run in the batch, control included.
+    #:
+    #: **Not a narrowing of the question** -- that is what a general ``--tests``
+    #: or ``-k`` pass-through would be, and this harness deliberately has no such
+    #: option (see ``mutate.py``'s "The whole suite runs, always"). This is for a
+    #: test the *machine* cannot pass: one that binds a fixed port a resident
+    #: daemon already owns, one that needs a network. Without it such a test
+    #: turns the control ``control-red``, which correctly voids the whole batch,
+    #: so the alternative is not a narrower run -- it is no run at all.
+    #:
+    #: Applied to the control by construction: it is read here, in the one place
+    #: that builds a suite argv, so no future edit can deselect a test from the
+    #: mutation runs while the control still walks it. A control walking a
+    #: different suite from the mutations is a baseline for a question nobody
+    #: asked.
+    #:
+    #: Every deselected id is printed with the summary, so a reader can tell a
+    #: batch that skipped a broken environment from one that skipped the test
+    #: that would have caught the mutation.
+    #:
+    #: **What is printed is the request, not a confirmation.** ``pytest
+    #: --deselect`` ignores a node id that matches nothing -- no error, no
+    #: warning, exit 0 -- so a typo, a renamed test or a stale path subtracts
+    #: nothing while the summary still names it. **An absolute path is one of
+    #: those non-matching ids**: node ids are resolved relative to rootdir, so
+    #: ``/abs/path/test_x.py::test_y`` silently deselects nothing. Measured
+    #: 2026-09-06 against this repository's pinned pytest: two ids given, one
+    #: real and one invented, reported ``1 passed, 1 deselected``; the same run
+    #: with both ids spelled absolutely reported ``2 passed`` and said nothing.
+    #:
+    #: The cross-check is pytest's own ``N deselected``, which the reporter
+    #: prints on each run's summary line directly under this list: fewer than
+    #: the ids named here means some of them matched nothing.
+    deselect: tuple[str, ...] = ()
 
 
 def _uv() -> str:
@@ -149,10 +194,32 @@ def _child_env(tree: Path, cache_dir: Path) -> dict[str, str]:
     return env
 
 
-def _run_suite(tree: Path, options: Options, cache_dir: Path) -> subprocess.CompletedProcess[str]:
-    argv = [_uv(), "run", "--frozen", "--no-sync", "pytest", *_PYTEST_ARGS]
+def _suite_argv(uv: str, options: Options) -> list[str]:
+    """The one *verdict-path* suite command line -- control and mutations alike.
+
+    Extracted so it is a single place and a pure function: the control run and
+    the mutation runs both reach the suite through :func:`_run_suite`, so a
+    ``--deselect`` that reached only one of them would leave the baseline
+    walking a different suite from the thing it is a baseline for. That is not
+    a hypothetical asymmetry -- it is the exact defect the option exists to
+    avoid causing, and it is unobservable from a batch's output.
+
+    It is not the only pytest command line in the harness, and saying otherwise
+    would be wrong: ``mutate._write_runner`` generates a second one inside a
+    prepared tree. That one produces no verdict and forwards its own arguments,
+    which is why ``--prepare-tree`` ignores ``--deselect`` and says so rather
+    than routing it through here.
+    """
+    argv = [uv, "run", "--frozen", "--no-sync", "pytest", *_PYTEST_ARGS]
+    for node_id in options.deselect:
+        argv.extend(("--deselect", node_id))
     if options.fail_fast:
         argv.append("-x")
+    return argv
+
+
+def _run_suite(tree: Path, options: Options, cache_dir: Path) -> subprocess.CompletedProcess[str]:
+    argv = _suite_argv(_uv(), options)
     try:
         return subprocess.run(  # noqa: S603 - argv is harness-owned, never user input
             argv,
@@ -212,14 +279,27 @@ def _run_one(tree: Path, mutation: Mutation, options: Options, cache_dir: Path) 
 def _hung_summary(hung: SuiteHungError) -> tuple[str, tuple[str, ...]]:
     """Best-available summary/failures from whatever the suite had printed.
 
-    A hang costs the full timeout to reproduce -- 1800s by default -- so
-    whatever partial output it left behind is the most expensive thing this
-    harness can discard. Falls back to the timeout message itself only when
-    the suite hung before printing anything at all.
+    A hang costs the full timeout to reproduce -- 1800s at the smallest default
+    -- so whatever partial output it left behind is the most expensive thing
+    this harness can discard. Falls back to the timeout message itself only
+    when the suite hung before printing anything at all.
+
+    **When nothing failed, the line says the clock ran out, not what pytest had
+    last printed** (#566). A suite killed mid-walk leaves a progress marker as
+    its final line -- ``......[ 43%]`` -- and the reporter prints that under a
+    verdict, so a control that merely ran out of time read at a glance exactly
+    like a baseline that went RED. It cost PR #581's round about 90 minutes:
+    the walk was green and slower than the timeout, every mutation reported
+    HUNG, and no line anywhere in the output said "timed out". An empty
+    ``failures`` is the discriminator, because a run that did fail before the
+    clock ran out has a ``FAILED``/``ERROR`` line and that is the thing worth
+    reading.
     """
     if not hung.output:
         return str(hung), ()
     summary, failures = _summarise(hung.output)
+    if not failures:
+        return f"timed out after {hung.seconds}s (no failing test); last line: {summary}", ()
     return summary or str(hung), failures
 
 
@@ -238,6 +318,7 @@ def _run_control(
             summary=summary,
             failures=failures,
             detail=hung.output[-4000:],
+            timed_out=True,
         )
     summary, failures = _summarise(completed.stdout)
     if not _recognised_summary(summary):
@@ -291,6 +372,7 @@ def _run_mutation(
             failures=failures,
             detail=hung.output[-4000:],
             digests=digests,
+            timed_out=True,
         )
     if completed is None:
         # Unreachable: `completed` is only ever left `None` when `hung` is
