@@ -835,13 +835,17 @@ class SqliteReviewFindingStore:
         daemon -- rather than claimed closed, and there is no disclosure either
         way.
 
-        **The permit that worker holds comes back, and used to be gone for the
-        life of the process** (#586). ``mcp/admission.py::AdmissionGate`` reclaims
-        a hold past ``MAX_PERMIT_HOLD_SECONDS``, so the reach is a bounded stall
-        of the findings gate rather than its availability until restart. Measured
-        2026-09-06 with all four permits parked in a real reader-less-FIFO
-        ``open()``: the first came back after 29.001 s and all four recovered,
-        against a ``threading.BoundedSemaphore`` still refusing at 60.005 s.
+        **The permit that worker holds comes back while the gate has room to
+        reclaim, and used to be gone for the life of the process** (#586).
+        ``mcp/admission.py::AdmissionGate`` reclaims a hold past
+        ``MAX_PERMIT_HOLD_SECONDS`` -- measured 2026-09-06 with all four permits
+        parked in a real reader-less-FIFO ``open()``, the first came back after
+        29.001 s and all four recovered, against a ``threading.BoundedSemaphore``
+        still refusing at 60.005 s. The bound is not unconditional: outstanding
+        reclaims are capped at ``MAX_CONCURRENT_SEARCHES``, so with that many
+        threads parked here the findings gate wedges for this residual's duration
+        rather than reclaiming without limit. ``mcp/admission.py`` records why
+        that ceiling is the safer end of the trade.
 
         The refusal below is this module's own class, so the tool surface converts
         it to the standing store-unavailable refusal like every other read fault,

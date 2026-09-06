@@ -819,15 +819,20 @@ class StateDatabaseNotAFileError(TheurianError):
     **racing writer** co-resident with the daemon, holding local write access to
     ``.theurian/state/`` at the instant of the open.
 
-    **The reach is a bounded stall of the admission gate, and was availability of
-    that gate until restart** (#586). The permit the parked thread holds is
-    reclaimed by ``mcp/admission.py::AdmissionGate`` once the hold passes
-    ``MAX_PERMIT_HOLD_SECONDS``. Measured 2026-09-06 with all four permits held by
-    threads parked in a real reader-less-FIFO ``open()``: the first permit came
-    back after 29.001 s and all four recovered, where the
-    ``threading.BoundedSemaphore`` that stood there before was still refusing
-    after 60.005 s. The parked thread itself is unchanged -- nothing cancels it,
-    and the second bullet above still describes it.
+    **The reach has two regimes, and naming only the first is what round two
+    caught** (#586). It was availability of the gate until restart. Now
+    ``mcp/admission.py::AdmissionGate`` reclaims the accounting token of a hold
+    past ``MAX_PERMIT_HOLD_SECONDS``, so while fewer than
+    ``MAX_CONCURRENT_SEARCHES`` reclaims are outstanding the cost is a **bounded
+    stall** -- measured 2026-09-06 with all four permits parked in a real
+    reader-less-FIFO ``open()``, the first permit came back after 29.001 s and
+    all four recovered, where the ``threading.BoundedSemaphore`` that stood there
+    before was still refusing after 60.005 s. Once that many are outstanding the
+    ceiling stops reclaiming and the gate **wedges for this residual's
+    duration**, as the semaphore did; that is the deliberate trade, and
+    ``mcp/admission.py`` records what reclaiming without a ceiling cost instead.
+    The parked thread itself is unchanged -- nothing cancels it, and the second
+    bullet above still describes it.
 
     Git carries no such mode (100644, 100755, 120000, 160000, 040000), so the
     artefact arrives from the machine and never from a clone.

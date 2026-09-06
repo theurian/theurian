@@ -173,6 +173,78 @@ def test_a_gate_that_could_not_bound_anything_refuses_to_exist(permits: int, hol
         AdmissionGate(permits, max_hold_seconds=hold)
 
 
+def test_parked_holders_plateau_at_twice_the_permits() -> None:
+    """Round two's H-1: the reclaim was unbounded in **aggregate**.
+
+    Reclaiming without a ceiling deletes the one property a semaphore had for
+    free -- a permit never released is never re-issued -- so parked holders
+    accumulate one *cohort per hold window* rather than stopping at the cap. At
+    the shipped constants the adversarial round measured four per 30 s window
+    until all 40 anyio worker-pool tokens were parked at t=323 s and every
+    synchronous MCP tool stopped answering.
+
+    This drives the same shape at test speed: wave after wave of holders that
+    acquire and never release. RED before the ceiling -- ``outstanding`` climbs
+    without limit, one cohort per wave.
+    """
+    permits = 3
+    gate = AdmissionGate(permits, max_hold_seconds=_A_SHORT_HOLD)
+    parked = 0
+    peak = 0
+
+    for _ in range(6):
+        for _ in range(permits):
+            if gate.acquire(_A_MOMENT) is not None:
+                parked += 1
+        peak = max(peak, gate.outstanding)
+        time.sleep(_A_SHORT_HOLD * 1.5)
+
+    assert peak <= 2 * permits, (
+        f"the gate had {peak} outstanding permits against a cap of {permits}; reclaiming "
+        f"with no ceiling re-issues a slot every hold window, so parked threads accumulate "
+        f"until the process-wide worker pool is gone (round two H-1)"
+    )
+    assert parked <= 2 * permits, (
+        f"{parked} holders were admitted and none released; the aggregate bound is "
+        f"2 x {permits}, and anything above it is the accumulation this test exists for"
+    )
+
+
+def test_the_reclaim_ceiling_refuses_once_it_is_full() -> None:
+    """The accumulation test's mechanism, driven directly.
+
+    ``2 * permits`` parked acquisitions fill both sets; the next one must be
+    refused however long it waits, because reclaiming again would put a
+    ``2 * permits + 1``-th thread in flight. RED before the ceiling: the wait
+    outlives a hold window, so the sweep hands out another slot.
+    """
+    permits = 2
+    gate = AdmissionGate(permits, max_hold_seconds=_A_SHORT_HOLD)
+
+    admitted = []
+    for _ in range(2 * permits):
+        token = gate.acquire(_A_SHORT_HOLD * 4)
+        assert token is not None, "the gate refused inside its own aggregate bound"
+        admitted.append(token)
+
+    assert gate.outstanding == 2 * permits, (
+        f"outstanding is {gate.outstanding}, so the two sets are not partitioning the "
+        f"holders the way the aggregate bound is computed from"
+    )
+    assert gate.acquire(_A_SHORT_HOLD * 4) is None, (
+        "the gate admitted a caller past its aggregate bound: with `permits` threads "
+        "parked and `permits` already reclaimed, reclaiming again is what drained the "
+        "worker pool in round two's measurement"
+    )
+
+    # And the wedge lifts the moment a parked thread actually returns, which is
+    # what makes this a ceiling rather than a terminal state.
+    gate.release(admitted[0])
+    assert gate.acquire(_A_SHORT_HOLD * 4) is not None, (
+        "a parked thread returned and freed a reclaim slot, and the gate still refused"
+    )
+
+
 def test_the_shipped_hold_bound_is_far_above_a_measured_search() -> None:
     """The constant's own claim, checked as an ordering rather than as a value.
 
@@ -181,9 +253,20 @@ def test_the_shipped_hold_bound_is_far_above_a_measured_search() -> None:
     ``test_search_concurrency_cap.py``; what this asserts is the relationship the
     docstring argues from, so a future edit that drops the bound to something a
     real search can cross fails here rather than in production.
+
+    **The margin asserted is the one the docstring states**, which it was not
+    until round two: this allowed 5.66 s -- a hundred medians -- while the note
+    claimed "roughly three orders of magnitude", so every value in between
+    satisfied the test and falsified the prose. Both now say 531x, and the
+    assertion is a floor just under it rather than a round number, so a reduction
+    fails here and a re-measurement of the median is what moves it.
     """
     measured_median_search_seconds = 0.0565
-    assert measured_median_search_seconds * 100 < MAX_PERMIT_HOLD_SECONDS, (
-        f"the hold bound {MAX_PERMIT_HOLD_SECONDS}s is within two orders of magnitude of a "
-        f"measured search, so an ordinary holder can now be reclaimed mid-answer"
+    stated_ratio = 531
+    measured_ratio = MAX_PERMIT_HOLD_SECONDS / measured_median_search_seconds
+    assert measured_ratio > stated_ratio - 1, (
+        f"the hold bound {MAX_PERMIT_HOLD_SECONDS}s is {measured_ratio:.0f}x a measured "
+        f"search where its own docstring claims {stated_ratio}x, so either the bound "
+        f"dropped far enough to reclaim an ordinary holder mid-answer or the note is "
+        f"now false"
     )

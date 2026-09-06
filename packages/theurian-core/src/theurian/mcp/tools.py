@@ -101,9 +101,14 @@ MAX_QUERY_CHARS: Final = 2_000
 #: records it as not taken; `AdmissionGate`'s hold bound is not it, and the two
 #: are worth telling apart. That gate reclaims the *accounting token* of a holder
 #: that has stopped coming back (#586), so a thread parked inside an `open` costs
-#: capacity for `MAX_PERMIT_HOLD_SECONDS` rather than until restart. It cancels
-#: nothing and refuses no admitted caller -- a sync tool's thread cannot be
-#: cancelled, which is the same fact this paragraph opens with.
+#: capacity for `MAX_PERMIT_HOLD_SECONDS` rather than until restart -- **while
+#: fewer than `MAX_CONCURRENT_SEARCHES` reclaims are outstanding.** Past that the
+#: gate stops reclaiming and wedges, which is what keeps parked threads at 2x
+#: this cap instead of accumulating a cohort per hold window until anyio's
+#: 40-token pool is gone (round two, H-1; `mcp/admission.py` carries the
+#: measurement). It cancels nothing and refuses no admitted caller -- a sync
+#: tool's thread cannot be cancelled, which is the same fact this paragraph opens
+#: with.
 #: What this cap does bound is an unbounded queue of callers building up
 #: behind however much work is already running.
 #:

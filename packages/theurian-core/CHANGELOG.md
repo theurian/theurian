@@ -53,18 +53,29 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   and the same descriptor check. #569's write-side semantics are unchanged and
   now pinned: a reader-less pipe still answers `ENXIO`, a link `ELOOP`, a
   directory `EISDIR`, and a fresh create still lands at the mode it was given.
-- **An admission permit whose holder never returns is reclaimed, so a parked
-  open costs a bounded stall rather than the permit.** A thread inside an
-  unbounded `open` held one of four permits for the life of the process, which
-  is the residual the entry below records: the daemon's search and findings
-  gates lost capacity permanently and "Retry shortly" was false. Measured
-  2026-09-06 with all four permits parked in a real reader-less-FIFO `open()`:
-  the first permit returns after 29.001 s and all four recover, where the
-  `threading.BoundedSemaphore` that stood there was still refusing after
-  60.005 s. Nothing is cancelled — a synchronous tool's thread cannot be — so
-  the per-query timeout T-6 records as not taken is still not taken; what is
-  reclaimed is the accounting token, and the parked thread consumes no CPU and
-  no GIL.
+- **An admission permit whose holder never returns is reclaimed, and outstanding
+  reclaims are capped so parked threads plateau at twice the permit count.** A
+  thread inside an unbounded `open` held one of four permits for the life of the
+  process, which is the residual the entry below records: the daemon's search
+  and findings gates lost capacity permanently and "Retry shortly" was false.
+  Measured 2026-09-06 with all four permits parked in a real reader-less-FIFO
+  `open()`: the first permit returns after 29.001 s and all four recover, where
+  the `threading.BoundedSemaphore` that stood there was still refusing after
+  60.005 s.
+
+  The ceiling is the other half, and it is why this is not simply "reclaim the
+  permit". A semaphore is self-limiting — a permit never released is never
+  re-issued — and reclaiming deletes that: measured at the shipped constants,
+  four parked holders per 30-second window accumulated until all **40** tokens
+  of anyio's worker pool were parked at t=323 s and *every* synchronous MCP tool
+  stopped answering, `system.capabilities` included, which takes no permit from
+  either gate. With the cap the same recipe plateaus at **8** parked threads
+  from the second wave and every probe is answered through t=416 s. Past the
+  cap the gate wedges for the parked opens' duration, exactly as the semaphore
+  did — the deliberate end of the trade. Nothing is cancelled — a synchronous
+  tool's thread cannot be — so the per-query timeout T-6 records as not taken is
+  still not taken; what is reclaimed is the accounting token, and the parked
+  threads consume no CPU and no GIL.
 - **An artefact where Theurian opens a file no longer blocks the command that
   meets it, and the refusal names what is there**
   ([#526](https://github.com/theurian/theurian/issues/526),
