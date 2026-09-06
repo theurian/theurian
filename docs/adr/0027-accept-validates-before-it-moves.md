@@ -658,10 +658,9 @@ commit updates it rather than silencing it.
 > [ADR-0030](0030-github-review-ingestion-spawns-gh.md) decision 2 added the
 > second key — the same module reads `providers.review.repositories` out of the
 > same file, and `security/review_allowlist.py` enforces it: a repository the
-> list does not name produces no spawn at all, so the allowlist this ADR could
-> only describe is a control in force. The file is therefore read for two keys,
-> and `test_config_key_call_sites.py`'s reader scan records those sites rather
-> than their absence. The paragraph above stays as the state this decision was
+> list does not name produces no spawn at all. The file is therefore read for
+> two keys, and `test_config_key_call_sites.py`'s reader scan records those
+> sites rather than their absence. The paragraph above stays as the state this decision was
 > taken against, which is what an amendment keeps and a rewrite loses.
 
 ## Consequences
