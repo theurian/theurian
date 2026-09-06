@@ -60,6 +60,7 @@ from theurian.infrastructure.github.environment import child_environment
 from theurian.infrastructure.github.gh_cli import GhCli, locate_binary
 from theurian.infrastructure.github.limits import (
     MAX_COMMENTS_PER_THREAD,
+    MAX_LINKED_ISSUES,
     MAX_PAGES,
     MAX_PULL_REQUESTS,
     PAGE_SIZE,
@@ -318,6 +319,15 @@ class GitHubReviewProvider:
         response's spelling: the two are equal case-folded by the check above,
         and using the configured one keeps a project's own records in one
         spelling however GitHub happens to case its answer.
+
+        Two graded stops fire before any record exists, both for the same reason
+        :meth:`_comments_of` has its own: a record that *looks* whole and is not
+        is worse than a refusal naming what could not be read. A merged pull
+        request must carry its merge commit, and a pull request may not close
+        more issues than
+        :data:`~theurian.infrastructure.github.limits.MAX_LINKED_ISSUES` -- the
+        ``closingIssuesReferences`` connection paginates, and this adapter
+        follows no cursor into it.
         """
         merged = node.get("merged") is True
         merge_commit = _mapping(node.get("mergeCommit")).get("oid")
@@ -327,6 +337,17 @@ class GitHubReviewProvider:
                 f"GitHub reported pull request {entry}#{node.get('number')} as merged "
                 f"with no merge commit, which is not a pull request this adapter can "
                 f"record honestly.",
+            )
+        linked = _mapping(node.get("closingIssuesReferences"))
+        if (
+            _mapping(linked.get("pageInfo")).get("hasNextPage") is True
+            or len(_nodes(linked)) > MAX_LINKED_ISSUES
+        ):
+            raise ReviewIngestRefusedError(
+                RefusalGrade.LIMIT_EXCEEDED,
+                f"Pull request {entry}#{node.get('number')} closes more than the "
+                f"recorded {MAX_LINKED_ISSUES}-issue cap. The read stopped rather than "
+                f"recording an event that looks whole and is not.",
             )
         rollup = _nodes(_mapping(node.get("commits")))
         state = None

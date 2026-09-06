@@ -31,6 +31,15 @@ VARIABLE_NAMES: Final[frozenset[str]] = frozenset(
 #: ``Organization``, ``Mannequin``, ``EnterpriseUserAccount`` -- is also a
 #: ``Node``, so one inline fragment covers them all rather than five. Verified
 #: against the live schema rather than assumed.
+#:
+#: ``closingIssuesReferences`` asks for ``pageInfo { hasNextPage }`` because its
+#: page size is a **cap the adapter reports** rather than a truncation it
+#: swallows: without the flag, a pull request closing forty issues and one
+#: closing twenty arrive identical. The number is
+#: :data:`~theurian.infrastructure.github.limits.MAX_LINKED_ISSUES` and it is
+#: spelled here as a literal, because this document is a literal (clause 2) and
+#: formatting a constant into it is the string building clause 2 exists to keep
+#: out.
 PULL_REQUESTS: Final = """\
 query($owner: String!, $name: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
@@ -49,7 +58,7 @@ query($owner: String!, $name: String!, $first: Int!, $after: String) {
         baseRefOid
         author { login ... on Node { id } }
         mergeCommit { oid }
-        closingIssuesReferences(first: 20) { nodes { number } }
+        closingIssuesReferences(first: 20) { pageInfo { hasNextPage } nodes { number } }
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
       }
     }

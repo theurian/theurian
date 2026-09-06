@@ -599,6 +599,38 @@ async def test_a_merged_pull_request_with_no_merge_commit_is_refused(
     assert f"{REPOSITORY}#12" in str(raised.value)
 
 
+@pytest.mark.asyncio
+async def test_a_pull_request_past_the_linked_issue_cap_is_reported_not_truncated(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The same treatment the comment cap gets, on the connection that had none.
+
+    ``closingIssuesReferences`` paginates like every other connection and this
+    adapter follows no cursor into it, so a pull request closing forty issues
+    used to arrive looking exactly like one closing twenty -- a record naming
+    half the issues, with nothing in it saying so.
+
+    The payload carries a full page **and** ``hasNextPage``, which is what GitHub
+    sends for the fortieth issue: a test that only over-filled ``nodes`` would
+    pass against an implementation that reads neither.
+    """
+    over = _pull_requests(
+        closingIssuesReferences={
+            "pageInfo": {"hasNextPage": True},
+            "nodes": [{"number": issue} for issue in range(1, limits.MAX_LINKED_ISSUES + 1)],
+        }
+    )
+    fake_gh.answer("prs", 1, over)
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert f"{REPOSITORY}#12" in str(raised.value)
+    assert str(limits.MAX_LINKED_ISSUES) in str(raised.value)
+
+
 # -- the version floor and the authentication probe ---------------------------
 
 

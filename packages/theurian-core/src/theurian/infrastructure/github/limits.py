@@ -49,6 +49,13 @@ MAX_PULL_REQUESTS: Final = 500
 #: which would be a silent loss inside a record that looks complete.
 MAX_COMMENTS_PER_THREAD: Final = 100
 
+#: The most issues one pull request may close before the read stops and reports.
+#: The ``closingIssuesReferences`` connection paginates like every other, and the
+#: adapter asks for one page of it and follows no cursor -- so without a check a
+#: pull request closing forty issues arrives looking exactly like one closing
+#: twenty, and the record would name half the issues while looking whole.
+MAX_LINKED_ISSUES: Final = 20
+
 #: The most bytes one child response may produce. Set beside a recorded number
 #: rather than invented: ``MAX_SOURCE_FILE_BYTES`` (``security/paths.py``) is
 #: 8 MiB and is what ingestion already enforces on a file it reads, and a
