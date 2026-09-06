@@ -42,12 +42,17 @@ class MigrationsCheck:
     #: ``True`` when :attr:`failure` is the *installation* failing to supply a
     #: usable JSON Schema, rather than anything about the files under
     #: ``.theurian/migrations``. Carried here rather than re-derived from
-    #: ``type(failure)`` by the probe, so the reader that made the distinction
-    #: is the only one that holds it: the checker runs the load and knows which
+    #: ``type(failure)`` by the probe: the checker runs the load and knows which
     #: call refused, and a second classification beside it is #91's divergence
-    #: in a new place. Issue #529 is what the flag closes -- until it existed,
-    #: a build that could not find its own schemas published "The migrations in
-    #: <dir> do not validate." and sent the operator to their own YAML.
+    #: in a new place. That the probe holds no second classification is checked
+    #: rather than asked for -- ``tests/unit/test_migrations_check_partition.py::
+    #: test_the_checker_catches_exactly_two_things_and_the_probe_catches_nothing``
+    #: enumerates both functions' handlers from the AST, and the two
+    #: ``..._because_the_checker_said_so`` tests hand the probe a check whose
+    #: flag and exception type disagree. Issue #529 is what the flag closes --
+    #: until it existed, a build that could not find its own schemas published
+    #: "The migrations in <dir> do not validate." and sent the operator to their
+    #: own YAML.
     schemas_unusable: bool = False
 
     def __post_init__(self) -> None:

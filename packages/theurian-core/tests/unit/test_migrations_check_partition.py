@@ -26,10 +26,14 @@ thing that publishes it.
    ``schema_root()``'s.
 4. **The arm it unlocks carries a real remedy.** The whole value of splitting
    is that the install faces get a cure the operator can run, so the constant
-   has to name the thing to act on *and* a command that acts on it. Every
-   behaviour test compares ``step.action`` against the constant, which means
-   all of them stay green if the constant is replaced with "Something went
-   wrong." -- measured, and the reason this claim is checked separately.
+   has to name the thing to act on *and* a command that acts on it. Every other
+   reader compares against the constant as a whole rather than looking inside
+   it, so none of them can see it emptied of meaning: ``git grep -n
+   SCHEMAS_UNUSABLE -- packages/`` answers 25 lines across four files at this
+   commit -- one of them this sentence -- and the only assertions that inspect
+   the string's *content* are in the last test here. Measured 2026-09-05 in a
+   throwaway clone: replacing the constant with "Something went wrong." left 35
+   of the 36 tests in this fix's scope green, and that test was the one failure.
 
 Claim 3 is the one with a wrong key available, and the wrong key was in the
 tree: two docstrings recorded "``ProjectError`` has no subclasses anywhere in

@@ -1424,9 +1424,13 @@ def probe_mcp_health(context: SetupContext) -> SetupStep:
 
 #: What ``migrations-valid`` publishes when the *installation* refused the load
 #: rather than the migration set (#529). Named constants rather than literals at
-#: the arm, because these two sentences are the entire rescue on a shared
-#: report: ``failure_detail`` publishes a type name there and nothing else, so a
-#: test that pins the report surface has to pin exactly these.
+#: the arm, because these two sentences are the whole of the rescue on a shared
+#: report -- ``failure_detail`` publishes a type name there and nothing else,
+#: and the step's other published fields are an id, a status, an outcome and an
+#: empty ``paths``. ``tests/integration/test_setup_migrations_checker.py::
+#: test_the_shared_report_carries_the_reinstall_cause_and_not_only_a_type_name``
+#: builds the real redacted payload and asserts all three strings, so a change
+#: that moved the rescue back into ``detail`` fails there.
 SCHEMAS_UNUSABLE_SUMMARY: Final = (
     "The migration set could not be validated: this installation cannot use the "
     "JSON Schemas it ships."
@@ -1436,10 +1440,21 @@ SCHEMAS_UNUSABLE_SUMMARY: Final = (
 #: a reader told only that validation failed goes looking at their own YAML.
 #:
 #: It says the files are not implicated, and deliberately not that they were
-#: never read: ``schema_root()`` fails before the load starts, while a schema
-#: the loader cannot use stops it after a migration file has been opened. The
-#: weakest claim true of both is the one published (the same distinction
-#: :func:`probe_initial_index` records for its own sentence).
+#: never read. Where the refusal lands relative to the read is not one answer,
+#: and the tempting shorter sentence is false at the third point:
+#:
+#: * ``schema_root()`` finding no candidate is raised before ``load_migrations``
+#:   is called at all.
+#: * A schema file that will not parse is refused where the validator is built
+#:   -- after the migrations directory is listed, before any migration file is
+#:   opened. Measured 2026-09-05 at 22ce405b: a corrupt ``migration.schema.json``
+#:   against ``examples/sample-project`` raised ``SchemaUnreadableError`` with
+#:   **zero** calls to the loader's ``read_source_file``.
+#: * An unresolvable ``$ref`` is raised inside ``validator.validate(document)``
+#:   (``_validate_document``), with that document already read.
+#:
+#: "Not implicated" holds at all three. The same distinction, from the other
+#: side, is why :func:`probe_initial_index` states no cause at all.
 SCHEMAS_UNUSABLE_ACTION: Final = (
     "Reinstall theurian: `uv tool install --force --python 3.13 'theurian[daemon]'`. "
     "The files under `.theurian/migrations` are not implicated -- the schemas they "

@@ -454,10 +454,15 @@ def test_a_schema_the_loader_cannot_use_is_the_installations_fault_and_says_so(
 
     A separate test rather than a parameter of the one above, because the two
     fail at different points -- one before ``load_migrations`` is called at all,
-    one after it has opened a migration file -- and a fix that keyed only on
-    ``ProjectError`` would still misattribute this one. That difference is also
-    why :data:`SCHEMAS_UNUSABLE_ACTION` says the files are not implicated rather
-    than that they were never read.
+    this one where the validator is built, after the migrations directory has
+    been listed -- and a fix that keyed only on ``ProjectError`` would still
+    misattribute this one.
+
+    This fixture opens no migration file (measured: zero ``read_source_file``
+    calls). A third point does, and it is why :data:`SCHEMAS_UNUSABLE_ACTION`
+    says the files are *not implicated* rather than that they were never read:
+    an unresolvable ``$ref`` reaches ``SchemaUnreadableError`` from inside
+    ``validator.validate(document)``, with that document already read.
     """
     root = _sample(tmp_path)
     broken = _a_schema_tree_that_cannot_be_parsed(tmp_path)
