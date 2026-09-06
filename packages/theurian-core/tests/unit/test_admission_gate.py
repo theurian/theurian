@@ -60,7 +60,11 @@ def test_a_refused_acquisition_waits_for_its_timeout_and_no_longer() -> None:
     started = time.monotonic()
     assert gate.acquire(_A_MOMENT) is None
     elapsed = time.monotonic() - started
-    assert _A_MOMENT <= elapsed < _A_MOMENT * 10, (
+    # The upper bound discriminates "honoured the caller's timeout" from "waited a
+    # hold bound", which is two orders of magnitude away; it is deliberately not
+    # tight. A tight one measures the runner's load, and CI's macOS box ran this
+    # suite in 894 s.
+    assert _A_MOMENT <= elapsed < _A_MOMENT * 25, (
         f"the refusal took {elapsed:.3f}s against a {_A_MOMENT}s timeout, so the wait is "
         f"not the caller's"
     )
@@ -121,19 +125,35 @@ def test_the_reclaimed_holder_cannot_hand_the_gate_a_permit_it_lost() -> None:
     when whatever it was waiting for arrives -- and its ``release`` then refers to
     a permit the gate has already re-issued. A ``BoundedSemaphore`` would raise
     ``ValueError``; a plain ``Semaphore`` would silently raise the cap. This does
-    neither.
+    neither: the stale release frees the **reclaim slot** its token occupies, and
+    no permit.
+
+    **Asserted through :attr:`AdmissionGate.outstanding`, and the first version of
+    this test asserted it through another ``acquire``, which raced.** That
+    acquisition waits, and while it waits ``reissued``'s own hold can cross
+    ``max_hold_seconds`` and be reclaimed -- correctly, since the stale release
+    has just freed the slot to reclaim into. CI caught it on macOS, where the
+    suite took 894 s and that hold expired inside a 0.2 s window; the gate had
+    done the right thing and the assertion said it had not. ``outstanding`` reads
+    the two sets under the lock and reclaims nothing, so it answers about the
+    state the release left rather than about a state a later expiry may have
+    moved on from.
     """
     gate = AdmissionGate(1, max_hold_seconds=_A_SHORT_HOLD)
     parked = gate.acquire(_A_MOMENT)
     assert parked is not None
     reissued = gate.acquire(_A_SHORT_HOLD * 4)
     assert reissued is not None
+    assert gate.outstanding == 2, (
+        "the reclaim did not leave two outstanding threads -- one holding, one reclaimed "
+        "and not yet returned -- so the state this test is about was never reached"
+    )
 
     gate.release(parked)  # the parked thread, waking up late
 
-    assert gate.acquire(_A_MOMENT) is None, (
-        "the stale release handed the gate a permit it had already re-issued, so the cap "
-        "inflated to two against one"
+    assert gate.outstanding == 1, (
+        "the stale release did not retire its own reclaimed token, so a thread that has "
+        "returned still counts against the ceiling"
     )
 
 
@@ -154,7 +174,10 @@ def test_a_waiter_is_woken_by_a_reclaim_and_not_only_by_a_release() -> None:
     elapsed = time.monotonic() - started
 
     assert admitted is not None, "the waiter was refused while a reclaimable permit existed"
-    assert elapsed < _A_SHORT_HOLD * 5, (
+    # Half the caller's own timeout, which is what separates "woke on the expiry"
+    # from "slept the whole timeout and then found it". Anything tighter is a
+    # measurement of the runner rather than of the wake-up.
+    assert elapsed < _A_SHORT_HOLD * 10, (
         f"the waiter took {elapsed:.3f}s to be admitted against a {_A_SHORT_HOLD}s hold "
         f"bound, so it slept past the expiry it was entitled to"
     )
