@@ -58,7 +58,7 @@ import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, final
+from typing import Final, Protocol, final
 
 from theurian.domain.review_ingest import (
     MAX_REFUSAL_DETAIL_CHARS,
@@ -94,6 +94,12 @@ _CHUNK_BYTES: Final = 64 * 1024
 _REAP_SECONDS: Final = 5.0
 
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+
+class _Closable(Protocol):
+    """The one method :func:`_release` needs from a child's transport."""
+
+    def close(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +151,7 @@ async def run_bounded(
     timeout: float = REQUEST_TIMEOUT_SECONDS,
     byte_cap: int = MAX_RESPONSE_BYTES,
 ) -> ChildOutcome:
-    """Spawn ``args``, read its output against ``byte_cap``, and never exceed ``timeout``.
+    """Spawn ``args``, read its output against ``byte_cap``, and stop it at ``timeout``.
 
     **The read shape is the property, not just the number** (clause 10). Output
     is taken a chunk at a time and the running total is compared against
@@ -163,11 +169,29 @@ async def run_bounded(
     and never reach the exit this waits for, so the drain cannot simply stop at
     the cap.
 
+    **Three awaits sit between the spawn and the answer, and one deadline bounds
+    all three**: each stdout read, the child's exit, and the stderr drain. The
+    drain is the one that has to be said out loud, because a *descendant* of the
+    child inherits fd 2 and can hold the stderr pipe open after the child itself
+    has exited and stdout has reached EOF -- an unbounded ``await`` on the drain
+    task then returns a **success** whenever the descendant finally lets go.
+    ``test_a_descendant_that_holds_stderr_open_is_refused_at_the_deadline``
+    drives exactly that shape.
+
+    What outlives ``timeout`` is the reap, deliberately and by a recorded amount:
+    once the deadline expires the child is killed and given at most
+    :data:`_REAP_SECONDS` to die, so the wall-clock ceiling on this call is
+    ``timeout + _REAP_SECONDS`` plus whatever the spawn itself costs. Waiting for
+    a killed child is what keeps a refusal from leaving a process behind, and
+    :func:`_end` runs from a ``finally`` so a cancellation or an exception this
+    function does not name cannot skip it.
+
     Raises:
         ReviewIngestRefusedError: Graded ``LIMIT_EXCEEDED`` when the response
             passes ``byte_cap``, and ``TOOL_FAILED`` when the child cannot be
-            spawned or does not finish inside ``timeout``. Both kill the child
-            first, so no refusal leaves a process behind.
+            spawned, or when the reads, the exit or the drain do not finish
+            inside ``timeout``. Both kill the child first, so no refusal leaves a
+            process behind.
     """
     child, stdout, errors = await _start(args, env)
     draining = asyncio.create_task(_drain_capped(errors, MAX_CHILD_STDERR_BYTES))
@@ -175,6 +199,7 @@ async def run_bounded(
     deadline = loop.time() + timeout
     chunks: list[bytes] = []
     total = 0
+    answered = False
     try:
         while True:
             remaining = deadline - loop.time()
@@ -185,7 +210,6 @@ async def run_bounded(
                 break
             total += len(chunk)
             if total > byte_cap:
-                await _end(child, draining)
                 raise ReviewIngestRefusedError(
                     RefusalGrade.LIMIT_EXCEEDED,
                     f"Review ingestion refused a GitHub response larger than the "
@@ -195,16 +219,25 @@ async def run_bounded(
                 )
             chunks.append(chunk)
         await asyncio.wait_for(child.wait(), max(deadline - loop.time(), 0.0))
+        contained = await asyncio.wait_for(draining, max(deadline - loop.time(), 0.0))
+        answered = True
+        return ChildOutcome(
+            returncode=child.returncode or 0, stdout=b"".join(chunks), stderr=contained
+        )
     except TimeoutError as exc:
-        await _end(child, draining)
         raise ReviewIngestRefusedError(
             RefusalGrade.TOOL_FAILED,
             f"The GitHub CLI did not answer within the recorded "
             f"{timeout:g}-second request timeout (SEC-19), so it was stopped.",
         ) from exc
-
-    contained = await draining
-    return ChildOutcome(returncode=child.returncode or 0, stdout=b"".join(chunks), stderr=contained)
+    finally:
+        # Every exit but the answered one: the byte cap, the deadline, a
+        # cancellation from the caller's own `wait_for`, and any exception this
+        # function does not name. A cap refusal used to clean up on its own line
+        # and the other three did not, which is how a cancelled call left both a
+        # live child and a pending drain task behind.
+        if not answered:
+            await _end(child, draining)
 
 
 async def _start(
@@ -229,9 +262,16 @@ async def _start(
             env=dict(env),
         )
     except OSError as exc:
+        # `strerror` and nothing else. The fallback used to be `exc` itself, and
+        # `str()` of an `OSError` appends its `filename` -- which here is the
+        # absolute path of the operator's `gh`, inside their home directory, in a
+        # published envelope. An `OSError` raised with a single argument carries
+        # no `strerror` at all, so that branch was reachable rather than
+        # theoretical; the class name locates the failure without a path.
         raise ReviewIngestRefusedError(
             RefusalGrade.TOOL_FAILED,
-            f"Review ingestion could not start the GitHub CLI: {exc.strerror or exc}.",
+            f"Review ingestion could not start the GitHub CLI: "
+            f"{exc.strerror or type(exc).__name__}.",
         ) from exc
 
     if child.stdout is None or child.stderr is None:  # pragma: no cover - PIPE is requested above
@@ -262,14 +302,47 @@ async def _drain_capped(stream: asyncio.StreamReader, cap: int) -> str:
 
 
 async def _end(child: asyncio.subprocess.Process, draining: asyncio.Task[str]) -> None:
-    """Kill ``child`` and stop draining it, so no refusal leaves a process behind."""
+    """Kill ``child`` and stop draining it, so no refusal leaves a process behind.
+
+    The two statements that actually release the resources -- cancelling the
+    drain task and signalling the child -- are synchronous and run before any
+    ``await`` here, because this is reached from a ``finally`` that a cancelled
+    caller may re-enter: an ``await`` in that state raises immediately, and
+    anything sequenced after one would not run.
+    """
     draining.cancel()
-    if child.returncode is None:
-        child.kill()
-    with contextlib.suppress(TimeoutError, ProcessLookupError):
+    # The child can exit between the `returncode` read and the signal, and a
+    # `ProcessLookupError` raised while unwinding a refusal would replace the
+    # graded envelope with the traceback clause 9 forbids.
+    with contextlib.suppress(ProcessLookupError):
+        if child.returncode is None:
+            child.kill()
+    with contextlib.suppress(TimeoutError, asyncio.CancelledError):
         await asyncio.wait_for(child.wait(), _REAP_SECONDS)
     with contextlib.suppress(asyncio.CancelledError):
         await draining
+    _release(child)
+
+
+def _release(child: asyncio.subprocess.Process) -> None:
+    """Close the child's transport, so an abandoned pipe is not left open.
+
+    ``asyncio`` finishes a subprocess transport once the process has exited *and*
+    every one of its pipes has disconnected. A descendant that inherited fd 2
+    keeps the stderr pipe open past both, so after a deadline refusal the
+    transport is still open when the collector reaches it: a held file descriptor
+    per abandoned child, reported as the ``ResourceWarning`` this suite raises as
+    an error.
+
+    ``Process`` publishes no way to say this, so the transport is reached by name
+    through a ``Protocol`` -- the edge this project admits an untyped value at --
+    and with ``getattr``'s default rather than an attribute access, so a runtime
+    that renames it leaves the transport to the collector instead of raising
+    ``AttributeError`` out of a cleanup path.
+    """
+    transport: _Closable | None = getattr(child, "_transport", None)
+    if transport is not None:
+        transport.close()
 
 
 @final

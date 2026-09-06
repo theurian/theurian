@@ -42,12 +42,18 @@ found, and a green run there says nothing about a desktop that does. The
 constant therefore gains **no** platform member, because adding one on reasoning
 rather than measurement is exactly the admission this table refuses.
 
-**What that costs, named:** on a Linux desktop whose ``gh`` credential lives in
-the Secret Service, the spawned child may not find it and the run ends in the
+**What that costs, named, and conditionally because the platform is unmeasured:**
+on a Linux desktop whose ``gh`` credential lives in the Secret Service, the
+spawned child may not find it. *If* ``gh`` answers, the run ends in the
 ``TOOL_UNAUTHENTICATED`` refusal envelope -- a graded refusal naming
-``gh auth status``, not a wrong answer and not a silent one. The measurement is
-owed to whoever first runs this on such a machine; the rule is unchanged either
-way, because the equality test pins whatever the constant records.
+``gh auth status``. *If* the credential lookup instead blocks -- a session bus
+that is unreachable rather than absent is a shape nobody here has run -- the
+deadline in ``gh_cli.run_bounded`` bounds every wait between the spawn and the
+answer, so the run ends in the ``TOOL_FAILED`` timeout envelope. Which of the two
+is unmeasured; that it is one of them is not, and neither is a wrong answer, a
+silent one, or an unbounded wait. The measurement is owed to whoever first runs
+this on such a machine; the rule is unchanged either way, because the equality
+test pins whatever the constant records.
 
 **An empty string is a present key, not an absent one.** ``gh`` treats an empty
 config-locating variable as absent and falls through to the next in its

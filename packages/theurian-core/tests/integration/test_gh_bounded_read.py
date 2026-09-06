@@ -53,6 +53,21 @@ _OVERRUN_THEN_SLEEP = (
 
 _SLEEP_WITHOUT_WRITING = "import time\ntime.sleep({sleep})\n"
 
+#: A child that answers on stdout, exits, and leaves a **descendant** holding
+#: fd 2. The grandchild's own stdout and stdin go to ``/dev/null``, so the stdout
+#: pipe reaches EOF and the child is reaped normally: the only thing still open
+#: is the stderr pipe, which is the one stream nothing used to bound.
+_ANSWER_THEN_LEAVE_STDERR_HELD = (
+    "import os, subprocess, sys\n"
+    "devnull = os.open(os.devnull, os.O_WRONLY)\n"
+    "subprocess.Popen(\n"
+    "    [sys.executable, '-c', 'import time; time.sleep({sleep})'],\n"
+    "    stdout=devnull, stdin=devnull,\n"
+    ")\n"
+    "sys.stdout.write('done')\n"
+    "sys.stdout.flush()\n"
+)
+
 
 @pytest.mark.asyncio
 async def test_a_child_that_overruns_the_cap_is_refused_without_waiting_for_it_to_finish() -> None:
@@ -125,12 +140,78 @@ async def test_a_child_that_never_answers_is_stopped_at_the_recorded_timeout() -
 
 
 @pytest.mark.asyncio
+async def test_a_descendant_that_holds_stderr_open_is_refused_at_the_deadline() -> None:
+    """The deadline covers the stderr drain, not only the reads and the exit.
+
+    The child writes its answer, exits, and leaves a grandchild holding fd 2. So
+    stdout reaches EOF and ``child.wait()`` returns at once: every wait the
+    deadline used to cover is already satisfied, and the only thing still
+    outstanding is the drain. Awaited unbounded, this call returns *twenty
+    seconds later with a success*; bounded, it refuses at the deadline.
+
+    The outer ``wait_for`` is what makes the RED reading a failure rather than a
+    hang -- an implementation that does not bound the drain fails here at
+    ``_BOUNDED_WAIT_SECONDS`` with a ``TimeoutError``, which is not the
+    ``ReviewIngestRefusedError`` this expects.
+    """
+    started = time.monotonic()
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await asyncio.wait_for(
+            run_bounded(
+                [
+                    sys.executable,
+                    "-c",
+                    _ANSWER_THEN_LEAVE_STDERR_HELD.format(sleep=_CHILD_SLEEP_SECONDS),
+                ],
+                env=_ENV,
+                timeout=1.0,
+            ),
+            timeout=_BOUNDED_WAIT_SECONDS,
+        )
+    elapsed = time.monotonic() - started
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert "timeout" in str(raised.value)
+    assert elapsed < _BOUNDED_WAIT_SECONDS
+
+
+@pytest.mark.asyncio
 async def test_a_binary_that_cannot_be_started_is_a_graded_refusal() -> None:
     """An ``OSError`` from the spawn is an envelope with a remedy, not a traceback."""
     with pytest.raises(ReviewIngestRefusedError) as raised:
         await run_bounded(["/nonexistent/gh"], env=_ENV, timeout=1.0)
 
     assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert raised.value.remedy
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_failure_with_no_strerror_does_not_publish_the_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``str()`` of an ``OSError`` appends its ``filename``; the envelope may not.
+
+    Every ``OSError`` the operating system raises for a missing or unexecutable
+    binary carries a ``strerror``, so the fallback is unreachable through a real
+    spawn and this drives it through the seam instead. An ``OSError`` built with
+    one argument has ``strerror is None``, which is the branch that used to
+    interpolate the exception itself -- and the exception's text is the absolute
+    path of the operator's ``gh``, inside their home directory.
+    """
+    absolute = "/Users/someone/Library/Application Support/tools/gh"
+
+    async def refuse(*args: object, **keywords: object) -> None:
+        raise OSError(f"cannot execute {absolute}")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", refuse)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await run_bounded([absolute], env=_ENV, timeout=1.0)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert absolute not in str(raised.value)
+    assert absolute not in raised.value.envelope.detail
     assert raised.value.remedy
 
 
