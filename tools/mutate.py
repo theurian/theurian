@@ -310,6 +310,16 @@ _DEFAULT_TIMEOUT_SECONDS: Final = 1800
 #: line through two points and nothing more, which is what the headroom below
 #: is for; re-measure and move these two numbers rather than reasoning about
 #: them.
+#:
+#: **The two numbers are fully-contended walks, and a lighter batch measures
+#: much faster** -- so a re-measurement that comes in low has not falsified
+#: them. Same machine, 2026-09-06, at 5571 tests: a solo ``pytest -q`` outside
+#: the harness took 542.9 s, and a two-job batch under ``--workers 2`` -- one
+#: control plus one mutation, where the mutation was killed at 271.5 s and left
+#: the control walking alone for the rest -- took 750.4 s. Neither is the case
+#: the timeout has to survive: that is the batch whose workers are *all* still
+#: walking full suites, which is what the two anchors above measured and what
+#: the default has to clear.
 _WALK_BASE_SECONDS: Final = 920
 _WALK_PER_WORKER_SECONDS: Final = 240
 
