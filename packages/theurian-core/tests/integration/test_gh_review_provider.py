@@ -25,6 +25,7 @@ would need an interpreter that literal does not promise.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 from collections.abc import Iterator
 from typing import Any, Final
@@ -69,6 +70,7 @@ n=$((n + 1))
 printf '%s' "$n" > "{state}/count"
 printf '%s\\n' "$@" > "{state}/argv-$n"
 /usr/bin/env > "{state}/env-$n"
+cat > "{state}/stdin-$n"
 
 case "$1" in
   --version) printf 'gh version {version} (2026-01-21)\\n'; exit 0 ;;
@@ -110,6 +112,10 @@ class FakeGh:
         """One invocation's environment, as the child itself reported it."""
         text = (self.directory / f"env-{index}").read_text(encoding="utf-8")
         return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+    def stdin_of(self, index: int) -> str:
+        """Everything one invocation could read from fd 0 before it saw EOF."""
+        return (self.directory / f"stdin-{index}").read_text(encoding="utf-8")
 
     def answer(self, kind: str, page: int, payload: dict[str, Any]) -> None:
         """Give the child a canned response for one query kind and page."""
@@ -357,6 +363,43 @@ async def test_the_child_receives_the_constructed_environment_and_nothing_else(
     assert "GH_HOST" not in seen
     assert "GH_TOKEN" not in seen
     assert "HTTPS_PROXY" not in seen
+
+
+@pytest.mark.asyncio
+async def test_the_child_cannot_read_the_parents_stdin(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """Clause 4 closes the environment; this closes the file descriptor beside it.
+
+    ``stdin`` left unset is *inherited*, so a spawned ``gh`` reads whatever the
+    calling process's fd 0 happens to be. **The parent's fd 0 is redirected here
+    on purpose**: under ``pytest``'s default capture it is already
+    ``/dev/null``, so a test that merely observed an empty read would pass
+    against an inheriting spawn and could never fail. This one plants a marker
+    on a pipe and puts the pipe on fd 0 first.
+
+    The pipe's write end is closed before the spawn, so the stand-in child sees
+    EOF either way and a regression is an assertion failure rather than a hang.
+    """
+    read_end, write_end = os.pipe()
+    os.write(write_end, b"SECRET-ON-THE-PARENTS-STDIN")
+    os.close(write_end)
+    saved = os.dup(0)
+    fake_gh.answer("prs", 1, _pull_requests())
+    provider = _provider(tmp_path, fake_gh)
+    try:
+        os.dup2(read_end, 0)
+        os.close(read_end)
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+    finally:
+        os.dup2(saved, 0)
+        os.close(saved)
+
+    assert fake_gh.stdin_of(1) == "", (
+        "the first spawned child read the parent's own stdin. Nothing but the "
+        "adapter decides what a child may reach, and that includes its file "
+        "descriptors."
+    )
 
 
 @pytest.mark.asyncio

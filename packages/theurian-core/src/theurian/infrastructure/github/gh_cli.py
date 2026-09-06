@@ -260,8 +260,16 @@ async def _start(
         # literal GraphQL document, and `name=value` variable bindings. No
         # element is derived by formatting a repository name into a path, and no
         # shell is involved -- `create_subprocess_shell` appears nowhere here.
+        # `stdin` is closed for the same reason the environment is (clause 4):
+        # what the child may reach is this adapter's decision, not the calling
+        # process's. Left unset it is *inherited*, and a spawned `gh` could then
+        # read whatever the parent's fd 0 happens to be -- a terminal, a pipe
+        # carrying somebody else's data, a file. Prompt-blocking rested on
+        # `GH_PROMPT_DISABLED` alone until this; now a prompt has nothing to read
+        # from either.
         child = await asyncio.create_subprocess_exec(
             *args,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=dict(env),
