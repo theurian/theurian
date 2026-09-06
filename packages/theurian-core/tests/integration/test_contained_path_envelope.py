@@ -157,7 +157,7 @@ import json
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -346,12 +346,18 @@ class Plant:
     refuses: frozenset[str] = field(default_factory=frozenset)
     #: Swept commands that refuse over the directory plant, where one is distinct.
     directory_refuses: frozenset[str] = field(default_factory=frozenset)
-    #: The exit code a *directory* plant's refusal must report, where this file
-    #: pins one. ``None`` leaves it unpinned, which is the default and the right
-    #: answer for the plants whose refusal belongs to a contract this file may not
-    #: regrade -- see
+    #: The exit code a *directory* plant's refusal must report, per command,
+    #: where this file pins one. An absent command is unpinned, which is the
+    #: default and the right answer for the plants whose refusal belongs to a
+    #: contract this file may not regrade -- see
     #: :func:`test_a_directory_where_a_file_belongs_is_also_answered_as_a_document`.
-    directory_refusal_grade: int | None = None
+    #:
+    #: Per command and not per plant (#586): one path can refuse through two
+    #: commands' own contracts, which need not agree. ``index build`` grades a
+    #: directory at the index pointer as a state error and ``index gc`` grades an
+    #: unreadable pointer as an ordinary refusal, and a single field per plant
+    #: could only have pinned one of them while silently claiming both.
+    directory_refusal_grades: Mapping[str, int] = field(default_factory=dict)
     #: Empty exactly when this plant's refusals are ``_contained``'s own, which is
     #: what makes it a member of the class #525 closes. Non-empty carries the
     #: measured reason it is not.
@@ -494,14 +500,27 @@ PLANTS: Final = (
         refuses=frozenset(
             {"index build", "index gc", "index status", "migrate apply", "project status"}
         ),
-        directory_refuses=frozenset({"index build"}),
-        # The one directory refusal this file grades. It is not a "nothing was
-        # published" outcome and not a containment failure either: the corpus was
+        # `index gc` joined `index build` here in #586. The pointer read probed
+        # `is_file()`, which answers `False` for a directory exactly as it does
+        # for the named pipe that issue is about, so a directory planted here was
+        # reported as *no pointer at all* -- and `index gc`, whose whole job is
+        # deciding which builds the pointer still names, then swept against an
+        # answer it had no business trusting. `exists()` plus a descriptor read
+        # makes it `unreadable`, which is what the pointer's two-failure contract
+        # says about a file that is there and cannot be interpreted.
+        directory_refuses=frozenset({"index build", "index gc"}),
+        # The directory refusals this file grades. Neither is a "nothing was
+        # published" outcome and neither is a containment failure: the corpus was
         # read, the index was built and renamed into place, and the atomic pointer
-        # swap is what the directory refused. `index build` chose
-        # `EXIT_STATE_ERROR` for it, and until this pin the code was the only
-        # record of that choice.
-        directory_refusal_grade=EXIT_STATE_ERROR,
+        # swap is what the directory refused. Until this pin each code was
+        # recorded nowhere but its own `_fail` call.
+        #
+        # They differ, and the difference is each command's own contract rather
+        # than a drift: `index build` reports a state error because the artefact
+        # stopped a publish, while `index gc` answers an unreadable pointer with
+        # its ordinary refusal (`index_commands.py`, `if pointer.unreadable`) --
+        # it published nothing and nothing is damaged.
+        directory_refusal_grades={"index build": EXIT_STATE_ERROR, "index gc": 1},
     ),
     Plant(
         helper="index_secret_scan",
@@ -1200,17 +1219,18 @@ def test_a_pinned_directory_refusal_reports_the_grade_the_command_chose(
     asserts the envelope and deliberately not the code, because the directory
     sweep spans outcomes whose grading is not this file's: ``index build``
     answering "nothing was published" over a directory at the database path is
-    its own contract. That reasoning covers the plants left at ``None`` and does
+    its own contract. That reasoning covers the plants that pin nothing and does
     **not** cover this one. A directory at ``.theurian/state/active-index.json``
-    refuses a swept command through a handler this branch added, which chose
-    ``EXIT_STATE_ERROR`` -- and until this test, the choice was recorded nowhere
-    but the ``_fail`` call itself, so moving it would have failed nothing.
+    refuses two swept commands, each through a handler that chose its own code --
+    and until this test, each choice was recorded nowhere but its own ``_fail``
+    call, so moving either would have failed nothing.
 
     Not a containment refusal: nothing escapes the tree, and
     :func:`test_every_containment_refusal_carries_the_state_error_exit_code`
-    excludes the directory sweep by construction. The two arrive at the same code
-    for different reasons, which is why they are pinned in different tests rather
-    than folded into one quantifier over "everything that refuses".
+    excludes the directory sweep by construction. ``index build`` arrives at the
+    containment refusal's code for a different reason, which is why the two are
+    pinned in different tests rather than folded into one quantifier over
+    "everything that refuses".
 
     ``write_lock``'s directory grade is deliberately not pinned here as well.
     ``test_migrate_apply_lock_confinement.py`` already asserts it over its own
@@ -1219,10 +1239,10 @@ def test_a_pinned_directory_refusal_reports_the_grade_the_command_chose(
     one fact go RED in whichever one its author remembered.
     """
     pinned = {
-        (plant.helper, command): plant.directory_refusal_grade
+        (plant.helper, command): grade
         for plant in SWEPT_PLANTS
-        if plant.has_directory_shape and plant.directory_refusal_grade is not None
-        for command in plant.directory_refuses
+        if plant.has_directory_shape
+        for command, grade in plant.directory_refusal_grades.items()
     }
 
     assert pinned, "no directory refusal is pinned, so this test asserts nothing"
