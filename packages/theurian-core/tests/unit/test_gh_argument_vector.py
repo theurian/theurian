@@ -216,6 +216,42 @@ def test_a_second_page_changes_only_the_cursor() -> None:
     )
 
 
+def test_two_mappings_with_the_same_variables_produce_byte_identical_vectors() -> None:
+    """``graphql_vector``'s recorded property, driven against the input that can break it.
+
+    "Two runs over the same input produce byte-identical vectors" is what the
+    docstring promises, and a recorded argv compared against one built here rests
+    on it. Building the vector twice from the *same* mapping cannot demonstrate
+    it: a ``dict`` iterates in insertion order, so an implementation that emitted
+    variables in whatever order it received them would agree with itself and
+    pass.
+
+    What separates them is two mappings carrying the same pairs in **different
+    insertion orders** -- which is the ordinary case, since the provider builds
+    ``variables`` a key at a time and adds ``after`` only on a later page.
+
+    The mapping is checked to actually be in a different order first. Python
+    preserves insertion order, but a fixture that quietly ended up identical
+    would make this test agree with itself, which is the failure it is about.
+    """
+    forward: dict[str, str | int] = {
+        "owner": "acme",
+        "name": "order-service",
+        "number": 12,
+        "first": 50,
+        "after": "CURSOR",
+    }
+    backward: dict[str, str | int] = dict(reversed(list(forward.items())))
+
+    assert list(backward) != list(forward), "both fixtures iterate the same way"
+    assert _vector(queries.REVIEW_THREADS, forward) == _vector(queries.REVIEW_THREADS, backward), (
+        "the same five variables in two insertion orders produced two different "
+        "vectors. A recorded argv can then only be compared against one built "
+        "from a mapping assembled the same way, and two runs of the same request "
+        "are two different spawns."
+    )
+
+
 def test_the_first_vector_element_is_an_absolute_path() -> None:
     """Clause 5: an unresolved name would let the child's PATH choose the executable.
 
