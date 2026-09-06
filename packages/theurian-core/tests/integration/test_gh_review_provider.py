@@ -180,8 +180,14 @@ def _provider(
     )
 
 
+#: "the response does not carry this field at all", as distinct from carrying it
+#: set to ``null``. Both are answers GitHub can give and they are different
+#: documents, so the fixture has to be able to build each.
+_ABSENT: Final = object()
+
+
 def _pull_requests(
-    *, private: bool = False, resolved_name: str = REPOSITORY, **overrides: Any
+    *, private: object = False, resolved_name: str = REPOSITORY, **overrides: Any
 ) -> dict[str, Any]:
     node = {
         "number": 12,
@@ -198,18 +204,16 @@ def _pull_requests(
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
     }
     node.update(overrides)
-    return {
-        "data": {
-            "repository": {
-                "nameWithOwner": resolved_name,
-                "isPrivate": private,
-                "pullRequests": {
-                    "pageInfo": {"hasNextPage": False, "endCursor": None},
-                    "nodes": [node],
-                },
-            }
-        }
+    repository: dict[str, Any] = {
+        "nameWithOwner": resolved_name,
+        "pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": [node],
+        },
     }
+    if private is not _ABSENT:
+        repository["isPrivate"] = private
+    return {"data": {"repository": repository}}
 
 
 def _threads(*, has_more_comments: bool = False, resolved: bool = True) -> dict[str, Any]:
@@ -459,11 +463,76 @@ async def test_a_private_repository_is_refused_at_ingestion(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "visibility",
+    (_ABSENT, None, "false", 0),
+    ids=("the field absent", "the field null", "the string false", "the integer zero"),
+)
+async def test_a_repository_that_does_not_resolve_as_public_is_refused(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, visibility: object
+) -> None:
+    """AC-2's other half: the check is "definitely public", not "not definitely private".
+
+    ``repo.get("isPrivate") is not False`` reads as a fussy spelling of "is
+    ``True``" until the response is not the one GitHub sends. It is not: an
+    answer with the field **absent**, one with it ``null``, and one carrying a
+    truthy-or-falsy value of another type are all documents this adapter can
+    receive, and none of them says the repository is public. Under "is ``True``"
+    every one of them is ingested.
+
+    Four shapes rather than one because the discriminator is the *type*: the
+    string ``"false"`` and the integer ``0`` both mean "not the boolean
+    ``False``", and a check that coerced would let a repository through on a
+    field it never understood. The two the round found unpinned are the first
+    two -- absent and null -- which is what a partial GraphQL response looks
+    like when a field errored.
+    """
+    fake_gh.answer("prs", 1, _pull_requests(private=visibility))
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.REPOSITORY_IS_PRIVATE
+    assert raised.value.remedy
+
+
+@pytest.mark.asyncio
 async def test_a_rename_redirect_is_refused_rather_than_followed(
     tmp_path: pathlib.Path, fake_gh: FakeGh
 ) -> None:
     """GitHub redirects a renamed repository, so an allowlisted name can resolve elsewhere."""
     fake_gh.answer("prs", 1, _pull_requests(resolved_name="acme/billing-service"))
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.REPOSITORY_RESOLVED_ELSEWHERE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resolved",
+    ("acme/order", "cme/order-servic"),
+    ids=("a prefix of the entry", "a substring at neither end"),
+)
+async def test_a_resolved_name_contained_in_the_entry_is_still_a_different_repository(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, resolved: str
+) -> None:
+    """The rename check is an equality, and only an equality demonstrates that.
+
+    ``acme/billing-service`` is not a substring of ``acme/order-service``, so the
+    test above passes just as well against a check that asks whether the resolved
+    name is *contained in* the entry -- a one-character edit, and a real one:
+    ``!=`` and ``not in`` differ by two characters on that line. ``acme/order``
+    is a repository somebody else may own, and under a containment check GitHub
+    answering for it would be accepted as an answer about ``acme/order-service``.
+
+    Both cases are proper substrings, one anchored at the start and one at
+    neither end, so the pin does not rest on where the shorter name sits.
+    """
+    fake_gh.answer("prs", 1, _pull_requests(resolved_name=resolved))
     provider = _provider(tmp_path, fake_gh)
 
     with pytest.raises(ReviewIngestRefusedError) as raised:
