@@ -196,24 +196,33 @@ _DEFAULT_CREATE_MODE: Final = 0o644
 _SECRET_READ_MODE: Final = 0o600
 
 
-def _opened_regular_file(path: Path, flags: int, mode: int) -> int:
-    """``os.open`` with ``flags``, refusing the descriptor if it is not a regular file.
+def _refuse_an_irregular_descriptor(descriptor: int, path: Path) -> None:
+    """Close ``descriptor`` and re-raise if it is not a regular file.
 
     The shared tail of both openers below, so the ``fstat`` is not a line each of
-    them could be edited out of separately. Returns the descriptor; the caller
-    owns closing it.
+    them could be edited out of separately, and the close-on-refusal is written
+    once rather than twice.
 
     ``except BaseException``, not ``Exception``: an interrupt landing between the
     open and the check leaks the descriptor exactly as an error would, and this
-    function is the only place that can still close it.
+    is the only place that can still close it.
+
+    **It takes the descriptor and not the open, which is deliberate** (#586 round
+    two). An earlier cut of this helper owned the ``os.open`` as well, with
+    ``flags`` and ``mode`` as parameters -- and that hid the creation mode from
+    static analysis: CodeQL raised ``py/overly-permissive-file`` at the shared
+    line, because through a parameter it can no longer see *which* mode reaches
+    it. The mode had not changed; only its visibility had. It is worth keeping
+    visible, because CodeQL reading the literal is what caught the ``0o666`` that
+    :data:`_DEFAULT_CREATE_MODE` records tightening. So each opener keeps its own
+    ``os.open`` with its own constant, and shares the part that has no constant
+    in it.
     """
-    descriptor = os.open(path, flags, mode)
     try:
         assert_a_regular_file(descriptor, path)
     except BaseException:
         os.close(descriptor)
         raise
-    return descriptor
 
 
 def open_without_following_a_link(path: Path, *, mode: int = _DEFAULT_CREATE_MODE) -> int:
@@ -240,7 +249,9 @@ def open_without_following_a_link(path: Path, *, mode: int = _DEFAULT_CREATE_MOD
             which ``O_WRONLY`` refuses before the ``fstat`` can be reached; every
             other errno means what it always meant.
     """
-    return _opened_regular_file(path, WRITE_FLAGS, mode)
+    descriptor = os.open(path, WRITE_FLAGS, mode)
+    _refuse_an_irregular_descriptor(descriptor, path)
+    return descriptor
 
 
 def open_for_reading_without_following_a_link(path: Path) -> int:
@@ -273,7 +284,9 @@ def open_for_reading_without_following_a_link(path: Path) -> int:
     # takes an omitted mode for the mode this call would create with. Spelling the
     # restrictive one costs nothing and says which answer is intended if a future
     # edit ever adds the flag that would use it.
-    return _opened_regular_file(path, READ_FLAGS, _SECRET_READ_MODE)
+    descriptor = os.open(path, READ_FLAGS, _SECRET_READ_MODE)
+    _refuse_an_irregular_descriptor(descriptor, path)
+    return descriptor
 
 
 def write_text_without_following_a_link(
