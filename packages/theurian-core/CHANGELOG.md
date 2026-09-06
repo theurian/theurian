@@ -14,6 +14,19 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed
 
+- **`theurian doctor` no longer blames your migrations for a broken
+  installation** ([#529](https://github.com/theurian/theurian/issues/529), O-3,
+  SEC-6). A build that cannot locate or read the JSON Schemas it publishes
+  refuses the same load a malformed migration does, and `migrations-valid`
+  published "The migrations in `<dir>` do not validate." with the action "Fix the
+  file it names" for both. Under `doctor --report` that was the whole message —
+  the shareable payload carries a bare exception type by design, so the report
+  someone pastes into an issue said `ProjectError.` and nothing that could
+  correct it. The step now names the installation and gives the command that
+  repairs it, in the two fields a report carries verbatim. The refusal set is
+  unchanged: `doctor` and `theurian migrate validate` still refuse on exactly the
+  same errors, so the two cannot disagree about a directory
+  ([#91](https://github.com/theurian/theurian/issues/91)).
 - **An artefact where Theurian opens a file no longer blocks the command that
   meets it, and the refusal names what is there**
   ([#526](https://github.com/theurian/theurian/issues/526),
