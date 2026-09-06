@@ -26,7 +26,12 @@ from typing import Final
 
 import pytest
 
-from theurian.domain.review_ingest import RefusalGrade, ReviewIngestRefusedError
+from theurian.domain.review_ingest import (
+    MAX_REFUSAL_DETAIL_CHARS,
+    RefusalGrade,
+    ReviewIngestRefusedError,
+)
+from theurian.infrastructure.github import limits
 from theurian.infrastructure.github.gh_cli import run_bounded
 
 pytestmark = pytest.mark.integration
@@ -44,6 +49,20 @@ _CHILD_SLEEP_SECONDS: Final = 20.0
 #: (see the module docstring): ``PATH`` is the running interpreter's so the
 #: child starts at all, and nothing else is passed.
 _ENV: Final[dict[str, str]] = {"PATH": os.environ.get("PATH", "")}
+
+#: How much of a child's stderr the drain keeps in memory, and how much of it an
+#: envelope may publish -- both **written out here and never imported**.
+#:
+#: The pair is what makes the memory bound observable at all, so a test that read
+#: either constant would move with it and pass whatever the relationship became.
+RECORDED_STDERR_BYTES: Final = 4_096
+RECORDED_DETAIL_CHARS: Final = 2_000
+
+#: One four-byte UTF-8 character, U+1F600. The two bounds above are counted in
+#: different units -- bytes and characters -- and over ASCII the character bound
+#: is always the tighter of the two, which is what hides a drain that keeps
+#: everything. At four bytes each the byte cap decides first.
+_WIDE_CHARACTER: Final = b"\xf0\x9f\x98\x80"
 
 _OVERRUN_THEN_SLEEP = (
     "import sys, time\n"
@@ -65,6 +84,16 @@ _ANNOUNCE_PID_THEN_OVERRUN_THEN_SLEEP = (
 
 
 _SLEEP_WITHOUT_WRITING = "import time\ntime.sleep({sleep})\n"
+
+#: A child whose stderr is ``count`` copies of a multi-byte character, written as
+#: raw bytes so the count on the wire is exact whatever the child's own encoding
+#: settings are.
+_WIDE_STDERR = (
+    "import sys\n"
+    "sys.stderr.buffer.write({unit!r} * {count})\n"
+    "sys.stderr.buffer.flush()\n"
+    "sys.stdout.write('done')\n"
+)
 
 #: A child that answers on stdout, exits, and leaves a **descendant** holding
 #: fd 2. The grandchild's own stdout and stdin go to ``/dev/null``, so the stdout
@@ -306,3 +335,71 @@ async def test_a_childs_stderr_is_kept_bounded_while_still_being_drained() -> No
     assert outcome.stdout == b"done"
     assert outcome.stderr.startswith("E")
     assert len(outcome.stderr) < 200000
+
+
+def test_the_two_stderr_bounds_this_file_drives_are_the_ones_the_code_enforces() -> None:
+    """The restated numbers and the enforced ones are two things, so they are compared.
+
+    Both are needed by the test below, and it is their *relationship* that makes
+    it able to fail at all: the drain's byte cap has to be small enough that the
+    envelope's character bound does not reach first. Restating them here without
+    checking them would drive a boundary neither constant holds any more.
+    """
+    assert limits.MAX_CHILD_STDERR_BYTES == RECORDED_STDERR_BYTES
+    assert MAX_REFUSAL_DETAIL_CHARS == RECORDED_DETAIL_CHARS
+
+
+@pytest.mark.asyncio
+async def test_the_stderr_the_drain_keeps_is_bounded_in_bytes_not_only_when_published() -> None:
+    """The drain's cap is a **memory** bound, and the envelope's slice hides it in ASCII.
+
+    ``_drain_capped`` keeps a prefix of at most
+    :data:`~theurian.infrastructure.github.limits.MAX_CHILD_STDERR_BYTES` while
+    reading the rest to EOF; what it returns is then sliced again to
+    :data:`~theurian.domain.review_ingest.MAX_REFUSAL_DETAIL_CHARS`. Over ASCII
+    the second slice is the tighter of the two, so a drain that kept **every**
+    byte a child produced returns exactly the same string -- the process holds a
+    megabyte where it should hold four kilobytes, and no published value moves.
+    That is why the surviving mutation survived: the observable was masked, not
+    absent.
+
+    A four-byte character unmasks it, because the two bounds are counted in
+    different units. 4,096 bytes is 1,024 of these characters, which is under the
+    2,000-character slice -- so the byte cap is the bound that decides, and the
+    length of the published detail is what it decided. Keep every byte instead
+    and the same child produces the full 2,000 characters.
+
+    This is the **memory** half; ``test_a_childs_stderr_is_kept_bounded_while_still_being_drained``
+    above is the *drain-to-EOF* half, where the child writes past a pipe buffer
+    and would block if the read stopped at the cap.
+    """
+    kept_characters = RECORDED_STDERR_BYTES // len(_WIDE_CHARACTER)
+    assert len(_WIDE_CHARACTER) == 4, "the fixture is not a four-byte character"
+    assert kept_characters < RECORDED_DETAIL_CHARS, (
+        f"{RECORDED_STDERR_BYTES} bytes of this character is {kept_characters} "
+        f"characters, which the {RECORDED_DETAIL_CHARS}-character envelope slice "
+        f"would cut first -- and then a capped drain and an uncapped one return "
+        f"the same string again. Widen the character or re-take the bounds."
+    )
+
+    outcome = await asyncio.wait_for(
+        run_bounded(
+            [
+                sys.executable,
+                "-c",
+                _WIDE_STDERR.format(unit=_WIDE_CHARACTER, count=RECORDED_DETAIL_CHARS * 2),
+            ],
+            env=_ENV,
+            timeout=_BOUNDED_WAIT_SECONDS * 2,
+        ),
+        timeout=_CHILD_SLEEP_SECONDS,
+    )
+
+    assert outcome.stdout == b"done"
+    assert outcome.stderr == _WIDE_CHARACTER.decode("utf-8") * kept_characters, (
+        f"the drain kept {len(outcome.stderr)} characters of the child's stderr and "
+        f"the byte cap allows {kept_characters}. A drain that keeps everything and "
+        f"lets the envelope's {RECORDED_DETAIL_CHARS}-character slice do the cutting "
+        f"publishes an identical string over ASCII while holding whatever the child "
+        f"produced -- the cap is a memory bound, and this is where it is observable."
+    )
