@@ -1064,11 +1064,16 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # 200,248-character refusal, defeating the bound `_publishable` exists
         # for. Per element rather than over the joined string, so one hostile id
         # cannot consume the whole budget and hide the rest.
-        known = ", ".join(_publishable(name) for name in sorted(entries)) or "none"
+        # The **field** form, not the quoted one: these are lists of ids a reader
+        # scans and retypes, so `Registered: demo` must not become `Registered:
+        # 'demo'` -- a first cut of this fix did exactly that and three surface
+        # tests caught it. Escaping and the length bound are what the sites need;
+        # the quotes belong to message text, not to a list of values.
+        known = ", ".join(_publishable_field(name) for name in sorted(entries)) or "none"
         skipped = (
             f"Present but unreadable, and served by nothing until removed with "
             f"`theurian project unregister <id>`: "
-            f"{', '.join(_publishable(name) for name in unreadable)}. "
+            f"{', '.join(_publishable_field(name) for name in unreadable)}. "
             if unreadable
             else ""
         )
