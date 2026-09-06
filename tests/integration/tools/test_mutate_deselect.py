@@ -33,6 +33,9 @@ pytestmark = pytest.mark.integration
 
 _CONTROL_LABEL = "__control__"
 
+#: Never created or opened -- ``_describe_prepared`` only prints paths.
+_A_TREE = Path("theurian-mutate-work") / "tree-0"
+
 
 def _install_recording_uv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Put a ``uv`` on ``PATH`` that logs its argv and reports a green suite."""
@@ -297,6 +300,41 @@ def test_a_control_that_really_went_red_is_still_reported_as_red(
     assert exit_code == 2
     assert "the unmutated control was RED" in printed
     assert "--deselect" in printed, "the remedy for a machine-broken test is named at the point"
+
+
+def test_a_prepared_tree_says_it_is_ignoring_the_deselections(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--prepare-tree`` accepts the flag and does not honour it, so it must say so.
+
+    Not honouring it is right: a prepared tree runs whatever selection its user
+    types, and pre-subtracting would change the answer to a question this
+    harness is not the one asking. Silence is what was wrong -- the flag was
+    accepted, and a reader had no way to learn it did nothing.
+
+    On stderr with the rest of the prepared-tree commentary, because stdout
+    carries the tree path alone and ``$(...)`` must capture nothing else.
+    """
+    ids = ("packages/x/tests/test_a.py::test_it",)
+
+    mutate._describe_prepared(_A_TREE, _A_TREE.parent, None, None, ids)
+
+    captured = capsys.readouterr()
+    assert "IGNORED" in captured.err
+    assert captured.out == "", "the tree path is stdout's only line in this mode"
+
+
+def test_a_prepared_tree_with_no_deselections_says_nothing_about_them(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The ordinary prepared tree's commentary must not gain a line.
+
+    The other direction: a note printed every time is furniture, and this one
+    only means something when the flag was actually passed and dropped.
+    """
+    mutate._describe_prepared(_A_TREE, _A_TREE.parent, None, None)
+
+    assert "IGNORED" not in capsys.readouterr().err
 
 
 def test_the_command_line_carries_repeated_deselections_into_the_options(
