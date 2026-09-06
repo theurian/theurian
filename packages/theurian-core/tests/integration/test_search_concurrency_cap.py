@@ -4,10 +4,12 @@ Sync MCP tools run through ``anyio.to_thread.run_sync``, and cancelling the
 *awaiting* task does not stop the worker thread it dispatched to -- so a
 transport-level wall-clock timeout cannot bound how much CPU or GIL time a
 flood of concurrent ``knowledge.search`` calls spends. T-6 answers this with
-admission control instead: a bounded semaphore around the answer block
+admission control instead: an ``AdmissionGate`` around the answer block
 (``hybrid_answer`` through ``substring_answer``), refusing the caller that
 arrives once the cap is already full rather than letting it queue behind
-however much work is already running.
+however much work is already running. That gate was a
+``threading.BoundedSemaphore`` until #586, which replaced it because a
+semaphore cannot return a permit whose holder never comes back.
 
 These were written as driving tests against a scratch implementation, before
 ``MAX_CONCURRENT_SEARCHES`` and ``ADMISSION_WAIT_SECONDS`` existed in
@@ -47,6 +49,7 @@ from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.daemon.server import DaemonConfig, build_app
 from theurian.mcp import tools
+from theurian.mcp.admission import MAX_PERMIT_HOLD_SECONDS, AdmissionGate
 from theurian.mcp.tools import (
     ADMISSION_WAIT_SECONDS,
     MAX_CONCURRENT_SEARCHES,
@@ -64,6 +67,12 @@ _runner = CliRunner()
 #: an unbounded poll -- so a leaked blocked worker fails the test instead of
 #: hanging the suite.
 _WAIT_BOUND_SECONDS: Final = 5.0
+
+#: The wait an acquisition takes when the answer is expected immediately --
+#: the gate is either empty or full, and neither case needs a wait at all.
+#: Non-zero so a scheduling hiccup on a loaded CI box does not read as a
+#: refusal, and short enough that four of them cost nothing.
+_A_MOMENT: Final = 0.2
 
 # -- A minimal registered project (self-contained migration fixtures) ------
 
@@ -456,17 +465,32 @@ def test_the_cap_pins_its_recorded_constants(registry: ProjectRegistry) -> None:
     """MEDIUM (adversarial M-1).
 
     T-6 records ``MAX_CONCURRENT_SEARCHES=4``, ``ADMISSION_WAIT_SECONDS=1.0``
-    and a *bounded* semaphore as recorded defaults, not tunings -- see those
-    constants' own docstrings in ``tools.py``. Every other test in this file
-    is parameterised by these symbols, which pins their *use* but not their
-    *value*: round 1 of the adversarial review changed the cap to 5 or 20,
-    swapped the bounded semaphore for a plain one, and emptied the refusal
-    string, and the whole suite stayed green under each (``cap-five``,
-    ``cap-twenty``, ``plain-semaphore``, ``refusal-empty``). This test pins
-    the literal recorded values directly instead of only through their use.
+    and a gate that cannot be inflated by an over-release, as recorded defaults
+    rather than tunings -- see those constants' own docstrings in ``tools.py``.
+    Every other test in this file is parameterised by these symbols, which pins
+    their *use* but not their *value*: round 1 of the adversarial review changed
+    the cap to 5 or 20, swapped the bounded semaphore for a plain one, and
+    emptied the refusal string, and the whole suite stayed green under each
+    (``cap-five``, ``cap-twenty``, ``plain-semaphore``, ``refusal-empty``). This
+    test pins the literal recorded values directly instead of only through their
+    use.
+
+    **The over-release property is pinned behaviourally now, and was pinned by
+    type until #586.** ``threading.BoundedSemaphore`` stood in the closure and
+    raised ``ValueError`` on an over-release, which is what
+    ``isinstance(..., BoundedSemaphore)`` used to assert here.
+    :class:`~theurian.mcp.admission.AdmissionGate` replaced it because a
+    semaphore counts and therefore cannot tell a *stale* release -- from a thread
+    whose permit the gate reclaimed after
+    :data:`~theurian.mcp.admission.MAX_PERMIT_HOLD_SECONDS` -- from an honest
+    one. It answers the same question more strongly: a repeated release is a
+    no-op, so the cap cannot inflate rather than raising when it would have.
+    Asserting the property is also what keeps this pin honest under a third
+    implementation.
     """
     assert MAX_CONCURRENT_SEARCHES == 4
     assert ADMISSION_WAIT_SECONDS == 1.0
+    assert MAX_PERMIT_HOLD_SECONDS == 30.0
 
     # The semaphore itself is a local inside `register`'s closure, not a
     # module attribute -- reached here through the registered tool function's
@@ -497,12 +521,27 @@ def test_the_cap_pins_its_recorded_constants(registry: ProjectRegistry) -> None:
     # narrows `__closure__` to `tuple[...] | None` and the subscript needs no
     # suppression. It was flagged as an unused ignore the moment the traversal
     # changed -- the gate catches this, a scoped run does not.
-    semaphore = fn.__closure__[index].cell_contents
-    assert isinstance(semaphore, threading.BoundedSemaphore), (
-        "an unbounded threading.Semaphore here would let a bug that "
-        "over-releases inflate the cap silently instead of raising -- see "
-        "the `finally: search_admission.release()` in knowledge_search, the "
-        "one call site that could ever over-release it (AC-4)"
+    gate = fn.__closure__[index].cell_contents
+    assert isinstance(gate, AdmissionGate), (
+        f"the object in the closure is a {type(gate).__name__}, so the property asserted "
+        f"below is being read off something other than the shipped gate"
+    )
+
+    # The property, driven rather than inferred from the type: a repeated
+    # release must not add a permit. A plain `threading.Semaphore` here would
+    # let a bug that over-releases inflate the cap silently -- see the
+    # `finally: search_admission.release(permit)` in `knowledge_search`, the one
+    # call site that could ever over-release it (AC-4).
+    probe = AdmissionGate(2)
+    first = probe.acquire(_A_MOMENT)
+    second = probe.acquire(_A_MOMENT)
+    assert first is not None and second is not None, "a fresh two-permit gate refused two callers"
+    assert probe.acquire(_A_MOMENT) is None, "a full gate admitted a third caller"
+    probe.release(first)
+    probe.release(first)
+    assert probe.acquire(_A_MOMENT) is not None, "the released permit was not handed back"
+    assert probe.acquire(_A_MOMENT) is None, (
+        "the double release inflated the cap: the gate handed out a third permit for two"
     )
 
     # The refusal content itself, read against hardcoded literal text rather
@@ -924,8 +963,9 @@ async def test_health_answers_promptly_while_the_cap_is_saturated(
     *current*, un-gated tool during this test's own construction.
 
     Scope: the bound pinned below (``elapsed < 0.5``) is for GIL-*releasing*
-    holders. ``BoundedSemaphore.acquire`` and the stub's ``threading.Event.wait``
-    both release the GIL while blocked, which is what keeps that bound tight.
+    holders. ``AdmissionGate.acquire`` (which waits on a
+    ``threading.Condition``) and the stub's ``threading.Event.wait`` both
+    release the GIL while blocked, which is what keeps that bound tight.
     A holder that instead holds the GIL continuously -- the real substring
     scan exercised by ``test_the_cap_gates_the_real_substring_scan_fallback``
     below is CPU-bound and does not release it -- is a different residual,

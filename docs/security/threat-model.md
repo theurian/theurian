@@ -1549,11 +1549,19 @@ landed, and a blocked open inside the daemon holds an admission permit
 | the daemon's instance lock takes the same flags and the same descriptor check | `daemon/instance.py::InstanceLock.acquire` |
 | the review-finding store's serving read refuses an artefact before it opens anything | `infrastructure/sqlite/findings_store.py::SqliteReviewFindingStore._read`, through `schema.py::irregular_shape_at` |
 | a `flock` refusal that is not contention is reported at once rather than polled to the 30 s deadline | `connection.py::WriteLock._acquire`, through `CONTENTION_ERRNOS` |
+| both derived-state pointers are read through a descriptor whose shape is checked, so a pipe at `active.json` cannot hold every project-resolving command | `security/regular_file.py::read_text_from_a_regular_file`, called by `application/project_service.py`'s two pointer readers ([#586](https://github.com/theurian/theurian/issues/586)) |
+| every index-database open in `index_store` passes one shape-refusing function, and `index_purge` asks the same of its source | `index_store.py::_connect_to` and `index_purge.py::_copy`, pinned structurally by `tests/unit/test_index_opener_claims.py` (#586) |
+| the token's openers cannot wait, and the descriptor they return is refused if it is not a regular file | `security/no_follow.py::WRITE_FLAGS`/`READ_FLAGS` (`O_NONBLOCK`) and `_opened_regular_file`'s `os.fstat` (#586) |
+| an admission permit whose holder never returns is reclaimed, so a parked open costs a bounded stall rather than the permit | `mcp/admission.py::AdmissionGate`, bounded by `MAX_PERMIT_HOLD_SECONDS` (#586) |
 
 The shape vocabulary is one function, `infrastructure/sqlite/schema.py::
-irregular_shape`, held equal to `security/paths.py::_unbounded_shape` by
+irregular_shape`, held equal to `security/paths.py::unbounded_shape` by
 `tests/unit/test_connection_faults.py::
-test_both_shape_namers_answer_alike_for_every_file_type`.
+test_both_shape_namers_answer_alike_for_every_file_type`. The `security/` side is
+also what the descriptor check asks — `security/regular_file.py::
+assert_a_regular_file` calls `unbounded_shape` on an `os.fstat`, so the pointer
+readers, the token openers and the lock openers all name a named pipe the same
+way.
 
 **Two residuals are accepted here rather than closed, both races and both
 availability-only.** Neither discloses anything: no content is read, and the
@@ -1564,15 +1572,25 @@ caller is refused rather than served.
    them and hand the open a named pipe. Measured on the fixing branch at 4.7
    swaps/second with four workers: one worker parked inside the open and was
    still parked 30 seconds after the artefact had been removed and a healthy
-   database restored — so the permit it holds is gone until the daemon restarts,
-   and the "Retry shortly" an exhausted gate publishes is false for that member.
-   It cannot be closed where the lock openers closed theirs: `sqlite3.connect`
-   takes a path and no descriptor, so there is no `fstat` to move the question
-   onto. Precondition: a **racing writer** with local write access to
-   `.theurian/state/` or the data directory, which is T-1's actor.
-   [#586](https://github.com/theurian/theurian/issues/586) bounds the
-   admission-permit path's open; when it lands this residual's reach drops from
-   a permanent wedge to a bounded stall.
+   database restored. It cannot be closed where the lock openers closed theirs:
+   `sqlite3.connect` takes a path and no descriptor, so there is no `fstat` to
+   move the question onto. Precondition: a **racing writer** with local write
+   access to `.theurian/state/` or the data directory, which is T-1's actor.
+
+   **The reach is a bounded stall and was a permanent wedge** ([#586](https://github.com/theurian/theurian/issues/586)).
+   The permit the parked worker holds is now reclaimed after
+   `mcp/admission.py::MAX_PERMIT_HOLD_SECONDS` (30 s), so the gate's capacity
+   returns without a restart and "Retry shortly" becomes true again. Measured
+   2026-09-06 with all four permits held by threads parked in a real
+   reader-less-FIFO `open()`: a caller arriving is refused after 1.004 s
+   (`ADMISSION_WAIT_SECONDS`), the first permit returns after **29.001 s**, and
+   all four are recovered; the `threading.BoundedSemaphore` that stood there
+   before was still refusing after 60.005 s of patience. Reproduced twice,
+   agreeing to within 6 ms on each figure. What is reclaimed is the
+   accounting token and nothing else — the parked thread is not cancelled, which
+   no Python API can do, so a reclaimed permit can briefly coexist with its
+   original holder. That holder consumes no CPU and no GIL, which is the resource
+   the cap protects.
 2. **`mkdir` and `open` are two calls at both lock paths.** `O_NOFOLLOW`
    constrains the final component only, so an actor who rewrites a *prefix*
    component between them defeats the ordering argument `WriteLock._open`

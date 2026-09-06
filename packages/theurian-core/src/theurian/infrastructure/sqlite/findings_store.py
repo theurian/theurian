@@ -828,15 +828,20 @@ class SqliteReviewFindingStore:
         the open a pipe. Measured on this branch at 4.7 swaps/second, four
         workers: one worker parked inside the open and never returned -- still
         parked 30 seconds after the artefact was removed and a healthy database
-        restored. That worker holds an admission permit for the life of the
-        process. The window cannot be closed here: ``sqlite3.connect`` takes a
+        restored. The window cannot be closed here: ``sqlite3.connect`` takes a
         path and no descriptor, so there is no ``fstat`` equivalent to move the
         question onto, as :meth:`WriteLock._open` could. It is recorded as a
         residual with its precondition -- a *racing writer* co-resident with the
-        daemon -- rather than claimed closed; the reach is availability of the
-        admission gate until restart, and no disclosure.
-        `#586 <https://github.com/theurian/theurian/issues/586>`_'s permit-path
-        bound, when it lands, reduces this residual's reach to a bounded stall.
+        daemon -- rather than claimed closed, and there is no disclosure either
+        way.
+
+        **The permit that worker holds comes back, and used to be gone for the
+        life of the process** (#586). ``mcp/admission.py::AdmissionGate`` reclaims
+        a hold past ``MAX_PERMIT_HOLD_SECONDS``, so the reach is a bounded stall
+        of the findings gate rather than its availability until restart. Measured
+        2026-09-06 with all four permits parked in a real reader-less-FIFO
+        ``open()``: the first came back after 29.001 s and all four recovered,
+        against a ``threading.BoundedSemaphore`` still refusing at 60.005 s.
 
         The refusal below is this module's own class, so the tool surface converts
         it to the standing store-unavailable refusal like every other read fault,

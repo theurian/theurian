@@ -811,16 +811,23 @@ class StateDatabaseNotAFileError(TheurianError):
       returns. One is bounded and self-healing; the other holds its thread until
       the process exits.
 
-    That thread is an admission permit in the daemon, so the reach is
-    availability of the admission gate until restart. **No disclosure**: nothing
+    That thread is an admission permit in the daemon. **No disclosure**: nothing
     is read, and the caller is refused rather than served. The window cannot be
     closed here -- ``sqlite3.connect`` takes a path and no descriptor, so there is
     no ``fstat`` to move the question onto the way :meth:`WriteLock._open` does --
     so it is recorded with its precondition rather than claimed closed: a
     **racing writer** co-resident with the daemon, holding local write access to
     ``.theurian/state/`` at the instant of the open.
-    `#586 <https://github.com/theurian/theurian/issues/586>`_'s permit-path bound,
-    when it lands, reduces this residual's reach to a bounded stall.
+
+    **The reach is a bounded stall of the admission gate, and was availability of
+    that gate until restart** (#586). The permit the parked thread holds is
+    reclaimed by ``mcp/admission.py::AdmissionGate`` once the hold passes
+    ``MAX_PERMIT_HOLD_SECONDS``. Measured 2026-09-06 with all four permits held by
+    threads parked in a real reader-less-FIFO ``open()``: the first permit came
+    back after 29.001 s and all four recovered, where the
+    ``threading.BoundedSemaphore`` that stood there before was still refusing
+    after 60.005 s. The parked thread itself is unchanged -- nothing cancels it,
+    and the second bullet above still describes it.
 
     Git carries no such mode (100644, 100755, 120000, 160000, 040000), so the
     artefact arrives from the machine and never from a clone.
