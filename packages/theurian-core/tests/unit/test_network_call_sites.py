@@ -293,9 +293,14 @@ NETWORK_CLIENT_SITES = {
 #:     literal ``graphql`` and no element is built by formatting a repository
 #:     name into a path, so there is no URL in the vector at all
 #:     (``test_gh_argument_vector.py``);
-#:   * **there is a timeout**, ``REQUEST_TIMEOUT_SECONDS``, together with a page
-#:     cap, a pull-request cap, a per-thread comment cap and a per-response byte
-#:     cap read incrementally (``test_gh_bounded_read.py``);
+#:   * **there is a timeout**, ``REQUEST_TIMEOUT_SECONDS``, and a per-response
+#:     byte cap read incrementally -- both driven under a bounded wait in
+#:     ``test_gh_bounded_read.py``, because for both the property is *when* the
+#:     stop happens and not only that it does. The four caps counted in named
+#:     constants -- the page cap, the pull-request cap, the per-thread comment
+#:     cap and the linked-issue cap -- are driven end to end against a stand-in
+#:     child in ``test_gh_review_provider.py``, which is where a canned response
+#:     can be shaped to reach each one;
 #:   * **the repository allowlist is in force**, in the same change -- SEC-10's
 #:     ``providers.review.repositories``, consulted before any process exists
 #:     (``test_review_allowlist.py``, ``test_gh_review_provider.py``).

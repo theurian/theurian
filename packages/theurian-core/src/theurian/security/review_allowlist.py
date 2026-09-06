@@ -55,7 +55,18 @@ from theurian.security.project_config import PROJECT_CONFIG_FILE, read_review_re
 #: so ``owner/.github`` -- a repository that exists -- is still accepted.
 REPOSITORY_PATTERN: Final = r"^(?!\.{1,2}(?:/|$))[\w.-]+/(?!\.{1,2}$)[\w.-]+$"
 
-_REPOSITORY = re.compile(REPOSITORY_PATTERN)
+#: Compiled with :data:`re.ASCII`, so this reader enforces the dialect the schema
+#: publishes rather than a wider one that happens to share its bytes.
+#:
+#: JSON Schema's ``pattern`` is ECMA-262, where ``\w`` is ``[A-Za-z0-9_]``.
+#: Python's ``\w`` is Unicode-aware by default and also matches letters and
+#: digits from every other script, so the same pattern string means two different
+#: things on the two sides -- and the reader's meaning was the *wider* one, which
+#: is the direction that admits a name the schema refuses. The flag is not part
+#: of the pattern text, so the byte-equality with the schema is untouched and
+#: both halves are held: ``test_the_pattern_this_module_enforces_is_the_one_the_schema_publishes``
+#: for the bytes, and the non-ASCII rejection case for the dialect.
+_REPOSITORY = re.compile(REPOSITORY_PATTERN, re.ASCII)
 
 #: A bound on the text this module will even try to match. ``re`` over an
 #: unbounded string is work a caller chose, and a repository name is short by

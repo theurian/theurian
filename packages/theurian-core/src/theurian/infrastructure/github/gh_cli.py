@@ -73,6 +73,7 @@ from theurian.domain.review_ingest import (
 from theurian.infrastructure.github.limits import (
     GH_VERSION_FLOOR,
     MAX_CHILD_STDERR_BYTES,
+    MAX_PROBE_STDOUT_BYTES,
     MAX_RESPONSE_BYTES,
     REQUEST_TIMEOUT_SECONDS,
     rendered_version,
@@ -217,7 +218,7 @@ async def run_bounded(
             if total > byte_cap:
                 raise ReviewIngestRefusedError(
                     RefusalGrade.LIMIT_EXCEEDED,
-                    f"Review ingestion refused a GitHub response larger than the "
+                    f"Review ingestion refused a GitHub CLI answer larger than the "
                     f"recorded {byte_cap}-byte cap. It was refused at the cap rather "
                     f"than read to the end and truncated afterwards, so nothing past "
                     f"it was held.",
@@ -403,7 +404,7 @@ class GhCli:
         outcome = await run_bounded(
             self.vector("--version"),
             env=self._environment,
-            byte_cap=MAX_CHILD_STDERR_BYTES,
+            byte_cap=MAX_PROBE_STDOUT_BYTES,
         )
         match = _VERSION.search(outcome.stdout.decode("utf-8", errors="replace"))
         if outcome.returncode != 0 or match is None:
@@ -440,7 +441,7 @@ class GhCli:
         outcome = await run_bounded(
             self.vector("auth", "status", "--hostname", GITHUB_HOSTNAME),
             env=self._environment,
-            byte_cap=MAX_CHILD_STDERR_BYTES,
+            byte_cap=MAX_PROBE_STDOUT_BYTES,
         )
         if outcome.returncode != 0:
             raise ReviewIngestRefusedError(

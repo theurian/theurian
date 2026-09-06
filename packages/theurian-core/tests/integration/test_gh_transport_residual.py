@@ -33,6 +33,7 @@ created, and the isolated configuration directory means the operator's real
 from __future__ import annotations
 
 import contextlib
+import functools
 import pathlib
 import re
 import shutil
@@ -67,8 +68,16 @@ FAKE_TOKEN: Final = "not-a-real-token"  # noqa: S105 - a fixture value, not a cr
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 
+@functools.cache
 def _installed_version() -> tuple[int, int, int] | None:
-    """The operator's ``gh`` version, or ``None`` when there is none to read."""
+    """The operator's ``gh`` version, or ``None`` when there is none to read.
+
+    Cached, and reached only from the fixture below, because answering it costs
+    a **spawn**. Read into a module-level constant it ran during collection, so
+    importing this file started a process -- and a ``--collect-only`` run, an
+    editor's test discovery, or a ``-k`` selection that never reaches either
+    test spawned one anyway.
+    """
     binary = shutil.which("gh")
     if binary is None:
         return None
@@ -79,18 +88,30 @@ def _installed_version() -> tuple[int, int, int] | None:
     return (int(match[1]), int(match[2]), int(match[3])) if match else None
 
 
-_INSTALLED = _installed_version()
+def _skip_reason(installed: tuple[int, int, int] | None) -> str:
+    """Why this half is skipped when it is, so a reader of a green run knows which ran."""
+    return (
+        f"ADR-0030 clause 4(ii-b) needs a real `gh` at or above the recorded floor "
+        f"{rendered_version(GH_VERSION_FLOOR)}; this machine has "
+        f"{rendered_version(installed) if installed else 'none'}. The control half, "
+        f"(ii-a), needs no binary and is never skipped: "
+        f"test_gh_review_provider.py::test_a_planted_transport_override_refuses_before_"
+        f"any_binary_probe."
+    )
 
-#: Why this half is skipped when it is, stated so a reader of a green run knows
-#: which of the two halves of clause 4(ii) actually ran.
-_SKIP_REASON: Final = (
-    f"ADR-0030 clause 4(ii-b) needs a real `gh` at or above the recorded floor "
-    f"{rendered_version(GH_VERSION_FLOOR)}; this machine has "
-    f"{rendered_version(_INSTALLED) if _INSTALLED else 'none'}. The control half, "
-    f"(ii-a), needs no binary and is never skipped: "
-    f"test_gh_review_provider.py::test_a_planted_transport_override_refuses_before_"
-    f"any_binary_probe."
-)
+
+@pytest.fixture
+def gh_at_the_recorded_floor() -> None:
+    """Skip unless this machine has a ``gh`` at or above the floor, reporting why.
+
+    A fixture rather than a ``skipif`` condition: a ``skipif`` is evaluated at
+    **collection**, and the answer here is a spawn. The skip is reported either
+    way, which is the property clause 4(ii-b) needs -- a skipped half must not
+    read as a passed one.
+    """
+    installed = _installed_version()
+    if installed is None or installed < GH_VERSION_FLOOR:
+        pytest.skip(_skip_reason(installed))
 
 
 class SocketWatch:
@@ -176,10 +197,12 @@ def _provider_over(tmp_path: pathlib.Path, socket_path: pathlib.Path) -> GitHubR
     )
 
 
-@pytest.mark.skipif(_INSTALLED is None or _INSTALLED < GH_VERSION_FLOOR, reason=_SKIP_REASON)
 @pytest.mark.asyncio
 async def test_with_the_refusal_bypassed_the_request_leaves_through_the_socket(
-    tmp_path: pathlib.Path, socket_watch: SocketWatch, monkeypatch: pytest.MonkeyPatch
+    tmp_path: pathlib.Path,
+    socket_watch: SocketWatch,
+    monkeypatch: pytest.MonkeyPatch,
+    gh_at_the_recorded_floor: None,
 ) -> None:
     """ADR-0030 runs D-F, re-run as a control: this is what the check does not close.
 
@@ -204,10 +227,9 @@ async def test_with_the_refusal_bypassed_the_request_leaves_through_the_socket(
     )
 
 
-@pytest.mark.skipif(_INSTALLED is None or _INSTALLED < GH_VERSION_FLOOR, reason=_SKIP_REASON)
 @pytest.mark.asyncio
 async def test_without_the_seam_the_same_fixture_reaches_the_socket_zero_times(
-    tmp_path: pathlib.Path, socket_watch: SocketWatch
+    tmp_path: pathlib.Path, socket_watch: SocketWatch, gh_at_the_recorded_floor: None
 ) -> None:
     """The negative control, so the zero above is not the number a broken watch returns.
 

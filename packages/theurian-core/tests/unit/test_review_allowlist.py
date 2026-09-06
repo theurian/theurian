@@ -135,6 +135,28 @@ def test_a_traversal_or_malformed_name_is_refused(name: str) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "name",
+    ("acme/日本語", "acme/ордер", "acmé/order", "acme/ordér"),
+    ids=("cjk", "cyrillic", "accented-owner", "accented-name"),
+)
+def test_a_non_ascii_name_is_refused_as_the_schema_refuses_it(name: str) -> None:
+    """The bytes of the pattern are the schema's; so must its **dialect** be.
+
+    JSON Schema's ``pattern`` is ECMA-262, where ``\\w`` is ``[A-Za-z0-9_]``.
+    Python's is Unicode-aware by default, so the same pattern string admitted
+    every script's letters here while the published contract admitted none of
+    them -- the reader wider than the schema, which is the direction that lets a
+    name through. ``re.ASCII`` is what closes it, and this is what fails without
+    the flag.
+    """
+    assert not is_well_formed(name), (
+        f"{name!r} satisfied the allowlist pattern. The schema publishes an "
+        "ECMA-262 pattern whose `\\w` is ASCII-only, and a reader that is wider "
+        "than the contract it claims to enforce enforces something else."
+    )
+
+
 def test_a_name_longer_than_the_recorded_bound_is_refused_before_the_pattern_runs() -> None:
     """A caller cannot spend regex time on an unbounded string it chose."""
     assert not is_well_formed("a" * MAX_REPOSITORY_CHARS + "/b")

@@ -505,6 +505,30 @@ async def test_a_limit_past_the_recorded_cap_stops_before_spawning(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("limit", (0, -1), ids=("zero", "negative"))
+async def test_a_limit_below_one_is_refused_with_a_summary_that_is_true(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, limit: int
+) -> None:
+    """The two bounds on ``limit`` share a grade and must not share a summary.
+
+    Both are reported stops before anything is spawned, and an operator does the
+    same thing about either. But the cap sentence -- "the recorded cap is 500, so
+    the run stopped rather than quietly returning fewer than were asked for" --
+    says nothing true about a request for zero, and a summary is the field that
+    describes *this* run.
+    """
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY, limit=limit)
+
+    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert str(limit) in str(raised.value)
+    assert str(limits.MAX_PULL_REQUESTS) not in str(raised.value)
+    assert fake_gh.invocations == 0
+
+
+@pytest.mark.asyncio
 async def test_a_response_that_never_stops_paging_is_stopped_by_the_page_cap(
     tmp_path: pathlib.Path, fake_gh: FakeGh
 ) -> None:

@@ -135,7 +135,17 @@ class GitHubReviewProvider:
                 carrying its own grade and the recorded remedy for it.
         """
         entry = self._allowlisted(repository)
-        if limit < 1 or limit > MAX_PULL_REQUESTS:
+        # Two summaries, one grade. An operator does the same thing about either
+        # -- change `limit` -- and `RefusalGrade`'s membership is coarse on
+        # purpose, but "the recorded cap is 500, so the run stopped rather than
+        # returning fewer than were asked for" is not true of a request for zero.
+        if limit < 1:
+            raise ReviewIngestRefusedError(
+                RefusalGrade.LIMIT_EXCEEDED,
+                f"Review ingestion was asked for {limit} pull requests, and there is no "
+                f"read of fewer than one to perform. Nothing was spawned.",
+            )
+        if limit > MAX_PULL_REQUESTS:
             raise ReviewIngestRefusedError(
                 RefusalGrade.LIMIT_EXCEEDED,
                 f"Review ingestion was asked for {limit} pull requests and the recorded "

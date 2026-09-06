@@ -16,10 +16,31 @@ exactly one recorded remedy, and
 reads the enum -- not a transcribed list -- so a grade added without a remedy
 reddens before it can be raised.
 
+**The cures are ``gh``-shaped, and that coupling has an owner.** Every entry in
+:data:`REMEDIES` names a ``gh`` command, because ``github`` is the only provider
+that exists: a GitLab adapter arriving later would tell its users to run
+``gh auth login``. ADR-0030 declines to claim provider-neutrality until a second
+provider exists (*What this does not close*, item 5), so keying the table on the
+provider as well as the grade belongs to **the change that adds one** -- a
+dimension added here on speculation would be a second key with one value in it.
+
 **A grade is the only thing a refusal distinguishes.** Two inputs that earn the
-same grade produce the same envelope shape, and the summary names what the caller
-already supplied (the repository it asked for, the limit it exceeded) rather than
-anything the request discovered about material the caller may not read.
+same grade produce the same envelope shape, and the summaries name what the
+caller already supplied -- the repository it asked for, the limit it exceeded --
+rather than anything the request discovered about material the caller may not
+read.
+
+**One summary is the exception, named here rather than left for a reader to
+find.** ``REPOSITORY_RESOLVED_ELSEWHERE`` echoes the ``owner/name`` GitHub
+answered with, which is a *redirect target* and not what the caller supplied. It
+is there because an operator cannot correct their own allowlist without it. What
+bounds it is the surface rather than the ordering -- the rename check runs
+*before* the private check, so the echoed name has not been shown to be public
+when it is printed: the name comes from the operator's own authenticated ``gh``
+resolving a repository their own ``.theurian/config.yaml`` lists, and no CLI
+command, MCP tool or application service reaches the adapter that raises it. A
+version that publishes these envelopes to somebody who is not the operator has to
+re-take this decision.
 """
 
 from __future__ import annotations
@@ -120,10 +141,17 @@ REMEDIES: Final[dict[RefusalGrade, str]] = {
         "Run `gh api graphql --hostname github.com -f query='{viewer{login}}'` by "
         "hand to see the failure with its own output, then run the ingestion again."
     ),
+    # Stated so it cures both directions. `limit` is refused below one as well as
+    # above the cap, and "narrow the run" sends a caller who asked for zero the
+    # wrong way. The two keep one grade because an operator does the same thing
+    # about either -- change `limit` -- and this enum's membership is coarse on
+    # purpose; what tells them apart is the summary, which names the number.
     RefusalGrade.LIMIT_EXCEEDED: (
-        "Narrow the run -- a smaller `limit`, or a `since_number` past the pull "
-        "requests already ingested -- and run it again. `gh api graphql --hostname "
-        "github.com` with a smaller page is the same request by hand."
+        "Adjust the run's bounds and try it again: `limit` is how many pull "
+        "requests to read and must be at least one and no more than the cap the "
+        "summary above names, and `since_number` skips the pull requests already "
+        "ingested. `gh api graphql --hostname github.com` with a smaller page is "
+        "the same request by hand."
     ),
 }
 

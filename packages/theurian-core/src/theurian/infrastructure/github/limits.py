@@ -70,6 +70,25 @@ MAX_LINKED_ISSUES: Final = 20
 #: drives under a bounded wait.
 MAX_RESPONSE_BYTES: Final = 8 * 1024 * 1024
 
+#: **The derived ceiling on one paginated read**, recorded because neither
+#: constant states it and a reader pricing a call needs the product rather than
+#: the factors: :data:`MAX_PAGES` pages at :data:`MAX_RESPONSE_BYTES` each is
+#: 160 MiB of child output a single ``get_threads`` may make this process read.
+#: What bounds *memory* is the per-page cap -- a page is released once it is
+#: parsed -- so the two numbers answer different questions and both are needed.
+MAX_READ_BYTES_PER_CALL: Final = MAX_PAGES * MAX_RESPONSE_BYTES
+
+#: The most stdout a **probe** may produce. ``gh --version`` prints one line and
+#: ``gh auth status`` a short report, so this is generous by orders of magnitude
+#: against either and still nothing a binary can spend memory with.
+#:
+#: Its own constant rather than a borrowed one: the probes used to pass
+#: :data:`MAX_CHILD_STDERR_BYTES` as their stdout cap, which meant an oversized
+#: ``gh --version`` was refused as "a GitHub response larger than the recorded
+#: 4096-byte cap" -- a *stderr* bound, named as a *response* bound, about a
+#: vector that makes no request.
+MAX_PROBE_STDOUT_BYTES: Final = 64 * 1024
+
 #: The most bytes of a child's stderr this adapter will hold, before it is
 #: decoded with replacement and sliced into a refusal envelope. Small: the point
 #: is to locate a failure, not to relay a log.
