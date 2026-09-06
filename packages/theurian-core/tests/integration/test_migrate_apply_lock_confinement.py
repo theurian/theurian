@@ -61,6 +61,7 @@ from theurian.domain.ports import Clock
 from theurian.domain.state import ActiveState, StateHash
 from theurian.infrastructure.sqlite.connection import LOCK_OPEN_FLAGS
 from theurian.infrastructure.sqlite.connection import create_database as real_create_database
+from theurian.infrastructure.sqlite.schema import irregular_shape
 
 pytestmark = pytest.mark.integration
 
@@ -745,6 +746,17 @@ class UnusableLock:
     #: question from whether a *mode* would deny anything, which is what
     #: ``needs_a_mode_that_denies`` asks.
     needs_a_posix_special_file: bool = False
+    #: ``True`` for an artefact the ``open`` **accepts**. There is one (a named
+    #: pipe with a reader attached), and it is the reason the premise probe below
+    #: cannot read "the open returned" as "this filesystem does not refuse
+    #: anything": the open returning is the finding, not the excuse.
+    opens_successfully: bool = False
+    #: The noun phrase the published refusal must contain, for an artefact whose
+    #: shape the refusal is supposed to name. ``None`` where the errno already
+    #: says it exactly -- a directory's ``EISDIR``, a mode's ``EACCES`` -- and set
+    #: for the two named pipes, whose errno (``ENXIO``, "Device not configured")
+    #: names nothing an operator would recognise.
+    names_the_shape: str | None = None
     #: ``True`` for the artefact that stops the acquisition at the ``mkdir``, one
     #: call before the open. It is the only one whose refusal must describe a
     #: directory that could not be *prepared*; the other three describe a file
@@ -776,6 +788,39 @@ def _plant_a_fifo(lock: Path) -> None:
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.unlink(missing_ok=True)
     os.mkfifo(lock)
+
+
+#: Reader descriptors held open for the lifetime of a test that plants a named
+#: pipe *with a reader*. Module level rather than on the artefact, because
+#: `UnusableLock` is frozen and the plant/restore pair is the only place that
+#: knows the descriptor exists.
+_ATTACHED_READERS: list[int] = []
+
+
+def _plant_a_fifo_with_a_reader(lock: Path) -> None:
+    """A named pipe someone is reading, which is the case ``O_NONBLOCK`` lets through.
+
+    The whole point of this artefact (round one, H-1). ``O_WRONLY | O_NONBLOCK``
+    returns ``ENXIO`` on a pipe *nothing* is reading, and that is what the plain
+    FIFO plant above exercises -- but with a reader attached the same open
+    **succeeds**, and the acquisition proceeds to ``flock`` holding a descriptor
+    that is not a file. Measured 2026-09-06: ``flock`` answered ``ENOTSUP``, and
+    the refusal published told the operator to move the project off a network
+    filesystem when the filesystem was APFS.
+
+    The reader is opened non-blocking, since ``O_RDONLY`` on a pipe with no
+    writer blocks in the mirror image of the fault under test.
+    """
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.unlink(missing_ok=True)
+    os.mkfifo(lock)
+    _ATTACHED_READERS.append(os.open(lock, os.O_RDONLY | os.O_NONBLOCK))
+
+
+def _close_the_attached_reader(lock: Path) -> None:
+    while _ATTACHED_READERS:
+        os.close(_ATTACHED_READERS.pop())
+    lock.unlink(missing_ok=True)
 
 
 def _plant_a_knowledge_directory_that_denies_the_runtime_create(lock: Path) -> None:
@@ -818,6 +863,16 @@ UNUSABLE_LOCKS: Final = (
         restore=lambda lock: lock.unlink(missing_ok=True),
         needs_a_mode_that_denies=False,
         needs_a_posix_special_file=True,
+        names_the_shape="a named pipe (FIFO)",
+    ),
+    UnusableLock(
+        label="a named pipe with a reader attached",
+        plant=_plant_a_fifo_with_a_reader,
+        restore=_close_the_attached_reader,
+        needs_a_mode_that_denies=False,
+        needs_a_posix_special_file=True,
+        opens_successfully=True,
+        names_the_shape="a named pipe (FIFO)",
     ),
     UnusableLock(
         label="a knowledge directory that refuses to recreate runtime",
@@ -829,13 +884,36 @@ UNUSABLE_LOCKS: Final = (
 )
 
 
-def _the_acquisition_really_refuses(lock: Path) -> bool:
-    """Whether taking the lock actually fails over the planted artefact.
+#: What the premise probe found, and what the caller must do about it.
+#:
+#: Three outcomes and not two, because "the open returned" has two meanings and
+#: the probe read them as one (round one, H-1 face b). It answered "this
+#: filesystem accepts the lock over <artefact>" -- blaming the filesystem -- for
+#: a named pipe with a reader attached, which every POSIX filesystem opens
+#: successfully and which is precisely the artefact the production guard exists
+#: to refuse. A skip keyed on that reason is the same false attribution the
+#: production code was making one layer down, and it turns a missing guard into
+#: a silent pass.
+_REFUSED: Final = "refused"
+_OPENED_AN_ARTEFACT: Final = "opened-an-artefact"
+_OPENED: Final = "opened"
+
+
+def _how_the_acquisition_answers(lock: Path) -> str:
+    """What taking the lock actually does over the planted artefact.
 
     The positive control on the plant. A mode denies nothing to root and nothing
     on a filesystem that ignores permission bits, and a plant that quietly
     permitted the acquisition would leave the assertions below describing a
     *successful* apply -- green, and about nothing.
+
+    Returns :data:`_REFUSED` when the acquisition fails, :data:`_OPENED` when it
+    genuinely succeeds on a regular file (the filesystem really does not refuse
+    what was planted -- the only case a skip is honest for), and
+    :data:`_OPENED_AN_ARTEFACT` when the open *succeeded on something that is not
+    a file*. The last one is a finding, never a skip: the production open asks
+    the descriptor what it got, so if the probe can open a named pipe and walk
+    away, that guard is gone.
 
     Both calls ``held`` makes before it has a descriptor are issued here, in that
     order and with the same arguments: the ``mkdir`` on the lock's parent, then
@@ -871,15 +949,18 @@ def _the_acquisition_really_refuses(lock: Path) -> bool:
     except TimeoutError:
         raise
     except OSError:
-        return True
+        return _REFUSED
     try:
         handle = os.open(lock, LOCK_OPEN_FLAGS, 0o600)
     except TimeoutError:
         raise
     except OSError as exc:
-        return exc.errno != errno.ELOOP
-    os.close(handle)
-    return False
+        return _REFUSED if exc.errno != errno.ELOOP else _OPENED
+    try:
+        shape = irregular_shape(os.fstat(handle).st_mode)
+    finally:
+        os.close(handle)
+    return _OPENED_AN_ARTEFACT if shape is not None else _OPENED
 
 
 @pytest.mark.parametrize("artefact", UNUSABLE_LOCKS, ids=lambda case: case.label)
@@ -938,9 +1019,26 @@ def test_a_lock_the_open_cannot_take_is_refused_as_a_document(
     artefact.plant(lock)
     try:
         with fails_rather_than_hanging(10, waiting_for=f"the lock open over {artefact.label}"):
-            refuses = _the_acquisition_really_refuses(lock)
-        if not refuses:
+            answer = _how_the_acquisition_answers(lock)
+        assert answer != _OPENED_AN_ARTEFACT or artefact.opens_successfully, (
+            f"the open accepted {artefact.label} and handed back a descriptor that is not "
+            f"a file; the acquisition's own `fstat` refusal is gone, and this artefact is "
+            f"not one that is supposed to open"
+        )
+        if answer == _OPENED_AN_ARTEFACT and artefact.opens_successfully:
+            # The expected shape for this artefact: the open is *meant* to
+            # succeed, and what refuses is the `fstat` one line later. Falling
+            # through is the point -- the command below must still publish a
+            # refusal naming the artefact.
+            pass
+        elif answer == _OPENED:
             pytest.skip(f"this filesystem accepts the lock over {artefact.label}")
+        if artefact.opens_successfully:
+            assert answer == _OPENED_AN_ARTEFACT, (
+                f"{artefact.label} was expected to open and be caught by the descriptor "
+                f"check, and the probe answered {answer!r}; the plant is no longer the "
+                f"artefact this case is about"
+            )
 
         result = runner.invoke(app, ["migrate", "apply", "--json"])
 
@@ -989,18 +1087,36 @@ def test_a_lock_the_open_cannot_take_is_refused_as_a_document(
                 f"reader cannot tell which of the two calls refused: {error!r}"
             )
         if not (lock.exists() or lock.is_symlink()):
-            # Two of the four artefacts leave *nothing* at the lock path -- the
-            # `0500` runtime directory refusing the `O_CREAT`, and the
+            # Two members of `UNUSABLE_LOCKS` leave *nothing* at the lock path
+            # -- the `0500` runtime directory refusing the `O_CREAT`, and the
             # `.theurian` that will not recreate `runtime/` -- and a cure that
             # opens "remove whatever is at <lock path>" sends the reader to
             # delete a file that is not there, past the permission that is the
             # actual fix. Same defect as the symbolic-link sentence below, in the
             # remedy rather than the message.
+            #
+            # "Two of the four" is what this said while the table held four; it
+            # holds six now, and the branch is keyed on the tree rather than on
+            # the count -- `if not (lock.exists() or lock.is_symlink())` -- so no
+            # number belongs in this comment at all.
             assert "Remove whatever is at" not in remedy, (
                 f"nothing is at {lock}, and the cure opens by telling the reader to "
                 f"remove it: {remedy!r}"
             )
         published = f"{payload.get('error', '')}\n{remedy}"
+        if artefact.names_the_shape is not None:
+            # Round one, H-1 face d: the shape branches were unpinned. Replacing
+            # `if shape is not None:` with `if False:` in
+            # `WriteLockUnusableError.__init__` left the whole suite green,
+            # because every assertion above is satisfied by the generic arm too
+            # -- `git grep "a named pipe (FIFO)" -- packages/theurian-core/tests`
+            # had no hit anywhere near the lock. What the generic arm publishes
+            # for these two artefacts is the errno's own words, "Device not
+            # configured", which sends an operator looking for hardware.
+            assert artefact.names_the_shape in published, (
+                f"the refusal over {artefact.label} does not say what is at the path, so "
+                f"the operator is left with the errno: {published!r}"
+            )
         assert "symbolic link" not in published, (
             f"the refusal calls {artefact.label} a symbolic link, which it is not; "
             f"the reader is sent to look for a link that does not exist: {published!r}"

@@ -15,12 +15,14 @@ import ast
 import inspect
 import pathlib
 import stat
+from typing import Final
 
 import pytest
 
+from theurian.cli import commands as commands_module
 from theurian.domain.errors import TheurianError
 from theurian.infrastructure.sqlite import connection as connection_module
-from theurian.infrastructure.sqlite.connection import _shape_of
+from theurian.infrastructure.sqlite.schema import irregular_shape
 from theurian.infrastructure.sqlite.store import _ALREADY_ANSWERED
 from theurian.security.paths import _unbounded_shape
 
@@ -58,7 +60,7 @@ def test_the_file_type_population_is_not_empty_and_holds_the_shapes_that_matter(
 def test_both_shape_namers_answer_alike_for_every_file_type(name: str) -> None:
     """RED means an operator can meet two phrasings for one fault.
 
-    `connection.py::_shape_of` and `security/paths.py::_unbounded_shape` are
+    `schema.py::irregular_shape` and `security/paths.py::_unbounded_shape` are
     deliberately not one function -- SEC-8's cap over authored source files and
     the bound on an `open` of derived state are different populations, and
     sharing a symbol between the security layer and a SQLite adapter to save six
@@ -72,9 +74,9 @@ def test_both_shape_namers_answer_alike_for_every_file_type(name: str) -> None:
     """
     mode = _FILE_TYPES[name] | 0o600
 
-    assert _shape_of(mode) == _unbounded_shape(mode), (
-        f"the two shape namers disagree about {name}: connection.py says "
-        f"{_shape_of(mode)!r} and security/paths.py says {_unbounded_shape(mode)!r}, so "
+    assert irregular_shape(mode) == _unbounded_shape(mode), (
+        f"the two shape namers disagree about {name}: schema.py says "
+        f"{irregular_shape(mode)!r} and security/paths.py says {_unbounded_shape(mode)!r}, so "
         f"the same artefact is described two ways depending on which opener met it"
     )
 
@@ -91,11 +93,11 @@ def test_a_directory_is_not_a_shape_either_namer_reports() -> None:
     artefact. Making a directory a shape would take those refusals away from the
     branches that say them best, and it would do it silently.
     """
-    assert _shape_of(stat.S_IFDIR | 0o755) is None, (
+    assert irregular_shape(stat.S_IFDIR | 0o755) is None, (
         "a directory is now reported as a shape, which replaces two refusals that "
         "name the fault exactly with one that says only 'not a regular file'"
     )
-    assert _shape_of(stat.S_IFREG | 0o644) is None, (
+    assert irregular_shape(stat.S_IFREG | 0o644) is None, (
         "a regular file is reported as a shape, so every ordinary open would be refused"
     )
 
@@ -232,6 +234,83 @@ def test_every_theurian_error_a_read_open_can_raise_is_already_answered() -> Non
     )
 
 
+#: The `except` clauses in `cli/commands.py` that enumerate state-database
+#: refusals, by the name of the function each sits in.
+#:
+#: **`_ALREADY_ANSWERED` was the whole population until round one** (code MED-2),
+#: and it is only one of the three places a new opener exception has to be
+#: admitted to. The other two are here, and each was measured going wrong when its
+#: entry was removed: `_verify_history` lets an unnamed type escape `--json` as a
+#: traceback with an empty machine channel, and `_applied_migration_ids` crashes a
+#: helper whose only job is choosing a remedy string.
+#:
+#: `_state_remedy` is deliberately **not** in this list. Its `isinstance` branch
+#: selects the delete-your-state cure, and a new refusal joining it is the defect,
+#: not the fix -- the types reach it through the `exc.remedy` tail instead.
+_COMMANDS_EXCEPT_SITES: Final = ("_applied_migration_ids", "_verify_history")
+
+
+def _caught_in(function_name: str) -> set[str]:
+    """Every exception name the `except` clauses inside ``function_name`` catch."""
+    source = pathlib.Path(inspect.getfile(commands_module)).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    caught: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name != function_name:
+            continue
+        for handler in (inner for inner in ast.walk(node) if isinstance(inner, ast.ExceptHandler)):
+            targets = handler.type
+            names = targets.elts if isinstance(targets, ast.Tuple) else [targets]
+            caught.update(name.id for name in names if isinstance(name, ast.Name))
+    return caught
+
+
+@pytest.mark.parametrize("function_name", _COMMANDS_EXCEPT_SITES)
+def test_every_state_open_refusal_is_named_by_the_cli_sites_that_must_answer_it(
+    function_name: str,
+) -> None:
+    """RED means a refusal the opener raises reaches a `--json` caller ungraded.
+
+    The sweep above covers the *store*'s conversion layer; this covers the CLI's.
+    They are separate populations reached by separate keys, and a type admitted to
+    one and forgotten by the other is not a hypothetical -- `StateDirectoryUnwritable
+    Error` was measured escaping `_verify_history` as a Rich traceback with nothing
+    on stdout while `_ALREADY_ANSWERED` already knew about it.
+
+    The comparison is deliberately not "these two functions catch the same set":
+    each catches other things for its own reasons (a schema mismatch, a path
+    escape). What is required is that every `TheurianError` `connection.py` raises
+    on a read open appears in each, however that site chooses to group them.
+
+    `SchemaVersionMismatchError` is in the derived population and in both sites, so
+    the check is not vacuous on the current tree; the assertion below names what is
+    missing rather than comparing sizes.
+    """
+    functions = _functions_of(_connection_source())
+    reachable = _reachable_from("open_read_connection", functions)
+    raised = {
+        name
+        for name in _raised_in(reachable, functions)
+        if isinstance(resolved := getattr(connection_module, name, None), type)
+        and issubclass(resolved, TheurianError)
+    }
+    assert raised, "the derived population is empty, so this comparison is vacuous"
+
+    caught = _caught_in(function_name)
+    assert caught, (
+        f"no `except` clause was found inside `{function_name}`, so this test is reading "
+        f"a function that has moved or been renamed"
+    )
+
+    missing = sorted(raised - caught)
+    assert not missing, (
+        f"`cli/commands.py::{function_name}` does not name {missing}, which "
+        f"`open_read_connection` can raise. An unnamed `TheurianError` there reaches a "
+        f"`--json` caller as a traceback with an empty machine channel, or takes a "
+        f"neighbour's cure -- the delete-your-state one, in both sites"
+    )
+
+
 def test_a_missing_database_is_answered_without_being_called_damage() -> None:
     """`FileNotFoundError` is the non-`TheurianError` member of the same tuple.
 
@@ -245,6 +324,23 @@ def test_a_missing_database_is_answered_without_being_called_damage() -> None:
         "a state database that was never built is reported as a damaged one, whose cure "
         "tells the operator to delete a directory that does not exist"
     )
+
+
+def _opens_a_database(node: ast.Call) -> bool:
+    """Whether ``node`` opens a SQLite database, in any of the spellings this key covers.
+
+    Three: the attribute call `sqlite3.connect(...)`, the bare `connect(...)` a
+    `from sqlite3 import connect` produces, and `sqlite3.Connection(...)`, which
+    the stdlib exposes as a constructor that opens a file just as the factory
+    does. The bare-name arm is what makes an import-style change fail here rather
+    than silently widening the surface.
+    """
+    target = node.func
+    if isinstance(target, ast.Attribute):
+        return target.attr in {"connect", "Connection"} and (
+            isinstance(target.value, ast.Name) and target.value.id == "sqlite3"
+        )
+    return isinstance(target, ast.Name) and target.id in {"connect", "Connection"}
 
 
 def test_this_module_opens_a_state_database_in_exactly_one_place() -> None:
@@ -261,6 +357,19 @@ def test_this_module_opens_a_state_database_in_exactly_one_place() -> None:
     GHSA-3f65 and #237 shape in one line: a guard keyed on a convenient subset
     while a direct-path builder walks past it.
 
+    **The key's own bound, recorded rather than left implicit** (round one, adv
+    M-5). It matches three spellings -- `sqlite3.connect(...)`, a bare
+    `connect(...)` from a `from sqlite3 import connect`, and
+    `sqlite3.Connection(...)`, which opens a database as directly as the factory
+    does. It does **not** match an aliased module (`import sqlite3 as db`), a
+    name bound at runtime, or a connection handed in from another module. Those
+    are not covered here and are not claimed to be: what covers them is
+    behavioural, `test_state_database_faults.py`'s named-pipe sweep, which fails
+    on an unbounded open however the connection was obtained. This test is the
+    cheap structural net that catches the ordinary way the guard gets bypassed --
+    someone adding a fourth opener beside the three -- and the FIFO tests are the
+    real one.
+
     The premise is asserted first, because a walk that found no `connect` at all
     would report perfect containment over a module it had failed to read. The
     functions are taken from *this* tree rather than from :func:`_functions_of`,
@@ -273,11 +382,7 @@ def test_this_module_opens_a_state_database_in_exactly_one_place() -> None:
     connects = {
         id(node)
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "connect"
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "sqlite3"
+        if isinstance(node, ast.Call) and _opens_a_database(node)
     }
     assert connects, (
         "no `sqlite3.connect` was found in connection.py at all, so this containment "

@@ -50,7 +50,11 @@ from theurian.domain.ports.review_finding_store import (
 )
 from theurian.domain.review_finding import PARSER_STAMP, FindingLoad, RejectedTrailer, ReviewFinding
 from theurian.infrastructure.sqlite.findings_schema import FINDINGS_DDL, FINDINGS_SCHEMA_VERSION
-from theurian.infrastructure.sqlite.schema import CONNECTION_PRAGMAS, read_only_uri
+from theurian.infrastructure.sqlite.schema import (
+    CONNECTION_PRAGMAS,
+    irregular_shape_at,
+    read_only_uri,
+)
 
 #: One inserted findings row: the eleven columns of the ``findings`` table, in
 #: order. Named so the insert statement and the row builder cannot drift on arity.
@@ -777,15 +781,42 @@ class SqliteReviewFindingStore:
         ``mode=ro`` so a query never conjures an empty database at a path whose file
         is gone -- the defect `index_store._open_read` records.
 
-        **Not every caller has checked that the file exists**, and this is what
-        makes that safe. :meth:`stamp` and :meth:`dump` probe first;
-        :meth:`serve_findings` deliberately does not, because a probe followed by
-        an open is two looks at a name a rebuild can move between them -- so the
-        missing-store case arrives here as ``sqlite3.OperationalError`` from the
-        open, converted by that method's own boundary. ``mode=ro`` is what keeps
-        that honest: without it, the serving read would *create* an empty database
-        at the path and then report a store with no stamp.
+        **Not every caller has checked that the file exists**, and two things
+        make that safe rather than one. :meth:`stamp` and :meth:`dump` probe
+        first; :meth:`serve_findings` deliberately does not, because a probe
+        followed by an open is two looks at a name a rebuild can move between
+        them -- so the missing-store case arrives here as
+        ``sqlite3.OperationalError`` from the open, converted by that method's own
+        boundary. ``mode=ro`` keeps that honest for a *missing* file: without it,
+        the serving read would create an empty database at the path and then
+        report a store with no stamp.
+
+        **``mode=ro`` says nothing about what is at the path, and the shape check
+        below is what does** (round one, H-4). A named pipe at the findings-store
+        path made this ``connect`` block inside ``open()`` -- measured 2026-09-06,
+        still blocked when a 6-second watchdog fired -- and the blocked call is
+        running inside the daemon's admission gate, holding one of
+        ``MAX_CONCURRENT_SEARCHES`` permits. Four such calls take the gate to
+        zero, and it never comes back: the permits are held by threads parked in
+        a syscall, removing the artefact does not wake them, and the refusal an
+        exhausted gate publishes says "Retry shortly", which is false. Recovery
+        was a daemon restart. ``stat`` answers from the directory entry and never
+        opens anything, so it is the one check that cannot itself be what blocks.
+
+        The refusal is this module's own class, so the tool surface converts it to
+        the standing store-unavailable refusal like every other read fault, and
+        the permit is returned by the ``finally`` that was already there.
         """
+        shape = irregular_shape_at(self._path)
+        if shape is not None:
+            raise FindingsStoreError(
+                f"the review-finding store path holds {shape}, not a file Theurian wrote",
+                remedy=(
+                    f"Remove {self._path} and run `theurian findings build` to rebuild the "
+                    f"store; `ls -l {self._path}` shows what is at the path now. It is "
+                    f"derived state (ADR-0004), so nothing authored is lost."
+                ),
+            )
         connection = sqlite3.connect(read_only_uri(self._path), uri=True)
         try:
             connection.row_factory = sqlite3.Row

@@ -35,6 +35,8 @@ from pathlib import Path
 from typing import IO, Final
 
 from theurian.domain.errors import TheurianError
+from theurian.infrastructure.sqlite.connection import LOCK_OPEN_FLAGS
+from theurian.infrastructure.sqlite.schema import irregular_shape, irregular_shape_at
 
 if sys.platform == "win32":  # pragma: no cover - Windows is not a 1.0 target
     raise ImportError(
@@ -98,6 +100,13 @@ class InstanceLock:
     can name a live unrelated process, and a "single instance" guarantee built on
     one is a guarantee that silently lapses. An advisory lock is released by the
     kernel when the holder exits, however it exits.
+
+    **The open is the write lock's, imported rather than re-spelled.**
+    :data:`~theurian.infrastructure.sqlite.connection.LOCK_OPEN_FLAGS` records
+    what each flag is for and the measurement behind it; :meth:`acquire` records
+    what this path cost while it had its own spelling. Sharing the constant is
+    what makes ``connection.py``'s "same call, same flags, same kind of file"
+    true -- it was written while it was not.
     """
 
     def __init__(self, path: Path) -> None:
@@ -108,14 +117,76 @@ class InstanceLock:
     def path(self) -> Path:
         return self._path
 
+    def _unusable(self, shape: str | None, *, cause: OSError | None) -> InstanceLockError:
+        """One sentence for "the instance lock path does not hold a lock file".
+
+        Two call sites reach it and they differ in what they know: the ``open``
+        that failed has an errno and no descriptor, the ``fstat`` that followed a
+        successful open has a descriptor and no errno. Both must name the
+        artefact, so the shape leads wherever it is known and the operating
+        system's own account trails when there is one.
+        """
+        artefact = shape or "something Theurian did not write"
+        account = f": {cause.strerror or cause}" if cause is not None else ""
+        return InstanceLockError(
+            f"The instance lock at {self._path} is {artefact}, not a lock file{account}. "
+            f"Remove it and retry -- it is derived state (ADR-0004) that Theurian "
+            f"recreates, so nothing authored is lost."
+        )
+
     def acquire(self) -> bool:
         """Try to take the lock without blocking.
+
+        **Opened with the write lock's own flags** (:data:`LOCK_OPEN_FLAGS`),
+        which is what round one found this method was not doing while
+        ``connection.py`` said it was. ``Path.open("w")`` gets three things
+        wrong at once, and each was measured on 2026-09-06 against this method:
+
+        * **``O_TRUNC``.** A symbolic link at ``daemon.lock`` pointing at a file
+          in the user's own tree was followed and truncated -- a 49-byte victim
+          became 15 bytes (this method's own breadcrumb) -- and ``acquire``
+          returned ``True``, so the daemon started and reported success. Same
+          shape as #481 at the write lock, on a path reached by the documented
+          ``theurian daemon start``.
+        * **No ``O_NOFOLLOW``.** Which is what let the link be followed at all.
+        * **No ``O_NONBLOCK``.** A named pipe at the path blocked inside
+          ``open()`` -- still blocked when a 15-second kill fired -- so a
+          `daemon start` never returned and published nothing to grade.
+
+        The breadcrumb still goes in, through the descriptor this method already
+        holds. It is truncated *after* the write rather than by the open: at that
+        point ``O_NOFOLLOW`` has already resolved the name to a regular file this
+        process holds a lock on, so the truncation cannot reach a link's target.
+        Without it, a longer breadcrumb from an earlier run would leave a tail of
+        stale bytes -- cosmetic, since nothing reads them, and still wrong to
+        leave.
+
+        The descriptor is asked what it is, for the reason
+        ``connection.WriteLock._open`` records: a named pipe with a reader
+        attached takes these flags without complaint, and ``flock`` then reports
+        ``ENOTSUP`` -- a fault about the descriptor, arriving where it can only
+        be described as one about the file.
 
         Returns:
             ``True`` if this process now holds it.
         """
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self._path.open("w")
+        try:
+            fileno = os.open(self._path, LOCK_OPEN_FLAGS, 0o600)
+        except OSError as exc:
+            # The errno alone describes nothing an operator can act on: a named
+            # pipe with no reader answers `ENXIO`, whose `strerror` is "Device
+            # not configured" on macOS. So the path is asked what is there, and
+            # the OS account travels as the second clause when it is.
+            raise self._unusable(irregular_shape_at(self._path), cause=exc) from exc
+        shape = irregular_shape(os.fstat(fileno).st_mode)
+        if shape is not None:
+            # The open *succeeded* on something that is not a file -- a named
+            # pipe with a reader attached takes these flags without complaint --
+            # so there is no refusal to quote, only the descriptor's own answer.
+            os.close(fileno)
+            raise self._unusable(shape, cause=None)
+        handle = os.fdopen(fileno, "w")
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
@@ -128,6 +199,7 @@ class InstanceLock:
         # The lock itself is the mechanism; this is only a breadcrumb.
         handle.write(json.dumps({"pid": os.getpid()}) + "\n")
         handle.flush()
+        handle.truncate()
         self._handle = handle
         return True
 

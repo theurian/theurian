@@ -4,6 +4,10 @@ This database is a projection. Every byte in it is reconstructible by replaying
 Git-tracked YAML migrations into an empty file, which is what makes discarding
 it on a schema change a cache miss rather than data loss.
 
+It is also this package's shared low-level module: :func:`read_only_uri` and the
+two shape namers below are used by adapters that have nothing else in common,
+and a copy of either in each of them is a copy that drifts.
+
 ``SCHEMA_VERSION`` is an input to the state hash, so bumping it invalidates
 every existing state database. Bump it for any change to the DDL below, and for
 a correctness fix that must not trust state an earlier build already derived --
@@ -12,6 +16,7 @@ the bump is what forces such a database to be rebuilt rather than read in place.
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 from typing import Final
 from urllib.parse import quote
@@ -74,12 +79,96 @@ def read_only_uri(path: Path) -> str:
     and opens read-write. Either way the `mode=ro` guarantee stops holding for a
     filename the operator chose.
 
-    Shared by both readers -- `index_store._open_read` and `index_purge._copy`'s
-    source -- so a path a purge copies from is escaped the same way a query
-    reads one. `quote` with no safe characters but `/`, because `?`, `#` and `%`
-    are all legal in a POSIX filename and each changes how the URI parses.
+    Shared by every ``mode=ro`` opener in this package -- `index_store._open_read`,
+    `index_purge._copy`'s source, `findings_store._read` and
+    `connection._connect` -- so a path a purge copies from is escaped the same way
+    a query reads one. `quote` with no safe characters but `/`, because `?`, `#`
+    and `%` are all legal in a POSIX filename and each changes how the URI parses.
+
+    **`connection._connect` was the one that did not**, and it is why the list
+    above is written out. It built the URI with an f-string, and measured on this
+    branch a project directory named ``proj#1`` truncated the URI at the ``#``:
+    the read opened ``.../proj`` instead, *created* a 4096-byte SQLite file at a
+    sibling path outside the project, and then published the delete-your-state
+    cure for a database that was in perfect condition.
     """
     return f"file:{quote(str(path), safe='/')}?mode=ro"
+
+
+def irregular_shape(mode: int) -> str | None:
+    """Name the file type ``mode`` describes when it is not a regular file.
+
+    The vocabulary every opener in this package uses to say what it found where
+    it needed a file: the state database (`connection._connect`), the write lock
+    (`connection.WriteLockUnusableError`), the daemon's instance lock and the
+    review-finding store. It is deliberately identical to
+    ``security/paths.py::_unbounded_shape``'s, so an operator who meets "a named
+    pipe (FIFO)" from a ``contentFile`` and from a state database does not have
+    to learn two phrasings for one fault. The two functions stay separate because
+    their populations do -- that one enforces SEC-8's byte cap over authored
+    source files, this one bounds an ``open`` of derived state -- and the wordings
+    are held equal by ``tests/unit/test_connection_faults.py::
+    test_both_shape_namers_answer_alike_for_every_file_type`` rather than by a
+    shared symbol.
+
+    **A directory is not a member, and the reason is per-caller rather than
+    universal.** At the write-lock path ``open()`` refuses one with ``EISDIR``
+    before a byte moves, and #520's branch publishes that exactly, so widening
+    this would take the refusal away from the branch that says it best. At the
+    *state-database* path the same is not true -- measured 2026-09-06, a
+    directory there gives ``mode=ro`` ``disk I/O error`` (``SQLITE_IOERR_READ``)
+    and the read path answered it with the delete-your-state cure -- so
+    `connection._connect` refuses a directory in its own branch rather than
+    through this function.
+
+    The residual branch keeps the check total: a type this build has never met is
+    named rather than passed through as a regular file.
+
+    Lives here rather than in `connection.py` because more than one adapter in
+    this package needs it, and this module is already where the cross-adapter
+    helper (:func:`read_only_uri`) lives.
+    """
+    if stat.S_ISREG(mode) or stat.S_ISDIR(mode):
+        return None
+    if stat.S_ISFIFO(mode):
+        return "a named pipe (FIFO)"
+    if stat.S_ISSOCK(mode):
+        return "a socket"
+    if stat.S_ISCHR(mode):
+        return "a character device"
+    if stat.S_ISBLK(mode):
+        return "a block device"
+    return "a special file"
+
+
+def irregular_shape_at(path: Path) -> str | None:
+    """:func:`irregular_shape` for what is at ``path``, or ``None`` if it cannot say.
+
+    ``stat`` rather than an ``open``: it answers from the directory entry and
+    never opens anything, so unlike every check that follows it cannot itself be
+    the thing that blocks. That is what lets it run *before* the open it guards --
+    the same argument ``security/paths.py::read_source_file`` records for the same
+    shape one layer out (#215).
+
+    **A path check is not a descriptor check**, and a caller that already holds a
+    descriptor should ask :func:`irregular_shape` about ``os.fstat`` instead.
+    This function answers about a name, and the name can be re-pointed between
+    the answer and the open -- measured on this branch as a real defect rather
+    than a theoretical one: a named pipe *with a reader attached* opens
+    successfully, so a refusal keyed only on the path's shape at open time is
+    not what makes the lock safe. `connection.WriteLock._open` asks the
+    descriptor for that reason.
+
+    ``None`` on a ``stat`` that cannot answer -- the path is gone, or its
+    directory denies the lookup. Callers treat that as "no shape to report" and
+    fall back to what they would have said anyway; replacing one unanswerable
+    question with another helps nobody.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return None
+    return irregular_shape(mode)
 
 
 DDL: Final = """

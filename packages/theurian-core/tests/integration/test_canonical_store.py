@@ -520,11 +520,25 @@ def test_a_lock_file_left_write_only_by_an_earlier_build_is_still_takeable(lock:
 #: one parameter case rather than two only where the two values coincide.
 _CONTENTION_ERRNOS = sorted({errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK})
 
-#: Errnos a filesystem returns when it will not take the lock at all. The first
-#: three are the unsupported-``flock`` family #423 names; ``EPERM`` is here
-#: because the rule is "not one of the contention pair", not "one of a list of
-#: known refusals", and a member outside the named family is what proves it.
-_REFUSAL_ERRNOS = [errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOLCK, errno.EPERM]
+#: Errnos that are not contention, and which arm of
+#: ``WriteLockRefusedError`` each one must take.
+#:
+#: **The two arms exist because round one found the single one claiming past what
+#: the platform documents** (adv M-1). ``man flock`` on macOS 26.6, read
+#: 2026-09-06, documents four errnos: ``EWOULDBLOCK`` (contention), ``EBADF``,
+#: ``EINVAL`` ("an object other than a file") and ``ENOTSUP`` ("the referenced
+#: descriptor is not of the correct type"). None of them names a filesystem, and
+#: two of them name the *descriptor* -- so "move the project off NFS" was an
+#: inference, and it was measured wrong on the case that actually arrives.
+#:
+#: ``ENOLCK`` is the one whose fault may clear on its own, so it is the one arm
+#: that must lead with a retry; every other errno here must not, because a retry
+#: is not the cure and offering it first wastes the operator's next action.
+#: ``EPERM`` is in the list because the rule is "not one of the contention set",
+#: never "one of a list of known refusals", and a member outside every named
+#: family is what proves that.
+_REFUSAL_ERRNOS = [errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL, errno.EPERM]
+_RETRYABLE_REFUSAL_ERRNO = errno.ENOLCK
 
 
 def _flock_that_always_raises(code: int, seen: list[int]) -> object:
@@ -552,9 +566,18 @@ def test_a_flock_refusal_that_is_not_contention_is_reported_at_once(
     type is asserted absent by construction --
     :class:`~theurian.infrastructure.sqlite.connection.WriteLockRefusedError` is
     not a subclass of it, so ``pytest.raises`` here fails if the old path still
-    runs. What the remedy must not do is send the reader to remove a lock file
-    that is not the problem, so the two cures are compared rather than merely
-    checked non-empty.
+    runs.
+
+    **The remedy assertions are arm-specific** (adv M-1). The first cut asserted
+    ``"df -h" in remedy`` for every errno, which is exactly the over-claim the
+    production code was making: it would have stayed green while the message told
+    an operator on APFS to move off NFS. What this arm owes is the pair of things
+    a reader can *look at* -- what is at the path and which filesystem holds it --
+    with neither asserted as the cause, and it must not lead with a retry, since
+    for these errnos a retry is not the cure.
+
+    ``ENOLCK`` is deliberately not in this parameter list; it has its own test
+    below, because its cure is the opposite one.
     """
     from theurian.infrastructure.sqlite.connection import (
         WRITE_LOCK_TIMEOUT_SECONDS,
@@ -588,13 +611,84 @@ def test_a_flock_refusal_that_is_not_contention_is_reported_at_once(
         "process that does not exist"
     )
     remedy = caught.value.remedy
-    assert str(lock.parent) in remedy and "df -h" in remedy, (
-        f"the remedy names neither the filesystem to inspect nor a command that "
-        f"inspects it, so it is a sentence rather than a cure: {remedy!r}"
+    assert f"ls -l {lock}" in remedy, (
+        f"the remedy names no command that shows what is at the lock path, which is one "
+        f"of the two things this errno leaves open: {remedy!r}"
     )
-    assert "remove" not in remedy.lower(), (
-        f"the remedy still offers deleting the lock file, which changes nothing about "
-        f"the filesystem that refused the lock: {remedy!r}"
+    assert f"df -h {lock.parent}" in remedy, (
+        f"the remedy names no command that shows which filesystem holds the lock, which "
+        f"is the other: {remedy!r}"
+    )
+    assert not remedy.startswith("Retry"), (
+        f"the cure for {errno.errorcode[code]} opens by telling the operator to retry, "
+        f"and this platform documents it as a fault about the descriptor or the "
+        f"filesystem -- neither of which a retry changes: {remedy!r}"
+    )
+    # The affirmative sentence, not the phrase. `WriteLockTimeoutError` publishes
+    # "Another Theurian process is writing." and the correct refusal here says
+    # "*not* another Theurian process holding it" -- a substring key on the noun
+    # phrase fires on the negation, which is the shape
+    # `test_canonical_store_corruption.py`'s delete-remedy regex records about
+    # its own anchoring.
+    published = f"{caught.value}\n{remedy}"
+    assert "Another Theurian process is writing" not in published, (
+        f"the refusal still blames a process that does not exist: {published!r}"
+    )
+
+
+def test_a_flock_refusal_with_no_lock_record_offers_the_retry_first(
+    lock: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ENOLCK``'s arm, and the reason ``WriteLockRefusedError`` has two (adv M-1).
+
+    Every other non-contention errno is final: the descriptor is wrong, or the
+    filesystem will not lock, and neither changes by waiting. ``ENOLCK`` is not
+    -- where it is documented it is documented both ways, as an exhausted kernel
+    lock table (which clears on its own) and as what a filesystem that cannot
+    lock answers (which does not). This platform's ``man flock`` does not list it
+    at all, which is why the arm names both possibilities instead of asserting
+    one.
+
+    So the cure has to lead with the free, reversible action and keep the
+    filesystem check as the second clause. A single arm for every errno gets one
+    of the two wrong whichever sentence it picks, and the first cut got this one
+    wrong by telling the operator that waiting could not help.
+
+    Still refused at the first attempt, not polled: "may clear on its own" is a
+    statement about a *later* command, not a reason to spend this one's thirty
+    seconds on a call that is answering immediately.
+    """
+    from theurian.infrastructure.sqlite.connection import (
+        WRITE_LOCK_TIMEOUT_SECONDS,
+        WriteLock,
+        WriteLockRefusedError,
+    )
+
+    seen: list[int] = []
+    monkeypatch.setattr(fcntl, "flock", _flock_that_always_raises(_RETRYABLE_REFUSAL_ERRNO, seen))
+
+    with (
+        pytest.raises(WriteLockRefusedError) as caught,
+        WriteLock(lock, timeout=WRITE_LOCK_TIMEOUT_SECONDS).held(),
+    ):
+        pass  # pragma: no cover - the acquisition above must fail
+
+    assert len(seen) == 1, (
+        f"ENOLCK was polled {len(seen)} times; it is answered immediately and the "
+        f"retry this arm offers is the operator's next command, not this one's loop"
+    )
+    remedy = caught.value.remedy
+    assert remedy.startswith("Retry"), (
+        f"the cure does not lead with the retry, and for an exhausted lock table that "
+        f"is the whole cure: {remedy!r}"
+    )
+    assert f"df -h {lock.parent}" in remedy, (
+        f"the cure offers only the retry, so an operator whose filesystem genuinely "
+        f"cannot lock is left with a loop: {remedy!r}"
+    )
+    assert "waiting will not clear it" not in str(caught.value), (
+        f"the message still asserts that waiting cannot help, which is the half of "
+        f"this errno's meaning that a retry does address: {caught.value}"
     )
 
 

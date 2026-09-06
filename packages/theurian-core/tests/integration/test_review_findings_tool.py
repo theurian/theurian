@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -907,6 +908,20 @@ async def test_the_findings_gate_returns_its_permit_on_every_exit_path(
     so a leak there is a documented entry point that permanently narrows the gate,
     which is the T-6 shape the gate itself exists to close.
 
+    **A fourth way out was not a way out at all** (round one, H-4). A named pipe
+    at the store path made ``_read``'s ``sqlite3.connect`` block inside
+    ``open()``, and a call parked in a syscall never leaves the block by any of
+    the three paths above -- it holds its permit indefinitely. Four such calls
+    took the gate to zero permanently: the threads do not wake when the artefact
+    is removed, so the "Retry shortly" the exhausted gate publishes was false and
+    recovery was a daemon restart. That is not an exit path this test can walk,
+    because there is no exit; it is closed one layer down, by ``_read`` refusing
+    a path that is not a regular file before it opens anything, and driven by
+    :func:`test_a_named_pipe_at_the_store_path_is_refused_rather_than_held`. It
+    is named here because "every exit path" is this test's own claim, and a
+    reader counting the arms below should know which member was closed elsewhere
+    and why it could never have been an arm.
+
     One server for the whole test, deliberately: ``build_server`` constructs the
     semaphore, so a per-call server would hand every exit path a fresh gate and
     assert nothing.
@@ -954,6 +969,73 @@ async def test_the_findings_gate_returns_its_permit_on_every_exit_path(
         await asyncio.wait_for(
             asyncio.gather(*holders, return_exceptions=True), timeout=_GATE_WAIT_SECONDS
         )
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="os.mkfifo is POSIX-only")
+def test_a_named_pipe_at_the_store_path_is_refused_rather_than_held(
+    project: ProjectRegistry,
+) -> None:
+    """Round one, H-4. The serving read blocked, holding an admission permit.
+
+    ``mode=ro`` stops the read *creating* a database at a path whose file is
+    gone; it says nothing about what is at the path. A named pipe there made
+    ``sqlite3.connect`` block inside ``open()`` -- measured 2026-09-06, still
+    blocked when a 6-second watchdog fired -- and the blocked call is running
+    inside the daemon's admission gate. ``MAX_CONCURRENT_SEARCHES`` such calls
+    take the gate to zero and it never re-opens: the permits are held by threads
+    parked in a syscall, and removing the artefact does not wake them.
+
+    The bound is a child this test kills rather than a signal, for the reason
+    ``test_state_database_faults.py`` records: SQLite retries an ``open``
+    interrupted by a signal, so ``SIGALRM`` does not escape it and an in-process
+    call would stall the run instead of failing.
+
+    What is asserted is that the call *returns*, and that the refusal names the
+    artefact -- ``FindingsStoreError`` is what the tool surface already converts
+    into the standing store-unavailable refusal, so nothing above needs to know
+    about this member; it only needs the permit back, which the ``finally``
+    already there gives it once the call returns at all.
+    """
+    store_path = _store_path(project, "demo")
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store_path.unlink(missing_ok=True)
+    os.mkfifo(store_path)
+
+    script = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from theurian.domain.ports.review_finding_store import FindingQuery\n"
+        "from theurian.infrastructure.sqlite.findings_store import (\n"
+        "    FindingsStoreError,\n"
+        "    SqliteReviewFindingStore,\n"
+        ")\n"
+        "store = SqliteReviewFindingStore(Path(sys.argv[1]))\n"
+        "try:\n"
+        "    store.serve_findings(FindingQuery(limit=10), text_chars=100)\n"
+        "except FindingsStoreError as exc:\n"
+        "    print(f'REFUSED {exc}')\n"
+        "else:\n"
+        "    print('SERVED')\n"
+    )
+    try:
+        done = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", script, str(store_path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(
+            "the serving read over a named pipe did not return within 30s and was "
+            "killed: in the daemon that call is holding one of "
+            f"{MAX_CONCURRENT_SEARCHES} admission permits and will never give it back"
+        )
+
+    assert done.stdout.startswith("REFUSED"), done
+    assert "a named pipe (FIFO)" in done.stdout, (
+        f"the refusal does not say what is at the store path: {done.stdout!r}"
+    )
 
 
 def _live_repo_root() -> Path | None:

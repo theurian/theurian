@@ -10,6 +10,7 @@ import json
 import os
 import socket
 import socketserver
+import subprocess
 import sys
 import threading
 from collections.abc import Iterator
@@ -17,7 +18,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import override
+from typing import Final, override
 
 import pytest
 from starlette.testclient import TestClient
@@ -31,6 +32,7 @@ from theurian.application.project_service import ProjectRegistry
 from theurian.cli.main import app
 from theurian.daemon.instance import (
     InstanceLock,
+    InstanceLockError,
     StartDecision,
     check_can_start,
     port_is_free,
@@ -304,6 +306,130 @@ def test_the_lock_is_released_by_its_context_manager(tmp_path: Path) -> None:
     other = InstanceLock(path)
     assert other.acquire()
     other.release()
+
+
+# -- The instance lock opens the way the write lock does (round one, H-3) -----
+#
+# `InstanceLock.acquire` opened with `Path.open("w")` until this section landed,
+# while `connection.py` said the two lock sites were "the same call, same flags,
+# same kind of file". Measured 2026-09-06 against that method, both faces reached
+# by the documented `theurian daemon start`:
+#
+#   - a symbolic link at `daemon.lock` pointing into the user's tree was
+#     followed and truncated -- 49 bytes to 15, the breadcrumb -- and `acquire`
+#     returned `True`, so the daemon started and reported success;
+#   - a named pipe at the same path blocked inside `open()` past a 15-second
+#     kill, so nothing was published at all.
+#
+# Both are #481's and #526's shapes on a second lock path, and the fix is to
+# share `LOCK_OPEN_FLAGS` rather than to re-spell it.
+
+_LOCK_VICTIM_BODY: Final = "# Notes\n\nSomething the operator wrote themselves.\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_symbolic_link_at_the_instance_lock_is_refused_rather_than_written_through(
+    tmp_path: Path,
+) -> None:
+    """RED before the flags were shared: the victim's bytes are the assertion.
+
+    ``Path.open("w")`` follows a link and truncates what it names, so taking the
+    instance lock destroyed a file the operator wrote -- and returned ``True``,
+    which is worse than failing: the daemon came up and said so. The byte count
+    is what makes this test about the damage rather than about the refusal's
+    wording; it moves with the constant beside it, and what does not move is that
+    it was nonzero before and must be nonzero after.
+    """
+    victim = tmp_path / "notes.md"
+    victim.write_text(_LOCK_VICTIM_BODY)
+    link = tmp_path / "daemon.lock"
+    link.symlink_to(victim)
+
+    with pytest.raises(InstanceLockError):
+        InstanceLock(link).acquire()
+
+    assert victim.read_text() == _LOCK_VICTIM_BODY, (
+        "taking the instance lock wrote through a symbolic link at its path and "
+        "truncated the file the link named"
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="os.mkfifo is POSIX-only")
+def test_a_named_pipe_at_the_instance_lock_is_refused_rather_than_waited_on(
+    tmp_path: Path,
+) -> None:
+    """RED before ``O_NONBLOCK``: the acquisition never returned.
+
+    The bound is the child, not a signal. ``os.open`` on a named pipe with no
+    reader blocks in the kernel, and a test that called ``acquire`` in-process
+    without the flag would stall the run rather than fail it -- so the call is
+    made in a subprocess this test kills, exactly as the state-database faults
+    are driven.
+
+    The refusal must also *name* the artefact: ``ENXIO``'s ``strerror`` is
+    "Device not configured" on macOS, which sends the reader looking for
+    hardware that is not involved.
+    """
+    path = tmp_path / "daemon.lock"
+    os.mkfifo(path)
+    script = (
+        "import sys\n"
+        "from theurian.daemon.instance import InstanceLock, InstanceLockError\n"
+        "try:\n"
+        "    InstanceLock(__import__('pathlib').Path(sys.argv[1])).acquire()\n"
+        "except InstanceLockError as exc:\n"
+        "    print(f'REFUSED {exc}')\n"
+        "else:\n"
+        "    print('ACQUIRED')\n"
+    )
+    try:
+        done = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", script, str(path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(
+            "taking the instance lock over a named pipe did not return within 30s and was "
+            "killed: `theurian daemon start` blocks in the open with nothing to grade"
+        )
+
+    assert done.stdout.startswith("REFUSED"), done
+    assert "a named pipe (FIFO)" in done.stdout, (
+        f"the refusal does not say what is at the lock path, so the operator is left "
+        f"with the errno: {done.stdout!r}"
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="os.mkfifo is POSIX-only")
+def test_a_named_pipe_with_a_reader_at_the_instance_lock_is_refused_too(
+    tmp_path: Path,
+) -> None:
+    """The face ``O_NONBLOCK`` alone does not close, on this lock path too (H-1).
+
+    With a reader attached the open *succeeds*, so a guard that only bounds the
+    open hands ``flock`` a descriptor that is not a file. ``acquire`` asks the
+    descriptor what it got, which is why this is refused rather than reported as
+    a filesystem that cannot lock.
+
+    In-process, deliberately: the open cannot block here -- that is the whole
+    difference from the case above -- so a child would buy nothing and hide the
+    exception this asserts on.
+    """
+    path = tmp_path / "daemon.lock"
+    os.mkfifo(path)
+    reader = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        with pytest.raises(InstanceLockError) as caught:
+            InstanceLock(path).acquire()
+    finally:
+        os.close(reader)
+
+    assert "a named pipe (FIFO)" in str(caught.value), (
+        f"the refusal does not name the artefact the open accepted: {caught.value}"
+    )
 
 
 def test_a_free_port_and_a_free_lock_means_start(tmp_path: Path) -> None:
