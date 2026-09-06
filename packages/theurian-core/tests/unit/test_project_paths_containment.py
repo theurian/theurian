@@ -243,6 +243,7 @@ _HELPER_CALLS: dict[str, Callable[[ProjectPaths], Path]] = {
     "ingestion_manifest": lambda p: p.ingestion_manifest,
     "write_lock": lambda p: p.write_lock,
     "index_for": lambda p: p.index_for("01K1AAAAAA01234567890ABCDE"),
+    "state_database_named": lambda p: p.state_database_named("theurian-state-abc123.sqlite"),
     "database_for": lambda p: p.database_for(_SAMPLE_STATE_HASH),
     "findings_for": lambda p: p.findings_for("01K1AAAAAA01234567890ABCDE"),
 }
@@ -268,6 +269,7 @@ _ESCAPING_CHILD: dict[str, str] = {
     "ingestion_manifest": "cache",
     "write_lock": "runtime",
     "index_for": "state",
+    "state_database_named": "state",
     "database_for": "state",
     "findings_for": "state",
 }
@@ -300,6 +302,13 @@ _READER_CONTAINED: set[str] = {"migrations"}
 #: ``INDEX_POINTER_REMEDY``, and the ``self.state`` access it makes first refuses
 #: as the *directory* case. Its presence here would have passed for the wrong
 #: reason, which is why the assertion below is an equality in both directions.
+#:
+#: ``state_database_named`` is absent for that same reason and arrived at it the
+#: hard way (round two, security H-1): its first cut called ``_contained`` and so
+#: belonged here, and root-scoped containment served a decoy *inside* the
+#: checkout at exit 0. It now carries ``index_for``'s state-scoped check, so its
+#: refusal is its own with ``ACTIVE_POINTER_REMEDY``, and the ``self.state``
+#: access it makes first is what this sweep sees.
 #:
 #: ``index_secret_scan`` joined on #329's merge, and the seam is worth naming: it
 #: is a hand-written classification of the helper list *as it stood*, so a helper

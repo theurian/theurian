@@ -37,6 +37,7 @@ from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from theurian import __protocol_version__, __version__
 from theurian.application.authorization import DEPLOYMENT_TENANT, AuthorizationGrant
 from theurian.application.project_service import (
+    ACTIVE_POINTER_REMEDY,
     FINDINGS_STORE_ID,
     BuildProvenance,
     ProjectError,
@@ -264,6 +265,115 @@ DEFERRED_RESULT_REFUSAL: Final = (
     "defect in this daemon, not something your request can fix; the daemon's own "
     "logs name it. Nothing was read and nothing was changed."
 )
+
+#: How much of a derived-state value a refusal may quote back. Long enough to
+#: recognise a filename, short enough that a 260-character one -- or a whole
+#: file pasted into the pointer -- is a bounded echo rather than the payload.
+_MAX_QUOTED_VALUE_CHARS: Final = 120
+
+#: How long a refusal built elsewhere may be by the time it reaches a client.
+#: Generous next to :data:`_MAX_QUOTED_VALUE_CHARS`, because a whole message is
+#: mostly this project's own prose and only partly the value inside it -- and
+#: still a ceiling, which is what a 3,000-character ``stateHash`` echo did not
+#: have.
+_MAX_MESSAGE_CHARS: Final = 600
+
+#: What :func:`_publishable` appends when it cuts. Never a prefix of what a cut
+#: value can end with, so "the value ended here" and "the value was cut" are
+#: distinguishable in a transcript.
+_CUT_MARKER: Final = "… (cut)"
+
+
+def _publishable_field(value: str) -> str:
+    """The same escaping and bound as :func:`_publishable`, **without the quotes**.
+
+    A published *field* is structured data a client reads by key --
+    ``project.list``'s ``projectId`` is the argument every other tool takes --
+    so quoting it would change the contract rather than protect it: a first cut
+    of this fix answered ``"'demo'"`` where the schema says ``demo``. What a
+    field still needs is the escaping, because the wire encoder does not care
+    whether a surrogate arrived in a message or in a value.
+
+    ``repr``'s interior rather than a second escaping scheme, so a reader
+    undoing either one uses the same rules -- and so printable non-ASCII
+    survives here exactly as it does there: a Japanese root path stays legible.
+
+    Built from ``repr`` directly rather than by slicing :func:`_publishable`'s
+    result: that one appends :data:`_CUT_MARKER` when it cuts, and dropping the
+    last character of a cut value would eat the marker's last character instead
+    of a quote.
+    """
+    interior = repr(value)[1:-1]
+    if len(interior) <= _MAX_QUOTED_VALUE_CHARS:
+        return interior
+    return interior[:_MAX_QUOTED_VALUE_CHARS] + _CUT_MARKER
+
+
+def _bounded_message(message: str) -> str:
+    """A refusal built elsewhere, cut to what a reply may carry.
+
+    :func:`_publishable` is for a *value* this daemon did not produce, and it
+    quotes as well as cuts. This is for a whole **message** that already contains
+    such a value -- `read_active_state`'s OS cause, `ContentHash`'s echo of
+    ``stateHash`` -- where quoting the sentence would be wrong and the length is
+    the only thing still unbounded. Escape-safety at those sites comes from their
+    own ``!r``; what they lack is a ceiling, and a 3,000-character ``stateHash``
+    is the shape that showed it (round two, security).
+    """
+    if len(message) <= _MAX_MESSAGE_CHARS:
+        return message
+    return message[:_MAX_MESSAGE_CHARS] + _CUT_MARKER
+
+
+def _publishable(value: str) -> str:
+    """A derived-state value rendered safe to interpolate into a reply.
+
+    **The failure this exists for is an empty response body, not an ugly one.**
+    ``databaseFilename`` is a value out of ``active.json`` -- derived,
+    git-ignored, unsigned (SEC-7) -- and ``ActiveState.from_json`` only ``str()``s
+    it, so a hand edit or a partially-decoded copy can put a lone surrogate in a
+    file that still parses (``json.dumps`` writes ``\\udcff`` and ``json.loads``
+    reads it straight back). Interpolated verbatim into a refusal, that surrogate
+    reaches the wire encoder: measured, ``CallToolResult.model_dump_json()``
+    raises ``PydanticSerializationError`` -- *"'utf-8' codec can't encode
+    character '\\udcff' … surrogates not allowed"* -- and the client receives a
+    200 with an empty body: no ``isError``, no message, no remedy. That is worse
+    than the ``UnexpectedToolError`` #388 was filed for, because nothing on the
+    wire says anything went wrong.
+
+    ``repr`` and not ``str.encode(errors=...)``, one spelling for every site:
+    ``repr`` escapes the surrogate, the NUL and the C0 controls in one operation
+    the reader already knows how to undo, and it leaves printable non-ASCII alone
+    -- a Japanese filename stays legible, which the ``ascii`` spelling would
+    destroy for no gain. The length bound is here rather than at the call sites
+    for the reason the escaping is: a rule applied per site is a rule that drifts.
+
+    **``_fail``'s two channels are not routed through this, and the reason given
+    here was wrong** (round two, adversarial H-3). The claim was that the text
+    channel is safe because the value has been through ``!r`` at the construction
+    site -- and the arm it pointed at, ``index_commands.py``'s
+    "names build {published}", has no ``!r`` at all. What actually saves that
+    channel is Python's own default: ``sys.stderr`` carries
+    ``errors='backslashreplace'``, so an unencodable character is written as an
+    escape rather than raising. The JSON channel is separately safe because
+    ``json.dumps``'s ``ensure_ascii`` escapes it before the write. Measured
+    2026-09-06 through a real subprocess under ``LANG`` of ``C``,
+    ``en_US.UTF-8`` and ``ja_JP.UTF-8``: a surrogate ``indexBuildId`` through
+    ``theurian index gc`` answered cleanly on both channels in all three.
+
+    **The claim is scoped to those two channels and to nothing else**, because
+    ``sys.stdout`` does *not* share that handler -- it carries
+    ``errors='surrogateescape'`` -- and a command that prints a payload rather
+    than a refusal is a different question. Under the two UTF-8 locales,
+    ``theurian index status`` without ``--json`` truncated stdout after 39 bytes
+    and ended in a traceback over the same plant, while ``--json`` answered.
+    That is pre-existing behaviour on a channel this module does not reach and
+    is recorded rather than fixed here.
+    """
+    quoted = repr(value)
+    if len(quoted) <= _MAX_QUOTED_VALUE_CHARS:
+        return quoted
+    return quoted[:_MAX_QUOTED_VALUE_CHARS] + _CUT_MARKER
 
 
 def _forwarding[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
@@ -864,7 +974,16 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         same line of SDK code. One fold, applied wherever a ``ProjectError``
         would otherwise cross the tool boundary.
         """
-        return ToolError(" ".join(part for part in (str(exc), exc.remedy) if part))
+        # Bounded on the way out (round two, adversarial H-2). Everything this
+        # wraps is a `ProjectError` built somewhere else, and two of them
+        # interpolate a value this daemon did not produce -- the pointer read's
+        # OS cause, and `ContentHash`'s refusal, which echoes the `stateHash`
+        # field verbatim. `!r` at those sites makes them escape-safe and leaves
+        # them length-unbounded, so the bound is applied here, once, where every
+        # such refusal passes.
+        return ToolError(
+            " ".join(part for part in (_bounded_message(str(exc)), exc.remedy) if part)
+        )
 
     def _registry_snapshot() -> tuple[dict[str, dict[str, str]], tuple[str, ...]]:
         """The registry's two halves: what loaded, and what was skipped.
@@ -933,14 +1052,28 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 f"entry, then register the project again from its repository."
             )
 
-        # `known` and `skipped` are the daemon's own registry contents, not the
-        # caller's input: `load` admits only ids that construct as a `ProjectId`
-        # (each <= MAX_PROJECT_ID_CHARS), and `unreadable` is whatever a hand
-        # edit left in the file. Neither is amplified by this request.
-        known = ", ".join(sorted(entries)) or "none"
+        # **Both go through the sanitiser, per element** (round two, adversarial
+        # H-2). The sentence here said "neither is amplified by this request",
+        # reasoning that `load` admits only ids that construct as a `ProjectId`.
+        # That holds for `known` and is false for `unreadable`, which is
+        # *precisely* the ids that did not construct -- whatever a hand edit left
+        # in the file. Measured 2026-09-06 on this path, which any client reaches
+        # by asking for an id that is not registered: a registry key carrying a
+        # lone surrogate killed the wire encoder, so the client received a 200
+        # with an empty body; a 200,000-character key produced a
+        # 200,248-character refusal, defeating the bound `_publishable` exists
+        # for. Per element rather than over the joined string, so one hostile id
+        # cannot consume the whole budget and hide the rest.
+        # The **field** form, not the quoted one: these are lists of ids a reader
+        # scans and retypes, so `Registered: demo` must not become `Registered:
+        # 'demo'` -- a first cut of this fix did exactly that and three surface
+        # tests caught it. Escaping and the length bound are what the sites need;
+        # the quotes belong to message text, not to a list of values.
+        known = ", ".join(_publishable_field(name) for name in sorted(entries)) or "none"
         skipped = (
             f"Present but unreadable, and served by nothing until removed with "
-            f"`theurian project unregister <id>`: {', '.join(unreadable)}. "
+            f"`theurian project unregister <id>`: "
+            f"{', '.join(_publishable_field(name) for name in unreadable)}. "
             if unreadable
             else ""
         )
@@ -1038,16 +1171,74 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         if active is None:
             msg = (
                 f"Project {project_id!r} has no built knowledge state. "
-                f"Run `theurian migrate apply` in {entry['rootPath']}."
+                f"Run `theurian migrate apply` in {_publishable(entry['rootPath'])}."
             )
             raise ToolError(msg)
 
-        database = paths.state / active.database_filename
-        if not database.exists():
+        # `databaseFilename` is a *value* out of `active.json`, which is derived,
+        # git-ignored and unsigned (SEC-7): `ActiveState.from_json` only `str()`s
+        # it, and `verify_state_provenance` binds `(root, state_hash)` rather
+        # than the filename, so nothing above this line has looked at what it
+        # says. A 260-character one made `exists()` raise `ENAMETOOLONG` past the
+        # `except TheurianError` boundary every tool is wrapped in, and
+        # `knowledge.search` answered the SDK's `UnexpectedToolError` -- "Error
+        # executing tool", no remedy (measured at `75fe9b4f`; the same class as
+        # #388's `indexBuildId` face, on the pointer beside it).
+        #
+        # **A filename carrying `../` is answered here now, and the sentence this
+        # replaces was wrong twice.** It said the escape was "met by the
+        # provenance gate below": provenance binds the hash, not the filename, so
+        # it passes. What actually fires is the *read-back integrity* guard, and
+        # only when the content differs -- measured 2026-09-06, a doctored copy
+        # outside the tree refused with `InvariantViolationError` while a
+        # **byte-identical** copy outside the tree was served at exit 0. Nothing
+        # bounded the escape itself, which is what `state_database_named`'s
+        # containment does; the guards below still bound what it can say.
+        try:
+            database = paths.state_database_named(active.database_filename)
+        except ProjectError as exc:
+            # **Neither the refusal's message nor its remedy is passed through**,
+            # and the two have separate reasons. The message names the resolved
+            # absolute path -- correct on a terminal, the operator's machine
+            # layout on this surface (GHSA-97q9), and routing this call through
+            # containment added a member to that population. The remedy is keyed
+            # by `ProjectPaths._escape_remedy` on the assumption that a *link* on
+            # the path is what escaped, so it says to remove `.theurian/state`:
+            # true of the plants #525 closes, and a non-cause here, where the
+            # directory is intact and it is the pointer's own field that carries
+            # `../`. Only this call site knows which of the two it asked with.
+            #
+            # "outside `.theurian/state/`" and not "outside its working tree",
+            # which round two measured false of half the class: `../../decoy
+            # .sqlite` resolves *inside* the root and was served at exit 0. Both
+            # causes -- past the root, and inside it but out of the state
+            # directory -- are true of the wording below, and only the second is
+            # true of the one it replaces.
+            msg = (
+                f"Project {project_id!r} points at a state database outside its own "
+                f"`.theurian/state/` directory ({_publishable(active.database_filename)}). "
+                f"{ACTIVE_POINTER_REMEDY}"
+            )
+            raise ToolError(msg) from exc
+        try:
+            present = database.exists()
+        except OSError as exc:
+            # The exception's type name and never `str(exc)`, which appends the
+            # filename and so the operator's absolute path -- the rule
+            # `_purge_fields`' failure reason already holds on this surface.
+            msg = (
+                f"Project {project_id!r} names a state database the operating system "
+                f"will not answer for ({type(exc).__name__}). Delete "
+                f".theurian/state/active.json and run `theurian migrate apply`; the "
+                f"pointer is derived, so nothing is lost."
+            )
+            raise ToolError(msg) from exc
+        if not present:
             msg = (
                 f"Project {project_id!r} points at a state database that is missing "
-                f"({active.database_filename}). Run `theurian migrate apply` to rebuild it; "
-                f"the canonical state is reconstructible from Git-tracked migrations."
+                f"({_publishable(active.database_filename)}). Run `theurian migrate apply` "
+                f"to rebuild it; the canonical state is reconstructible from Git-tracked "
+                f"migrations."
             )
             raise ToolError(msg)
 
@@ -1632,11 +1823,20 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         entries, unreadable = _registry_snapshot()
         return {
             "count": len(entries),
+            # Sanitised even though these are *values* rather than message text
+            # (round two, adversarial H-2): a dict literal reaches the same wire
+            # encoder a refusal does, and a `rootPath` carrying a lone surrogate
+            # ended `project.list` in an `UnexpectedToolError` (measured
+            # 2026-09-06). Invisible to a sweep keyed on f-strings, which is why
+            # the key below is keyed on the *source* of a value as well.
             "projects": [
-                {"projectId": pid, "rootPath": e.get("rootPath", "")}
+                {
+                    "projectId": _publishable_field(pid),
+                    "rootPath": _publishable_field(e.get("rootPath", "")),
+                }
                 for pid, e in sorted(entries.items())
             ],
-            "unreadable": list(unreadable),
+            "unreadable": [_publishable_field(name) for name in unreadable],
             "remedy": (
                 "Remove them with `theurian project unregister <id>`, then register each "
                 "project again from its repository. Until then, an id in this list "

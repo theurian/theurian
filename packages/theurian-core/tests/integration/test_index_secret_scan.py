@@ -30,6 +30,7 @@ holds that line.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import shutil
@@ -47,14 +48,28 @@ from theurian.application.project_service import (
     ProjectPaths,
     ProjectRegistry,
     read_active_index_pointer,
+    write_active_index_pointer,
 )
 from theurian.application.setup_service import SetupService
+from theurian.cli import index_commands
+from theurian.cli.index_commands import EXIT_SECRET_FOUND
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.setup import SetupReport, SetupState
 from theurian.security.content_secrets import MAX_FINDINGS, REDACTED_PREFIX_CHARS
 
 pytestmark = pytest.mark.integration
+
+_SOURCE = Path(__file__).resolve().parents[2] / "src" / "theurian"
+
+#: The two helpers in `index_build`'s post-publish window that convert their own
+#: failure into a warning beside the report. Named rather than inferred, so a
+#: third one has to be classified here before it can sit in the window.
+_CONVERTS_ITS_OWN_FAILURE = frozenset({"_record_the_provenance", "_record_the_scan"})
+
+#: Builtins the window may call: they read what is already in memory and cannot
+#: touch the filesystem, so they carry no failure to convert.
+_BUILTINS_IN_THE_WINDOW = frozenset({"list", "len", "sorted", "str"})
 
 runner = CliRunner()
 
@@ -1702,3 +1717,192 @@ def test_doctor_still_answers_when_the_state_directory_escapes_the_project(
         "findings": 0,
     }
     assert code == 1, "an escaping tree is still an unhealthy machine"
+
+
+# -- The window between the precondition and the record write (#551) -----------
+
+
+def test_a_state_directory_that_escapes_after_the_publish_still_reports_the_findings(
+    planted: Path, tmp_path: Path
+) -> None:
+    """The TOCTOU residual's *escape*, closed; the window itself stays open.
+
+    ``_the_scan_record_paths_are_usable`` proves the record's two paths contained
+    before anything is built, and ``_record_the_scan`` resolves them again after
+    ``_publish`` has swapped the pointer. A co-resident local process that
+    redirects ``.theurian/state`` between the two makes the second resolution
+    raise ``ProjectPathEscapeError`` -- a ``TheurianError``, which the handler's
+    ``except OSError`` does not catch.
+
+    That is worse than the crash it looks like, which is why it is driven at all:
+    the raise lands *after* the publish and *before* ``_emit``, so under the
+    default ``block`` policy the credential-bearing build is serving while
+    ``secretFindings`` never prints and ``EXIT_SECRET_FOUND`` never fires --
+    exactly the shape the precondition was added to prevent, met one step later.
+
+    The window is planted rather than raced: ``write_active_index_pointer`` is
+    the publish, so wrapping it puts the redirect at the one instant that
+    matters. A race would be flaky and would prove less -- what is asserted is
+    the *handling*, and the window's own closure is recorded as follow-up on
+    #551 rather than attempted here.
+    """
+    outside = tmp_path / "state-elsewhere"
+    published: list[bool] = []
+    real = write_active_index_pointer
+
+    def redirecting(*args: Any, **kwargs: Any) -> None:
+        real(*args, **kwargs)
+        state = planted / ".theurian/state"
+        shutil.move(str(state), str(outside))
+        state.symlink_to(outside)
+        published.append(True)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(index_commands, "write_active_index_pointer", redirecting)
+        code, payload = _in(planted, "index", "build")
+
+    assert published, "the publish never ran, so the window was never opened"
+    assert code == EXIT_SECRET_FOUND, (
+        f"the block policy's exit code did not fire, so the escape reached the "
+        f"caller instead of the findings: exit {code}, payload {payload}"
+    )
+    assert payload["published"] is True
+    assert _findings(payload), "the findings the caller is owed were not published"
+    warning = payload.get("recordWarning", "")
+    assert "working tree" in warning, (
+        f"the warning does not say what went wrong with the record: {warning!r}"
+    )
+    assert "Remove" in warning, (
+        f"the warning carries no cure for the escape it reports: {warning!r}"
+    )
+    # The two arms keep different cures, because the causes are different: an
+    # incidental write failure is met with `chmod`, and a path that left the tree
+    # is met by removing what redirected it -- `chmod` on a directory that is no
+    # longer the directory cures nothing. Asserted here rather than in a test of
+    # its own, which would repeat this whole build for one absence; the offline
+    # CI job's budget is what decides that, and the assertion is about the very
+    # string above it.
+    assert "writable" not in warning, (
+        f"the escape took the write-failure cure, which is a non-cause here: {warning!r}"
+    )
+
+
+# -- The rest of the same window: everything between publish and emit ----------
+
+
+def test_a_provenance_record_that_cannot_be_written_still_reports_the_findings(
+    planted: Path, tmp_path: Path
+) -> None:
+    """Round one, security H-B: `record_index` sat in the window unguarded.
+
+    It runs between ``_publish``'s pointer swap and the ``_emit`` below it, so
+    anything it raises lands after the build is serving and before the caller is
+    told anything. Measured at ``8f975d50`` with a *directory* at
+    ``<data_dir>/provenance.json.tmp`` -- a path no ``ProjectPaths`` helper
+    guards and nothing in this repository owns -- ``index build --json`` exited 1
+    with **zero bytes on stdout**, an ``IsADirectoryError`` traceback at
+    ``index_commands.py:293``, and ``active-index.json`` already naming the new
+    build: the exact shape ``_the_scan_record_paths_are_usable`` exists to
+    prevent, one line earlier.
+
+    Planted *after* ``migrate apply``, which writes the record itself -- planting
+    before it would fail the apply and never reach the window.
+
+    The warning is asserted on what the failure **costs**, not on bookkeeping:
+    ``mcp/search`` stands aside a build id it cannot find in the record, so an
+    unrecorded build degrades every ``knowledge.search`` to the substring scan
+    and reports ``index-unbuilt`` about a build that is on disk and published.
+    """
+    (tmp_path / "datadir" / "provenance.json.tmp").mkdir(parents=True)
+
+    code, payload = _in(planted, "index", "build")
+
+    assert code == EXIT_SECRET_FOUND, (
+        f"the block policy's exit code did not fire, so the failure reached the "
+        f"caller instead of the findings: exit {code}, payload {payload}"
+    )
+    assert payload["published"] is True
+    assert _findings(payload), "the findings the caller is owed were not published"
+    warning = payload.get("provenanceWarning", "")
+    assert "index-unbuilt" in warning, (
+        f"the warning describes bookkeeping rather than what the caller will "
+        f"actually observe: {warning!r}"
+    )
+    assert "theurian index build" in warning, f"the warning carries no cure: {warning!r}"
+
+
+def test_no_step_between_the_publish_and_the_report_can_raise_past_it() -> None:
+    """The source-level pin for that window, because two members of it were found one at a time.
+
+    Read off ``index_build``'s own body: every statement between the ``try`` that
+    publishes the pointer and the ``_emit`` that reports must make no call except
+    to a helper that converts its own failure, or to a builtin. The two helpers
+    are named in :data:`_CONVERTS_ITS_OWN_FAILURE`; inlining either one's body
+    back into the command -- which is exactly how ``record_index`` came to sit
+    there bare -- fails this by name.
+
+    Keyed on *calls* rather than on "is wrapped in a ``try``", because a `try`
+    around the window would satisfy the letter and lose the property: the point
+    is that each failure degrades into the report with a cure of its own, not
+    that one handler swallows them all into a single message.
+    """
+    tree = ast.parse((_SOURCE / "cli" / "index_commands.py").read_text(encoding="utf-8"))
+    body = next(
+        node.body
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "index_build"
+    )
+    publishes = [i for i, st in enumerate(body) if isinstance(st, ast.Try)]
+    emits = [
+        i
+        for i, st in enumerate(body)
+        if any(
+            isinstance(call.func, ast.Name) and call.func.id == "_emit"
+            for call in ast.walk(st)
+            if isinstance(call, ast.Call)
+        )
+    ]
+    assert publishes and emits, "the publish/emit landmarks moved, so this pins nothing"
+    # The **last** `try` before `_emit`, not the last one anywhere: `publishes[-1]`
+    # took the last top-level `try` in the whole body, so wrapping a re-inlined
+    # `record_index` in its own `try: ... except ValueError: pass` inside the
+    # window moved the landmark past it and the window read as empty (round two,
+    # measured with a positive control). Bounded to the statements before the
+    # report, which is the region the claim is about.
+    publishes_before_the_report = [index for index in publishes if index < emits[0]]
+    assert publishes_before_the_report, "no publish precedes the report, so this pins nothing"
+    window = body[publishes_before_the_report[0] + 1 : emits[0]]
+    assert window, "the window is empty, so this asserts nothing"
+
+    unguarded = {
+        ast.unparse(call)[:80]
+        for statement in window
+        for call in ast.walk(statement)
+        if isinstance(call, ast.Call)
+        and not (
+            isinstance(call.func, ast.Name)
+            and call.func.id in {*_CONVERTS_ITS_OWN_FAILURE, *_BUILTINS_IN_THE_WINDOW}
+        )
+    }
+    assert not unguarded, (
+        "a step between publishing the pointer and reporting the build can raise "
+        f"past the report -- the H-B shape: {sorted(unguarded)}"
+    )
+
+    # A `try` *inside* the window is not an escape hatch either: the evasion round
+    # two measured was `try: record_index(...) except ValueError: pass`, which the
+    # call key above cannot see because the call is no longer bare. So the window's
+    # own handlers must convert rather than swallow -- a `pass` body reports
+    # nothing to the caller, which is the property this whole pin is about.
+    swallowing = {
+        f"line {handler.lineno}: except {ast.unparse(handler.type) if handler.type else ''}"
+        for statement in window
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Try)
+        for handler in node.handlers
+        if all(isinstance(step, ast.Pass) for step in handler.body)
+    }
+    assert not swallowing, (
+        "a step in the window swallows its own failure instead of converting it "
+        f"into the report: {sorted(swallowing)}"
+    )

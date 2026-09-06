@@ -7,6 +7,7 @@ the Claude Code plugin depends on (CP-2), validated by ``tests/contract/``.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import sqlite3
 import sys
@@ -36,6 +37,7 @@ from theurian.application.migration_engine import (
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
     BuildProvenance,
+    ProjectError,
     ProjectPathEscapeError,
     ProjectPaths,
     ensure_gitignore,
@@ -883,6 +885,28 @@ def _discard_untrusted_state(database: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _layout_refusal(exc: OSError) -> str:
+    """Why the ``.theurian/`` layout could not be created, naming the path in the way.
+
+    ``exc.filename`` and not ``exc.strerror``, and not ``type(exc).__name__``
+    either. ``strerror`` is the bare OS phrase -- ``'File exists'`` for the
+    dangling-link plant -- which tells an operator nothing about *which* of the
+    thirteen paths ``initialize_project`` creates stopped it, and the remedy
+    beside this message sends them to that path. Both are published: the phrase
+    says what the OS refused, the filename says where.
+
+    An absolute path is correct on this surface. ``init`` is a terminal command
+    whose whole subject is the working directory, every sibling refusal here
+    already prints one (``_fail_a_path_escape``, the ``.gitignore`` arms), and
+    the rule that keeps operators' paths out is the *MCP* one.
+    """
+    where = exc.filename or "a path under .theurian/"
+    return (
+        f"The .theurian/ layout could not be created: {exc.strerror or type(exc).__name__} "
+        f"at {where}."
+    )
+
+
 def init_command(as_json: JsonOption = False) -> None:
     """Create ``.theurian/`` in the current repository.
 
@@ -924,12 +948,34 @@ def init_command(as_json: JsonOption = False) -> None:
             code=1,
         )
         return
+    except OSError as exc:
+        # The `mkdir` itself, which containment cannot speak for: a clone
+        # carrying a *dangling* `.theurian/cache` link makes `exists()` answer
+        # `False` and `mkdir(parents=True)` then raise `FileExistsError`
+        # (errno 17) -- `exist_ok` is not passed here and would not help, since
+        # it suppresses `EEXIST` only once `is_dir()` agrees, and it follows the
+        # link to answer. Measured at `75fe9b4f` against the real CLI: exit 1,
+        # **zero bytes on stdout**, a Rich traceback naming this line (#571's
+        # second face). A regular file at one of those paths, and a read-only
+        # `.theurian/`, arrive the same way.
+        _fail(
+            _layout_refusal(exc),
+            remedy=(
+                "Remove or repair whatever sits at the path the message names -- a "
+                "clone can deliver it as a symbolic link to nowhere -- then re-run "
+                "`theurian init`."
+            ),
+            as_json=as_json,
+            code=1,
+        )
+        return
 
     try:
         gitignore_changed, _ = ensure_gitignore(context.paths.root)
     except TheurianError as exc:
-        # Markers that do not delimit one block, which `ensure_gitignore`
-        # refuses rather than guessing at -- the .gitignore half of #128. It
+        # Two refusals now, both raised by `ensure_gitignore` with their own
+        # cures: markers that do not delimit one block (the .gitignore half of
+        # #128), and a symbolic link at `.gitignore` itself (#571). Either
         # arrived here as a Typer traceback with the remedy buried in it,
         # because the only `except` in this command wraps `resolve_context`.
         # The directories above are already created and are not undone: they are
@@ -938,6 +984,39 @@ def init_command(as_json: JsonOption = False) -> None:
         _fail(
             str(exc),
             remedy=_context_remedy(exc, default="Repair the .gitignore block, then re-run."),
+            as_json=as_json,
+            code=1,
+        )
+        return
+    except (OSError, UnicodeDecodeError) as exc:
+        # **What still arrives here, after the arm above took the rest** (round
+        # two). This comment used to name the symbolic link among the conditions
+        # and it no longer reaches this arm at all: `_read_authored_file`
+        # converts the `ELOOP` into a `ProjectError`, which the
+        # `except TheurianError` above catches. What is left is the ordinary
+        # filesystem refusals -- an unreadable or unwritable file, a directory
+        # where the file belongs (whose `IsADirectoryError` the link converter
+        # re-raises), a full disk -- each of which ended `init --json` in a
+        # traceback with an empty machine channel until this arm existed.
+        #
+        # `UnicodeDecodeError` beside `OSError` and **not folded into it**: it is
+        # a `ValueError`, so an `except OSError` does not see it, and a
+        # `.gitignore` holding one non-UTF-8 byte went on producing the traceback
+        # this arm exists to stop (round one, adversarial M-7; #367's `init`
+        # face). `propose --local` has caught the pair together since it was
+        # written, which is where the shape is taken from.
+        reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else "it is unreadable"
+        _fail(
+            f"The Theurian block could not be written to .gitignore: {reason}. "
+            f"The `.theurian/` directories were created; nothing else was changed.",
+            remedy=(
+                # No symbolic-link clause: a link never reaches this arm, and a
+                # cure naming a condition the reader cannot be in is the
+                # wrong-remedy shape this project has shipped three times.
+                "Make .gitignore a readable, writable, UTF-8 regular file, then re-run "
+                "`theurian init`. Until it carries the Theurian block, `git status` will "
+                "show derived state that ADR-0004 means to keep out of the repository."
+            ),
             as_json=as_json,
             code=1,
         )
@@ -1213,6 +1292,83 @@ def _pointer_failure_fields(failure: TheurianError | None) -> dict[str, str]:
     }
 
 
+def _state_built_failure_fields(failure: TheurianError | None) -> dict[str, str]:
+    """Why ``stateBuilt`` is ``null`` and what clears it, or nothing.
+
+    Its own two keys rather than the pointer's ``reason``/``remedy``, because the
+    two failures are independent and either can happen without the other -- and
+    sharing one pair meant the loser's text was published nowhere. Named for the
+    field they explain, so a reader does not have to know which of several
+    "cannot know"s a bare ``reason`` was about.
+    """
+    if failure is None:
+        return {}
+    return {"stateBuiltReason": str(failure), "stateBuiltRemedy": failure.remedy}
+
+
+def _state_database_is_built(database: Path) -> tuple[bool | None, TheurianError | None]:
+    """Whether the state database is on disk, or ``None`` when the OS would not say.
+
+    Returns the answer and, when there is none, the failure to publish beside it.
+
+    ``Path.exists()`` swallows the errnos ``pathlib`` reads as "not there" --
+    ``{ENOENT, EBADF, ENOTDIR, ELOOP}`` on CPython 3.13, measured -- and
+    re-raises everything else, so a ``.theurian/state`` at mode ``000`` reached
+    ``project status`` as a ``PermissionError`` from inside its payload literal
+    (#389, measured at ``75fe9b4f``: exit 1, zero bytes on stdout). Converted
+    rather than swallowed into ``False``: this command's contract is to report
+    what it can and name what it could not, and "no built state" is a claim
+    whose cure -- `theurian migrate apply` -- cannot run in the condition that
+    produced it either.
+
+    **Two errnos reach here and they have opposite cures**, which is why the
+    remedy is chosen rather than fixed. ``EACCES`` is a mode on some directory
+    above the file, and the cure is the ``chmod``;
+    :data:`ACTIVE_POINTER_REMEDY`'s "delete the pointer" is not something the
+    operator can do through an unreadable parent either, which is why that text
+    is not borrowed. ``ENAMETOOLONG`` is a checkout whose path is simply too deep
+    -- reachable with the state directory perfectly readable, which is how the
+    limb is driven -- and `chmod` cures nothing there. Publishing one cure for
+    both is the "a remedy that names a non-cause" defect this project has shipped
+    three times.
+    """
+    try:
+        return database.exists(), None
+    except OSError as exc:
+        return None, ProjectError(
+            f"Whether {database.name} exists could not be established: "
+            f"{exc.strerror or type(exc).__name__}.",
+            remedy=_state_probe_remedy(database, exc),
+        )
+
+
+def _state_probe_remedy(database: Path, exc: OSError) -> str:
+    """The cure for the errno that actually stopped the probe.
+
+    Keyed on ``errno`` rather than on the message, for the reason
+    :func:`~theurian.security.no_follow.is_a_symbolic_link_refusal` records: the
+    kernel's answer for *this* call is the only thing that is not a guess. The
+    fallback names neither cure and says what is known instead -- a wrong cure
+    costs a reader more than an honest "the OS refused, here is its reason".
+    """
+    if exc.errno == errno.ENAMETOOLONG:
+        return (
+            "Move this repository to a shorter path -- the state database's full path "
+            "is past the limit the operating system accepts -- then run "
+            "`theurian project status` again."
+        )
+    if exc.errno == errno.EACCES:
+        return (
+            f"Make {database.parent} readable -- `chmod u+rx` on it and every directory "
+            f"above it -- then run `theurian project status` again."
+        )
+    return (
+        f"Inspect {database.parent} and the directories above it: the operating system "
+        f"refused the question rather than answering it. Then run `theurian project "
+        f"status` again."
+    )
+
+
 def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
     """``project status`` for a repository whose project could not be resolved.
 
@@ -1380,6 +1536,16 @@ def project_status(as_json: JsonOption = False) -> None:
         _fail_a_path_escape(exc, as_json=as_json)
         return
 
+    # Hoisted for the reason `index_stale` above it was, and met the same way:
+    # `Path.exists()` re-raises `EACCES` rather than answering "not there"
+    # (CPython 3.13's ignored set is `{ENOENT, EBADF, ENOTDIR, ELOOP}`), so a
+    # `.theurian/state` at mode 000 raised `PermissionError` from inside the
+    # payload literal below -- exit 1, zero bytes on stdout, measured at
+    # `75fe9b4f` (#389's third face). This is the one probe of the three that
+    # `read_active_state`'s own fix does not cover: it stats the database, not
+    # the pointer.
+    state_built, probe_failure = _state_database_is_built(database)
+
     _emit(
         {
             "projectId": context.project_id.value,
@@ -1400,7 +1566,12 @@ def project_status(as_json: JsonOption = False) -> None:
             "initialized": context.paths.knowledge_dir.is_dir(),
             "stateHash": str(context.state_hash),
             "activeStateHash": None if active is None else str(active.state_hash),
-            "stateBuilt": database.exists(),
+            # `None` is "cannot know", the spelling `registered` above already
+            # uses for the file it could not read. `False` would be a claim --
+            # "this project has no built state" -- about a question the probe
+            # was refused an answer to, and its cure (`migrate apply`) is one
+            # that cannot run either.
+            "stateBuilt": state_built,
             "indexStale": index_stale,
             # `activeStateHash: null` alone cannot say which of two things
             # happened, and the two have opposite cures: `migrate apply` for a
@@ -1431,6 +1602,16 @@ def project_status(as_json: JsonOption = False) -> None:
             # lost when it wins -- `statePointerCorrupt` above carries the
             # pointer failure whatever happens, and its cure is a fixed string
             # both this command and `theurian index status` print.
+            # The probe publishes under **its own keys**, never by borrowing the
+            # pointer's (round one, code review M-3 / adversarial M-2). Folding
+            # it into `reason`/`remedy` meant its text was published only when
+            # the pointer read had *not* failed -- and under the mode plant the
+            # pointer always fails first, so the probe's own strings reached no
+            # payload the suite produced, and two mutations rewriting them
+            # survived. They are reachable: a project root long enough that the
+            # database path passes `PATH_MAX`, with the state directory readable
+            # and no pointer written yet.
+            **_state_built_failure_fields(probe_failure),
             **_pointer_failure_fields(pointer_failure),
             **read.failure_fields,
         },
@@ -2585,7 +2766,13 @@ def ingest_command(as_json: JsonOption = False) -> None:
         raise typer.Exit(EXIT_STATE_ERROR)
 
 
-def _verify_history(context: CommandContext, as_json: bool) -> None:
+def _verify_history(  # noqa: PLR0911 -- one early return per distinguishable outcome:
+    # three cases where there is genuinely nothing to check against, and five refusals that
+    # each name a different cause with its own cure. Folding any two would publish one
+    # message for two conditions, which is the defect this function keeps being fixed for.
+    context: CommandContext,
+    as_json: bool,
+) -> None:
     """Fail if an already-applied migration has been edited or deleted (FR-K5, ADR-0005).
 
     Checked against the *previously active* state, not the one being built.
@@ -2607,8 +2794,54 @@ def _verify_history(context: CommandContext, as_json: bool) -> None:
     if active is None or active.state_hash == context.state_hash:
         return
 
-    previous = context.paths.state / active.database_filename
-    if not previous.exists():
+    # Through the helper, never the bare join (round two, security H-1). This
+    # site and `index build`'s were the two the MCP-side containment did not
+    # reach, and this one runs inside `_require_project`, so it is on the path of
+    # every command that resolves a project.
+    try:
+        previous = context.paths.state_database_named(active.database_filename)
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
+    except TheurianError as exc:
+        _fail(
+            f"Theurian cannot confirm that no applied migration has been edited (FR-K5): {exc}",
+            remedy=_context_remedy(exc, default=ACTIVE_POINTER_REMEDY),
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
+    try:
+        there = previous.exists()
+    except OSError as exc:
+        # `databaseFilename` is a value out of `active.json`, and `ActiveState
+        # .from_json` only `str()`s it -- so the helper above builds whatever the
+        # pointer says and this is the first line that asks the OS about it. A
+        # 260-character one made `exists()` raise `ENAMETOOLONG`, which
+        # `pathlib` does not swallow, through `migrate status`, `migrate apply`
+        # and `index build` -- every command `_require_project` routes -- as a
+        # Rich traceback at exit 1 with zero bytes on stdout (measured at
+        # `75fe9b4f`; the same class as the `indexBuildId` faces and the third
+        # of the three joins on this value). The helper converts the *unusable
+        # name* now, so what still arrives here is a name the OS accepts and
+        # then declines to answer about -- a mode, or a length past `PATH_MAX`
+        # that `NAME_MAX` did not catch.
+        #
+        # Refused rather than returned, for this function's own recorded reason:
+        # the early returns are for "there is genuinely nothing to check
+        # against", and a name the OS will not answer for is not that. Treating
+        # it as absent would report a clean history at exit 0 for a project
+        # whose FR-K5 evidence was never read.
+        _fail(
+            f"Theurian cannot confirm that no applied migration has been edited "
+            f"(FR-K5): the previously active state pointer names a database the "
+            f"operating system will not answer for ({type(exc).__name__}).",
+            remedy=ACTIVE_POINTER_REMEDY,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
+    if not there:
         return
 
     try:

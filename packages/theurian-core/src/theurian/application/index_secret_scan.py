@@ -390,10 +390,17 @@ def _loaded_mapping(record: Path) -> dict[str, Any] | None:
     record holding arbitrary bytes -- a partially overwritten file, a restored
     binary -- escapes a handler that lists only the latter. The same three-way
     catch ``read_active_index_pointer`` carries, for the same file shape.
+
+    **The ``is_file`` probe is inside the ``try``**, swept here with the two
+    pointer readers beside it (#389): ``pathlib`` re-raises ``EACCES`` rather
+    than answering "not there", so a ``.theurian/state`` at mode ``000`` made
+    this probe raise past the ``except`` written for that errno. The two callers
+    of this function reach ``theurian doctor`` and the withdrawal-triggered
+    purge, and neither grades an ``OSError`` from here.
     """
-    if not record.is_file():
-        return None
     try:
+        if not record.is_file():
+            return None
         loaded = json.loads(record.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None

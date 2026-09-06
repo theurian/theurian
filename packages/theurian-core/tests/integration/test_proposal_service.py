@@ -3760,3 +3760,44 @@ def test_an_unreadable_installed_schema_is_not_reported_as_the_proposals_fault(
     assert "Reinstall theurian" in caught.value.remedy, caught.value.remedy
     assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
     assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_local_draft_over_a_symlinked_gitignore_says_what_is_actually_wrong(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """Round one, adversarial M-6: the arm was reachable and asserted by nothing.
+
+    ``--local``'s whole promise is that the body stays out of Git, and that rests
+    on the managed block being current -- so the draft is refused rather than
+    written when it cannot be. A symbolic link at ``.gitignore`` is one way it
+    cannot be, and it arrives at a *different* arm from the marker failures: its
+    own message, because the sibling's sentence is a claim about the **block**
+    ("a Theurian block that cannot be rewritten safely") and is false of a link,
+    where the block may not even be in this repository's file.
+
+    Nothing pinned that split, so a mutation collapsing the two arms into one
+    message survived. Asserted on the sentence each owns, and on the draft not
+    being written -- the refusal's whole point.
+    """
+    victim = paths.root.parent / "victim.txt"
+    victim.write_text("rules that are not this repository's\n", encoding="utf-8")
+    gitignore = paths.root / ".gitignore"
+    gitignore.unlink(missing_ok=True)
+    gitignore.symlink_to(Path("..") / victim.name)
+
+    with pytest.raises(ProposalError) as raised:
+        service.draft(_request(), local=True)
+
+    assert "symbolic link" in str(raised.value), (
+        f"the link took the marker arm's message, which is a claim about the "
+        f"block rather than about the file: {raised.value}"
+    )
+    assert "cannot be rewritten safely" not in str(raised.value)
+    assert "ls -l" in raised.value.remedy, (
+        f"the cure does not carry the link's two acts: {raised.value.remedy}"
+    )
+    assert not list(paths.proposals_local.glob("*")), (
+        "a draft was written despite the refusal, so the ignore guarantee it "
+        "promises was never established"
+    )

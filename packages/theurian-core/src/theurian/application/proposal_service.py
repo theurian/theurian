@@ -83,7 +83,12 @@ from typing import Final, NoReturn
 
 import yaml
 
-from theurian.application.project_service import ProjectError, ProjectPaths, ensure_gitignore
+from theurian.application.project_service import (
+    GitignoreIsASymbolicLinkError,
+    ProjectError,
+    ProjectPaths,
+    ensure_gitignore,
+)
 from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, TrustLevel
 from theurian.domain.errors import (
     InputTooLargeError,
@@ -898,6 +903,17 @@ class ProposalService:
         """
         try:
             ensure_gitignore(self._paths.root)
+        except GitignoreIsASymbolicLinkError as exc:
+            # Ahead of the `ProjectError` arm below, whose sentence is a claim
+            # about the *block* -- "a Theurian block that cannot be rewritten
+            # safely" -- and is false of a link, where the block is not the
+            # problem and may not even be in this repository's file (#571).
+            raise ProposalError(
+                "A --local draft needs .theurian/proposals-local/ to be git-ignored, but the "
+                "project's .gitignore is a symbolic link, which Theurian will not write "
+                "through. Nothing was written.",
+                remedy=exc.remedy,
+            ) from exc
         except ProjectError as exc:
             raise ProposalError(
                 "A --local draft needs .theurian/proposals-local/ to be git-ignored, but the "

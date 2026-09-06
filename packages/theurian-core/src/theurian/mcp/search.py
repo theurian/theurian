@@ -476,15 +476,28 @@ def _searchable_file(paths: ProjectPaths, build_id: str) -> Path | Fallback:
     """
     try:
         path = paths.index_for(build_id)
-    except TheurianError:
-        # `index_for` refuses an id that resolves outside the state directory.
-        # `active-index.json` is derived, git-ignored, and unsigned, so any local
-        # process can put `../` in it, and SEC-7 covers every path rather than
-        # only the ones that look like user input. Its message is not passed
-        # through: it names an absolute path, and this reply goes to a client.
+        present = path.is_file()
+    except (TheurianError, OSError):
+        # Two families, one answer, and the `OSError` is the half #388 measured
+        # missing. `index_for` refuses an id that resolves outside the state
+        # directory -- `active-index.json` is derived, git-ignored and unsigned,
+        # so any local process can put `../` in it (SEC-7) -- but it cannot
+        # refuse one that is merely too long, because `Path.resolve()` in
+        # non-strict mode never stats. An `indexBuildId` of 234 characters or
+        # more therefore came back from it as a `Path` whose `is_file()` raised
+        # `ENAMETOOLONG`, and `mcp/tools.py`'s `except TheurianError` boundary
+        # does not catch an `OSError`: measured, `knowledge.search` answered the
+        # SDK's `UnexpectedToolError` -- "Error executing tool" with no remedy at
+        # all -- for a pointer this file exists to fall back past.
+        #
+        # `_POINTER_INVALID` rather than `_FILE_MISSING`, because "the published
+        # build is no longer on disk" is a claim about a build that was named,
+        # and nothing here established that one was. The message from the
+        # refusal is not passed through either: it names an absolute path, and
+        # this reply goes to a client.
         return _POINTER_INVALID
 
-    if not path.is_file():
+    if not present:
         # The pointer outlived its file. `theurian index status` reports it; here
         # it is simply an index that cannot be read.
         return _FILE_MISSING

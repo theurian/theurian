@@ -113,7 +113,16 @@ authored-symlink and planted-directory class, keyed on the ``_contain`` /
 can fail to publish an envelope", and reading it as that would make any unrelated
 escape look like a hole in it.
 
-``ProjectPaths.index_for`` is the neighbour that makes the distinction concrete.
+``ProjectPaths.index_for`` and ``ProjectPaths.state_database_named`` are the
+neighbours that make the distinction concrete, and neither is a member here:
+each resolves ``self.state`` and then compares against it, rather than calling
+``_contained``, so the AST key below cannot see them and does not claim to.
+``state_database_named`` joined the class for one round -- its first cut *did*
+call ``_contained``, and root-scoped containment served a decoy inside the
+checkout at exit 0 (round two, security H-1) -- which is why it now carries
+``index_for``'s state-scoped check and has left this population with it. What
+drives them is where their escapes are *values*:
+``test_derived_state_value_envelope.py``.
 It raises the same ``ProjectError`` type and lives in the same class, and it is
 outside this population by root cause: what it refuses is a **value** -- an
 ``indexBuildId`` read out of ``active-index.json``, derived, git-ignored and
@@ -619,6 +628,13 @@ REACHES_NO_SWEPT_COMMAND: Final = frozenset(
 #: commands, and every refusal is the migration loader's.
 CONTAINMENT_PLANTS: Final = tuple(plant for plant in PLANTS if plant.in_the_containment_class)
 
+#: Plants outside the containment class for a reason of their own, rather than
+#: because no swept command reaches them. Each carries that reason on its
+#: ``outside_the_class_because``; naming them here as a set keeps the partition
+#: exact -- a new one has to be classified rather than absorbed into whichever
+#: half the assertion happens to read first.
+_OUTSIDE_FOR_THEIR_OWN_REASON: Final = frozenset({"knowledge", "initialize_project"})
+
 
 # -- The corpus and the sweep -----------------------------------------------
 
@@ -878,7 +894,7 @@ def test_every_contained_derived_helper_is_planted_or_excluded_with_a_reason() -
     )
     assert planted >= REACHES_NO_SWEPT_COMMAND
     outside = {plant.helper for plant in PLANTS if not plant.in_the_containment_class}
-    assert outside == REACHES_NO_SWEPT_COMMAND | {"knowledge", "initialize_project"}, (
+    assert outside == REACHES_NO_SWEPT_COMMAND | _OUTSIDE_FOR_THEIR_OWN_REASON, (
         f"the plants held outside the containment class have moved: {sorted(outside)}"
     )
     assert all(PLANT_BY_HELPER[helper].outside_the_class_because for helper in outside), (

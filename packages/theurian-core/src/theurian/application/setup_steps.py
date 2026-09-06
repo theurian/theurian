@@ -41,6 +41,7 @@ from theurian.application.authorization import (
     serving_profile_path,
 )
 from theurian.application.project_service import (
+    GITIGNORE_LINK_REMEDY,
     ProjectError,
     ProjectPaths,
     ProjectRegistry,
@@ -1228,6 +1229,32 @@ def probe_gitignore(context: SetupContext) -> SetupStep:
             summary="Not inside a Git repository.",
         )
     gitignore = root / ".gitignore"
+    # Ahead of `is_file()`, which follows the link and answers `True` about the
+    # *target*. Round one, three reviewers converging: a clone carrying a tracked
+    # mode-120000 `.gitignore` made this step read the block through the link and
+    # publish `satisfied` -- from `theurian doctor` and from `theurian setup
+    # --dry-run` alike -- for a repository where Git ignores nothing at all. Git
+    # refuses a symlinked `.gitignore` outright rather than following it
+    # (measured: "unable to access '.gitignore': Too many levels of symbolic
+    # links", `git check-ignore .theurian/state/` exits 1, and one `git add -A`
+    # then tracks `.theurian/`), so the file this step was reading is not the
+    # file Git reads. Its own verdict was the most confident thing in the report.
+    if gitignore.is_symlink():
+        return SetupStep(
+            step_id=StepId.GITIGNORE,
+            status=StepStatus.MISSING,
+            summary=(
+                f"{gitignore} is a symbolic link. Git does not follow one, so nothing "
+                f"in it ignores the derived artifacts however it reads."
+            ),
+            # Never `_gitignore_missing`'s action, which says to run `theurian
+            # init` -- and `init` refuses this file rather than repairing it
+            # (`ensure_gitignore`), so that instruction returns the reader to
+            # where they started. The two acts are `GITIGNORE_LINK_REMEDY`'s, in
+            # its order: look at what the link names, then replace it.
+            action=GITIGNORE_LINK_REMEDY.format(path=gitignore),
+            critical=False,
+        )
     if not gitignore.is_file():
         return _gitignore_missing(
             f"{gitignore} does not exist, so nothing ignores the derived artifacts."

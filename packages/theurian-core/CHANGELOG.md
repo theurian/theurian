@@ -80,6 +80,141 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   Theurian's own by mode. `theurian doctor` continues to demand rotation for a
   group- or other-writable `auth/` directory, which is the signal that face has.
 
+- **A value read out of `.theurian/state/` no longer reaches a caller as a
+  traceback** ([#551](https://github.com/theurian/theurian/issues/551),
+  [#388](https://github.com/theurian/theurian/issues/388),
+  [#389](https://github.com/theurian/theurian/issues/389), ADR-0004, SEC-7).
+  Everything under `.theurian/state/` is derived, git-ignored and unsigned: any
+  local process can rewrite it, and a clone can deliver a doctored one
+  force-added past that ignore. The values in it — `indexBuildId`,
+  `databaseFilename` — and the *mode* of the directory holding them were trusted
+  as far as an `os.stat`, and the stat's failure had no handler. Measured
+  against the real CLI on `75fe9b4f`:
+
+  - an `indexBuildId` that resolves outside the state directory, and one of 234
+    characters or more, each ended `theurian index gc --json` (`--dry-run`
+    included) at exit 1 with **zero bytes on stdout** and a Rich traceback. The
+    second is the one no existing guard could see: `Path.resolve()` in
+    non-strict mode never stats, so the containment refusal that catches the
+    first hands the second back as an ordinary path and the caller's own stat
+    raises `ENAMETOOLONG`;
+  - the same length reached `knowledge.search` as the MCP SDK's
+    `UnexpectedToolError` — "Error executing tool", carrying no remedy — because
+    the tool boundary catches `TheurianError` and not `OSError`. A
+    260-character `databaseFilename` did the same through the canonical
+    pointer's own path join, and through the FR-K5 history check that runs
+    inside `_require_project` — so `migrate status`, `migrate apply` and `index
+    build` too;
+  - `.theurian/state` at mode `000` ended **seven of the nine swept commands**
+    the same way: `index build`, `index gc`, `index status`, `migrate status`,
+    `migrate validate`, `migrate apply` and `project status`. Six of the seven
+    raised through one probe that sat above the `try` written for that errno.
+
+  Every one of them now refuses or degrades through its own surface's envelope:
+  a `{error, remedy}` document at a non-zero exit on the CLI, a graded fallback
+  (`index-pointer-invalid`) or a `ToolError` with a cure over MCP. `theurian
+  project status` publishes `stateBuilt: null` — "cannot know", the spelling
+  `registered` beside it already uses — rather than claiming a project has no
+  built state because it was refused permission to look. The cure for a pointer
+  the operating system declined is its own: deleting the file is a cure only
+  while the directory holding it is writable, so that remedy names the `chmod`
+  as well.
+
+  A **lone surrogate** in `databaseFilename` was worse than any of those: the
+  refusal interpolated the value verbatim, and the wire encoder then died —
+  `PydanticSerializationError`, "surrogates not allowed" — so the client received
+  a 200 with an **empty body**, no `isError`, no message and no remedy. Every
+  reply that quotes a value this daemon did not produce now goes through one
+  sanitiser, bounded in length and escaping what the encoder cannot carry.
+
+  A `databaseFilename` carrying `../` is contained now as well, **on every
+  consumer and against the state directory rather than the checkout**. Measured
+  2026-09-06: provenance binds `(root, state_hash)` and passes it, the read-back
+  integrity guard refuses a *doctored* copy outside the tree, and a
+  **byte-identical** copy outside the tree was served at exit 0 — so nothing
+  bounded the escape itself, only what it could say. A first cut of that fix
+  proved only that the filename stayed inside the project *root*, which left the
+  whole checkout reachable: `../../decoy.sqlite` served the decoy's own rows at
+  exit 0. And it reached the MCP surface alone, while `theurian index build` and
+  the FR-K5 history check joined the value themselves — `index build` with
+  `../../../outside.sqlite` read that file, built an index from it and
+  **published at exit 0**.
+
+  A refusal that names a value the daemon did not produce also has to *reach* the
+  caller. A lone surrogate anywhere in one kills the wire encoder, and the
+  client receives a 200 with an empty body — no `isError`, no message, no
+  remedy. Three surfaces carried one unbounded: the missing-database arm, the
+  refusal for an unregistered project id (which lists the registry's unreadable
+  ids, and which any client reaches), and `project.list`'s own payload. All are
+  escaped and length-bounded now; a 200,000-character registry key produced a
+  200,248-character refusal before, and 377 characters after.
+
+  The populations are derived from the source rather than listed, on three keys:
+  every caller of `ProjectPaths.index_for` must grade `OSError` at the probe of
+  the path it returned; no consumer may join `databaseFilename` onto a path at
+  all, rather than going through the containment helper; and no reply may carry a
+  value the daemon did not produce without a sanitiser. Each key ships the
+  evasions that defeated a weaker first cut of it as planted controls — a stat
+  moved below the handler, a stat aimed at a different path, `joinpath`, a
+  grading inherited from a nested function, and an f-string conversion of `!s`,
+  which is `str()`. A key whose findings are all "nothing found" is satisfied by
+  a key that matches nothing, which is what the controls are for.
+
+- **`theurian init` no longer writes the managed `.gitignore` block through a
+  symbolic link** ([#571](https://github.com/theurian/theurian/issues/571),
+  #237, SEC-7). Git tracks a symlinked `.gitignore` like any other file, so a
+  clone can deliver one — and `init` read the rules through it, merged its own
+  block in, and wrote the result back through it: measured at exit 0 with
+  `gitignoreUpdated: true`, the victim's body replaced, the link intact, for a
+  target outside the working tree and for a tracked file inside it. Both are
+  refused now. This is the *authored*-file class rather than the derived-path
+  one above it, so the cure is its own: it says to inspect the link and replace
+  it with a regular file holding the rules, and never that the file is derived
+  state to delete.
+
+  **`theurian doctor` and `theurian setup` read the same file and were the ones
+  publishing a verdict about it.** `probe_gitignore` also followed the link, so a
+  clone carrying a tracked symlinked `.gitignore` was reported `satisfied` — the
+  managed block present and current — for a repository where Git ignores nothing
+  at all: measured, `git check-ignore .theurian/state/` exits 1 ("unable to
+  access '.gitignore': Too many levels of symbolic links") and one `git add -A`
+  tracks `.theurian/`. Its action said to run `theurian init`, which now refuses
+  that very file. It reports the link and carries the same two-act cure now.
+
+  A clone carrying a **dangling** `.theurian/cache` link ended `init` in a
+  traceback from the `mkdir` beside it; a **regular file** at `.theurian/cache`
+  or `.theurian/state` was read as "already created", so `init` exited 0 with
+  `changed: true`, the path absent from `createdPaths` and the file untouched —
+  nothing then ignores the derived artefacts that belong there. A `.gitignore`
+  that is a directory, one that is read-only, and one that is **not UTF-8**
+  (#367's `init` face — `UnicodeDecodeError` is a `ValueError`, so the arm
+  listing `OSError` did not catch it) all now reach the caller as documents
+  naming the path in the way.
+
+- **Nothing between publishing an index and reporting it can take the findings
+  down with it** ([#551](https://github.com/theurian/theurian/issues/551),
+  SEC-11). Two steps sit in that window and both could. The secret-scan record's
+  paths are proved contained before the build starts and resolved again after
+  the index publishes. A local process that redirects `.theurian/state` between
+  the two made the second resolution raise a containment refusal that the
+  handler's `except OSError` did not catch — after the publish and before the
+  report, so a build carrying a credential served while `secretFindings` never
+  printed and `block`'s exit 6 never fired. It degrades to a `recordWarning`
+  beside the findings now, carrying the escape's own cure.
+
+  The step beside it — recording that this installation built the index — was
+  unguarded outright: with a directory at `<data_dir>/provenance.json.tmp`,
+  `index build --json` exited 1 with zero bytes on stdout and an
+  `IsADirectoryError` traceback, **with the pointer already published**. It
+  degrades to a `provenanceWarning` now, which names what the failure costs
+  rather than the bookkeeping: an unrecorded build makes `knowledge.search` stand
+  aside and report `index-unbuilt` about a build that is on disk and serving. A
+  source-level check keeps the window closed — every step in it must convert its
+  own failure, so inlining one back fails a named test.
+
+  The TOCTOU *window* itself is unchanged and recorded on the issue: closing it
+  needs the record write to hold a descriptor opened before the build.
+
 ## [0.1.0] - 2026-09-05
 
 ### Added

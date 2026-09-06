@@ -92,6 +92,14 @@ envelope; a new exception type would slip past those handlers and reach a
 call sites add is the *wording*: :func:`is_a_symbolic_link_refusal` tells the
 link apart from the other ways a write fails, and :func:`symbolic_link_remedy`
 gives it the cure.
+
+**One caller departs from that, with its reason recorded there** (#571):
+``project_service._gitignore_link_refusal`` converts the ``ELOOP`` -- and only
+the ``ELOOP`` -- into a ``ProjectError``. The paragraph above holds because its
+callers are composition roots that already grade ``OSError``;
+``ensure_gitignore`` is an application function whose refusal has to survive two
+of them and carry a cure neither could write. Named here so the exception is a
+cross-reference rather than a contradiction a reader has to resolve alone.
 """
 
 from __future__ import annotations
