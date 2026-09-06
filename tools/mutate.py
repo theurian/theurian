@@ -326,8 +326,15 @@ def _default_timeout(workers: int) -> int:
     time than the harness used to. A timeout that is shorter than a green walk
     does not report "slow" -- it reports HUNG for every survivor and takes the
     control down with it, and both read exactly like real findings.
+
+    ``workers`` is not clamped, and does not need to be: the floor already
+    covers every value the line goes wrong at. Nothing validates ``--workers``,
+    so a zero or a negative reaches here, and the fitted line is below 1800 s
+    for anything under four -- a clamp on top of that is a guard no input can
+    reach, and one was removed from this function after it survived its own
+    deletion against the whole ``tools`` suite.
     """
-    walk = _WALK_BASE_SECONDS + _WALK_PER_WORKER_SECONDS * max(workers, 1)
+    walk = _WALK_BASE_SECONDS + _WALK_PER_WORKER_SECONDS * workers
     return max(_DEFAULT_TIMEOUT_SECONDS, int(walk * _TIMEOUT_HEADROOM))
 
 

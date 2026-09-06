@@ -82,8 +82,13 @@ def test_no_worker_count_shortens_the_bound_the_harness_already_had(workers: int
 def test_a_worker_count_below_one_does_not_collapse_the_bound() -> None:
     """``--workers 0`` is not rejected upstream, so the model must survive it.
 
-    Nothing here validates the flag, and a linear model evaluated at zero or a
-    negative is how a scaled default becomes shorter than an unscaled one.
+    Nothing validates the flag, and a linear model evaluated at zero or a
+    negative is how a scaled default becomes shorter than an unscaled one. The
+    floor is what holds this, and it is the *only* thing that does: a
+    ``max(workers, 1)`` clamp was written here alongside it and removed once it
+    survived its own deletion against the whole ``tools`` suite -- the floor
+    already covers every input the line goes wrong at, so the clamp was a guard
+    no argument could reach.
     """
     assert _default_timeout(0) >= _DEFAULT_TIMEOUT_SECONDS
     assert _default_timeout(-3) >= _DEFAULT_TIMEOUT_SECONDS
