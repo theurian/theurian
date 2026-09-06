@@ -7,10 +7,11 @@ build that cannot locate or read the JSON Schemas it publishes was reported as
 "The migrations in <dir> do not validate.", and under ``doctor --report`` that
 sentence was the whole message.
 
-Three claims hold the split up, and this module keys each one to a check that
+Four claims hold the split up, and this module keys each one to a check that
 goes red when it stops being true. They are here rather than beside the
-behaviour tests because none of them is about a value the step produces --
-each is about the *shape* of the code that produces it.
+behaviour tests because none of them is about *which* sentence the step
+publishes -- the behaviour tests own that -- and each is about the shape of the
+thing that publishes it.
 
 1. **The population.** ``_check_migrations`` has exactly two handlers and
    ``probe_migrations`` has none. Enumerated from the AST rather than asserted
@@ -23,6 +24,12 @@ each is about the *shape* of the code that produces it.
    ProjectError)`` names the two install-integrity faces *and nothing else*,
    because inside that ``try`` the only ``ProjectError`` raised is
    ``schema_root()``'s.
+4. **The arm it unlocks carries a real remedy.** The whole value of splitting
+   is that the install faces get a cure the operator can run, so the constant
+   has to name the thing to act on *and* a command that acts on it. Every
+   behaviour test compares ``step.action`` against the constant, which means
+   all of them stay green if the constant is replaced with "Something went
+   wrong." -- measured, and the reason this claim is checked separately.
 
 Claim 3 is the one with a wrong key available, and the wrong key was in the
 tree: two docstrings recorded "``ProjectError`` has no subclasses anywhere in
@@ -44,6 +51,7 @@ from pathlib import Path
 import pytest
 
 from theurian.application.project_service import ProjectError
+from theurian.application.setup_steps import SCHEMAS_UNUSABLE_ACTION, SCHEMAS_UNUSABLE_SUMMARY
 from theurian.domain.errors import SchemaUnreadableError, TheurianError
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "theurian"
@@ -176,6 +184,33 @@ def test_nothing_the_checkers_try_calls_can_raise_a_project_error(callee: str) -
     ``migrations-valid`` would tell the operator to reinstall Theurian over it.
     """
     assert PROJECT_ERROR_HOME not in _import_closure(callee)
+
+
+def test_the_install_arm_names_something_the_reader_can_run() -> None:
+    """Claim 4: the remedy is a cure, not a truthy string.
+
+    The two sentences the install arm publishes are the only rescue on a shared
+    report, and every test that pins them does it by comparing against these
+    same constants -- so the whole suite stays green when they are replaced with
+    a placeholder. This is the check that does not.
+
+    ``uv tool install`` is asserted whole rather than by the word "reinstall",
+    because a remedy that names an action without naming the command that
+    performs it sends the reader to look one up.
+    """
+    assert "`uv tool install --force --python 3.13 'theurian[daemon]'`" in SCHEMAS_UNUSABLE_ACTION
+    assert "`.theurian/migrations`" in SCHEMAS_UNUSABLE_ACTION, (
+        "the arm exists to say which files are *not* the thing to edit; naming "
+        "them is how it says it"
+    )
+    assert "installation" in SCHEMAS_UNUSABLE_SUMMARY, "the summary must name the culprit"
+    assert "could not be validated" in SCHEMAS_UNUSABLE_SUMMARY, (
+        "the summary names the operation that failed, which is the half that is "
+        "true whichever of the two faces refused"
+    )
+    assert "do not validate" not in SCHEMAS_UNUSABLE_SUMMARY, (
+        "that is the other arm's sentence, and publishing it here is #529 itself"
+    )
 
 
 def test_the_reachability_walker_finds_project_service_where_it_is_reachable() -> None:
