@@ -349,6 +349,60 @@ class WriteLockUnusableError(TheurianError):
         )
 
 
+#: The errnos ``flock`` uses to say "another open file description holds this
+#: lock". Everything else it can return is a refusal of the *call*, not a report
+#: about a holder, and :meth:`WriteLock._acquire` polled both alike until #423.
+#:
+#: The first two are ``daemon/instance.py::InstanceLock.acquire``'s pair, and the
+#: two sites are spelled the same deliberately: same call, same flags, same kind
+#: of file, and the one governed by ADR-0018's accepted NFS risk was the loose
+#: one. ``EWOULDBLOCK`` is written out rather than left to alias ``EAGAIN``
+#: -- they are one value here (measured 2026-09-06 on macOS 26.6: both 35) and
+#: POSIX permits a platform where they are not, which would otherwise turn
+#: ordinary contention into an immediate refusal.
+_CONTENTION_ERRNOS: Final = frozenset({errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK})
+
+
+class WriteLockRefusedError(TheurianError):
+    """``flock`` refused the lock call itself rather than reporting a holder.
+
+    :class:`WriteLockTimeoutError`'s opposite number, and the distinction is the
+    whole content of #423. That type says another Theurian process is writing and
+    offers waiting or removing the lock file; both are true of contention and
+    neither is true here. On a filesystem whose ``flock`` is unsupported --
+    ``ENOTSUP``/``EOPNOTSUPP``/``ENOLCK``, the NFS case ADR-0018 records as
+    outside the supported configuration -- every attempt failed immediately for a
+    reason that is not contention, and :meth:`WriteLock._acquire`'s bare ``except
+    OSError`` polled it to the 30-second deadline before publishing a diagnosis
+    that named a process that does not exist and a cure that cannot help.
+
+    **The remedy names the filesystem rather than the lock file**, because
+    removing a lock file changes nothing about which filesystem it sits on. It is
+    the one place in this module whose cure is not "act on this artefact": the
+    artefact is fine and its host is not.
+
+    No test drives a real unsupported filesystem -- there is none on the machines
+    this project is developed and tested on -- so the driving test injects the
+    errno through ``fcntl.flock`` instead, the same fault-injection shape the
+    suite already uses where portability puts the real fault out of reach.
+    """
+
+    def __init__(self, path: Path, cause: OSError) -> None:
+        self.remedy = (
+            f"Check which filesystem holds {path}: `df -h {path.parent}` names it. "
+            f"Theurian's write lock needs `flock`, which network filesystems such as NFS "
+            f"do not provide -- ADR-0018 places a `.theurian/` on NFS outside the "
+            f"supported configuration -- so move the project to a local filesystem and "
+            f"retry. Nothing is damaged and nothing needs rebuilding: the refusal came "
+            f"before any write was attempted."
+        )
+        super().__init__(
+            f"The write lock on {path.name} could not be taken: {_refusal_text(cause)}. "
+            f"That is the operating system refusing the lock call, not another Theurian "
+            f"process holding it, so waiting will not clear it."
+        )
+
+
 class StateDatabaseUnreadableError(TheurianError):
     """A stored value in this state database is not the value it claims to be.
 
@@ -724,12 +778,27 @@ class WriteLock:
             raise WriteLockUnusableError(self._path, exc) from exc
 
     def _acquire(self, fileno: int) -> None:
+        """Take the lock, telling a holder apart from a refusal of the call (#423).
+
+        The errno decides which, because ``flock`` reports both through
+        ``OSError`` and only one of them is worth waiting for. Contention clears
+        when the holder exits, so it polls; anything else is the filesystem or
+        the descriptor refusing outright, and a poll spends the whole timeout to
+        arrive at a diagnosis that was wrong when it started -- see
+        :class:`WriteLockRefusedError`.
+
+        The same discrimination ``daemon/instance.py::InstanceLock.acquire``
+        already made against the identical call. The two disagreed until #423,
+        and this was the loose one.
+        """
         deadline = time.monotonic() + self._timeout
         while True:
             try:
                 fcntl.flock(fileno, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return
-            except OSError:
+            except OSError as exc:
+                if exc.errno not in _CONTENTION_ERRNOS:
+                    raise WriteLockRefusedError(self._path, exc) from exc
                 if time.monotonic() >= deadline:
                     raise WriteLockTimeoutError(self._path, self._timeout) from None
                 # Poll rather than block, so the timeout is honoured. 50 ms is
@@ -872,6 +941,11 @@ def write_transaction(
             path takes. Raised before the database is opened, so no transaction
             has begun -- see :meth:`WriteLock._acquire`. Never raised when
             ``already_locked`` is ``True``, since no acquisition happens here.
+        WriteLockRefusedError: If ``flock`` refuses the call for a reason that is
+            not contention -- a filesystem that does not support it (#423). Raised
+            in the same place and under the same ``already_locked`` condition as
+            the timeout above, and it is the sibling that must not be confused
+            with it: waiting cannot clear this one.
         WriteLockUnusableError: If the lock cannot be taken at all -- a
             symbolic link taking it would otherwise write through (#481), a
             directory at the path, a mode that denies this process, an unwritable

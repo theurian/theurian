@@ -6,9 +6,12 @@ is correct; only this proves the adapter is.
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import os
 import sqlite3
 import sys
+import time
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -494,6 +497,134 @@ def test_a_lock_file_left_write_only_by_an_earlier_build_is_still_takeable(lock:
     assert lock.stat().st_mode & 0o777 == 0o200, (
         "taking the lock changed the mode of a file it did not create; the 0o600 "
         "the open passes applies to creation only"
+    )
+
+
+# -- Issue #423: a refused `flock` is not a held one --------------------------
+#
+# `_acquire` caught a bare `OSError` and polled until the deadline, so an errno
+# that says "this call is not supported here" was read as "another process is
+# writing". On a filesystem whose `flock` is unsupported -- the NFS case
+# ADR-0018 records as outside the supported configuration -- that cost a
+# 30-second stall, a diagnosis naming a process that does not exist, and a cure
+# (remove `runtime/write.lock`) that cannot help.
+#
+# The fault is injected rather than reproduced: no filesystem on the machines
+# this project is developed and tested on refuses `flock`, so a real one cannot
+# be planted. What the injection does reproduce exactly is the shape `_acquire`
+# sees -- `fcntl.flock` raising `OSError` with an errno it must classify.
+
+#: Errnos that really do mean "another open file description holds it", which
+#: must keep polling to the deadline. ``EWOULDBLOCK`` is ``EAGAIN`` under another
+#: name on this platform (measured 2026-09-06 on macOS 26.6: both 35), so it is
+#: one parameter case rather than two only where the two values coincide.
+_CONTENTION_ERRNOS = sorted({errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK})
+
+#: Errnos a filesystem returns when it will not take the lock at all. The first
+#: three are the unsupported-``flock`` family #423 names; ``EPERM`` is here
+#: because the rule is "not one of the contention pair", not "one of a list of
+#: known refusals", and a member outside the named family is what proves it.
+_REFUSAL_ERRNOS = [errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOLCK, errno.EPERM]
+
+
+def _flock_that_always_raises(code: int, seen: list[int]) -> object:
+    def refuse(fileno: int, operation: int) -> None:
+        seen.append(operation)
+        raise OSError(code, os.strerror(code))
+
+    return refuse
+
+
+@pytest.mark.parametrize("code", _REFUSAL_ERRNOS, ids=errno.errorcode.get)
+def test_a_flock_refusal_that_is_not_contention_is_reported_at_once(
+    lock: Path, monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    """Issue #423. RED before ``_acquire`` classified the errno, in two ways at once.
+
+    The call count is the sharper of the two assertions and the reason it leads:
+    at the shipped 30-second timeout the old bare ``except OSError`` issued the
+    same doomed ``flock`` roughly six hundred times before giving up, and a
+    wall-clock bound alone would let a future implementation satisfy this test by
+    shortening the timeout rather than by classifying the fault. One call is the
+    property: the refusal is read the first time it arrives.
+
+    The exception type is asserted rather than the message, and the *timeout*
+    type is asserted absent by construction --
+    :class:`~theurian.infrastructure.sqlite.connection.WriteLockRefusedError` is
+    not a subclass of it, so ``pytest.raises`` here fails if the old path still
+    runs. What the remedy must not do is send the reader to remove a lock file
+    that is not the problem, so the two cures are compared rather than merely
+    checked non-empty.
+    """
+    from theurian.infrastructure.sqlite.connection import (
+        WRITE_LOCK_TIMEOUT_SECONDS,
+        WriteLock,
+        WriteLockRefusedError,
+        WriteLockTimeoutError,
+    )
+
+    seen: list[int] = []
+    monkeypatch.setattr(fcntl, "flock", _flock_that_always_raises(code, seen))
+
+    started = time.monotonic()
+    with (
+        pytest.raises(WriteLockRefusedError) as caught,
+        WriteLock(lock, timeout=WRITE_LOCK_TIMEOUT_SECONDS).held(),
+    ):
+        pass  # pragma: no cover - the acquisition above must fail
+    elapsed = time.monotonic() - started
+
+    assert len(seen) == 1, (
+        f"a refusal that cannot change was retried {len(seen)} times; the errno "
+        f"{errno.errorcode[code]} says the filesystem will not take this lock, and "
+        f"polling it only delays the same answer"
+    )
+    assert elapsed < 1.0, (
+        f"the refusal took {elapsed:.1f}s to publish, so the operator still waits out "
+        f"a timeout for a fault that was final when it arrived"
+    )
+    assert not isinstance(caught.value, WriteLockTimeoutError), (
+        "the refusal is reported as a timeout, which tells the operator to wait for a "
+        "process that does not exist"
+    )
+    remedy = caught.value.remedy
+    assert str(lock.parent) in remedy and "df -h" in remedy, (
+        f"the remedy names neither the filesystem to inspect nor a command that "
+        f"inspects it, so it is a sentence rather than a cure: {remedy!r}"
+    )
+    assert "remove" not in remedy.lower(), (
+        f"the remedy still offers deleting the lock file, which changes nothing about "
+        f"the filesystem that refused the lock: {remedy!r}"
+    )
+
+
+@pytest.mark.parametrize("code", _CONTENTION_ERRNOS, ids=errno.errorcode.get)
+def test_contention_errnos_keep_polling_to_the_deadline(
+    lock: Path, monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    """The other half of #423's classification, and the one a fix can break silently.
+
+    ``EACCES`` and ``EAGAIN`` are what ``flock(LOCK_EX | LOCK_NB)`` returns while
+    another open file description holds the lock, and the whole point of the
+    timeout is to wait them out -- a holder that exits inside the window lets the
+    acquisition through. A classifier that refused every ``OSError`` immediately
+    would pass the test above and turn ordinary contention into an instant
+    failure, so this pins that these two still poll.
+
+    More than one call, rather than a specific count: the poll interval is an
+    implementation detail and the property is that it retried at all.
+    """
+    from theurian.infrastructure.sqlite.connection import WriteLock, WriteLockTimeoutError
+
+    seen: list[int] = []
+    monkeypatch.setattr(fcntl, "flock", _flock_that_always_raises(code, seen))
+
+    with pytest.raises(WriteLockTimeoutError), WriteLock(lock, timeout=0.2).held():
+        pass  # pragma: no cover - the acquisition above must fail
+
+    assert len(seen) > 1, (
+        f"{errno.errorcode[code]} means another holder has it, and the acquisition "
+        f"gave up after {len(seen)} attempt(s) instead of waiting out the timeout"
     )
 
 
