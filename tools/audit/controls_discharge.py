@@ -77,11 +77,28 @@ def _repository_tests(root: Path) -> list[Path]:
     their own ``test_*.py``. A citation naming one of those resolved, so the
     check could be satisfied by a name this repository does not define -- which
     is the same "shape, not existence" hole one level down.
+
+    **The dot filter reads the path relative to ``root``, never the absolute
+    one** (#558). ``rglob`` yields absolute paths when ``root`` is absolute, so
+    keying on ``path.parts`` asks about the *checkout's own location* as much as
+    about anything inside it: every agent worktree here lives under
+    ``.claude/worktrees/``, and that one dot component discarded the whole
+    population. Measured on this tree at ``522ff9a3``, from a worktree under
+    ``.claude/worktrees/``: 260 files found by ``rglob``, **0** kept on the
+    absolute key against **204** on the relative one, the 56 dropped by the
+    relative key all under ``.venv``. Zero citations then resolved, so both
+    ``test_census_audits_run.py`` rows went RED in every lane while a plain
+    clone stayed green -- and a filter that keeps nothing is also the shape that
+    would report every citation unresolvable rather than none, so the direction
+    it fails in is not fixed.
     """
     return [
         path
         for path in root.rglob("test_*.py")
-        if not any(part.startswith(".") or part == "node_modules" for part in path.parts)
+        if not any(
+            part.startswith(".") or part == "node_modules"
+            for part in path.relative_to(root).parts
+        )
     ]
 
 
