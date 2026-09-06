@@ -226,10 +226,13 @@ def _check_migrations(root: Path) -> MigrationsCheck:
     # reachability rather than a count of its subclasses: it is defined in
     # `application/project_service.py`, so no code can raise it without reaching
     # that module, and neither `load_migrations` nor `run_static_migration_guards`
-    # does -- transitively, over first-party imports. That is what
-    # `tests/unit/test_migrations_check_partition.py` computes, with
-    # `cli/setup_commands` itself as the positive control (it reaches
-    # `project_service`, so a walker that found nothing would fail there first).
+    # does -- transitively, over absolute and relative imports and through the
+    # packages Python executes on the way. That is what
+    # `tests/unit/test_migrations_check_partition.py` computes; it derives *which*
+    # callees to sweep from this try body rather than listing them, and it proves
+    # the walker on a planted tree with a negative arm, because a control drawn
+    # from this tree can only exercise the import shapes this tree happens to
+    # contain.
     # Counting subclasses is the argument that does *not* hold, and it had
     # already rotted: two docstrings recorded "`ProjectError` has no subclasses
     # anywhere in this tree". That was true when #519 wrote it -- `git grep -nE

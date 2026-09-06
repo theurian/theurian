@@ -82,10 +82,20 @@ def checked_by_the_loader(root: Path) -> MigrationsCheck:
     **The partition is mirrored too, not only the net** (#529). Production
     reports an installation that cannot supply a usable JSON Schema through
     ``schemas_unusable``, and ``migrations-valid`` publishes a "reinstall" arm
-    for it. A double that flattened that back to one arm would send every test
-    using it down the migrations-are-broken branch, which is the arm #529 exists
-    to stop being universal -- the same shape as the ``Exception`` net above, one
-    field over.
+    for it. A double that flattened it back to one arm would answer every
+    install fault reaching it with the migrations-are-broken verdict -- the same
+    shape as the ``Exception`` net above, one field over.
+
+    That sentence is held by two things rather than asserted, because when it
+    was first written it was held by neither: no test provoked an install fault
+    through this double, so the arm was unreachable and the claim about what a
+    flattened one would do described nothing that ran.
+    ``test_probe_migrations_validate.py::
+    test_an_install_fault_through_the_real_double_takes_the_reinstall_arm``
+    drives it, and ``test_migrations_check_partition.py::
+    test_the_double_mirrors_the_checkers_handlers`` compares the ``except``
+    clauses here against ``_check_migrations``' own -- the hazard this
+    docstring names.
     """
     paths = ProjectPaths.of(root)
     try:

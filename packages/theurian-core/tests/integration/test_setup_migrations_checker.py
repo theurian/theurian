@@ -698,3 +698,46 @@ def test_a_set_the_wired_resolver_cannot_read_makes_the_step_say_so(tmp_path: Pa
         "Cannot tell what state this project is at: its migration set could not "
         "be read. Run `theurian migrate validate`, which prints why."
     )
+
+
+def test_a_theurian_that_leaves_the_tree_stays_a_conflict_rather_than_an_answer(
+    tmp_path: Path,
+) -> None:
+    """``_current_state_hash``' placement argument, held by a test rather than prose.
+
+    The resolve sits *outside* that function's ``try`` on purpose: a ``.theurian``
+    resolving out of the working tree is a containment refusal (#237, T-5), not a
+    verdict about a migration set, so it must escape to ``SetupService._probe``'s
+    generic net and reach the operator as CONFLICTING -- something setup stops
+    and asks about -- carrying the refusal itself in ``detail``.
+
+    Nothing held that. Measured 2026-09-07 against the counterfactual, with
+    ``ProjectPaths.of`` moved inside the ``try`` and everything else identical:
+    the step answers ``not-applicable``, "Cannot tell what state this project is
+    at: its migration set could not be read.", ``detail`` empty and
+    ``needs_consent`` ``False``. So the price of making that resolver total is
+    exactly twice paid -- a containment refusal published as a statement about
+    the operator's YAML, and a T-5 finding demoted to an informational line.
+
+    Driven through the real ``SetupService`` net rather than the probe alone,
+    because the grade under test is the net's, not the probe's.
+    """
+    root = _a_repository(_sample(tmp_path))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    shutil.move(str(root / ".theurian"), str(outside / "theurian"))
+    (root / ".theurian").symlink_to(outside / "theurian", target_is_directory=True)
+    with pytest.raises(ProjectError):
+        ProjectPaths.of(root)
+
+    steps = (Step(StepId.INITIAL_INDEX, probe_initial_index, None, critical=False),)
+    report = SetupService(_context(tmp_path, root), steps).run(SetupRequest(dry_run=True))
+    (step,) = report.steps
+
+    assert step.status is StepStatus.CONFLICTING
+    assert step.needs_consent, "a containment refusal is not an informational line"
+    assert step.summary == "Could not check initial-index."
+    assert "resolves outside the project root" in step.detail, (
+        "the refusal travels; a step that swallowed it would report the same grade "
+        "for a completely different fault"
+    )

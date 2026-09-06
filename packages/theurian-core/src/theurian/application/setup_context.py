@@ -16,6 +16,7 @@ from typing import Any
 from theurian.domain.ports.daemon_manager import DaemonManager
 from theurian.domain.ports.mcp_client_config import McpClientConfig
 from theurian.domain.ports.secret_store import SecretStore
+from theurian.domain.setup import SetupError
 from theurian.domain.state import StateHash
 
 
@@ -56,13 +57,31 @@ class MigrationsCheck:
     schemas_unusable: bool = False
 
     def __post_init__(self) -> None:
-        if self.schemas_unusable and self.failure is None:
+        # Both directions, because one guard held only the shape that happened to
+        # be on somebody's mind. `count` is what the SATISFIED arm publishes as
+        # "N migration(s) parse and validate.", and a check carrying a refusal
+        # *and* a number is a claim that both happened -- the reason every
+        # returning site pairs a failure with 0, and every test asserting one
+        # says "nothing was validated, so there is no number to publish".
+        if self.failure is not None and self.count:
             msg = (
-                "schemas_unusable describes a failure and this check carries none; "
-                "set it from the catch that classified the refusal "
-                "(`cli/setup_commands._check_migrations`)"
+                f"a refused check validated nothing, so it publishes no count; got "
+                f"count={self.count} with {type(self.failure).__name__}. Pair every "
+                f"failure with `count=0`."
             )
-            raise ValueError(msg)
+            raise SetupError(msg)
+        if self.schemas_unusable and self.failure is None:
+            # Names the field contract rather than the composition root's own
+            # `_check_migrations`: this is the application layer, and a message
+            # pointing at a private CLI helper both crosses ADR-0003's line and
+            # rots the moment that helper is renamed. Whoever constructs a check
+            # can act on the rule; they do not need the current caller's name.
+            msg = (
+                "schemas_unusable describes `failure` and this check carries none. "
+                "Set it only in the branch that caught an installation's own "
+                "refusal, beside the failure it classifies."
+            )
+            raise SetupError(msg)
 
 
 @dataclass(frozen=True, slots=True)

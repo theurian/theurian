@@ -30,8 +30,11 @@ matters, and the exact command that fixes it.
   It may also quote authored text straight from a repository file: when a
   project's migrations do not validate, the `migrations-valid` finding carries
   the refusal message, which echoes the offending migration's own content, so the
-  plain payload is not pre-sanitized. Only `--report` withholds, and there is no
-  flag that turns redaction off.
+  plain payload is not pre-sanitized. That step has a second failure shape whose
+  refusal is not the user's content but is still theirs — a build that cannot use
+  the JSON Schemas it ships names an absolute path inside the installation — so
+  treat the whole `detail` as private either way. Only `--report` withholds, and
+  there is no flag that turns redaction off.
 - If the user asks for a report to paste into a public issue, use
   `theurian doctor --report --json`. It substitutes the paths Theurian wrote into
   the payload and withholds the values it only read — an MCP entry, a service
