@@ -230,14 +230,17 @@ def _check_migrations(root: Path) -> MigrationsCheck:
     # `tests/unit/test_migrations_check_partition.py` computes, with
     # `cli/setup_commands` itself as the positive control (it reaches
     # `project_service`, so a walker that found nothing would fail there first).
-    # Counting subclasses is the argument that does *not* hold, and it was
-    # tried: two docstrings recorded "`ProjectError` has no subclasses anywhere
-    # in this tree", measured 2026-09-04. Importing every `theurian` module and
-    # asking `ProjectError.__subclasses__()` answered 2 at 22ce405b on
-    # 2026-09-05 -- `ProjectPathEscapeError` and `GitignoreIsASymbolicLinkError`,
-    # the second landed by #581 the same day. Both live in `project_service`,
-    # so both are outside this `try` by the reachability key above, which is
-    # why the clause is still exact and the count never was the reason.
+    # Counting subclasses is the argument that does *not* hold, and it had
+    # already rotted: two docstrings recorded "`ProjectError` has no subclasses
+    # anywhere in this tree". That was true when #519 wrote it -- `git grep -nE
+    # '^class [A-Za-z_]+\(ProjectError\)' 5157da73 -- packages/theurian-core/src`
+    # returns nothing -- and false two days later: the same key at 22ce405b
+    # returns `ProjectPathEscapeError` and `GitignoreIsASymbolicLinkError`, and
+    # importing every `theurian` module and asking
+    # `ProjectError.__subclasses__()` there answers 2 (measured 2026-09-05).
+    # Both live in `project_service`, so both are outside this `try` by the
+    # reachability key above -- which is why the clause is still exact, and why
+    # the count was never the reason it was.
     except (SchemaUnreadableError, ProjectError) as exc:
         return MigrationsCheck(count=0, failure=exc, schemas_unusable=True)
     # Everything else the load can refuse on, which -- together with the clause

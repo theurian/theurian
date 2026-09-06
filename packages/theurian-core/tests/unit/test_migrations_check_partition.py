@@ -37,11 +37,19 @@ thing that publishes it.
 
 Claim 3 is the one with a wrong key available, and the wrong key was in the
 tree: two docstrings recorded "``ProjectError`` has no subclasses anywhere in
-this tree", measured 2026-09-04. It had one then and two by 2026-09-05, when
-``GitignoreIsASymbolicLinkError`` arrived with #581 -- a change that added a
-member to the population without re-checking the universals over it. Counting
-subclasses is the wrong key anyway: what matters is not how many exist but
-whether any can be *raised* inside the ``try``. So the key here is import
+this tree". It was true when #519 wrote it and false two days later, which is
+what a count-shaped key does -- a change adds a member to the population and
+nothing re-checks the universals over it:
+
+.. code-block:: console
+
+   $ git grep -nE '^class [A-Za-z_]+\\(ProjectError\\)' 5157da73 -- packages/theurian-core/src
+   $ git grep -nE '^class [A-Za-z_]+\\(ProjectError\\)' 22ce405b -- packages/theurian-core/src
+   .../project_service.py:525:class ProjectPathEscapeError(ProjectError):
+   .../project_service.py:581:class GitignoreIsASymbolicLinkError(ProjectError):
+
+Counting is the wrong key anyway: what matters is not how many subclasses exist
+but whether any can be *raised* inside the ``try``. So the key here is import
 reachability. ``ProjectError`` is defined in
 ``application/project_service.py``; code that never reaches that module cannot
 raise it, whatever the class hierarchy does.
