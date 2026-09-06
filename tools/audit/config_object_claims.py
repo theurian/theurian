@@ -661,26 +661,18 @@ def sweep(root: Path) -> list[Row]:
 #: Every fragment below is therefore chosen to identify exactly one sentence, and
 #: :data:`LEDGER_CONTROLS`' last row is what holds that.
 SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
-    (
-        "packages/theurian-core/tests/unit/test_census_record_claims.py",
-        "reader scan, and which tracker issue owns",
-        "DEFECT, outside this change's fix set",
-        "ADR-0030 slice 1 shipped the reader this sentence denies -- "
-        "`security/project_config.read_review_repositories`, reached from "
-        "`security/review_allowlist.py` before any spawn. The claim was true when it was "
-        "written and the same branch that made it false is the one that surfaced it, "
-        "because `KEYS_WITH_A_READER` is what lets this audit see a named key-scoped "
-        "claim at all. The correction is owed to the file's owner; it is a test module "
-        "and outside the production file set this change carries.",
-    ),
-    (
-        "packages/theurian-core/tests/unit/test_census_record_claims.py",
-        "reader scan; which issue owns FR-V5",
-        "DEFECT, outside this change's fix set",
-        "The same claim, one docstring lower and worded differently, so it needs its own "
-        "row rather than being absorbed by the one above -- which is the third "
-        "reconciliation direction working. Same cause, same owed correction.",
-    ),
+    # `test_census_record_claims.py`'s two rows -- "reader scan, and which
+    # tracker issue owns" and "reader scan; which issue owns FR-V5" -- stood here
+    # as `DEFECT, outside this change's fix set` for one commit. Both docstrings
+    # said that "nothing reads `providers.review.repositories`" was the fact
+    # `test_config_key_call_sites.py`'s reader scan held; ADR-0030 slice 1 gave
+    # the key a reader -- `security/project_config.read_review_repositories`,
+    # enforced from `security/review_allowlist.py` before any spawn -- and that
+    # scan now records the site rather than its absence. Both passages say
+    # *which* modules read the key, and both name the turn-over rather than
+    # deleting the sentence that carried it. The sweep produces no row for
+    # either, so the ledger carries none. A passage returning to "nothing reads"
+    # is an unrecorded suspect again, which is the direction that has to stay RED.
     (
         "packages/theurian-core/tests/unit/test_raptor_config_claims.py",
         "RAPTOR_MD_SENTENCES: Final",
