@@ -15,9 +15,14 @@ properties with tests, and the ones this module carries are:
 * **clause 2** -- the endpoint is the literal ``graphql``; identity travels as
   typed variables, and no vector element is built by formatting a repository
   name into a path;
-* **clause 3** -- ``--hostname github.com`` is present in every spawned vector,
-  which is what holds against an inherited ``GH_HOST`` (ADR-0030 run B measured
-  the threat, run A the pin);
+* **clause 3** -- ``--hostname github.com`` is present in every spawned vector
+  **that makes a request**, which is what holds against an inherited ``GH_HOST``
+  (ADR-0030 run B measured the threat, run A the pin). The exemption is
+  ``gh --version``, which prints a compiled-in string, parses no host and opens
+  no connection. The population is read off this module's source by
+  ``test_the_hostname_is_pinned_in_every_vector_that_makes_a_request``, so a
+  fourth vector added later is judged rather than assumed to be one or the
+  other;
 * **clause 4** -- the child environment is the closed constant in
   :mod:`~theurian.infrastructure.github.environment`, constructed and never
   inherited;

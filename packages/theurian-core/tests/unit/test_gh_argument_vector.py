@@ -105,8 +105,85 @@ def test_every_variable_binding_names_a_variable_the_documents_declare() -> None
         assert binding.split("=", 1)[0] in queries.VARIABLE_NAMES, binding
 
 
-def test_the_hostname_is_pinned_in_every_vector() -> None:
-    """Clause 3: an inherited ``GH_HOST`` moved the request (ADR-0030 run B); this is run A."""
+#: The one spawned vector with no ``--hostname``, and why it is an exemption
+#: rather than an omission: ``gh --version`` prints a compiled-in string. It
+#: parses no host, opens no connection, and there is nothing an inherited
+#: ``GH_HOST`` could redirect. Any *other* vector arriving here is a probe nobody
+#: has judged, which is what the assertion below turns into a failure.
+_MAKES_NO_REQUEST: Final[tuple[tuple[str, ...], ...]] = (("--version",),)
+
+
+def _vector_call_sites() -> list[tuple[str, ...] | None]:
+    """Every ``self.vector(...)`` call in ``gh_cli.py``, as its literal arguments.
+
+    Read off the source rather than listed here, because clause 3's sentence is
+    about a **population**: a fourth probe added later with no ``--hostname`` is
+    precisely what the pin has to catch, and a transcribed list of three would
+    agree with itself while missing it.
+
+    A site whose arguments are not all literals reads as ``None`` --
+    ``graphql_vector`` unpacks a list it builds -- and is checked as the vector
+    it produces instead. Bare names are resolved against this module's own string
+    constants, which is how ``GITHUB_HOSTNAME`` is read.
+    """
+    module = ast.parse(GH_CLI_SOURCE.read_text(encoding="utf-8"))
+    sites: list[tuple[str, ...] | None] = []
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if not (isinstance(function, ast.Attribute) and function.attr == "vector"):
+            continue
+        arguments: list[str] = []
+        for argument in node.args:
+            constant = (
+                getattr(gh_cli, argument.id, None) if isinstance(argument, ast.Name) else None
+            )
+            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                arguments.append(argument.value)
+            elif isinstance(constant, str):
+                arguments.append(constant)
+            else:
+                sites.append(None)
+                break
+        else:
+            sites.append(tuple(arguments))
+    return sites
+
+
+def test_the_hostname_is_pinned_in_every_vector_that_makes_a_request() -> None:
+    """Clause 3: an inherited ``GH_HOST`` moved the request (ADR-0030 run B); this is run A.
+
+    "Every vector" is measured, not transcribed. The literal call sites come out
+    of the source, and the one site that builds its arguments is checked as the
+    two vectors it produces -- so the assertion covers the version probe, the
+    authentication probe and both GraphQL requests.
+
+    What the scan measures is every ``vector(...)`` call **this module makes**. A
+    vector assembled without that helper and handed straight to ``run_bounded``
+    is outside it, which is one of the reasons the helper exists: it is also
+    where the absolute binary path comes from (clause 5).
+
+    The version probe is the exemption and it is named as one: it is asserted to
+    carry no ``--hostname`` rather than skipped, so an exemption that stops being
+    true reddens from either direction.
+    """
+    sites = _vector_call_sites()
+    assert sites, "the source scan found no `vector(...)` call, so this asserts nothing"
+    assert any(site is None for site in sites), (
+        "every call site read as literal arguments, so `graphql_vector`'s built "
+        "vector is no longer covered by the second half of this test"
+    )
+
+    for arguments in sites:
+        if arguments is None:
+            continue
+        if arguments in _MAKES_NO_REQUEST:
+            assert "--hostname" not in arguments
+            continue
+        assert "--hostname" in arguments, arguments
+        assert arguments[arguments.index("--hostname") + 1] == gh_cli.GITHUB_HOSTNAME, arguments
+
     for document in (queries.PULL_REQUESTS, queries.REVIEW_THREADS):
         vector = _vector(document, {"owner": "acme", "name": "order-service"})
         assert "--hostname" in vector
