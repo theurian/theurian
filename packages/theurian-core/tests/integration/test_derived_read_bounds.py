@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import socket
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -41,6 +43,11 @@ pytestmark = pytest.mark.integration
 #: ``os.mkfifo`` is POSIX-only, and a named pipe is the artefact this whole
 #: module is about: it is the one shape a test can plant without a device node.
 _CAN_MAKE_A_NAMED_PIPE: Final = hasattr(os, "mkfifo")
+
+#: A `chflags` cannot refuse root, and Windows has no BSD file flags at all, so
+#: a flag-based plant would report a *successful* rotation as a passing refusal.
+#: The suite's standing idiom; offline CI runs as root.
+_CANNOT_BE_REFUSED_BY_A_MODE: Final = sys.platform == "win32" or os.geteuid() == 0
 
 #: How long a child gets before it is killed and the test fails. Generous next to
 #: a command that reads a small JSON file and short next to a CI job.
@@ -303,9 +310,60 @@ _COMMANDS_OVER_THE_TOKEN: Final = (
 _A_PRIVATE_MODE: Final = 0o600
 
 
+#: Every shape a local account can put at the token's name in one command, and
+#: the sweep is the point rather than the list (#586 round two, H-3). The first
+#: cut of this fixture planted a pipe and only a pipe, so a **directory** -- one
+#: ``mkdir`` for the same actor -- went unmeasured: the probes reached for the
+#: *stall* shape vocabulary, which excludes a directory on purpose, and published
+#: "No local access token yet" over it while ``auth rotate --json`` escaped as an
+#: ``IsADirectoryError`` traceback with an empty machine channel. A sweep over
+#: the shapes is what would have caught that at implementation time.
+#:
+#: A **symbolic link** is here as the neighbour that must keep its own refusal:
+#: it is #371's face, it has a different cure, and a fix that folded it into the
+#: shape family would take the compromise warning away from the branch that says
+#: it best.
+_PLANTED_TOKEN_SHAPES: Final = ("pipe", "socket", "directory", "symlink")
+
+
+def _plant(shape: str, path: Path, elsewhere: Path) -> None:
+    """Put ``shape`` at ``path``. ``elsewhere`` is the symlink's target."""
+    if shape == "pipe":
+        os.mkfifo(path)
+        path.chmod(_A_PRIVATE_MODE)
+    elif shape == "socket":
+        # Bound through a relative name from the directory: an `AF_UNIX` address
+        # is capped near a hundred bytes and a pytest temporary path spends most
+        # of it. The socket object is kept alive by the caller's `with`.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as endpoint:
+            cwd = Path.cwd()
+            os.chdir(path.parent)
+            try:
+                endpoint.bind(path.name)
+            finally:
+                os.chdir(cwd)
+        path.chmod(_A_PRIVATE_MODE)
+    elif shape == "directory":
+        path.mkdir(mode=0o700)
+    elif shape == "symlink":
+        elsewhere.write_text("an-attacker-chosen-token-value\n", encoding="utf-8")
+        elsewhere.chmod(_A_PRIVATE_MODE)
+        path.symlink_to(elsewhere)
+    else:  # pragma: no cover - the parametrization is the population
+        raise AssertionError(f"unknown plant {shape!r}")
+
+
 @pytest.fixture
-def token_pipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A data directory whose token path holds a 0600 named pipe."""
+def token_plant(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """A data directory whose token path holds the requested shape.
+
+    Returns the working directory to run in. Parametrized indirectly, so one
+    fixture serves the whole shape sweep and a shape added to
+    :data:`_PLANTED_TOKEN_SHAPES` is driven by every test that takes it.
+    """
+    shape = getattr(request, "param", "pipe")
     data_dir = tmp_path / "datadir"
     auth = data_dir / "auth"
     auth.mkdir(parents=True)
@@ -314,10 +372,14 @@ def token_pipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir()
     (tmp_path / "work").mkdir()
-    token = auth / "mcp-token"
-    os.mkfifo(token)
-    token.chmod(_A_PRIVATE_MODE)
+    _plant(shape, auth / "mcp-token", tmp_path / "elsewhere")
     return tmp_path / "work"
+
+
+@pytest.fixture
+def token_pipe(token_plant: Path) -> Path:
+    """The named-pipe plant, for the tests whose subject is the *stall*."""
+    return token_plant
 
 
 @pytest.mark.skipif(not _CAN_MAKE_A_NAMED_PIPE, reason="os.mkfifo is POSIX-only")
@@ -386,3 +448,216 @@ def test_doctor_reports_the_planted_token_rather_than_an_absent_one(token_pipe: 
         assert "named pipe" in str(steps[probe]["summary"]), (
             f"`doctor`'s `{probe}` step does not name what is at the path: {steps[probe]}"
         )
+
+
+@pytest.mark.skipif(not _CAN_MAKE_A_NAMED_PIPE, reason="os.mkfifo is POSIX-only")
+@pytest.mark.parametrize("token_plant", _PLANTED_TOKEN_SHAPES, indirect=True)
+def test_every_planted_shape_at_the_token_is_named_rather_than_escaping(
+    token_plant: Path,
+) -> None:
+    """#586 round two, H-3. The sweep the first cut of this file did not run.
+
+    Every shape a local account can put at ``<data_dir>/auth/mcp-token`` must
+    reach ``auth rotate --json`` as a document naming the artefact. RED for the
+    **directory** before this round: the probes asked the stall vocabulary, so
+    ``auth rotate`` reached ``FileSecretStore.get``'s read and escaped as an
+    ``IsADirectoryError`` traceback with an empty machine channel -- while the
+    pipe at the same path published its refusal.
+
+    The symbolic link is swept beside them and keeps its own wording on purpose:
+    reading through one hands back a value somebody else chose, so its cure adds
+    the compromise warning the shape refusals correctly do not carry.
+    """
+    argv = ["auth", "rotate", "--json", "--port", "7420"]
+    payload = _published(_run_in_a_child(token_plant, argv), argv)
+    error = str(payload["error"])
+    remedy = str(payload["remedy"])
+    assert "mcp-token" in error, (
+        f"`auth rotate --json` does not name the artefact at the token's path: {error!r}"
+    )
+    assert "not a secret file" in error, f"the refusal does not say what is wrong: {error!r}"
+    assert "mcp-token" in remedy and "`theurian auth rotate`" in remedy, (
+        f"the remedy does not name both the artefact to clear and something to run: {remedy!r}"
+    )
+
+
+@pytest.mark.skipif(not _CAN_MAKE_A_NAMED_PIPE, reason="os.mkfifo is POSIX-only")
+@pytest.mark.parametrize("token_plant", ["directory"], indirect=True)
+def test_doctor_names_a_directory_at_the_token_rather_than_calling_it_absent(
+    token_plant: Path,
+) -> None:
+    """The probe half of the same finding, which decides whether setup *acts*.
+
+    Measured RED: both steps published ``missing`` -- "No local access token yet"
+    and "The token file does not exist yet" -- over a directory sitting at that
+    path, and ``MISSING`` is the status that makes ``setup`` mint into the name.
+    """
+    argv = ["doctor", "--json", "--port", "7420"]
+    payload = _published(_run_in_a_child(token_plant, argv), argv)
+    published = payload["steps"]
+    assert isinstance(published, list), f"`doctor --json` published no step list: {payload}"
+    steps = {str(step["id"]): step for step in published}
+    for probe in _TOKEN_PROBES:
+        assert steps[probe]["status"] == "conflicting", (
+            f"`doctor`'s `{probe}` step reports {steps[probe]['status']!r} over a directory "
+            f"at the token's path: {steps[probe]}"
+        )
+        assert "a directory" in str(steps[probe]["summary"]), (
+            f"`doctor`'s `{probe}` step does not name what is at the path: {steps[probe]}"
+        )
+
+
+# -- The env file -------------------------------------------------------------
+
+
+@pytest.fixture
+def env_plant(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path]:
+    """A data directory with a real token and the requested shape at ``env``.
+
+    Returns the working directory and the symlink's victim. The token has to be
+    mintable: ``auth rotate`` writes it *before* it touches the env file, so a
+    planted token would stop the command one step earlier and this face would go
+    unmeasured.
+    """
+    shape = getattr(request, "param", "pipe")
+    data_dir = tmp_path / "datadir"
+    auth = data_dir / "auth"
+    auth.mkdir(parents=True)
+    auth.chmod(0o700)
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    (tmp_path / "work").mkdir()
+    victim = tmp_path / "dotfiles-env"
+    if shape == "pipe":
+        os.mkfifo(data_dir / "env")
+    else:
+        victim.write_text("# a file its author wrote\nexport SOMETHING=else\n", encoding="utf-8")
+        (data_dir / "env").symlink_to(victim)
+    return tmp_path / "work", victim
+
+
+def _next_steps(payload: dict[str, object]) -> str:
+    """``nextSteps`` as one string, so a phrase can be looked for across its lines."""
+    lines = payload["nextSteps"]
+    assert isinstance(lines, list), f"`auth rotate --json` published no nextSteps: {payload}"
+    return " ".join(str(line) for line in lines)
+
+
+@pytest.mark.skipif(not _CAN_MAKE_A_NAMED_PIPE, reason="os.mkfifo is POSIX-only")
+@pytest.mark.parametrize("env_plant", ["pipe"], indirect=True)
+def test_a_named_pipe_at_the_env_file_does_not_hold_a_rotation(
+    env_plant: tuple[Path, Path],
+) -> None:
+    """#586 round two, H-2 face (a).
+
+    The env writer's open carried the creation mode and nothing else -- no
+    ``O_NONBLOCK`` -- so a named pipe at ``<data_dir>/env`` held ``auth rotate``
+    inside it: measured RED, killed at 12 s with both channels empty, *after* the
+    token had already been replaced. Nothing here is allowed to fail the
+    rotation, so what is asserted is that the command completes and says what it
+    could not do.
+    """
+    working, _ = env_plant
+    argv = ["auth", "rotate", "--json", "--port", "7420"]
+    payload = _published(_run_in_a_child(working, argv), argv)
+    assert payload["rotated"] is True, (
+        f"the env file must not be able to fail a rotation the token write already "
+        f"finished: {payload}"
+    )
+    steps = _next_steps(payload)
+    assert "named pipe" in steps, (
+        f"the rotation does not say what is at the env path, so nothing tells the operator "
+        f"why their shell will not export the token: {steps!r}"
+    )
+
+
+@pytest.mark.parametrize("env_plant", ["symlink"], indirect=True)
+def test_a_symlink_at_the_env_file_does_not_write_through_it(
+    env_plant: tuple[Path, Path],
+) -> None:
+    """#586 round two, H-2 face (b) -- the write escape, at the CLI.
+
+    Measured RED: the managed block was written *through* the link, into a file
+    outside the data directory that its author wrote, at exit 0. The victim's own
+    bytes are the assertion, because that is what the escape destroyed.
+    """
+    working, victim = env_plant
+    before = victim.read_text(encoding="utf-8")
+    argv = ["auth", "rotate", "--json", "--port", "7420"]
+    payload = _published(_run_in_a_child(working, argv), argv)
+    assert victim.read_text(encoding="utf-8") == before, (
+        "the rotation wrote through the symbolic link and out of the data directory, "
+        "overwriting a file it does not own"
+    )
+    steps = _next_steps(payload)
+    assert "symbolic link" in steps, (
+        f"the rotation does not say the env file was left untouched or why: {steps!r}"
+    )
+
+
+#: ``chflags uchg`` is BSD/macOS. Linux's equivalent, ``chattr +i``, needs
+#: ``CAP_LINUX_IMMUTABLE`` -- root -- so there is no unprivileged way to plant
+#: this fault there and the test skips rather than pretending. What it drives is
+#: the one class of ``store.set`` failure that #572 measured as genuinely
+#: unrepairable: a directory-mode fault self-repairs, because ``set``
+#: re-``mkdir``s ``auth/`` and re-asserts its mode before the open.
+_CAN_MAKE_A_FILE_IMMUTABLE: Final = sys.platform == "darwin" and shutil.which("chflags") is not None
+
+
+@pytest.mark.skipif(not _CAN_MAKE_A_FILE_IMMUTABLE, reason="needs BSD chflags and not root")
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="root is refused by nothing here")
+def test_a_token_that_cannot_be_rewritten_is_a_document_and_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closes #572, whose recorded fix shape this is.
+
+    ``auth rotate`` wrapped ``store.set`` in ``except SecretPathIsASymbolicLinkError``
+    and then, from #586 round one, ``except SecurityError``. Neither covers the
+    faults the store does not *classify* -- another account's file, a read-only
+    mount, ``ENOSPC``, or the immutable flag planted here -- so each escaped
+    ``--json`` as a Rich traceback with empty stdout, the CP-2 shape on a command
+    whose contract is a parseable document.
+
+    The remedy is asserted to name the artefact and something runnable, not
+    merely to be non-empty: an operator meeting this has to know which file
+    refused, and `chflags nouchg` is the cure for the fault this test plants.
+    """
+    data_dir = tmp_path / "datadir"
+    auth = data_dir / "auth"
+    auth.mkdir(parents=True)
+    auth.chmod(0o700)
+    token = auth / "mcp-token"
+    token.write_text("an-existing-token-value-long-enough-to-pass\n", encoding="utf-8")
+    token.chmod(0o600)
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    (tmp_path / "work").mkdir()
+
+    subprocess.run(["chflags", "uchg", str(token)], check=True, capture_output=True)  # noqa: S603, S607
+    try:
+        # The positive control on the plant: a filesystem that ignores the flag
+        # would let the rotation succeed and this test would assert nothing.
+        with pytest.raises(OSError):
+            token.write_text("probe", encoding="utf-8")
+
+        argv = ["auth", "rotate", "--json", "--port", "7420"]
+        payload = _published(_run_in_a_child(tmp_path / "work", argv), argv)
+    finally:
+        subprocess.run(["chflags", "nouchg", str(token)], check=False, capture_output=True)  # noqa: S603, S607
+
+    error = str(payload["error"])
+    remedy = str(payload["remedy"])
+    assert "could not be written" in error, f"the refusal does not say what failed: {error!r}"
+    assert str(token) in remedy, (
+        f"the remedy does not name the file that refused the write: {remedy!r}"
+    )
+    assert "chflags nouchg" in remedy and "`theurian auth rotate`" in remedy, (
+        f"the remedy names nothing the reader can run to clear the fault and retry: {remedy!r}"
+    )
+    assert token.read_text(encoding="utf-8").strip() == (
+        "an-existing-token-value-long-enough-to-pass"
+    ), "and the old token is still in place, which is what the remedy tells the reader"

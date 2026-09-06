@@ -56,6 +56,7 @@ from theurian.application.setup_withholding import (
     withheld_difference,
     withheld_registry_detail,
 )
+from theurian.domain.errors import SecurityError
 from theurian.domain.extras import (
     DAEMON_EXTRA,
     DAEMON_EXTRA_REMEDY,
@@ -74,7 +75,16 @@ from theurian.security.env_file import (
     contains_shadowing_assignment,
     merge_env_file,
 )
-from theurian.security.paths import is_world_accessible, unbounded_shape
+from theurian.security.no_follow import (
+    is_a_symbolic_link_refusal,
+    write_text_without_following_a_link,
+)
+from theurian.security.paths import is_world_accessible
+from theurian.security.regular_file import (
+    IrregularArtefactError,
+    read_text_from_a_regular_file,
+    shape_that_is_not_a_regular_file,
+)
 from theurian.security.tokens import MIN_TOKEN_LENGTH, TOKEN_ENV_VAR, generate_token
 
 # The marker pair that used to be declared here as `PROFILE_BEGIN`/`PROFILE_END`
@@ -85,6 +95,13 @@ from theurian.security.tokens import MIN_TOKEN_LENGTH, TOKEN_ENV_VAR, generate_t
 # setup does write until #128.
 
 _DATA_DIR_MODE: Final = 0o700
+
+#: The mode ``<data_dir>/env`` is created with and re-asserted at. It names the
+#: token's location and is meant to be sourced by its owner alone, so it takes
+#: the token file's own mode rather than a derived artefact's ``0644``. Named
+#: rather than repeated as a literal because the write and the ``chmod`` beside
+#: it must not be able to drift apart.
+_SECRET_FILE_MODE: Final = 0o600
 
 #: How long to wait for a freshly started daemon to answer. Generous enough for
 #: a cold start on a loaded machine, short enough that a daemon which will never
@@ -428,12 +445,21 @@ def _a_planted_artefact(step_id: StepId, path: Path, auth_dir: Path) -> SetupSte
     ``lstat``, so the answer is about the name itself. It runs *after* the
     ``is_symlink()`` arm and never sees a link, which is what keeps the two
     refusals from competing for the same artefact.
+
+    **The vocabulary is the verdict one, and asking the stall one is what round
+    two found** (H-3). This called ``unbounded_shape``, which deliberately does
+    not name a **directory** -- correct for "will a read of this wait", wrong for
+    "is a file what is there". A ``mkdir`` at the token's name, one command for
+    the same actor who could plant a pipe, therefore fell straight through to the
+    ``is_file()`` arm below and was published as ``missing``: "No local access
+    token yet", over an artefact sitting at that path, with ``MISSING`` being the
+    status that makes ``setup`` try to mint into it.
     """
     try:
-        shape = unbounded_shape(path.lstat().st_mode)
+        shape = shape_that_is_not_a_regular_file(path.lstat().st_mode)
     except OSError:
-        # Nothing there, or a directory that will not answer. Both are the
-        # probes' own cases and neither is this one's to pre-empt.
+        # Nothing there, or a name whose directory denies the lookup. Both are
+        # the probes' own cases and neither is this one's to pre-empt.
         return None
     if shape is None:
         return None
@@ -442,10 +468,10 @@ def _a_planted_artefact(step_id: StepId, path: Path, auth_dir: Path) -> SetupSte
         status=StepStatus.CONFLICTING,
         summary=f"The token file is {shape}.",
         detail=(
-            f"{path} is {shape}, not the token file Theurian wrote; `ls -l {path}` shows "
-            f"what is at the path now. Remove it with `rm {path}` and run `theurian auth "
-            f"rotate` to mint a fresh token. Something with write access to {auth_dir} put "
-            f"it there, so check that directory's permissions (it should be 0700)."
+            f"{path} is {shape}, not the token file Theurian wrote; `ls -ld {path}` shows "
+            f"what is at the path now. Remove it and run `theurian auth rotate` to mint a "
+            f"fresh token. Something with write access to {auth_dir} put it there, so "
+            f"check that directory's permissions (it should be 0700)."
         ),
         paths=(str(path),),
     )
@@ -899,8 +925,12 @@ def _read_env_file(path: Path) -> str:
     a ``\\r`` inside a quoted value, ``export GREETING="hello\\rworld"``, came
     back as a newline that splits the assignment in two. Measured on a CRLF file
     through the real ``SetupService``: two ``\\r`` bytes in, zero out.
+
+    **Through the bounded reader since #586**, which is what keeps a named pipe
+    at ``<data_dir>/env`` from holding this read for a writer that never comes.
+    ``newline=""`` is forwarded, so the byte-for-byte promise above is unchanged.
     """
-    return path.read_text(encoding="utf-8", newline="")
+    return read_text_from_a_regular_file(path, newline="")
 
 
 def apply_env_reference(context: SetupContext) -> None:
@@ -938,21 +968,47 @@ def apply_env_reference(context: SetupContext) -> None:
     existing = _read_env_file(path) if path.is_file() else None
     merged = merge_env_file(existing, context.data_dir)
     # 0600 from the moment it is created: the file names the token's location,
-    # and its whole purpose is to be sourced by its owner alone. The builtin
-    # and not `Path.open`, which takes no `opener` -- and the opener is what
-    # carries the creation mode. `newline=""` for the reason `_read_env_file`
-    # passes it: what this writes is what the merge produced, byte for byte.
-    with open(
-        path,
-        "w",
-        encoding="utf-8",
-        newline="",
-        opener=lambda file, flags: os.open(file, flags, 0o600),
-    ) as handle:
-        handle.write(merged)
+    # and its whole purpose is to be sourced by its owner alone. `newline=""` is
+    # what the writer already passes, for the reason `_read_env_file` passes it:
+    # what this writes is what the merge produced, byte for byte.
+    #
+    # **Through `no_follow`'s writer since #586.** This was the builtin `open`
+    # with an opener carrying the creation mode and nothing else -- no
+    # `O_NOFOLLOW`, no `O_NONBLOCK` -- so a symbolic link at `<data_dir>/env`
+    # was followed *out of the data directory* and the victim it named was
+    # truncated and overwritten at exit 0 (measured), and a named pipe there held
+    # the open with no bound. The shared writer carries both flags and asks the
+    # descriptor its shape, and it takes the same creation mode.
+    try:
+        write_text_without_following_a_link(path, merged, mode=_SECRET_FILE_MODE)
+    except (IrregularArtefactError, OSError) as exc:
+        # The refusal is graded here rather than left to the runner's
+        # `except Exception`, which records `f"{type(exc).__name__}: {exc}"` --
+        # measured as `OSError: [Errno 62] Too many levels of symbolic links`,
+        # a sentence naming nothing an operator can do. A `SecurityError` reaches
+        # the same recorder with a cure in it.
+        shape = (
+            exc.shape
+            if isinstance(exc, IrregularArtefactError)
+            else "a symbolic link"
+            if is_a_symbolic_link_refusal(exc)
+            else None
+        )
+        if shape is None:
+            raise
+        msg = (
+            f"{path} is {shape}, not the env file Theurian writes, so the block was not "
+            f"written and nothing outside {context.data_dir} was touched. `ls -ld {path}` "
+            f"shows what is at the path now. Remove it and run `theurian setup` again; "
+            f"something with write access to {context.data_dir} put it there, so check "
+            f"that directory's permissions (it should be 0700)."
+        )
+        raise SecurityError(msg) from exc
     # Re-asserted, because the mode above is ANDed with the umask and because a
-    # file an earlier version created keeps whatever mode it was given.
-    path.chmod(0o600)
+    # file an earlier version created keeps whatever mode it was given. Safe to
+    # follow: the write above has just refused every non-regular shape and every
+    # link at this name.
+    path.chmod(_SECRET_FILE_MODE)
 
 
 # -- 8. Daemon service ------------------------------------------------------

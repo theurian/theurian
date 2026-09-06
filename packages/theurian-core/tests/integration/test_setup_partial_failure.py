@@ -29,11 +29,13 @@ step only reaches an apply while its probe says ``MISSING`` -- so anything
 present afterwards must have been created by this run. ``MISSING`` means *not as
 setup wants it*, which is not the same as absent, and the declared path is
 already sitting there on every one of these: a 0755 ``~/.theurian`` being
-tightened, a regular file where that directory goes, a *directory* at
-``auth/mcp-token`` (declared by ``token`` and by ``token-storage`` both), an env
-file whose contents differ (#128), and ``~/.claude.json``, which exists whenever
-Claude Code is on PATH and which ``claude mcp add`` leaves byte-identical when it
-refuses. ``_changed_since`` carries the same enumeration; each was published as a
+tightened, a regular file where that directory goes, an env file whose contents
+differ (#128), and ``~/.claude.json``, which exists whenever Claude Code is on
+PATH and which ``claude mcp add`` leaves byte-identical when it refuses. A
+*directory* at ``auth/mcp-token`` was the fifth and is no longer one: both token
+probes answered ``MISSING`` over it until #586 round two, and they answer
+``CONFLICTING`` now, so it stops the run before an apply rather than reaching
+one. ``_changed_since`` carries the same enumeration; each was published as a
 file this run wrote. The credential row is the one with teeth: the plugin reads
 ``changedPaths`` and tells the operator to rotate what it names, and there was no
 credential.
@@ -41,8 +43,9 @@ credential.
 So the question is answered by *provenance* -- what the path looked like
 immediately before this step's apply, against what it looks like now -- and the
 tests below drive both answers plus the four edges that comparison introduces: a
-write that is only a mode, a declaration that is a symlink onto what was really
-written, a path that stops being statable while the apply is running, and a
+write that is only a mode, a declaration that is a symlink -- refused since #586
+rather than written through, so what is asserted is that nothing moved on either
+side of it -- a path that stops being statable while the apply is running, and a
 declaration that is not a path at all. The third of those is disclosed *because*
 the check could not tell, which is the one arm where naming a path setup did not
 write is the correct answer.
@@ -390,18 +393,26 @@ def test_a_credential_that_was_never_minted_is_not_offered_for_rotation(
 ) -> None:
     """#47, SEC-6. The false positive with teeth: a path shaped like a credential.
 
-    A *directory* at ``auth/mcp-token`` makes ``FileSecretStore.get`` raise before
-    ``set`` writes anything, so the token step fails with its declared path
-    present and no credential anywhere. Publishing it sends the operator -- or
-    the plugin, which reads ``changedPaths`` and advises rotating what it names --
-    after a secret that does not exist, and `theurian auth rotate` on a directory
-    is not a recovery.
+    A *directory* at ``auth/mcp-token`` leaves the declared path present with no
+    credential anywhere. Publishing it sends the operator -- or the plugin, which
+    reads ``changedPaths`` and advises rotating what it names -- after a secret
+    that does not exist, and `theurian auth rotate` on a directory is not a
+    recovery.
 
-    Both halves are asserted: the path is there, so the existence check this
-    replaced would have named it, and no file is there, so there is nothing to
-    rotate. The data directory is asserted present in the same report, because
-    this run genuinely did tighten it -- the prohibition is about provenance, not
-    about a report that gave up and said nothing.
+    **How the run stops changed in #586 round two (H-3), and the change is the
+    fix.** The directory used to reach ``apply_token``, where
+    ``FileSecretStore.get`` raised ``IsADirectoryError`` and the step recorded a
+    FAILED outcome: the probe had asked the *stall* shape vocabulary, which
+    excludes a directory on purpose, so it published ``missing`` -- "No local
+    access token yet" -- and ``MISSING`` is the status that makes setup try to
+    mint into that name. Both token probes now answer ``CONFLICTING`` naming the
+    artefact, so the run halts for consent before anything applies. The property
+    this test is about is unchanged and is now reached one step earlier: the path
+    exists, it is not a credential, and nothing offers it for rotation.
+
+    The data directory is asserted present in the same report, because this run
+    genuinely did tighten it -- the prohibition is about provenance, not about a
+    report that gave up and said nothing.
     """
     context = _context(tmp_path)
     context.data_dir.mkdir(parents=True)
@@ -412,16 +423,36 @@ def test_a_credential_that_was_never_minted_is_not_offered_for_rotation(
     report = SetupService(context).run(SetupRequest())
 
     token = context.auth_dir / TOKEN_KEY
-    failed = report.step(StepId.TOKEN)
-    assert report.state is SetupState.HALTED, "the token step is critical"
-    assert failed is not None and failed.outcome is StepOutcome.FAILED
-    assert "IsADirectoryError" in failed.detail, "the store's read is what raised, before any write"
+    refused = report.step(StepId.TOKEN)
+    assert report.state is SetupState.AWAITING_CONSENT, (
+        "a planted artefact at the token's name is a conflict a person resolves, not a "
+        "step that runs and fails"
+    )
+    assert refused is not None and refused.status is StepStatus.CONFLICTING
+    assert refused.outcome is StepOutcome.NOT_ATTEMPTED, (
+        "nothing may be applied over an artefact somebody else put there"
+    )
+    assert "a directory" in refused.detail, (
+        f"the refusal does not name what is at the path, which is the whole of what an "
+        f"operator needs to act: {refused.detail!r}"
+    )
     assert token.is_dir() and not token.is_file(), (
         "the path exists, so an existence check names it, and it is not a credential"
     )
     assert str(token) not in report.changed_paths, "nothing may be offered for rotation"
-    assert str(context.data_dir) in report.changed_paths, (
-        "while the directory this run really did tighten is still named"
+    # The prohibition above is satisfied by an empty report, so the pair that
+    # makes it mean something is stated rather than left implicit: the run is
+    # silent about having *written* anything -- it halted before any apply -- and
+    # loud about the artefact, in the step's own status and detail asserted
+    # above. A report that named the token as changed *or* one that said nothing
+    # at all about it would fail one of the two.
+    assert report.changed_paths == (), (
+        f"a run that halts for consent applies nothing, so it may claim nothing: "
+        f"{report.changed_paths}"
+    )
+    assert str(token) in refused.detail, (
+        "and the artefact itself must still be named somewhere a person reads, or this "
+        "test passes on a report that simply gave up"
     )
 
 
@@ -676,28 +707,36 @@ def test_a_step_declaring_the_empty_string_never_publishes_the_working_directory
     )
 
 
-def test_a_write_through_a_symlinked_declaration_is_disclosed(
+def test_a_symlinked_env_declaration_is_refused_rather_than_written_through(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#47. The observation follows links, because every apply here does.
+    """#586 round two, H-2. The write no longer follows a link out of the data directory.
 
-    ``apply_env_reference`` writes through the existing inode -- ``open(path,
-    "w")``, never a temporary file and a rename -- and ``apply_data_directory``,
-    ``FileSecretStore.set`` and ``claude mcp add`` all write *through* a symlink
-    rather than replacing one. A home directory kept in a dotfiles repository,
-    where these files are links into it, is an ordinary machine -- and watching
-    the link instead of what it points at reports every such write as "nothing
-    happened", which is the silence #47 exists to end arriving from the other
-    side. It is also why #128's merge cannot be made atomic: a rename would
-    leave a regular file where the link was.
+    **This test asserted the opposite until that finding, and the assertion was
+    the defect.** ``apply_env_reference`` wrote through the existing inode --
+    the builtin ``open(path, "w")`` with an opener carrying the creation mode and
+    neither ``O_NOFOLLOW`` nor ``O_NONBLOCK`` -- so a symbolic link at
+    ``<data_dir>/env`` sent the managed block to whatever it named, outside the
+    data directory, at exit 0. The witness this file carried was the target
+    having *gained the block*, which is exactly the write that must not happen:
+    ``<data_dir>/env`` is a 0600 file naming the token's location, in the
+    per-user data directory, and #371 already refuses a link at the token's own
+    name one directory over.
 
-    Measured on the link, which is what the step declares: writing the target
-    leaves the link's own inode, size and mtime untouched, so this passes under
-    ``os.stat`` and fails under ``os.lstat``. The target is asserted to have
-    *gained the block* first, so the disclosure is being compared against a
-    write that really happened -- and to have kept the line already in it,
-    because the witness this test carried until #128 was the target's
-    truncation, which was the defect and not the write.
+    What is asserted now is the refusal and its blast radius: the step fails, the
+    target keeps only the line it already had, and the link itself does not move.
+    The last of those is measured on ``lstat`` for the reason the old test gave
+    -- a write through the link would leave the link's own inode untouched, so
+    only ``lstat`` can tell "refused" from "followed".
+
+    The chmod refusal is kept from the previous fixture, and it is now the
+    control rather than the mechanism: the write refuses *before* it, so a run
+    that reached the ``chmod`` at all would mean the link had been followed.
+
+    #47's own property -- a write that lands on a link's target is disclosed as a
+    changed path -- is not asserted here any more, because this step no longer
+    performs one. It remains live for the applies that still write through a
+    link, and this file's other cases cover the disclosure contract.
     """
     context = _context(tmp_path)
     target = tmp_path / "dotfiles" / "env"
@@ -714,12 +753,20 @@ def test_a_write_through_a_symlinked_declaration_is_disclosed(
     assert report.state is SetupState.HALTED, "the env-reference step is critical"
     assert failed is not None and failed.outcome is StepOutcome.FAILED
     written = target.read_text(encoding="utf-8")
-    assert env_block(context.data_dir) in written, (
-        "the apply wrote through the link before its chmod raised"
+    assert env_block(context.data_dir) not in written, (
+        "the apply wrote the managed block through the link and out of the data "
+        "directory, which is the escape #586 closed"
     )
-    assert "export THEURIAN_MCP_TOKEN=an-older-spelling\n" in written, (
-        "and kept the line the target already held, which the whole-file rewrite "
-        "this replaces would have destroyed (#128)"
+    assert written == "export THEURIAN_MCP_TOKEN=an-older-spelling\n", (
+        "and the target must be byte-for-byte what it was: a refused write touches "
+        "nothing, so neither the block nor a truncation may appear"
+    )
+    assert "symbolic link" in failed.detail, (
+        f"the failure names no artefact, so an operator meeting it has nothing to act "
+        f"on: {failed.detail!r}"
+    )
+    assert "`theurian setup`" in failed.detail, (
+        f"the failure names nothing the reader can run once the link is gone: {failed.detail!r}"
     )
     after = context.env_file.lstat()
     assert (after.st_ino, after.st_size, after.st_mtime_ns) == (
@@ -727,6 +774,12 @@ def test_a_write_through_a_symlinked_declaration_is_disclosed(
         link.st_size,
         link.st_mtime_ns,
     ), "while the link itself did not move, which is what lstat would have seen"
-    assert str(context.env_file) in report.changed_paths, (
-        "so the declared path is disclosed on the strength of what it points at"
+    assert str(context.env_file) not in report.changed_paths, (
+        "a refused write changed nothing, so naming the path would send an operator -- "
+        "or the plugin, which reads `changedPaths` -- to inspect a file this run did "
+        "not touch"
+    )
+    assert str(target) not in report.changed_paths, (
+        "and the link's target least of all: it is outside the data directory, and the "
+        "whole point of the refusal is that nothing reached it"
     )

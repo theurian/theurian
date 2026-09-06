@@ -28,6 +28,7 @@ and a caller usually wants more than one of the three.
 from __future__ import annotations
 
 import os
+import stat
 from typing import TYPE_CHECKING
 
 from theurian.security.paths import unbounded_shape
@@ -64,6 +65,34 @@ class IrregularArtefactError(OSError):
         super().__init__(f"{path.name} is {shape}, not a regular file")
 
 
+def shape_that_is_not_a_regular_file(mode: int) -> str | None:
+    """Name what ``mode`` describes when it is not a regular file, ``None`` otherwise.
+
+    **The verdict vocabulary, and it is not
+    :func:`~theurian.security.paths.unbounded_shape`.** That one answers *"will a
+    read of this wait, or stream without end?"*, and a **directory** is correctly
+    absent from it: a directory descriptor opens at once and the ``read`` refuses
+    it with ``EISDIR``, which is the fault #520's branch publishes best. This one
+    answers a different question -- *"is a file what is at this name?"* -- and
+    for that a directory is as much a wrong answer as a pipe.
+
+    Reaching for the stall vocabulary where a verdict was wanted is exactly what
+    round two found (H-3): ``setup_steps``' token probes asked
+    ``unbounded_shape``, so a directory at ``<data_dir>/auth/mcp-token`` -- one
+    ``mkdir`` for the actor who could plant the pipe -- fell through to
+    ``is_file()`` and was published as ``missing``, "No local access token yet",
+    over an artefact sitting at that path. ``MISSING`` is the status that makes
+    ``setup`` *act*.
+
+    A pure function of ``st_mode``, like both of its neighbours, so a caller
+    chooses whether to ask ``stat`` or ``lstat`` or ``fstat`` and this stays out
+    of that decision.
+    """
+    if stat.S_ISDIR(mode):
+        return "a directory"
+    return unbounded_shape(mode)
+
+
 def assert_a_regular_file(descriptor: int, path: Path) -> None:
     """Raise :class:`IrregularArtefactError` unless ``descriptor`` is a regular file.
 
@@ -87,7 +116,7 @@ def assert_a_regular_file(descriptor: int, path: Path) -> None:
         raise IrregularArtefactError(path, shape)
 
 
-def read_text_from_a_regular_file(path: Path) -> str:
+def read_text_from_a_regular_file(path: Path, *, newline: str | None = None) -> str:
     """``Path.read_text(encoding="utf-8")`` that cannot wait on a planted artefact.
 
     The drop-in for a small UTF-8 file at a path a local account can write.
@@ -95,6 +124,16 @@ def read_text_from_a_regular_file(path: Path) -> str:
     ``.theurian/state/active.json``: ``migrate status``, ``project status``,
     ``index status`` and ``findings build`` each sat inside ``read()`` until a
     12-second kill fired, with zero bytes on stdout and on stderr.
+
+    ``newline`` is forwarded to the decoder untouched and defaults to
+    ``Path.read_text``'s own: universal translation. ``<data_dir>/env`` passes
+    ``""``, because half of a byte-for-byte promise lives on the *read* -- with
+    translation on, every ``\\r\\n`` in a file Theurian only partly owns becomes
+    ``\\n`` before the merge sees it, and a ``\\r`` inside a quoted value comes
+    back as a newline that splits the assignment in two
+    (``setup_steps._read_env_file`` records the measurement). A drop-in that
+    silently dropped this argument would rewrite the line endings of lines
+    nobody asked it to touch.
 
     **Symbolic links are followed, exactly as ``Path.read_text`` follows them.**
     This function changes what a read *waits on*, not what it *resolves*; a link
@@ -117,7 +156,7 @@ def read_text_from_a_regular_file(path: Path) -> str:
     except BaseException:
         os.close(descriptor)
         raise
-    with os.fdopen(descriptor, encoding="utf-8") as handle:
+    with os.fdopen(descriptor, encoding="utf-8", newline=newline) as handle:
         return handle.read()
 
 
@@ -125,4 +164,5 @@ __all__ = [
     "IrregularArtefactError",
     "assert_a_regular_file",
     "read_text_from_a_regular_file",
+    "shape_that_is_not_a_regular_file",
 ]

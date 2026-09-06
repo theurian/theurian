@@ -19,8 +19,11 @@ from theurian.security.no_follow import (
     open_for_reading_without_following_a_link,
     open_without_following_a_link,
 )
-from theurian.security.paths import ensure_private_mode, is_world_accessible, unbounded_shape
-from theurian.security.regular_file import IrregularArtefactError
+from theurian.security.paths import ensure_private_mode, is_world_accessible
+from theurian.security.regular_file import (
+    IrregularArtefactError,
+    shape_that_is_not_a_regular_file,
+)
 
 #: The token file, relative to the data directory. Re-exported from
 #: :mod:`theurian.security.env_file`, which is where the application layer
@@ -40,9 +43,14 @@ def _planted_shape(path: Path) -> str | None:
     the kernel has declined the open -- so the swap window a path check normally
     opens has nothing left to change. ``None`` for a ``stat`` that cannot answer,
     which leaves the original ``OSError`` to be re-raised as it was.
+
+    The **verdict** vocabulary, not the stall one, so a directory is a member:
+    ``O_WRONLY`` refuses one with ``EISDIR``, which arrives here with no shape at
+    all, and "Is a directory" is not a sentence that tells an operator the token's
+    own name has a directory at it (#586 round two, H-3).
     """
     try:
-        return unbounded_shape(path.stat().st_mode)
+        return shape_that_is_not_a_regular_file(path.stat().st_mode)
     except OSError:
         return None
 
@@ -122,7 +130,7 @@ class SecretPathIsASymbolicLinkError(SecurityError):
 
 
 class SecretPathIsNotAFileError(SecurityError):
-    """The secret's path holds a named pipe, a socket or a device (#586).
+    """The secret's path holds a named pipe, socket, device or directory (#586).
 
     :class:`SecretPathIsASymbolicLinkError`'s sibling, and it exists because
     ``O_NOFOLLOW`` answers a different question. A named pipe is not a link, so
@@ -138,6 +146,14 @@ class SecretPathIsNotAFileError(SecurityError):
     unaware that something with write access to their data directory had put it
     there, which is the whole signal.
 
+    **A directory is a member, and adding it is round two's H-3.** The shape
+    vocabulary this class was first wired to -- ``unbounded_shape``, which answers
+    *"will a read of this wait?"* -- excludes one on purpose, so a ``mkdir`` at
+    the token's name reached ``get``'s ``read`` as a bare ``IsADirectoryError``
+    and ``auth rotate --json`` published it as a traceback with an empty machine
+    channel. ``shape_that_is_not_a_regular_file`` is the verdict vocabulary and
+    names it.
+
     The remedy is not the link's. That one says "remove the symbolic link", which
     is false here and would send a reader looking for something that is not
     there; and it treats the token as compromised, which a pipe does not
@@ -149,9 +165,12 @@ class SecretPathIsNotAFileError(SecurityError):
     def __init__(self, path: Path, shape: str) -> None:
         self.path = path
         self.shape = shape
+        # `ls -ld` and not `ls -l`: a directory is a member of this class now, and
+        # `ls -l` on one lists what is *inside* it rather than describing the
+        # artefact the operator was told to look at.
         self.remedy = (
             f"Remove {path} and run `theurian auth rotate` to mint a fresh token; "
-            f"`ls -l {path}` shows what is at the path now. Something with write access "
+            f"`ls -ld {path}` shows what is at the path now. Something with write access "
             f"to {path.parent} put it there, so check that directory's permissions (it "
             f"should be 0700) before rotating."
         )
@@ -280,6 +299,27 @@ class FileSecretStore:
         except OSError as exc:
             if is_a_symbolic_link_refusal(exc):
                 raise SecretPathIsASymbolicLinkError(path) from exc
+            # The same fallback `set` carries, and it was missing here (#586
+            # round two, H-3): an open the kernel declines before a descriptor
+            # exists leaves nothing to `fstat`, and the errno alone names no
+            # artefact.
+            shape = _planted_shape(path)
+            if shape is not None:
+                raise SecretPathIsNotAFileError(path, shape) from exc
+            raise
+        try:
+            # **A directory reaches here and the opener does not refuse it.**
+            # `assert_a_regular_file` asks the *stall* vocabulary, where a
+            # directory is deliberately absent, so `O_RDONLY` returns a
+            # descriptor for one and the `read` below would raise a bare
+            # `IsADirectoryError` -- which escaped `auth rotate --json` as a
+            # traceback with an empty machine channel. Asked of the descriptor
+            # rather than the name, so the answer is about what was opened.
+            directory = shape_that_is_not_a_regular_file(os.fstat(descriptor).st_mode)
+            if directory is not None:
+                raise SecretPathIsNotAFileError(path, directory)
+        except BaseException:
+            os.close(descriptor)
             raise
         with os.fdopen(descriptor, encoding="utf-8") as handle:
             return handle.read().strip()

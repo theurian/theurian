@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import errno
 import json
 import os
 import sys
@@ -59,6 +60,7 @@ from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import JOURNAL_FILENAME, SetupRequest, SetupService
 from theurian.domain.setup import SetupState, StepId, StepOutcome
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
+from theurian.infrastructure.secrets import file_store
 from theurian.infrastructure.secrets.file_store import TOKEN_KEY, FileSecretStore
 from theurian.security.tokens import MIN_TOKEN_LENGTH
 
@@ -170,8 +172,33 @@ def test_the_step_that_stopped_the_run_is_journalled_as_failed(tmp_path: Path) -
     }, "and the steps that did finish are still recorded as applied"
 
 
+#: A fault at the token file that the probes cannot classify and ``set`` cannot
+#: repair, driven where ``file_store`` bound the opener rather than where it is
+#: defined: ``from ... import open_without_following_a_link`` copies the
+#: reference at import time.
+#:
+#: **A planted artefact is no longer such a fault, which is why this exists**
+#: (#586 round two, H-3). Both token probes used to publish ``missing`` over a
+#: *directory* at ``auth/mcp-token`` -- ``MISSING`` being the status that makes
+#: setup act -- so the apply ran and raised ``IsADirectoryError``, and these
+#: fixtures used that to reach the failed arm. The probes now answer
+#: ``CONFLICTING`` and the run halts for consent before applying anything, which
+#: is the fix; the tests below still need a step that *applies* and fails.
+#:
+#: ``ENOSPC`` is the shape #572 recorded when it looked for one: a directory-mode
+#: fault self-repairs, because ``set`` re-``mkdir``s ``auth/`` and re-asserts its
+#: mode before the open.
+def _refuse_the_token_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``FileSecretStore.set``'s open fail with a fault nothing repairs."""
+
+    def refuse(path: Path, *, mode: int = 0o600) -> int:
+        raise OSError(errno.ENOSPC, "No space left on device", str(path))
+
+    monkeypatch.setattr(file_store, "open_without_following_a_link", refuse)
+
+
 def test_the_journal_is_disclosed_when_the_first_step_to_apply_is_the_one_that_failed(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#47. The run wrote exactly one file, and it is the runner's own.
 
@@ -184,10 +211,15 @@ def test_the_journal_is_disclosed_when_the_first_step_to_apply_is_the_one_that_f
 
     Here nothing precedes it. The data directory is already 0700, so it is
     ``SATISFIED`` and never applied; the token step is the first step to apply
-    anything and it fails against a *directory* at ``auth/mcp-token``. Both are
-    asserted by outcome, because the fixture is the whole test: if the data
-    directory ever stopped being pre-satisfied, this would silently become one
-    more run with something behind it.
+    anything and it fails against a full disk. Both are asserted by outcome,
+    because the fixture is the whole test: if the data directory ever stopped
+    being pre-satisfied, this would silently become one more run with something
+    behind it.
+
+    The fault was a *directory* at ``auth/mcp-token`` until #586 round two, which
+    is the shape the probes now catch before anything applies --
+    :func:`_refuse_the_token_write` records why a planted artefact can no longer
+    reach an apply, and what replaced it.
 
     The equality is what makes the disclosure meaningful in both directions --
     the journal is named, and nothing else is, on a run that wrote nothing else.
@@ -196,7 +228,7 @@ def test_the_journal_is_disclosed_when_the_first_step_to_apply_is_the_one_that_f
     context.data_dir.mkdir(parents=True)
     context.data_dir.chmod(0o700)
     context.auth_dir.mkdir(parents=True, mode=0o700)
-    (context.auth_dir / TOKEN_KEY).mkdir(mode=0o700)
+    _refuse_the_token_write(monkeypatch)
     service = SetupService(context)
 
     report = service.run(SetupRequest())
@@ -446,7 +478,7 @@ def test_a_step_that_applied_and_could_not_be_journalled_keeps_the_earlier_line_
     reason="POSIX permission bits, and root is refused by none of them",
 )
 def test_a_failure_that_could_not_be_journalled_keeps_the_earlier_line_disclosed(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#47. The same fold on the arm that ends the run, which is a separate line.
 
@@ -458,15 +490,17 @@ def test_a_failure_that_could_not_be_journalled_keeps_the_earlier_line_disclosed
     publish a ``changed_paths`` that does not mention it -- on the one report
     setup exists to make readable.
 
-    The failure is the shipped one: ``auth/mcp-token`` is a *directory*, so the
-    store's read raises ``IsADirectoryError`` and the critical token step stops
-    the run. The outcome is asserted ``FAILED`` for the same reason the test
-    above asserts ``CHANGED`` -- either fixture could drift into the other's arm
-    and both tests would still pass, holding one line between them.
+    The failure is an ``ENOSPC`` at the token write, for the reason
+    :func:`_refuse_the_token_write` records: a planted artefact at that name is
+    caught by the probes since #586 round two, so it stops the run before any
+    apply and cannot reach this arm. The outcome is asserted ``FAILED`` for the
+    same reason the test above asserts ``CHANGED`` -- either fixture could drift
+    into the other's arm and both tests would still pass, holding one line
+    between them.
     """
     context, service = _a_run_whose_journal_locks_after_the_first_append(tmp_path)
     context.auth_dir.mkdir(parents=True, mode=0o700)
-    (context.auth_dir / TOKEN_KEY).mkdir(mode=0o700)
+    _refuse_the_token_write(monkeypatch)
 
     report = service.run(SetupRequest())
 
