@@ -1422,6 +1422,30 @@ def probe_mcp_health(context: SetupContext) -> SetupStep:
 
 # -- 16 & 17. Knowledge state ------------------------------------------------
 
+#: What ``migrations-valid`` publishes when the *installation* refused the load
+#: rather than the migration set (#529). Named constants rather than literals at
+#: the arm, because these two sentences are the entire rescue on a shared
+#: report: ``failure_detail`` publishes a type name there and nothing else, so a
+#: test that pins the report surface has to pin exactly these.
+SCHEMAS_UNUSABLE_SUMMARY: Final = (
+    "The migration set could not be validated: this installation cannot use the "
+    "JSON Schemas it ships."
+)
+#: Names the thing to act on -- the installation, not ``.theurian/migrations``
+#: -- and a command that acts on it. The second sentence is what #529 is about:
+#: a reader told only that validation failed goes looking at their own YAML.
+#:
+#: It says the files are not implicated, and deliberately not that they were
+#: never read: ``schema_root()`` fails before the load starts, while a schema
+#: the loader cannot use stops it after a migration file has been opened. The
+#: weakest claim true of both is the one published (the same distinction
+#: :func:`probe_initial_index` records for its own sentence).
+SCHEMAS_UNUSABLE_ACTION: Final = (
+    "Reinstall theurian: `uv tool install --force --python 3.13 'theurian[daemon]'`. "
+    "The files under `.theurian/migrations` are not implicated -- the schemas they "
+    "are checked against are the installation's."
+)
+
 
 def probe_migrations(context: SetupContext) -> SetupStep:
     """Runs the static validation `theurian migrate validate` runs; never repairs.
@@ -1479,6 +1503,22 @@ def probe_migrations(context: SetupContext) -> SetupStep:
     A refusal quotes the author's own file, and that is not Theurian's to publish
     (O-3, SEC-6): :func:`failure_detail` puts the message on the operator's
     terminal and the type name in a shared report.
+
+    **Two failure arms, because a broken installation is not a broken migration
+    set** (#529). A build whose published JSON Schemas cannot be located or read
+    refuses the same load, and until this split it was published as "The
+    migrations in <dir> do not validate." with the action "Fix the file it
+    names" -- sending the author to YAML that is not the problem. Under
+    ``doctor --report`` that was the whole of it: ``failure_detail`` publishes a
+    type name and nothing else there, so the shareable copy carried the
+    misattribution with no cause to correct it.
+
+    So the rescue lives in :attr:`SetupStep.summary` and
+    :attr:`SetupStep.action`, which are Theurian's own sentences and travel into
+    a report, rather than in ``detail``, which is the withholding control and
+    stays exactly as strict. Which arm to take is
+    :attr:`MigrationsCheck.schemas_unusable` -- the checker's classification,
+    read rather than re-derived here.
     """
     root = context.project_root
     if root is None:
@@ -1490,9 +1530,18 @@ def probe_migrations(context: SetupContext) -> SetupStep:
     paths = ProjectPaths.of(root)
     check = context.check_migrations(root)
     if check.failure is not None:
-        # MISSING rather than CONFLICTING: there is nothing of the operator's
-        # here to consent past -- setup neither edits migrations nor would if it
-        # were allowed to -- only a file whose author has to fix it.
+        # MISSING on both arms rather than CONFLICTING: there is nothing of the
+        # operator's here to consent past -- setup neither edits migrations nor
+        # replaces its own installation -- only something whose owner has to fix
+        # it, and a problem `doctor` has to count.
+        if check.schemas_unusable:
+            return SetupStep(
+                step_id=StepId.MIGRATIONS_VALID,
+                status=StepStatus.MISSING,
+                summary=SCHEMAS_UNUSABLE_SUMMARY,
+                action=SCHEMAS_UNUSABLE_ACTION,
+                detail=failure_detail(check.failure, for_publication=context.for_publication),
+            )
         return SetupStep(
             step_id=StepId.MIGRATIONS_VALID,
             status=StepStatus.MISSING,
@@ -1562,18 +1611,16 @@ def probe_initial_index(context: SetupContext) -> SetupStep:
     holds for each. "The read did not happen" does not, and neither does anything
     naming YAML.
 
-    **Wording rather than a catch keyed on the exception -- and not because the
-    types are unavailable.** ``except (SchemaUnreadableError, ProjectError)``
-    would catch those two faces exactly: ``ProjectError`` has no subclasses
-    anywhere in this tree, and inside the resolver's ``try`` the only one raised
-    is ``schema_root()``'s. What rules it out *here* is that
-    ``_check_migrations`` catches ``TheurianError`` for the same load, so
-    splitting one reader and not the other leaves two verdicts about one call on
-    different footings -- #91's divergence in a new place. Doing it honestly
-    means doing it in both, with an arm of its own that says "reinstall", and
-    that is #529's open design space -- where it is worth more, because that
-    step's misattribution survives ``doctor --report`` and this one has no cause
-    to lose.
+    **Wording here, a keyed catch one step over.** ``_check_migrations`` does
+    partition the refusal by type since #529 -- ``(SchemaUnreadableError,
+    ProjectError)`` against the rest -- so ``migrations-valid`` publishes a
+    "reinstall" arm for exactly these two faces, in the same report as this
+    sentence. That is where the split pays: that step's misattribution survived
+    ``doctor --report``, and this one has no cause to lose. Repeating it here
+    would buy a cause this arm is deliberately not stating, and the union of
+    ``_check_migrations``' two clauses is still exactly ``TheurianError`` --
+    the same set this resolver refuses on, which is what #91 requires of the
+    pair.
 
     **What does not come back as an answer at all** is a ``.theurian`` resolving
     outside the working tree. ``ProjectPaths.of`` refuses that (#237, T-5) and it
@@ -1607,11 +1654,11 @@ def probe_initial_index(context: SetupContext) -> SetupStep:
         # (measured, both faces), and the three causes fail at three different
         # points -- one before the load starts, one during it, one after a
         # migration has been read. This sentence is the weakest claim true of all
-        # three; the docstring above carries why it is a wording decision rather
-        # than a catch keyed on the exception, and #529 owns the split itself.
-        # `theurian migrate validate` prints which cause it was, and in a
+        # three; the docstring above carries why this arm states no cause even
+        # though `_check_migrations` now keys a catch on the two install faces
+        # (#529). `theurian migrate validate` prints which cause it was, and in a
         # `doctor` run `migrations-valid` probes the same load and publishes what
-        # refused it.
+        # refused it -- naming the installation when that is what refused.
         return SetupStep(
             step_id=StepId.INITIAL_INDEX,
             status=StepStatus.NOT_APPLICABLE,

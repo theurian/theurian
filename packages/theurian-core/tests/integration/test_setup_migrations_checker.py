@@ -37,21 +37,29 @@ from pathlib import Path
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
 
-from theurian.application.project_service import ProjectPaths, resolve_state_hash
+from theurian.application.project_service import ProjectError, ProjectPaths, resolve_state_hash
 from theurian.application.setup_context import SetupContext
-from theurian.application.setup_steps import probe_initial_index, probe_migrations
+from theurian.application.setup_service import SetupRequest, SetupService
+from theurian.application.setup_steps import (
+    SCHEMAS_UNUSABLE_ACTION,
+    SCHEMAS_UNUSABLE_SUMMARY,
+    Step,
+    probe_initial_index,
+    probe_migrations,
+)
 from theurian.cli.context import resolve_context, schema_root
-from theurian.cli.setup_commands import _check_migrations, _current_state_hash
+from theurian.cli.setup_commands import _check_migrations, _current_state_hash, _redacted
 from theurian.domain.errors import (
     AliasItemCollisionError,
     DuplicateContentFileError,
     InvalidIdentifierError,
     IrregularSourceFileError,
     MigrationError,
+    SchemaUnreadableError,
     TheurianError,
     UnenforceableScopeError,
 )
-from theurian.domain.setup import StepStatus
+from theurian.domain.setup import StepId, StepStatus
 from theurian.domain.state import StateHash
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
@@ -85,7 +93,7 @@ def _loaded_count(root: Path) -> int:
     return len(load_migrations(paths.root, paths.migrations, schema_root()).migration_set)
 
 
-def _context(tmp_path: Path, root: Path) -> SetupContext:
+def _context(tmp_path: Path, root: Path, *, for_publication: bool = False) -> SetupContext:
     """A context wired to the real readers, which is what these tests are about.
 
     Both of the composition root's migration readers, not only the checker: they
@@ -106,6 +114,7 @@ def _context(tmp_path: Path, root: Path) -> SetupContext:
         executable="",
         check_migrations=_check_migrations,
         current_state_hash=_current_state_hash,
+        for_publication=for_publication,
     )
 
 
@@ -371,6 +380,181 @@ def test_a_repository_reached_through_a_symlink_is_checked_rather_than_crashing(
         f"the wrapper mixed a resolved path with an unresolved one: {check.failure}"
     )
     assert check.count == _loaded_count(root)
+
+
+# -- #529: which side refused, and what the shared report says about it -------
+#
+# Two things can refuse this load, and only one of them is the operator's. A
+# build that cannot locate or read the JSON Schemas it publishes was reported as
+# "The migrations in <dir> do not validate.", action "Fix the file it names" --
+# and under ``doctor --report`` that was the entire message, because
+# ``failure_detail`` publishes a type name there and nothing else. So the
+# shareable copy carried the misattribution with no cause to correct it.
+#
+# The faults below are provoked at production's own raise sites rather than by
+# monkeypatching the checker: face 1 makes ``_schema_candidate_exists`` answer
+# False for both candidates, which is what ``schema_root()`` raises on, and face
+# 2 points the real loader at a real schema file it cannot parse. Each asserts
+# the production call refuses *first*, so a fixture that failed to provoke it
+# fails here rather than passing through the wrong arm.
+
+
+def _a_schema_tree_that_cannot_be_parsed(tmp_path: Path) -> Path:
+    """A schema root whose ``migration.schema.json`` is not JSON.
+
+    The loader translates that at its validate seam into
+    ``SchemaUnreadableError`` -- "a candidate was found, but using it failed" --
+    which is install integrity and not migration content.
+    """
+    broken = tmp_path / "broken-schemas" / "migrations"
+    broken.mkdir(parents=True)
+    (broken / "migration.schema.json").write_text("{ not json", encoding="utf-8")
+    return broken.parent
+
+
+def test_no_schema_candidate_at_all_is_the_installations_fault_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Face 1: ``schema_root()`` locates neither candidate, so nothing was read.
+
+    The ``ProjectError`` it raises says "This build is incomplete; reinstall
+    theurian", and until #529 the step that caught it published "The migrations
+    in <dir> do not validate." with the action "Fix the file it names" -- sending
+    the author to YAML the load never opened.
+
+    The probe assertions name the constants rather than repeating their text, so
+    a wording change moves one place; the two negatives beneath them are what a
+    constant cannot say: the sentence must not blame the migrations, and must
+    not name their directory as the thing to go and edit.
+    """
+    root = _sample(tmp_path)
+    monkeypatch.setattr("theurian.cli.context._schema_candidate_exists", lambda _c: False)
+    with pytest.raises(ProjectError):
+        schema_root()
+
+    check = _check_migrations(root)
+
+    assert isinstance(check.failure, ProjectError)
+    assert check.schemas_unusable is True
+    assert check.count == 0
+
+    step = probe_migrations(_context(tmp_path, root))
+
+    assert step.status is StepStatus.MISSING
+    assert step.summary == SCHEMAS_UNUSABLE_SUMMARY
+    assert step.action == SCHEMAS_UNUSABLE_ACTION
+    assert "do not validate" not in step.summary
+    assert str(ProjectPaths.of(root).migrations) not in step.summary + step.action
+
+
+def test_a_schema_the_loader_cannot_use_is_the_installations_fault_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Face 2: a schema that is present and unusable, refused inside the load.
+
+    A separate test rather than a parameter of the one above, because the two
+    fail at different points -- one before ``load_migrations`` is called at all,
+    one after it has opened a migration file -- and a fix that keyed only on
+    ``ProjectError`` would still misattribute this one. That difference is also
+    why :data:`SCHEMAS_UNUSABLE_ACTION` says the files are not implicated rather
+    than that they were never read.
+    """
+    root = _sample(tmp_path)
+    broken = _a_schema_tree_that_cannot_be_parsed(tmp_path)
+    monkeypatch.setattr("theurian.cli.setup_commands.schema_root", lambda: broken)
+    paths = ProjectPaths.of(root)
+    with pytest.raises(SchemaUnreadableError):
+        load_migrations(paths.root, paths.migrations, broken)
+
+    check = _check_migrations(root)
+
+    assert isinstance(check.failure, SchemaUnreadableError)
+    assert check.schemas_unusable is True
+
+    step = probe_migrations(_context(tmp_path, root))
+
+    assert step.status is StepStatus.MISSING
+    assert step.summary == SCHEMAS_UNUSABLE_SUMMARY
+    assert step.action == SCHEMAS_UNUSABLE_ACTION
+
+
+def test_migrations_the_operator_broke_keep_naming_the_migrations(tmp_path: Path) -> None:
+    """The control: the split must not widen, and this is the arm it must leave alone.
+
+    Without it, a checker that set ``schemas_unusable`` unconditionally -- or a
+    probe that took the reinstall arm for every failure -- passes both tests
+    above while telling every author with a typo to reinstall Theurian.
+    """
+    root = _sample(tmp_path)
+    (ProjectPaths.of(root).migrations / "0002-broken.yaml").touch()
+
+    check = _check_migrations(root)
+
+    assert isinstance(check.failure, MigrationError)
+    assert check.schemas_unusable is False
+
+    step = probe_migrations(_context(tmp_path, root))
+
+    assert step.summary == f"The migrations in {ProjectPaths.of(root).migrations} do not validate."
+    assert step.action == (
+        "Fix the file it names; `theurian migrate validate` prints the full refusal."
+    )
+
+
+def _published_migrations_step(context: SetupContext) -> dict[str, object]:
+    """The ``migrations-valid`` entry of a ``doctor --report`` payload.
+
+    Produced the way ``doctor_command`` produces it -- ``SetupService``, then
+    ``to_json``, then ``_redacted`` -- because the report surface is the half of
+    #529 that had no rescue at all, and a test reading ``SetupStep`` fields
+    directly would not have seen it.
+    """
+    steps = (Step(StepId.MIGRATIONS_VALID, probe_migrations, None, critical=False),)
+    report = SetupService(context, steps).run(SetupRequest(dry_run=True))
+    published = _redacted(report.to_json(), context)
+    steps_published: list[dict[str, object]] = published["steps"]
+    entries = [s for s in steps_published if s["id"] == StepId.MIGRATIONS_VALID.value]
+    assert len(entries) == 1, f"one migrations-valid entry, got {entries}"
+    return entries[0]
+
+
+def test_the_shared_report_carries_the_reinstall_cause_and_not_only_a_type_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second face of #529, driven at the surface it survived on.
+
+    ``failure_detail`` still publishes a bare ``ProjectError.`` here, and that is
+    correct -- an exception carries whatever raised it, and this one carries an
+    absolute installation path (O-3, SEC-6). What changed is that the rescue no
+    longer lives there: ``summary`` and ``action`` are Theurian's own sentences,
+    they travel into the payload, and they name the installation and a command
+    that repairs it.
+
+    The last two assertions are the control that makes the first three mean
+    something: on the same surface, with an operator's own broken migration, the
+    payload says the opposite -- so a step that had simply started saying
+    "reinstall" for everything fails here.
+    """
+    root = _sample(tmp_path)
+    monkeypatch.setattr("theurian.cli.context._schema_candidate_exists", lambda _c: False)
+
+    entry = _published_migrations_step(_context(tmp_path, root, for_publication=True))
+
+    assert entry["summary"] == SCHEMAS_UNUSABLE_SUMMARY
+    assert entry["action"] == SCHEMAS_UNUSABLE_ACTION
+    assert entry["detail"] == (
+        "ProjectError. The message is withheld from a shared report because an "
+        "exception carries whatever raised it; run `theurian doctor` without "
+        "--report to see it."
+    ), "the withholding control is unchanged; the rescue moved, it was not widened"
+
+    monkeypatch.undo()
+    (ProjectPaths.of(root).migrations / "0002-broken.yaml").touch()
+
+    operators = _published_migrations_step(_context(tmp_path, root, for_publication=True))
+
+    assert operators["summary"] != SCHEMAS_UNUSABLE_SUMMARY
+    assert "do not validate" in str(operators["summary"])
 
 
 # -- The composition root's other reader: which state is this at (#451) ------

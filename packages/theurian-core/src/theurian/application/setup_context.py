@@ -23,8 +23,8 @@ from theurian.domain.state import StateHash
 class MigrationsCheck:
     """What a project's migration set turned out to be, once something read it.
 
-    Two fields rather than a raised exception, because the step reporting this
-    has to publish a verdict for a refusal as well as for a healthy set: a probe
+    Fields rather than a raised exception, because the step reporting this has
+    to publish a verdict for a refusal as well as for a healthy set: a probe
     that let the failure escape would reach the reader as
     ``SetupService._probe``'s generic "Could not check migrations-valid" and lose
     the sentence written for it.
@@ -39,6 +39,25 @@ class MigrationsCheck:
     #: migrate validate` runs. Otherwise whatever refused it, so the step can
     #: publish the type and withhold the message (:func:`failure_detail`).
     failure: Exception | None
+    #: ``True`` when :attr:`failure` is the *installation* failing to supply a
+    #: usable JSON Schema, rather than anything about the files under
+    #: ``.theurian/migrations``. Carried here rather than re-derived from
+    #: ``type(failure)`` by the probe, so the reader that made the distinction
+    #: is the only one that holds it: the checker runs the load and knows which
+    #: call refused, and a second classification beside it is #91's divergence
+    #: in a new place. Issue #529 is what the flag closes -- until it existed,
+    #: a build that could not find its own schemas published "The migrations in
+    #: <dir> do not validate." and sent the operator to their own YAML.
+    schemas_unusable: bool = False
+
+    def __post_init__(self) -> None:
+        if self.schemas_unusable and self.failure is None:
+            msg = (
+                "schemas_unusable describes a failure and this check carries none; "
+                "set it from the catch that classified the refusal "
+                "(`cli/setup_commands._check_migrations`)"
+            )
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)

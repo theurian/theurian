@@ -34,10 +34,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from theurian.application.project_service import ProjectPaths, resolve_state_hash
+from theurian.application.project_service import ProjectError, ProjectPaths, resolve_state_hash
 from theurian.application.setup_context import MigrationsCheck
 from theurian.cli.context import schema_root
-from theurian.domain.errors import TheurianError
+from theurian.domain.errors import SchemaUnreadableError, TheurianError
 from theurian.domain.state import StateHash
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
@@ -75,13 +75,23 @@ def checked_by_the_loader(root: Path) -> MigrationsCheck:
     reaches the operator as CONFLICTING "Could not check migrations-valid" came
     back through the double as an ordinary MISSING verdict, and no test using this
     could see the difference. That is #91's divergence living inside the fixture
-    built to measure it. It tracks ``_check_migrations``' own catch clause, which
-    is ``TheurianError`` -- exactly the set `migrate validate` refuses on -- so the
-    double neither swallows a real bug nor misses a verdict.
+    built to measure it. It tracks ``_check_migrations``' own catch clause, whose
+    two arms partition ``TheurianError`` -- exactly the set `migrate validate`
+    refuses on -- so the double neither swallows a real bug nor misses a verdict.
+
+    **The partition is mirrored too, not only the net** (#529). Production
+    reports an installation that cannot supply a usable JSON Schema through
+    ``schemas_unusable``, and ``migrations-valid`` publishes a "reinstall" arm
+    for it. A double that flattened that back to one arm would send every test
+    using it down the migrations-are-broken branch, which is the arm #529 exists
+    to stop being universal -- the same shape as the ``Exception`` net above, one
+    field over.
     """
     paths = ProjectPaths.of(root)
     try:
         loaded = load_migrations(paths.root, paths.migrations, schema_root())
+    except (SchemaUnreadableError, ProjectError) as exc:  # the installation's own half
+        return MigrationsCheck(count=0, failure=exc, schemas_unusable=True)
     except TheurianError as exc:  # what the probe has to report rather than raise
         return MigrationsCheck(count=0, failure=exc)
     return MigrationsCheck(count=len(loaded.migration_set), failure=None)
