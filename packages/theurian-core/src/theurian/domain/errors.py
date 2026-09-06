@@ -435,9 +435,10 @@ class MigrationsDirectoryUnreadableError(MigrationError):
        "not a directory" case ``load_migrations`` already answers by returning
        an empty migration set -- but re-raises ``EACCES``. That escaped every
        command that resolves a project (`init`, `project register`, `project
-       status`, and every one of `_require_project`'s callers -- nine as of
-       2026-08-20; re-count with ``grep -rn '_require_project(as_json)$'
-       packages/theurian-core/src/theurian/cli/`` rather than trusting this
+       status`, and every one of `_require_project`'s callers -- ten as of
+       22ce405b, 2026-09-07; re-count with ``grep -rn
+       '_require_project(as_json)$' packages/theurian-core/src/theurian/cli/``
+       rather than trusting this
        number), `project status` included, even though its whole contract is to
        answer at exit 0 rather than crash. Measured against the real CLI:
        `chmod 000 .theurian` (also `chmod 400`, missing only the execute bit)

@@ -33,6 +33,8 @@ from theurian.domain.extras import (
     DAEMON_EXTRA_REMEDY,
     DAEMON_INSTALLERS,
     DAEMON_MODULES,
+    DAEMON_REINSTALL,
+    DAEMON_REINSTALL_COMMANDS,
     provided_by_daemon_extra,
 )
 
@@ -214,14 +216,22 @@ def test_the_remedy_names_a_command_for_each_installer_the_surfaces_offer() -> N
 def test_the_install_commands_pin_the_python_core_requires() -> None:
     """The bare ``3.13`` in ``domain/extras.py``, held to the metadata that decides it.
 
-    Three literals: both :data:`DAEMON_INSTALLERS` entries and the pipx
-    ``--force`` form inside :data:`DAEMON_EXTRA_REMEDY`. ``requires-python`` is
+    Three literals -- both :data:`DAEMON_INSTALLERS` entries and the pipx
+    ``--force`` form inside :data:`DAEMON_EXTRA_REMEDY` -- plus
+    :data:`DAEMON_REINSTALL`, which is *derived* from the first pair and is swept
+    here anyway: derivation is a claim, and this is the check that it holds
+    rather than an assumption that it does. ``requires-python`` is
     where the floor is actually declared; these only repeat it, and nothing in
     the build derives one from the other. Raising the floor to 3.14 without
     touching them therefore ships ``uv tool install --python 3.13
     'theurian[daemon]'`` as the command Theurian prints when the daemon will not
     start -- a remedy that cannot resolve, because the only wheel it may install
     excludes the interpreter it just asked for.
+
+    **A remedy outside this sweep is the defect this exists to prevent, and one
+    shipped.** ``migrations-valid``'s reinstall arm was written with a fourth
+    ``--python 3.13`` literal of its own; it now composes
+    :data:`DAEMON_REINSTALL` instead, so the floor reaches it from here.
 
     Every ``--python`` in each string is checked rather than the first: the
     remedy names two commands, and a fix that updated one of them is exactly the
@@ -236,9 +246,39 @@ def test_the_install_commands_pin_the_python_core_requires() -> None:
     """
     floor = _requires_python_floor()
 
-    for command in (*DAEMON_INSTALLERS, DAEMON_EXTRA_REMEDY):
+    for command in (*DAEMON_INSTALLERS, DAEMON_EXTRA_REMEDY, DAEMON_REINSTALL):
         pinned = set(_PINNED_PYTHON.findall(command))
         assert pinned == {floor}, (
             f"`requires-python` says >={floor}, but this pins {sorted(pinned) or 'nothing'}: "
             f"{command}"
         )
+
+
+def test_the_reinstall_commands_are_the_install_commands_with_force() -> None:
+    """The derivation :data:`DAEMON_REINSTALL_COMMANDS` performs, checked not assumed.
+
+    It inserts ``--force`` after the installer's ``install`` verb, which is a
+    string edit and therefore something that can silently stop matching: a
+    :data:`DAEMON_INSTALLERS` entry rephrased so that `` install `` no longer
+    appears would yield a "reinstall" command with no ``--force`` in it, and the
+    only symptom would be an operator following the remedy to completion and
+    staying broken. That is the failure ``--force`` is here to prevent, so the
+    edit is held rather than trusted.
+
+    The pipx entry is compared against the spelling :data:`DAEMON_EXTRA_REMEDY`
+    already writes out, which pins the two remedies to one command instead of
+    letting them drift into two answers for the same installer.
+    """
+    assert len(DAEMON_REINSTALL_COMMANDS) == len(DAEMON_INSTALLERS)
+
+    for original, forced in zip(DAEMON_INSTALLERS, DAEMON_REINSTALL_COMMANDS, strict=True):
+        assert forced != original, "the derivation produced the install command unchanged"
+        assert "--force" in forced
+        assert forced.split()[0] == original.split()[0], "the installer's own program name"
+        assert f"theurian[{DAEMON_EXTRA}]" in forced
+
+    assert DAEMON_REINSTALL_COMMANDS[1] in DAEMON_EXTRA_REMEDY, (
+        "the pipx repair command has one spelling in this module, not two"
+    )
+    for command in DAEMON_REINSTALL_COMMANDS:
+        assert command in DAEMON_REINSTALL, "the sentence names both installers"

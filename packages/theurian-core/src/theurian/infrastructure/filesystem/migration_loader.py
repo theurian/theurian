@@ -1833,8 +1833,8 @@ def _parse_upsert(
         # `resolve_context` caller already guards (issue #205). Converting here,
         # at the one call site the read happens, is what makes every one of
         # those callers -- `migrate validate`, `init`, and the rest of
-        # `_require_project`'s call sites (nine as of 2026-08-20; re-count
-        # with `grep -rn '_require_project(as_json)$'
+        # `_require_project`'s call sites (ten as of 22ce405b, 2026-09-07;
+        # re-count with `grep -rn '_require_project(as_json)$'
         # packages/theurian-core/src/theurian/cli/`) -- report the CP-2 `{error,
         # remedy}` shape instead of a Rich traceback with an empty stdout.
         raise MigrationContentUnreadableError(

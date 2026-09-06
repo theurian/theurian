@@ -61,6 +61,7 @@ from theurian.domain.extras import (
     DAEMON_EXTRA_REMEDY,
     DAEMON_INSTALLERS,
     DAEMON_MODULES,
+    DAEMON_REINSTALL,
 )
 from theurian.domain.ports.daemon_manager import ServiceState
 from theurian.domain.project import GITIGNORE_ENTRIES
@@ -1436,8 +1437,18 @@ SCHEMAS_UNUSABLE_SUMMARY: Final = (
     "JSON Schemas it ships."
 )
 #: Names the thing to act on -- the installation, not ``.theurian/migrations``
-#: -- and a command that acts on it. The second sentence is what #529 is about:
+#: -- and a command that acts on it. The last sentence is what #529 is about:
 #: a reader told only that validation failed goes looking at their own YAML.
+#:
+#: The command comes from :data:`~theurian.domain.extras.DAEMON_REINSTALL` and
+#: is not written out here. Spelled locally it was a fourth ``--python 3.13``
+#: literal outside the population
+#: ``test_daemon_extra.py::test_the_install_commands_pin_the_python_core_requires``
+#: sweeps, so a raised ``requires-python`` floor would have shipped this arm
+#: pinning an interpreter the only installable wheel rejects -- a remedy that
+#: cannot resolve, printed as the cure for an installation that does not work.
+#: It is also where both installers come from: every other remedy in the tree
+#: names uv *and* pipx, and a pipx user handed only the uv form has none.
 #:
 #: It says the files are not implicated, and deliberately not that they were
 #: never read. Where the refusal lands relative to the read is not one answer,
@@ -1456,9 +1467,8 @@ SCHEMAS_UNUSABLE_SUMMARY: Final = (
 #: "Not implicated" holds at all three. The same distinction, from the other
 #: side, is why :func:`probe_initial_index` states no cause at all.
 SCHEMAS_UNUSABLE_ACTION: Final = (
-    "Reinstall theurian: `uv tool install --force --python 3.13 'theurian[daemon]'`. "
-    "The files under `.theurian/migrations` are not implicated -- the schemas they "
-    "are checked against are the installation's."
+    f"{DAEMON_REINSTALL} The files under `.theurian/migrations` are not "
+    f"implicated -- the schemas they are checked against are the installation's."
 )
 
 

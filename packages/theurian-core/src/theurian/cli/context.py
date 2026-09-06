@@ -21,6 +21,7 @@ from theurian.application.project_service import (
     resolve_state_hash,
 )
 from theurian.domain.errors import SchemaUnreadableError
+from theurian.domain.extras import DAEMON_REINSTALL
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.migration import LoadedMigrations
 from theurian.domain.state import StateHash
@@ -129,6 +130,23 @@ def schema_root() -> Path:
 
     The source-checkout fallback lets a contributor edit a schema and see the
     effect without reinstalling.
+
+    **The refusal carries its own ``remedy``, and the message alone was not
+    enough** (#529, the #233/#287 class). ``_context_remedy`` prefers a
+    non-empty ``exc.remedy`` and otherwise falls through to
+    ``_require_project``'s default, so with the schemas gone every one of that
+    function's callers -- ten, at 22ce405b, by ``grep -rn
+    '_require_project(as_json)$' packages/theurian-core/src/theurian/cli/``;
+    re-count rather than trusting this number -- answered "Run this inside an
+    initialised Theurian project.", printed to somebody standing in one.
+    Measured through the real CLI with both candidate locations moved aside:
+    ``migrate validate --json`` and ``index status --json`` both published that
+    remedy over this message.
+
+    ``migrate validate`` is the specific harm rather than one caller of ten:
+    `doctor`'s ``initial-index`` step names it as the command that prints why a
+    migration set could not be read, so the operator whose build is broken was
+    routed from a truthful step into the one sentence that misdirects them.
     """
     packaged = Path(__file__).resolve().parents[1] / "schemas"
     if _schema_candidate_exists(packaged / "migrations" / "migration.schema.json"):
@@ -139,7 +157,8 @@ def schema_root() -> Path:
         return from_source
 
     raise ProjectError(
-        "Cannot locate the published JSON Schemas. This build is incomplete; reinstall theurian."
+        "Cannot locate the published JSON Schemas. This build is incomplete; reinstall theurian.",
+        remedy=DAEMON_REINSTALL,
     )
 
 

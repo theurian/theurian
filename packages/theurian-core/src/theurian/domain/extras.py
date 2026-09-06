@@ -86,6 +86,45 @@ DAEMON_EXTRA_REMEDY: Final = (
     "success."
 )
 
+#: :data:`DAEMON_INSTALLERS`, each with ``--force``, for repairing an install
+#: that already exists rather than creating one.
+#:
+#: Derived rather than written out, so a raised ``requires-python`` floor reaches
+#: these too. The insertion point is the installer's own ``install`` verb, and
+#: each entry contains exactly one `` install `` token -- the target is
+#: ``'theurian[daemon]'`` and the only other word is ``--python``.
+#: ``tests/unit/test_daemon_extra.py`` holds both the structure of the edit and
+#: the floor the result still has to pin.
+DAEMON_REINSTALL_COMMANDS: Final = tuple(
+    command.replace(" install ", " install --force ", 1) for command in DAEMON_INSTALLERS
+)
+
+#: What to say to someone whose *existing* installation is the broken thing --
+#: a build that cannot supply the JSON Schemas it ships, say (issue #529). Not
+#: :data:`DAEMON_EXTRA_REMEDY`: that one answers a bare install missing an extra,
+#: and it would tell an operator whose files are corrupt to add a dependency.
+#:
+#: **``--force`` on both, and the reason is measured on both.** pipx's is
+#: recorded on :data:`DAEMON_EXTRA_REMEDY` above. uv's is the same shape and was
+#: measured separately, against uv 0.7.2 on 2026-09-07 with ``UV_TOOL_DIR``,
+#: ``UV_TOOL_BIN_DIR`` and ``UV_CACHE_DIR`` redirected to a scratch tree: a
+#: second ``uv tool install`` of an already-installed requirement prints
+#: ``... is already installed`` and exits 0 without touching the venv, while
+#: ``--force`` reinstalls it. So the flag is what separates a remedy the
+#: operator can follow to completion from one that reports success and leaves
+#: the corrupt bytes exactly where they were -- which matters more here than for
+#: the extras remedy, because here the bytes on disk *are* the fault.
+#:
+#: What that run does **not** establish is that ``--force`` rebuilds from
+#: source: for a same-version local path it reinstalled from uv's build cache
+#: and the executable's behaviour did not change. That is a property of
+#: installing an edited working tree under one version, not of repairing a
+#: corrupt install from a published wheel, and no sentence here rests on it.
+DAEMON_REINSTALL: Final = (
+    f"Reinstall theurian with `{DAEMON_REINSTALL_COMMANDS[0]}`, or with pipx "
+    f"`{DAEMON_REINSTALL_COMMANDS[1]}`."
+)
+
 
 def provided_by_daemon_extra(module: str | None) -> bool:
     """Whether a failed import names something the ``daemon`` extra would supply.
