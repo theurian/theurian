@@ -267,6 +267,53 @@ def test_the_documents_interpolate_nothing() -> None:
     assert "%s" not in queries.REVIEW_THREADS
 
 
+#: Every page size a document spells as a literal, with the constant whose value
+#: it must be, as ``(the connection's field name, the constant's name)``.
+#:
+#: Two connections, because both are read against a cap the *provider* enforces
+#: while the number that actually reaches GitHub is the literal here.
+_PAGE_SIZE_LITERALS: Final[tuple[tuple[str, str, str], ...]] = (
+    ("comments", "MAX_COMMENTS_PER_THREAD", "REVIEW_THREADS"),
+    ("closingIssuesReferences", "MAX_LINKED_ISSUES", "PULL_REQUESTS"),
+)
+
+
+@pytest.mark.parametrize(
+    ("connection", "constant", "document"),
+    _PAGE_SIZE_LITERALS,
+    ids=[case[0] for case in _PAGE_SIZE_LITERALS],
+)
+def test_a_page_size_the_document_spells_is_the_constant_that_names_the_cap(
+    connection: str, constant: str, document: str
+) -> None:
+    """The constant and the literal are two numbers, and only one of them reaches GitHub.
+
+    ``MAX_COMMENTS_PER_THREAD`` and ``MAX_LINKED_ISSUES`` are recorded bounds the
+    provider refuses on: it reads ``hasNextPage`` and stops. But what decides
+    whether ``hasNextPage`` is ever true is the ``first:`` **literal inside the
+    document**, and the two can move apart. Lowering the constant alone leaves the
+    query asking for a hundred and publishes a refusal naming a cap nothing
+    enforces; lowering the literal alone truncates at the smaller number while the
+    refusal never fires, which is the silent loss the cap exists to prevent.
+
+    **This test interpolates and the document must not**, and that is not a
+    contradiction: ``test_the_documents_interpolate_nothing`` holds
+    ``queries.py`` to literals precisely so a repository name cannot be formatted
+    into one. The consequence is that the number *is* transcribed there, and a
+    transcription needs something outside it to be checked against -- which is
+    this, built here where interpolation is free of that risk.
+    """
+    expected = f"{connection}(first: {getattr(limits, constant)})"
+
+    assert expected in getattr(queries, document), (
+        f"`queries.{document}` does not ask for `{expected}`. "
+        f"`limits.{constant}` is the number the refusal message names and the "
+        f"provider's `hasNextPage` check is priced against; the `first:` literal "
+        f"in the document is the number GitHub is actually asked for. Move both "
+        f"in the same change, or the cap is a message about a bound nothing sets."
+    )
+
+
 @pytest.mark.parametrize(
     ("name", "value"),
     (
