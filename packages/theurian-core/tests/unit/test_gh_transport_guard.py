@@ -51,13 +51,23 @@ RECORDED_CONFIG_BYTES: Final = 256 * 1024
 #: the only difference between the refusing case and the silent one is a byte.
 OVERRIDE_LINE: Final = "http_unix_socket: /tmp/planted.sock\n"
 
+#: The file ``gh`` writes and reads inside the directory it resolves --
+#: ``.yml``, not ``.yaml`` -- **written out here and never imported**.
+#:
+#: Every fixture in this file plants its configuration under this name, so a
+#: fixture that took the name from ``transport_guard`` would follow the check
+#: wherever it went: point the check at ``config.yaml`` and the fixture writes
+#: ``config.yaml``, the override is found, and every test passes while ``gh``
+#: reads a file nobody wrote.
+RECORDED_CONFIG_FILE: Final = "config.yml"
+
 
 def _config_dir(root: pathlib.Path, name: str, body: str | None) -> pathlib.Path:
     """A ``gh`` configuration directory, with ``config.yml`` written when given."""
     directory = root / name
     directory.mkdir(parents=True)
     if body is not None:
-        (directory / transport_guard.GH_CONFIG_FILE).write_text(body, encoding="utf-8")
+        (directory / RECORDED_CONFIG_FILE).write_text(body, encoding="utf-8")
     return directory
 
 
@@ -201,6 +211,24 @@ def test_a_configuration_that_moves_nothing_refuses_nothing(
     directory = _config_dir(tmp_path, "gh", body)
 
     transport_guard.refuse_transport_overrides({"GH_CONFIG_DIR": str(directory)})
+
+
+def test_the_file_this_check_opens_is_the_one_gh_writes() -> None:
+    """``.yml`` is ``gh``'s spelling, and reading ``.yaml`` would check nothing at all.
+
+    A check pointed at a filename ``gh`` does not use finds no configuration on
+    any machine, refuses nothing, and looks exactly like a machine with no
+    override configured -- the fail-open arm swallowing the whole control. The
+    name is restated here because every fixture in this file plants its file
+    under it: taken from ``transport_guard`` instead, the fixtures would follow
+    the check to ``config.yaml`` and the pair would agree with itself.
+    """
+    assert transport_guard.GH_CONFIG_FILE == RECORDED_CONFIG_FILE, (
+        f"the check opens {transport_guard.GH_CONFIG_FILE!r} and `gh` writes "
+        f"{RECORDED_CONFIG_FILE!r}. A check reading a file `gh` does not use "
+        f"refuses nothing and reads, from the outside, exactly like a machine "
+        f"with no override configured."
+    )
 
 
 def test_the_size_bound_this_file_drives_is_the_one_the_check_reads() -> None:

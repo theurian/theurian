@@ -309,6 +309,11 @@ async def test_a_planted_transport_override_refuses_before_any_binary_probe(
     """
     config_dir = tmp_path / "ghconfig"
     config_dir.mkdir()
+    # The filename comes from the constant here on purpose, and it is the one
+    # place in the suite where that is right: what this asserts is the *order* --
+    # refusal before spawn -- which holds whatever the file is called. Which name
+    # `gh` actually writes is pinned test-side, once, by
+    # `test_gh_transport_guard.py::test_the_file_this_check_opens_is_the_one_gh_writes`.
     (config_dir / GH_CONFIG_FILE).write_text(
         f"http_unix_socket: {tmp_path / 'planted.sock'}\n", encoding="utf-8"
     )
