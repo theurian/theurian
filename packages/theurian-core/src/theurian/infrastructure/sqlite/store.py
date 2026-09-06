@@ -84,8 +84,10 @@ from theurian.infrastructure.sqlite.connection import (
 #: What a read can raise that is *not* this file's bytes failing to be a value.
 #:
 #: The key :func:`_reading` applies is one question -- **does this line interpret
-#: bytes that came out of this file?** -- and these three are the answers of "no"
-#: that are still errors:
+#: bytes that came out of this file?** -- and the members below are the answers of
+#: "no" that are still errors. The list is not counted here: it opened at three,
+#: and the paragraphs under it record each later joiner and why, so a total
+#: written at the top is a number that goes wrong every time the tuple is right.
 #:
 #: - `FileNotFoundError`: there was nothing to interpret. Its message names the
 #:   path the *caller* asked for, not a cell, and the remedy differs -- a state
