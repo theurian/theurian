@@ -43,6 +43,7 @@ from theurian.application.index_secret_scan import (
     write_index_secret_scan,
 )
 from theurian.application.project_service import (
+    ACTIVE_POINTER_REMEDY,
     INDEX_POINTER_REMEDY,
     UNBUILT_STATE_REMEDY,
     BuildProvenance,
@@ -108,7 +109,8 @@ _UNWRITABLE_INDEX_POINTER_REMEDY: Final = (
 
 
 @index_app.command("build")
-def index_build(  # noqa: PLR0911 -- one early return per distinguishable failure shape, the
+def index_build(  # noqa: PLR0911, PLR0912 -- one early return per distinguishable failure
+    # shape, the
     # precedent `migrate_apply` sets: three preconditions, an empty build, and the two ways
     # publishing can be refused. Folding the last three into one `try` would make an `OSError`
     # from the provenance record read as "the pointer could not be written" (#525).
@@ -210,8 +212,18 @@ def index_build(  # noqa: PLR0911 -- one early return per distinguishable failur
     # so a file under the completed name is complete by construction. The purge
     # writes under the same discipline (`index_purge.purge_into`).
     final_path = paths.index_for(index_build_id)
+    # Through the helper, never the bare join (round two, security H-1). The
+    # join here bypassed containment entirely, and measured at `4dd322d6` a
+    # `databaseFilename` of `../../../outside.sqlite` made `theurian index build`
+    # read that file, build from it and **publish at exit 0** -- so a doctored
+    # pointer turned a build into a copy of knowledge the working tree does not
+    # hold. The MCP surface's own join was contained one round earlier; this one
+    # and `_verify_history`'s were the two the fix did not reach.
+    database = _the_state_database(paths, active, as_json=as_json)
+    if database is None:
+        return
     request = IndexRequest(
-        database=paths.state / active.database_filename,
+        database=database,
         index_path=Path(f"{final_path}.building"),
         project_id=context.project_id.value,
         state_hash=str(active.state_hash),
@@ -467,6 +479,36 @@ def _the_scan_record_paths_are_usable(paths: ProjectPaths, as_json: bool) -> boo
     return True
 
 
+def _the_state_database(paths: ProjectPaths, active: ActiveState, *, as_json: bool) -> Path | None:
+    """The canonical store this pointer names, or ``None`` once the refusal is published.
+
+    The CLI's half of the containment `mcp/tools._resolve` gained one round
+    earlier. Absolute paths are fine in what this publishes -- a terminal is
+    where they belong, and every sibling refusal here prints one; the rule that
+    keeps them out is the *MCP* one (GHSA-97q9).
+
+    ``ProjectPathEscapeError`` keeps #525's grading, because a filename that
+    leaves the *working tree* is the doctored-clone condition that class owns. A
+    filename that stays inside the tree but leaves ``.theurian/state/`` is the
+    pointer's own contents being wrong, which is exit 1 and the pointer's cure.
+    """
+    from theurian.cli.commands import _fail, _fail_a_path_escape  # noqa: PLC0415 - cycle
+
+    try:
+        return paths.state_database_named(active.database_filename)
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        return None
+    except TheurianError as exc:
+        _fail(str(exc), remedy=_context_remedy_for(exc), as_json=as_json, code=1)
+        return None
+
+
+def _context_remedy_for(exc: TheurianError) -> str:
+    """The exception's own cure, or the pointer's when it carries none."""
+    return getattr(exc, "remedy", "") or ACTIVE_POINTER_REMEDY
+
+
 def _record_the_provenance(paths: ProjectPaths, index_build_id: str) -> str | None:
     """Record that this installation built this index, or say what it costs that it could not.
 
@@ -489,10 +531,16 @@ def _record_the_provenance(paths: ProjectPaths, index_build_id: str) -> str | No
     ``index-unbuilt`` -- "no index has been built" about a build that is on disk
     and published. One rebuild records it.
 
-    ``TheurianError`` beside ``OSError`` because the data directory is resolved
-    rather than fixed: ``default_data_dir`` reads ``THEURIAN_DATA_DIR``, and a
-    value that cannot be made a path refuses as this project's own error type
-    rather than the OS's.
+    **``OSError`` alone, and the ``TheurianError`` that used to sit beside it was
+    inert** (round two, adversarial). Its stated reason was that
+    ``default_data_dir`` "resolves" the data directory and could refuse as this
+    project's own error type. It does not: it reads ``os.environ`` inline and
+    returns ``Path(override)``, which raises nothing, and every other step below
+    it -- the ``mkdir``, the write, the ``os.replace`` -- fails as the OS's type.
+    A handler for an exception that cannot arrive reads as coverage and is none,
+    which is why the mutation deleting it survived. If a future edit gives
+    ``BuildProvenance`` a refusal of its own, this arm comes back *with* the row
+    that drives it.
 
     Degraded and never raised, for :func:`_record_the_scan`'s reason: after a
     correct publish the report is the operator's only account of what the build
@@ -500,7 +548,7 @@ def _record_the_provenance(paths: ProjectPaths, index_build_id: str) -> str | No
     """
     try:
         BuildProvenance.default().record_index(paths.root, index_build_id)
-    except (TheurianError, OSError) as exc:
+    except OSError as exc:
         return (
             f"The index published, but this installation's record of having built it could "
             f"not be written ({type(exc).__name__}), so `knowledge.search` will stand aside "

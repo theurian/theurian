@@ -989,12 +989,15 @@ def init_command(as_json: JsonOption = False) -> None:
         )
         return
     except (OSError, UnicodeDecodeError) as exc:
-        # Every other way the read or the write fails, which `ensure_gitignore`
-        # deliberately leaves untranslated (the contract `security.no_follow`
-        # records for its openers): a read-only `.gitignore`, a directory in its
-        # place, a full disk. All of them ended `init --json` in a traceback with
-        # an empty machine channel until this arm, the same CP-2 shape the
-        # dangling-link plant above produces one step earlier.
+        # **What still arrives here, after the arm above took the rest** (round
+        # two). This comment used to name the symbolic link among the conditions
+        # and it no longer reaches this arm at all: `_read_authored_file`
+        # converts the `ELOOP` into a `ProjectError`, which the
+        # `except TheurianError` above catches. What is left is the ordinary
+        # filesystem refusals -- an unreadable or unwritable file, a directory
+        # where the file belongs (whose `IsADirectoryError` the link converter
+        # re-raises), a full disk -- each of which ended `init --json` in a
+        # traceback with an empty machine channel until this arm existed.
         #
         # `UnicodeDecodeError` beside `OSError` and **not folded into it**: it is
         # a `ValueError`, so an `except OSError` does not see it, and a
@@ -1007,7 +1010,10 @@ def init_command(as_json: JsonOption = False) -> None:
             f"The Theurian block could not be written to .gitignore: {reason}. "
             f"The `.theurian/` directories were created; nothing else was changed.",
             remedy=(
-                "Make .gitignore a writable, UTF-8 regular file, then re-run "
+                # No symbolic-link clause: a link never reaches this arm, and a
+                # cure naming a condition the reader cannot be in is the
+                # wrong-remedy shape this project has shipped three times.
+                "Make .gitignore a readable, writable, UTF-8 regular file, then re-run "
                 "`theurian init`. Until it carries the Theurian block, `git status` will "
                 "show derived state that ADR-0004 means to keep out of the repository."
             ),
@@ -2760,7 +2766,13 @@ def ingest_command(as_json: JsonOption = False) -> None:
         raise typer.Exit(EXIT_STATE_ERROR)
 
 
-def _verify_history(context: CommandContext, as_json: bool) -> None:
+def _verify_history(  # noqa: PLR0911 -- one early return per distinguishable outcome:
+    # three cases where there is genuinely nothing to check against, and five refusals that
+    # each name a different cause with its own cure. Folding any two would publish one
+    # message for two conditions, which is the defect this function keeps being fixed for.
+    context: CommandContext,
+    as_json: bool,
+) -> None:
     """Fail if an already-applied migration has been edited or deleted (FR-K5, ADR-0005).
 
     Checked against the *previously active* state, not the one being built.
@@ -2782,19 +2794,38 @@ def _verify_history(context: CommandContext, as_json: bool) -> None:
     if active is None or active.state_hash == context.state_hash:
         return
 
-    previous = context.paths.state / active.database_filename
+    # Through the helper, never the bare join (round two, security H-1). This
+    # site and `index build`'s were the two the MCP-side containment did not
+    # reach, and this one runs inside `_require_project`, so it is on the path of
+    # every command that resolves a project.
+    try:
+        previous = context.paths.state_database_named(active.database_filename)
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
+    except TheurianError as exc:
+        _fail(
+            f"Theurian cannot confirm that no applied migration has been edited (FR-K5): {exc}",
+            remedy=_context_remedy(exc, default=ACTIVE_POINTER_REMEDY),
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
     try:
         there = previous.exists()
     except OSError as exc:
         # `databaseFilename` is a value out of `active.json`, and `ActiveState
-        # .from_json` only `str()`s it -- so the join above builds whatever the
+        # .from_json` only `str()`s it -- so the helper above builds whatever the
         # pointer says and this is the first line that asks the OS about it. A
         # 260-character one made `exists()` raise `ENAMETOOLONG`, which
         # `pathlib` does not swallow, through `migrate status`, `migrate apply`
         # and `index build` -- every command `_require_project` routes -- as a
         # Rich traceback at exit 1 with zero bytes on stdout (measured at
         # `75fe9b4f`; the same class as the `indexBuildId` faces and the third
-        # of the three joins on this value).
+        # of the three joins on this value). The helper converts the *unusable
+        # name* now, so what still arrives here is a name the OS accepts and
+        # then declines to answer about -- a mode, or a length past `PATH_MAX`
+        # that `NAME_MAX` did not catch.
         #
         # Refused rather than returned, for this function's own recorded reason:
         # the early returns are for "there is genuinely nothing to check

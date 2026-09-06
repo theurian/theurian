@@ -946,22 +946,53 @@ class ProjectPaths:
         verbatim -- ``ActiveState.from_json`` only ``str()``s it -- and any local
         process can put ``../`` in that file (SEC-7).
 
-        **What the escape actually costs, measured rather than reasoned
-        (2026-09-06, real CLI plus the MCP entry point).** Provenance binds
-        ``(root, state_hash)`` and not the filename, so it passes; the read-back
-        integrity guard is what fires, and only when the *content* differs. With
-        the pointer aimed at a doctored copy outside the tree,
+        **State-scoped, not merely root-scoped, and the first cut was only the
+        latter** (round two, security H-1). ``_contained`` proves the path stays
+        inside the *project root*, which leaves the whole checkout reachable:
+        with ``databaseFilename`` set to ``../../decoy.sqlite`` -- a file at the
+        root, a path a clone delivers as ordinary tracked content --
+        ``knowledge.search`` served the decoy's rows at exit 0 (measured
+        2026-09-06, the decoy's own title came back). The second check is the one
+        :meth:`index_for` has carried since it was written, and
+        :meth:`findings_for`'s docstring records it as the obligation of every
+        helper that takes a *value* rather than a computed name.
+
+        **What the escape costs when it is not refused, measured rather than
+        reasoned** (2026-09-06, real CLI plus the MCP entry point). Provenance
+        binds ``(root, state_hash)`` and not the filename, so it passes; the
+        read-back integrity guard is what fires, and only when the *content*
+        differs. With the pointer aimed at a doctored copy outside the tree,
         ``knowledge.search`` refused with ``InvariantViolationError``. With it
-        aimed at a **byte-identical** copy outside the tree, nothing refused at
-        all: exit 0, one result served, out of a file the working tree does not
-        contain. So the bound is on what an escape can *say*, never on whether it
-        happens -- which is the gap this method closes, and the reason a comment
-        at the call site naming provenance as the refuser was wrong twice over.
+        aimed at a **byte-identical** copy, nothing refused at all: exit 0, one
+        result served, out of a file the working tree does not contain. So the
+        bound was on what an escape could *say*, never on whether it happened --
+        the gap this method closes, and the reason a comment at the call site
+        naming provenance as the refuser was wrong twice over.
 
         Raises:
             ProjectPathEscapeError: The filename resolves outside the project.
+            ProjectError: The filename resolves inside the project but outside
+                ``.theurian/state/``, or cannot name a path at all.
         """
-        return self._contained(self.knowledge_dir / "state" / database_filename)
+        state = self.state  # one `_contained`; an escaping `state` refuses here
+        try:
+            candidate = (state / database_filename).resolve()
+            contained = candidate.is_relative_to(state.resolve())
+        except (ValueError, OSError) as exc:
+            # An embedded NUL makes `resolve` raise `ValueError` and a name the
+            # platform rejects makes it raise `OSError`; neither is a
+            # `TheurianError`, and the conversion happens here for the reason
+            # `index_for`'s does -- callers may only ever need to catch one type.
+            raise ProjectError(
+                f"The state pointer names {database_filename!r}, which is not a usable filename.",
+                remedy=ACTIVE_POINTER_REMEDY,
+            ) from exc
+        if not contained:
+            raise ProjectError(
+                f"The state pointer names {database_filename!r}, which resolves outside {state}.",
+                remedy=ACTIVE_POINTER_REMEDY,
+            )
+        return candidate
 
     def index_for(self, index_build_id: str) -> Path:
         """Where one index build lives.
@@ -1152,6 +1183,17 @@ def initialize_project(paths: ProjectPaths) -> tuple[str, ...]:
     into a directory that does not exist. Only a *prefix* file reached the
     ``mkdir``'s own refusal, so the arm added for the dangling link answered one
     face of two.
+
+    **A symbolic link to a real directory still passes**, and that is #577's
+    recorded bound rather than a gap in this check: ``is_dir()`` follows the
+    link to answer, so a clone carrying ``.theurian/state -> ../elsewhere``
+    resolves to a directory, `theurian init` exits 0, and the derived state is
+    written **through** the link -- measured 2026-09-06, with ``git add -A``
+    then staging it. Containment waves it through for the same reason it waves
+    through the ingestion manifest's: the target resolves inside the working
+    tree. Closing it needs ``openat`` against a directory descriptor at every
+    level, which nothing in this codebase does
+    ([#577](https://github.com/theurian/theurian/issues/577)).
 
     Raises:
         ProjectError: A path the layout needs is occupied by something that is

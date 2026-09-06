@@ -303,6 +303,13 @@ _READER_CONTAINED: set[str] = {"migrations"}
 #: as the *directory* case. Its presence here would have passed for the wrong
 #: reason, which is why the assertion below is an equality in both directions.
 #:
+#: ``state_database_named`` is absent for that same reason and arrived at it the
+#: hard way (round two, security H-1): its first cut called ``_contained`` and so
+#: belonged here, and root-scoped containment served a decoy *inside* the
+#: checkout at exit 0. It now carries ``index_for``'s state-scoped check, so its
+#: refusal is its own with ``ACTIVE_POINTER_REMEDY``, and the ``self.state``
+#: access it makes first is what this sweep sees.
+#:
 #: ``index_secret_scan`` joined on #329's merge, and the seam is worth naming: it
 #: is a hand-written classification of the helper list *as it stood*, so a helper
 #: landing from another branch is classified by whichever assertion runs rather
@@ -330,7 +337,6 @@ _NAMES_A_DERIVED_ARTIFACT: set[str] = {
     "write_lock",
     "database_for",
     "findings_for",
-    "state_database_named",
 }
 
 

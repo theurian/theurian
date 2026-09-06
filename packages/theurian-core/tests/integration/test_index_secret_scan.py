@@ -1863,7 +1863,15 @@ def test_no_step_between_the_publish_and_the_report_can_raise_past_it() -> None:
         )
     ]
     assert publishes and emits, "the publish/emit landmarks moved, so this pins nothing"
-    window = body[publishes[-1] + 1 : emits[0]]
+    # The **last** `try` before `_emit`, not the last one anywhere: `publishes[-1]`
+    # took the last top-level `try` in the whole body, so wrapping a re-inlined
+    # `record_index` in its own `try: ... except ValueError: pass` inside the
+    # window moved the landmark past it and the window read as empty (round two,
+    # measured with a positive control). Bounded to the statements before the
+    # report, which is the region the claim is about.
+    publishes_before_the_report = [index for index in publishes if index < emits[0]]
+    assert publishes_before_the_report, "no publish precedes the report, so this pins nothing"
+    window = body[publishes_before_the_report[0] + 1 : emits[0]]
     assert window, "the window is empty, so this asserts nothing"
 
     unguarded = {
@@ -1879,4 +1887,22 @@ def test_no_step_between_the_publish_and_the_report_can_raise_past_it() -> None:
     assert not unguarded, (
         "a step between publishing the pointer and reporting the build can raise "
         f"past the report -- the H-B shape: {sorted(unguarded)}"
+    )
+
+    # A `try` *inside* the window is not an escape hatch either: the evasion round
+    # two measured was `try: record_index(...) except ValueError: pass`, which the
+    # call key above cannot see because the call is no longer bare. So the window's
+    # own handlers must convert rather than swallow -- a `pass` body reports
+    # nothing to the caller, which is the property this whole pin is about.
+    swallowing = {
+        f"line {handler.lineno}: except {ast.unparse(handler.type) if handler.type else ''}"
+        for statement in window
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Try)
+        for handler in node.handlers
+        if all(isinstance(step, ast.Pass) for step in handler.body)
+    }
+    assert not swallowing, (
+        "a step in the window swallows its own failure instead of converting it "
+        f"into the report: {sorted(swallowing)}"
     )

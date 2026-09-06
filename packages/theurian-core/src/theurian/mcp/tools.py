@@ -271,10 +271,58 @@ DEFERRED_RESULT_REFUSAL: Final = (
 #: file pasted into the pointer -- is a bounded echo rather than the payload.
 _MAX_QUOTED_VALUE_CHARS: Final = 120
 
+#: How long a refusal built elsewhere may be by the time it reaches a client.
+#: Generous next to :data:`_MAX_QUOTED_VALUE_CHARS`, because a whole message is
+#: mostly this project's own prose and only partly the value inside it -- and
+#: still a ceiling, which is what a 3,000-character ``stateHash`` echo did not
+#: have.
+_MAX_MESSAGE_CHARS: Final = 600
+
 #: What :func:`_publishable` appends when it cuts. Never a prefix of what a cut
 #: value can end with, so "the value ended here" and "the value was cut" are
 #: distinguishable in a transcript.
 _CUT_MARKER: Final = "… (cut)"
+
+
+def _publishable_field(value: str) -> str:
+    """The same escaping and bound as :func:`_publishable`, **without the quotes**.
+
+    A published *field* is structured data a client reads by key --
+    ``project.list``'s ``projectId`` is the argument every other tool takes --
+    so quoting it would change the contract rather than protect it: a first cut
+    of this fix answered ``"'demo'"`` where the schema says ``demo``. What a
+    field still needs is the escaping, because the wire encoder does not care
+    whether a surrogate arrived in a message or in a value.
+
+    ``repr``'s interior rather than a second escaping scheme, so a reader
+    undoing either one uses the same rules -- and so printable non-ASCII
+    survives here exactly as it does there: a Japanese root path stays legible.
+
+    Built from ``repr`` directly rather than by slicing :func:`_publishable`'s
+    result: that one appends :data:`_CUT_MARKER` when it cuts, and dropping the
+    last character of a cut value would eat the marker's last character instead
+    of a quote.
+    """
+    interior = repr(value)[1:-1]
+    if len(interior) <= _MAX_QUOTED_VALUE_CHARS:
+        return interior
+    return interior[:_MAX_QUOTED_VALUE_CHARS] + _CUT_MARKER
+
+
+def _bounded_message(message: str) -> str:
+    """A refusal built elsewhere, cut to what a reply may carry.
+
+    :func:`_publishable` is for a *value* this daemon did not produce, and it
+    quotes as well as cuts. This is for a whole **message** that already contains
+    such a value -- `read_active_state`'s OS cause, `ContentHash`'s echo of
+    ``stateHash`` -- where quoting the sentence would be wrong and the length is
+    the only thing still unbounded. Escape-safety at those sites comes from their
+    own ``!r``; what they lack is a ceiling, and a 3,000-character ``stateHash``
+    is the shape that showed it (round two, security).
+    """
+    if len(message) <= _MAX_MESSAGE_CHARS:
+        return message
+    return message[:_MAX_MESSAGE_CHARS] + _CUT_MARKER
 
 
 def _publishable(value: str) -> str:
@@ -300,12 +348,27 @@ def _publishable(value: str) -> str:
     destroy for no gain. The length bound is here rather than at the call sites
     for the reason the escaping is: a rule applied per site is a rule that drifts.
 
-    **The CLI is deliberately not routed through this**, and that is measured
-    rather than assumed: ``_fail``'s JSON channel goes through ``json.dumps``,
-    whose ``ensure_ascii`` default escapes a surrogate, and its text channel
-    reaches ``sys.stderr.write`` only after the same value has been through
-    ``!r`` at the construction site. A surrogate ``indexBuildId`` through
-    ``theurian index gc`` answered cleanly on both channels (measured 2026-09-06).
+    **``_fail``'s two channels are not routed through this, and the reason given
+    here was wrong** (round two, adversarial H-3). The claim was that the text
+    channel is safe because the value has been through ``!r`` at the construction
+    site -- and the arm it pointed at, ``index_commands.py``'s
+    "names build {published}", has no ``!r`` at all. What actually saves that
+    channel is Python's own default: ``sys.stderr`` carries
+    ``errors='backslashreplace'``, so an unencodable character is written as an
+    escape rather than raising. The JSON channel is separately safe because
+    ``json.dumps``'s ``ensure_ascii`` escapes it before the write. Measured
+    2026-09-06 through a real subprocess under ``LANG`` of ``C``,
+    ``en_US.UTF-8`` and ``ja_JP.UTF-8``: a surrogate ``indexBuildId`` through
+    ``theurian index gc`` answered cleanly on both channels in all three.
+
+    **The claim is scoped to those two channels and to nothing else**, because
+    ``sys.stdout`` does *not* share that handler -- it carries
+    ``errors='surrogateescape'`` -- and a command that prints a payload rather
+    than a refusal is a different question. Under the two UTF-8 locales,
+    ``theurian index status`` without ``--json`` truncated stdout after 39 bytes
+    and ended in a traceback over the same plant, while ``--json`` answered.
+    That is pre-existing behaviour on a channel this module does not reach and
+    is recorded rather than fixed here.
     """
     quoted = repr(value)
     if len(quoted) <= _MAX_QUOTED_VALUE_CHARS:
@@ -911,7 +974,16 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         same line of SDK code. One fold, applied wherever a ``ProjectError``
         would otherwise cross the tool boundary.
         """
-        return ToolError(" ".join(part for part in (str(exc), exc.remedy) if part))
+        # Bounded on the way out (round two, adversarial H-2). Everything this
+        # wraps is a `ProjectError` built somewhere else, and two of them
+        # interpolate a value this daemon did not produce -- the pointer read's
+        # OS cause, and `ContentHash`'s refusal, which echoes the `stateHash`
+        # field verbatim. `!r` at those sites makes them escape-safe and leaves
+        # them length-unbounded, so the bound is applied here, once, where every
+        # such refusal passes.
+        return ToolError(
+            " ".join(part for part in (_bounded_message(str(exc)), exc.remedy) if part)
+        )
 
     def _registry_snapshot() -> tuple[dict[str, dict[str, str]], tuple[str, ...]]:
         """The registry's two halves: what loaded, and what was skipped.
@@ -980,14 +1052,23 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 f"entry, then register the project again from its repository."
             )
 
-        # `known` and `skipped` are the daemon's own registry contents, not the
-        # caller's input: `load` admits only ids that construct as a `ProjectId`
-        # (each <= MAX_PROJECT_ID_CHARS), and `unreadable` is whatever a hand
-        # edit left in the file. Neither is amplified by this request.
-        known = ", ".join(sorted(entries)) or "none"
+        # **Both go through the sanitiser, per element** (round two, adversarial
+        # H-2). The sentence here said "neither is amplified by this request",
+        # reasoning that `load` admits only ids that construct as a `ProjectId`.
+        # That holds for `known` and is false for `unreadable`, which is
+        # *precisely* the ids that did not construct -- whatever a hand edit left
+        # in the file. Measured 2026-09-06 on this path, which any client reaches
+        # by asking for an id that is not registered: a registry key carrying a
+        # lone surrogate killed the wire encoder, so the client received a 200
+        # with an empty body; a 200,000-character key produced a
+        # 200,248-character refusal, defeating the bound `_publishable` exists
+        # for. Per element rather than over the joined string, so one hostile id
+        # cannot consume the whole budget and hide the rest.
+        known = ", ".join(_publishable(name) for name in sorted(entries)) or "none"
         skipped = (
             f"Present but unreadable, and served by nothing until removed with "
-            f"`theurian project unregister <id>`: {', '.join(unreadable)}. "
+            f"`theurian project unregister <id>`: "
+            f"{', '.join(_publishable(name) for name in unreadable)}. "
             if unreadable
             else ""
         )
@@ -1121,9 +1202,16 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             # true of the plants #525 closes, and a non-cause here, where the
             # directory is intact and it is the pointer's own field that carries
             # `../`. Only this call site knows which of the two it asked with.
+            #
+            # "outside `.theurian/state/`" and not "outside its working tree",
+            # which round two measured false of half the class: `../../decoy
+            # .sqlite` resolves *inside* the root and was served at exit 0. Both
+            # causes -- past the root, and inside it but out of the state
+            # directory -- are true of the wording below, and only the second is
+            # true of the one it replaces.
             msg = (
                 f"Project {project_id!r} points at a state database outside its own "
-                f"working tree ({_publishable(active.database_filename)}). "
+                f"`.theurian/state/` directory ({_publishable(active.database_filename)}). "
                 f"{ACTIVE_POINTER_REMEDY}"
             )
             raise ToolError(msg) from exc
@@ -1730,11 +1818,20 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         entries, unreadable = _registry_snapshot()
         return {
             "count": len(entries),
+            # Sanitised even though these are *values* rather than message text
+            # (round two, adversarial H-2): a dict literal reaches the same wire
+            # encoder a refusal does, and a `rootPath` carrying a lone surrogate
+            # ended `project.list` in an `UnexpectedToolError` (measured
+            # 2026-09-06). Invisible to a sweep keyed on f-strings, which is why
+            # the key below is keyed on the *source* of a value as well.
             "projects": [
-                {"projectId": pid, "rootPath": e.get("rootPath", "")}
+                {
+                    "projectId": _publishable_field(pid),
+                    "rootPath": _publishable_field(e.get("rootPath", "")),
+                }
                 for pid, e in sorted(entries.items())
             ],
-            "unreadable": list(unreadable),
+            "unreadable": [_publishable_field(name) for name in unreadable],
             "remedy": (
                 "Remove them with `theurian project unregister <id>`, then register each "
                 "project again from its repository. Until then, an id in this list "

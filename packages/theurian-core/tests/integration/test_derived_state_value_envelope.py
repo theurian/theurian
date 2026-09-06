@@ -600,6 +600,127 @@ def test_a_database_filename_the_os_will_not_answer_for_is_refused_with_a_cure(
     )
 
 
+#: The two shapes an escaping ``databaseFilename`` takes, and they are not one
+#: shape twice. ``../../`` resolves **inside** the project root -- a file at the
+#: checkout's top level, which a clone delivers as ordinary tracked content --
+#: while ``../../../`` leaves the tree. The first was served at exit 0 by a
+#: containment check that proved only the root (round two, security H-1), so a
+#: row over the second alone measures a guard the first walks past.
+_ESCAPING_FILENAMES: Final = (
+    pytest.param("../../decoy.sqlite", id="inside-the-root"),
+    pytest.param("../../../outside.sqlite", id="past-the-root"),
+)
+
+
+@pytest.mark.parametrize("filename", _ESCAPING_FILENAMES)
+def test_the_mcp_surface_refuses_a_state_database_outside_the_state_directory(
+    project: Path, filename: str
+) -> None:
+    """Round two, security H-1: the exclusion cited a test row that did not exist.
+
+    The plant is a **real, readable** database at the escaping path, copied from
+    the project's own, so nothing downstream can refuse it for being absent or
+    corrupt: without that, this row would pass over a file the guard never had to
+    judge. Measured before the fix at ``4dd322d6`` with the in-root spelling:
+    ``knowledge.search`` served the decoy's rows at exit 0.
+
+    Three assertions, because "it refused" is satisfied by three different wrong
+    refusals: the message must name the *state directory* (the working-tree
+    wording is false of the in-root half), it must not carry the operator's
+    absolute path (GHSA-97q9), and it must not carry ``derived_escape_remedy``'s
+    "remove `.theurian/state`" -- a non-cure when the directory is intact and the
+    pointer's field is what escaped.
+    """
+    registry = ProjectRegistry.default(project.parent / "datadir")
+    _plant_a_readable_database_at(project, filename)
+
+    with pytest.raises(SdkToolError) as raised:
+        asyncio.run(_search(registry))
+
+    message = str(raised.value)
+    assert ".theurian/state/" in message, (
+        f"the refusal describes the wrong boundary, which is false of a filename "
+        f"that stays inside the working tree: {message}"
+    )
+    assert str(project) not in message, (
+        f"the refusal carries the operator's absolute path to a client: {message}"
+    )
+    assert "Remove `.theurian/state`" not in message, (
+        f"the refusal published the planted-link cure for a pointer whose own "
+        f"field escaped, which removes derived state to fix a value: {message}"
+    )
+    assert "active.json" in message, f"the refusal names no artefact to act on: {message}"
+
+
+@pytest.mark.parametrize("filename", _ESCAPING_FILENAMES)
+def test_index_build_refuses_a_state_database_outside_the_state_directory(
+    project: Path, filename: str
+) -> None:
+    """The CLI half of the same guard, which the MCP-side fix did not reach.
+
+    ``index build`` joined the pointer's value itself. Measured at ``4dd322d6``
+    with ``../../../outside.sqlite``: the command **read that file, built an
+    index from it and published at exit 0** -- so a doctored pointer turned a
+    build into a copy of knowledge the working tree does not hold.
+
+    An absolute path in *this* refusal is correct and is not asserted against:
+    the rule that keeps them out is the MCP one, and every sibling refusal on
+    this surface prints one.
+    """
+    _plant_a_readable_database_at(project, filename)
+    before = sorted(p.name for p in (project / ".theurian/state").glob("theurian-index-*.sqlite"))
+
+    ran = _run("index", "build")
+
+    assert ran.escaped is None, f"an exception reached the caller: {ran.escaped}"
+    assert ran.exit_code != 0, (
+        f"the build was published from outside the state directory: {ran.stdout}"
+    )
+    assert ran.envelope is not None, f"stderr held no document: {ran.stderr[:200]}"
+    after = sorted(p.name for p in (project / ".theurian/state").glob("theurian-index-*.sqlite"))
+    assert after == before, f"a refused build left an index behind: {before} -> {after}"
+
+
+def test_the_history_check_refuses_a_state_database_outside_the_state_directory(
+    project: Path,
+) -> None:
+    """The third consumer, on the path of every command `_require_project` routes.
+
+    ``_verify_history`` joined the value too, and it runs before any command's
+    own body. Driven with the state hash moved, because it returns early while
+    the recorded hash and the derived one agree -- without that this row measures
+    the early return rather than the join.
+    """
+    _move_the_state_hash(project)
+    _plant_a_readable_database_at(project, "../../../outside.sqlite")
+
+    ran = _run("migrate", "status")
+
+    assert ran.escaped is None, f"an exception reached the caller: {ran.escaped}"
+    assert ran.exit_code != 0, (
+        f"the history check accepted a database outside the tree: {ran.stdout}"
+    )
+    assert ran.envelope is not None, f"stderr held no document: {ran.stderr[:200]}"
+
+
+def _plant_a_readable_database_at(root: Path, filename: str) -> None:
+    """Copy the project's own state database to the escaping path and point at it.
+
+    A *readable* copy, so the guard under test is the only thing that can refuse:
+    an absent target is refused by the missing-database arm and a corrupt one by
+    the integrity guard, and either would make this row green without the
+    containment check existing.
+    """
+    pointer = root / ".theurian/state/active.json"
+    payload = json.loads(pointer.read_text(encoding="utf-8"))
+    honest = root / ".theurian/state" / payload["databaseFilename"]
+    target = (root / ".theurian/state" / filename).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(honest, target)
+    payload["databaseFilename"] = filename
+    pointer.write_text(json.dumps(payload), encoding="utf-8")
+
+
 @pytest.mark.parametrize(
     ("case", "filename"),
     [
@@ -648,39 +769,171 @@ def test_a_refusal_naming_a_derived_value_can_always_reach_the_wire(
     )
 
 
-def test_every_derived_value_a_reply_quotes_goes_through_the_one_sanitiser() -> None:
-    """The population for H-D, read out of ``mcp/tools.py``'s own AST.
+#: What a reply may not carry raw: a value this daemon read out of a file some
+#: other process wrote. Two came from the pointer and the registry entry; the
+#: third is the registry *key*, which round two measured as the one any client
+#: reaches -- ask for an id that is not registered and the refusal lists it.
+_VALUES_THE_DAEMON_DID_NOT_PRODUCE: Final = ("database_filename", "rootPath", "unreadable")
 
-    The key is an f-string field with **no conversion** -- no ``!r``, no ``!s``
-    -- whose expression names a value this daemon did not produce: the pointer's
-    ``database_filename`` or the registry entry's ``rootPath``. Those are the two
-    the sweep returned on 2026-09-06, and both now go through
-    :func:`~theurian.mcp.tools._publishable`. ``{project_id!r}`` and
-    ``{type(exc).__name__}`` are outside the key by construction, which is the
-    point of keying on the conversion rather than on the name.
+#: The sanitisers a value may reach a reply through. Two forms, one escaping:
+#: the quoted one for message text, the bare one for a published field.
+_SANITISERS: Final = ("_publishable", "_publishable_field")
 
-    A message added later that interpolates one of these raw fails here rather
-    than reaching a client, which is what makes "every published field" a
-    checkable sentence in this module and not a claim.
+
+def _unsanitised_publications(tree: ast.AST) -> list[str]:
+    """Every place ``tree`` puts an untrusted value into a reply without a sanitiser.
+
+    **Three shapes, because round two's three unconverted sites were three
+    different ones** and a key seeing only the first called the class closed:
+
+    * an f-string field, **whatever its conversion**. The first cut required
+      ``conversion == -1``, which admits ``!s`` -- and ``!s`` *is* ``str()``, so
+      the exclusion admitted the exact defect it was written to catch. ``!r``
+      escapes, but it does not bound, and the 200,000-character registry key is
+      what made that distinction matter.
+    * a ``str.join`` over a comprehension or a name, which is how the two
+      registry lists were built -- the value never appears in the f-string at
+      all, only the joined result does.
+    * a **dict literal** value, which is not message text and reaches the same
+      wire encoder anyway: ``project.list``'s ``rootPath`` died there.
+
+    The key is deliberately syntactic and therefore over-broad; a site that is
+    genuinely safe is excluded by name in :data:`_PUBLISHED_RAW_ON_PURPOSE`
+    rather than by narrowing the shape, so the exclusion is readable and
+    attackable.
     """
-    source = (_SOURCE_ROOT / "mcp" / "tools.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    untrusted = ("database_filename", "rootPath")
+    found: list[str] = []
+    for node in ast.walk(tree):
+        for expression, where in _publication_sites(node):
+            rendered = ast.unparse(expression)
+            if not any(name in rendered for name in _VALUES_THE_DAEMON_DID_NOT_PRODUCE):
+                continue
+            if any(sanitiser in rendered for sanitiser in _SANITISERS):
+                continue
+            line = getattr(node, "lineno", 0)
+            found.append(f"line {line}: {where} {rendered[:70]}")
+    return found
 
-    raw = [
-        f"line {node.lineno}: {{{ast.unparse(part.value)}}}"
-        for node in ast.walk(tree)
-        if isinstance(node, ast.JoinedStr)
-        for part in node.values
-        if isinstance(part, ast.FormattedValue)
-        and part.conversion == -1
-        and "_publishable" not in ast.unparse(part.value)
-        and any(name in ast.unparse(part.value) for name in untrusted)
+
+def _publication_sites(node: ast.AST) -> Iterator[tuple[ast.AST, str]]:
+    """The expressions ``node`` publishes, with what kind of site each one is.
+
+    A conditional yields its two *branches* rather than itself: the whole
+    ``IfExp`` renders with its condition in it, so ``"...text..." if unreadable
+    else None`` -- a fixed remedy string chosen by a flag -- read as a
+    publication of ``unreadable``. What reaches the reply is the branch.
+    """
+    if isinstance(node, ast.JoinedStr):
+        for part in node.values:
+            if isinstance(part, ast.FormattedValue):
+                yield part.value, "f-string"
+    elif isinstance(node, ast.Dict):
+        for value in node.values:
+            if value is not None:
+                yield from _reaches_the_reply(value, "dict value")
+    elif (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"join", "format"}
+    ):
+        for argument in node.args:
+            yield from _reaches_the_reply(argument, f".{node.func.attr}()")
+
+
+def _reaches_the_reply(value: ast.AST, where: str) -> Iterator[tuple[ast.AST, str]]:
+    """``value``, or a conditional's branches, dropping plain constants."""
+    if isinstance(value, ast.IfExp):
+        yield from _reaches_the_reply(value.body, where)
+        yield from _reaches_the_reply(value.orelse, where)
+    elif not isinstance(value, ast.Constant):
+        yield value, where
+
+
+#: Sites the key reports that are safe for a reason, named rather than narrowed
+#: out of the shape. Keyed on the rendered expression, so a site that changes has
+#: to be re-classified instead of inheriting an exemption.
+_PUBLISHED_RAW_ON_PURPOSE: Final = {
+    "list(unreadable)": (
+        "not a publication: it is the argument to `_registry_snapshot`'s own return, "
+        "which every consumer then sanitises at its own surface"
+    ),
+}
+
+
+def test_every_untrusted_value_a_reply_carries_goes_through_a_sanitiser() -> None:
+    """The population for the wire-encoder class, read out of ``mcp/tools.py``'s AST.
+
+    **The first cut of this key was tautological** (round two, adversarial H-2):
+    it required ``conversion == -1`` and matched two hardcoded names -- the two
+    already converted -- so it was a restatement of the fix rather than a check
+    on it. Three unconverted sites reached the wire while it passed, and one of
+    them is on the path any client takes by asking for an unregistered id.
+
+    What the key asks now is where an untrusted value can *reach a reply*, in
+    the three shapes those sites used, with the conversion ignored because
+    ``!s`` is ``str()``. :func:`test_the_publication_key_reports_a_planted_site`
+    is its vacuity control -- this assertion is a "not found", which a key
+    matching nothing satisfies perfectly.
+    """
+    tree = ast.parse((_SOURCE_ROOT / "mcp" / "tools.py").read_text(encoding="utf-8"))
+
+    unsanitised = [
+        site
+        for site in _unsanitised_publications(tree)
+        if not any(excluded in site for excluded in _PUBLISHED_RAW_ON_PURPOSE)
     ]
 
-    assert not raw, (
-        "a reply interpolates a derived-state value the daemon did not produce "
-        f"without routing it through `_publishable`: {raw}"
+    assert not unsanitised, (
+        "a reply carries a value this daemon did not produce without routing it "
+        f"through `_publishable`: {unsanitised}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("shape", "source"),
+    [
+        ("f-string-no-conversion", 'msg = f"names {active.database_filename}"'),
+        ("f-string-str-conversion", 'msg = f"names {active.database_filename!s}"'),
+        ("f-string-repr-conversion", 'msg = f"names {active.database_filename!r}"'),
+        ("join-over-a-comprehension", 'msg = ", ".join(name for name in unreadable)'),
+        ("dict-literal-value", 'payload = {"rootPath": entry["rootPath"]}'),
+        ("format-call", 'msg = "names {}".format(active.database_filename)'),
+    ],
+)
+def test_the_publication_key_reports_a_planted_site(shape: str, source: str) -> None:
+    """The vacuity control: the key must *hit* each shape it claims to cover.
+
+    Every assertion in the sweep above is a "nothing found", which a key that
+    matches nothing satisfies perfectly -- and the first cut of this key very
+    nearly was that: it saw one of these six. Each is planted and required to be
+    reported, ``!r`` included, because escaping is not bounding and the
+    200,000-character key is what proved the difference.
+    """
+    reported = _unsanitised_publications(ast.parse(textwrap.dedent(source)))
+
+    assert reported, f"the key does not see a `{shape}` publication at all: {source}"
+
+
+def test_the_publication_key_accepts_a_sanitised_site() -> None:
+    """The other half: a key reporting everything would satisfy the control above.
+
+    Both sanitiser spellings, because the field form exists precisely so a
+    published *field* is not quoted -- and a key that only knew the message form
+    would push every field through the wrong one.
+    """
+    sanitised = ast.parse(
+        textwrap.dedent(
+            """
+msg = f"names {_publishable(active.database_filename)}"
+payload = {"rootPath": _publishable_field(entry["rootPath"])}
+joined = ", ".join(_publishable(name) for name in unreadable)
+"""
+        )
+    )
+
+    assert not _unsanitised_publications(sanitised), (
+        "the key reports a site that is already sanitised, so its findings say "
+        "nothing about whether a value is protected"
     )
 
 
@@ -967,35 +1220,60 @@ def _index_for_callers(
     }
 
 
-def _grades_the_index_stat(node: ast.AST) -> frozenset[str]:
-    """What guards the ``index_for`` call **and** the stat that follows it.
+def _index_for_targets(body: list[ast.stmt]) -> frozenset[str]:
+    """The local names bound to what ``index_for`` returned, inside ``body``."""
+    targets: set[str] = set()
+    for statement in body:
+        if not isinstance(statement, ast.Assign) or not _calls_named(
+            statement.value, {"index_for"}
+        ):
+            continue
+        targets |= {name.id for name in statement.targets if isinstance(name, ast.Name)}
+    return frozenset(targets)
 
-    Both in one ``try`` body, which is the strengthening MEDIUM-1 asked for: the
-    first cut asked only that the ``index_for`` call was inside a ``try``, so
-    moving the ``is_file()`` one line below the handler -- the exact shape of
-    every #389 face -- passed the key while reopening the defect.
+
+def _stats_that_target(body: list[ast.stmt], targets: frozenset[str]) -> bool:
+    """Whether ``body`` stats the path ``index_for`` returned, rather than some other one.
+
+    Round two: the first cut asked only that *a* stat shared the ``try`` body,
+    so a function that resolved the build id and then stat-ed an unrelated path
+    inside the handler read as guarded while the real probe sat below it. The
+    receiver has to be the bound name -- or the ``index_for`` call itself, which
+    is the chained spelling ``paths.index_for(id).is_file()``.
     """
+    for statement in body:
+        for call in ast.walk(statement):
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
+                continue
+            if call.func.attr not in _ASKS_THE_FILESYSTEM:
+                continue
+            receiver = call.func.value
+            if isinstance(receiver, ast.Name) and receiver.id in targets:
+                return True
+            if _calls_named(receiver, {"index_for"}):
+                return True
+    return False
 
-    def guarded(statement: ast.AST) -> bool:
-        return _calls_named(statement, {"index_for"}) and _calls_named(
-            statement, _ASKS_THE_FILESYSTEM
-        )
 
-    over_the_statement = _handlers_over(node, guarded)
-    if over_the_statement:
-        return over_the_statement
+def _grades_the_index_stat(node: ast.AST) -> frozenset[str]:
+    """What guards the ``index_for`` call **and** the stat of what it returned.
 
-    # The two calls may be separate statements in one `try` body, which is the
-    # ordinary spelling: `path = paths.index_for(id)` then `present =
-    # path.is_file()`. Asked as a property of the body rather than of a single
-    # statement, and still of the *same* body.
+    Both in one ``try`` body, and the stat aimed at the *same path*. Round one's
+    MEDIUM-1 moved the first half here -- the original key asked only that the
+    ``index_for`` call was inside a ``try``, so moving the ``is_file()`` one line
+    below the handler passed while reopening the defect. Round two moved the
+    second: a stat on a **different** path in that body satisfied the widened key
+    just as well, which is the same "an exit code is not membership" mistake one
+    level down.
+    """
     caught: set[str] = set()
     for child in _own_statements(node):
         if not isinstance(child, ast.Try):
             continue
-        body_calls_index_for = any(_calls_named(st, {"index_for"}) for st in child.body)
-        body_stats = any(_calls_named(st, _ASKS_THE_FILESYSTEM) for st in child.body)
-        if not (body_calls_index_for and body_stats):
+        if not any(_calls_named(statement, {"index_for"}) for statement in child.body):
+            continue
+        targets = _index_for_targets(child.body)
+        if not _stats_that_target(child.body, targets):
             continue
         for handler in child.handlers:
             if handler.type is None:
@@ -1006,21 +1284,27 @@ def _grades_the_index_stat(node: ast.AST) -> frozenset[str]:
     return frozenset(caught)
 
 
-#: Every function that joins ``database_filename`` onto a path and does not
-#: grade an ``OSError`` itself, with the reason it does not have to.
-_JOIN_GRADED_ELSEWHERE: Final = {
-    "cli/index_commands.py::index_build": (
-        "the join is handed to `IndexRequest` and never stat-ed here; the read that "
-        "does touch it is `_run_build`'s, whose "
-        "`except (TheurianError, sqlite3.Error, OSError)` converts it"
-    ),
+#: The functions allowed to join ``database_filename`` onto a path, and why.
+#:
+#: **The key changed shape in round two, because the fix did.** It used to ask
+#: whether each joining function graded the stat that followed; every consumer
+#: now goes through :meth:`ProjectPaths.state_database_named` instead, so the
+#: property worth holding is stronger and simpler: *a bare join is the defect*.
+#: Two joins remain and neither takes a pointer's value.
+#: **The containment helper is not in this set and is not visible to the key**,
+#: which is a bound rather than an omission: it takes the filename as a bare
+#: parameter, so its own join reads ``state / database_filename`` -- a ``Name``,
+#: not the ``<pointer>.database_filename`` attribute this key matches. What holds
+#: the helper is its own escaping rows below and the two containment sweeps that
+#: reflect over ``ProjectPaths``; what this key holds is that no *consumer* goes
+#: round it.
+_MAY_JOIN_THE_FILENAME: Final = {
     "application/project_service.py::database_for": (
         "a different `database_filename`: `StateHash`'s, computed from the migration "
         "set rather than read from a pointer. The guard on *that* one is upstream and "
         "is not this class's: `StateHash` is built from a 64-hex `ContentHash`, so the "
         "filename cannot carry an attacker's bytes at all -- provenance says nothing "
-        "about it. And this helper returns the path without stat-ing it, so each "
-        "caller's own probe is where a mode failure is graded"
+        "about it"
     ),
 }
 
@@ -1109,35 +1393,39 @@ def _join_sites(tree: ast.AST, module: str) -> dict[str, ast.FunctionDef | ast.A
     }
 
 
-def test_every_database_filename_join_grades_the_stat_that_follows_it() -> None:
-    """The closure argument for the pointer's other value, derived the same way.
+def test_no_consumer_joins_the_pointers_database_filename_onto_a_path() -> None:
+    """The closure argument for the pointer's other value, after round two moved it.
 
-    ``ActiveState.from_json`` only ``str()``s ``databaseFilename``, and nothing
-    between the pointer and these joins has read what it says. Reproduce the
-    population with ``git grep -n 'active.database_filename' --
-    packages/theurian-core/src``: four lines on 2026-09-05, three joins and one
-    message.
+    Round one asked whether each joining function graded the stat that followed,
+    which was the right question while three consumers joined the value
+    themselves. Round two measured what that left open: containment lived only on
+    the MCP side, so ``index build`` with ``databaseFilename`` set to
+    ``../../../outside.sqlite`` **read that file, built from it and published at
+    exit 0** (measured 2026-09-06), and `_verify_history` -- on the path of every
+    command `_require_project` routes -- joined it too.
 
-    The key demonstrably hits: it is what found ``_verify_history`` after the
-    other two joins had already been converted -- the "a guard covers the whole
-    set, never a convenient subset" failure caught before it shipped -- and
-    :func:`test_the_population_keys_catch_what_defeated_their_first_cut` runs it
-    against the evasions round one measured.
+    So the key is now membership rather than grading: every consumer goes through
+    :meth:`ProjectPaths.state_database_named`, and a bare join is the defect
+    whatever it does afterwards. Reproduce the population with ``git grep -n
+    'database_filename' -- packages/theurian-core/src``; the two functions in
+    :data:`_MAY_JOIN_THE_FILENAME` are the only ones that may build the path, and
+    only one of them takes a pointer's value.
+
+    The key demonstrably hits: it is what reported ``index_build`` leaving the
+    population when that call was converted, and
+    :func:`test_the_population_keys_catch_what_defeated_their_first_cut` runs its
+    evasion shapes.
     """
     joins = _swept(_join_sites)
     assert joins, "the AST key found no `database_filename` join at all"
 
-    stale = frozenset(_JOIN_GRADED_ELSEWHERE) - frozenset(joins)
-    assert not stale, f"an exclusion names a join that no longer exists: {sorted(stale)}"
+    stale = frozenset(_MAY_JOIN_THE_FILENAME) - frozenset(joins)
+    assert not stale, f"an allowance names a join that no longer exists: {sorted(stale)}"
 
-    ungraded = sorted(
-        position
-        for position, node in joins.items()
-        if position not in _JOIN_GRADED_ELSEWHERE and "OSError" not in _grades_the_join_stat(node)
-    )
-    assert not ungraded, (
-        "a function joins `databaseFilename` onto a path and does not grade the "
-        f"`OSError` the stat that follows can raise: {ungraded}"
+    bare = sorted(frozenset(joins) - frozenset(_MAY_JOIN_THE_FILENAME))
+    assert not bare, (
+        "a consumer builds a path out of the pointer's `databaseFilename` instead "
+        f"of asking `state_database_named` for it, so nothing contains it: {bare}"
     )
 
 
@@ -1213,6 +1501,18 @@ def register(paths, published):
 def resolve(paths, active):
     database = paths.state.joinpath(active.database_filename)
     return database.exists()
+""",
+    ),
+    "index-stat-on-a-different-path": (
+        _grades_the_index_stat,
+        """
+def gc(paths, published, other):
+    try:
+        path = paths.index_for(published)
+        other.is_file()
+    except (TheurianError, OSError):
+        return None
+    return path.is_file()
 """,
     ),
     "stat-on-a-different-path": (
@@ -1297,3 +1597,42 @@ def resolve(paths, active):
 
     assert _grades_the_index_stat(correct_index) >= _BOTH_FAMILIES
     assert "OSError" in _grades_the_join_stat(correct_join)
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_the_pointer_refusal_names_the_file_relative_to_the_project(project: Path) -> None:
+    """Round two, adversarial: the GHSA-97q9 fix on this message was unpinned.
+
+    `read_active_state`'s refusal reaches MCP clients verbatim -- `_resolve`
+    publishes it through `_with_remedy` -- and both halves of it used to carry
+    the operator's absolute path: the pointer directly, and the OS cause, because
+    an `OSError`'s ``str`` appends the filename its ``strerror`` leaves out. Both
+    were made project-relative, and a mutation putting either back survived,
+    because nothing asserted the property.
+
+    Driven at the MCP surface rather than at the function, because that is where
+    the rule applies: the CLI prints absolute paths on purpose.
+    """
+    registry = ProjectRegistry.default(project.parent / "datadir")
+    state = project / ".theurian/state"
+    state.chmod(0o000)
+    try:
+        with pytest.raises(OSError, match="Permission denied"):
+            (state / "active.json").read_text(encoding="utf-8")
+
+        with pytest.raises(SdkToolError) as raised:
+            asyncio.run(_search(registry))
+    finally:
+        state.chmod(0o700)
+
+    message = str(raised.value)
+    assert str(project) not in message, (
+        f"the refusal carries the operator's absolute path to a client: {message}"
+    )
+    assert ".theurian/state/active.json" in message, (
+        f"the refusal names no file at all, so relative-ness was bought by saying "
+        f"nothing: {message}"
+    )
+    assert "Permission denied" in message, (
+        f"the refusal dropped the OS's own reason along with the path it appended: {message}"
+    )

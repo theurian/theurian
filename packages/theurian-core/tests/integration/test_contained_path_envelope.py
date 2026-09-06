@@ -113,7 +113,16 @@ authored-symlink and planted-directory class, keyed on the ``_contain`` /
 can fail to publish an envelope", and reading it as that would make any unrelated
 escape look like a hole in it.
 
-``ProjectPaths.index_for`` is the neighbour that makes the distinction concrete.
+``ProjectPaths.index_for`` and ``ProjectPaths.state_database_named`` are the
+neighbours that make the distinction concrete, and neither is a member here:
+each resolves ``self.state`` and then compares against it, rather than calling
+``_contained``, so the AST key below cannot see them and does not claim to.
+``state_database_named`` joined the class for one round -- its first cut *did*
+call ``_contained``, and root-scoped containment served a decoy inside the
+checkout at exit 0 (round two, security H-1) -- which is why it now carries
+``index_for``'s state-scoped check and has left this population with it. What
+drives them is where their escapes are *values*:
+``test_derived_state_value_envelope.py``.
 It raises the same ``ProjectError`` type and lives in the same class, and it is
 outside this population by root cause: what it refuses is a **value** -- an
 ``indexBuildId`` read out of ``active-index.json``, derived, git-ignored and
@@ -575,29 +584,6 @@ PLANTS: Final = (
         directory_refuses=frozenset({"index build", "migrate status", "migrate apply"}),
     ),
     Plant(
-        helper="state_database_named",
-        relative="state/theurian-state-*.sqlite",
-        is_directory=False,
-        remedy=_DERIVED_STATE,
-        derives_a_path=False,
-        outside_the_class_because=(
-            "it derives the *same leaf* `database_for` does -- both name "
-            "`state/theurian-state-<hash>.sqlite` -- so a plant at its path is "
-            "`database_for`'s plant, and every refusal it would measure is that "
-            "helper's. What differs is the argument: `database_for` takes a "
-            "`StateHash` this build computed, while this one takes `active.json`'s "
-            "`databaseFilename` verbatim (#551 round one). Its only consumer is "
-            "`mcp/tools._resolve`, and an MCP refusal is a different envelope "
-            "contract -- a `ToolError`, not a `--json` document on stderr -- so it "
-            "is not merely unswept here but outside what this file can assert "
-            "about, the same position `findings_for`'s `review.findings` consumer "
-            "is in. Driven instead by "
-            "`test_derived_state_value_envelope.py`'s escaping-`databaseFilename` "
-            "row, where the refusal it produces is measured on the surface that "
-            "publishes it."
-        ),
-    ),
-    Plant(
         helper="initialize_project",
         relative="",
         is_directory=True,
@@ -647,9 +633,7 @@ CONTAINMENT_PLANTS: Final = tuple(plant for plant in PLANTS if plant.in_the_cont
 #: ``outside_the_class_because``; naming them here as a set keeps the partition
 #: exact -- a new one has to be classified rather than absorbed into whichever
 #: half the assertion happens to read first.
-_OUTSIDE_FOR_THEIR_OWN_REASON: Final = frozenset(
-    {"knowledge", "initialize_project", "state_database_named"}
-)
+_OUTSIDE_FOR_THEIR_OWN_REASON: Final = frozenset({"knowledge", "initialize_project"})
 
 
 # -- The corpus and the sweep -----------------------------------------------
