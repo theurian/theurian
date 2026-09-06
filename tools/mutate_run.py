@@ -122,6 +122,20 @@ class Options:
     #: Every deselected id is printed with the summary, so a reader can tell a
     #: batch that skipped a broken environment from one that skipped the test
     #: that would have caught the mutation.
+    #:
+    #: **What is printed is the request, not a confirmation.** ``pytest
+    #: --deselect`` ignores a node id that matches nothing -- no error, no
+    #: warning, exit 0 -- so a typo, a renamed test or a stale path subtracts
+    #: nothing while the summary still names it. **An absolute path is one of
+    #: those non-matching ids**: node ids are resolved relative to rootdir, so
+    #: ``/abs/path/test_x.py::test_y`` silently deselects nothing. Measured
+    #: 2026-09-06 against this repository's pinned pytest: two ids given, one
+    #: real and one invented, reported ``1 passed, 1 deselected``; the same run
+    #: with both ids spelled absolutely reported ``2 passed`` and said nothing.
+    #:
+    #: The cross-check is pytest's own ``N deselected``, which the reporter
+    #: prints on each run's summary line directly under this list: fewer than
+    #: the ids named here means some of them matched nothing.
     deselect: tuple[str, ...] = ()
 
 
@@ -181,7 +195,7 @@ def _child_env(tree: Path, cache_dir: Path) -> dict[str, str]:
 
 
 def _suite_argv(uv: str, options: Options) -> list[str]:
-    """The one suite command line, built for the control and every mutation alike.
+    """The one *verdict-path* suite command line -- control and mutations alike.
 
     Extracted so it is a single place and a pure function: the control run and
     the mutation runs both reach the suite through :func:`_run_suite`, so a
@@ -189,6 +203,12 @@ def _suite_argv(uv: str, options: Options) -> list[str]:
     walking a different suite from the thing it is a baseline for. That is not
     a hypothetical asymmetry -- it is the exact defect the option exists to
     avoid causing, and it is unobservable from a batch's output.
+
+    It is not the only pytest command line in the harness, and saying otherwise
+    would be wrong: ``mutate._write_runner`` generates a second one inside a
+    prepared tree. That one produces no verdict and forwards its own arguments,
+    which is why ``--prepare-tree`` ignores ``--deselect`` and says so rather
+    than routing it through here.
     """
     argv = [uv, "run", "--frozen", "--no-sync", "pytest", *_PYTEST_ARGS]
     for node_id in options.deselect:
