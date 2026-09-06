@@ -384,26 +384,42 @@ def test_a_page_size_the_document_spells_is_the_constant_that_names_the_cap(
     )
 
 
+#: The bounds whose test-side restatement lives **here**, with the value.
+#:
+#: **The admission rule, so the next constant does not have to be argued about.**
+#: A bound belongs in this table when nothing else restates it test-side. A
+#: second restatement in a second file is a second copy free to drift from the
+#: first, which is the failure this whole table exists to prevent one level up.
+#: So four of ``limits.py``'s constants are deliberately absent, each restated by
+#: the file that *drives* it:
+#:
+#: * ``MAX_PROBE_STDOUT_BYTES`` -- ``test_gh_review_provider.py``'s
+#:   ``RECORDED_PROBE_STDOUT_BYTES``, which sizes a probe's stdout to the
+#:   boundary and one byte past it;
+#: * ``MAX_CHILD_STDERR_BYTES`` -- ``test_gh_bounded_read.py``'s
+#:   ``RECORDED_STDERR_BYTES``, where it is observed as a memory bound;
+#: * ``MAX_GH_CONFIG_BYTES`` and ``MAX_REPOSITORY_CHARS`` -- the two
+#:   fixture-independence rebuilds, in their own files.
+#:
+#: ``MAX_READ_BYTES_PER_CALL`` is absent for a different reason: it is *derived*,
+#: so restating its value here would pin a product rather than the derivation.
+#: :func:`test_the_derived_per_call_ceiling_is_still_the_product_of_its_factors`
+#: is its pin, and the figure ``limits.py``'s prose names is entailed by that
+#: plus the two factors below.
+RECORDED_BOUNDS: Final[tuple[tuple[str, object], ...]] = (
+    ("REQUEST_TIMEOUT_SECONDS", 30.0),
+    ("PAGE_SIZE", 50),
+    ("MAX_PAGES", 20),
+    ("MAX_PULL_REQUESTS", 500),
+    ("MAX_COMMENTS_PER_THREAD", 100),
+    ("MAX_LINKED_ISSUES", 20),
+    ("MAX_RESPONSE_BYTES", 8 * 1024 * 1024),
+    ("GH_VERSION_FLOOR", (2, 86, 0)),
+)
+
+
 @pytest.mark.parametrize(
-    ("name", "value"),
-    (
-        ("REQUEST_TIMEOUT_SECONDS", 30.0),
-        ("PAGE_SIZE", 50),
-        ("MAX_PAGES", 20),
-        ("MAX_PULL_REQUESTS", 500),
-        ("MAX_COMMENTS_PER_THREAD", 100),
-        ("MAX_RESPONSE_BYTES", 8 * 1024 * 1024),
-        ("GH_VERSION_FLOOR", (2, 86, 0)),
-    ),
-    ids=(
-        "REQUEST_TIMEOUT_SECONDS",
-        "PAGE_SIZE",
-        "MAX_PAGES",
-        "MAX_PULL_REQUESTS",
-        "MAX_COMMENTS_PER_THREAD",
-        "MAX_RESPONSE_BYTES",
-        "GH_VERSION_FLOOR",
-    ),
+    ("name", "value"), RECORDED_BOUNDS, ids=[name for name, _ in RECORDED_BOUNDS]
 )
 def test_each_recorded_bound_is_the_value_the_prose_names(name: str, value: object) -> None:
     """Clause 7's shape: a bound is a constant a test reads and prose can name.
@@ -411,10 +427,43 @@ def test_each_recorded_bound_is_the_value_the_prose_names(name: str, value: obje
     Written out here rather than imported for the same reason clause 4(i)'s
     mapping is: a test that reads the constant moves with it. Changing a cap is
     then a two-file diff somebody reviews, which is what a recorded limit means.
+
+    ``MAX_LINKED_ISSUES`` joined its sibling here rather than resting on the
+    document pin above. That pin holds the constant and the query literal
+    *together*; it says nothing about either one's value, so moving both leaves
+    it green -- which is the state ``MAX_COMMENTS_PER_THREAD`` was never in and
+    the newer constant was.
+
+    Which bounds belong in this table, and which are restated by the file that
+    drives them instead, is :data:`RECORDED_BOUNDS`.
     """
     assert getattr(limits, name) == value, (
         f"`{name}` moved. A cap is a recorded number: move the prose that names "
         f"it in the same change, and say what the new bound costs."
+    )
+
+
+def test_the_derived_per_call_ceiling_is_still_the_product_of_its_factors() -> None:
+    """``MAX_READ_BYTES_PER_CALL`` is a derivation, and a derivation can be hand-edited.
+
+    It exists because neither factor states the ceiling a reader pricing one
+    paginated call needs. Today it is written as ``MAX_PAGES *
+    MAX_RESPONSE_BYTES``, and the risk a recorded number carries is that somebody
+    writes the answer down instead: a literal ``160 * 1024 * 1024`` is correct on
+    the day it is typed and silently wrong the first time either factor moves,
+    with the constant's own prose still naming the old product.
+
+    This is the only assertion that separates the two spellings, and it is why
+    the figure is not restated in :data:`RECORDED_BOUNDS`: both factors are
+    pinned there, so the ceiling the prose names follows from this and needs no
+    third copy.
+    """
+    assert limits.MAX_READ_BYTES_PER_CALL == limits.MAX_PAGES * limits.MAX_RESPONSE_BYTES, (
+        f"`MAX_READ_BYTES_PER_CALL` is {limits.MAX_READ_BYTES_PER_CALL} and "
+        f"`MAX_PAGES * MAX_RESPONSE_BYTES` is "
+        f"{limits.MAX_PAGES * limits.MAX_RESPONSE_BYTES}. The ceiling is recorded as a "
+        f"derivation so it cannot drift from its factors; if it has become a literal, "
+        f"the prose beside it names a product nothing computes."
     )
 
 

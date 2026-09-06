@@ -45,6 +45,17 @@ pytestmark = pytest.mark.integration
 PROJECT: Final = ProjectId("demo")
 REPOSITORY: Final = "acme/order-service"
 
+#: How much stdout a **probe** may produce before the read is refused, **written
+#: out here and never imported**.
+#:
+#: The two probes are the only spawns whose output is bounded by something other
+#: than the response cap, and they got their own constant precisely because
+#: borrowing the stderr one made an oversized ``gh --version`` report a *stderr*
+#: bound as a *response* bound. A fixture sized from the constant would then
+#: overrun whatever the constant became and pass for every value of it, so the
+#: number is restated here and both boundary tests are built from this one.
+RECORDED_PROBE_STDOUT_BYTES: Final = 64 * 1024
+
 #: Variables ``/bin/sh`` sets **for itself** on start-up, which are therefore in
 #: the child's ``env`` output without having been passed by the adapter.
 #: Measured on this machine and reproduced in CI: ``PWD`` and ``_`` from the
@@ -74,7 +85,7 @@ printf '%s' "$0" > "{state}/argv0-$n"
 cat > "{state}/stdin-$n"
 
 case "$1" in
-  --version) printf 'gh version {version} (2026-01-21)\\n'; exit 0 ;;
+  --version) cat "{state}/{version_stdout}"; exit 0 ;;
   auth) printf 'auth probe stderr: {auth_stderr}\\n' >&2; exit {auth_exit} ;;
 esac
 
@@ -91,6 +102,15 @@ if [ -f "$body" ]; then cat "$body"; exit 0; fi
 printf 'no canned response for %s page %s\\n' "$kind" "$page" >&2
 exit {query_exit}
 """
+
+
+#: Where the stand-in child's ``--version`` stdout lives, byte for byte.
+#:
+#: A file the child ``cat``s rather than a ``printf`` inside the script, so the
+#: bytes it writes are under the test's control **and counted in one place**. A
+#: probe bound is measured in bytes of stdout, and a template that printed the
+#: line would leave the test computing the line's length a second time.
+_VERSION_STDOUT: Final = "version-stdout"
 
 
 class FakeGh:
@@ -132,6 +152,22 @@ class FakeGh:
         """Give the child a canned response for one query kind and page."""
         (self.directory / f"{kind}{page}.json").write_text(json.dumps(payload), encoding="utf-8")
 
+    def pad_version_stdout_to(self, total: int) -> None:
+        """Make ``--version``'s stdout exactly ``total`` bytes.
+
+        The version line is kept first and unchanged, so the padded output is
+        still one this adapter can read a version out of -- which is what makes
+        the *bound* the thing under test rather than the parse. The length is
+        asserted rather than assumed: a fixture that missed the boundary by a
+        byte would report the cap as off by one when it is not.
+        """
+        printed = (self.directory / _VERSION_STDOUT).read_bytes()
+
+        assert total >= len(printed), (
+            f"{total} bytes cannot carry the {len(printed)}-byte version line"
+        )
+        (self.directory / _VERSION_STDOUT).write_bytes(printed + b"x" * (total - len(printed)))
+
 
 @pytest.fixture
 def fake_gh(tmp_path: pathlib.Path) -> Iterator[FakeGh]:
@@ -152,13 +188,14 @@ def _write_fake(
     fake.binary.write_text(
         _FAKE_GH.format(
             state=directory,
-            version=version,
+            version_stdout=_VERSION_STDOUT,
             auth_exit=auth_exit,
             auth_stderr=auth_stderr,
             query_exit=query_exit,
         ),
         encoding="utf-8",
     )
+    (directory / _VERSION_STDOUT).write_bytes(f"gh version {version} (2026-01-21)\n".encode())
     fake.binary.chmod(0o700)
     return fake
 
@@ -963,6 +1000,71 @@ async def test_a_gh_below_the_floor_is_refused_and_the_message_names_the_floor(
     assert raised.value.grade is RefusalGrade.TOOL_TOO_OLD
     assert "2.86.0" in str(raised.value)
     assert fake.invocations == 1, "nothing beyond the version probe should have run"
+
+
+def test_the_probe_stdout_bound_this_file_drives_is_the_one_the_probes_pass() -> None:
+    """The restated number and the enforced one are two things, so they are compared.
+
+    :data:`RECORDED_PROBE_STDOUT_BYTES` is what the two boundary tests below size
+    their version output from. If the probes' own constant moved and this one did
+    not, both would be driving a boundary that is no longer the boundary --
+    passing, and about the wrong number.
+    """
+    assert limits.MAX_PROBE_STDOUT_BYTES == RECORDED_PROBE_STDOUT_BYTES, (
+        f"the probes are capped at {limits.MAX_PROBE_STDOUT_BYTES} bytes of stdout and "
+        f"this file drives {RECORDED_PROBE_STDOUT_BYTES}. A cap is a recorded number: "
+        f"move the prose that names it in the same change, and say what the new one "
+        f"costs."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_probe_at_the_recorded_stdout_bound_is_read_rather_than_refused(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The accepting side of the probe cap, which is what makes it a boundary.
+
+    Without it the refusal below proves nothing: a cap of zero refuses an
+    oversized probe just as well, and so does a read that never ran. This is one
+    byte smaller than the refusal case, and it is read -- the version parses out
+    of the front of it and the run continues to an answer.
+    """
+    fake_gh.pad_version_stdout_to(RECORDED_PROBE_STDOUT_BYTES)
+    fake_gh.answer("prs", 1, _pull_requests())
+    provider = _provider(tmp_path, fake_gh)
+
+    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert event.number == 12
+
+
+@pytest.mark.asyncio
+async def test_a_probe_one_byte_past_the_recorded_stdout_bound_is_refused(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The probes' own cap, driven -- the one recorded bound with no input reaching it.
+
+    ``gh --version`` prints a line and ``gh auth status`` a short report, so the
+    64 KiB ceiling is generous by orders of magnitude against either. That is
+    exactly why nothing reached it: a stand-in child that behaves prints
+    thirty-odd bytes, and a bound no input meets is a bound no test can drive.
+
+    The response is canned as well, so a green result here cannot come from the
+    run failing for some other reason: lift the cap and this call **succeeds**,
+    which is a `DID NOT RAISE` rather than a differently-graded refusal.
+    """
+    fake_gh.pad_version_stdout_to(RECORDED_PROBE_STDOUT_BYTES + 1)
+    fake_gh.answer("prs", 1, _pull_requests())
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert str(RECORDED_PROBE_STDOUT_BYTES) in str(raised.value)
+    assert fake_gh.invocations == 1, (
+        "the version probe overran its cap and something was spawned after it"
+    )
 
 
 @pytest.mark.asyncio
