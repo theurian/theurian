@@ -106,10 +106,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `connect` are two calls (measured winnable at 4.7 swaps/second, and a worker
   parked in the open does not come back), and `mkdir` and `open` are two calls at
   the lock paths. Both are written into the threat model under T-6 with their
-  preconditions. The first one's *reach* is now a bounded stall rather than a
-  permanent wedge — see the permit entry above
-  ([#586](https://github.com/theurian/theurian/issues/586)) — while the race
-  itself stays open.
+  preconditions. The permit entry above
+  ([#586](https://github.com/theurian/theurian/issues/586)) narrowed the first
+  one's *reach* from a permanent wedge to a bounded stall; it closed neither
+  race, and the second is unchanged.
 - **A symbolic link planted where Theurian writes derived state no longer
   redirects the write** ([#523](https://github.com/theurian/theurian/issues/523),
   [#394](https://github.com/theurian/theurian/issues/394),

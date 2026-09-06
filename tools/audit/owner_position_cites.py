@@ -550,20 +550,14 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "`_PROXIMITY` -- so no row is owed for the table, and adding one would read as "
         "stale. Its owed-item *prose* at :735 is a member, and has its own row above.",
     ),
-    (
-        "docs/security/threat-model.md",
-        "586",
-        "bounds the admission-permit path's open",
-        "correct -- open owner, snapshot-age false positive",
-        "T-6's first accepted residual -- the shape probe and the open being two calls -- "
-        "names #586 as the owner of the bound that would reduce its reach from a "
-        "permanent wedge to a bounded stall. #586 was filed 2026-09-06 and read OPEN "
-        "that day; it postdates the 2026-09-03 snapshot, so `--offline` returns "
-        "`(absent from the tracker)` and `classify` treats that exactly like "
-        "`issue:closed`. A live run verdicts it correct. Same class and same handling "
-        "as the three #575 rows above, and deleted by the same commit that refreshes "
-        "`tracker-state.json` (#576).",
-    ),
+    # The #586 row that stood here is gone, and *not* because the tracker
+    # snapshot moved: T-6's first accepted residual no longer names #586 as the
+    # owner of anything. That bound landed, so the paragraph states the improved
+    # reach as a measured fact and cites #586 historically -- `_in_owner_position`
+    # is False for the sentence that replaced it, and the sweep stops producing
+    # the row. This is the second of the four reconciliation directions the
+    # `SUSPECTS` docstring names: an entry the sweep no longer produces means the
+    # cite was repointed, and the row goes with it.
     (
         "docs/security/threat-model.md",
         "349",
