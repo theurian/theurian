@@ -116,6 +116,66 @@ def test_a_hung_control_reports_error_with_an_accurate_duration(
     assert outcome.seconds > 0.5, "a hang timed out at 1s must not report ~0.0s"
 
 
+def test_a_hung_control_is_marked_as_having_timed_out(
+    tmp_path: Path, hanging_uv_on_path: None
+) -> None:
+    """#566: ``ERROR`` alone cannot say whether the clock ran out or the tree broke.
+
+    A control that hangs and a control whose summary line was unreadable both
+    land on ``ERROR`` and both end the batch at exit 2, and their remedies are
+    opposite -- more seconds or fewer workers against fix the tree.
+    ``_verdict_mode`` tells them apart by this field rather than by matching on
+    a human-facing string, so it has to be set on the real hang path and not
+    only by whatever constructs an ``Outcome`` in a test.
+    """
+    control = Mutation(label="__control__", path=None, old="", new="")
+
+    outcome = _run_one(tmp_path, control, _options(tmp_path, timeout=1), tmp_path / "uvcache")
+
+    assert outcome.timed_out is True
+
+
+def test_a_hung_mutation_is_marked_as_having_timed_out(
+    tmp_path: Path, hanging_uv_on_path: None
+) -> None:
+    """#566: the same fact on the mutation path, where it is persisted to ``--json``.
+
+    ``HUNG`` already means "did not finish", so this is redundant *there* -- but
+    the field is what a reader of the JSON gets, and a field set on one of two
+    paths is worse than one set on neither: it reads as a discriminator and is
+    not.
+    """
+    target = tmp_path / "target.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    mutation = Mutation(label="hangs", path="target.py", old="VALUE = 1", new="VALUE = 2")
+
+    outcome = _run_one(tmp_path, mutation, _options(tmp_path, timeout=1), tmp_path / "uvcache")
+
+    assert outcome.timed_out is True
+
+
+def test_a_run_that_finished_is_not_marked_as_having_timed_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other direction: a field that is always ``True`` discriminates nothing.
+
+    Without this, ``timed_out=True`` hard-coded on every outcome would satisfy
+    both tests above and turn every red control into "the clock ran out".
+    """
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir(exist_ok=True)
+    quick = fake_bin / "uv"
+    quick.write_text('#!/bin/sh\nprintf "1 passed in 0.01s\\n"\n', encoding="utf-8")
+    quick.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    control = Mutation(label="__control__", path=None, old="", new="")
+
+    outcome = _run_one(tmp_path, control, _options(tmp_path, timeout=30), tmp_path / "uvcache")
+
+    assert outcome.verdict == "control-green"
+    assert outcome.timed_out is False
+
+
 def test_run_suite_carries_partial_output_into_suitehungerror(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
