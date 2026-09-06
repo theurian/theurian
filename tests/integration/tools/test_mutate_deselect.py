@@ -219,6 +219,50 @@ def test_a_control_that_ran_out_of_clock_is_not_reported_as_a_red_baseline(
     assert "the unmutated control was RED" not in printed
 
 
+def test_a_control_that_was_already_red_when_it_timed_out_is_not_told_to_raise_the_timeout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A suite can print ``FAILED`` and *then* run past the clock (code-review HIGH-1).
+
+    Both a clean timeout and this one set ``timed_out``, and the advisory used
+    to read only that field -- so an operator whose baseline was genuinely red
+    was told "the tree is not RED, the clock ran out. Raise --timeout", a remedy
+    that cannot work and costs the whole timeout again to disprove. Reproduced
+    against a real hanging ``uv`` that printed a ``FAILED`` line first.
+
+    ``failures`` is the discriminator, the same one ``_hung_summary`` uses one
+    layer down; this pins that the caller reads it too, and that the failing
+    test's own name reaches the operator.
+    """
+    control = Outcome(
+        label=_CONTROL_LABEL,
+        verdict="ERROR",
+        suite_green=None,
+        seconds=1800.0,
+        summary="......[ 43%]",
+        failures=("FAILED packages/x/tests/test_a.py::test_it - AssertionError",),
+        timed_out=True,
+    )
+    monkeypatch.setattr(mutate, "_execute", _execute_returning(control))
+    args = argparse.Namespace(
+        spec=None,
+        file="tools/mutate.py",
+        old="unused-anchor",
+        new="unused-replacement",
+        old_file=None,
+        new_file=None,
+        label="red-then-hung-control",
+    )
+
+    exit_code = mutate._verdict_mode(args, _options(timeout=1800))
+
+    printed = capsys.readouterr().out
+    assert exit_code == 2
+    assert "raising --timeout will not fix it" in printed
+    assert "the tree is not RED" not in printed
+    assert "test_a.py::test_it" in printed, "the operator needs the name to act on"
+
+
 def test_a_control_that_really_went_red_is_still_reported_as_red(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

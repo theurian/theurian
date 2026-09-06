@@ -313,13 +313,15 @@ _DEFAULT_TIMEOUT_SECONDS: Final = 1800
 #:
 #: **The two numbers are fully-contended walks, and a lighter batch measures
 #: much faster** -- so a re-measurement that comes in low has not falsified
-#: them. Same machine, 2026-09-06, at 5571 tests: a solo ``pytest -q`` outside
-#: the harness took 542.9 s, and a two-job batch under ``--workers 2`` -- one
-#: control plus one mutation, where the mutation was killed at 271.5 s and left
-#: the control walking alone for the rest -- took 750.4 s. Neither is the case
-#: the timeout has to survive: that is the batch whose workers are *all* still
-#: walking full suites, which is what the two anchors above measured and what
-#: the default has to clear.
+#: them. Same machine, 2026-09-06, at 5571 tests, on ``556035b3`` (pull request
+#: #584): a solo ``pytest -q`` outside the harness took 542.9 s, and a two-job
+#: batch under ``--workers 2`` -- one control plus one mutation, where the
+#: mutation was killed at 271.5 s and left the control walking alone for the
+#: rest -- took 750.4 s, both recorded at
+#: https://github.com/theurian/theurian/pull/584#issuecomment-5556266602.
+#: Neither is the case the timeout has to survive: that is the batch whose
+#: workers are *all* still walking full suites, which is what the two anchors
+#: above measured and what the default has to clear.
 _WALK_BASE_SECONDS: Final = 920
 _WALK_PER_WORKER_SECONDS: Final = 240
 
@@ -337,12 +339,19 @@ def _default_timeout(workers: int) -> int:
     does not report "slow" -- it reports HUNG for every survivor and takes the
     control down with it, and both read exactly like real findings.
 
-    ``workers`` is not clamped, and does not need to be: the floor already
-    covers every value the line goes wrong at. Nothing validates ``--workers``,
-    so a zero or a negative reaches here, and the fitted line is below 1800 s
-    for anything under four -- a clamp on top of that is a guard no input can
-    reach, and one was removed from this function after it survived its own
-    deletion against the whole ``tools`` suite.
+    ``workers`` is not clamped, and does not need to be. Nothing validates
+    ``--workers``, so a zero or a negative reaches here -- and those are the
+    *only* values a clamp would change, because for every ``workers >= 1`` the
+    clamped and unclamped lines are the same expression. At ``workers <= 0`` the
+    unclamped line is at most ``920 * 1.5 = 1380`` and falls further from there,
+    so the 1800 s floor answers every one of them; the clamp would hand the
+    floor 1740 s instead, and ``max`` returns 1800 either way. A
+    ``max(workers, 1)`` was written here and removed once it survived its own
+    deletion against the whole ``tools`` suite -- no argument can reach it.
+
+    Note that the floor is *not* what decides the shipped value at ordinary
+    worker counts: at two the line gives 2100 s and at three 2460 s, both above
+    it. The floor only binds at one worker and below.
     """
     walk = _WALK_BASE_SECONDS + _WALK_PER_WORKER_SECONDS * workers
     return max(_DEFAULT_TIMEOUT_SECONDS, int(walk * _TIMEOUT_HEADROOM))
@@ -735,11 +744,42 @@ def _execute(mutations: tuple[Mutation, ...], options: Options) -> list[Outcome]
             shutil.rmtree(root, ignore_errors=True)
 
 
+def _batch_options(options: Options) -> dict[str, object]:
+    """The flags that decide what a verdict in this batch *means*.
+
+    Not every field of :class:`Options`: ``json_path``, ``work_dir`` and
+    ``keep_trees`` say where the run put its files, which changes nothing about
+    how a KILLED or a SURVIVED should be read. These six do -- and ``deselect``
+    most of all, because it is the one that makes the batch's verdicts cover
+    less than the whole suite.
+    """
+    return {
+        "workers": options.workers,
+        "failFast": options.fail_fast,
+        "control": options.control,
+        "timeout": options.timeout,
+        "withGit": options.with_git,
+        "deselect": list(options.deselect),
+    }
+
+
 def _persist(outcomes: list[Outcome], options: Options) -> None:
-    """Write after every result, so a long batch is inspectable while it runs."""
+    """Write after every result, so a long batch is inspectable while it runs.
+
+    **The document is an object, not the bare list it used to be** (#566). The
+    list carried the verdicts and nothing about the run that produced them, so a
+    batch that subtracted tests with ``--deselect`` wrote a file whose "0
+    SURVIVED" is a stronger claim than the run made -- and the caveat lived only
+    on a terminal line that has scrolled away by the time anyone reads the JSON.
+    Anything that reads these files takes ``["outcomes"]`` now; nothing in this
+    repository did, checked with
+    ``git grep -n '_persist\\|asdict(outcome)' -- tools tests packages``, which
+    finds only this function and its one call site.
+    """
     if options.json_path is None:
         return
-    payload = json.dumps([asdict(outcome) for outcome in outcomes], indent=2, ensure_ascii=False)
+    document = {"options": _batch_options(options), "outcomes": [asdict(o) for o in outcomes]}
+    payload = json.dumps(document, indent=2, ensure_ascii=False)
     options.json_path.write_text(payload + "\n", encoding="utf-8")
 
 
@@ -807,9 +847,20 @@ def _apply_to_prepared(tree: Path, mutation: Mutation | None) -> tuple[Applied, 
 
 
 def _describe_prepared(
-    tree: Path, root: Path, mutation: Mutation | None, land: tuple[Applied, ...] | None
+    tree: Path,
+    root: Path,
+    mutation: Mutation | None,
+    land: tuple[Applied, ...] | None,
+    deselect: tuple[str, ...] = (),
 ) -> None:
     _note("prepared tree ready -- nothing has been run in it")
+    if deselect:
+        # Said out loud rather than honoured. A prepared tree runs whatever
+        # selection its user types, and pre-subtracting from that would quietly
+        # change the answer to a question the harness is not the one asking.
+        # Silence here would be worse than either: the flag was accepted.
+        _note(f"  --deselect IGNORED in this mode ({len(deselect)} id(s)); the runner below")
+        _note("             forwards its own arguments, so pass them to it directly")
     _note(f"  path       {tree}")
     if mutation is not None and land:
         _note(f"  mutation   {mutation.label}")
@@ -839,7 +890,7 @@ def _prepare_mode(args: argparse.Namespace, options: Options) -> int:
         shutil.rmtree(root, ignore_errors=True)
         raise
     _write_runner(tree, cache_dir)
-    _describe_prepared(tree, root, mutation, land)
+    _describe_prepared(tree, root, mutation, land, options.deselect)
     print(tree)
     return 0
 
@@ -877,7 +928,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help=(
             "remove one node id from every run in the batch, control included -- for a "
             "test this MACHINE cannot pass (a bound port, no network), never to narrow "
-            "the question. Repeatable. Printed with the summary."
+            "the question. Repeatable. Printed with the summary. Ignored by "
+            "--prepare-tree, whose runner takes pytest arguments of its own"
         ),
     )
     parser.add_argument(
@@ -945,15 +997,23 @@ def _report_summary(outcomes: list[Outcome], elapsed: float, options: Options) -
         )
 
 
-def _timed_out_control(outcomes: list[Outcome]) -> bool:
-    """Did the unmutated baseline run out of clock rather than go red?
+def _timed_out_control(outcomes: list[Outcome]) -> Outcome | None:
+    """The unmutated baseline, when it ran out of clock rather than finishing.
 
-    Both end the batch at exit 2 and neither yields a usable verdict, so the
-    exit code cannot tell them apart -- but the remedies are opposite. A red
-    tree needs the tree fixed; a timed-out one needs more seconds or fewer
-    workers, and the tree may be perfectly green.
+    Returned rather than answered yes/no, because "it timed out" is not on its
+    own enough to name a remedy: a suite killed by the clock may have been
+    perfectly green up to that moment or may already have printed ``FAILED``,
+    and those two need opposite advice. The caller reads ``failures`` to tell
+    them apart -- the same discriminator :func:`mutate_run._hung_summary` uses
+    one layer down.
+
+    Both cases end the batch at exit 2 and neither yields a usable verdict, so
+    the exit code cannot tell any of this apart on its own.
     """
-    return any(item.label == _CONTROL_LABEL and item.timed_out for item in outcomes)
+    for item in outcomes:
+        if item.label == _CONTROL_LABEL and item.timed_out:
+            return item
+    return None
 
 
 def _verdict_mode(args: argparse.Namespace, options: Options) -> int:
@@ -986,7 +1046,21 @@ def _verdict_mode(args: argparse.Namespace, options: Options) -> int:
         # hung run produces no verdict at all. Said out loud because the two
         # look alike in a summary and only one of them means the tree is broken
         # -- see `_hung_summary`, which puts "timed out" on the line itself.
-        if _timed_out_control(outcomes):
+        #
+        # Two remedies, and the wrong one costs the timeout again to find out.
+        # A suite can print `FAILED` and *then* run past the clock, and telling
+        # that operator to raise --timeout is advice that cannot work: the
+        # baseline is red whatever the bound. `failures` is what separates them.
+        timed_out = _timed_out_control(outcomes)
+        if timed_out is not None and timed_out.failures:
+            print(
+                f"the unmutated control was already RED when it ran out of clock at "
+                f"{options.timeout}s: raising --timeout will not fix it. Fix the tree, or "
+                "--deselect a test this MACHINE cannot pass"
+            )
+            for failure in timed_out.failures[:6]:
+                print(f"  {failure[:120]}")
+        elif timed_out is not None:
             print(
                 f"the unmutated control did not finish within {options.timeout}s: the tree is "
                 "not RED, the clock ran out. Raise --timeout or lower --workers"
