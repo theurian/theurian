@@ -69,6 +69,7 @@ n=$(cat "{state}/count" 2>/dev/null || echo 0)
 n=$((n + 1))
 printf '%s' "$n" > "{state}/count"
 printf '%s\\n' "$@" > "{state}/argv-$n"
+printf '%s' "$0" > "{state}/argv0-$n"
 /usr/bin/env > "{state}/env-$n"
 cat > "{state}/stdin-$n"
 
@@ -107,6 +108,16 @@ class FakeGh:
     def argv(self, index: int) -> list[str]:
         """One invocation's argument vector, without the binary path itself."""
         return (self.directory / f"argv-{index}").read_text(encoding="utf-8").splitlines()
+
+    def spawned_as(self, index: int) -> str:
+        """The vector's **first** element, as the child was handed it.
+
+        ``"$@"`` starts at the first argument, so :meth:`argv` cannot see this.
+        The path a ``#!`` script is invoked with reaches the interpreter
+        unresolved -- a symlink stays a symlink -- which is exactly what makes it
+        able to say whether ``locate_binary`` resolved the one it found.
+        """
+        return (self.directory / f"argv0-{index}").read_text(encoding="utf-8")
 
     def child_environment(self, index: int) -> dict[str, str]:
         """One invocation's environment, as the child itself reported it."""
@@ -425,6 +436,42 @@ async def test_the_recorded_argv_is_the_vector_the_clauses_describe(
     assert "owner=acme" in argv
     assert "name=order-service" in argv
     assert not any(element.startswith("http") for element in argv)
+
+
+@pytest.mark.asyncio
+async def test_the_binary_the_child_is_spawned_as_is_the_resolved_absolute_path(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """Clause 5 on the path production takes, where the lookup actually happens.
+
+    Every other driver here hands the provider an already-resolved ``binary``, so
+    ``locate_binary`` -- the function that does the resolving -- never runs at
+    all, and the vector's first element is whatever the test passed in. The unit
+    pin next door asserts that element is *absolute*, which an unresolved
+    ``shutil.which`` answer already is: on a ``PATH`` of absolute directories
+    both forms pass it.
+
+    So the discriminator is a **symlink**. ``gh`` is found through one, and what
+    the child reports being spawned as is the link's target: a resolved path.
+    Dropping ``.resolve()`` leaves the link itself in the vector -- still
+    absolute, still on the recorded ``PATH``, and now a name whose meaning is
+    whatever the link points at when the child is executed.
+    """
+    on_the_path = tmp_path / "on-the-path"
+    on_the_path.mkdir()
+    (on_the_path / "gh").symlink_to(fake_gh.binary)
+    fake_gh.answer("prs", 1, _pull_requests())
+    provider = _provider(tmp_path, None, parent={"PATH": str(on_the_path)})
+
+    await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert fake_gh.spawned_as(1) == str(fake_gh.binary.resolve())
+    assert fake_gh.spawned_as(1) != str(on_the_path / "gh"), (
+        "the child was spawned as the symlink `gh` was found through, not as the "
+        "binary it resolves to. `locate_binary` resolves once, on purpose: an "
+        "unresolved name is one whose target can change between the lookup and "
+        "the spawn."
+    )
 
 
 @pytest.mark.asyncio
@@ -784,6 +831,62 @@ async def test_a_cursor_carrying_a_nul_is_refused_rather_than_spawned(
         "the version probe, the auth probe and the first page -- and no second "
         "page: the cursor is refused before it can be spawned"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_timestamp_with_no_offset_is_refused_rather_than_read_as_local_time(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """A naive datetime is a wrong measurement, and nothing below this adapter refuses one.
+
+    ``datetime.fromisoformat`` parses ``2026-09-01T10:00:00`` happily and answers
+    a datetime with no ``tzinfo``. Nothing in the domain rejects that --
+    ``ReviewEvent`` bounds its number and its identifiers, not its timestamps --
+    so an accepted naive value is recorded, compared against aware ones, and read
+    downstream as the instant it names. Which instant that is depends on the
+    reader's own zone, and no error ever fires.
+
+    The refusal is the honest answer: this adapter records no timestamp it cannot
+    place on a timeline. ``createdAt`` is the field driven because it is required
+    -- ``mergedAt`` merely becomes ``None``, which is a quieter version of the
+    same decision and a weaker thing to assert.
+    """
+    fake_gh.answer("prs", 1, _pull_requests(createdAt="2026-09-01T10:00:00"))
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert "createdAt" in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_author_is_recorded_under_githubs_own_name_for_one(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """``ghost`` is GitHub's word, spelled out here so the record keeps meaning one thing.
+
+    A deleted account is the one author the response cannot identify, and
+    ``ReviewParticipant.external_id`` may not be empty -- so the adapter puts a
+    constant there. Which constant is not a free choice: ``ghost`` is what GitHub
+    itself calls the account, so a reader meeting it in a record recognises it,
+    and every deleted author collapses onto one participant rather than becoming
+    a new person per event.
+
+    The literal is written here rather than imported from ``GHOST_LOGIN``,
+    because a test that reads the constant agrees with whatever the constant
+    becomes. Changing it is a change to records already written -- the same
+    account read as two people across two ingests -- and that is a decision, not
+    a rename.
+    """
+    fake_gh.answer("prs", 1, _pull_requests(author=None))
+    provider = _provider(tmp_path, fake_gh)
+
+    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert event.author.external_id == "ghost"
+    assert event.author.display_name == "ghost"
 
 
 @pytest.mark.asyncio
