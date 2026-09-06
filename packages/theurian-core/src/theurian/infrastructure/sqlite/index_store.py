@@ -51,7 +51,11 @@ from theurian.infrastructure.sqlite.index_schema import (
     INDEX_DDL,
     INDEX_SCHEMA_VERSION,
 )
-from theurian.infrastructure.sqlite.schema import CONNECTION_PRAGMAS, read_only_uri
+from theurian.infrastructure.sqlite.schema import (
+    CONNECTION_PRAGMAS,
+    irregular_shape_at,
+    read_only_uri,
+)
 
 #: Little-endian float32. Fixed rather than native so an index built on one
 #: machine reads correctly on another -- the file is derived, but it is also
@@ -135,6 +139,50 @@ class IndexUnreadableError(IndexBuildError):
             f"built by an older version of Theurian, damaged, or replaced while "
             f"this search was reading it. Run `theurian index build` to rebuild "
             f"it; the index is derived, so nothing is lost."
+        )
+
+
+class IndexPathNotAFileError(IndexBuildError):
+    """The index path holds something that is not a file Theurian wrote (#586).
+
+    A sibling of :class:`IndexUnreadableError` rather than a subclass, because the
+    two say opposite things about the file: that one is about bytes this build
+    cannot interpret, and this one is raised **before an open happens at all**, so
+    nothing has been read. Both are :class:`IndexBuildError`\\ s, which is what
+    keeps ``mcp/search.py``'s ``except IndexBuildError`` -- the fallback to the
+    substring scan -- covering it unchanged.
+
+    **A named pipe is the member that does not merely fail.** ``mode=ro`` on one
+    waits inside ``open()`` for a writer with no bound: measured 2026-09-06,
+    ``_open_read`` against a FIFO was still inside the call when a 12-second kill
+    fired. A socket and a device fail promptly and wrongly instead, under a
+    message about a *damaged* index. What every member shares is that the path is
+    not the regular file an ``index build`` wrote.
+
+    **A directory is not a member here**, and the reason is per-caller exactly as
+    it is for the state database (:func:`schema.irregular_shape`): a directory at
+    this path is answered ``unable to open database file``, which
+    :class:`IndexUnreadableError` publishes under ``theurian index build`` -- and
+    that cure lands, because a rebuild writes a *new* file under a new build id
+    rather than trying to replace this name.
+
+    The path travels in the remedy and only its leaf in the message: the remedy is
+    the field a reader acts on, and an absolute path in both is the operator's
+    machine layout twice over (GHSA-97q9).
+    """
+
+    def __init__(self, path: Path, shape: str) -> None:
+        self.path = path
+        self.shape = shape
+        self.remedy = (
+            f"Remove {path} and run `theurian index build` to rebuild the index; "
+            f"`ls -l {path}` shows what is at the path now. The index is derived "
+            f"(ADR-0004), so nothing authored is lost."
+        )
+        super().__init__(
+            f"The retrieval index path holds {shape}, not a file Theurian wrote, so "
+            f"{path.name} was refused unopened. Nothing an open of {shape} could return "
+            f"would be this index."
         )
 
 
@@ -251,6 +299,68 @@ def fts5_available() -> bool:
     return True
 
 
+def _connect_to(path: Path, *, read_only: bool) -> sqlite3.Connection:
+    """The one place this module opens an index database by path.
+
+    **One function rather than two call sites, so the refusal below cannot be
+    bypassed by adding a third.** ``tests/unit/test_index_opener_claims.py::
+    test_this_module_opens_an_index_database_in_exactly_one_place`` reads the
+    syntax tree and fails on any ``sqlite3.connect`` outside this function whose
+    argument is not the ``":memory:"`` literal :func:`fts5_available` probes
+    with. That is the only form of the claim that stays true: an enumeration of
+    the callers is a list somebody maintains, and the guard it protects is one a
+    direct-connect site walks straight past.
+
+    **The refusal it centralises used to be four ``is_file()`` probes at four
+    call sites** -- ``mcp/search.py::_searchable_file``,
+    ``cli/index_status_report.py``, ``cli/index_commands.py``'s gc guard and
+    ``application/withdrawal_purge.py`` (#586). Those probes are still there and
+    still do their own job (telling "no index yet" from "an index that will not
+    open"); what changed is that they are no longer the *only* thing between a
+    planted artefact and an open with no bound.
+
+    ``read_only`` picks the access mode and nothing else. ``mode=ro`` so a read
+    path cannot create the file it was asked to open: ``sqlite3.connect`` on a
+    path that does not exist *creates an empty database there*, so a pointer that
+    outlived its file -- which ``theurian index gc`` makes an ordinary state --
+    turned the "no index, fall back to the substring scan" branch into a raw ``no
+    such table: chunks_fts`` at the agent, and left a file behind that made every
+    later attempt fail identically. Measured: the default connect recreates the
+    path; ``mode=ro`` raises ``unable to open database file`` and creates nothing.
+
+    The URI comes from :func:`~theurian.infrastructure.sqlite.schema.read_only_uri`
+    and not from an f-string, so a project directory an operator named ``proj#1``
+    cannot truncate it into a path outside the project (#585).
+
+    All four ``CONNECTION_PRAGMAS`` are accepted on a read-only connection, and
+    the read and write paths stay configured the same way -- **but that rests on
+    a premise: every index file is created in WAL mode.** ``PRAGMA journal_mode =
+    WAL`` on a read-only connection only *reports* the mode when the file is
+    already WAL; on a DELETE-mode file it tries to *set* it and raises ``attempt
+    to write a readonly database`` (measured on SQLite 3.47.1). Index files are
+    always created WAL -- ``create`` runs ``CONNECTION_PRAGMAS``, and
+    ``test_a_built_index_is_always_in_wal_mode`` pins it -- so the premise holds
+    for every file this opens. If it were ever violated the failure would be a
+    mapped :class:`IndexUnreadableError` naming a rebuild, not a corruption,
+    which is the right shape for a malformed index; but the premise is what makes
+    these pragmas harmless rather than the read-only mode alone.
+
+    Raises:
+        IndexPathNotAFileError: If the path holds a named pipe, a socket or a
+            device. A **directory** is not a member; that class records why.
+    """
+    shape = irregular_shape_at(path)
+    if shape is not None:
+        raise IndexPathNotAFileError(path, shape)
+    connection = (
+        sqlite3.connect(read_only_uri(path), uri=True) if read_only else sqlite3.connect(path)
+    )
+    connection.row_factory = sqlite3.Row
+    for pragma in CONNECTION_PRAGMAS:
+        connection.execute(pragma)
+    return connection
+
+
 @contextmanager
 def _connect(path: Path) -> Iterator[sqlite3.Connection]:
     """A configured *writable* connection that is always closed.
@@ -262,11 +372,8 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
     Used by the build paths only. Reads go through :func:`_open_read`, which
     refuses to create the file it was asked to open.
     """
-    connection = sqlite3.connect(path)
+    connection = _connect_to(path, read_only=False)
     try:
-        connection.row_factory = sqlite3.Row
-        for pragma in CONNECTION_PRAGMAS:
-            connection.execute(pragma)
         yield connection
     finally:
         connection.close()
@@ -275,36 +382,21 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
 def _open_read(path: Path) -> sqlite3.Connection:
     """A read-only connection that will not conjure the file it cannot find.
 
-    **`mode=ro` is the whole point, and it closes a defect rather than tightening
-    a permission** (ADR-0024 decision 7). ``sqlite3.connect`` on a path that does
-    not exist *creates an empty database there*, so a pointer that outlived its
-    file -- which `theurian index gc` makes an ordinary state -- turned the "no
-    index, fall back to the substring scan" branch into a raw ``no such table:
-    chunks_fts`` at the agent, and left a file behind that made every later
-    attempt fail identically. Measured: the default connect recreates the path;
-    `mode=ro` raises ``unable to open database file`` and creates nothing.
+    :func:`_connect_to` with ``read_only=True``, and it stays a named function
+    rather than a call because it is what the reads reach for: ``session()`` and
+    ``_read`` both name it, and the mode a read takes is not a keyword a caller
+    should be able to get wrong.
 
-    All four ``CONNECTION_PRAGMAS`` are accepted on a read-only connection, and
-    the read and write paths stay configured the same way -- **but that rests on
-    a premise: every index file is created in WAL mode.** ``PRAGMA journal_mode =
-    WAL`` on a read-only connection only *reports* the mode when the file is
-    already WAL; on a DELETE-mode file it tries to *set* it and raises ``attempt
-    to write a readonly database`` (measured on SQLite 3.47.1). Index files are
-    always created WAL -- `create` runs `CONNECTION_PRAGMAS`, and
-    ``test_a_built_index_is_always_in_wal_mode`` pins it -- so the premise holds
-    for every file this opens. If it were ever violated the failure would be a
-    mapped ``IndexUnreadableError`` naming a rebuild, not a corruption, which is
-    the right shape for a malformed index; but the premise is what makes these
-    pragmas harmless rather than the read-only mode alone.
+    ADR-0024 decision 7's ``mode=ro``, the shape refusal and the WAL premise all
+    live in :func:`_connect_to`; a write through this connection is refused by
+    SQLite rather than by convention.
 
-    A write through this connection is refused by SQLite rather than by
-    convention.
+    Raises:
+        IndexPathNotAFileError: If the path holds a named pipe, a socket or a
+            device -- refused before the open, so a pipe cannot wait for a
+            writer that never comes (#586).
     """
-    connection = sqlite3.connect(read_only_uri(path), uri=True)
-    connection.row_factory = sqlite3.Row
-    for pragma in CONNECTION_PRAGMAS:
-        connection.execute(pragma)
-    return connection
+    return _connect_to(path, read_only=True)
 
 
 #: What *interpreting this file* can raise, other than through `sqlite3` itself.
@@ -1783,6 +1875,7 @@ __all__ = [
     "MAX_QUERY_TERMS",
     "Fts5UnavailableError",
     "IndexBuildError",
+    "IndexPathNotAFileError",
     "IndexUnreadableError",
     "IndexableChunk",
     "IndexableNode",
