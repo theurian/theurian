@@ -27,6 +27,44 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   unchanged: `doctor` and `theurian migrate validate` still refuse on exactly the
   same errors, so the two cannot disagree about a directory
   ([#91](https://github.com/theurian/theurian/issues/91)).
+- **The remaining reads of a derived-state or auth path no longer wait on what
+  somebody planted there** ([#586](https://github.com/theurian/theurian/issues/586),
+  ADR-0004, SEC-4, SEC-7, T-6), completing the class the entry below opened:
+
+  - a named pipe at `.theurian/state/active.json` sat on every project-resolving
+    command's path, so `migrate status`, `project status`, `index status` and
+    `findings build` each ran until a 12-second kill with **zero bytes on both
+    channels**;
+  - the sibling at `active-index.json` never blocked and was *wrong* instead:
+    its `is_file()` probe answers `False` for a pipe, so `index status`
+    published `built: false`, `indexBuildId: null` and
+    `indexPointerCorrupt: false` at exit 0 for a project whose index had just
+    been built, sending the reader to build one they already had;
+  - `index_store`'s read opener blocked at the function level, guarded on every
+    shipped path only by four `is_file()` probes a fifth caller would walk past;
+  - a 0600 named pipe at `<data_dir>/auth/mcp-token` held `daemon start
+    --foreground --json` and `auth rotate --json` with both channels empty — the
+    daemon starter *after* taking `daemon.lock`, so every later starter read a
+    stale holder — while `doctor` reported the token as simply absent.
+
+  Both pointers are read through a descriptor whose shape is checked, every
+  index open in `index_store` passes one function (pinned by reading the syntax
+  tree, not by a maintained list), and the token's openers gained `O_NONBLOCK`
+  and the same descriptor check. #569's write-side semantics are unchanged and
+  now pinned: a reader-less pipe still answers `ENXIO`, a link `ELOOP`, a
+  directory `EISDIR`, and a fresh create still lands at the mode it was given.
+- **An admission permit whose holder never returns is reclaimed, so a parked
+  open costs a bounded stall rather than the permit.** A thread inside an
+  unbounded `open` held one of four permits for the life of the process, which
+  is the residual the entry below records: the daemon's search and findings
+  gates lost capacity permanently and "Retry shortly" was false. Measured
+  2026-09-06 with all four permits parked in a real reader-less-FIFO `open()`:
+  the first permit returns after 29.001 s and all four recover, where the
+  `threading.BoundedSemaphore` that stood there was still refusing after
+  60.005 s. Nothing is cancelled — a synchronous tool's thread cannot be — so
+  the per-query timeout T-6 records as not taken is still not taken; what is
+  reclaimed is the accounting token, and the parked thread consumes no CPU and
+  no GIL.
 - **An artefact where Theurian opens a file no longer blocks the command that
   meets it, and the refusal names what is there**
   ([#526](https://github.com/theurian/theurian/issues/526),
@@ -68,8 +106,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `connect` are two calls (measured winnable at 4.7 swaps/second, and a worker
   parked in the open does not come back), and `mkdir` and `open` are two calls at
   the lock paths. Both are written into the threat model under T-6 with their
-  preconditions; [#586](https://github.com/theurian/theurian/issues/586) bounds
-  the admission-permit path and reduces the first to a bounded stall.
+  preconditions. The first one's *reach* is now a bounded stall rather than a
+  permanent wedge — see the permit entry above
+  ([#586](https://github.com/theurian/theurian/issues/586)) — while the race
+  itself stays open.
 - **A symbolic link planted where Theurian writes derived state no longer
   redirects the write** ([#523](https://github.com/theurian/theurian/issues/523),
   [#394](https://github.com/theurian/theurian/issues/394),
