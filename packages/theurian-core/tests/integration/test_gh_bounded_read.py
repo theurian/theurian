@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import pathlib
 import sys
 import time
 from typing import Final
@@ -51,6 +52,18 @@ _OVERRUN_THEN_SLEEP = (
     "time.sleep({sleep})\n"
 )
 
+#: The same child, announcing its own pid first. Written before a byte of stdout,
+#: so the file exists by the time the cap can possibly have been passed and the
+#: assertion below never races the spawn.
+_ANNOUNCE_PID_THEN_OVERRUN_THEN_SLEEP = (
+    "import os, sys, time\n"
+    "open({pidfile!r}, 'w').write(str(os.getpid()))\n"
+    "sys.stdout.buffer.write(b'x' * {written})\n"
+    "sys.stdout.buffer.flush()\n"
+    "time.sleep({sleep})\n"
+)
+
+
 _SLEEP_WITHOUT_WRITING = "import time\ntime.sleep({sleep})\n"
 
 #: A child that answers on stdout, exits, and leaves a **descendant** holding
@@ -67,6 +80,21 @@ _ANSWER_THEN_LEAVE_STDERR_HELD = (
     "sys.stdout.write('done')\n"
     "sys.stdout.flush()\n"
 )
+
+
+def _is_alive(pid: int) -> bool:
+    """Whether ``pid`` still names a process, asked once rather than waited on.
+
+    Signal 0 performs the permission and existence checks and delivers nothing,
+    which is the whole question here. It is asked *after* ``run_bounded`` has
+    returned, and ``run_bounded`` reaps the child it kills before returning -- so
+    there is nothing to wait for and a poll would only hide a slow cleanup.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 @pytest.mark.asyncio
@@ -103,6 +131,49 @@ async def test_a_child_that_overruns_the_cap_is_refused_without_waiting_for_it_t
         f"accumulates the whole response before measuring it cannot answer inside "
         f"this window -- which is the difference clause 10 is about, and the "
         f"reason this assertion is on time and not only on the grade."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_cap_refusal_leaves_no_child_behind(tmp_path: pathlib.Path) -> None:
+    """A refusal that abandons the child hands the caller a bound and keeps the cost.
+
+    The byte cap exists so a child cannot make this process spend what it likes.
+    A refusal that returns while the child is still running has moved the cost
+    rather than removed it: the caller sees a graded envelope, and the machine
+    carries a process nobody is reading any more -- twenty seconds here, and
+    unbounded from a real ``gh``. ``run_bounded``'s docstring says every refusal
+    kills the child first, and until now the only thing holding that sentence was
+    the sentence.
+
+    The child announces its pid, overruns the cap and sleeps. After the refusal
+    the pid is asked about **once**: ``run_bounded`` reaps what it kills before
+    it returns, so a live process here is a live process, not a slow one.
+    """
+    cap = 1024
+    pidfile = tmp_path / "child.pid"
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await run_bounded(
+            [
+                sys.executable,
+                "-c",
+                _ANNOUNCE_PID_THEN_OVERRUN_THEN_SLEEP.format(
+                    pidfile=str(pidfile), written=cap * 4, sleep=_CHILD_SLEEP_SECONDS
+                ),
+            ],
+            env=_ENV,
+            timeout=_CHILD_SLEEP_SECONDS * 2,
+            byte_cap=cap,
+        )
+    child = int(pidfile.read_text(encoding="utf-8"))
+
+    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert not _is_alive(child), (
+        f"the cap refused the answer and process {child} is still running. It has "
+        f"{_CHILD_SLEEP_SECONDS:g} seconds of sleeping left here and no bound at all "
+        f"from a real `gh`: the refusal moved the cost off the caller rather than "
+        f"stopping it."
     )
 
 
