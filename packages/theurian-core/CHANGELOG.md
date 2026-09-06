@@ -127,20 +127,38 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   reply that quotes a value this daemon did not produce now goes through one
   sanitiser, bounded in length and escaping what the encoder cannot carry.
 
-  A `databaseFilename` carrying `../` is contained now as well. Measured
+  A `databaseFilename` carrying `../` is contained now as well, **on every
+  consumer and against the state directory rather than the checkout**. Measured
   2026-09-06: provenance binds `(root, state_hash)` and passes it, the read-back
   integrity guard refuses a *doctored* copy outside the tree, and a
   **byte-identical** copy outside the tree was served at exit 0 — so nothing
-  bounded the escape itself, only what it could say.
+  bounded the escape itself, only what it could say. A first cut of that fix
+  proved only that the filename stayed inside the project *root*, which left the
+  whole checkout reachable: `../../decoy.sqlite` served the decoy's own rows at
+  exit 0. And it reached the MCP surface alone, while `theurian index build` and
+  the FR-K5 history check joined the value themselves — `index build` with
+  `../../../outside.sqlite` read that file, built an index from it and
+  **published at exit 0**.
 
-  The population is derived from the source rather than listed, on two keys:
-  every caller of `ProjectPaths.index_for`, and every function that joins
-  `databaseFilename` onto a path. Each must grade `OSError` at the probe or carry
-  a recorded reason, and a call site added later fails that test by name. The
-  second key is what found the history check, after the first two joins had
-  already been converted. Both keys require the guard over the *same* statements
-  as the call they are about, and both ship the evasions that defeated a weaker
-  first cut as planted controls.
+  A refusal that names a value the daemon did not produce also has to *reach* the
+  caller. A lone surrogate anywhere in one kills the wire encoder, and the
+  client receives a 200 with an empty body — no `isError`, no message, no
+  remedy. Three surfaces carried one unbounded: the missing-database arm, the
+  refusal for an unregistered project id (which lists the registry's unreadable
+  ids, and which any client reaches), and `project.list`'s own payload. All are
+  escaped and length-bounded now; a 200,000-character registry key produced a
+  200,248-character refusal before, and 377 characters after.
+
+  The populations are derived from the source rather than listed, on three keys:
+  every caller of `ProjectPaths.index_for` must grade `OSError` at the probe of
+  the path it returned; no consumer may join `databaseFilename` onto a path at
+  all, rather than going through the containment helper; and no reply may carry a
+  value the daemon did not produce without a sanitiser. Each key ships the
+  evasions that defeated a weaker first cut of it as planted controls — a stat
+  moved below the handler, a stat aimed at a different path, `joinpath`, a
+  grading inherited from a nested function, and an f-string conversion of `!s`,
+  which is `str()`. A key whose findings are all "nothing found" is satisfied by
+  a key that matches nothing, which is what the controls are for.
 
 - **`theurian init` no longer writes the managed `.gitignore` block through a
   symbolic link** ([#571](https://github.com/theurian/theurian/issues/571),
