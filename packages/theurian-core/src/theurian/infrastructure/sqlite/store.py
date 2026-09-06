@@ -75,6 +75,7 @@ from theurian.domain.values import (
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
     StateDatabaseUnreadableError,
+    StateDirectoryUnwritableError,
     WriteTransactionBusyError,
     open_read_connection,
 )
@@ -123,10 +124,24 @@ from theurian.infrastructure.sqlite.connection import (
 #: A conversion undone one layer up is still the defect the conversion was
 #: written to prevent, which is why the closure argument for that class is stated
 #: over conversion *layers* rather than over any single site.
+#:
+#: ``StateDirectoryUnwritableError`` joined for exactly the reason
+#: ``WriteTransactionBusyError`` did (#530): ``_prepare`` classifies an unwritable
+#: state directory correctly one layer down -- "nothing was read, make the
+#: directory writable" -- and re-wrapping it here would put back the
+#: delete-your-state cure it exists to remove.
+#:
+#: **Membership is not a list someone maintains.**
+#: ``tests/unit/test_connection_faults.py::
+#: test_every_theurian_error_a_read_open_can_raise_is_already_answered`` derives
+#: the population from ``connection.py``'s own call graph and fails on a type
+#: raised there that is missing here -- which is the failure mode this tuple has
+#: had twice.
 _ALREADY_ANSWERED: Final = (
     FileNotFoundError,
     SchemaVersionMismatchError,
     StateDatabaseUnreadableError,
+    StateDirectoryUnwritableError,
     WriteTransactionBusyError,
 )
 

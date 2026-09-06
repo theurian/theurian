@@ -167,6 +167,97 @@ def _is_contention(exc: sqlite3.Error) -> bool:
     return isinstance(code, int) and code & 0xFF in _CONTENTION_RESULT_CODES
 
 
+def _is_a_read_only_directory(exc: sqlite3.Error, database_path: Path) -> bool:
+    """Whether SQLite is reporting that it may not write beside the database (#530).
+
+    **Keyed on the extended result code, never on the masked primary one, and
+    that is a measurement rather than a preference** (2026-09-06, SQLite 3.47.1,
+    one row per configuration of ``.theurian/state/``):
+
+    * ``.theurian/state/`` at ``0555`` with the database present and its ``-wal``
+      and ``-shm`` gone -- what a clean close leaves behind -- fails inside
+      :func:`_prepare` with ``SQLITE_READONLY_DIRECTORY`` (1544), on **both**
+      openers. That is #530's face.
+    * A database left in a **rollback journal**, opened ``mode=ro`` with the
+      directory perfectly writable, fails inside :func:`_prepare` with the bare
+      ``SQLITE_READONLY`` (8): ``PRAGMA journal_mode = WAL`` has to *write* to
+      change the mode. Masking 1544 down to 8 would catch this too and send the
+      reader to ``chmod`` a directory that already allows what it asks for.
+
+    So the extended code answers on its own, and the bare one is admitted only
+    once the directory is asked whether it really denies the write. That second
+    clause is portability rather than measurement -- nothing here has produced
+    the bare spelling for a permissions fault -- and it is written as a question
+    to the filesystem precisely so it cannot answer "permissions" where there is
+    no permissions problem.
+
+    ``os.access`` is a *diagnosis* here, not a gate: it chooses which sentence to
+    publish about a failure that has already happened, so the usual
+    time-of-check/time-of-use objection to it does not apply. Nothing is opened
+    on the strength of its answer.
+
+    Everything else stays where it was. ``SQLITE_CANTOPEN`` is deliberately
+    absent: it arrives from ``sqlite3.connect`` rather than from here -- measured
+    for a database file at mode ``0000``, for a state directory at ``0000``, and
+    for a directory at the database path -- and those are graded by the CLI's own
+    backstop, whose cure already leads with the permission.
+    """
+    code = getattr(exc, "sqlite_errorcode", None)
+    if not isinstance(code, int):
+        return False
+    if code == sqlite3.SQLITE_READONLY_DIRECTORY:
+        return True
+    return code == sqlite3.SQLITE_READONLY and not os.access(database_path.parent, os.W_OK)
+
+
+class StateDirectoryUnwritableError(TheurianError):
+    """The directory holding the state database refused the write SQLite needs.
+
+    **The database is not what failed, and the whole point of this type is that
+    the published cure says so** (#530). Before it existed, ``_prepare``'s broad
+    ``except`` answered this with :class:`StateDatabaseUnreadableError`, whose
+    message opens "it is damaged, or holds a value this build cannot interpret"
+    and whose cure opens "delete ``.theurian/state/``". Reproduced against the
+    real CLI on 2026-09-06 with ``.theurian/state/`` at mode ``0555`` and the
+    database present: ``migrate status --json`` and ``migrate apply --json`` both
+    published exactly that, at exit 4, over a file nothing had read a byte of.
+    An operator who follows it discards derived state and rebuilds it -- into the
+    same unwritable directory, where the rebuild fails too.
+
+    The sibling of :class:`WriteTransactionBusyError` one class over: both are
+    faults ``_prepare`` meets that are *not* the file failing to be interpreted,
+    and both exist so the destructive cure is never the default. What separates
+    them is what clears the fault -- waiting, or a ``chmod``.
+
+    **The wording has to hold on both openers**, because :func:`_prepare` serves
+    :func:`open_read_connection` as well as :func:`_open_transaction`, and the
+    fault was measured arriving on both. So it says what the *connection* needed
+    rather than what a writer wanted: a WAL database keeps its ``-wal`` and
+    ``-shm`` beside itself, and a reader has to be able to create them too.
+
+    Which statement of the four pragmas and one ``SELECT`` was refused is
+    deliberately not named. ``_prepare`` catches around all of them and cannot
+    say, and a message that guessed would be the shape of defect this class was
+    written to remove.
+    """
+
+    def __init__(self, database_path: Path) -> None:
+        directory = database_path.parent
+        self.remedy = (
+            f"Make {directory} writable by this user -- `chmod u+w {directory}` -- then "
+            f"retry; `ls -ld {directory}` shows the mode it has now. Everything under it "
+            f"is derived state (ADR-0004) that Theurian rebuilds, so nothing authored is "
+            f"lost -- but deleting it is not the cure here, and a rebuild into the same "
+            f"directory fails the same way."
+        )
+        super().__init__(
+            f"Preparing a connection to {database_path.name} needs a write in the "
+            f"directory holding it -- a WAL database keeps its `-wal` and `-shm` files "
+            f"beside itself -- and the operating system refused that write. Nothing was "
+            f"read out of the database, so nothing here says it is damaged."
+        )
+
+
 #: How :func:`_prepare` names what it was doing, for the one message both the
 #: read and the write opener can publish. A phrase rather than a SQL statement
 #: because ``_prepare`` catches around four pragmas *and* a ``SELECT`` and cannot
@@ -639,11 +730,23 @@ def _prepare(connection: sqlite3.Connection, database_path: Path) -> None:
 
     The predicate was already right -- :func:`_is_contention` returns ``True``
     for both -- and only its placement was wrong, so the classification moved
-    ahead of the broad catch rather than being widened. What still reaches
-    :class:`StateDatabaseUnreadableError` is what this function is actually for:
-    bytes that cannot be interpreted, plus the permissions face (an unreadable
-    file or an unwritable state directory), which is a different class and is
-    filed as #530 rather than folded in here.
+    ahead of the broad catch rather than being widened.
+
+    **The permissions face joined it in the same position** (#530). A state
+    directory this process may not write is not damage either: ``sqlite3.connect``
+    succeeds, and then the pragma loop cannot create the ``-wal`` and ``-shm``
+    files a WAL database keeps beside itself. Measured on both openers with
+    ``.theurian/state/`` at ``0555`` and the database present, and it published
+    "it is damaged … delete ``.theurian/state/``" over a file nothing had read.
+    :func:`_is_a_read_only_directory` records why the key is the extended result
+    code rather than the masked primary one.
+
+    What still reaches :class:`StateDatabaseUnreadableError` is what this
+    function is actually for: bytes that cannot be interpreted. The *file*
+    permissions face -- a database at mode ``0000``, a state directory that
+    refuses even the lookup -- never arrives here at all: ``sqlite3.connect``
+    fails first, outside this conversion, and the CLI's own backstop grades it
+    (measured 2026-09-06, ``SQLITE_CANTOPEN`` at the connect for both).
     """
     try:
         _configure(connection)
@@ -655,13 +758,17 @@ def _prepare(connection: sqlite3.Connection, database_path: Path) -> None:
         # one.
         raise
     except Exception as exc:
-        # Ahead of the conversion, never inside it: a file another process is
-        # holding is not a file this build cannot interpret, and the two have
-        # opposite cures. Kept as one arm rather than a separate `except
-        # sqlite3.Error` so there is still exactly one place that decides a
-        # database is unreadable.
-        if isinstance(exc, sqlite3.Error) and _is_contention(exc):
-            raise WriteTransactionBusyError(database_path, _PREPARING_A_CONNECTION) from exc
+        # Ahead of the conversion, never inside it: neither a file another
+        # process is holding nor a directory this process may not write is a
+        # file this build cannot interpret, and each has a cure opposite to the
+        # damaged-file one. Kept as one arm rather than an `except sqlite3.Error`
+        # per class, so there is still exactly one place that decides a database
+        # is unreadable.
+        if isinstance(exc, sqlite3.Error):
+            if _is_contention(exc):
+                raise WriteTransactionBusyError(database_path, _PREPARING_A_CONNECTION) from exc
+            if _is_a_read_only_directory(exc, database_path):
+                raise StateDirectoryUnwritableError(database_path) from exc
         raise StateDatabaseUnreadableError(type(exc).__name__) from exc
 
 
