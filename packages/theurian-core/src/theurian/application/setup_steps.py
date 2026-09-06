@@ -74,7 +74,7 @@ from theurian.security.env_file import (
     contains_shadowing_assignment,
     merge_env_file,
 )
-from theurian.security.paths import is_world_accessible
+from theurian.security.paths import is_world_accessible, unbounded_shape
 from theurian.security.tokens import MIN_TOKEN_LENGTH, TOKEN_ENV_VAR, generate_token
 
 # The marker pair that used to be declared here as `PROFILE_BEGIN`/`PROFILE_END`
@@ -408,6 +408,49 @@ def apply_data_directory(context: SetupContext) -> None:
 # -- 5 & 6. Token and its storage -------------------------------------------
 
 
+def _a_planted_artefact(step_id: StepId, path: Path, auth_dir: Path) -> SetupStep | None:
+    """The step to publish when the token's name holds a pipe, socket or device.
+
+    ``None`` when it holds a regular file, a directory or nothing -- the three
+    the probes below already answer for themselves.
+
+    **One function for both probes, because the arm they had was one probe's**
+    (#586). Each reached ``if not path.is_file()`` next, which answers ``False``
+    for a named pipe, so a planted artefact was published as ``MISSING`` -- "No
+    local access token yet" and "The token file does not exist yet", measured
+    2026-09-06 through ``theurian doctor --json`` against a 0600 pipe at
+    ``<data_dir>/auth/mcp-token``. Both sentences are false, and ``MISSING`` is
+    the status that makes ``setup`` *act*: acting means minting into that name,
+    which ``FileSecretStore.set`` now declines, so the run would end in a failed
+    step describing a write nobody asked for. That is the same reason the symbolic
+    link arm above each of them chose ``CONFLICTING``.
+
+    ``lstat``, so the answer is about the name itself. It runs *after* the
+    ``is_symlink()`` arm and never sees a link, which is what keeps the two
+    refusals from competing for the same artefact.
+    """
+    try:
+        shape = unbounded_shape(path.lstat().st_mode)
+    except OSError:
+        # Nothing there, or a directory that will not answer. Both are the
+        # probes' own cases and neither is this one's to pre-empt.
+        return None
+    if shape is None:
+        return None
+    return SetupStep(
+        step_id=step_id,
+        status=StepStatus.CONFLICTING,
+        summary=f"The token file is {shape}.",
+        detail=(
+            f"{path} is {shape}, not the token file Theurian wrote; `ls -l {path}` shows "
+            f"what is at the path now. Remove it with `rm {path}` and run `theurian auth "
+            f"rotate` to mint a fresh token. Something with write access to {auth_dir} put "
+            f"it there, so check that directory's permissions (it should be 0700)."
+        ),
+        paths=(str(path),),
+    )
+
+
 def probe_token(context: SetupContext) -> SetupStep:
     """Whether a local access token is present, and whether it is Theurian's.
 
@@ -448,6 +491,12 @@ def probe_token(context: SetupContext) -> SetupStep:
                 f"compromised."
             ),
         )
+    planted = _a_planted_artefact(StepId.TOKEN, path, context.auth_dir)
+    if planted is not None:
+        # Before the `is_file()` arm, which answers `False` for a named pipe and
+        # would report an absent token over a planted one (#586) -- and before the
+        # `read_text` below, which would wait on it.
+        return planted
     if not path.is_file():
         return SetupStep(
             step_id=StepId.TOKEN,
@@ -482,6 +531,60 @@ def apply_token(context: SetupContext) -> None:
     """
     if asyncio.run(context.secrets.get(TOKEN_KEY)) is None:
         asyncio.run(context.secrets.set(TOKEN_KEY, generate_token()))
+
+
+def _a_permissive_auth_directory(auth_dir: Path) -> SetupStep | None:
+    """The step to publish when ``auth/`` grants group or other anything.
+
+    ``None`` when it grants neither, which is the satisfied case its caller
+    answers. Extracted from :func:`probe_token_storage` when #586 added the
+    planted-artefact arm above it and the function reached seven exits; the two
+    branches here were already one subject -- the *directory*'s mode -- while
+    everything left in the caller is about the token file itself.
+
+    **Two arms, and the split is the write bit.** ``is_world_accessible`` is
+    ``st_mode & 0o077``, which includes write. A directory another user can write
+    is a substitution surface (#573): they can unlink the token and drop in their
+    own 0600 file, which every probe reads as satisfied, and tightening the mode
+    does not undo a swap that may already have happened -- so that arm asks for
+    rotation. A merely *readable* directory never made the token's contents
+    readable, so its cure is the ``chmod`` alone.
+
+    The *symlink* half of that surface is closed and does not belong in either
+    sentence: ``FileSecretStore`` opens with ``O_NOFOLLOW`` on both sides and
+    refuses rather than minting through -- or reading back through -- a planted
+    link (#371, and the read side from security round one), and the
+    ``is_symlink()`` arm at the top of the caller reports one rather than stating
+    it away. The substitution above is what is left, and it is why the write arm
+    survived that fix rather than being deleted with it.
+    """
+    if not is_world_accessible(auth_dir):
+        return None
+    directory_mode = auth_dir.stat().st_mode & 0o777
+    if directory_mode & 0o022:
+        return SetupStep(
+            step_id=StepId.TOKEN_STORAGE,
+            status=StepStatus.CONFLICTING,
+            summary="The token's directory is writable by group or other.",
+            detail=(
+                f"{auth_dir} is mode {directory_mode:04o}; tighten it with "
+                f"`chmod 0700 {auth_dir}`. A writable directory lets another "
+                f"user replace the token file, so rotate it with `theurian auth "
+                f"rotate` as well -- tightening the mode does not undo a substitution "
+                f"that may already have happened."
+            ),
+        )
+    return SetupStep(
+        step_id=StepId.TOKEN_STORAGE,
+        status=StepStatus.CONFLICTING,
+        summary="The token's directory grants group or other access.",
+        detail=(
+            f"{auth_dir} is mode {directory_mode:04o}; tighten it with "
+            f"`chmod 0700 {auth_dir}`. Rotation is not asked for here: "
+            f"the token file's own bits grant nothing to group or other, so the "
+            f"directory's mode never made its contents readable."
+        ),
+    )
 
 
 def probe_token_storage(context: SetupContext) -> SetupStep:
@@ -567,6 +670,11 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
                 f"appeared as compromised."
             ),
         )
+    planted = _a_planted_artefact(StepId.TOKEN_STORAGE, path, context.auth_dir)
+    if planted is not None:
+        # The same ordering :func:`probe_token` records, and for the same reason:
+        # `is_file()` reports a named pipe as an absent token (#586).
+        return planted
     if not path.is_file():
         return SetupStep(
             step_id=StepId.TOKEN_STORAGE,
@@ -586,48 +694,9 @@ def probe_token_storage(context: SetupContext) -> SetupStep:
                 f"with `theurian auth rotate`."
             ),
         )
-    if is_world_accessible(context.auth_dir):
-        directory_mode = context.auth_dir.stat().st_mode & 0o777
-        if directory_mode & 0o022:
-            # The group/other *write* bit, split from the readable case because a
-            # writable directory is a substitution surface (#573), not a listing one: an
-            # attacker who can write `auth/` can unlink the token and replace it
-            # with a 0600 file of their own, which every probe here reads as
-            # satisfied. Tightening the mode does not undo a swap that may already
-            # have happened, so this arm asks for rotation as well -- the same
-            # reason the world-readable-file arm does.
-            #
-            # The *symlink* half of that surface is closed and no longer belongs
-            # in this sentence: `FileSecretStore` opens with `O_NOFOLLOW` on both
-            # sides and refuses rather than minting through -- or reading back
-            # through -- a planted link (#371, and the read side from security
-            # round one), and the `is_symlink()` arm at the top of this probe
-            # reports one rather than stating it away. The substitution above (#573) is
-            # what is left, and it is why this arm survives that fix rather than
-            # being deleted with it.
-            return SetupStep(
-                step_id=StepId.TOKEN_STORAGE,
-                status=StepStatus.CONFLICTING,
-                summary="The token's directory is writable by group or other.",
-                detail=(
-                    f"{context.auth_dir} is mode {directory_mode:04o}; tighten it with "
-                    f"`chmod 0700 {context.auth_dir}`. A writable directory lets another "
-                    f"user replace the token file, so rotate it with `theurian auth "
-                    f"rotate` as well -- tightening the mode does not undo a substitution "
-                    f"that may already have happened."
-                ),
-            )
-        return SetupStep(
-            step_id=StepId.TOKEN_STORAGE,
-            status=StepStatus.CONFLICTING,
-            summary="The token's directory grants group or other access.",
-            detail=(
-                f"{context.auth_dir} is mode {directory_mode:04o}; tighten it with "
-                f"`chmod 0700 {context.auth_dir}`. Rotation is not asked for here: "
-                f"the token file's own bits grant nothing to group or other, so the "
-                f"directory's mode never made its contents readable."
-            ),
-        )
+    permissive = _a_permissive_auth_directory(context.auth_dir)
+    if permissive is not None:
+        return permissive
     return SetupStep(
         step_id=StepId.TOKEN_STORAGE,
         status=StepStatus.SATISFIED,

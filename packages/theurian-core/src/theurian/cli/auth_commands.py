@@ -23,11 +23,11 @@ import typer
 
 from theurian.cli.setup_commands import _executable
 from theurian.daemon.instance import DEFAULT_PORT, probe_health
+from theurian.domain.errors import SecurityError
 from theurian.domain.ports.daemon_manager import ServiceState
 from theurian.infrastructure.secrets.file_store import (
     TOKEN_KEY,
     FileSecretStore,
-    SecretPathIsASymbolicLinkError,
     default_data_dir,
 )
 from theurian.infrastructure.services import detect_manager
@@ -56,13 +56,23 @@ def auth_rotate(
     token = generate_token()
     try:
         asyncio.run(store.set(TOKEN_KEY, token))
-    except SecretPathIsASymbolicLinkError as exc:
+    except SecurityError as exc:
         # The one command that reaches `FileSecretStore.set` with no handler
         # above it (#371). `setup` runs it through `SetupService._apply`, whose
         # `except Exception` records a FAILED step, and `daemon start
         # --foreground` has an `except TheurianError` that publishes `exc.remedy`
         # -- so this is where the refusal would otherwise have become a Rich
         # traceback with an empty machine channel under `--json` (CP-2).
+        #
+        # **`SecurityError` and not the link class it named until #586.** The
+        # store refuses a plant at the secret's path with a *family* of errors --
+        # a symbolic link, and now a named pipe, socket or device -- and naming
+        # one of them made this handler the maintained-list shape the same issue
+        # is about elsewhere: measured 2026-09-06, a 0600 named pipe at
+        # `<data_dir>/auth/mcp-token` escaped here as
+        # `SecretPathIsNotAFileError` at exit 1 with **both channels empty**,
+        # while the link at the same path published its document. Every member
+        # carries its own message and its own cure, so one arm serves them all.
         #
         # Exit 1 rather than a state code: nothing about the caller's knowledge
         # state is wrong, and this command has no `EXIT_STATE_ERROR` vocabulary of

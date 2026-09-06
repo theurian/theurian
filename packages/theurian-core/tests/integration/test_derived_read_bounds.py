@@ -278,3 +278,111 @@ def test_a_named_pipe_at_the_index_pointer_is_reported_as_a_corrupt_pointer(
         f"a named pipe at the index pointer is reported as a project with no index, which "
         f"sends the reader to build one they already have: {json.dumps(payload)}"
     )
+
+
+# -- The local access token ---------------------------------------------------
+
+#: The commands measured reaching ``FileSecretStore`` with a 0600 named pipe at
+#: ``<data_dir>/auth/mcp-token`` (#585 round two's off-list find, this issue's
+#: comment 1). Before the fix each ran until it was killed with **zero bytes on
+#: both channels**, and ``daemon start`` did so *after* taking the daemon lock,
+#: so every later starter read a stale holder.
+#:
+#: ``--port 7420`` on both, and ``--foreground`` on the starter: a development
+#: machine's resident daemon owns 7419, and nothing here may register a service
+#: or leave one detached. Neither command reaches a bind in this configuration --
+#: the refusal comes first -- and the child is killed if it ever does.
+_COMMANDS_OVER_THE_TOKEN: Final = (
+    ["auth", "rotate", "--json", "--port", "7420"],
+    ["daemon", "start", "--foreground", "--json", "--port", "7420"],
+)
+
+#: At the default umask a named pipe is created ``0644``, where
+#: ``is_world_accessible`` refuses it first and this face never runs. 0600 is what
+#: puts the artefact past that guard and into the open.
+_A_PRIVATE_MODE: Final = 0o600
+
+
+@pytest.fixture
+def token_pipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A data directory whose token path holds a 0600 named pipe."""
+    data_dir = tmp_path / "datadir"
+    auth = data_dir / "auth"
+    auth.mkdir(parents=True)
+    auth.chmod(0o700)
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    (tmp_path / "work").mkdir()
+    token = auth / "mcp-token"
+    os.mkfifo(token)
+    token.chmod(_A_PRIVATE_MODE)
+    return tmp_path / "work"
+
+
+@pytest.mark.skipif(not _CAN_MAKE_A_NAMED_PIPE, reason="os.mkfifo is POSIX-only")
+@pytest.mark.parametrize("argv", _COMMANDS_OVER_THE_TOKEN, ids=lambda argv: " ".join(argv[:2]))
+def test_a_named_pipe_at_the_token_is_answered_rather_than_waited_on(
+    token_pipe: Path, argv: list[str]
+) -> None:
+    """#586 member 3, both faces.
+
+    RED in two different ways, and the second is why this is a parametrized
+    sweep rather than one test:
+
+    * before ``O_NONBLOCK`` and the ``fstat``, both commands sat inside the open
+      until they were killed;
+    * with the refusal raised but ``auth rotate`` still naming only the *link*
+      class in its ``except``, the new refusal escaped ``--json`` as a
+      ``SecretPathIsNotAFileError`` at exit 1 with both channels empty --
+      bounded, and publishing nothing to grade.
+
+    The envelope must name the shape and carry a cure that names the artefact and
+    something to run: a reader who did not plant the pipe cannot act on "the
+    token file is wrong".
+    """
+    payload = _published(_run_in_a_child(token_pipe, argv), argv)
+    assert "a named pipe (FIFO)" in str(payload["error"]), (
+        f"`theurian {' '.join(argv)}` returned without naming what is at the token path: {payload}"
+    )
+    remedy = str(payload["remedy"])
+    assert "mcp-token" in remedy, f"the remedy does not name the artefact to clear: {remedy!r}"
+    assert "`theurian auth rotate`" in remedy, (
+        f"the remedy names nothing the reader can run once the artefact is gone: {remedy!r}"
+    )
+
+
+#: The two setup probes over the token's own name. Both reached
+#: ``if not path.is_file()`` after their symbolic-link arm, which answers
+#: ``False`` for a named pipe.
+_TOKEN_PROBES: Final = ("token", "token-storage")
+
+
+@pytest.mark.skipif(not _CAN_MAKE_A_NAMED_PIPE, reason="os.mkfifo is POSIX-only")
+def test_doctor_reports_the_planted_token_rather_than_an_absent_one(token_pipe: Path) -> None:
+    """``doctor``'s face of the same probe defect, which was bounded and false.
+
+    Measured 2026-09-06 before the fix: both steps published ``missing`` -- "No
+    local access token yet" and "The token file does not exist yet" -- over a
+    0600 named pipe sitting at that exact path. ``missing`` is the status that
+    makes ``setup`` *act*, and acting means minting into that name, which the
+    store now declines; so the report was not merely worded wrongly, it pointed
+    the next command at a write that cannot land.
+
+    ``--dry-run`` is ``doctor``'s default and nothing here registers anything;
+    ``--port 7420`` keeps the health probe off a development machine's resident
+    daemon.
+    """
+    argv = ["doctor", "--json", "--port", "7420"]
+    payload = _published(_run_in_a_child(token_pipe, argv), argv)
+    published = payload["steps"]
+    assert isinstance(published, list), f"`doctor --json` published no step list: {payload}"
+    steps = {str(step["id"]): step for step in published}
+    for probe in _TOKEN_PROBES:
+        assert steps[probe]["status"] == "conflicting", (
+            f"`doctor`'s `{probe}` step reports {steps[probe]['status']!r} over a named pipe "
+            f"at the token's path: {steps[probe]}"
+        )
+        assert "named pipe" in str(steps[probe]["summary"]), (
+            f"`doctor`'s `{probe}` step does not name what is at the path: {steps[probe]}"
+        )

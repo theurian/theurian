@@ -19,7 +19,8 @@ from theurian.security.no_follow import (
     open_for_reading_without_following_a_link,
     open_without_following_a_link,
 )
-from theurian.security.paths import ensure_private_mode, is_world_accessible
+from theurian.security.paths import ensure_private_mode, is_world_accessible, unbounded_shape
+from theurian.security.regular_file import IrregularArtefactError
 
 #: The token file, relative to the data directory. Re-exported from
 #: :mod:`theurian.security.env_file`, which is where the application layer
@@ -28,6 +29,22 @@ TOKEN_KEY: Final = _TOKEN_KEY
 
 _SECRET_MODE: Final = 0o600
 _DIRECTORY_MODE: Final = 0o700
+
+
+def _planted_shape(path: Path) -> str | None:
+    """What is at ``path`` when it is not a regular file, or ``None``.
+
+    **Answers about a name, and is used only to word a refusal that has already
+    happened.** Every decision to refuse in this module is made from a
+    descriptor; this is the one place a name is asked anything, and it runs after
+    the kernel has declined the open -- so the swap window a path check normally
+    opens has nothing left to change. ``None`` for a ``stat`` that cannot answer,
+    which leaves the original ``OSError`` to be re-raised as it was.
+    """
+    try:
+        return unbounded_shape(path.stat().st_mode)
+    except OSError:
+        return None
 
 
 class SecretPathIsASymbolicLinkError(SecurityError):
@@ -101,6 +118,47 @@ class SecretPathIsASymbolicLinkError(SecurityError):
             f"{path.name} is a symbolic link, not a secret file. Theurian refuses to touch "
             f"it: writing would send the token through the link to whatever it names, and "
             f"reading would hand back whatever somebody else put there."
+        )
+
+
+class SecretPathIsNotAFileError(SecurityError):
+    """The secret's path holds a named pipe, a socket or a device (#586).
+
+    :class:`SecretPathIsASymbolicLinkError`'s sibling, and it exists because
+    ``O_NOFOLLOW`` answers a different question. A named pipe is not a link, so
+    the link guard waved it through and the open **waited**: measured 2026-09-06
+    with a 0600 pipe at ``<data_dir>/auth/mcp-token`` (at 0644 the
+    world-readable guard pre-empts it), ``theurian daemon start --foreground
+    --json`` published zero bytes on both channels and never returned, *after*
+    taking the daemon lock -- so every later starter read a stale holder --
+    and ``theurian auth rotate --json`` did the same.
+
+    **Refused rather than replaced, the posture both neighbours already take.**
+    Unlinking the artefact and minting into its place would leave the operator
+    unaware that something with write access to their data directory had put it
+    there, which is the whole signal.
+
+    The remedy is not the link's. That one says "remove the symbolic link", which
+    is false here and would send a reader looking for something that is not
+    there; and it treats the token as compromised, which a pipe does not
+    establish -- nothing was ever read through it. What both share is the
+    directory-permissions check, because whoever planted this had the same write
+    access.
+    """
+
+    def __init__(self, path: Path, shape: str) -> None:
+        self.path = path
+        self.shape = shape
+        self.remedy = (
+            f"Remove {path} and run `theurian auth rotate` to mint a fresh token; "
+            f"`ls -l {path}` shows what is at the path now. Something with write access "
+            f"to {path.parent} put it there, so check that directory's permissions (it "
+            f"should be 0700) before rotating."
+        )
+        super().__init__(
+            f"{path.name} is {shape}, not a secret file. Theurian refuses to touch it: "
+            f"reading would wait for whoever holds the other end, and writing would send "
+            f"the token there."
         )
 
 
@@ -185,12 +243,23 @@ class FileSecretStore:
         symbolic link at ``auth/`` itself is followed
         ([#577](https://github.com/theurian/theurian/issues/577)).
 
+        **The shape refusal is the third arm, and it is not the link one**
+        (#586). A named pipe here is no symbolic link, so ``O_NOFOLLOW`` waved it
+        through and this open *waited* -- see
+        :class:`SecretPathIsNotAFileError` for what that did to ``daemon start``.
+        It sits after the mode check for the same reason the link arm does: a
+        secret other accounts can already read is refused whatever else is wrong
+        with the path. A pipe created at the default umask is ``0644`` and so is
+        caught by that earlier check; at ``0600`` it reaches this one.
+
         Raises:
             InsecureSecretPermissionsError: If the file -- or, through a link, the
                 file it names -- is group- or world-accessible. Checked first, so
-                it pre-empts the refusal below.
+                it pre-empts the two refusals below.
             SecretPathIsASymbolicLinkError: If the secret's own name is a symbolic
                 link and its target is not world-accessible.
+            SecretPathIsNotAFileError: If it is a named pipe, a socket or a
+                device.
             OSError: For every other way the open or the read can fail.
         """
         path = self._path(key)
@@ -202,6 +271,12 @@ class FileSecretStore:
 
         try:
             descriptor = open_for_reading_without_following_a_link(path)
+        except IrregularArtefactError as exc:
+            # Ahead of the `OSError` arm below, which it is a subclass of: the
+            # link cure names a link that is not there, and this one must not be
+            # taken by a bare `raise` either -- an `OSError` reaching `daemon
+            # start` is graded without ever naming what is at the path.
+            raise SecretPathIsNotAFileError(path, exc.shape) from exc
         except OSError as exc:
             if is_a_symbolic_link_refusal(exc):
                 raise SecretPathIsASymbolicLinkError(path) from exc
@@ -230,9 +305,20 @@ class FileSecretStore:
         this is the per-user data directory, not a project tree -- so the link at
         the leaf is the whole of what is refused.
 
+        **The shape refusal is the other half of #586's token face, and the write
+        side needed both parts of it.** ``O_NONBLOCK`` alone answers a
+        *reader-less* pipe with ``ENXIO`` -- the refusal ``connection
+        .LOCK_OPEN_FLAGS`` and ``daemon/instance.py`` already rely on -- but a
+        pipe with a reader attached takes the open without complaint (measured
+        2026-09-06), and the token would then be written into somebody's pipe.
+        The ``fstat`` inside the opener is what refuses that, and ``auth rotate``
+        publishes the artefact rather than an errno.
+
         Raises:
             SecretPathIsASymbolicLinkError: If the secret's own name is a
                 symbolic link.
+            SecretPathIsNotAFileError: If it is a named pipe, a socket or a
+                device.
             OSError: For every other way the open or the write can fail, which is
                 what it was before.
         """
@@ -242,9 +328,21 @@ class FileSecretStore:
         path = self._path(key)
         try:
             descriptor = open_without_following_a_link(path, mode=_SECRET_MODE)
+        except IrregularArtefactError as exc:
+            raise SecretPathIsNotAFileError(path, exc.shape) from exc
         except OSError as exc:
             if is_a_symbolic_link_refusal(exc):
                 raise SecretPathIsASymbolicLinkError(path) from exc
+            shape = _planted_shape(path)
+            if shape is not None:
+                # The `ENXIO` arm. `O_WRONLY | O_NONBLOCK` on a reader-less pipe
+                # refuses *before* a descriptor exists, so there is nothing to
+                # `fstat` and the errno names nothing: its `strerror` is "Device
+                # not configured", which `daemon/instance.py` records meeting on
+                # the same artefact. The shape is looked up from the name here --
+                # a question this module never asks to decide whether to open,
+                # only to word a refusal the kernel has already made.
+                raise SecretPathIsNotAFileError(path, shape) from exc
             raise
         try:
             os.write(descriptor, value.encode("utf-8"))
@@ -281,5 +379,6 @@ __all__ = [
     "FileSecretStore",
     "InsecureSecretPermissionsError",
     "SecretPathIsASymbolicLinkError",
+    "SecretPathIsNotAFileError",
     "default_data_dir",
 ]
