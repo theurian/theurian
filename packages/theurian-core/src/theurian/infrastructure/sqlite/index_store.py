@@ -149,8 +149,17 @@ class IndexPathNotAFileError(IndexBuildError):
     two say opposite things about the file: that one is about bytes this build
     cannot interpret, and this one is raised **before an open happens at all**, so
     nothing has been read. Both are :class:`IndexBuildError`\\ s, which is what
-    keeps ``mcp/search.py``'s ``except IndexBuildError`` -- the fallback to the
-    substring scan -- covering it unchanged.
+    keeps them inside ``mcp/search.py``'s fallback rather than raising at an agent.
+
+    **That fallback is two handlers, not one, and this paragraph named only the
+    first until round two** (M-1). ``except IndexBuildError`` there wraps the
+    *query*, so it covers a refusal met while reading; it does not wrap
+    ``_searchable_file``'s ``is_searchable()`` probe, which opens the file one
+    call earlier. A **static** plant never reaches that probe -- the ``is_file()``
+    before it answers ``False`` and the request falls back as a missing file,
+    measured -- but a co-resident process swapping the path between the two makes
+    it the *opener*, and the refusal escaped to the agent as a ``ToolError``.
+    That probe now has a handler of its own returning the same fallback.
 
     **A named pipe is the member that does not merely fail.** ``mode=ro`` on one
     waits inside ``open()`` for a writer with no bound: measured 2026-09-06,
@@ -318,6 +327,18 @@ def _connect_to(path: Path, *, read_only: bool) -> sqlite3.Connection:
     still do their own job (telling "no index yet" from "an index that will not
     open"); what changed is that they are no longer the *only* thing between a
     planted artefact and an open with no bound.
+
+    **What they still get wrong is the wording, and it is recorded rather than
+    fixed here** (round two, LOW). ``Path.is_file()`` answers ``False`` for a
+    named pipe exactly as it does for an absent file, so with one at the
+    *published index file* -- measured 2026-09-06, both bounded and prompt --
+    ``theurian index gc`` publishes "that build's file is not there" about an
+    artefact that is, and ``index status`` reports ``built: true`` with no schema
+    version. Neither misleads an operator into the wrong action: both cures name
+    ``theurian index build``, and a rebuild publishes a new file under a new id
+    whatever is at the old name. Telling the two apart means widening both
+    probes, which is a change to two commands' reporting contracts and not to
+    this opener's guard.
 
     ``read_only`` picks the access mode and nothing else. ``mode=ro`` so a read
     path cannot create the file it was asked to open: ``sqlite3.connect`` on a

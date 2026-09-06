@@ -2,7 +2,10 @@
 
 ``Path.read_text`` and a bare ``os.open`` for reading both block without bound
 when the name they were given holds a **named pipe**: the open waits for a
-writer, and nothing in the call says how long. At a path a local account can
+writer, and nothing in the call says how long. *Waiting* is the whole of what
+this module bounds -- a **regular** file of any size is read entire, and
+:func:`read_text_from_a_regular_file` records what that costs and who carries
+the size question instead. At a path a local account can
 write -- the derived pointers under ``.theurian/state/``, the token under
 ``<data_dir>/auth/`` -- that turns a read into an indefinite stall on whichever
 command reached it, publishing nothing to either channel while it waits.
@@ -120,6 +123,19 @@ def read_text_from_a_regular_file(path: Path, *, newline: str | None = None) -> 
     """``Path.read_text(encoding="utf-8")`` that cannot wait on a planted artefact.
 
     The drop-in for a small UTF-8 file at a path a local account can write.
+
+    **"Small" is the caller's promise, not this function's** (#586 round two,
+    M-4). What is bounded here is *waiting*: the shape refusal removes the open
+    that never returns. Nothing bounds the number of bytes a **regular** file
+    hands back, and a regular file is exactly what passes the check -- measured,
+    an 8 GiB sparse file at a pointer path read for 15 seconds and took 16 GB of
+    resident memory before it returned. Every caller today reads a file Theurian
+    itself writes and keeps small (the two state pointers, ``<data_dir>/env``,
+    the ingestion manifest), so no cap is imposed and none is claimed; a caller
+    that reads something an author controls wants
+    ``security/paths.py::read_source_file`` instead, which carries SEC-8's
+    ``MAX_SOURCE_FILE_BYTES``.
+
     Measured 2026-09-06 before this existed, with a named pipe at
     ``.theurian/state/active.json``: ``migrate status``, ``project status``,
     ``index status`` and ``findings build`` each sat inside ``read()`` until a

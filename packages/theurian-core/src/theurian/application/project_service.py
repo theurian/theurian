@@ -1576,7 +1576,7 @@ def read_active_state(paths: ProjectPaths) -> ActiveState | None:
     against the real CLI: ``migrate status``, ``project status``, ``index
     status`` and ``findings build`` each ran until a 12-second kill, with zero
     bytes on stdout and stderr -- a `--json` caller cannot tell that from a
-    daemon that is merely slow. :func:`~theurian.security.paths
+    daemon that is merely slow. :func:`~theurian.security.regular_file
     .read_text_from_a_regular_file` is the read now, and it refuses by asking the
     **descriptor** what it opened rather than asking the name beforehand, so the
     swap window a path check leaves is not reopened here. The refusal arrives as
@@ -1688,7 +1688,7 @@ def read_active_index_pointer(paths: ProjectPaths) -> ActiveIndexPointer:
     and whose pointer file was sitting right there. That is the answer the
     paragraph above rules out, arriving through a probe instead of through a
     branch. ``exists()`` is ``True`` for the pipe, so the read below runs and
-    :func:`~theurian.security.paths.read_text_from_a_regular_file` refuses it as
+    :func:`~theurian.security.regular_file.read_text_from_a_regular_file` refuses it as
     an ``OSError`` -- landing on ``unreadable``, which publishes
     ``indexPointerCorrupt`` and the delete-the-pointer cure. Two other shapes
     move with it, both from ``None`` to ``unreadable``: a **directory** (the

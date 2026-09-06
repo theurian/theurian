@@ -502,7 +502,27 @@ def _searchable_file(paths: ProjectPaths, build_id: str) -> Path | Fallback:
         # it is simply an index that cannot be read.
         return _FILE_MISSING
 
-    if not SqliteIndexStore(path).is_searchable():
+    try:
+        searchable = SqliteIndexStore(path).is_searchable()
+    except IndexBuildError:
+        # **The probe opens the file, so it can meet what the `is_file()` above
+        # could not see** (#586 round two, M-1). A *static* plant never reaches
+        # here -- `is_file()` answers `False` for a named pipe and the
+        # `_FILE_MISSING` branch takes it, measured. What reaches here is the
+        # interleaving: the path is a regular file at the probe above and holds
+        # a planted artefact by the time this opens it, so `_connect_to` refuses
+        # with an `IndexPathNotAFileError`. Outside this `try` that escaped the
+        # caller's `except IndexBuildError` -- which wraps the *query*, not this
+        # probe -- and reached the agent as a `ToolError`.
+        #
+        # `_SCHEMA_MISMATCH` is the neighbouring answer rather than a new one:
+        # both mean "this file cannot be searched, rebuild it", both are a
+        # missing optimisation on a derived artefact, and inventing a ninth
+        # `fallbackReason` for a race would widen the wire schema for a state an
+        # operator resolves the same way.
+        return _SCHEMA_MISMATCH
+
+    if not searchable:
         # Checked here rather than discovered mid-query, because mid-query it
         # cannot be discovered at all: an older schema is missing tables, and a
         # query against a missing table looks exactly like a query that matched

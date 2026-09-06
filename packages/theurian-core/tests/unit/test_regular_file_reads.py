@@ -41,9 +41,6 @@ _CAN_MAKE_A_NAMED_PIPE: Final = hasattr(os, "mkfifo")
 #: an ``fstat`` simply answers.
 _A_CHARACTER_DEVICE: Final = Path("/dev/zero")
 
-#: How long the child gets before it is killed and the test fails.
-_CHILD_TIMEOUT_SECONDS: Final = 20.0
-
 
 def test_a_regular_file_reads_back_exactly_what_was_written(tmp_path: Path) -> None:
     """The drop-in half: same bytes, same decoding, no surprises for the normal case."""

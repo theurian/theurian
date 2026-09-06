@@ -641,10 +641,25 @@ def _copy(source: Path, target: Path) -> None:
     keeps the plant off this path today; the check below is what stops that probe
     from being the only thing that does.
 
-    The **target** needs no such check: ``purge_into`` refuses outright when
-    anything already exists at the ``.building`` name -- another writer's work in
-    progress, or a crashed one's leftovers -- so this open only ever creates.
+    **The target's guard is ``purge_into``'s existence check, and it has one
+    hole** (#586 round two, M-6). That check is ``Path.exists()``, which follows
+    a symbolic link and answers ``False`` for a **dangling** one -- so a link at
+    the ``.building`` name pointing at a path that does not exist passes it, and
+    this ``connect`` then creates the purged build *through* the link, outside
+    the tree, after which ``os.replace`` publishes the link's own name. Measured.
+    It is unreachable by planting: the ``.building`` name is derived from a ULID
+    nobody outside the process knows before the purge starts. The ``lstat``
+    below closes it anyway, because "unguessable" is not a guard and the check
+    costs one syscall on a path this function is about to open.
     """
+    if target.is_symlink():
+        msg = (
+            f"{target.name} is a symbolic link, so the purged build would be written "
+            f"through it rather than into the project. Nothing was published, so retrieval "
+            f"still uses the current index. Remove {target} and run `theurian index build`; "
+            f"`ls -ld {target}` shows what is at the path now."
+        )
+        raise IndexPurgeError(msg)
     shape = irregular_shape_at(source)
     if shape is not None:
         msg = (

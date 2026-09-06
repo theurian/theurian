@@ -19,6 +19,7 @@ import stat
 from typing import Final
 
 import pytest
+from ast_keys import opens_a_database, opens_inside
 
 from theurian.cli import commands as commands_module
 from theurian.domain.errors import TheurianError
@@ -327,23 +328,6 @@ def test_a_missing_database_is_answered_without_being_called_damage() -> None:
     )
 
 
-def _opens_a_database(node: ast.Call) -> bool:
-    """Whether ``node`` opens a SQLite database, in any of the spellings this key covers.
-
-    Three: the attribute call `sqlite3.connect(...)`, the bare `connect(...)` a
-    `from sqlite3 import connect` produces, and `sqlite3.Connection(...)`, which
-    the stdlib exposes as a constructor that opens a file just as the factory
-    does. The bare-name arm is what makes an import-style change fail here rather
-    than silently widening the surface.
-    """
-    target = node.func
-    if isinstance(target, ast.Attribute):
-        return target.attr in {"connect", "Connection"} and (
-            isinstance(target.value, ast.Name) and target.value.id == "sqlite3"
-        )
-    return isinstance(target, ast.Name) and target.id in {"connect", "Connection"}
-
-
 def test_this_module_opens_a_state_database_in_exactly_one_place() -> None:
     """RED means a state database is opened past `_connect`'s shape refusal.
 
@@ -379,28 +363,20 @@ def test_this_module_opens_a_state_database_in_exactly_one_place() -> None:
     function" and passes.
     """
     tree = ast.parse(_connection_source())
-    functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
     connects = {
-        id(node)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and _opens_a_database(node)
+        id(node) for node in ast.walk(tree) if isinstance(node, ast.Call) and opens_a_database(node)
     }
     assert connects, (
         "no `sqlite3.connect` was found in connection.py at all, so this containment "
         "claim is about a module the walk did not read"
     )
 
-    enclosing = {
-        name
-        for name, function in functions.items()
-        for node in ast.walk(function)
-        if id(node) in connects
-    }
-    assert enclosing == {"_connect"}, (
-        f"`sqlite3.connect` is called from {sorted(enclosing)}. Every open of a state "
-        f"database has to go through `_connect`, which refuses a path that is not a "
-        f"regular file before the open -- a second call site opens whatever is there and "
-        f"blocks on a named pipe with nothing left to bound it (#526)"
+    inside = opens_inside(tree, "_connect", connects)
+    assert inside == connects, (
+        f"{len(connects - inside)} of {len(connects)} state-database opens are outside "
+        f"`_connect`. Every open of one has to go through it, because it refuses a path "
+        f"that is not a regular file before the open -- a second call site opens whatever "
+        f"is there and blocks on a named pipe with nothing left to bound it (#526)"
     )
 
 

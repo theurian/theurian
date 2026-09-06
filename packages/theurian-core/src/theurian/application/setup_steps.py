@@ -531,7 +531,12 @@ def probe_token(context: SetupContext) -> SetupStep:
             action="Generate a 256-bit token with the system CSPRNG.",
             paths=(str(path),),
         )
-    if len(path.read_text(encoding="utf-8").strip()) < MIN_TOKEN_LENGTH:
+    # The bounded reader, for the window the arms above leave (#586 round two,
+    # M-7): every check before this one asks the *name*, and a co-resident
+    # process can put a named pipe there between the last of them and this
+    # read. `Path.read_text` would then hold `theurian doctor` with no bound;
+    # this refuses by descriptor and the caller's `OSError` handling grades it.
+    if len(read_text_from_a_regular_file(path).strip()) < MIN_TOKEN_LENGTH:
         return SetupStep(
             step_id=StepId.TOKEN,
             status=StepStatus.CONFLICTING,
