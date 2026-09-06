@@ -43,6 +43,7 @@ from theurian.application.index_secret_scan import (
 from theurian.application.migration_engine import run_static_migration_guards
 from theurian.application.project_service import (
     BuildProvenance,
+    ProjectError,
     ProjectPaths,
     resolve_state_hash,
 )
@@ -50,7 +51,7 @@ from theurian.application.setup_context import MigrationsCheck, SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.cli.context import schema_root
 from theurian.daemon.instance import DEFAULT_PORT, probe_health
-from theurian.domain.errors import TheurianError
+from theurian.domain.errors import SchemaUnreadableError, TheurianError
 from theurian.domain.setup import SetupError, SetupState
 from theurian.domain.state import StateHash
 from theurian.infrastructure.claude.mcp_config import ClaudeCodeMcpConfig, ConnectionSpec
@@ -157,26 +158,21 @@ def _current_state_hash(root: Path) -> StateHash | None:
     install-integrity rather than migration content, and both arrive at
     ``probe_initial_index`` as ``None``.
 
-    Telling them apart is available and is deliberately not taken *here*.
-    ``except (SchemaUnreadableError, ProjectError)`` would name those two faces
-    and nothing else. Two searches settle that, both run 2026-09-04:
-    ``git grep -nE '^class [A-Za-z]+\\(ProjectError\\)' -- packages/theurian-core/src``
-    returns one line, ``ProjectPathEscapeError``, whose raise sites are both
-    inside ``_contain`` and so reachable only through a ``ProjectPaths`` helper --
-    and the resolve above is outside this ``try`` on purpose. ``git grep -nE
-    'raise ProjectError\\(' -- packages/theurian-core/src`` puts every remaining
-    site in ``application/project_service.py`` or ``cli/context.py``, and none in
-    ``infrastructure/``, where ``load_migrations`` lives and which imports
-    neither. So inside this ``try`` the only ``ProjectError`` is
-    ``schema_root()``'s. What rules the
-    split out here is the other reader: ``_check_migrations`` calls
-    ``schema_root()`` inside its own ``try`` and catches ``TheurianError``, and
-    two readers of one load catching different sets is #91's divergence in a new
-    place. Splitting both, with an honest "reinstall" arm, is #529's open design
-    space and worth more there -- ``migrations-valid`` is the step whose
-    misattribution survives ``doctor --report``. Until then the caller states no
-    cause, and the refusal itself stays ``migrations-valid``'s to publish, in the
-    same report, so nothing read from the file travels with this one.
+    ``_check_migrations`` does tell them apart, since #529: it partitions the
+    same ``TheurianError`` set into ``(SchemaUnreadableError, ProjectError)``
+    and the rest, and ``migrations-valid`` publishes a "reinstall" arm for the
+    first. That is not a divergence between the two readers -- the *set* each
+    refuses on is still exactly ``TheurianError``, which is what #91 is about --
+    and it is deliberately not repeated here, because this step's sentence is
+    already the weakest claim true of all three causes and needs no cause to
+    say it. In a `doctor` run the two compose: ``migrations-valid`` names the
+    broken installation, ``initial-index`` says it cannot tell which state the
+    project is at, and nothing read out of the operator's files travels with
+    either.
+
+    The classification key is import reachability, and it is checked rather
+    than asserted: see ``_check_migrations``' own clause and
+    ``tests/unit/test_migrations_check_partition.py``.
     """
     paths = ProjectPaths.of(root)
     try:
@@ -208,13 +204,52 @@ def _check_migrations(root: Path) -> MigrationsCheck:
     ``load_migrations`` a resolved migrations directory beside an unresolved
     project root makes its own containment check raise ``ValueError: ... is not
     in the subpath``, which is neither a refusal nor a verdict (measured).
+
+    **Two catches, because two things can refuse and only one of them is the
+    operator's** (#529). The refusal set is unchanged -- it is still exactly
+    ``TheurianError``, and the pair below partitions that set rather than
+    narrowing it -- but the caller now learns *which side* refused, in
+    :attr:`MigrationsCheck.schemas_unusable`, and publishes a "reinstall" arm
+    for the build's own faults instead of sending their author to
+    ``.theurian/migrations``.
     """
     paths = ProjectPaths.of(root)
     try:
         loaded = load_migrations(paths.root, paths.migrations, schema_root())
         run_static_migration_guards(loaded.migration_set)
-    # `TheurianError`, the whole family, and not a hand-listed tuple built from
-    # ``load_migrations``' ``Raises`` -- that tuple omitted whatever the docstring
+    # The installation's own half: `schema_root()` locating no candidate at all,
+    # and `SchemaUnreadableError` for a candidate that is there and cannot be
+    # used. Neither says anything about the files under `.theurian/migrations`,
+    # and before this clause both were published as though they did.
+    #
+    # `ProjectError` is exact here rather than over-wide, and the key is import
+    # reachability rather than a count of its subclasses: it is defined in
+    # `application/project_service.py`, so no code can raise it without reaching
+    # that module, and neither `load_migrations` nor `run_static_migration_guards`
+    # does -- transitively, over absolute and relative imports and through the
+    # packages Python executes on the way. That is what
+    # `tests/unit/test_migrations_check_partition.py` computes; it derives *which*
+    # callees to sweep from this try body rather than listing them, and it proves
+    # the walker on a planted tree with a negative arm, because a control drawn
+    # from this tree can only exercise the import shapes this tree happens to
+    # contain.
+    # Counting subclasses is the argument that does *not* hold, and it had
+    # already rotted: two docstrings recorded "`ProjectError` has no subclasses
+    # anywhere in this tree". That was true when #519 wrote it -- `git grep -nE
+    # '^class [A-Za-z_]+\(ProjectError\)' 5157da73 -- packages/theurian-core/src`
+    # returns nothing -- and false two days later: the same key at 22ce405b
+    # returns `ProjectPathEscapeError` and `GitignoreIsASymbolicLinkError`, and
+    # importing every `theurian` module and asking
+    # `ProjectError.__subclasses__()` there answers 2 (measured 2026-09-05).
+    # Both live in `project_service`, so both are outside this `try` by the
+    # reachability key above -- which is why the clause is still exact, and why
+    # the count was never the reason it was.
+    except (SchemaUnreadableError, ProjectError) as exc:
+        return MigrationsCheck(count=0, failure=exc, schemas_unusable=True)
+    # Everything else the load can refuse on, which -- together with the clause
+    # above, whose two types are both `TheurianError`s -- is the whole
+    # `TheurianError` family and not a hand-listed tuple built from
+    # ``load_migrations``' ``Raises``. That tuple omitted whatever the docstring
     # forgot, and a trailing-newline ``id`` block scalar raised the
     # ``InvalidIdentifierError`` it left out (a ``DomainError``, not one of the five
     # listed), so `doctor` demanded consent for "Could not check migrations-valid"

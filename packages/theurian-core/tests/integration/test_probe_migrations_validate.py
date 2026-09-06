@@ -39,9 +39,14 @@ from setup_migrations import checked_by_the_loader, state_hash_from_the_loader
 
 from theurian.application.project_service import ProjectPaths
 from theurian.application.setup_context import MigrationsCheck, SetupContext
-from theurian.application.setup_steps import probe_migrations
+from theurian.application.setup_steps import (
+    SCHEMAS_UNUSABLE_ACTION,
+    SCHEMAS_UNUSABLE_SUMMARY,
+    probe_migrations,
+)
 from theurian.cli.context import schema_root
-from theurian.domain.setup import StepStatus
+from theurian.domain.errors import MigrationError, SchemaUnreadableError
+from theurian.domain.setup import SetupError, StepStatus
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
 from theurian.infrastructure.secrets.file_store import FileSecretStore
@@ -358,3 +363,101 @@ def test_a_theurian_directory_that_denies_traversal_is_a_refusal_the_step_report
     assert step.status is StepStatus.MISSING
     assert step.summary == f"The migrations in {ProjectPaths.of(root).migrations} do not validate."
     assert step.detail.startswith("MigrationsDirectoryUnreadableError: ")
+
+
+# -- Which failure arm, and who decides it (#529) -----------------------------
+#
+# ``tests/integration/test_setup_migrations_checker.py`` drives the two install
+# faults through the real composition root. What is left over is this step's own
+# half of the contract, and it is the half a real fault cannot measure: the
+# classification is the *checker's*, read here rather than recomputed from
+# ``type(check.failure)``. So both tests below hand the probe a check whose flag
+# and whose exception type disagree, which no real fault produces -- a probe
+# that had grown its own ``isinstance`` reads one and this file reads the other,
+# and that second classification is #91's divergence in a new place.
+
+
+def test_the_install_arm_is_taken_because_the_checker_said_so(tmp_path: Path) -> None:
+    """A ``MigrationError`` flagged ``schemas_unusable``: the reinstall arm, still."""
+    root = _project(tmp_path)
+    flagged = MigrationsCheck(
+        count=0, failure=MigrationError("nothing about the installation"), schemas_unusable=True
+    )
+
+    step = probe_migrations(_context(tmp_path, root, check_migrations=lambda _: flagged))
+
+    assert step.status is StepStatus.MISSING
+    assert step.summary == SCHEMAS_UNUSABLE_SUMMARY
+    assert step.action == SCHEMAS_UNUSABLE_ACTION
+
+
+def test_the_migrations_arm_is_taken_because_the_checker_said_so(tmp_path: Path) -> None:
+    """A ``SchemaUnreadableError`` *not* flagged: the migrations arm, still.
+
+    The mirror of the test above, and the one that fails for a probe keying on
+    the exception type: this is exactly the type the install arm exists for.
+    """
+    root = _project(tmp_path)
+    migrations = ProjectPaths.of(root).migrations
+    unflagged = MigrationsCheck(
+        count=0, failure=SchemaUnreadableError("/somewhere", "unreadable"), schemas_unusable=False
+    )
+
+    step = probe_migrations(_context(tmp_path, root, check_migrations=lambda _: unflagged))
+
+    assert step.status is StepStatus.MISSING
+    assert step.summary == f"The migrations in {migrations} do not validate."
+
+
+def test_an_install_fault_through_the_real_double_takes_the_reinstall_arm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The double's own install arm, driven -- it was unreachable when written.
+
+    Every other test in this file injects a :class:`MigrationsCheck` directly,
+    so ``setup_migrations.checked_by_the_loader``'s
+    ``(SchemaUnreadableError, ProjectError)`` clause was code no test ran: the
+    double could have been left flattened and the whole suite would have stayed
+    green while every fixture-driven install fault took the wrong arm.
+
+    Provoked at the production predicate ``schema_root`` consults, so the real
+    refusal travels through the real double. The migrations directory holds a
+    parseable set, so nothing here is a migration fault -- with the schemas
+    present this reaches ``satisfied``.
+    """
+    root = _project(tmp_path)
+    (ProjectPaths.of(root).migrations / "0001-fine.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr("theurian.cli.context._schema_candidate_exists", lambda _c: False)
+
+    step = probe_migrations(_context(tmp_path, root))
+
+    assert step.status is StepStatus.MISSING
+    assert step.summary == SCHEMAS_UNUSABLE_SUMMARY, (
+        "the double classified it as the installation's, the way production does"
+    )
+    assert step.action == SCHEMAS_UNUSABLE_ACTION
+
+
+def test_a_check_cannot_claim_a_broken_installation_with_no_failure() -> None:
+    """The impossible object is refused at construction, not rendered.
+
+    ``schemas_unusable`` describes :attr:`MigrationsCheck.failure`, so a check
+    carrying the flag and no failure would reach a probe whose install arm has
+    nothing to put in ``detail`` -- a MISSING step announcing a broken build for
+    a set that loaded.
+    """
+    with pytest.raises(SetupError, match="describes `failure`"):
+        MigrationsCheck(count=3, failure=None, schemas_unusable=True)
+
+
+def test_a_refused_check_cannot_also_publish_a_count() -> None:
+    """The other direction of the same invariant, which one guard did not cover.
+
+    ``count`` is what the SATISFIED arm publishes as "N migration(s) parse and
+    validate.". A check carrying a refusal *and* a number claims both happened,
+    and it is exactly what every returning site avoids by pairing a failure with
+    ``0`` -- a rule that lived only in those sites and in the assertion messages
+    of the tests that noticed.
+    """
+    with pytest.raises(SetupError, match="publishes no count"):
+        MigrationsCheck(count=3, failure=MigrationError("refused"))

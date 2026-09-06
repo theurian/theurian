@@ -16,6 +16,7 @@ from typing import Any
 from theurian.domain.ports.daemon_manager import DaemonManager
 from theurian.domain.ports.mcp_client_config import McpClientConfig
 from theurian.domain.ports.secret_store import SecretStore
+from theurian.domain.setup import SetupError
 from theurian.domain.state import StateHash
 
 
@@ -23,8 +24,8 @@ from theurian.domain.state import StateHash
 class MigrationsCheck:
     """What a project's migration set turned out to be, once something read it.
 
-    Two fields rather than a raised exception, because the step reporting this
-    has to publish a verdict for a refusal as well as for a healthy set: a probe
+    Fields rather than a raised exception, because the step reporting this has
+    to publish a verdict for a refusal as well as for a healthy set: a probe
     that let the failure escape would reach the reader as
     ``SetupService._probe``'s generic "Could not check migrations-valid" and lose
     the sentence written for it.
@@ -39,6 +40,48 @@ class MigrationsCheck:
     #: migrate validate` runs. Otherwise whatever refused it, so the step can
     #: publish the type and withhold the message (:func:`failure_detail`).
     failure: Exception | None
+    #: ``True`` when :attr:`failure` is the *installation* failing to supply a
+    #: usable JSON Schema, rather than anything about the files under
+    #: ``.theurian/migrations``. Carried here rather than re-derived from
+    #: ``type(failure)`` by the probe: the checker runs the load and knows which
+    #: call refused, and a second classification beside it is #91's divergence
+    #: in a new place. That the probe holds no second classification is checked
+    #: rather than asked for -- ``tests/unit/test_migrations_check_partition.py::
+    #: test_the_checker_catches_exactly_two_things_and_the_probe_catches_nothing``
+    #: enumerates both functions' handlers from the AST, and the two
+    #: ``..._because_the_checker_said_so`` tests hand the probe a check whose
+    #: flag and exception type disagree. Issue #529 is what the flag closes --
+    #: until it existed, a build that could not find its own schemas published
+    #: "The migrations in <dir> do not validate." and sent the operator to their
+    #: own YAML.
+    schemas_unusable: bool = False
+
+    def __post_init__(self) -> None:
+        # Both directions, because one guard held only the shape that happened to
+        # be on somebody's mind. `count` is what the SATISFIED arm publishes as
+        # "N migration(s) parse and validate.", and a check carrying a refusal
+        # *and* a number is a claim that both happened -- the reason every
+        # returning site pairs a failure with 0, and every test asserting one
+        # says "nothing was validated, so there is no number to publish".
+        if self.failure is not None and self.count:
+            msg = (
+                f"a refused check validated nothing, so it publishes no count; got "
+                f"count={self.count} with {type(self.failure).__name__}. Pair every "
+                f"failure with `count=0`."
+            )
+            raise SetupError(msg)
+        if self.schemas_unusable and self.failure is None:
+            # Names the field contract rather than the composition root's own
+            # `_check_migrations`: this is the application layer, and a message
+            # pointing at a private CLI helper both crosses ADR-0003's line and
+            # rots the moment that helper is renamed. Whoever constructs a check
+            # can act on the rule; they do not need the current caller's name.
+            msg = (
+                "schemas_unusable describes `failure` and this check carries none. "
+                "Set it only in the branch that caught an installation's own "
+                "refusal, beside the failure it classifies."
+            )
+            raise SetupError(msg)
 
 
 @dataclass(frozen=True, slots=True)

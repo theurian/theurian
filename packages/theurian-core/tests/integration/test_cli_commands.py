@@ -31,9 +31,11 @@ from theurian.application.project_service import (
     ProjectRegistry,
     derived_escape_remedy,
 )
+from theurian.cli.context import schema_root
 from theurian.cli.index_status_report import index_staleness
 from theurian.cli.main import app
 from theurian.domain.errors import MigrationError
+from theurian.domain.extras import DAEMON_REINSTALL, DAEMON_REINSTALL_COMMANDS
 
 pytestmark = pytest.mark.integration
 
@@ -591,6 +593,50 @@ def test_an_oversized_content_file_is_diagnosed_by_its_own_remedy(
     assert "shrink" in payload["remedy"] or "split" in payload["remedy"], (
         "the remedy must tell the user how to fix it, not only that it failed"
     )
+
+
+def test_a_build_that_cannot_find_its_schemas_is_diagnosed_by_its_own_remedy(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #529, and the same shape as #287 above: no ``.remedy`` on the raise.
+
+    ``schema_root`` (``cli/context.py``) refuses when neither candidate location
+    exists -- "This build is incomplete; reinstall theurian" -- and set no
+    ``remedy``, so ``_context_remedy`` found nothing to prefer and fell through
+    to ``_require_project``'s generic default. Every one of that function's
+    callers therefore answered a broken *installation* with "Run this inside an
+    initialised Theurian project.", printed to somebody standing in one.
+    Measured through the real CLI with both candidate directories moved aside:
+    ``migrate validate --json`` and ``index status --json`` published it.
+
+    ``migrate validate`` is the representative command on purpose rather than
+    for coverage: `doctor`'s ``initial-index`` step names it as the thing to run
+    when a migration set could not be read, so this is where a truthful step
+    routed the operator into the one sentence that misdirects them.
+
+    Provoked at the production predicate ``schema_root`` consults, so the real
+    raise runs -- a monkeypatched ``schema_root`` would prove only that the CLI
+    prints whatever it is handed. The refusal is asserted first, so a patch that
+    failed to provoke it fails here instead of passing for the wrong reason.
+    """
+    _invoke("init")
+    monkeypatch.setattr("theurian.cli.context._schema_candidate_exists", lambda _c: False)
+    with pytest.raises(ProjectError):
+        schema_root()
+
+    code, payload = _invoke("migrate", "validate")
+
+    assert code == 1
+    assert payload["remedy"] != "Run this inside an initialised Theurian project.", (
+        "the diagnosis must name the broken installation, not send someone who is "
+        "already inside a project to go and initialise one"
+    )
+    assert payload["remedy"] == DAEMON_REINSTALL, (
+        "and it is the shared reinstall remedy, so a raised `requires-python` floor "
+        "reaches this sentence through `test_daemon_extra.py`'s sweep"
+    )
+    for installer in DAEMON_REINSTALL_COMMANDS:
+        assert installer in payload["remedy"], "uv and pipx, since both are offered elsewhere"
 
 
 def test_status_outside_a_repository_reports_unregistered(
