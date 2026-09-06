@@ -723,7 +723,7 @@ def test_a_directory_at_the_active_pointer_temp_path_fails_cleanly(project: Path
 # `open()`, so `migrate apply` never returned -- worse than the traceback, since
 # nothing arrives to grade. `LOCK_OPEN_FLAGS` carries `O_NONBLOCK` now, which
 # turns that block into `ENXIO` and puts the artefact on the same footing as the
-# other four. It is the reason `_the_acquisition_really_refuses` below opens with
+# other four. It is the reason `_how_the_acquisition_answers` below opens with
 # the imported flags rather than a copy of them: a probe that kept the old
 # spelling would hang here while the production open returned.
 
@@ -821,6 +821,57 @@ def _close_the_attached_reader(lock: Path) -> None:
     while _ATTACHED_READERS:
         os.close(_ATTACHED_READERS.pop())
     lock.unlink(missing_ok=True)
+
+
+def _open_descriptors() -> int:
+    """How many file descriptors this process holds, from ``/dev/fd``."""
+    return sum(1 for _ in Path("/dev/fd").iterdir())
+
+
+@pytest.mark.skipif(not _CAN_MAKE_A_SPECIAL_FILE, reason="needs os.mkfifo")
+@pytest.mark.skipif(not Path("/dev/fd").is_dir(), reason="needs /dev/fd to count descriptors")
+def test_a_refused_write_lock_gives_its_descriptor_back(tmp_path: Path) -> None:
+    """``_open``'s ``os.close`` on the descriptor-refusal path (round two, M-9).
+
+    The arm that refuses a named pipe with a reader attached does so *after* the
+    open succeeded, so it holds a descriptor. Deleting its ``os.close`` left the
+    whole suite green: a leak is invisible in one acquisition's result and shows
+    only in how many descriptors the process is holding. On a lock file that is
+    worse than an ordinary leak -- the open file description is a lock this
+    process still holds, with nothing left to release it.
+
+    Driven through ``write_transaction`` rather than by building the lock, which
+    is why it belongs in this module: ``test_connection_claims.py`` keeps
+    ``test_canonical_store.py`` as the one file that constructs the lock class
+    directly, and this test does not name it at all -- ``write_transaction`` is
+    the wider population's own entry point, and the acquisition it opens is the
+    same one.
+    """
+    from theurian.infrastructure.sqlite.connection import (
+        WriteLockUnusableError,
+        write_transaction,
+    )
+
+    lock = tmp_path / "runtime" / "write.lock"
+    lock.parent.mkdir(parents=True)
+    os.mkfifo(lock)
+    reader = os.open(lock, os.O_RDONLY | os.O_NONBLOCK)
+    database = tmp_path / "state" / "theurian-state-abc.sqlite"
+    database.parent.mkdir(parents=True)
+    real_create_database(database, "a" * 64, 1)
+    try:
+        before = _open_descriptors()
+        for _ in range(50):
+            with pytest.raises(WriteLockUnusableError), write_transaction(database, lock):
+                pass  # pragma: no cover - the acquisition above must fail
+        after = _open_descriptors()
+    finally:
+        os.close(reader)
+
+    assert after <= before + 2, (
+        f"fifty refused acquisitions left {after - before} descriptors behind; each one "
+        f"is an open file description on the write lock that nothing will release"
+    )
 
 
 def _plant_a_knowledge_directory_that_denies_the_runtime_create(lock: Path) -> None:
@@ -996,8 +1047,8 @@ def test_a_lock_the_open_cannot_take_is_refused_as_a_document(
     conversion selects that sentence for ``ELOOP`` alone, and nothing here
     produces one.
 
-    **The named pipe is the fifth artefact and the one with a hard bound around
-    it** (#526). Its refusal is what ``O_NONBLOCK`` buys, and without that flag
+    **The named pipes are the members with a hard bound around them** (#526,
+    then round one's H-1). Their refusal is what ``O_NONBLOCK`` buys, and without that flag
     the ``open`` never returns -- so the premise probe below runs inside
     ``fails_rather_than_hanging``, which turns the block into a failing test in
     seconds instead of a stalled suite. The bound sits on the probe rather than
@@ -1007,7 +1058,7 @@ def test_a_lock_the_open_cannot_take_is_refused_as_a_document(
     raised *inside* the command is an ``OSError``, which the command's own
     backstops would convert into an envelope -- a hang passing as a graded
     refusal. The same swallow was measured in the probe itself, one arm lower;
-    :func:`_the_acquisition_really_refuses` records it and re-raises.
+    :func:`_how_the_acquisition_answers` records it and re-raises.
     """
     if artefact.needs_a_mode_that_denies and _CANNOT_BE_REFUSED_BY_A_MODE:
         pytest.skip("POSIX permission bits, and not as root")
@@ -1020,25 +1071,27 @@ def test_a_lock_the_open_cannot_take_is_refused_as_a_document(
     try:
         with fails_rather_than_hanging(10, waiting_for=f"the lock open over {artefact.label}"):
             answer = _how_the_acquisition_answers(lock)
-        assert answer != _OPENED_AN_ARTEFACT or artefact.opens_successfully, (
-            f"the open accepted {artefact.label} and handed back a descriptor that is not "
-            f"a file; the acquisition's own `fstat` refusal is gone, and this artefact is "
-            f"not one that is supposed to open"
+        # Every assertion about the probe's answer comes before the only skip, so
+        # none of them can be stepped over by it (round two, M-12: the
+        # `opens_successfully` check sat *below* the skip and was unreachable for
+        # the one answer that could have reached it).
+        expected = _OPENED_AN_ARTEFACT if artefact.opens_successfully else _REFUSED
+        assert answer == expected, (
+            f"the probe answered {answer!r} for {artefact.label}, which is planted to "
+            f"produce {expected!r}. {_OPENED_AN_ARTEFACT!r} where {_REFUSED!r} was "
+            f"expected means the acquisition's own `fstat` refusal is gone; "
+            f"{_OPENED!r} means the plant is no longer the artefact this case is about"
         )
-        if answer == _OPENED_AN_ARTEFACT and artefact.opens_successfully:
-            # The expected shape for this artefact: the open is *meant* to
-            # succeed, and what refuses is the `fstat` one line later. Falling
-            # through is the point -- the command below must still publish a
-            # refusal naming the artefact.
-            pass
-        elif answer == _OPENED:
+        if answer == _OPENED:  # pragma: no cover - see the note below
+            # Unreachable for every member of the table, which is why the
+            # assertion above is the guard and this is not. It is kept because
+            # `_OPENED` is a real answer the probe can give -- a symbolic link,
+            # whose `ELOOP` the probe deliberately reports as "opened" so #481's
+            # own test owns that artefact -- and a future member planted there
+            # should skip rather than fail. What must never happen again is a
+            # *planted* artefact opening and being read as a filesystem that
+            # refuses nothing.
             pytest.skip(f"this filesystem accepts the lock over {artefact.label}")
-        if artefact.opens_successfully:
-            assert answer == _OPENED_AN_ARTEFACT, (
-                f"{artefact.label} was expected to open and be caught by the descriptor "
-                f"check, and the probe answered {answer!r}; the plant is no longer the "
-                f"artefact this case is about"
-            )
 
         result = runner.invoke(app, ["migrate", "apply", "--json"])
 

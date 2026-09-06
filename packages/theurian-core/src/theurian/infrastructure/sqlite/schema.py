@@ -100,8 +100,9 @@ def irregular_shape(mode: int) -> str | None:
 
     The vocabulary every opener in this package uses to say what it found where
     it needed a file: the state database (`connection._connect`), the write lock
-    (`connection.WriteLockUnusableError`), the daemon's instance lock and the
-    review-finding store. It is deliberately identical to
+    (`connection.WriteLockUnusableError`), the daemon's instance lock
+    (`daemon/instance.py::InstanceLock`) and the review-finding store
+    (`findings_store.SqliteReviewFindingStore._read`). It is deliberately identical to
     ``security/paths.py::_unbounded_shape``'s, so an operator who meets "a named
     pipe (FIFO)" from a ``contentFile`` and from a state database does not have
     to learn two phrasings for one fault. The two functions stay separate because
@@ -112,14 +113,22 @@ def irregular_shape(mode: int) -> str | None:
     shared symbol.
 
     **A directory is not a member, and the reason is per-caller rather than
-    universal.** At the write-lock path ``open()`` refuses one with ``EISDIR``
-    before a byte moves, and #520's branch publishes that exactly, so widening
-    this would take the refusal away from the branch that says it best. At the
-    *state-database* path the same is not true -- measured 2026-09-06, a
-    directory there gives ``mode=ro`` ``disk I/O error`` (``SQLITE_IOERR_READ``)
-    and the read path answered it with the delete-your-state cure -- so
-    `connection._connect` refuses a directory in its own branch rather than
-    through this function.
+    universal.** Measured 2026-09-06, one row per caller:
+
+    * the **write lock** and the **instance lock** open with ``O_WRONLY``, which
+      refuses a directory with ``EISDIR`` before a byte moves, and #520's branch
+      publishes that exactly -- so widening this would take the refusal away from
+      the branch that says it best;
+    * the **state database** gets ``disk I/O error`` (``SQLITE_IOERR_READ``)
+      through ``mode=ro``, and the read path answered that with the
+      delete-your-state cure, so `connection._database_path_shape` adds the
+      member back for itself;
+    * the **review-finding store** gets the same driver answer, under a rebuild
+      cure that cannot land -- ``findings build`` publishes with ``Path.replace``,
+      which refuses a directory -- so `findings_store._read` adds it back too.
+
+    Two callers exclude it and two include it, which is why the exclusion lives
+    per caller and not here.
 
     The residual branch keeps the check total: a type this build has never met is
     named rather than passed through as a regular file.

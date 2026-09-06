@@ -500,14 +500,22 @@ class SqliteReviewFindingStore:
     def stamp(self) -> FindingsStamp | None:
         """The recorded (schema version, parser stamp), or ``None`` if unreadable.
 
-        A missing file, a missing metadata row, an unreadable one, or an OS-level
-        failure merely checking whether the file exists (an untraversable parent
-        directory raises ``PermissionError`` from :meth:`Path.exists`, which does
-        not treat every ``OSError`` as "missing") all answer ``None`` -- each means
-        the same thing to a staleness check: there is no trustworthy stamp, so a
-        rebuild is owed. A corrupt file is *not* raised here for that reason;
-        :meth:`dump`, which promises real content, is where a damaged store becomes
-        loud.
+        A missing file, a missing metadata row, an unreadable one, an artefact at
+        the path, or an OS-level failure merely checking whether the file exists
+        (an untraversable parent directory raises ``PermissionError`` from
+        :meth:`Path.exists`, which does not treat every ``OSError`` as "missing")
+        all answer ``None`` -- each means the same thing to a staleness check:
+        there is no trustworthy stamp, so a rebuild is owed. A corrupt file is
+        *not* raised here for that reason; :meth:`dump`, which promises real
+        content, is where a damaged store becomes loud.
+
+        **``FindingsStoreError`` is in the caught tuple, and leaving it out was a
+        reach regression** (round two). :meth:`_read`'s shape refusal is this
+        class, not ``sqlite3.Error`` or ``OSError``, so the moment it landed a
+        socket or a device at the store path -- which answered ``None`` here
+        before the batch, because the driver raised -- started raising out of a
+        method whose whole contract is that it does not. The type already means
+        "there is no trustworthy stamp"; that is exactly this method's ``None``.
         """
         try:
             exists = self._path.exists()
@@ -521,7 +529,7 @@ class SqliteReviewFindingStore:
                     "SELECT findings_schema_version, parser_stamp FROM findings_metadata "
                     "WHERE id = 1"
                 ).fetchone()
-        except (sqlite3.Error, OSError):
+        except (sqlite3.Error, OSError, FindingsStoreError):
             return None
         if row is None:
             return None
@@ -803,11 +811,38 @@ class SqliteReviewFindingStore:
         was a daemon restart. ``stat`` answers from the directory entry and never
         opens anything, so it is the one check that cannot itself be what blocks.
 
-        The refusal is this module's own class, so the tool surface converts it to
-        the standing store-unavailable refusal like every other read fault, and
-        the permit is returned by the ``finally`` that was already there.
+        **A directory is a member here**, unlike at the write-lock path where
+        ``open()`` answers ``EISDIR`` and #520's branch says so exactly. This
+        ``connect`` answers "disk I/O error" instead, and the cure that fault
+        published was a rebuild that cannot land: ``findings build`` finishes with
+        ``Path.replace`` onto the store path, which refuses a directory. So the
+        third caller of
+        :func:`~theurian.infrastructure.sqlite.schema.irregular_shape` widens it
+        the way the state-database opener does, and for the same reason -- the
+        driver's answer here names nothing an operator can act on.
+
+        **What the shape check does *not* close is the window behind it** (round
+        two, GATE-2). It is a check on a name, and the ``connect`` that follows
+        resolves that name again: a co-resident process swapping a database and a
+        named pipe at this path can still be answered "regular file" and then hand
+        the open a pipe. Measured on this branch at 4.7 swaps/second, four
+        workers: one worker parked inside the open and never returned -- still
+        parked 30 seconds after the artefact was removed and a healthy database
+        restored. That worker holds an admission permit for the life of the
+        process. The window cannot be closed here: ``sqlite3.connect`` takes a
+        path and no descriptor, so there is no ``fstat`` equivalent to move the
+        question onto, as :meth:`WriteLock._open` could. It is recorded as a
+        residual with its precondition -- a *racing writer* co-resident with the
+        daemon -- rather than claimed closed; the reach is availability of the
+        admission gate until restart, and no disclosure.
+        `#586 <https://github.com/theurian/theurian/issues/586>`_'s permit-path
+        bound, when it lands, reduces this residual's reach to a bounded stall.
+
+        The refusal below is this module's own class, so the tool surface converts
+        it to the standing store-unavailable refusal like every other read fault,
+        and the permit is returned by the ``finally`` that was already there.
         """
-        shape = irregular_shape_at(self._path)
+        shape = irregular_shape_at(self._path) or ("a directory" if self._path.is_dir() else None)
         if shape is not None:
             raise FindingsStoreError(
                 f"the review-finding store path holds {shape}, not a file Theurian wrote",

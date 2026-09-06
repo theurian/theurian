@@ -293,12 +293,16 @@ def test_an_unwritable_state_directory_is_not_answered_by_deleting_the_state(
         f"the remedy does not name the directory whose mode is the fault, so the reader "
         f"has to guess which path to act on: {remedy!r}"
     )
-    # The whole computed fragment, not the verb (adv M-3). `"chmod" in remedy`
-    # is satisfied by `chmodx`, by the word inside a sentence about chmod, and by
-    # a cure that names the wrong path -- none of which an operator can paste.
-    assert f"chmod u+w {directory}" in remedy, (
-        f"the remedy does not carry a command the operator can paste, aimed at the "
-        f"directory whose mode is the fault: {remedy!r}"
+    # The whole computed fragment *and its closing boundary* (adv M-3, then round
+    # two's M-1). `"chmod" in remedy` is satisfied by `chmodx`; the prefix form
+    # `f"chmod u+w {directory}"` is satisfied by a cure aimed at
+    # `<directory>/theurian-state-....sqlite` or at a deeper path that does not
+    # exist -- both mutations survived it. The remedy renders the command inside
+    # backticks, so the closing one is the boundary that says the path ends there.
+    assert f"chmod u+w {directory}`" in remedy, (
+        f"the remedy does not carry a pasteable command aimed at exactly the directory "
+        f"whose mode is the fault -- a longer path starting with it is not the cure: "
+        f"{remedy!r}"
     )
     assert STATE_REBUILD_REMEDY not in remedy, (
         f"the cure still carries the delete-your-state instruction, for a database "
@@ -392,9 +396,9 @@ def test_the_fr_k5_check_over_an_unwritable_state_directory_publishes_a_document
         f"the refusal does not say which guarantee could not be confirmed, so a reader "
         f"cannot tell it from an unrelated state fault: {payload['error']!r}"
     )
-    assert f"chmod u+w {directory}" in payload["remedy"], (
-        f"the FR-K5 refusal carries no pasteable command aimed at the directory whose "
-        f"mode is the fault: {payload['remedy']!r}"
+    assert f"chmod u+w {directory}`" in payload["remedy"], (
+        f"the FR-K5 refusal carries no pasteable command aimed at exactly the directory "
+        f"whose mode is the fault: {payload['remedy']!r}"
     )
     assert STATE_REBUILD_REMEDY not in payload["remedy"], (
         f"the FR-K5 refusal still offers to delete the state -- which here destroys the "

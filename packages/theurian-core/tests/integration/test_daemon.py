@@ -46,12 +46,20 @@ from theurian.infrastructure.secrets.file_store import (
     FileSecretStore,
     InsecureSecretPermissionsError,
 )
+from theurian.infrastructure.sqlite.connection import LOCK_OPEN_FLAGS
+from theurian.infrastructure.sqlite.schema import irregular_shape, irregular_shape_at
 from theurian.security.env_file import env_file_contents
+from theurian.security.no_follow import irregular_artefact_remedy, symbolic_link_remedy
 from theurian.security.tokens import generate_token
 
 pytestmark = pytest.mark.integration
 
 TOKEN = generate_token()
+
+#: Where a POSIX mode decides nothing, so a test that turns one on must not
+#: run. The suite's standing idiom: Windows has no mode bits, and root is
+#: exempt from the ones it has -- the offline CI image runs as root.
+_CANNOT_BE_REFUSED_BY_A_MODE: Final = sys.platform == "win32" or os.geteuid() == 0
 
 
 @pytest.fixture
@@ -316,8 +324,13 @@ def test_the_lock_is_released_by_its_context_manager(tmp_path: Path) -> None:
 # by the documented `theurian daemon start`:
 #
 #   - a symbolic link at `daemon.lock` pointing into the user's tree was
-#     followed and truncated -- 49 bytes to 15, the breadcrumb -- and `acquire`
-#     returned `True`, so the daemon started and reported success;
+#     followed and truncated -- down to this method's own breadcrumb, which is a
+#     JSON object holding a pid and so has no fixed length -- and `acquire`
+#     returned `True`, so the daemon started and reported success. The victim's
+#     size before is `len(_LOCK_VICTIM_BODY)`, read off the constant below rather
+#     than written out here: the number differs from the write lock's 49-byte
+#     victim in `test_migrate_apply_lock_confinement.py`, and two files quoting
+#     one number is how they came to be confused;
 #   - a named pipe at the same path blocked inside `open()` past a 15-second
 #     kill, so nothing was published at all.
 #
@@ -335,22 +348,69 @@ def test_a_symbolic_link_at_the_instance_lock_is_refused_rather_than_written_thr
 
     ``Path.open("w")`` follows a link and truncates what it names, so taking the
     instance lock destroyed a file the operator wrote -- and returned ``True``,
-    which is worse than failing: the daemon came up and said so. The byte count
-    is what makes this test about the damage rather than about the refusal's
-    wording; it moves with the constant beside it, and what does not move is that
-    it was nonzero before and must be nonzero after.
+    which is worse than failing: the daemon came up and said so. The whole body
+    is compared rather than its length, so the assertion says "unchanged" instead
+    of "still some bytes".
+
+    **The refusal must call it a symbolic link, not a named pipe** (round two).
+    ``irregular_shape_at`` follows the link, so a link *to* a FIFO was described
+    by its target's shape -- true of what the link names and false of the artefact
+    at the path, which is the mis-description #520 removed from the write lock's
+    own sentence. The errno arm answers first, and the cure is the shared
+    ``symbolic_link_remedy`` the other five sites publish.
     """
     victim = tmp_path / "notes.md"
     victim.write_text(_LOCK_VICTIM_BODY)
     link = tmp_path / "daemon.lock"
     link.symlink_to(victim)
 
-    with pytest.raises(InstanceLockError):
+    with pytest.raises(InstanceLockError) as caught:
         InstanceLock(link).acquire()
 
     assert victim.read_text() == _LOCK_VICTIM_BODY, (
         "taking the instance lock wrote through a symbolic link at its path and "
         "truncated the file the link named"
+    )
+    assert "is a symbolic link" in str(caught.value), (
+        f"the refusal does not call the artefact a symbolic link: {caught.value}"
+    )
+    assert caught.value.remedy == symbolic_link_remedy(link), (
+        f"the cure is not the one every other symbolic-link refusal publishes, so an "
+        f"operator meeting this one reads a different sentence for the same artefact: "
+        f"{caught.value.remedy!r}"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="os.mkfifo is POSIX-only")
+def test_a_link_to_a_named_pipe_is_named_by_the_artefact_not_by_its_target(
+    tmp_path: Path,
+) -> None:
+    """Round two: the shape probe follows the link and answered for the target.
+
+    The combination is what separates the two arms -- a link whose target is a
+    named pipe. Keyed on shape, the refusal said "is a named pipe (FIFO)" about a
+    path holding a symlink, and told the operator to remove something that is not
+    what is there. Keyed on the errno, ``O_NOFOLLOW``'s ``ELOOP`` names the link.
+
+    In-process: ``O_NOFOLLOW`` refuses at the link, so the open never reaches the
+    pipe and cannot block.
+    """
+    target = tmp_path / "pipe"
+    os.mkfifo(target)
+    link = tmp_path / "daemon.lock"
+    link.symlink_to(target)
+
+    with pytest.raises(InstanceLockError) as caught:
+        InstanceLock(link).acquire()
+
+    published = f"{caught.value}\n{caught.value.remedy}"
+    assert "symbolic link" in published, (
+        f"the refusal does not name the artefact at the path: {published!r}"
+    )
+    assert "named pipe" not in published, (
+        f"the refusal describes the link's *target* instead of the link, so the cure "
+        f"names an artefact the operator will not find at that path: {published!r}"
     )
 
 
@@ -378,7 +438,7 @@ def test_a_named_pipe_at_the_instance_lock_is_refused_rather_than_waited_on(
         "try:\n"
         "    InstanceLock(__import__('pathlib').Path(sys.argv[1])).acquire()\n"
         "except InstanceLockError as exc:\n"
-        "    print(f'REFUSED {exc}')\n"
+        "    print(f'REFUSED {exc} || {exc.remedy}')\n"
         "else:\n"
         "    print('ACQUIRED')\n"
     )
@@ -400,6 +460,11 @@ def test_a_named_pipe_at_the_instance_lock_is_refused_rather_than_waited_on(
     assert "a named pipe (FIFO)" in done.stdout, (
         f"the refusal does not say what is at the lock path, so the operator is left "
         f"with the errno: {done.stdout!r}"
+    )
+    assert irregular_artefact_remedy(path, "a named pipe (FIFO)") in done.stdout, (
+        f"the refusal carries no cure, so a caller reading `exc.remedy or <default>` "
+        f"publishes the generic doctor fallback -- which neither reports the artefact "
+        f"nor removes it: {done.stdout!r}"
     )
 
 
@@ -429,6 +494,303 @@ def test_a_named_pipe_with_a_reader_at_the_instance_lock_is_refused_too(
 
     assert "a named pipe (FIFO)" in str(caught.value), (
         f"the refusal does not name the artefact the open accepted: {caught.value}"
+    )
+    assert caught.value.remedy == irregular_artefact_remedy(path, "a named pipe (FIFO)"), (
+        f"the refusal carries no cure of its own: {caught.value.remedy!r}"
+    )
+    # The message/remedy split `WriteLockUnusableError` records: `error` is the
+    # field quoted into a bug report, `remedy` the one pasted into a shell, so the
+    # operator's absolute path belongs in exactly one of them.
+    assert str(tmp_path) not in str(caught.value), (
+        f"the published message carries the absolute path, which belongs in the remedy "
+        f"and nowhere else: {caught.value}"
+    )
+    assert str(path) in caught.value.remedy, (
+        f"the remedy does not name the path to act on: {caught.value.remedy!r}"
+    )
+
+
+def _open_descriptors() -> int:
+    """How many file descriptors this process holds.
+
+    ``/dev/fd`` on both platforms this project builds on. Counted rather than
+    listed: the identity of the descriptors is not the subject, only whether a
+    refused acquisition gave its own back.
+    """
+    return sum(1 for _ in Path("/dev/fd").iterdir())
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="os.mkfifo is POSIX-only")
+@pytest.mark.skipif(not Path("/dev/fd").is_dir(), reason="needs /dev/fd to count descriptors")
+def test_a_refused_acquisition_gives_its_descriptor_back(tmp_path: Path) -> None:
+    """The ``os.close`` on the refusal path, which nothing observed (round two, M-9).
+
+    The descriptor arm refuses *after* the open has succeeded, so it is holding
+    one. Deleting its ``os.close`` left every test green -- a leak is invisible in
+    one call's result, and visible only in how many the process is holding, which
+    is what this counts. It matters more here than in an ordinary leak: the
+    descriptor is on a lock file, so a leaked one is a lock this process still
+    holds with nothing left to release it.
+
+    Repeated, because a single leak is inside the noise of an interpreter that
+    opens and closes files for its own reasons; fifty is not.
+    """
+    path = tmp_path / "daemon.lock"
+    os.mkfifo(path)
+    reader = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        before = _open_descriptors()
+        for _ in range(50):
+            with pytest.raises(InstanceLockError):
+                InstanceLock(path).acquire()
+        after = _open_descriptors()
+    finally:
+        os.close(reader)
+
+    assert after <= before + 2, (
+        f"fifty refused acquisitions left {after - before} descriptors behind; each one "
+        f"is an open file description on a lock file that nothing will release"
+    )
+
+
+def test_the_breadcrumb_leaves_no_tail_from_a_longer_earlier_one(tmp_path: Path) -> None:
+    """``acquire``'s ``truncate`` is behaviour, so it is driven rather than described.
+
+    The open dropped ``O_TRUNC`` deliberately -- that flag is what let a symbolic
+    link at this path destroy the file it named -- so the breadcrumb is truncated
+    *after* the write instead, once ``O_NOFOLLOW`` has resolved the name to a
+    regular file this process holds a lock on. Deleting the ``truncate`` left the
+    whole suite green, because every other test reads the lock's *lock* and
+    nothing reads its bytes.
+
+    A longer breadcrumb is what makes the tail visible: a stale line from an
+    earlier run leaves trailing bytes after the new one, so the file parses as
+    JSON up to the newline and then carries something a reader would have to know
+    to ignore.
+    """
+    path = tmp_path / "daemon.lock"
+    path.write_text('{"pid": 999999999999999999999999}\nstale tail nobody meant to leave\n')
+
+    lock = InstanceLock(path)
+    assert lock.acquire()
+    try:
+        written = path.read_text()
+    finally:
+        lock.release()
+
+    assert written.endswith("\n"), written
+    assert json.loads(written) == {"pid": os.getpid()}, (
+        f"the lock file carries more than this run's breadcrumb -- a tail from the "
+        f"longer line that was there before: {written!r}"
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="os.mkfifo is POSIX-only")
+def test_the_descriptor_and_the_path_disagree_after_the_open(tmp_path: Path) -> None:
+    """The *reason* both locks ask ``fstat`` rather than the path (round two, M-10).
+
+    Both the write lock's ``_open`` and :meth:`InstanceLock.acquire` say the
+    question goes to the descriptor because a path can be re-pointed between the answer
+    and the open, and swapping the production ``fstat`` back to a path probe
+    survived the whole suite: every artefact those tests plant sits still, so the
+    two probes agree on all of them and the reason was reasoning, not a measured
+    difference.
+
+    This is the input where they disagree. The pipe is opened, the *name* is then
+    re-pointed at a regular file, and the two questions are put side by side:
+    ``os.fstat`` still answers "a named pipe (FIFO)" about the object the open
+    actually got, while ``irregular_shape_at`` -- looking the name up again --
+    answers ``None`` and would wave the descriptor through to ``flock``.
+
+    The swap is done deliberately rather than raced, because the property under
+    test is *which object each question is about*, not how often a racer wins.
+    """
+    lock = tmp_path / "daemon.lock"
+    os.mkfifo(lock)
+    reader = os.open(lock, os.O_RDONLY | os.O_NONBLOCK)
+    fileno = os.open(lock, LOCK_OPEN_FLAGS, 0o600)
+    try:
+        lock.unlink()
+        lock.write_text("")
+
+        from_the_descriptor = irregular_shape(os.fstat(fileno).st_mode)
+        from_the_path = irregular_shape_at(lock)
+    finally:
+        os.close(fileno)
+        os.close(reader)
+
+    assert from_the_descriptor == "a named pipe (FIFO)", (
+        f"`fstat` no longer reports what the open actually got: {from_the_descriptor!r}"
+    )
+    assert from_the_path is None, (
+        f"the path probe was expected to answer about the *new* file at the name; it "
+        f"answered {from_the_path!r}, so this input no longer separates the two questions"
+    )
+    assert from_the_descriptor != from_the_path, (
+        "the descriptor and the path agree here, so nothing in this test distinguishes "
+        "asking the kernel about the open object from looking the name up again"
+    )
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_directory_at_the_instance_lock_is_named_by_the_operating_system(
+    tmp_path: Path,
+) -> None:
+    """The OS account is the whole diagnostic where there is no shape (round two, M-5).
+
+    ``irregular_shape`` excludes directories on purpose -- ``O_WRONLY`` answers
+    ``EISDIR`` before a byte moves, and that errno names the fault exactly -- so
+    for this artefact the ``strerror`` clause is the *only* thing in the message
+    that distinguishes it from any other refusal. Deleting that clause left every
+    test green, which is why it is asserted here rather than assumed.
+    """
+    path = tmp_path / "daemon.lock"
+    path.mkdir()
+
+    with pytest.raises(InstanceLockError) as caught:
+        InstanceLock(path).acquire()
+
+    assert "Is a directory" in str(caught.value), (
+        f"the refusal drops the operating system's own account, which for a directory "
+        f"is the only thing that says what went wrong: {caught.value}"
+    )
+    assert caught.value.remedy, (
+        f"a refusal with no cure falls back to the generic one: {caught.value}"
+    )
+
+
+# -- GATE-1: the lock directory's own refusal reaches `--json` ----------------
+#
+# `acquire`'s `mkdir` raised a bare `OSError` past every handler in the daemon's
+# start path -- which is the `ExecStart` of the shipped launchd and systemd
+# units. Measured 2026-09-06 against the real CLI in a sandboxed HOME and
+# THEURIAN_DATA_DIR, `daemon start --foreground --json`:
+#
+#   - THEURIAN_DATA_DIR replaced by a regular file -> FileExistsError traceback,
+#     exit 1, **zero bytes on stdout and zero on stderr**;
+#   - its parent at mode 0500 -> PermissionError, the same.
+#
+# A supervised daemon crash-loops on that with nothing structured to read. The
+# rule it now follows is the write lock's `_prepare_the_directory`, one file over: an
+# acquisition has no step left that raises a bare `OSError`.
+
+_DAEMON_START_CHILD: Final = (
+    "import json, sys\n"
+    "from typer.testing import CliRunner\n"
+    "from theurian.cli.main import app\n"
+    "r = CliRunner().invoke(app, sys.argv[1:])\n"
+    "escaped = None if isinstance(r.exception, SystemExit) else r.exception\n"
+    "print(json.dumps({'code': r.exit_code, 'out': r.stdout, 'err': r.stderr,\n"
+    "                  'raised': type(escaped).__name__ if escaped is not None else None}))\n"
+)
+
+
+def _daemon_start_over(data_dir: Path, home: Path, cwd: Path) -> dict[str, object]:
+    """``daemon start --foreground --json`` in a child, with everything redirected.
+
+    A child rather than ``runner.invoke``: this command *serves* when the lock is
+    takeable, and the whole point of these fixtures is that it must not get that
+    far. The timeout is the backstop -- if a future change lets the acquisition
+    through, the child is killed and the test fails instead of the run hanging on
+    a daemon nobody asked for.
+
+    ``--port 7420`` for the reason ``docs/contributing/development.md`` records:
+    a dev-time daemon never touches 7419, where a resident one may be listening.
+    """
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "HOME": str(home),
+            "THEURIAN_DATA_DIR": str(data_dir),
+            "UV_TOOL_DIR": str(home / "uv-tool"),
+            "UV_CACHE_DIR": str(home / "uv-cache"),
+        }
+    )
+    try:
+        done = subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                "-c",
+                _DAEMON_START_CHILD,
+                "daemon",
+                "start",
+                "--foreground",
+                "--json",
+                "--port",
+                "7420",
+            ],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(
+            "`theurian daemon start --foreground` did not return within 60s over an "
+            "unusable data directory: the acquisition got past the refusal and may be "
+            "serving"
+        )
+    lines = done.stdout.strip().splitlines()
+    assert lines, f"the child printed no report; rc={done.returncode} stderr={done.stderr!r}"
+    report: dict[str, object] = json.loads(lines[-1])
+    return report
+
+
+@pytest.mark.parametrize("fault", ["a regular file", "an unwritable parent"])
+def test_a_data_directory_that_cannot_hold_the_lock_is_refused_as_a_document(
+    tmp_path: Path, fault: str
+) -> None:
+    """GATE-1. RED before the ``mkdir`` was wrapped: nothing reached either channel.
+
+    The assertion is the reporting contract, not the wording: a ``--json`` caller
+    receives one ``{error, remedy}`` document on stderr and an empty stdout,
+    whatever is wrong with the directory. Before the wrap it received *nothing* on
+    either channel and an uncaught ``OSError`` -- the CP-2 shape, on the command a
+    service manager runs.
+
+    **This is the one instance-lock test that reads the ``--json`` shape.** The
+    three above stop at the library boundary, which is where round one left them:
+    they prove ``acquire`` refuses, and none of them proves the refusal survives
+    the trip to a caller.
+
+    The cure must name the directory to act on. The generic fallback a caller
+    reading ``exc.remedy or <default>`` would publish sends the operator to
+    ``theurian doctor``, which reports nothing about a data directory it cannot
+    create.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    data_dir = tmp_path / "data"
+    if fault == "a regular file":
+        data_dir.write_text("not a directory\n")
+    else:
+        if _CANNOT_BE_REFUSED_BY_A_MODE:
+            pytest.skip("POSIX permission bits, and not as root")
+        tmp_path.chmod(0o500)
+
+    try:
+        report = _daemon_start_over(data_dir, home, project)
+    finally:
+        tmp_path.chmod(0o700)
+
+    assert report["raised"] is None, (
+        f"the refusal escaped `--json` as a {report['raised']} rather than a document, "
+        f"so a service manager restarting this daemon has nothing to read"
+    )
+    assert report["out"] == "", f"stdout stays a clean machine channel: {report['out']!r}"
+    payload = json.loads(str(report["err"]))
+    assert payload.get("error"), payload
+    remedy = str(payload.get("remedy", ""))
+    assert str(data_dir) in remedy, (
+        f"the cure does not name the directory that could not be prepared: {remedy!r}"
+    )
+    assert "THEURIAN_DATA_DIR" in remedy, (
+        f"the cure names no way to point Theurian somewhere else, which is the other "
+        f"half of the fix for a data directory the operator got wrong: {remedy!r}"
     )
 
 

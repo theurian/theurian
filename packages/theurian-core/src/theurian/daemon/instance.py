@@ -21,7 +21,6 @@ winner is healthy; it never kills the winner and never repairs data.
 
 from __future__ import annotations
 
-import errno
 import fcntl
 import json
 import os
@@ -35,8 +34,14 @@ from pathlib import Path
 from typing import IO, Final
 
 from theurian.domain.errors import TheurianError
+from theurian.infrastructure.sqlite.connection import CONTENTION_ERRNOS as _CONTENTION_ERRNOS
 from theurian.infrastructure.sqlite.connection import LOCK_OPEN_FLAGS
 from theurian.infrastructure.sqlite.schema import irregular_shape, irregular_shape_at
+from theurian.security.no_follow import (
+    irregular_artefact_remedy,
+    is_a_symbolic_link_refusal,
+    symbolic_link_remedy,
+)
 
 if sys.platform == "win32":  # pragma: no cover - Windows is not a 1.0 target
     raise ImportError(
@@ -90,7 +95,21 @@ class InstanceCheck:
 
 
 class InstanceLockError(TheurianError):
-    """The instance lock could not be acquired or was found in a bad state."""
+    """The instance lock could not be acquired or was found in a bad state.
+
+    **Carries its own remedy** (round two, and the #404 R1-5 shape
+    ``WriteLockTimeoutError`` already took). It set none, so it inherited
+    ``TheurianError``'s empty default and every caller reading
+    ``exc.remedy or <default>`` published "Run `theurian doctor`" -- which
+    neither reports an artefact at the lock path nor clears one. The cure has to
+    come from the raiser, because only it knows whether the fault is a link, a
+    named pipe, a directory that could not be made, or a lock another daemon
+    holds.
+    """
+
+    def __init__(self, detail: str, *, remedy: str = "") -> None:
+        self.remedy = remedy
+        super().__init__(detail)
 
 
 class InstanceLock:
@@ -118,20 +137,81 @@ class InstanceLock:
         return self._path
 
     def _unusable(self, shape: str | None, *, cause: OSError | None) -> InstanceLockError:
-        """One sentence for "the instance lock path does not hold a lock file".
+        """One refusal for "the instance lock path does not hold a lock file".
 
-        Two call sites reach it and they differ in what they know: the ``open``
+        Three call sites reach it and they differ in what they know: the ``open``
         that failed has an errno and no descriptor, the ``fstat`` that followed a
-        successful open has a descriptor and no errno. Both must name the
-        artefact, so the shape leads wherever it is known and the operating
-        system's own account trails when there is one.
+        successful open has a descriptor and no errno, and the symbolic-link arm
+        has an errno it must not describe by the *target's* shape. So the shape
+        leads wherever it is known and the operating system's own account trails
+        when there is one.
+
+        **A symbolic link is answered first, by errno, and not by shape** (round
+        two). ``irregular_shape_at`` follows the link, so a link pointing at a
+        named pipe was published as "is a named pipe (FIFO)" about a path holding
+        a symlink -- true of the target and false of the artefact the operator has
+        to remove, which is the same mis-description #520 removed from the write
+        lock's own sentence. ``O_NOFOLLOW`` gives ``ELOOP`` for exactly this, and
+        :func:`~theurian.security.no_follow.symbolic_link_remedy` is the cure the
+        other five sites already publish.
+
+        **The message names the basename and the remedy the absolute path** --
+        the split ``WriteLockUnusableError`` records: ``error`` is the field
+        quoted into a bug report and ``remedy`` the one pasted into a shell, so
+        the operator's absolute path belongs in one of them and not in both.
+
+        **The operating system's own account is load-bearing, not decoration.**
+        For a directory or a link there is no shape to publish, so ``strerror``
+        is the only thing in the message that distinguishes one refusal from the
+        next -- which is why the driving tests assert it rather than only the
+        noun phrase.
         """
+        if cause is not None and is_a_symbolic_link_refusal(cause):
+            return InstanceLockError(
+                f"The instance lock at {self._path.name} is a symbolic link, not a lock "
+                f"file. Opening it would write through the link to whatever it names, so "
+                f"Theurian refuses to take the lock rather than touching that file.",
+                remedy=symbolic_link_remedy(self._path),
+            )
         artefact = shape or "something Theurian did not write"
         account = f": {cause.strerror or cause}" if cause is not None else ""
         return InstanceLockError(
-            f"The instance lock at {self._path} is {artefact}, not a lock file{account}. "
-            f"Remove it and retry -- it is derived state (ADR-0004) that Theurian "
-            f"recreates, so nothing authored is lost."
+            f"The instance lock at {self._path.name} is {artefact}, not a lock file"
+            f"{account}. Theurian takes that lock before it serves, so it refuses to "
+            f"start rather than proceed without it.",
+            remedy=irregular_artefact_remedy(self._path, artefact),
+        )
+
+    def _directory_unusable(self, cause: OSError) -> InstanceLockError:
+        """The refusal for a lock directory that could not be prepared (GATE-1).
+
+        ``acquire``'s ``mkdir`` raised a bare ``OSError`` past every handler in
+        the daemon's start path. Measured 2026-09-06 against the real CLI with a
+        sandboxed ``HOME`` and ``THEURIAN_DATA_DIR``: ``theurian daemon start
+        --foreground --json`` with the data directory replaced by a regular file
+        exited 1 with a ``FileExistsError`` traceback, **zero bytes on stdout and
+        zero on stderr**, and the same with its parent at mode ``0500``
+        (``PermissionError``). That path is the ``ExecStart`` of the shipped
+        launchd and systemd units, so a data directory the operator got wrong
+        crash-loops a supervised daemon with nothing structured to read.
+
+        The rule it now follows is
+        ``connection.WriteLock._prepare_the_directory``'s, stated one file over:
+        an acquisition has no step left that raises a bare ``OSError``. Named for
+        the *call* rather than for the errno, for that method's reason --
+        ``EACCES`` arrives from the ``mkdir`` and from the open's ``O_CREAT``
+        alike, and only the call site knows which ran.
+        """
+        return InstanceLockError(
+            f"The directory holding the instance lock could not be prepared: "
+            f"{cause.strerror or cause}. Theurian takes the lock at {self._path.name} "
+            f"before it serves, so it refuses to start rather than proceed without it.",
+            remedy=(
+                f"Make {self._path.parent.parent} writable, and make sure nothing but a "
+                f"directory sits at {self._path.parent}, then retry. That directory is "
+                f"Theurian's data directory -- `theurian doctor` reports where it is, and "
+                f"`THEURIAN_DATA_DIR` overrides it."
+            ),
         )
 
     def acquire(self) -> bool:
@@ -165,12 +245,19 @@ class InstanceLock:
         ``connection.WriteLock._open`` records: a named pipe with a reader
         attached takes these flags without complaint, and ``flock`` then reports
         ``ENOTSUP`` -- a fault about the descriptor, arriving where it can only
-        be described as one about the file.
+        be described as one about the file. That the descriptor and the path can
+        disagree is measured (``test_the_descriptor_and_the_path_disagree_after_
+        the_open``); that this line must ask the descriptor is argued from that
+        measurement and held by a structural pin, because no input the suite
+        plants separates them through *this* method.
 
         Returns:
             ``True`` if this process now holds it.
         """
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise self._directory_unusable(exc) from exc
         try:
             fileno = os.open(self._path, LOCK_OPEN_FLAGS, 0o600)
         except OSError as exc:
@@ -179,21 +266,38 @@ class InstanceLock:
             # not configured" on macOS. So the path is asked what is there, and
             # the OS account travels as the second clause when it is.
             raise self._unusable(irregular_shape_at(self._path), cause=exc) from exc
-        shape = irregular_shape(os.fstat(fileno).st_mode)
-        if shape is not None:
-            # The open *succeeded* on something that is not a file -- a named
-            # pipe with a reader attached takes these flags without complaint --
-            # so there is no refusal to quote, only the descriptor's own answer.
+        # Everything between the open and the `fdopen` that takes ownership of
+        # the descriptor closes it on the way out. `BaseException`, not
+        # `Exception`: a `KeyboardInterrupt` between these two lines leaks the
+        # descriptor exactly as an error would, and a leaked descriptor on a lock
+        # file is a lock this process still holds with nothing left to release
+        # it (round two, descriptor hygiene).
+        try:
+            shape = irregular_shape(os.fstat(fileno).st_mode)
+            if shape is not None:
+                # The open *succeeded* on something that is not a file -- a named
+                # pipe with a reader attached takes these flags without complaint
+                # -- so there is no refusal to quote, only the descriptor's own
+                # answer.
+                raise self._unusable(shape, cause=None)
+            handle = os.fdopen(fileno, "w")
+        except BaseException:
             os.close(fileno)
-            raise self._unusable(shape, cause=None)
-        handle = os.fdopen(fileno, "w")
+            raise
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             handle.close()
-            if exc.errno in (errno.EACCES, errno.EAGAIN):
+            if exc.errno in _CONTENTION_ERRNOS:
                 return False
-            raise InstanceLockError(f"Cannot lock {self._path}: {exc}") from exc
+            raise InstanceLockError(
+                f"Cannot lock {self._path.name}: {exc.strerror or exc}.",
+                remedy=(
+                    f"Check which filesystem holds {self._path}: `df -h "
+                    f"{self._path.parent}` names it. Theurian's locks need `flock`, which "
+                    f"network filesystems such as NFS do not provide (ADR-0018)."
+                ),
+            ) from exc
 
         # Written for humans reading the file, never used to decide anything.
         # The lock itself is the mechanism; this is only a breadcrumb.

@@ -12,6 +12,7 @@ what keeps them from drifting into two phrasings for one fault.
 from __future__ import annotations
 
 import ast
+import importlib
 import inspect
 import pathlib
 import stat
@@ -400,4 +401,67 @@ def test_this_module_opens_a_state_database_in_exactly_one_place() -> None:
         f"database has to go through `_connect`, which refuses a path that is not a "
         f"regular file before the open -- a second call site opens whatever is there and "
         f"blocks on a named pipe with nothing left to bound it (#526)"
+    )
+
+
+#: The two lock openers, as (module, function) pairs. Both open a lock file and
+#: then ask what they got, and both must ask the *descriptor*.
+_LOCK_OPENERS: Final = (
+    ("theurian.infrastructure.sqlite.connection", "_open"),
+    ("theurian.daemon.instance", "acquire"),
+)
+
+
+@pytest.mark.parametrize(("module_name", "function_name"), _LOCK_OPENERS)
+def test_a_lock_opener_asks_the_descriptor_and_not_the_path(
+    module_name: str, function_name: str
+) -> None:
+    """RED means an opener went back to looking the name up after opening it.
+
+    **A structural pin, and it says so.** The *reason* the two differ is measured
+    -- `test_daemon.py::test_the_descriptor_and_the_path_disagree_after_the_open`
+    puts both questions to a descriptor whose name has been re-pointed, and they
+    answer differently. What that test cannot do is show the production opener
+    making the right choice: to separate them through `acquire` you have to win
+    the swap against its own open, which is the race GATE-2 records as winnable
+    but not reliable, and a test that depended on winning it would be flaky in
+    the direction that matters (green when it loses).
+
+    So the choice is pinned by reading the call rather than by racing it.
+    Swapping `os.fstat` back to the path probe survived all 83 tests before this
+    existed, which is exactly the shape a structural pin is for: a change no
+    input in the suite can distinguish, in a line whose whole purpose is the
+    distinction.
+    """
+    module = importlib.import_module(module_name)
+    source = pathlib.Path(inspect.getfile(module)).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    ]
+    assert len(functions) == 1, (
+        f"{module_name}.{function_name} is not in the parsed module exactly once, so this "
+        f"pin is reading something else: found {len(functions)}"
+    )
+
+    called = {
+        node.func.attr
+        for node in ast.walk(functions[0])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    } | {
+        node.func.id
+        for node in ast.walk(functions[0])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert "fstat" in called, (
+        f"{module_name}.{function_name} no longer asks the descriptor what it opened; a "
+        f"named pipe with a reader attached takes these flags without complaint, and "
+        f"what reaches `flock` is then a descriptor that is not a file"
+    )
+    assert "irregular_shape_at" not in called or function_name == "acquire", (
+        f"{module_name}.{function_name} looks the path up again after opening it, which "
+        f"answers about a name rather than about the object it holds"
     )

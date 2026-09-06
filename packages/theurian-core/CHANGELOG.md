@@ -14,6 +14,49 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed
 
+- **An artefact where Theurian opens a file no longer blocks the command that
+  meets it, and the refusal names what is there**
+  ([#526](https://github.com/theurian/theurian/issues/526),
+  [#530](https://github.com/theurian/theurian/issues/530),
+  [#423](https://github.com/theurian/theurian/issues/423), ADR-0004, ADR-0018,
+  T-6). Four openers took a path and opened it without asking what it held. A
+  named pipe at the state-database path left `theurian index build --json`
+  inside `open()` — killed at 60 s with **zero bytes on both channels**, which is
+  worse than a traceback because nothing arrives to grade — and the same artefact
+  at `.theurian/runtime/write.lock`, at the daemon's `daemon.lock`, and at the
+  review-finding store did the same to `migrate apply`, `daemon start` and
+  `review.findings`. Inside the daemon a blocked open holds one of four admission
+  permits for the life of the process. Every one of those paths now refuses by
+  shape before it opens, and the two lock paths ask the *descriptor* rather than
+  the path — a named pipe **with a reader attached** takes `O_NONBLOCK` without
+  complaint, and the refusal that followed told an operator on APFS to move the
+  project off NFS.
+- **A permissions or filesystem fault is no longer reported as a damaged
+  database.** `.theurian/state/` unwritable with the database present published
+  "it is damaged … delete `.theurian/state/`" over a file nothing had read, and
+  following that cure rebuilds into the same unwritable directory. A `flock`
+  refusal that is not contention was polled for 30 s and then blamed a process
+  that does not exist. Both now carry a cure that names the artefact and a
+  command that acts on it.
+- **`theurian daemon start` publishes a document when its data directory cannot
+  hold the lock.** The `mkdir` raised a bare `OSError` past every handler on the
+  path a launchd or systemd unit runs as `ExecStart`: a `THEURIAN_DATA_DIR`
+  pointing at a regular file, or one whose parent is unwritable, crash-looped a
+  supervised daemon with **zero bytes on stdout and zero on stderr**.
+- **A `mode=ro` read no longer lands on a different path.** The state database's
+  read URI was built with an f-string, so a project directory named `proj#1`
+  truncated it at the `#`: the open landed on the sibling `proj`, *created* a
+  4096-byte SQLite file there — outside the project, past containment, on a path
+  `mode=ro` is supposed to make uncreatable — and then published the
+  delete-your-state cure over a healthy database.
+
+  Two residuals are recorded rather than closed, both races, both
+  availability-only and neither disclosing anything: the shape probe and the
+  `connect` are two calls (measured winnable at 4.7 swaps/second, and a worker
+  parked in the open does not come back), and `mkdir` and `open` are two calls at
+  the lock paths. Both are written into the threat model under T-6 with their
+  preconditions; [#586](https://github.com/theurian/theurian/issues/586) bounds
+  the admission-permit path and reduces the first to a bounded stall.
 - **A symbolic link planted where Theurian writes derived state no longer
   redirects the write** ([#523](https://github.com/theurian/theurian/issues/523),
   [#394](https://github.com/theurian/theurian/issues/394),

@@ -101,8 +101,8 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
             AliasItemCollisionError: From the engine's own whole-set guards.
         StateDatabaseNotAFileError, StateDatabaseUnreadableError,
             StateDirectoryUnwritableError: From the transaction's own opener.
-            The first refuses a named pipe, socket or device at the database path
-            before anything is opened (#526); the third refuses when the
+            The first refuses a named pipe, socket, device or directory at the
+            database path before anything is opened (#526); the third refuses when the
             directory holding the database will not accept the write preparing a
             connection needs (#530). Neither says the file is damaged, and
             neither cure deletes state.
