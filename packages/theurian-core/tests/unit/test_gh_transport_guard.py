@@ -26,6 +26,7 @@ will not open.
 from __future__ import annotations
 
 import pathlib
+from typing import Final
 
 import pytest
 import yaml
@@ -35,6 +36,21 @@ from theurian.infrastructure.github import transport_guard
 
 pytestmark = pytest.mark.unit
 
+#: How large a ``gh`` configuration may be before this check gives up on it,
+#: **written out here and never imported**.
+#:
+#: The bound used to be driven by a fixture computed from the constant --
+#: ``"x" * transport_guard.MAX_GH_CONFIG_BYTES`` -- which is a test that cannot
+#: fail: lift the bound to 256 MiB and the padding grows with it, so the file is
+#: still over the bound and the check still declines to read it. The number is
+#: restated here and both fixtures below are derived from *this* one, which is
+#: the shape ``test_gh_child_environment.py`` uses for clause 4(i)'s mapping.
+RECORDED_CONFIG_BYTES: Final = 256 * 1024
+
+#: The line that makes the file worth reading. Present in both fixtures below, so
+#: the only difference between the refusing case and the silent one is a byte.
+OVERRIDE_LINE: Final = "http_unix_socket: /tmp/planted.sock\n"
+
 
 def _config_dir(root: pathlib.Path, name: str, body: str | None) -> pathlib.Path:
     """A ``gh`` configuration directory, with ``config.yml`` written when given."""
@@ -43,6 +59,22 @@ def _config_dir(root: pathlib.Path, name: str, body: str | None) -> pathlib.Path
     if body is not None:
         (directory / transport_guard.GH_CONFIG_FILE).write_text(body, encoding="utf-8")
     return directory
+
+
+def _config_of_exactly(root: pathlib.Path, name: str, total: int) -> pathlib.Path:
+    """A configuration directory whose ``config.yml`` is exactly ``total`` bytes.
+
+    :data:`OVERRIDE_LINE` first, so any check that reads the file at all sees it,
+    then one YAML comment padded to land the file on the requested byte. The
+    length is asserted rather than assumed: a fixture that missed the boundary by
+    a byte would report the bound as off by one when it is not.
+    """
+    padding = total - len(OVERRIDE_LINE) - len("#\n")
+    assert padding >= 0, f"{total} bytes cannot carry the override line"
+    body = f"{OVERRIDE_LINE}#{'x' * padding}\n"
+
+    assert len(body.encode("utf-8")) == total, "the fixture is not the size it claims"
+    return _config_dir(root, name, body)
 
 
 def test_gh_config_dir_wins_over_both_others(tmp_path: pathlib.Path) -> None:
@@ -171,7 +203,41 @@ def test_a_configuration_that_moves_nothing_refuses_nothing(
     transport_guard.refuse_transport_overrides({"GH_CONFIG_DIR": str(directory)})
 
 
-def test_a_configuration_larger_than_the_recorded_bound_is_not_read(
+def test_the_size_bound_this_file_drives_is_the_one_the_check_reads() -> None:
+    """The restated number and the enforced one are two things, so they are compared.
+
+    :data:`RECORDED_CONFIG_BYTES` is what the two boundary tests below build
+    their fixtures from. If the check's own constant moved and this one did not,
+    those two would be driving a boundary that is no longer the boundary --
+    passing, and about the wrong number. This is what makes them fail instead.
+    """
+    assert transport_guard.MAX_GH_CONFIG_BYTES == RECORDED_CONFIG_BYTES, (
+        f"the check reads {transport_guard.MAX_GH_CONFIG_BYTES} bytes and this file "
+        f"drives {RECORDED_CONFIG_BYTES}. A bound is a recorded number: move the "
+        f"prose that names it in the same change, and say what the new one costs."
+    )
+
+
+def test_a_configuration_at_the_recorded_bound_is_still_read(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The positive control on the bound: at the boundary the file is parsed and refused.
+
+    Without it the test below proves nothing. A check that read *no* file at all
+    would pass that one, and so would a bound of zero -- silence is what both a
+    working fail-open arm and a broken read look like from the outside. This is
+    the input that makes the bound bite from the other side: one byte smaller
+    than the refusal case, and refused.
+    """
+    directory = _config_of_exactly(tmp_path, "gh", RECORDED_CONFIG_BYTES)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        transport_guard.refuse_transport_overrides({"GH_CONFIG_DIR": str(directory)})
+
+    assert raised.value.grade is RefusalGrade.TRANSPORT_OVERRIDE_CONFIGURED
+
+
+def test_a_configuration_one_byte_past_the_recorded_bound_is_not_read(
     tmp_path: pathlib.Path,
 ) -> None:
     """An oversized file joins the fail-open arm rather than being parsed.
@@ -179,9 +245,14 @@ def test_a_configuration_larger_than_the_recorded_bound_is_not_read(
     A caller does not get to make this check spend unbounded work on a file, and
     a configuration past the bound is treated exactly like one that will not
     parse -- same decision, same recorded exposure.
+
+    **One byte past, and the fixture size comes from this file rather than from
+    the constant.** The earlier form padded with ``"x" *
+    transport_guard.MAX_GH_CONFIG_BYTES``, so a bound lifted to 256 MiB lifted
+    the fixture with it: the file stayed over the bound, the check stayed silent,
+    and the test stayed green for every value the constant could take.
     """
-    padding = "# " + "x" * transport_guard.MAX_GH_CONFIG_BYTES + "\n"
-    directory = _config_dir(tmp_path, "gh", padding + "http_unix_socket: /tmp/planted.sock\n")
+    directory = _config_of_exactly(tmp_path, "gh", RECORDED_CONFIG_BYTES + 1)
 
     transport_guard.refuse_transport_overrides({"GH_CONFIG_DIR": str(directory)})
 

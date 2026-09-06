@@ -44,6 +44,16 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
 PROJECT_CONFIG_SCHEMA = REPO_ROOT / "schemas" / "config" / "project-config.schema.json"
 
+#: How long a repository name may be before the reader refuses it without running
+#: the pattern, **written out here and never imported**.
+#:
+#: A test whose input is ``"a" * MAX_REPOSITORY_CHARS`` cannot fail: the string
+#: grows with the constant, so it is over the bound whatever the bound is. The
+#: number is restated here and both boundary tests are built from *this* one,
+#: which is the shape ``test_gh_child_environment.py`` uses for clause 4(i)'s
+#: mapping.
+RECORDED_REPOSITORY_CHARS: Final = 200
+
 #: Names GitHub issues that the allowlist must keep accepting. ``owner/.github``
 #: is the one that makes "reject anything starting with a dot" wrong: it is a
 #: real repository, and the special-repository convention every GitHub org uses.
@@ -157,9 +167,53 @@ def test_a_non_ascii_name_is_refused_as_the_schema_refuses_it(name: str) -> None
     )
 
 
+def test_the_name_length_bound_this_file_drives_is_the_one_the_reader_enforces() -> None:
+    """The restated number and the enforced one are two things, so they are compared.
+
+    :data:`RECORDED_REPOSITORY_CHARS` is what the two boundary tests below build
+    their names from. If the reader's own constant moved and this one did not,
+    both would be driving a boundary that is no longer the boundary -- passing,
+    and about the wrong number.
+    """
+    assert MAX_REPOSITORY_CHARS == RECORDED_REPOSITORY_CHARS, (
+        f"the reader bounds a name at {MAX_REPOSITORY_CHARS} characters and this file "
+        f"drives {RECORDED_REPOSITORY_CHARS}. A bound is a recorded number: move the "
+        f"prose that names it in the same change, and say what the new one costs."
+    )
+
+
+def test_a_name_at_the_recorded_bound_is_still_matched() -> None:
+    """The positive control on the bound: at the boundary the pattern still runs.
+
+    Without it the test below proves nothing -- a reader that refused *every*
+    name would pass it, and so would a bound of zero. This is the input that
+    makes the bound bite from the other side: one character shorter than the
+    refusal case, and accepted.
+    """
+    name = "a" * (RECORDED_REPOSITORY_CHARS - len("/b")) + "/b"
+
+    assert len(name) == RECORDED_REPOSITORY_CHARS
+    assert is_well_formed(name)
+
+
 def test_a_name_longer_than_the_recorded_bound_is_refused_before_the_pattern_runs() -> None:
-    """A caller cannot spend regex time on an unbounded string it chose."""
-    assert not is_well_formed("a" * MAX_REPOSITORY_CHARS + "/b")
+    """A caller cannot spend regex time on an unbounded string it chose.
+
+    **The name is otherwise well-formed**, one character past the bound, so a
+    ``False`` here can only have come from the length check: the pattern's own
+    verdict on this string is a match. That is how "before the pattern runs" is
+    observed rather than asserted.
+
+    **The length comes from this file rather than from the constant.** The
+    earlier form was ``"a" * MAX_REPOSITORY_CHARS + "/b"``, which grows with
+    whatever the constant is: lift the bound to 200,000,000 and the name grows to
+    200 MB, stays over the bound, and the test passes for every value the
+    constant can take -- while allocating the string that proves it.
+    """
+    name = "a" * (RECORDED_REPOSITORY_CHARS - len("/b") + 1) + "/b"
+
+    assert len(name) == RECORDED_REPOSITORY_CHARS + 1
+    assert not is_well_formed(name)
 
 
 def test_an_unlisted_repository_is_refused_with_its_grade(tmp_path: pathlib.Path) -> None:
