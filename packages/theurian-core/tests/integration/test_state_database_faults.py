@@ -104,6 +104,7 @@ operations:
 #: than the `theurian` console script, so the test does not depend on the package
 #: being installed on `PATH` -- a dependency that turns a real failure into a
 #: silent skip.
+#:
 #: ``SystemExit`` is not an escape: it is how Typer *reports* the exit code, so
 #: every refusing command carries one and reading it as a crash would fail every
 #: assertion below on a correct refusal. The same narrowing
@@ -395,4 +396,123 @@ def test_the_fr_k5_check_over_an_unwritable_state_directory_publishes_a_document
         f"the FR-K5 refusal still offers to delete the state -- which here destroys the "
         f"tamper evidence the check exists to hold, over a permission bit: "
         f"{payload['remedy']!r}"
+    )
+
+
+# -- #526: an artefact at the database path is refused, never waited on --------
+#
+# `sqlite3.connect(f"file:{path}?mode=ro")` issues `os.open(path, O_RDONLY)`,
+# which blocks on a named pipe until a writer appears. Nothing downstream bounds
+# it: the driver takes a timeout for locks, not for the open, and SQLite's
+# `robust_open` retries an `open` interrupted by a signal, so the suite's
+# `SIGALRM` guard does not reach it either. `_connect` therefore refuses on the
+# shape, before the open, which is the only position where the check cannot be
+# the thing that hangs.
+
+#: The commands measured meeting the state database with a FIFO planted at its
+#: path, 2026-09-06 against the real CLI. `index build` is the one that hung --
+#: it reads through `SqliteCanonicalStore` -- while `migrate status` and `migrate
+#: apply` reached the write opener and published a driver complaint ("disk I/O
+#: error") under a cure about NFS and deleting state. `index status` is here as
+#: the negative: it exited 0, because it never opens the canonical store, and a
+#: sweep that quietly lost a command would show up as this one changing.
+_COMMANDS_OVER_THE_DATABASE_PATH: Final = (
+    ["index", "build", "--json"],
+    ["migrate", "status", "--json"],
+    ["migrate", "apply", "--json"],
+)
+
+
+def _replace_the_database_with(project: Path, plant: str) -> Path:
+    """Put ``plant`` where the state database is, and return the path."""
+    database = _state_database(project)
+    for suffix in ("-wal", "-shm"):
+        Path(str(database) + suffix).unlink(missing_ok=True)
+    database.unlink()
+    if plant == "fifo":
+        os.mkfifo(database)
+    else:  # pragma: no cover - one plant today; the branch keeps the name honest
+        raise AssertionError(f"unknown plant {plant!r}")
+    return database
+
+
+@pytest.mark.skipif(not _CAN_MAKE_A_NAMED_PIPE, reason="os.mkfifo is POSIX-only")
+@pytest.mark.parametrize(
+    "argv", _COMMANDS_OVER_THE_DATABASE_PATH, ids=lambda argv: " ".join(argv[:2])
+)
+def test_a_named_pipe_at_the_database_path_is_refused_rather_than_waited_on(
+    applied: Path, argv: list[str]
+) -> None:
+    """Issue #526's read face, and the write opener beside it.
+
+    RED before `_connect` checked the shape, in two different ways depending on
+    the opener -- which is why one test covers both rather than two tests
+    covering one each:
+
+    * `index build` reads through `SqliteCanonicalStore`, whose open is
+      `mode=ro`. Measured against the pre-fix source: still inside `__open` when
+      a 12-second kill fired, with an empty `--json` stdout and nothing on
+      stderr. That is worse than a traceback -- nothing arrives to grade.
+    * `migrate status` and `migrate apply` reach the write opener, where `O_RDWR`
+      on a named pipe returns at once. They published `disk I/O error` under a
+      cure about NFS and deleting state: bounded, and about nothing the operator
+      can act on.
+
+    The kill in :func:`_run_in_a_child` is the bound, and it has to be: the
+    suite's `SIGALRM` guard does not escape this open (SQLite retries the
+    interrupted call), so a regression under an in-process runner would stall the
+    whole run instead of failing this test.
+
+    The remedy is asserted to name the file and a command to run, not to be a
+    particular sentence: `index build` publishes its own cure for every state
+    fault it meets rather than the exception's, so requiring one wording here
+    would be asserting that command's contract instead of this refusal's. What
+    all three owe a reader is the same two things -- which file, and what to
+    type.
+    """
+    database = _replace_the_database_with(applied, "fifo")
+    report = _run_in_a_child(applied, argv)
+    payload = _envelope(report, argv)
+
+    assert report["code"] != 0, (
+        f"`theurian {' '.join(argv)}` reported success over a named pipe where its state "
+        f"database belongs: {report}"
+    )
+    remedy = payload["remedy"]
+    assert database.name in remedy, (
+        f"the remedy does not name the file holding the named pipe, so the reader cannot "
+        f"tell which artefact to act on: {remedy!r}"
+    )
+    assert "theurian migrate apply" in remedy, (
+        f"the remedy names nothing the reader can run to get back to a working state: {remedy!r}"
+    )
+    assert payload["error"] != _THE_DAMAGE_SENTENCE, (
+        f"the refusal is still the damaged-database sentence, about a file nothing "
+        f"opened: {payload['error']!r}"
+    )
+
+
+@pytest.mark.skipif(not _CAN_MAKE_A_NAMED_PIPE, reason="os.mkfifo is POSIX-only")
+def test_the_refusal_names_the_artefact_and_not_the_driver(applied: Path) -> None:
+    """What the refusal *says*, pinned once rather than at every swept command.
+
+    The sweep above asserts the shape of what arrives; this asserts its content,
+    and the two are separated because a message assertion repeated per command
+    turns one wording decision into three failing tests.
+
+    "a named pipe (FIFO)" is the vocabulary `security/paths.py` already publishes
+    for the same artefact behind a `contentFile`, and
+    `tests/unit/test_connection_faults.py::
+    test_both_shape_namers_answer_alike_for_every_file_type` is what keeps the
+    two spellings equal. Asserted here because that unit test compares the two
+    namers to each other and would stay green if both drifted together, while
+    this one is about what an operator actually reads.
+    """
+    _replace_the_database_with(applied, "fifo")
+    argv = ["index", "build", "--json"]
+    payload = _envelope(_run_in_a_child(applied, argv), argv)
+
+    assert "a named pipe (FIFO)" in payload["error"], (
+        f"the refusal does not say what is at the path, so the reader is left with a "
+        f"driver complaint to interpret: {payload['error']!r}"
     )

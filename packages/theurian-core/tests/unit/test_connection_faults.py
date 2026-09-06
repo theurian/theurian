@@ -245,3 +245,54 @@ def test_a_missing_database_is_answered_without_being_called_damage() -> None:
         "a state database that was never built is reported as a damaged one, whose cure "
         "tells the operator to delete a directory that does not exist"
     )
+
+
+def test_this_module_opens_a_state_database_in_exactly_one_place() -> None:
+    """RED means a state database is opened past `_connect`'s shape refusal.
+
+    The refusal that bounds a named pipe at the database path runs *before* the
+    open, because after it there is nothing left that can bound one -- the driver
+    takes a timeout for locks rather than for the open, and SQLite retries an
+    `open` interrupted by a signal. A guard in that position is worth exactly its
+    coverage, and coverage here means: no second `sqlite3.connect`.
+
+    An enumeration of the callers would be a list someone maintains. This reads
+    the syntax tree instead, which is the form that stays true -- and it is the
+    GHSA-3f65 and #237 shape in one line: a guard keyed on a convenient subset
+    while a direct-path builder walks past it.
+
+    The premise is asserted first, because a walk that found no `connect` at all
+    would report perfect containment over a module it had failed to read. The
+    functions are taken from *this* tree rather than from :func:`_functions_of`,
+    which parses again: two parses give two sets of nodes, and the membership test
+    below is identity, so a second parse silently answers "no call is inside any
+    function" and passes.
+    """
+    tree = ast.parse(_connection_source())
+    functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+    connects = {
+        id(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "connect"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "sqlite3"
+    }
+    assert connects, (
+        "no `sqlite3.connect` was found in connection.py at all, so this containment "
+        "claim is about a module the walk did not read"
+    )
+
+    enclosing = {
+        name
+        for name, function in functions.items()
+        for node in ast.walk(function)
+        if id(node) in connects
+    }
+    assert enclosing == {"_connect"}, (
+        f"`sqlite3.connect` is called from {sorted(enclosing)}. Every open of a state "
+        f"database has to go through `_connect`, which refuses a path that is not a "
+        f"regular file before the open -- a second call site opens whatever is there and "
+        f"blocks on a named pipe with nothing left to bound it (#526)"
+    )

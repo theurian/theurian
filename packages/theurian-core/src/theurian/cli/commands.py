@@ -93,6 +93,7 @@ from theurian.infrastructure.filesystem.parsers.registry import ParserRegistry, 
 from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
+    StateDatabaseNotAFileError,
     StateDatabaseUnreadableError,
     StateDirectoryUnwritableError,
     WriteLock,
@@ -473,6 +474,7 @@ def _applied_migration_ids(paths: ProjectPaths, project_id: ProjectId) -> frozen
                 ids.update(migration_id for migration_id, _ in store.applied_migrations(project_id))
         except (
             SchemaVersionMismatchError,
+            StateDatabaseNotAFileError,
             StateDatabaseUnreadableError,
             StateDirectoryUnwritableError,
             WriteTransactionBusyError,
@@ -485,10 +487,13 @@ def _applied_migration_ids(paths: ProjectPaths, project_id: ProjectId) -> frozen
             # database is the same safe over-correction as skipping an unreadable
             # one, and for the same reason.
             #
-            # `StateDirectoryUnwritableError` joins for that reason a third time
-            # (#530): the state directory is the same one for every database this
-            # loop opens, so a mode that denies the write denies it for all of
-            # them, and a helper choosing a string is not where that is reported.
+            # `StateDirectoryUnwritableError` (#530) and
+            # `StateDatabaseNotAFileError` (#526) join for that reason again. The
+            # state directory is the same one for every database this loop opens,
+            # so a mode that denies the write denies it for all of them; and a
+            # stray artefact at one database's path says nothing about the
+            # migration ids recorded in the others. Neither is reported from a
+            # helper whose only job is choosing a remedy string.
             continue
     return frozenset(ids)
 
@@ -2890,24 +2895,28 @@ def _verify_history(  # noqa: PLR0911 -- one early return per distinguishable ou
             code=EXIT_STATE_ERROR,
         )
         return
-    except StateDirectoryUnwritableError as exc:
-        # A third arm rather than a share of either neighbour (#530), and it is
-        # the same distinction the other two draw: FR-K5 could not be confirmed,
-        # and *why* decides the cure. The database was never read here -- the
-        # directory holding it refused the write a connection needs -- so the
-        # unreadable arm's "delete `.theurian/state/`" would destroy tamper
-        # evidence over a permission bit, and a rebuild into the same directory
-        # would fail identically. Without an arm at all it escapes: this call
-        # sits outside `_require_project`'s own `try`, so an unhandled
-        # `TheurianError` here reaches a `--json` caller as a Rich traceback with
-        # an empty machine channel -- the CP-2 shape #483 closed.
+    except (StateDatabaseNotAFileError, StateDirectoryUnwritableError) as exc:
+        # A third arm rather than a share of either neighbour (#530, #526), and
+        # it is the same distinction the other two draw: FR-K5 could not be
+        # confirmed, and *why* decides the cure. Neither of these read a byte of
+        # the database -- one is a directory that refused the write a connection
+        # needs, the other a path holding something that is not a file at all --
+        # so the unreadable arm's "delete `.theurian/state/`" would destroy
+        # tamper evidence over a permission bit or a stray artefact, and a
+        # rebuild into the same place would fail identically. Without an arm at
+        # all they escape: this call sits outside `_require_project`'s own `try`,
+        # so an unhandled `TheurianError` here reaches a `--json` caller as a
+        # Rich traceback with an empty machine channel -- the CP-2 shape #483
+        # closed, and the shape any new opener exception reopens by existing.
         #
-        # `.remedy` rather than a literal, the shape the busy arm above already
-        # takes: the type that knows the cure is the type that words it.
+        # `.remedy` and `{exc}` rather than a literal, the shape the busy arm
+        # above already takes: the type that knows the cure is the type that
+        # words it, and this sentence stays true of both members by saying only
+        # what they share.
         _fail(
             f"Theurian cannot confirm that no applied migration has been edited "
-            f"(FR-K5): the directory holding the previously active state database "
-            f"will not accept the write a connection to it needs. {exc}",
+            f"(FR-K5): the previously active state database could not be opened, and "
+            f"what stopped it is not the file's contents. {exc}",
             remedy=exc.remedy,
             as_json=as_json,
             code=EXIT_STATE_ERROR,

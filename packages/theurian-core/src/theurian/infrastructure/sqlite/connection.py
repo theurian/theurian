@@ -686,6 +686,87 @@ class StateDatabaseUnreadableError(TheurianError):
         )
 
 
+class StateDatabaseNotAFileError(TheurianError):
+    """The state-database path holds something an open of it cannot bound (#526).
+
+    **Refused by ``stat`` before the open, and the ordering is the whole class.**
+    ``sqlite3.connect(f"file:{path}?mode=ro", uri=True)`` issues
+    ``os.open(path, O_RDONLY)``, which on a named pipe blocks until a writer
+    appears. Measured 2026-09-06 against the real CLI in a sandboxed ``HOME``
+    and ``THEURIAN_DATA_DIR``: with a FIFO at the state-database path,
+    ``theurian index build --json`` was still inside ``__open`` when a 12-second
+    kill fired, with nothing on either channel.
+
+    **Nothing downstream can bound it, which is why the check has to run first.**
+    A timeout is not available -- ``sqlite3.connect`` takes one for *locks*, not
+    for the open -- and the suite's ``SIGALRM`` hang guard does not reach it
+    either: SQLite's ``robust_open`` retries an ``open`` interrupted by a signal,
+    so the timer fired at 3 s and the process was still in ``__open`` at 150 s
+    (measured the same day). ``stat`` answers from the directory entry and never
+    opens anything, so it is the one check that cannot itself be what hangs --
+    the same argument ``security/paths.py::read_source_file`` records for the
+    same shape one layer out (#215).
+
+    **A blocking open is not the only member, and the class is named for the
+    property rather than for the block.** A unix socket at the path returns
+    ``SQLITE_CANTOPEN`` and ``/dev/zero`` returns ``SQLITE_READONLY`` -- both
+    bounded, both measured, and both answered before this class existed with a
+    driver complaint that describes nothing an operator can act on. What every
+    member shares is that the path is not a file this build wrote, and that is
+    what the message says.
+
+    **Residual, recorded rather than closed.** The path can be replaced between
+    this ``stat`` and the ``connect`` -- the same window ``read_source_file``
+    records. Winning it takes local write access to ``.theurian/state/`` at the
+    instant of the open, and an actor with that reaches the same availability
+    outcome by means this guard was never between them and. Git carries no such
+    mode (100644, 100755, 120000, 160000, 040000), so the artefact arrives from
+    the machine and never from a clone. The outcome is availability, never
+    disclosure.
+
+    The path travels in the remedy and only its name in the message, the split
+    :class:`WriteLockUnusableError` already makes: the remedy is the field a
+    reader acts on, and the absolute path belongs in it once rather than in both.
+    """
+
+    def __init__(self, database_path: Path, shape: str) -> None:
+        self.remedy = (
+            f"Remove {database_path} and run `theurian migrate apply` to rebuild the state "
+            f"from the Git-tracked migrations; `ls -l {database_path}` shows what is at the "
+            f"path now. Everything under `.theurian/state/` is derived (ADR-0004), so "
+            f"nothing authored is lost."
+        )
+        super().__init__(
+            f"The state database path holds {shape}, not a file Theurian wrote, so "
+            f"{database_path.name} was refused unopened. Theurian only ever creates a "
+            f"regular file there, and an open of {shape} is not bounded by anything this "
+            f"command could wait on."
+        )
+
+
+def _connect(database_path: Path, *, read_only: bool) -> sqlite3.Connection:
+    """The one place this module opens a state database.
+
+    **One function rather than three call sites, so the refusal above cannot be
+    bypassed by adding a fourth.** ``tests/unit/test_connection_faults.py::
+    test_this_module_opens_a_state_database_in_exactly_one_place`` reads the
+    syntax tree and fails on a second ``sqlite3.connect`` anywhere in this file,
+    which is the only form of that claim that stays true -- an enumeration of the
+    callers is a list someone maintains, and the guard it protects is one a
+    direct-connect site walks straight past.
+
+    ``read_only`` picks the access mode and nothing else. ``mode=ro`` so a read
+    path cannot create or modify a database by accident -- a misconfigured caller
+    then fails loudly instead of silently writing.
+    """
+    shape = _shape_at(database_path)
+    if shape is not None:
+        raise StateDatabaseNotAFileError(database_path, shape)
+    if read_only:
+        return sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, isolation_level=None)
+    return sqlite3.connect(database_path, isolation_level=None)
+
+
 def _configure(connection: sqlite3.Connection) -> None:
     for pragma in CONNECTION_PRAGMAS:
         connection.execute(pragma)
@@ -775,17 +856,32 @@ def _prepare(connection: sqlite3.Connection, database_path: Path) -> None:
 def open_read_connection(database_path: Path) -> sqlite3.Connection:
     """Open a read connection, verifying the schema version first.
 
+    **The chokepoint every read of canonical state passes through**, which is why
+    #526's refusal is placed in the opener rather than in the commands that met
+    it. Read the *calls* rather than the mentions --
+    ``git grep -n 'open_read_connection(' -- packages/theurian-core/src``, which
+    returned two lines on 2026-09-06: this definition and
+    ``store.py::SqliteCanonicalStore._conn``. The key without the parenthesis
+    answers eleven, and most of those are prose, this paragraph included, which
+    is why the total is not the thing stated. One call site is: a guard here
+    covers every consumer of the canonical store -- the CLI's reads, the MCP
+    tools, the retriever -- rather than the ones a sweep happened to run.
+
     Raises:
         SchemaVersionMismatchError: If the database was written by another build.
+        StateDatabaseNotAFileError: If the path holds a named pipe, a socket or a
+            device -- an artefact whose open this command cannot bound (#526).
         StateDatabaseUnreadableError: If the file cannot be interpreted at all.
+        StateDirectoryUnwritableError: If the directory holding it refuses the
+            write preparing a connection needs (#530).
+        WriteTransactionBusyError: If another process holds the file while the
+            connection is prepared.
         FileNotFoundError: If the database does not exist.
     """
     if not database_path.exists():
         raise FileNotFoundError(f"No state database at {database_path}")
 
-    # `mode=ro` so a read path cannot create or modify a database by accident --
-    # a misconfigured caller then fails loudly instead of silently writing.
-    connection = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, isolation_level=None)
+    connection = _connect(database_path, read_only=True)
     try:
         _prepare(connection, database_path)
     except Exception:
@@ -799,14 +895,18 @@ def create_database(database_path: Path, state_hash: str, engine_version: int) -
 
     Raises:
         FileExistsError: If one already exists. Overwriting would silently
-            discard a state another process may be reading.
+            discard a state another process may be reading. An artefact that is
+            not a regular file exists too, and is answered here rather than by
+            :func:`_connect`'s shape refusal one line down -- the ``exists``
+            check runs first, and "something is already at this path" is true and
+            actionable for a named pipe as much as for a database.
     """
     if database_path.exists():
         raise FileExistsError(f"State database already exists: {database_path}")
 
     database_path.parent.mkdir(parents=True, exist_ok=True)
 
-    connection = sqlite3.connect(database_path, isolation_level=None)
+    connection = _connect(database_path, read_only=False)
     try:
         _configure(connection)
         connection.executescript(DDL)
@@ -1095,7 +1195,7 @@ def _open_transaction(database_path: Path) -> Iterator[sqlite3.Connection]:
     here has produced it and nothing here rules it out -- and it is stated rather
     than folded into the WAL claim.
     """
-    connection = sqlite3.connect(database_path, isolation_level=None)
+    connection = _connect(database_path, read_only=False)
     try:
         _prepare(connection, database_path)
         _execute_own(connection, "BEGIN IMMEDIATE", database_path)
@@ -1162,6 +1262,12 @@ def write_transaction(
     NFR-8: no external I/O inside. Read and hash content files *before* entering.
 
     Raises:
+        StateDatabaseNotAFileError: If the database path holds a named pipe, a
+            socket or a device (#526). Raised before the connect, by
+            :func:`_connect`, so nothing was opened.
+        StateDirectoryUnwritableError: If the directory holding the database
+            refuses the write preparing a connection needs (#530). Raised before
+            ``BEGIN IMMEDIATE``, over a database nothing has read.
         StateDatabaseUnreadableError: If the file cannot be interpreted far
             enough to start a transaction. Raised before ``BEGIN IMMEDIATE`` and
             never after it -- see :func:`_prepare`.

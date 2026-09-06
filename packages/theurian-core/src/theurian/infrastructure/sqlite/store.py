@@ -74,6 +74,7 @@ from theurian.domain.values import (
 )
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
+    StateDatabaseNotAFileError,
     StateDatabaseUnreadableError,
     StateDirectoryUnwritableError,
     WriteTransactionBusyError,
@@ -125,11 +126,12 @@ from theurian.infrastructure.sqlite.connection import (
 #: written to prevent, which is why the closure argument for that class is stated
 #: over conversion *layers* rather than over any single site.
 #:
-#: ``StateDirectoryUnwritableError`` joined for exactly the reason
-#: ``WriteTransactionBusyError`` did (#530): ``_prepare`` classifies an unwritable
-#: state directory correctly one layer down -- "nothing was read, make the
-#: directory writable" -- and re-wrapping it here would put back the
-#: delete-your-state cure it exists to remove.
+#: ``StateDirectoryUnwritableError`` (#530) and ``StateDatabaseNotAFileError``
+#: (#526) joined for exactly the reason ``WriteTransactionBusyError`` did:
+#: ``connection.py`` classifies each correctly one layer down -- "nothing was
+#: read, make the directory writable"; "the path holds a named pipe, remove it"
+#: -- and re-wrapping either here would put back the delete-your-state cure they
+#: exist to replace.
 #:
 #: **Membership is not a list someone maintains.**
 #: ``tests/unit/test_connection_faults.py::
@@ -140,6 +142,7 @@ from theurian.infrastructure.sqlite.connection import (
 _ALREADY_ANSWERED: Final = (
     FileNotFoundError,
     SchemaVersionMismatchError,
+    StateDatabaseNotAFileError,
     StateDatabaseUnreadableError,
     StateDirectoryUnwritableError,
     WriteTransactionBusyError,
