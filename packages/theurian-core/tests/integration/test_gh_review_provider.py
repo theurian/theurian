@@ -598,10 +598,75 @@ async def test_a_limit_below_one_is_refused_with_a_summary_that_is_true(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "limit",
+    (1, limits.MAX_PULL_REQUESTS),
+    ids=("the smallest read there is", "the recorded cap exactly"),
+)
+async def test_a_limit_at_either_boundary_is_read_rather_than_refused(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, limit: int
+) -> None:
+    """The accepting side of both bounds, which is what makes them boundaries.
+
+    ``limit < 1`` and ``limit > MAX_PULL_REQUESTS`` are the two refusals, and
+    each has a driver one step outside it. Neither says anything about the value
+    *on* the boundary, so ``<`` widening to ``<=`` and ``>`` widening to ``>=``
+    would refuse a request the contract accepts with every test green -- and the
+    caller would read it as the cap, because the grade and the summary are the
+    cap's.
+
+    **What is derived from what.** The number `MAX_PULL_REQUESTS` *is* is pinned
+    test-side in ``test_gh_argument_vector.py``; what this drives is the
+    comparison, and a comparison is killed at whatever value the constant holds.
+    """
+    fake_gh.answer("prs", 1, _pull_requests())
+    provider = _provider(tmp_path, fake_gh)
+
+    events = await provider.list_pull_requests(PROJECT, REPOSITORY, limit=limit)
+
+    assert [event.number for event in events] == [12]
+
+
+@pytest.mark.asyncio
+async def test_a_read_stops_at_the_limit_rather_than_one_past_it(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """``limit`` is how many pull requests come back, not how many are exceeded.
+
+    Every other driver of ``limit`` asks for more than the page carries, so the
+    stop never fires and ``len(events) >= limit`` reads the same as
+    ``len(events) > limit``. The page here carries **three** and the caller asks
+    for two: the correct read answers two, and the off-by-one answers three --
+    one more record than the caller asked for, from a page it had already
+    decided to stop reading.
+    """
+    page = _pull_requests()
+    nodes = page["data"]["repository"]["pullRequests"]["nodes"]
+    nodes[:] = [{**nodes[0], "number": number} for number in (14, 13, 12)]
+    fake_gh.answer("prs", 1, page)
+    provider = _provider(tmp_path, fake_gh)
+
+    events = await provider.list_pull_requests(PROJECT, REPOSITORY, limit=2)
+
+    assert [event.number for event in events] == [14, 13], (
+        f"the page carried three pull requests, the caller asked for two, and "
+        f"{len(events)} came back."
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_response_that_never_stops_paging_is_stopped_by_the_page_cap(
     tmp_path: pathlib.Path, fake_gh: FakeGh
 ) -> None:
-    """A repository -- or a hostile response -- cannot keep this adapter asking."""
+    """A repository -- or a hostile response -- cannot keep this adapter asking.
+
+    **The request count is the assertion the grade cannot make.** A page cap of
+    twenty-five stops an endless response too, and reports the same grade and the
+    same recorded number in the same sentence -- so a message-only check passes
+    against a loop that made five more requests than the record says it may. What
+    bounds the work is how many times the child was spawned, which is counted
+    here against the constant the refusal names.
+    """
     endless = _threads()
     endless["data"]["repository"]["pullRequest"]["reviewThreads"]["pageInfo"] = {
         "hasNextPage": True,
@@ -612,12 +677,18 @@ async def test_a_response_that_never_stops_paging_is_stopped_by_the_page_cap(
     fake_gh.answer("prs", 1, _pull_requests())
     provider = _provider(tmp_path, fake_gh)
     events = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    before = fake_gh.invocations
 
     with pytest.raises(ReviewIngestRefusedError) as raised:
         await provider.get_threads(PROJECT, events[0])
 
     assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
     assert str(limits.MAX_PAGES) in str(raised.value)
+    assert fake_gh.invocations - before == limits.MAX_PAGES, (
+        f"the read asked for {fake_gh.invocations - before} pages before it "
+        f"stopped, and the recorded cap it reports is {limits.MAX_PAGES}. The "
+        f"refusal's wording is the same either way; the spawn count is not."
+    )
 
 
 @pytest.mark.asyncio
