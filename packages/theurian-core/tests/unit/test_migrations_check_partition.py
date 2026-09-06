@@ -364,7 +364,17 @@ def _callees_that_must_not_raise_a_project_error() -> list[str]:
         f"{THE_CALL_THAT_MAY_RAISE_A_PROJECT_ERROR} is no longer called in that try; "
         f"the exclusion below is now silently sweeping nothing it was meant to skip"
     )
-    return sorted(set(called.values()))
+    modules = sorted(set(called.values()))
+    # An empty derivation is the failure mode a derived parameter list invites,
+    # and pytest does not report it as one: zero parameters is a *skip*, so the
+    # sweep would go quiet with the suite still reading green. Measured -- a
+    # perturbation that emptied this returned "176 passed, 1 skipped".
+    assert modules, (
+        "the reachability sweep derived no callees from `_check_migrations`' try "
+        "body; a parametrization with no cases skips rather than fails, so this "
+        "assertion is what keeps an empty sweep from reading as a clean one"
+    )
+    return modules
 
 
 @pytest.mark.parametrize("callee", _callees_that_must_not_raise_a_project_error())
@@ -464,9 +474,15 @@ def test_the_walker_follows_a_planted_relative_import_chain(tmp_path: Path) -> N
       import in the language. Ruff's ``TID252`` does not cover the gap: its
       default bans parent-relative imports only, so a same-package relative is
       both lint-clean and, before this, invisible.
-    * **Depth is unbounded.** ``forbidden`` is two edges from ``entry``, so a
-      walker that stopped at the first hop fails here -- which the real positive
-      control above cannot detect.
+    * **Ancestor packages are walked.** ``nested/__init__.py`` is imported by
+      nothing; it is reached only because Python executes it on the way to
+      ``nested.leaf``, and it is what imports ``forbidden``. Dropping that edge
+      changed no test outcome when the planted tree was flat, which is why the
+      tree is not flat.
+    * **Depth is unbounded.** ``forbidden`` is three edges from ``entry``, so a
+      walker that stopped early fails here -- which the real positive control
+      above cannot detect, since nothing in the real tree is that far from the
+      target.
 
     The negative arm is not decoration. Without it a walker that simply returned
     every module under the root would pass the positive arm, and every "does not
@@ -479,19 +495,28 @@ def test_the_walker_follows_a_planted_relative_import_chain(tmp_path: Path) -> N
         {
             "__init__.py": "",
             "entry.py": "from .middle import helper\n",
-            "middle.py": "from .forbidden import Boom\n\n\ndef helper() -> None: ...\n",
+            "middle.py": "from .nested.leaf import thing\n\n\ndef helper() -> None: ...\n",
+            # Reachable *only* as an ancestor of `planted.nested.leaf`: nothing
+            # imports this package by name, and Python runs it on the way in.
+            "nested/__init__.py": "from ..forbidden import Boom\n",
+            "nested/leaf.py": "thing = 1\n",
             "forbidden.py": "class Boom(Exception): ...\n",
             "unrelated.py": "value = 1\n",
         },
     )
     reached = _import_closure("planted.entry", root=root, package="planted")
 
+    assert "planted.nested" in reached, (
+        "nothing names this package; it is reached only because Python executes a "
+        "package's __init__ before the submodule under it"
+    )
     assert "planted.forbidden" in reached, (
-        "a relative import two edges away is exactly the shape the first version "
-        "of this walker could not see"
+        "three edges out, through a package __init__ nobody imports, by a "
+        "``from ..x import Y`` relative -- none of which the first version of this "
+        "walker could follow"
     )
     assert "planted.middle" in reached
-    assert "planted" in reached, "the package __init__ Python executes on the way"
+    assert "planted" in reached
     assert "planted.unrelated" not in reached, (
         "nothing imports it; a walker that returns every module under the root "
         "cannot answer the question this file asks"
