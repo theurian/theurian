@@ -35,12 +35,12 @@ from theurian.security.paths import (
     MAX_SOURCE_FILE_BYTES,
     MAX_SYMLINK_HOPS,
     _anchors,
-    _unbounded_shape,
     assert_no_symlink_escape,
     ensure_private_mode,
     is_world_accessible,
     read_source_file,
     resolve_within_root,
+    unbounded_shape,
 )
 
 #: A FIFO is the shape that blocks, and interrupting the block is what lets a
@@ -1395,7 +1395,7 @@ def test_a_regular_file_is_not_refused(project_root: Path) -> None:
     assert read_source_file(project_root, ".theurian/knowledge/auth.md") == b"# Auth policy\n"
 
 
-#: Every file type ``_unbounded_shape`` distinguishes, keyed by ``st_mode``.
+#: Every file type ``unbounded_shape`` distinguishes, keyed by ``st_mode``.
 #:
 #: The two exotic rows are written as literal mode bits rather than as ``stat``
 #: constants. CPython's ``_stat`` takes those names from the platform's own
@@ -1427,7 +1427,7 @@ _MODE_SHAPES: list[tuple[int, str | None, str]] = [
     ids=[label for _, _, label in _MODE_SHAPES],
 )
 def test_the_shape_check_names_every_file_type_it_meets(mode: int, expected: str | None) -> None:
-    """``_unbounded_shape`` is a pure function of ``st_mode``, tested as one.
+    """``unbounded_shape`` is a pure function of ``st_mode``, tested as one.
 
     Issue #215's guard is reachable through a real file for only two of these
     rows. A FIFO and a socket are makeable in a test, and both have one above.
@@ -1450,7 +1450,7 @@ def test_the_shape_check_names_every_file_type_it_meets(mode: int, expected: str
     ``resolve_within_root`` and ``assert_no_symlink_escape`` answer that case
     first, and a row here would read as a claim that they do not.
     """
-    assert _unbounded_shape(mode) == expected
+    assert unbounded_shape(mode) == expected
 
 
 def test_permission_bits_do_not_change_the_shape() -> None:
@@ -1460,8 +1460,8 @@ def test_permission_bits_do_not_change_the_shape() -> None:
     would answer differently for the same file type at different permissions,
     which is a refusal that depends on something SEC-8 does not care about.
     """
-    assert _unbounded_shape(stat.S_IFIFO | 0o600) == "a named pipe (FIFO)"
-    assert _unbounded_shape(stat.S_IFREG | 0o777) is None
+    assert unbounded_shape(stat.S_IFIFO | 0o600) == "a named pipe (FIFO)"
+    assert unbounded_shape(stat.S_IFREG | 0o777) is None
 
 
 # -- SEC-4: credential file permissions ------------------------------------

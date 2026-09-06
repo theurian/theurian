@@ -3,7 +3,7 @@
 `connection.py` names two kinds of thing it will not open: an artefact that is
 not a regular file, and -- for the lock -- one it may not open. Both refusals
 publish a *shape* ("a named pipe (FIFO)"), and that vocabulary already exists in
-`security/paths.py::_unbounded_shape`, where SEC-8's byte cap uses it for a
+`security/paths.py::unbounded_shape`, where SEC-8's byte cap uses it for a
 `contentFile`. The two are separate functions on purpose (different layers,
 different populations, neither refusal implying the other), and this module is
 what keeps them from drifting into two phrasings for one fault.
@@ -25,7 +25,7 @@ from theurian.domain.errors import TheurianError
 from theurian.infrastructure.sqlite import connection as connection_module
 from theurian.infrastructure.sqlite.schema import irregular_shape
 from theurian.infrastructure.sqlite.store import _ALREADY_ANSWERED
-from theurian.security.paths import _unbounded_shape
+from theurian.security.paths import unbounded_shape
 
 pytestmark = pytest.mark.unit
 
@@ -61,7 +61,7 @@ def test_the_file_type_population_is_not_empty_and_holds_the_shapes_that_matter(
 def test_both_shape_namers_answer_alike_for_every_file_type(name: str) -> None:
     """RED means an operator can meet two phrasings for one fault.
 
-    `schema.py::irregular_shape` and `security/paths.py::_unbounded_shape` are
+    `schema.py::irregular_shape` and `security/paths.py::unbounded_shape` are
     deliberately not one function -- SEC-8's cap over authored source files and
     the bound on an `open` of derived state are different populations, and
     sharing a symbol between the security layer and a SQLite adapter to save six
@@ -75,9 +75,9 @@ def test_both_shape_namers_answer_alike_for_every_file_type(name: str) -> None:
     """
     mode = _FILE_TYPES[name] | 0o600
 
-    assert irregular_shape(mode) == _unbounded_shape(mode), (
+    assert irregular_shape(mode) == unbounded_shape(mode), (
         f"the two shape namers disagree about {name}: schema.py says "
-        f"{irregular_shape(mode)!r} and security/paths.py says {_unbounded_shape(mode)!r}, so "
+        f"{irregular_shape(mode)!r} and security/paths.py says {unbounded_shape(mode)!r}, so "
         f"the same artefact is described two ways depending on which opener met it"
     )
 

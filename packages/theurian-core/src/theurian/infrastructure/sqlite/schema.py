@@ -103,7 +103,7 @@ def irregular_shape(mode: int) -> str | None:
     (`connection.WriteLockUnusableError`), the daemon's instance lock
     (`daemon/instance.py::InstanceLock`) and the review-finding store
     (`findings_store.SqliteReviewFindingStore._read`). It is deliberately identical to
-    ``security/paths.py::_unbounded_shape``'s, so an operator who meets "a named
+    ``security/paths.py::unbounded_shape``'s, so an operator who meets "a named
     pipe (FIFO)" from a ``contentFile`` and from a state database does not have
     to learn two phrasings for one fault. The two functions stay separate because
     their populations do -- that one enforces SEC-8's byte cap over authored
