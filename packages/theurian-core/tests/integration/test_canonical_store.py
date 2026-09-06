@@ -6,9 +6,12 @@ is correct; only this proves the adapter is.
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import os
 import sqlite3
 import sys
+import time
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -494,6 +497,228 @@ def test_a_lock_file_left_write_only_by_an_earlier_build_is_still_takeable(lock:
     assert lock.stat().st_mode & 0o777 == 0o200, (
         "taking the lock changed the mode of a file it did not create; the 0o600 "
         "the open passes applies to creation only"
+    )
+
+
+# -- Issue #423: a refused `flock` is not a held one --------------------------
+#
+# `_acquire` caught a bare `OSError` and polled until the deadline, so an errno
+# that says "this call is not supported here" was read as "another process is
+# writing". On a filesystem whose `flock` is unsupported -- the NFS case
+# ADR-0018 records as outside the supported configuration -- that cost a
+# 30-second stall, a diagnosis naming a process that does not exist, and a cure
+# (remove `runtime/write.lock`) that cannot help.
+#
+# The fault is injected rather than reproduced: no filesystem on the machines
+# this project is developed and tested on refuses `flock`, so a real one cannot
+# be planted. What the injection does reproduce exactly is the shape `_acquire`
+# sees -- `fcntl.flock` raising `OSError` with an errno it must classify.
+
+#: Errnos that really do mean "another open file description holds it", which
+#: must keep polling to the deadline. ``EWOULDBLOCK`` is ``EAGAIN`` under another
+#: name on this platform (measured 2026-09-06 on macOS 26.6: both 35), so it is
+#: one parameter case rather than two only where the two values coincide.
+_CONTENTION_ERRNOS = sorted({errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK})
+
+#: Errnos that are not contention, and which arm of
+#: ``WriteLockRefusedError`` each one must take.
+#:
+#: **The two arms exist because round one found the single one claiming past what
+#: the platform documents** (adv M-1). ``man flock`` on macOS 26.6, read
+#: 2026-09-06, documents four errnos: ``EWOULDBLOCK`` (contention), ``EBADF``,
+#: ``EINVAL`` ("an object other than a file") and ``ENOTSUP`` ("the referenced
+#: descriptor is not of the correct type"). None of them names a filesystem, and
+#: two of them name the *descriptor* -- so "move the project off NFS" was an
+#: inference, and it was measured wrong on the case that actually arrives.
+#:
+#: ``ENOLCK`` is the one whose fault may clear on its own, so it is the one arm
+#: that must lead with a retry; every other errno here must not, because a retry
+#: is not the cure and offering it first wastes the operator's next action.
+#: ``EPERM`` is in the list because the rule is "not one of the contention set",
+#: never "one of a list of known refusals", and a member outside every named
+#: family is what proves that.
+_REFUSAL_ERRNOS = [errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL, errno.EPERM]
+_RETRYABLE_REFUSAL_ERRNO = errno.ENOLCK
+
+
+def _flock_that_always_raises(code: int, seen: list[int]) -> object:
+    def refuse(fileno: int, operation: int) -> None:
+        seen.append(operation)
+        raise OSError(code, os.strerror(code))
+
+    return refuse
+
+
+@pytest.mark.parametrize("code", _REFUSAL_ERRNOS, ids=errno.errorcode.get)
+def test_a_flock_refusal_that_is_not_contention_is_reported_at_once(
+    lock: Path, monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    """Issue #423. RED before ``_acquire`` classified the errno, in two ways at once.
+
+    The call count is the sharper of the two assertions and the reason it leads:
+    at the shipped 30-second timeout the old bare ``except OSError`` issued the
+    same doomed ``flock`` roughly six hundred times before giving up, and a
+    wall-clock bound alone would let a future implementation satisfy this test by
+    shortening the timeout rather than by classifying the fault. One call is the
+    property: the refusal is read the first time it arrives.
+
+    The exception type is asserted rather than the message, and the *timeout*
+    type is asserted absent by construction --
+    :class:`~theurian.infrastructure.sqlite.connection.WriteLockRefusedError` is
+    not a subclass of it, so ``pytest.raises`` here fails if the old path still
+    runs.
+
+    **The remedy assertions are arm-specific** (adv M-1). The first cut asserted
+    ``"df -h" in remedy`` for every errno, which is exactly the over-claim the
+    production code was making: it would have stayed green while the message told
+    an operator on APFS to move off NFS. What this arm owes is the pair of things
+    a reader can *look at* -- what is at the path and which filesystem holds it --
+    with neither asserted as the cause, and it must not lead with a retry, since
+    for these errnos a retry is not the cure.
+
+    ``ENOLCK`` is deliberately not in this parameter list; it has its own test
+    below, because its cure is the opposite one.
+    """
+    from theurian.infrastructure.sqlite.connection import (
+        WRITE_LOCK_TIMEOUT_SECONDS,
+        WriteLock,
+        WriteLockRefusedError,
+        WriteLockTimeoutError,
+    )
+
+    seen: list[int] = []
+    monkeypatch.setattr(fcntl, "flock", _flock_that_always_raises(code, seen))
+
+    started = time.monotonic()
+    with (
+        pytest.raises(WriteLockRefusedError) as caught,
+        WriteLock(lock, timeout=WRITE_LOCK_TIMEOUT_SECONDS).held(),
+    ):
+        pass  # pragma: no cover - the acquisition above must fail
+    elapsed = time.monotonic() - started
+
+    assert len(seen) == 1, (
+        f"a refusal that cannot change was retried {len(seen)} times; the errno "
+        f"{errno.errorcode[code]} says the filesystem will not take this lock, and "
+        f"polling it only delays the same answer"
+    )
+    assert elapsed < 1.0, (
+        f"the refusal took {elapsed:.1f}s to publish, so the operator still waits out "
+        f"a timeout for a fault that was final when it arrived"
+    )
+    assert not isinstance(caught.value, WriteLockTimeoutError), (
+        "the refusal is reported as a timeout, which tells the operator to wait for a "
+        "process that does not exist"
+    )
+    remedy = caught.value.remedy
+    assert f"ls -l {lock}" in remedy, (
+        f"the remedy names no command that shows what is at the lock path, which is one "
+        f"of the two things this errno leaves open: {remedy!r}"
+    )
+    assert f"df -h {lock.parent}" in remedy, (
+        f"the remedy names no command that shows which filesystem holds the lock, which "
+        f"is the other: {remedy!r}"
+    )
+    assert not remedy.startswith("Retry"), (
+        f"the cure for {errno.errorcode[code]} opens by telling the operator to retry, "
+        f"and this platform documents it as a fault about the descriptor or the "
+        f"filesystem -- neither of which a retry changes: {remedy!r}"
+    )
+    # The affirmative sentence, not the phrase. `WriteLockTimeoutError` publishes
+    # "Another Theurian process is writing." and the correct refusal here says
+    # "*not* another Theurian process holding it" -- a substring key on the noun
+    # phrase fires on the negation, which is the shape
+    # `test_canonical_store_corruption.py`'s delete-remedy regex records about
+    # its own anchoring.
+    published = f"{caught.value}\n{remedy}"
+    assert "Another Theurian process is writing" not in published, (
+        f"the refusal still blames a process that does not exist: {published!r}"
+    )
+
+
+def test_a_flock_refusal_with_no_lock_record_offers_the_retry_first(
+    lock: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ENOLCK``'s arm, and the reason ``WriteLockRefusedError`` has two (adv M-1).
+
+    Every other non-contention errno is final: the descriptor is wrong, or the
+    filesystem will not lock, and neither changes by waiting. ``ENOLCK`` is not
+    -- where it is documented it is documented both ways, as an exhausted kernel
+    lock table (which clears on its own) and as what a filesystem that cannot
+    lock answers (which does not). This platform's ``man flock`` does not list it
+    at all, which is why the arm names both possibilities instead of asserting
+    one.
+
+    So the cure has to lead with the free, reversible action and keep the
+    filesystem check as the second clause. A single arm for every errno gets one
+    of the two wrong whichever sentence it picks, and the first cut got this one
+    wrong by telling the operator that waiting could not help.
+
+    Still refused at the first attempt, not polled: "may clear on its own" is a
+    statement about a *later* command, not a reason to spend this one's thirty
+    seconds on a call that is answering immediately.
+    """
+    from theurian.infrastructure.sqlite.connection import (
+        WRITE_LOCK_TIMEOUT_SECONDS,
+        WriteLock,
+        WriteLockRefusedError,
+    )
+
+    seen: list[int] = []
+    monkeypatch.setattr(fcntl, "flock", _flock_that_always_raises(_RETRYABLE_REFUSAL_ERRNO, seen))
+
+    with (
+        pytest.raises(WriteLockRefusedError) as caught,
+        WriteLock(lock, timeout=WRITE_LOCK_TIMEOUT_SECONDS).held(),
+    ):
+        pass  # pragma: no cover - the acquisition above must fail
+
+    assert len(seen) == 1, (
+        f"ENOLCK was polled {len(seen)} times; it is answered immediately and the "
+        f"retry this arm offers is the operator's next command, not this one's loop"
+    )
+    remedy = caught.value.remedy
+    assert remedy.startswith("Retry"), (
+        f"the cure does not lead with the retry, and for an exhausted lock table that "
+        f"is the whole cure: {remedy!r}"
+    )
+    assert f"df -h {lock.parent}" in remedy, (
+        f"the cure offers only the retry, so an operator whose filesystem genuinely "
+        f"cannot lock is left with a loop: {remedy!r}"
+    )
+    assert "waiting will not clear it" not in str(caught.value), (
+        f"the message still asserts that waiting cannot help, which is the half of "
+        f"this errno's meaning that a retry does address: {caught.value}"
+    )
+
+
+@pytest.mark.parametrize("code", _CONTENTION_ERRNOS, ids=errno.errorcode.get)
+def test_contention_errnos_keep_polling_to_the_deadline(
+    lock: Path, monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    """The other half of #423's classification, and the one a fix can break silently.
+
+    ``EACCES`` and ``EAGAIN`` are what ``flock(LOCK_EX | LOCK_NB)`` returns while
+    another open file description holds the lock, and the whole point of the
+    timeout is to wait them out -- a holder that exits inside the window lets the
+    acquisition through. A classifier that refused every ``OSError`` immediately
+    would pass the test above and turn ordinary contention into an instant
+    failure, so this pins that these two still poll.
+
+    More than one call, rather than a specific count: the poll interval is an
+    implementation detail and the property is that it retried at all.
+    """
+    from theurian.infrastructure.sqlite.connection import WriteLock, WriteLockTimeoutError
+
+    seen: list[int] = []
+    monkeypatch.setattr(fcntl, "flock", _flock_that_always_raises(code, seen))
+
+    with pytest.raises(WriteLockTimeoutError), WriteLock(lock, timeout=0.2).held():
+        pass  # pragma: no cover - the acquisition above must fail
+
+    assert len(seen) > 1, (
+        f"{errno.errorcode[code]} means another holder has it, and the acquisition "
+        f"gave up after {len(seen)} attempt(s) instead of waiting out the timeout"
     )
 
 

@@ -93,7 +93,9 @@ from theurian.infrastructure.filesystem.parsers.registry import ParserRegistry, 
 from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
+    StateDatabaseNotAFileError,
     StateDatabaseUnreadableError,
+    StateDirectoryUnwritableError,
     WriteLock,
     WriteLockTimeoutError,
     WriteTransactionBusyError,
@@ -290,8 +292,11 @@ STATE_REBUILD_REMEDY: Final = (
 #: `.theurian/state/`:
 #:
 #: * **directory 0555, database present** -- the connect succeeds and ``PRAGMA
-#:   journal_mode = WAL`` fails trying to create the sidecars, so ``_prepare``
-#:   converts it and ``STATE_REBUILD_REMEDY`` is published, not this constant.
+#:   journal_mode = WAL`` fails trying to create the sidecars. Until #530 that
+#:   published ``STATE_REBUILD_REMEDY``, telling the operator to delete state
+#:   over a permission bit; ``_prepare`` now raises
+#:   ``StateDirectoryUnwritableError``, whose own cure names the directory and
+#:   the ``chmod``. Neither this constant nor the rebuild one.
 #: * **directory 0555, never applied** -- ``migrate status`` exits 0 (there is no
 #:   database to open) and ``migrate apply`` is answered by section A's
 #:   ``_LOCKED_WRITE_FAULT_REMEDY``.
@@ -303,8 +308,10 @@ STATE_REBUILD_REMEDY: Final = (
 #:
 #: So both measured members are open-time failures of ``sqlite3.connect`` that
 #: arrive as the driver's own ``SQLITE_CANTOPEN``. The unwritable-*directory*
-#: cases land in the three other places above; that they are graded three
-#: different ways is recorded on #530, not settled here.
+#: cases land in the three other places above, and #530 settled the first of
+#: them; the remaining split between the "never applied" row and this constant's
+#: own file-level row is between genuinely different faults, not one graded two
+#: ways.
 #:
 #: **What must never reach it is a transient fault**, and that is now structural
 #: rather than a matter of wording here: a write conflict is converted at its
@@ -467,7 +474,9 @@ def _applied_migration_ids(paths: ProjectPaths, project_id: ProjectId) -> frozen
                 ids.update(migration_id for migration_id, _ in store.applied_migrations(project_id))
         except (
             SchemaVersionMismatchError,
+            StateDatabaseNotAFileError,
             StateDatabaseUnreadableError,
+            StateDirectoryUnwritableError,
             WriteTransactionBusyError,
         ):
             # `WriteTransactionBusyError` joins the two above because the store
@@ -477,6 +486,14 @@ def _applied_migration_ids(paths: ProjectPaths, project_id: ProjectId) -> frozen
             # "unrelated crash" the docstring above refuses. Skipping the held
             # database is the same safe over-correction as skipping an unreadable
             # one, and for the same reason.
+            #
+            # `StateDirectoryUnwritableError` (#530) and
+            # `StateDatabaseNotAFileError` (#526) join for that reason again. The
+            # state directory is the same one for every database this loop opens,
+            # so a mode that denies the write denies it for all of them; and a
+            # stray artefact at one database's path says nothing about the
+            # migration ids recorded in the others. Neither is reported from a
+            # helper whose only job is choosing a remedy string.
             continue
     return frozenset(ids)
 
@@ -2767,9 +2784,11 @@ def ingest_command(as_json: JsonOption = False) -> None:
 
 
 def _verify_history(  # noqa: PLR0911 -- one early return per distinguishable outcome:
-    # three cases where there is genuinely nothing to check against, and five refusals that
-    # each name a different cause with its own cure. Folding any two would publish one
-    # message for two conditions, which is the defect this function keeps being fixed for.
+    # cases where there is genuinely nothing to check against, and refusals that each name a
+    # different cause with its own cure. Folding any two would publish one message for two
+    # conditions, which is the defect this function keeps being fixed for -- and it keeps
+    # being fixed, so no total is written here: read the arms, which is what a total would
+    # send the reader to do anyway.
     context: CommandContext,
     as_json: bool,
 ) -> None:
@@ -2871,6 +2890,33 @@ def _verify_history(  # noqa: PLR0911 -- one early return per distinguishable ou
             f"Theurian cannot confirm that no applied migration has been edited "
             f"(FR-K5) right now: the previously active state database is held by "
             f"another process. {exc}",
+            remedy=exc.remedy,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
+    except (StateDatabaseNotAFileError, StateDirectoryUnwritableError) as exc:
+        # A third arm rather than a share of either neighbour (#530, #526), and
+        # it is the same distinction the other two draw: FR-K5 could not be
+        # confirmed, and *why* decides the cure. Neither of these read a byte of
+        # the database -- one is a directory that refused the write a connection
+        # needs, the other a path holding something that is not a file at all --
+        # so the unreadable arm's "delete `.theurian/state/`" would destroy
+        # tamper evidence over a permission bit or a stray artefact, and a
+        # rebuild into the same place would fail identically. Without an arm at
+        # all they escape: this call sits outside `_require_project`'s own `try`,
+        # so an unhandled `TheurianError` here reaches a `--json` caller as a
+        # Rich traceback with an empty machine channel -- the CP-2 shape #483
+        # closed, and the shape any new opener exception reopens by existing.
+        #
+        # `.remedy` and `{exc}` rather than a literal, the shape the busy arm
+        # above already takes: the type that knows the cure is the type that
+        # words it, and this sentence stays true of both members by saying only
+        # what they share.
+        _fail(
+            f"Theurian cannot confirm that no applied migration has been edited "
+            f"(FR-K5): the previously active state database could not be opened, and "
+            f"what stopped it is not the file's contents. {exc}",
             remedy=exc.remedy,
             as_json=as_json,
             code=EXIT_STATE_ERROR,

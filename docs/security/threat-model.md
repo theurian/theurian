@@ -1533,6 +1533,55 @@ Recorded under T-6 rather than as its own entry: resource exhaustion is one
 threat, and splitting it by which stage the load enters would leave a reader
 asking "can someone burn this daemon's CPU" to find two places.
 
+**Controls where an *opener* meets an artefact it cannot bound**
+([#526](https://github.com/theurian/theurian/issues/526),
+[#530](https://github.com/theurian/theurian/issues/530),
+[#423](https://github.com/theurian/theurian/issues/423)). The FIFO row above
+bounds a `contentFile` an author names; these bound the four paths Theurian
+opens *itself*. Each was measured blocking without bound before its control
+landed, and a blocked open inside the daemon holds an admission permit
+(`mcp/tools.py::MAX_CONCURRENT_SEARCHES`, 4) for as long as it is parked:
+
+| Bound | Symbol |
+| :-- | :-- |
+| the state database is refused unopened when its path holds a named pipe, socket, device or directory | `infrastructure/sqlite/connection.py::_connect`, through `_database_path_shape` |
+| the write lock's open cannot block, and the descriptor it returns is refused if it is not a regular file | `connection.py::LOCK_OPEN_FLAGS` (`O_NONBLOCK`) and `WriteLock._open`'s `os.fstat` |
+| the daemon's instance lock takes the same flags and the same descriptor check | `daemon/instance.py::InstanceLock.acquire` |
+| the review-finding store's serving read refuses an artefact before it opens anything | `infrastructure/sqlite/findings_store.py::SqliteReviewFindingStore._read`, through `schema.py::irregular_shape_at` |
+| a `flock` refusal that is not contention is reported at once rather than polled to the 30 s deadline | `connection.py::WriteLock._acquire`, through `CONTENTION_ERRNOS` |
+
+The shape vocabulary is one function, `infrastructure/sqlite/schema.py::
+irregular_shape`, held equal to `security/paths.py::_unbounded_shape` by
+`tests/unit/test_connection_faults.py::
+test_both_shape_namers_answer_alike_for_every_file_type`.
+
+**Two residuals are accepted here rather than closed, both races and both
+availability-only.** Neither discloses anything: no content is read, and the
+caller is refused rather than served.
+
+1. **The shape probe and the open are two calls** (`_connect`,
+   `findings_store._read`). A co-resident process can re-point the path between
+   them and hand the open a named pipe. Measured on the fixing branch at 4.7
+   swaps/second with four workers: one worker parked inside the open and was
+   still parked 30 seconds after the artefact had been removed and a healthy
+   database restored — so the permit it holds is gone until the daemon restarts,
+   and the "Retry shortly" an exhausted gate publishes is false for that member.
+   It cannot be closed where the lock openers closed theirs: `sqlite3.connect`
+   takes a path and no descriptor, so there is no `fstat` to move the question
+   onto. Precondition: a **racing writer** with local write access to
+   `.theurian/state/` or the data directory, which is T-1's actor.
+   [#586](https://github.com/theurian/theurian/issues/586) bounds the
+   admission-permit path's open; when it lands this residual's reach drops from
+   a permanent wedge to a bounded stall.
+2. **`mkdir` and `open` are two calls at both lock paths.** `O_NOFOLLOW`
+   constrains the final component only, so an actor who rewrites a *prefix*
+   component between them defeats the ordering argument `WriteLock._open`
+   records, and two writers racing that rewrite take locks on two different
+   files. Closing it needs `openat` against a directory descriptor at every
+   level, which nothing in this codebase does — the same bound
+   [#577](https://github.com/theurian/theurian/issues/577) records for the
+   prefix-symlink relocation.
+
 #### T-7 — A hostile Git or external URL triggers an internal request (SSRF, Medium)
 
 **Controls:** external `$ref` targets recorded as unresolved, never fetched.

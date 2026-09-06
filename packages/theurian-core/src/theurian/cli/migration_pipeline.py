@@ -99,14 +99,23 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
             match what the store holds.
         UnenforceableScopeError, DuplicateContentFileError,
             AliasItemCollisionError: From the engine's own whole-set guards.
-        StateDatabaseUnreadableError, WriteLockTimeoutError,
-            WriteLockUnusableError: From the transaction itself. The last two
-            come from the lock and cannot be raised when ``already_locked`` is
-            ``True``, since no acquisition happens here then;
+        StateDatabaseNotAFileError, StateDatabaseUnreadableError,
+            StateDirectoryUnwritableError: From the transaction's own opener.
+            The first refuses a named pipe, socket, device or directory at the
+            database path before anything is opened (#526); the third refuses when the
+            directory holding the database will not accept the write preparing a
+            connection needs (#530). Neither says the file is damaged, and
+            neither cure deletes state.
+        WriteLockTimeoutError, WriteLockRefusedError, WriteLockUnusableError:
+            From the lock, so none of them can be raised when ``already_locked``
+            is ``True`` -- no acquisition happens here then.
             ``WriteLockUnusableError`` is any refusal met taking the lock -- a
             symbolic link at its path (#481), a directory there, a mode that
-            denies this process, or a directory above it that cannot be created
-            (#520).
+            denies this process, a directory above it that cannot be created
+            (#520), or a named pipe where the lock file belongs (#526).
+            ``WriteLockRefusedError`` is the other half of the timeout: ``flock``
+            refusing the call rather than reporting a holder, which waiting
+            cannot clear (#423).
         WriteTransactionBusyError: If another writer holds the database when
             this transaction tries to begin or commit. Raised whatever
             ``already_locked`` says: it comes from the transaction, not from the

@@ -287,9 +287,38 @@ def symbolic_link_remedy(path: Path) -> str:
     )
 
 
+def irregular_artefact_remedy(path: Path, shape: str) -> str:
+    """The cure for a named pipe, socket or device at a derived path.
+
+    :func:`symbolic_link_remedy`'s sibling, and it lives beside it for that
+    reason: both remove a derived artefact so Theurian can recreate what belongs
+    there, and a cure that deletes something must have one spelling across every
+    site that publishes it. The link keeps its own text because its danger is
+    different -- opening it *writes through* to a file the operator did author --
+    while these shapes destroy nothing and merely cannot be what was asked for.
+
+    Shared by the three openers that meet these shapes: the write lock
+    (``connection.WriteLockUnusableError``), the daemon's instance lock
+    (``daemon/instance.py::InstanceLock``) and the review-finding store
+    (``findings_store.SqliteReviewFindingStore._read``). The state database has
+    its own, because its cure names ``theurian migrate apply`` rather than a
+    plain retry.
+
+    ``ls -l`` rather than a bare instruction to remove: an operator who did not
+    put the artefact there needs to see what it is before deleting anything under
+    a path Theurian owns.
+    """
+    return (
+        f"Remove {path} and retry: it is {shape}, and Theurian needs a regular file "
+        f"there. `ls -l {path}` shows what is at the path now. It is derived state "
+        f"(ADR-0004) that Theurian recreates, so nothing authored is lost."
+    )
+
+
 __all__ = [
     "READ_FLAGS",
     "WRITE_FLAGS",
+    "irregular_artefact_remedy",
     "is_a_symbolic_link_refusal",
     "open_for_reading_without_following_a_link",
     "open_without_following_a_link",

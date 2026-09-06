@@ -552,6 +552,20 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     ),
     (
         "docs/security/threat-model.md",
+        "586",
+        "bounds the admission-permit path's open",
+        "correct -- open owner, snapshot-age false positive",
+        "T-6's first accepted residual -- the shape probe and the open being two calls -- "
+        "names #586 as the owner of the bound that would reduce its reach from a "
+        "permanent wedge to a bounded stall. #586 was filed 2026-09-06 and read OPEN "
+        "that day; it postdates the 2026-09-03 snapshot, so `--offline` returns "
+        "`(absent from the tracker)` and `classify` treats that exactly like "
+        "`issue:closed`. A live run verdicts it correct. Same class and same handling "
+        "as the three #575 rows above, and deleted by the same commit that refreshes "
+        "`tracker-state.json` (#576).",
+    ),
+    (
+        "docs/security/threat-model.md",
         "349",
         "the artifacts it lands them as",
         "history",

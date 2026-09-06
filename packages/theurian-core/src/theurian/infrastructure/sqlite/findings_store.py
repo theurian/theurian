@@ -50,7 +50,11 @@ from theurian.domain.ports.review_finding_store import (
 )
 from theurian.domain.review_finding import PARSER_STAMP, FindingLoad, RejectedTrailer, ReviewFinding
 from theurian.infrastructure.sqlite.findings_schema import FINDINGS_DDL, FINDINGS_SCHEMA_VERSION
-from theurian.infrastructure.sqlite.schema import CONNECTION_PRAGMAS, read_only_uri
+from theurian.infrastructure.sqlite.schema import (
+    CONNECTION_PRAGMAS,
+    irregular_shape_at,
+    read_only_uri,
+)
 
 #: One inserted findings row: the eleven columns of the ``findings`` table, in
 #: order. Named so the insert statement and the row builder cannot drift on arity.
@@ -496,14 +500,22 @@ class SqliteReviewFindingStore:
     def stamp(self) -> FindingsStamp | None:
         """The recorded (schema version, parser stamp), or ``None`` if unreadable.
 
-        A missing file, a missing metadata row, an unreadable one, or an OS-level
-        failure merely checking whether the file exists (an untraversable parent
-        directory raises ``PermissionError`` from :meth:`Path.exists`, which does
-        not treat every ``OSError`` as "missing") all answer ``None`` -- each means
-        the same thing to a staleness check: there is no trustworthy stamp, so a
-        rebuild is owed. A corrupt file is *not* raised here for that reason;
-        :meth:`dump`, which promises real content, is where a damaged store becomes
-        loud.
+        A missing file, a missing metadata row, an unreadable one, an artefact at
+        the path, or an OS-level failure merely checking whether the file exists
+        (an untraversable parent directory raises ``PermissionError`` from
+        :meth:`Path.exists`, which does not treat every ``OSError`` as "missing")
+        all answer ``None`` -- each means the same thing to a staleness check:
+        there is no trustworthy stamp, so a rebuild is owed. A corrupt file is
+        *not* raised here for that reason; :meth:`dump`, which promises real
+        content, is where a damaged store becomes loud.
+
+        **``FindingsStoreError`` is in the caught tuple, and leaving it out was a
+        reach regression** (round two). :meth:`_read`'s shape refusal is this
+        class, not ``sqlite3.Error`` or ``OSError``, so the moment it landed a
+        socket or a device at the store path -- which answered ``None`` here
+        before the batch, because the driver raised -- started raising out of a
+        method whose whole contract is that it does not. The type already means
+        "there is no trustworthy stamp"; that is exactly this method's ``None``.
         """
         try:
             exists = self._path.exists()
@@ -517,7 +529,7 @@ class SqliteReviewFindingStore:
                     "SELECT findings_schema_version, parser_stamp FROM findings_metadata "
                     "WHERE id = 1"
                 ).fetchone()
-        except (sqlite3.Error, OSError):
+        except (sqlite3.Error, OSError, FindingsStoreError):
             return None
         if row is None:
             return None
@@ -777,15 +789,69 @@ class SqliteReviewFindingStore:
         ``mode=ro`` so a query never conjures an empty database at a path whose file
         is gone -- the defect `index_store._open_read` records.
 
-        **Not every caller has checked that the file exists**, and this is what
-        makes that safe. :meth:`stamp` and :meth:`dump` probe first;
-        :meth:`serve_findings` deliberately does not, because a probe followed by
-        an open is two looks at a name a rebuild can move between them -- so the
-        missing-store case arrives here as ``sqlite3.OperationalError`` from the
-        open, converted by that method's own boundary. ``mode=ro`` is what keeps
-        that honest: without it, the serving read would *create* an empty database
-        at the path and then report a store with no stamp.
+        **Not every caller has checked that the file exists**, and two things
+        make that safe rather than one. :meth:`stamp` and :meth:`dump` probe
+        first; :meth:`serve_findings` deliberately does not, because a probe
+        followed by an open is two looks at a name a rebuild can move between
+        them -- so the missing-store case arrives here as
+        ``sqlite3.OperationalError`` from the open, converted by that method's own
+        boundary. ``mode=ro`` keeps that honest for a *missing* file: without it,
+        the serving read would create an empty database at the path and then
+        report a store with no stamp.
+
+        **``mode=ro`` says nothing about what is at the path, and the shape check
+        below is what does** (round one, H-4). A named pipe at the findings-store
+        path made this ``connect`` block inside ``open()`` -- measured 2026-09-06,
+        still blocked when a 6-second watchdog fired -- and the blocked call is
+        running inside the daemon's admission gate, holding one of
+        ``MAX_CONCURRENT_SEARCHES`` permits. Four such calls take the gate to
+        zero, and it never comes back: the permits are held by threads parked in
+        a syscall, removing the artefact does not wake them, and the refusal an
+        exhausted gate publishes says "Retry shortly", which is false. Recovery
+        was a daemon restart. ``stat`` answers from the directory entry and never
+        opens anything, so it is the one check that cannot itself be what blocks.
+
+        **A directory is a member here**, unlike at the write-lock path where
+        ``open()`` answers ``EISDIR`` and #520's branch says so exactly. This
+        ``connect`` answers "disk I/O error" instead, and the cure that fault
+        published was a rebuild that cannot land: ``findings build`` finishes with
+        ``Path.replace`` onto the store path, which refuses a directory. So the
+        third caller of
+        :func:`~theurian.infrastructure.sqlite.schema.irregular_shape` widens it
+        the way the state-database opener does, and for the same reason -- the
+        driver's answer here names nothing an operator can act on.
+
+        **What the shape check does *not* close is the window behind it** (round
+        two, GATE-2). It is a check on a name, and the ``connect`` that follows
+        resolves that name again: a co-resident process swapping a database and a
+        named pipe at this path can still be answered "regular file" and then hand
+        the open a pipe. Measured on this branch at 4.7 swaps/second, four
+        workers: one worker parked inside the open and never returned -- still
+        parked 30 seconds after the artefact was removed and a healthy database
+        restored. That worker holds an admission permit for the life of the
+        process. The window cannot be closed here: ``sqlite3.connect`` takes a
+        path and no descriptor, so there is no ``fstat`` equivalent to move the
+        question onto, as :meth:`WriteLock._open` could. It is recorded as a
+        residual with its precondition -- a *racing writer* co-resident with the
+        daemon -- rather than claimed closed; the reach is availability of the
+        admission gate until restart, and no disclosure.
+        `#586 <https://github.com/theurian/theurian/issues/586>`_'s permit-path
+        bound, when it lands, reduces this residual's reach to a bounded stall.
+
+        The refusal below is this module's own class, so the tool surface converts
+        it to the standing store-unavailable refusal like every other read fault,
+        and the permit is returned by the ``finally`` that was already there.
         """
+        shape = irregular_shape_at(self._path) or ("a directory" if self._path.is_dir() else None)
+        if shape is not None:
+            raise FindingsStoreError(
+                f"the review-finding store path holds {shape}, not a file Theurian wrote",
+                remedy=(
+                    f"Remove {self._path} and run `theurian findings build` to rebuild the "
+                    f"store; `ls -l {self._path}` shows what is at the path now. It is "
+                    f"derived state (ADR-0004), so nothing authored is lost."
+                ),
+            )
         connection = sqlite3.connect(read_only_uri(self._path), uri=True)
         try:
             connection.row_factory = sqlite3.Row

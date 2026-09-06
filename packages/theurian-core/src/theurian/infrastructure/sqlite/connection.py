@@ -46,14 +46,42 @@ from theurian.infrastructure.sqlite.schema import (
     CONNECTION_PRAGMAS,
     DDL,
     SCHEMA_VERSION,
+    irregular_shape,
+    irregular_shape_at,
     is_supported,
+    read_only_uri,
 )
-from theurian.security.no_follow import symbolic_link_remedy
+from theurian.security.no_follow import irregular_artefact_remedy, symbolic_link_remedy
 
 #: How long to wait for the write lock before giving up. Long enough for a
 #: normal migration run to finish, short enough that a wedged process is
 #: reported rather than waited on indefinitely.
 WRITE_LOCK_TIMEOUT_SECONDS: Final = 30.0
+
+#: The flags every acquisition opens the write-lock file with. Each is a decision
+#: with a measurement behind it, and :meth:`WriteLock._open`'s docstring records
+#: all four:
+#:
+#: * ``O_WRONLY`` rather than ``O_RDWR`` -- ``flock`` locks the open file
+#:   description whatever its access mode and nothing reads these bytes, while
+#:   ``O_RDWR`` refuses a lock file left at mode ``0200``, which ``Path.open("w")``
+#:   opened without complaint (measured: ``EACCES`` against a success).
+#: * ``O_CREAT`` because ``.theurian/runtime/`` is derived and routinely absent.
+#: * ``O_NOFOLLOW`` so a symbolic link at the path is refused by the kernel's own
+#:   resolution of this call rather than by a check with a window in it (#481).
+#: * ``O_NONBLOCK`` so a named pipe at the path returns ``ENXIO`` instead of
+#:   blocking in ``open()`` until a reader appears (#526).
+#:
+#: No ``O_TRUNC``: the lock file's bytes carry no meaning, and truncation is what
+#: turned a mis-aimed open into data loss (#481).
+#:
+#: **Published rather than inlined** so a test probing whether a planted artefact
+#: really refuses the acquisition issues the same call the lock does. The probe in
+#: ``test_migrate_apply_lock_confinement.py`` re-spelled these flags beside the
+#: production ones, and a probe that drifts from the open it stands for answers a
+#: question nobody asked -- with a FIFO at the lock path it would have hung on the
+#: spelling it kept.
+LOCK_OPEN_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
 
 
 class SchemaVersionMismatchError(TheurianError):
@@ -139,6 +167,99 @@ def _is_contention(exc: sqlite3.Error) -> bool:
     """
     code = getattr(exc, "sqlite_errorcode", None)
     return isinstance(code, int) and code & 0xFF in _CONTENTION_RESULT_CODES
+
+
+def _is_a_read_only_directory(exc: sqlite3.Error, database_path: Path) -> bool:
+    """Whether SQLite is reporting that it may not write beside the database (#530).
+
+    **Keyed on the extended result code, never on the masked primary one, and
+    that is a measurement rather than a preference** (2026-09-06, SQLite 3.47.1,
+    one row per configuration of ``.theurian/state/``):
+
+    * ``.theurian/state/`` at ``0555`` with the database present and its ``-wal``
+      and ``-shm`` gone -- what a clean close leaves behind -- fails inside
+      :func:`_prepare` with ``SQLITE_READONLY_DIRECTORY`` (1544), on **both**
+      openers. That is #530's face.
+    * A database left in a **rollback journal**, opened ``mode=ro`` with the
+      directory perfectly writable, fails inside :func:`_prepare` with the bare
+      ``SQLITE_READONLY`` (8): ``PRAGMA journal_mode = WAL`` has to *write* to
+      change the mode. Masking 1544 down to 8 would catch this too and send the
+      reader to ``chmod`` a directory that already allows what it asks for.
+
+    So the extended code answers on its own, and the bare one is admitted only
+    once the directory is asked whether it really denies the write. That second
+    clause is portability rather than measurement -- nothing here has produced
+    the bare spelling for a permissions fault -- and it is written as a question
+    to the filesystem precisely so it cannot answer "permissions" where there is
+    no permissions problem.
+
+    ``os.access`` is a *diagnosis* here, not a gate: it chooses which sentence to
+    publish about a failure that has already happened, so the usual
+    time-of-check/time-of-use objection to it does not apply. Nothing is opened
+    on the strength of its answer.
+
+    Everything else stays where it was. ``SQLITE_CANTOPEN`` is deliberately
+    absent: it arrives from ``sqlite3.connect`` rather than from here -- measured
+    for a database file at mode ``0000`` and for a state directory at ``0000`` --
+    and those are graded by the CLI's own backstop, whose cure already leads with
+    the permission. *A directory at the database path* was a third example here
+    and is not one any more: :func:`_database_path_shape` refuses it before the
+    connect, so the driver never reports it (round two).
+    """
+    code = getattr(exc, "sqlite_errorcode", None)
+    if not isinstance(code, int):
+        return False
+    if code == sqlite3.SQLITE_READONLY_DIRECTORY:
+        return True
+    return code == sqlite3.SQLITE_READONLY and not os.access(database_path.parent, os.W_OK)
+
+
+class StateDirectoryUnwritableError(TheurianError):
+    """The directory holding the state database refused the write SQLite needs.
+
+    **The database is not what failed, and the whole point of this type is that
+    the published cure says so** (#530). Before it existed, ``_prepare``'s broad
+    ``except`` answered this with :class:`StateDatabaseUnreadableError`, whose
+    message opens "it is damaged, or holds a value this build cannot interpret"
+    and whose cure opens "delete ``.theurian/state/``". Reproduced against the
+    real CLI on 2026-09-06 with ``.theurian/state/`` at mode ``0555`` and the
+    database present: ``migrate status --json`` and ``migrate apply --json`` both
+    published exactly that, at exit 4, over a file nothing had read a byte of.
+    An operator who follows it discards derived state and rebuilds it -- into the
+    same unwritable directory, where the rebuild fails too.
+
+    The sibling of :class:`WriteTransactionBusyError` one class over: both are
+    faults ``_prepare`` meets that are *not* the file failing to be interpreted,
+    and both exist so the destructive cure is never the default. What separates
+    them is what clears the fault -- waiting, or a ``chmod``.
+
+    **The wording has to hold on both openers**, because :func:`_prepare` serves
+    :func:`open_read_connection` as well as :func:`_open_transaction`, and the
+    fault was measured arriving on both. So it says what the *connection* needed
+    rather than what a writer wanted: a WAL database keeps its ``-wal`` and
+    ``-shm`` beside itself, and a reader has to be able to create them too.
+
+    Which statement of the four pragmas and one ``SELECT`` was refused is
+    deliberately not named. ``_prepare`` catches around all of them and cannot
+    say, and a message that guessed would be the shape of defect this class was
+    written to remove.
+    """
+
+    def __init__(self, database_path: Path) -> None:
+        directory = database_path.parent
+        self.remedy = (
+            f"Make {directory} writable by this user -- `chmod u+w {directory}` -- then "
+            f"retry; `ls -ld {directory}` shows the mode it has now. Everything under it "
+            f"is derived state (ADR-0004) that Theurian rebuilds, so nothing authored is "
+            f"lost -- but deleting it is not the cure here, and a rebuild into the same "
+            f"directory fails the same way."
+        )
+        super().__init__(
+            f"Preparing a connection to {database_path.name} needs a write in the "
+            f"directory holding it -- a WAL database keeps its `-wal` and `-shm` files "
+            f"beside itself -- and the operating system refused that write. Nothing was "
+            f"read out of the database, so nothing here says it is damaged."
+        )
 
 
 #: How :func:`_prepare` names what it was doing, for the one message both the
@@ -244,26 +365,58 @@ class WriteLockUnusableError(TheurianError):
     root resolves inside it and passes untouched, which is exactly the shape that
     does the damage to a working tree.
 
-    **The message is a function of what actually failed** (#520). Three shapes,
-    and the branch that picks one is the whole point of the class carrying its own
-    text:
+    **The message is a function of what actually failed** (#520, #526). Four
+    shapes, and the branch that picks one is the whole point of the class carrying
+    its own text:
 
     1. the ``ELOOP`` a symbolic link at the final component produces, which is
        the sentence this class was written for;
-    2. any other errno from the ``open``, which says the file could not be opened
+    2. an artefact that is not a regular file at all -- a named pipe, a socket, a
+       device -- named by shape, because the errno does not name it: ``ENXIO``
+       spells as "Device not configured" on macOS, which sends a reader looking
+       for hardware while a FIFO sits at the path (#526);
+    3. any other errno from the ``open``, which says the file could not be opened
        and carries the operating system's own account of why;
-    3. a refused ``mkdir`` of the lock's parent, which says so instead -- no open
+    4. a refused ``mkdir`` of the lock's parent, which says so instead -- no open
        was attempted, and nothing is at the lock path to remove.
 
     The symbolic-link sentence was published for all of them until #520, and it
     was false of the three artefacts measured there -- a directory at the lock
     path, a lock file at mode ``0000``, a ``.theurian/runtime/`` that refuses the
-    ``O_CREAT``. Shape 3 is the same defect one call earlier: reusing shape 2 for
+    ``O_CREAT``. Shape 4 is the same defect one call earlier: reusing shape 3 for
     it would publish "could not be opened" about a call that never ran, and a
     remedy leading "remove whatever is at <lock path>" about a path where nothing
-    is. It is a *fragment* of the OS message that travels in shapes 2 and 3, never
-    ``str(cause)``: that spelling repeats the absolute path the remedy already
-    prints, once per channel.
+    is. It is a *fragment* of the OS message that travels in shapes 2, 3 and 4,
+    never ``str(cause)``: that spelling repeats the absolute path the remedy
+    already prints, once per channel.
+
+    **A directory is not shape 2**, and that is what keeps shape 3's ``EISDIR``
+    wording intact: :func:`~theurian.infrastructure.sqlite.schema.irregular_shape`
+    returns ``None`` for one, so #520's directory artefact still publishes
+    "could not be opened: Is a directory". The state-database opener adds it back
+    for itself (:func:`_database_path_shape`), because the driver's answer there
+    is "disk I/O error" rather than an errno that names the fault.
+
+    **The remedies name the absolute path; the messages name only the basename**,
+    across all four shapes -- including the symbolic-link arm, whose cure comes
+    from :func:`~theurian.security.no_follow.symbolic_link_remedy` and follows the
+    same split ("Remove the symbolic link at ``{path}``"). The messages say
+    ``{path.name}``. That division is deliberate and pinned: a test on the sweep
+    asserts the operator's absolute path never reaches the ``error`` field, since
+    the ``remedy`` beside it already prints it once.
+
+    **This constructor is 108 lines and five arms**, measured over the syntax
+    tree at this commit rather than counted by eye -- the note that replaced said
+    "four shapes", which was the count before the descriptor arm landed in the
+    same round that wrote the note. Recorded rather than defended: it is long for
+    an ``__init__``, the length is entirely branch prose and f-strings, and
+    splitting it would put the five sentences a reader compares into five places.
+
+    **The threshold the earlier note set has been reached, so it is settled here
+    rather than restated.** A sixth arm splits this into one function per shape
+    returning ``(message, remedy)``; a sixth arm added *without* that split is the
+    thing to refuse in review. Five is where it stops being a judgement call and
+    starts being a rule.
 
     **Sets its own remedy** (the #205 rule): the cure is to act on a file, and no
     caller can infer that from the exception's type. It is a ``TheurianError``
@@ -282,7 +435,29 @@ class WriteLockUnusableError(TheurianError):
     on the state-database path.
     """
 
-    def __init__(self, path: Path, cause: OSError, *, creating_the_parent: bool = False) -> None:
+    def __init__(
+        self,
+        path: Path,
+        cause: OSError | None = None,
+        *,
+        creating_the_parent: bool = False,
+        descriptor_shape: str | None = None,
+    ) -> None:
+        if descriptor_shape is not None:
+            # Shape 2, asked of the descriptor. No `cause`, because there is no
+            # refusal to quote: the `open` *succeeded* and what is wrong is what
+            # it opened. See `_open`, which measures this arm's whole reason --
+            # a named pipe with a reader attached takes `O_WRONLY | O_NONBLOCK`
+            # without complaint.
+            self.remedy = irregular_artefact_remedy(path, descriptor_shape)
+            super().__init__(
+                f"The write lock at {path.name} is {descriptor_shape}, not a lock file. "
+                f"Theurian takes that lock before it writes, so it refuses to write rather "
+                f"than proceed without it."
+            )
+            return
+        if cause is None:  # pragma: no cover - guarded by the branch above
+            raise ValueError("WriteLockUnusableError needs a cause or a descriptor shape")
         if creating_the_parent:
             # Shape 3. Named for the call rather than for the errno, because the
             # errno does not distinguish it: `EACCES` arrives from the `mkdir`
@@ -323,6 +498,27 @@ class WriteLockUnusableError(TheurianError):
                 f"to take the lock rather than touching that file."
             )
             return
+        shape = irregular_shape_at(path)
+        if shape is not None:
+            # Shape 2. Keyed on what is at the path rather than on the errno,
+            # because the errno is the least informative part of this refusal: a
+            # FIFO with no reader returns `ENXIO`, whose `strerror` is "Device
+            # not configured" on macOS, and shape 3's wording would hand the
+            # operator that phrase about a named pipe they created themselves.
+            # The OS account still travels -- it is the second clause, not the
+            # first.
+            #
+            # This arm reads the *path*, and the descriptor arm above reads what
+            # was actually opened. Both exist because they meet different
+            # artefacts: this one runs when the open failed, so there is no
+            # descriptor to ask.
+            self.remedy = irregular_artefact_remedy(path, shape)
+            super().__init__(
+                f"The write lock at {path.name} is {shape}, not a lock file: "
+                f"{_refusal_text(cause)}. Theurian takes that lock before it writes, so it "
+                f"refuses to write rather than proceed without it."
+            )
+            return
         # Which clause leads is decided by what is actually there. The three
         # artefacts #520 measured split two ways: a directory at the lock path and
         # a lock file at mode 0000 are things to remove, while a
@@ -346,6 +542,134 @@ class WriteLockUnusableError(TheurianError):
             f"The write lock at {path.name} could not be opened as a lock file: "
             f"{_refusal_text(cause)}. Theurian takes that lock before it writes, so "
             f"it refuses to write rather than proceed without it."
+        )
+
+
+#: The errnos ``flock`` uses to say "another open file description holds this
+#: lock". Everything else it can return is a refusal of the *call*, not a report
+#: about a holder, and :meth:`WriteLock._acquire` polled both alike until #423.
+#:
+#: The first two are ``daemon/instance.py::InstanceLock.acquire``'s pair, and the
+#: two sites are spelled the same deliberately: same call, same flags, same kind
+#: of file.
+#:
+#: **That sentence was written before it was true, and round one measured it
+#: false.** ``InstanceLock.acquire`` was still opening with ``Path.open("w")`` --
+#: ``O_TRUNC``, no ``O_NOFOLLOW``, no ``O_NONBLOCK`` -- so "same flags" was
+#: wrong, and with it "same kind of file": a symbolic link at ``daemon.lock`` was
+#: followed and truncated (49 bytes to 15) while ``acquire`` returned ``True``,
+#: and a named pipe there blocked the open outright. It is true now because that
+#: method imports :data:`LOCK_OPEN_FLAGS` from here rather than spelling its own,
+#: and a shared constant is the only form of "same flags" that cannot drift back.
+#: What was already true, and remains the point of this set, is that the *errno*
+#: discrimination was the loose one here (#423).
+#:
+#: ``EWOULDBLOCK`` is written out rather than left to alias ``EAGAIN`` -- they are
+#: one value here (measured 2026-09-06 on macOS 26.6: both 35) and POSIX permits
+#: a platform where they are not, which would otherwise turn ordinary contention
+#: into an immediate refusal.
+CONTENTION_ERRNOS: Final = frozenset({errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK})
+
+
+#: The errno ``flock`` uses to say "no lock record was available", and the one
+#: arm of :class:`WriteLockRefusedError` whose fault may clear on its own.
+#:
+#: It is *not* in the contention set, because contention is a lock another
+#: description holds and this is the kernel declining to allocate a record at
+#: all -- but it is also not permanent, which is what separates it from every
+#: other member of that class. Where it is documented at all it is documented
+#: both ways: as an exhausted lock table (transient) and as the answer a
+#: filesystem that cannot lock gives (permanent). So its arm says both and leads
+#: with the cheaper action.
+#:
+#: **This platform's ``man flock`` does not list it**, which is the whole reason
+#: the arm names two possibilities rather than asserting one. Read on macOS 26.6,
+#: 2026-09-06: the documented set is ``EWOULDBLOCK``, ``EBADF``, ``EINVAL`` ("the
+#: argument fd refers to an object other than a file") and ``ENOTSUP`` ("the
+#: referenced descriptor is not of the correct type"). Nothing there names a
+#: filesystem, and three of the four -- ``EBADF``, ``EINVAL``, ``ENOTSUP`` -- name
+#: the *descriptor*.
+_NO_LOCK_RECORD_ERRNO: Final = errno.ENOLCK
+
+
+class WriteLockRefusedError(TheurianError):
+    """``flock`` refused the lock call itself rather than reporting a holder.
+
+    :class:`WriteLockTimeoutError`'s opposite number, and the distinction is the
+    whole content of #423. That type says another Theurian process is writing and
+    offers waiting or removing the lock file; both are true of contention and
+    neither is true here. :meth:`WriteLock._acquire`'s bare ``except OSError``
+    polled every refusal to the 30-second deadline before publishing a diagnosis
+    that named a process that does not exist and a cure that cannot help.
+
+    **What the message may claim is bounded by what the platform documents, and
+    round one found this class claiming past it.** The first cut published one
+    sentence for every non-contention errno: *move the project off a network
+    filesystem such as NFS*. That is an inference from the errno to a cause, and
+    it was measured wrong on the case that actually arrives -- a named pipe with
+    a reader attached at the lock path answered ``ENOTSUP``, and the operator was
+    told to move a project off APFS. ``man flock`` on this platform documents
+    ``ENOTSUP`` as "the referenced descriptor is not of the correct type" and
+    ``EINVAL`` as "an object other than a file": both are statements about the
+    *descriptor*, and so is ``EBADF`` -- three of the four documented errnos, with
+    only ``EWOULDBLOCK`` saying anything about a holder.
+
+    :meth:`WriteLock._open` now refuses a non-regular descriptor before
+    ``flock`` ever runs, so what reaches here holds a regular file. That is what
+    makes a filesystem worth *naming* -- and it is still named as one of two
+    things to look at rather than asserted, because no errno on this platform
+    says "this filesystem cannot lock".
+
+    Two arms, and the errno picks:
+
+    * ``ENOLCK`` (:data:`_NO_LOCK_RECORD_ERRNO`) -- no lock record was
+      available. Documented both as an exhausted lock table, which a retry
+      clears, and as what a filesystem that cannot lock returns, which no retry
+      clears. The cure leads with the retry because it is free and reversible,
+      and names the filesystem check second.
+    * everything else -- the operating system's own account, with the two things
+      an operator can inspect (``ls -l`` the lock file, ``df -h`` its
+      filesystem) and no assertion about which is at fault.
+
+    ``EINTR`` is absent from both arms and cannot arrive: since PEP 475 CPython
+    retries a syscall interrupted by a signal whose handler returns normally, so
+    ``fcntl.flock`` never surfaces it to this module.
+
+    No test drives a real unsupported filesystem -- there is none on the machines
+    this project is developed and tested on -- so the driving tests inject each
+    errno through ``fcntl.flock`` instead, the same fault-injection shape the
+    suite already uses where portability puts the real fault out of reach, and
+    they assert the arm's own text rather than a fragment both arms share.
+    """
+
+    def __init__(self, path: Path, cause: OSError) -> None:
+        if cause.errno == _NO_LOCK_RECORD_ERRNO:
+            self.remedy = (
+                f"Retry `theurian` once: this is what the system reports when no lock "
+                f"record was available, and an exhausted lock table clears on its own. If "
+                f"it keeps happening, the filesystem holding {path} is the thing to look "
+                f"at -- `df -h {path.parent}` names it, and ADR-0018 places a `.theurian/` "
+                f"on a network filesystem such as NFS outside the supported configuration. "
+                f"Nothing is damaged: the refusal came before any write was attempted."
+            )
+            super().__init__(
+                f"The write lock on {path.name} could not be taken: {_refusal_text(cause)}. "
+                f"The operating system would not allocate a lock record, which is not "
+                f"another Theurian process holding the file."
+            )
+            return
+        self.remedy = (
+            f"Look at two things and retry. What is at {path} -- `ls -l {path}` -- since "
+            f"the lock needs a regular file there; and which filesystem holds it -- "
+            f"`df -h {path.parent}` -- since ADR-0018 places a `.theurian/` on a network "
+            f"filesystem such as NFS outside the supported configuration. Nothing is "
+            f"damaged and nothing needs rebuilding: the refusal came before any write was "
+            f"attempted."
+        )
+        super().__init__(
+            f"The write lock on {path.name} could not be taken: {_refusal_text(cause)}. "
+            f"That is the operating system refusing the lock call, not another Theurian "
+            f"process holding it, so waiting will not clear it."
         )
 
 
@@ -426,6 +750,157 @@ class StateDatabaseUnreadableError(TheurianError):
         )
 
 
+class StateDatabaseNotAFileError(TheurianError):
+    """The state-database path holds something an open of it cannot bound (#526).
+
+    **Refused by ``stat`` before the open, and the ordering is the whole class.**
+    ``sqlite3.connect(f"file:{path}?mode=ro", uri=True)`` issues
+    ``os.open(path, O_RDONLY)``, which on a named pipe blocks until a writer
+    appears. Measured 2026-09-06 against the real CLI in a sandboxed ``HOME``
+    and ``THEURIAN_DATA_DIR``: with a FIFO at the state-database path,
+    ``theurian index build --json`` was still inside ``__open`` when a 12-second
+    kill fired, with nothing on either channel.
+
+    **Nothing downstream can bound it, which is why the check has to run first.**
+    A timeout is not available -- ``sqlite3.connect`` takes one for *locks*, not
+    for the open -- and the suite's ``SIGALRM`` hang guard does not reach it
+    either: SQLite's ``robust_open`` retries an ``open`` interrupted by a signal,
+    so the timer fired at 3 s and the process was still in ``__open`` at 150 s
+    (measured the same day). ``stat`` answers from the directory entry and never
+    opens anything, so it is the one check that cannot itself be what hangs --
+    the same argument ``security/paths.py::read_source_file`` records for the
+    same shape one layer out (#215).
+
+    **A blocking open is not the only member, and the class is named for the
+    property rather than for the block** -- the distinction
+    :class:`~theurian.domain.errors.IrregularSourceFileError` already records
+    about its own wording. Measured 2026-09-06, one row per artefact at the
+    state-database path:
+
+    * a **named pipe** -- ``mode=ro`` blocks in ``open()`` with no bound;
+    * a **unix socket** -- ``SQLITE_CANTOPEN``, bounded;
+    * ``/dev/zero`` -- ``SQLITE_READONLY``, bounded;
+    * a **directory** -- ``SQLITE_IOERR_READ``, "disk I/O error", bounded, and
+      the one that made the read path publish the delete-your-state cure for a
+      state directory that was in perfect condition (round one, adv M-4).
+
+    Only the first blocks, so "not bounded" is false of three of the four and is
+    not what the message says. What every member shares is that the path is not a
+    regular file this build wrote.
+
+    **A directory is a member here and not at the lock path**, which is why
+    :func:`~theurian.infrastructure.sqlite.schema.irregular_shape` does not name
+    one and :func:`_connect` adds it. At the lock path ``open()`` answers
+    ``EISDIR`` and #520's branch publishes that exactly; here the driver answers
+    "disk I/O error", which describes nothing an operator can act on.
+
+    **Residual, recorded rather than closed -- and the first draft of this
+    paragraph got its reach wrong** (round two, GATE-2). The path can be replaced
+    between this ``stat`` and the ``connect``, the same window
+    ``read_source_file`` records, and the earlier text dismissed it as "the same
+    availability outcome by means this guard was never between them and". It is
+    not the same outcome, and both halves were measured on this branch:
+
+    * **Winnable.** Four workers opening the path while a fifth swapped a
+      database and a named pipe at 4.7 swaps/second: one of the four was inside
+      the open and still there when the run ended.
+    * **It does not heal.** That worker was still parked 30 seconds after the
+      artefact was removed *and* a healthy database put back. Deleting the
+      database -- the "same outcome" the old sentence offered -- answers
+      ``FileNotFoundError`` immediately and opens normally the moment the file
+      returns. One is bounded and self-healing; the other holds its thread until
+      the process exits.
+
+    That thread is an admission permit in the daemon, so the reach is
+    availability of the admission gate until restart. **No disclosure**: nothing
+    is read, and the caller is refused rather than served. The window cannot be
+    closed here -- ``sqlite3.connect`` takes a path and no descriptor, so there is
+    no ``fstat`` to move the question onto the way :meth:`WriteLock._open` does --
+    so it is recorded with its precondition rather than claimed closed: a
+    **racing writer** co-resident with the daemon, holding local write access to
+    ``.theurian/state/`` at the instant of the open.
+    `#586 <https://github.com/theurian/theurian/issues/586>`_'s permit-path bound,
+    when it lands, reduces this residual's reach to a bounded stall.
+
+    Git carries no such mode (100644, 100755, 120000, 160000, 040000), so the
+    artefact arrives from the machine and never from a clone.
+
+    The path travels in the remedy and only its name in the message, the split
+    :class:`WriteLockUnusableError` already makes: the remedy is the field a
+    reader acts on, and the absolute path belongs in it once rather than in both.
+    """
+
+    def __init__(self, database_path: Path, shape: str) -> None:
+        self.remedy = (
+            f"Remove {database_path} and run `theurian migrate apply` to rebuild the state "
+            f"from the Git-tracked migrations; `ls -l {database_path}` shows what is at the "
+            f"path now. Everything under `.theurian/state/` is derived (ADR-0004), so "
+            f"nothing authored is lost."
+        )
+        super().__init__(
+            f"The state database path holds {shape}, not a file Theurian wrote, so "
+            f"{database_path.name} was refused unopened. Theurian only ever creates a "
+            f"regular file there, and nothing an open of {shape} could return would be "
+            f"this database."
+        )
+
+
+def _database_path_shape(database_path: Path) -> str | None:
+    """What is at the state-database path when it is not a regular file.
+
+    :func:`~theurian.infrastructure.sqlite.schema.irregular_shape_at`'s answer,
+    widened by one member: a **directory**. That function excludes directories
+    because at the write-lock path ``open()`` answers ``EISDIR`` and #520's
+    branch publishes it exactly -- but at *this* path the driver answers
+    ``SQLITE_IOERR_READ``, "disk I/O error", which the read path then reported as
+    a damaged database with a cure that deletes derived state (round one, adv
+    M-4; measured 2026-09-06 through ``SqliteCanonicalStore``).
+
+    ``is_dir()`` follows a symbolic link, and that is the wanted reading: what
+    the open would land on is what the refusal should describe. A link *out* of
+    the project is refused earlier, by ``ProjectPaths``' containment.
+    """
+    shape = irregular_shape_at(database_path)
+    if shape is not None:
+        return shape
+    return "a directory" if database_path.is_dir() else None
+
+
+def _connect(database_path: Path, *, read_only: bool) -> sqlite3.Connection:
+    """The one place this module opens a state database.
+
+    **One function rather than three call sites, so the refusal above cannot be
+    bypassed by adding a fourth.** ``tests/unit/test_connection_faults.py::
+    test_this_module_opens_a_state_database_in_exactly_one_place`` reads the
+    syntax tree and fails on a second ``sqlite3.connect`` anywhere in this file,
+    which is the only form of that claim that stays true -- an enumeration of the
+    callers is a list someone maintains, and the guard it protects is one a
+    direct-connect site walks straight past.
+
+    ``read_only`` picks the access mode and nothing else. ``mode=ro`` so a read
+    path cannot create or modify a database by accident -- a misconfigured caller
+    then fails loudly instead of silently writing.
+
+    **The URI comes from :func:`~theurian.infrastructure.sqlite.schema
+    .read_only_uri` and not from an f-string**, which is what the read path did
+    until round one. SQLite reads everything after ``#`` or ``?`` as URI syntax,
+    so a project directory the operator named ``proj#1`` truncated the URI at the
+    ``#``: measured 2026-09-06, the open landed on the sibling path ``.../proj``,
+    *created* a 4096-byte SQLite file there -- outside the project, past every
+    containment check, on a path ``mode=ro`` is supposed to make uncreatable --
+    and then published the delete-your-state cure over a database that was
+    perfectly healthy. Three spellings are legal in a POSIX filename and each
+    breaks it differently; the escaping is the fix, and it is the same call the
+    index readers and the findings store already made.
+    """
+    shape = _database_path_shape(database_path)
+    if shape is not None:
+        raise StateDatabaseNotAFileError(database_path, shape)
+    if read_only:
+        return sqlite3.connect(read_only_uri(database_path), uri=True, isolation_level=None)
+    return sqlite3.connect(database_path, isolation_level=None)
+
+
 def _configure(connection: sqlite3.Connection) -> None:
     for pragma in CONNECTION_PRAGMAS:
         connection.execute(pragma)
@@ -470,11 +945,23 @@ def _prepare(connection: sqlite3.Connection, database_path: Path) -> None:
 
     The predicate was already right -- :func:`_is_contention` returns ``True``
     for both -- and only its placement was wrong, so the classification moved
-    ahead of the broad catch rather than being widened. What still reaches
-    :class:`StateDatabaseUnreadableError` is what this function is actually for:
-    bytes that cannot be interpreted, plus the permissions face (an unreadable
-    file or an unwritable state directory), which is a different class and is
-    filed as #530 rather than folded in here.
+    ahead of the broad catch rather than being widened.
+
+    **The permissions face joined it in the same position** (#530). A state
+    directory this process may not write is not damage either: ``sqlite3.connect``
+    succeeds, and then the pragma loop cannot create the ``-wal`` and ``-shm``
+    files a WAL database keeps beside itself. Measured on both openers with
+    ``.theurian/state/`` at ``0555`` and the database present, and it published
+    "it is damaged … delete ``.theurian/state/``" over a file nothing had read.
+    :func:`_is_a_read_only_directory` records why the key is the extended result
+    code rather than the masked primary one.
+
+    What still reaches :class:`StateDatabaseUnreadableError` is what this
+    function is actually for: bytes that cannot be interpreted. The *file*
+    permissions face -- a database at mode ``0000``, a state directory that
+    refuses even the lookup -- never arrives here at all: ``sqlite3.connect``
+    fails first, outside this conversion, and the CLI's own backstop grades it
+    (measured 2026-09-06, ``SQLITE_CANTOPEN`` at the connect for both).
     """
     try:
         _configure(connection)
@@ -486,30 +973,63 @@ def _prepare(connection: sqlite3.Connection, database_path: Path) -> None:
         # one.
         raise
     except Exception as exc:
-        # Ahead of the conversion, never inside it: a file another process is
-        # holding is not a file this build cannot interpret, and the two have
-        # opposite cures. Kept as one arm rather than a separate `except
-        # sqlite3.Error` so there is still exactly one place that decides a
-        # database is unreadable.
-        if isinstance(exc, sqlite3.Error) and _is_contention(exc):
-            raise WriteTransactionBusyError(database_path, _PREPARING_A_CONNECTION) from exc
+        # Ahead of the conversion, never inside it: neither a file another
+        # process is holding nor a directory this process may not write is a
+        # file this build cannot interpret, and each has a cure opposite to the
+        # damaged-file one. Kept as one arm rather than an `except sqlite3.Error`
+        # per class, so there is still exactly one place that decides a database
+        # is unreadable.
+        if isinstance(exc, sqlite3.Error):
+            if _is_contention(exc):
+                raise WriteTransactionBusyError(database_path, _PREPARING_A_CONNECTION) from exc
+            if _is_a_read_only_directory(exc, database_path):
+                raise StateDirectoryUnwritableError(database_path) from exc
         raise StateDatabaseUnreadableError(type(exc).__name__) from exc
 
 
 def open_read_connection(database_path: Path) -> sqlite3.Connection:
     """Open a read connection, verifying the schema version first.
 
+    **The chokepoint every read of canonical state passes through**, which is why
+    #526's refusal is placed in the opener rather than in the commands that met
+    it. Read the *calls* rather than the mentions --
+    ``git grep -n 'open_read_connection(' -- packages/theurian-core/src``.
+
+    **No total is written here**, for the reason :class:`WriteLockUnusableError`
+    records about its own: this paragraph quotes the key, so it is itself a hit,
+    and a count beside it is wrong by having been written. It was "two lines" for
+    one round and is three by the time you read this. What the key shows is the
+    definition and ``store.py::SqliteCanonicalStore._conn`` -- one caller, which
+    is why a guard here covers every consumer of the canonical store (the CLI's
+    reads, the MCP tools, the retriever) rather than the ones a sweep happened to
+    run.
+
     Raises:
         SchemaVersionMismatchError: If the database was written by another build.
+        StateDatabaseNotAFileError: If the path holds a named pipe, a socket, a
+            device or a directory -- anything that is not the regular file this
+            build writes there (#526). The directory member is this opener's own:
+            the shared shape vocabulary excludes it because the lock paths get
+            ``EISDIR``, and ``mode=ro`` gets "disk I/O error" instead.
         StateDatabaseUnreadableError: If the file cannot be interpreted at all.
+        StateDirectoryUnwritableError: If the directory holding it refuses the
+            write preparing a connection needs (#530).
+        WriteTransactionBusyError: If another process holds the file while the
+            connection is prepared.
         FileNotFoundError: If the database does not exist.
+        sqlite3.Error: If ``sqlite3.connect`` itself refuses -- a database file
+            at mode ``0000``, a state directory that denies the lookup. Raised
+            **before** the ``try`` below and so deliberately unconverted here
+            (round one, adv LOW-1): the ``except`` covers ``_prepare``, and
+            widening it to the connect would put a second opinion beside the
+            one ``store.py::_reading`` already forms for the one caller that
+            reaches this function. What must not arrive this way is an artefact
+            at the path -- that is refused by shape, above the connect.
     """
     if not database_path.exists():
         raise FileNotFoundError(f"No state database at {database_path}")
 
-    # `mode=ro` so a read path cannot create or modify a database by accident --
-    # a misconfigured caller then fails loudly instead of silently writing.
-    connection = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, isolation_level=None)
+    connection = _connect(database_path, read_only=True)
     try:
         _prepare(connection, database_path)
     except Exception:
@@ -523,14 +1043,18 @@ def create_database(database_path: Path, state_hash: str, engine_version: int) -
 
     Raises:
         FileExistsError: If one already exists. Overwriting would silently
-            discard a state another process may be reading.
+            discard a state another process may be reading. An artefact that is
+            not a regular file exists too, and is answered here rather than by
+            :func:`_connect`'s shape refusal one line down -- the ``exists``
+            check runs first, and "something is already at this path" is true and
+            actionable for a named pipe as much as for a database.
     """
     if database_path.exists():
         raise FileExistsError(f"State database already exists: {database_path}")
 
     database_path.parent.mkdir(parents=True, exist_ok=True)
 
-    connection = sqlite3.connect(database_path, isolation_level=None)
+    connection = _connect(database_path, read_only=False)
     try:
         _configure(connection)
         connection.executescript(DDL)
@@ -615,6 +1139,9 @@ class WriteLock:
     def _open(self) -> int:
         """Open the lock file without following a link and without emptying it.
 
+        The flag set is :data:`LOCK_OPEN_FLAGS`, which names each choice beside
+        the measurement behind it; this docstring records the arguments.
+
         ``os.open`` rather than ``Path.open("w")``, for two independent reasons
         that the mode string got wrong at once (#481):
 
@@ -687,49 +1214,125 @@ class WriteLock:
         directory at the lock path (``EISDIR``), a lock file at mode ``0000``
         (``EACCES``) and a ``.theurian/runtime/`` at mode ``0500`` refusing the
         ``O_CREAT`` (``EACCES`` again). Re-measured 2026-09-04 against the real
-        CLI: each now exits 4 with a parseable ``{error, remedy}`` on stderr. The
-        errno still decides what is *said* -- see
-        :class:`WriteLockUnusableError`, which publishes the symbolic-link
-        sentence for ``ELOOP`` and the operating system's own account otherwise.
+        CLI: each now exits 4 with a parseable ``{error, remedy}`` on stderr. What
+        is *said* is decided by :class:`WriteLockUnusableError`, from the errno and
+        from what is at the path.
 
-        **A FIFO at the lock path is not among them, because it never reaches
-        this ``except``.** Measured 2026-09-04 on macOS 26.6.2, CPython 3.13.3,
-        with these exact flags against a FIFO nothing is reading:
-        ``O_NONBLOCK`` added returns ``ENXIO``; without it the call was still
-        inside ``open()`` when a 2-second ``SIGALRM`` fired. An ``except`` reads
-        a return that never happens. Issue #526 owns the flags; this conversion
-        cannot own it.
+        **A FIFO at the lock path used to reach no ``except`` at all, and
+        :data:`LOCK_OPEN_FLAGS`'s ``O_NONBLOCK`` is what brings it here** (#526).
+        ``O_WRONLY`` on a named pipe blocks in ``open()`` until a reader appears,
+        and an ``except`` reads a return that never happens: measured 2026-09-04
+        on macOS 26.6.2, CPython 3.13.3, still inside ``open()`` when a 2-second
+        ``SIGALRM`` fired, and re-measured 2026-09-06 still blocked when a
+        6-second kill fired. With ``O_NONBLOCK`` the same open returns ``ENXIO``
+        at once, and the conversion below turns it into a document like every
+        other artefact.
+
+        The flag was not free to add, and what it cost was re-measured rather than
+        argued (2026-09-06, same platform, the whole flag set): a fresh create
+        still lands at mode ``0600`` and locks; a lock file left at mode ``0200``
+        still opens, which is the constraint that chose ``O_WRONLY`` over
+        ``O_RDWR`` above; mode ``0000`` still refuses ``EACCES``; a directory
+        still refuses ``EISDIR``; a symbolic link still refuses ``ELOOP`` with its
+        target's 49 bytes intact. ``O_NONBLOCK`` has no effect on the ``open`` of
+        a regular file, and this class never reads or writes the descriptor it
+        gets -- it only ``flock``s and closes it.
+
+        **``O_NONBLOCK`` bounds the open; it does not decide what was opened, and
+        the ``fstat`` below is what does** (round one, H-1). A named pipe with a
+        *reader attached* takes ``O_WRONLY | O_NONBLOCK`` without complaint --
+        measured 2026-09-06: the open returned a descriptor, ``flock`` then
+        refused it with ``ENOTSUP``, and the refusal was published as
+        :class:`WriteLockRefusedError` telling the operator to move the project
+        off a filesystem that was APFS. Two things had to be true for that: the
+        errno arm inferred a filesystem from a *descriptor* fault (see that
+        class), and nothing had asked what the descriptor was.
+
+        The question is put to the **descriptor** rather than to the path on
+        purpose. ``irregular_shape_at(self._path)`` would answer about a name,
+        and the name can be re-pointed between the answer and the open --
+        the same window ``O_NOFOLLOW`` exists to remove for symbolic links.
+        ``os.fstat`` asks the kernel about the object this call actually opened,
+        so there is no window to pick and no second resolution of the path.
+
+        **What is measured, and what is argued.** That the two questions differ
+        on a real input is measured -- ``test_daemon.py::
+        test_the_descriptor_and_the_path_disagree_after_the_open`` re-points the
+        name behind an open descriptor and gets "a named pipe (FIFO)" from the
+        ``fstat`` and ``None`` from the path. That *this* line must be the
+        descriptor's is then argued from it: no input the suite plants separates
+        them here, because every artefact it plants sits still, and separating
+        them through this method means winning the swap against its own open --
+        the race :class:`StateDatabaseNotAFileError` records as winnable but not
+        reliable. So the choice is held by a structural pin,
+        ``test_connection_faults.py::
+        test_a_lock_opener_asks_the_descriptor_and_not_the_path``, which says
+        that it is one.
+        ``man flock`` on this platform documents ``EINVAL`` as "the argument fd
+        refers to an object other than a file" and ``ENOTSUP`` as "the referenced
+        descriptor is not of the correct type", which is the same fault reported
+        one call later and with no way to say what the object was.
+
+        A directory cannot reach the ``fstat``: ``O_WRONLY`` refuses one with
+        ``EISDIR`` at the open, which is #520's artefact and its own sentence.
 
         The other calls :meth:`held` makes are the ``mkdir``, ``flock`` and
         ``os.close`` -- read them off that method, it is eleven lines. The
         ``mkdir`` is converted by :meth:`_prepare_the_directory` and ``flock`` by
-        :meth:`_acquire`, so the two ``finally`` clauses are what is left raising
-        a bare ``OSError`` out of an acquisition, after the descriptor exists and
-        the work is done.
+        :meth:`_acquire`. What is left raising a bare ``OSError`` out of an
+        acquisition is the two ``finally`` clauses in :meth:`held`, after the
+        descriptor exists and the work is done -- **and the ``os.fstat`` below**,
+        which the earlier version of this sentence did not name because it did not
+        exist yet. A ``fstat`` on a descriptor this method has just opened has no
+        measured failure mode, so it is recorded here rather than converted; the
+        ``except BaseException`` beside it is about the *descriptor*, not about
+        the message.
         """
         try:
-            # `O_WRONLY`, not `O_RDWR`: `flock` locks the open file description
-            # whatever its access mode, and nothing reads these bytes -- while
-            # `O_RDWR` would refuse a lock file left at mode 0200, which
-            # `Path.open("w")` opened without complaint (measured: EACCES against
-            # a success). The flags are unchanged by #520 -- only the `except`
-            # below moved -- so nothing that opened before now refuses.
-            #
             # 0o600 applies **only when this call creates the file**; a lock file
             # that already exists keeps the mode it was created with, including
             # the umask-derived 0o644 an earlier build left behind. Nothing here
             # chmods a file it did not create.
-            return os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            fileno = os.open(self._path, LOCK_OPEN_FLAGS, 0o600)
         except OSError as exc:
             raise WriteLockUnusableError(self._path, exc) from exc
+        # Everything between the open and the return closes the descriptor on the
+        # way out. `BaseException`, not `Exception`: a `KeyboardInterrupt` landing
+        # between these lines leaks it exactly as an error would, and a leaked
+        # descriptor on a lock file is a lock this process still holds with
+        # nothing left to release it -- `held` only reaches its `finally` for a
+        # descriptor this method returned.
+        try:
+            shape = irregular_shape(os.fstat(fileno).st_mode)
+            if shape is not None:
+                raise WriteLockUnusableError(self._path, descriptor_shape=shape)
+        except BaseException:
+            os.close(fileno)
+            raise
+        return fileno
 
     def _acquire(self, fileno: int) -> None:
+        """Take the lock, telling a holder apart from a refusal of the call (#423).
+
+        The errno decides which, because ``flock`` reports both through
+        ``OSError`` and only one of them is worth waiting for. Contention clears
+        when the holder exits, so it polls; anything else is the filesystem or
+        the descriptor refusing outright, and a poll spends the whole timeout to
+        arrive at a diagnosis that was wrong when it started -- see
+        :class:`WriteLockRefusedError`.
+
+        The same discrimination ``daemon/instance.py::InstanceLock.acquire``
+        already made against the identical call. The two disagreed until #423,
+        and this was the loose one.
+        """
         deadline = time.monotonic() + self._timeout
         while True:
             try:
                 fcntl.flock(fileno, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return
-            except OSError:
+            except OSError as exc:
+                if exc.errno not in CONTENTION_ERRNOS:
+                    raise WriteLockRefusedError(self._path, exc) from exc
                 if time.monotonic() >= deadline:
                     raise WriteLockTimeoutError(self._path, self._timeout) from None
                 # Poll rather than block, so the timeout is honoured. 50 ms is
@@ -797,7 +1400,7 @@ def _open_transaction(database_path: Path) -> Iterator[sqlite3.Connection]:
     here has produced it and nothing here rules it out -- and it is stated rather
     than folded into the WAL claim.
     """
-    connection = sqlite3.connect(database_path, isolation_level=None)
+    connection = _connect(database_path, read_only=False)
     try:
         _prepare(connection, database_path)
         _execute_own(connection, "BEGIN IMMEDIATE", database_path)
@@ -864,6 +1467,12 @@ def write_transaction(
     NFR-8: no external I/O inside. Read and hash content files *before* entering.
 
     Raises:
+        StateDatabaseNotAFileError: If the database path holds a named pipe, a
+            socket, a device or a directory (#526). Raised before the connect, by
+            :func:`_connect`, so nothing was opened.
+        StateDirectoryUnwritableError: If the directory holding the database
+            refuses the write preparing a connection needs (#530). Raised before
+            ``BEGIN IMMEDIATE``, over a database nothing has read.
         StateDatabaseUnreadableError: If the file cannot be interpreted far
             enough to start a transaction. Raised before ``BEGIN IMMEDIATE`` and
             never after it -- see :func:`_prepare`.
@@ -872,11 +1481,18 @@ def write_transaction(
             path takes. Raised before the database is opened, so no transaction
             has begun -- see :meth:`WriteLock._acquire`. Never raised when
             ``already_locked`` is ``True``, since no acquisition happens here.
+        WriteLockRefusedError: If ``flock`` refuses the call for a reason that is
+            not contention -- a filesystem that does not support it (#423). Raised
+            in the same place and under the same ``already_locked`` condition as
+            the timeout above, and it is the sibling that must not be confused
+            with it: waiting cannot clear this one.
         WriteLockUnusableError: If the lock cannot be taken at all -- a
             symbolic link taking it would otherwise write through (#481), a
             directory at the path, a mode that denies this process, an unwritable
             ``runtime`` directory, or a ``.theurian/`` that refuses to create one
-            (#520). Raised in the same place and never when ``already_locked`` is
+            (#520), or a named pipe, socket or device where the lock file belongs
+            (#526; a *directory* there is the ``EISDIR`` arm above rather than a
+            shape). Raised in the same place and never when ``already_locked`` is
             ``True``, for the same reason -- see :meth:`WriteLock._open` and
             :meth:`WriteLock._prepare_the_directory`.
         WriteTransactionBusyError: If another writer holds the database itself,

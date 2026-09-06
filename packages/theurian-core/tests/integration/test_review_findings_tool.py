@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -56,6 +57,7 @@ from theurian.application.project_service import (
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.knowledge import SourceAnchor
+from theurian.domain.ports.review_finding_store import FindingQuery
 from theurian.domain.review_finding import (
     FindingLoad,
     FindingSeverity,
@@ -907,6 +909,34 @@ async def test_the_findings_gate_returns_its_permit_on_every_exit_path(
     so a leak there is a documented entry point that permanently narrows the gate,
     which is the T-6 shape the gate itself exists to close.
 
+    **A fourth way out was not a way out at all** (round one, H-4). A named pipe
+    at the store path made ``_read``'s ``sqlite3.connect`` block inside
+    ``open()``, and a call parked in a syscall never leaves the block by any of
+    the three paths above -- it holds its permit indefinitely. Four such calls
+    took the gate to zero permanently: the threads do not wake when the artefact
+    is removed, so the "Retry shortly" the exhausted gate publishes was false and
+    recovery was a daemon restart.
+
+    ``_read``'s shape refusal removes the *planted* artefact case, which is what
+    :func:`test_a_named_pipe_at_the_store_path_is_refused_rather_than_held`
+    drives. **It does not remove the case entirely, and this paragraph said it
+    did** (round two, GATE-2). The refusal reads a name and the ``connect`` that
+    follows resolves that name again, so a co-resident process swapping a
+    database and a named pipe at the path can still be answered "regular file"
+    and hand the open a pipe -- measured on this branch at 4.7 swaps/second with
+    four workers: one parked inside the open and was still parked 30 seconds
+    after the artefact had been removed and a healthy database restored. The
+    window cannot be closed there, because ``sqlite3.connect`` takes a path and
+    no descriptor.
+
+    So the honest statement is the one this test can hold: **every exit path
+    *from the block* returns its permit**, and a caller that never leaves the
+    block is a recorded residual with a racing-writer precondition rather than a
+    fourth arm. Its reach is availability of this gate until restart, and no
+    disclosure. `#586 <https://github.com/theurian/theurian/issues/586>`_'s
+    permit-path bound, when it lands, reduces that residual to a bounded stall
+    and makes it an arm this test could walk.
+
     One server for the whole test, deliberately: ``build_server`` constructs the
     semaphore, so a per-call server would hand every exit path a fresh gate and
     assert nothing.
@@ -954,6 +984,146 @@ async def test_the_findings_gate_returns_its_permit_on_every_exit_path(
         await asyncio.wait_for(
             asyncio.gather(*holders, return_exceptions=True), timeout=_GATE_WAIT_SECONDS
         )
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="os.mkfifo is POSIX-only")
+def test_a_named_pipe_at_the_store_path_is_refused_rather_than_held(
+    project: ProjectRegistry,
+) -> None:
+    """Round one, H-4. The serving read blocked, holding an admission permit.
+
+    ``mode=ro`` stops the read *creating* a database at a path whose file is
+    gone; it says nothing about what is at the path. A named pipe there made
+    ``sqlite3.connect`` block inside ``open()`` -- measured 2026-09-06, still
+    blocked when a 6-second watchdog fired -- and the blocked call is running
+    inside the daemon's admission gate. ``MAX_CONCURRENT_SEARCHES`` such calls
+    take the gate to zero and it never re-opens: the permits are held by threads
+    parked in a syscall, and removing the artefact does not wake them.
+
+    The bound is a child this test kills rather than a signal, for the reason
+    ``test_state_database_faults.py`` records: SQLite retries an ``open``
+    interrupted by a signal, so ``SIGALRM`` does not escape it and an in-process
+    call would stall the run instead of failing.
+
+    What is asserted is that the call *returns*, and that the refusal names the
+    artefact -- ``FindingsStoreError`` is what the tool surface already converts
+    into the standing store-unavailable refusal, so nothing above needs to know
+    about this member; it only needs the permit back, which the ``finally``
+    already there gives it once the call returns at all.
+    """
+    store_path = _store_path(project, "demo")
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store_path.unlink(missing_ok=True)
+    os.mkfifo(store_path)
+
+    script = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from theurian.domain.ports.review_finding_store import FindingQuery\n"
+        "from theurian.infrastructure.sqlite.findings_store import (\n"
+        "    FindingsStoreError,\n"
+        "    SqliteReviewFindingStore,\n"
+        ")\n"
+        "store = SqliteReviewFindingStore(Path(sys.argv[1]))\n"
+        "try:\n"
+        "    store.serve_findings(FindingQuery(limit=10), text_chars=100)\n"
+        "except FindingsStoreError as exc:\n"
+        "    print(f'REFUSED {exc}')\n"
+        "else:\n"
+        "    print('SERVED')\n"
+    )
+    try:
+        done = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", script, str(store_path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(
+            "the serving read over a named pipe did not return within 30s and was "
+            "killed: in the daemon that call is holding one of "
+            f"{MAX_CONCURRENT_SEARCHES} admission permits and will never give it back"
+        )
+
+    assert done.stdout.startswith("REFUSED"), done
+    assert "a named pipe (FIFO)" in done.stdout, (
+        f"the refusal does not say what is at the store path: {done.stdout!r}"
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="os.mkfifo is POSIX-only")
+def test_an_artefact_at_the_store_path_leaves_the_stamp_unreadable_rather_than_raising(
+    project: ProjectRegistry,
+) -> None:
+    """Round two: the new refusal escaped a method whose contract is that it does not.
+
+    :meth:`stamp` answers ``None`` for every way there is no trustworthy stamp --
+    a missing file, a missing row, an unreadable one, an untraversable parent --
+    and both its docstring and :meth:`is_current`'s rest on that. ``_read``'s
+    shape refusal is a ``FindingsStoreError``, which is neither ``sqlite3.Error``
+    nor ``OSError``, so it started raising straight through.
+
+    It is also a **reach regression** rather than only a docstring falsehood: a
+    socket or a device at the path answered ``None`` before the batch, because
+    the driver raised one of the two caught types. The named pipe is the member
+    that could not answer at all before -- it blocked -- so it is the one driven
+    here, with the two the regression actually moved asserted beside it.
+    """
+    store_path = _store_path(project, "demo")
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store_path.unlink(missing_ok=True)
+    os.mkfifo(store_path)
+    store = SqliteReviewFindingStore(store_path)
+
+    assert store.stamp() is None, (
+        "an artefact at the store path raises out of `stamp`, whose whole contract is "
+        "that every unreadable state answers None -- and whose caller `is_current` "
+        "reads it as a plain boolean"
+    )
+    assert store.is_current() is False, (
+        "`is_current` raises over an artefact at the store path instead of reporting "
+        "the store as stale"
+    )
+
+
+def test_a_directory_at_the_store_path_is_refused_with_a_cure_that_can_land(
+    project: ProjectRegistry,
+) -> None:
+    """Round two: "disk I/O error" under a rebuild that cannot finish.
+
+    A directory is not a member of the shared shape vocabulary -- at the two lock
+    paths ``open()`` answers ``EISDIR`` and that names the fault exactly -- but
+    this opener is ``mode=ro`` and answers "disk I/O error" instead. The cure
+    that fault published was a rebuild, and ``findings build`` finishes with
+    ``Path.replace`` onto the store path, which refuses a directory: the operator
+    would have run the suggested command and met a second failure.
+
+    So ``_read`` widens the check for itself, the way the state-database opener
+    does, and the refusal names the artefact the operator has to remove first.
+    """
+    store_path = _store_path(project, "demo")
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store_path.unlink(missing_ok=True)
+    store_path.mkdir()
+    store = SqliteReviewFindingStore(store_path)
+
+    with pytest.raises(FindingsStoreError) as caught:
+        store.serve_findings(FindingQuery(limit=10), text_chars=100)
+
+    assert "a directory" in str(caught.value), (
+        f"the refusal hands the operator the driver's `disk I/O error` instead of "
+        f"saying a directory is at the path: {caught.value}"
+    )
+    assert str(store_path) in caught.value.remedy, (
+        f"the cure does not name the artefact to remove before a rebuild can land: "
+        f"{caught.value.remedy!r}"
+    )
+    assert store.stamp() is None, (
+        "a directory at the store path raises out of `stamp` rather than reporting "
+        "that there is no trustworthy stamp"
+    )
 
 
 def _live_repo_root() -> Path | None:

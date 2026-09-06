@@ -74,7 +74,9 @@ from theurian.domain.values import (
 )
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
+    StateDatabaseNotAFileError,
     StateDatabaseUnreadableError,
+    StateDirectoryUnwritableError,
     WriteTransactionBusyError,
     open_read_connection,
 )
@@ -82,8 +84,10 @@ from theurian.infrastructure.sqlite.connection import (
 #: What a read can raise that is *not* this file's bytes failing to be a value.
 #:
 #: The key :func:`_reading` applies is one question -- **does this line interpret
-#: bytes that came out of this file?** -- and these three are the answers of "no"
-#: that are still errors:
+#: bytes that came out of this file?** -- and the members below are the answers of
+#: "no" that are still errors. The list is not counted here: it opened at three,
+#: and the paragraphs under it record each later joiner and why, so a total
+#: written at the top is a number that goes wrong every time the tuple is right.
 #:
 #: - `FileNotFoundError`: there was nothing to interpret. Its message names the
 #:   path the *caller* asked for, not a cell, and the remedy differs -- a state
@@ -123,10 +127,26 @@ from theurian.infrastructure.sqlite.connection import (
 #: A conversion undone one layer up is still the defect the conversion was
 #: written to prevent, which is why the closure argument for that class is stated
 #: over conversion *layers* rather than over any single site.
+#:
+#: ``StateDirectoryUnwritableError`` (#530) and ``StateDatabaseNotAFileError``
+#: (#526) joined for exactly the reason ``WriteTransactionBusyError`` did:
+#: ``connection.py`` classifies each correctly one layer down -- "nothing was
+#: read, make the directory writable"; "the path holds a named pipe, remove it"
+#: -- and re-wrapping either here would put back the delete-your-state cure they
+#: exist to replace.
+#:
+#: **Membership is not a list someone maintains.**
+#: ``tests/unit/test_connection_faults.py::
+#: test_every_theurian_error_a_read_open_can_raise_is_already_answered`` derives
+#: the population from ``connection.py``'s own call graph and fails on a type
+#: raised there that is missing here -- which is the failure mode this tuple has
+#: had twice.
 _ALREADY_ANSWERED: Final = (
     FileNotFoundError,
     SchemaVersionMismatchError,
+    StateDatabaseNotAFileError,
     StateDatabaseUnreadableError,
+    StateDirectoryUnwritableError,
     WriteTransactionBusyError,
 )
 
