@@ -137,9 +137,11 @@ opens is filed as #551 and closes over that key with its own control. The same
 shape #518's closure took against #520's neighbour, and the reason the key is
 published beside the claim rather than left implicit.
 
-**What is deliberately not swept here.** A FIFO at the write-lock path blocks in
-the ``open`` rather than failing (recorded on #526, the lock face); nothing in
-this file plants one, and nothing here needs that fix to pass. The ``mkdir``
+**What is deliberately not swept here.** A FIFO at the write-lock path is
+refused as a document like every other artefact since #526 added ``O_NONBLOCK``
+to ``LOCK_OPEN_FLAGS`` -- it used to block inside the ``open`` instead -- and
+``test_migrate_apply_lock_confinement.py``'s ``UNUSABLE_LOCKS`` table is where it
+is driven; nothing in this file plants one. The ``mkdir``
 that runs before that open *was* on this list and is not any more -- it converts
 its own refusal, and ``test_migrate_apply_lock_confinement.py`` drives it. An escaping
 ``.theurian`` *itself* is refused a level earlier, by the join check in

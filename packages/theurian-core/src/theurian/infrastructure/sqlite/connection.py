@@ -23,6 +23,7 @@ from __future__ import annotations
 import errno
 import os
 import sqlite3
+import stat
 import sys
 import time
 from collections.abc import Iterator
@@ -54,6 +55,31 @@ from theurian.security.no_follow import symbolic_link_remedy
 #: normal migration run to finish, short enough that a wedged process is
 #: reported rather than waited on indefinitely.
 WRITE_LOCK_TIMEOUT_SECONDS: Final = 30.0
+
+#: The flags every acquisition opens the write-lock file with. Each is a decision
+#: with a measurement behind it, and :meth:`WriteLock._open`'s docstring records
+#: all four:
+#:
+#: * ``O_WRONLY`` rather than ``O_RDWR`` -- ``flock`` locks the open file
+#:   description whatever its access mode and nothing reads these bytes, while
+#:   ``O_RDWR`` refuses a lock file left at mode ``0200``, which ``Path.open("w")``
+#:   opened without complaint (measured: ``EACCES`` against a success).
+#: * ``O_CREAT`` because ``.theurian/runtime/`` is derived and routinely absent.
+#: * ``O_NOFOLLOW`` so a symbolic link at the path is refused by the kernel's own
+#:   resolution of this call rather than by a check with a window in it (#481).
+#: * ``O_NONBLOCK`` so a named pipe at the path returns ``ENXIO`` instead of
+#:   blocking in ``open()`` until a reader appears (#526).
+#:
+#: No ``O_TRUNC``: the lock file's bytes carry no meaning, and truncation is what
+#: turned a mis-aimed open into data loss (#481).
+#:
+#: **Published rather than inlined** so a test probing whether a planted artefact
+#: really refuses the acquisition issues the same call the lock does. The probe in
+#: ``test_migrate_apply_lock_confinement.py`` re-spelled these flags beside the
+#: production ones, and a probe that drifts from the open it stands for answers a
+#: question nobody asked -- with a FIFO at the lock path it would have hung on the
+#: spelling it kept.
+LOCK_OPEN_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
 
 
 class SchemaVersionMismatchError(TheurianError):
@@ -218,6 +244,67 @@ def _refusal_text(cause: OSError) -> str:
     return "the operating system refused the call"
 
 
+def _shape_of(mode: int) -> str | None:
+    """Name the file type ``mode`` describes when it is not a regular file.
+
+    Both places this module meets an artefact where it needs a file -- the state
+    database (:func:`_connect`) and the write lock
+    (:class:`WriteLockUnusableError`) -- say which shape it was, in one
+    vocabulary. That vocabulary is ``security/paths.py::_unbounded_shape``'s,
+    deliberately: an operator who meets "a named pipe (FIFO)" from a
+    ``contentFile`` and from a state database should not have to learn two
+    phrasings for one fault. The two functions are separate because their
+    *populations* are -- that one enforces SEC-8's byte cap over authored source
+    files, this one bounds an ``open`` of derived state, and neither refusal
+    implies the other -- so the wordings are held equal by a test rather than by
+    a shared symbol: ``tests/unit/test_connection_faults.py::
+    test_both_shape_namers_answer_alike_for_every_file_type``.
+
+    **A directory is not a member, in both functions and for the same reason
+    twice over.** ``open()`` refuses one outright before a byte moves, and both
+    callers here already publish a refusal that names the fault better than "not
+    a regular file" would: ``sqlite3.connect`` reports its own error for a
+    directory at the database path, and #520's ``EISDIR`` branch answers one at
+    the lock path. Widening this to cover directories would take those refusals
+    away from the branches that say them best.
+
+    The residual branch keeps the check total: a type this build has never met is
+    still named rather than passed through as a regular file.
+    """
+    if stat.S_ISREG(mode) or stat.S_ISDIR(mode):
+        return None
+    if stat.S_ISFIFO(mode):
+        return "a named pipe (FIFO)"
+    if stat.S_ISSOCK(mode):
+        return "a socket"
+    if stat.S_ISCHR(mode):
+        return "a character device"
+    if stat.S_ISBLK(mode):
+        return "a block device"
+    return "a special file"
+
+
+def _shape_at(path: Path) -> str | None:
+    """:func:`_shape_of` for what is at ``path``, or ``None`` if it cannot say.
+
+    ``stat`` rather than an ``open``: it answers from the directory entry and
+    never opens anything, so unlike every check that follows it cannot itself be
+    the thing that blocks. That is the whole reason this can run *before* the
+    open it guards -- ``security/paths.py::read_source_file`` records the same
+    argument for the same reason.
+
+    ``None`` on a ``stat`` that cannot answer -- the path is gone, or its
+    directory denies the lookup. Callers treat that as "no shape to report" and
+    fall back to what they would have said anyway; replacing one unanswerable
+    question with another helps nobody.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return None
+    return _shape_of(mode)
+
+
 class WriteLockUnusableError(TheurianError):
     """The write-lock path holds something the lock open cannot accept.
 
@@ -244,26 +331,34 @@ class WriteLockUnusableError(TheurianError):
     root resolves inside it and passes untouched, which is exactly the shape that
     does the damage to a working tree.
 
-    **The message is a function of what actually failed** (#520). Three shapes,
-    and the branch that picks one is the whole point of the class carrying its own
-    text:
+    **The message is a function of what actually failed** (#520, #526). Four
+    shapes, and the branch that picks one is the whole point of the class carrying
+    its own text:
 
     1. the ``ELOOP`` a symbolic link at the final component produces, which is
        the sentence this class was written for;
-    2. any other errno from the ``open``, which says the file could not be opened
+    2. an artefact that is not a regular file at all -- a named pipe, a socket, a
+       device -- named by shape, because the errno does not name it: ``ENXIO``
+       spells as "Device not configured" on macOS, which sends a reader looking
+       for hardware while a FIFO sits at the path (#526);
+    3. any other errno from the ``open``, which says the file could not be opened
        and carries the operating system's own account of why;
-    3. a refused ``mkdir`` of the lock's parent, which says so instead -- no open
+    4. a refused ``mkdir`` of the lock's parent, which says so instead -- no open
        was attempted, and nothing is at the lock path to remove.
 
     The symbolic-link sentence was published for all of them until #520, and it
     was false of the three artefacts measured there -- a directory at the lock
     path, a lock file at mode ``0000``, a ``.theurian/runtime/`` that refuses the
-    ``O_CREAT``. Shape 3 is the same defect one call earlier: reusing shape 2 for
+    ``O_CREAT``. Shape 4 is the same defect one call earlier: reusing shape 3 for
     it would publish "could not be opened" about a call that never ran, and a
     remedy leading "remove whatever is at <lock path>" about a path where nothing
-    is. It is a *fragment* of the OS message that travels in shapes 2 and 3, never
-    ``str(cause)``: that spelling repeats the absolute path the remedy already
-    prints, once per channel.
+    is. It is a *fragment* of the OS message that travels in shapes 2, 3 and 4,
+    never ``str(cause)``: that spelling repeats the absolute path the remedy
+    already prints, once per channel.
+
+    **A directory is not shape 2**, and that is what keeps shape 3's ``EISDIR``
+    wording intact: :func:`_shape_at` returns ``None`` for one, so #520's
+    directory artefact still publishes "could not be opened: Is a directory".
 
     **Sets its own remedy** (the #205 rule): the cure is to act on a file, and no
     caller can infer that from the exception's type. It is a ``TheurianError``
@@ -321,6 +416,26 @@ class WriteLockUnusableError(TheurianError):
                 f"The write lock at {path.name} is a symbolic link, not a lock file. Opening "
                 f"it would write through the link to whatever it names, so Theurian refuses "
                 f"to take the lock rather than touching that file."
+            )
+            return
+        shape = _shape_at(path)
+        if shape is not None:
+            # Shape 2. Keyed on what is at the path rather than on the errno,
+            # because the errno is the least informative part of this refusal: a
+            # FIFO with no reader returns `ENXIO`, whose `strerror` is "Device
+            # not configured" on macOS, and shape 3's wording would hand the
+            # operator that phrase about a named pipe they created themselves.
+            # The OS account still travels -- it is the second clause, not the
+            # first.
+            self.remedy = (
+                f"Remove {path} and retry: it is {shape}, and the lock needs a regular "
+                f"file there. `ls -l {path}` shows what is at the path now. It is derived "
+                f"state (ADR-0004) that Theurian recreates, so nothing authored is lost."
+            )
+            super().__init__(
+                f"The write lock at {path.name} is {shape}, not a lock file: "
+                f"{_refusal_text(cause)}. Theurian takes that lock before it writes, so it "
+                f"refuses to write rather than proceed without it."
             )
             return
         # Which clause leads is decided by what is actually there. The three
@@ -669,6 +784,9 @@ class WriteLock:
     def _open(self) -> int:
         """Open the lock file without following a link and without emptying it.
 
+        The flag set is :data:`LOCK_OPEN_FLAGS`, which names each choice beside
+        the measurement behind it; this docstring records the arguments.
+
         ``os.open`` rather than ``Path.open("w")``, for two independent reasons
         that the mode string got wrong at once (#481):
 
@@ -741,18 +859,29 @@ class WriteLock:
         directory at the lock path (``EISDIR``), a lock file at mode ``0000``
         (``EACCES``) and a ``.theurian/runtime/`` at mode ``0500`` refusing the
         ``O_CREAT`` (``EACCES`` again). Re-measured 2026-09-04 against the real
-        CLI: each now exits 4 with a parseable ``{error, remedy}`` on stderr. The
-        errno still decides what is *said* -- see
-        :class:`WriteLockUnusableError`, which publishes the symbolic-link
-        sentence for ``ELOOP`` and the operating system's own account otherwise.
+        CLI: each now exits 4 with a parseable ``{error, remedy}`` on stderr. What
+        is *said* is decided by :class:`WriteLockUnusableError`, from the errno and
+        from what is at the path.
 
-        **A FIFO at the lock path is not among them, because it never reaches
-        this ``except``.** Measured 2026-09-04 on macOS 26.6.2, CPython 3.13.3,
-        with these exact flags against a FIFO nothing is reading:
-        ``O_NONBLOCK`` added returns ``ENXIO``; without it the call was still
-        inside ``open()`` when a 2-second ``SIGALRM`` fired. An ``except`` reads
-        a return that never happens. Issue #526 owns the flags; this conversion
-        cannot own it.
+        **A FIFO at the lock path used to reach no ``except`` at all, and
+        :data:`LOCK_OPEN_FLAGS`'s ``O_NONBLOCK`` is what brings it here** (#526).
+        ``O_WRONLY`` on a named pipe blocks in ``open()`` until a reader appears,
+        and an ``except`` reads a return that never happens: measured 2026-09-04
+        on macOS 26.6.2, CPython 3.13.3, still inside ``open()`` when a 2-second
+        ``SIGALRM`` fired, and re-measured 2026-09-06 still blocked when a
+        6-second kill fired. With ``O_NONBLOCK`` the same open returns ``ENXIO``
+        at once, and the conversion below turns it into a document like every
+        other artefact.
+
+        The flag was not free to add, and what it cost was re-measured rather than
+        argued (2026-09-06, same platform, the whole flag set): a fresh create
+        still lands at mode ``0600`` and locks; a lock file left at mode ``0200``
+        still opens, which is the constraint that chose ``O_WRONLY`` over
+        ``O_RDWR`` above; mode ``0000`` still refuses ``EACCES``; a directory
+        still refuses ``EISDIR``; a symbolic link still refuses ``ELOOP`` with its
+        target's 49 bytes intact. ``O_NONBLOCK`` has no effect on the ``open`` of
+        a regular file, and this class never reads or writes the descriptor it
+        gets -- it only ``flock``s and closes it.
 
         The other calls :meth:`held` makes are the ``mkdir``, ``flock`` and
         ``os.close`` -- read them off that method, it is eleven lines. The
@@ -762,18 +891,11 @@ class WriteLock:
         the work is done.
         """
         try:
-            # `O_WRONLY`, not `O_RDWR`: `flock` locks the open file description
-            # whatever its access mode, and nothing reads these bytes -- while
-            # `O_RDWR` would refuse a lock file left at mode 0200, which
-            # `Path.open("w")` opened without complaint (measured: EACCES against
-            # a success). The flags are unchanged by #520 -- only the `except`
-            # below moved -- so nothing that opened before now refuses.
-            #
             # 0o600 applies **only when this call creates the file**; a lock file
             # that already exists keeps the mode it was created with, including
             # the umask-derived 0o644 an earlier build left behind. Nothing here
             # chmods a file it did not create.
-            return os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            return os.open(self._path, LOCK_OPEN_FLAGS, 0o600)
         except OSError as exc:
             raise WriteLockUnusableError(self._path, exc) from exc
 
@@ -950,7 +1072,8 @@ def write_transaction(
             symbolic link taking it would otherwise write through (#481), a
             directory at the path, a mode that denies this process, an unwritable
             ``runtime`` directory, or a ``.theurian/`` that refuses to create one
-            (#520). Raised in the same place and never when ``already_locked`` is
+            (#520), or a named pipe, socket or device where the lock file belongs
+            (#526). Raised in the same place and never when ``already_locked`` is
             ``True``, for the same reason -- see :meth:`WriteLock._open` and
             :meth:`WriteLock._prepare_the_directory`.
         WriteTransactionBusyError: If another writer holds the database itself,
