@@ -96,8 +96,7 @@ def _repository_tests(root: Path) -> list[Path]:
         path
         for path in root.rglob("test_*.py")
         if not any(
-            part.startswith(".") or part == "node_modules"
-            for part in path.relative_to(root).parts
+            part.startswith(".") or part == "node_modules" for part in path.relative_to(root).parts
         )
     ]
 

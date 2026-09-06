@@ -275,6 +275,12 @@ quirks are recorded (see [The filing filter](#the-filing-filter)).
   reports the unmutated behaviour.
 - Pass `--with-git` to the mutation driver, quote the scope argument, and guard
   against "no tests ran" — pytest's exit 4 otherwise reads as a `KILLED`.
+- Read a batch of `HUNG` verdicts over a control that named no failing test as a
+  clock, not a finding. The driver's default `--timeout` scales with `--workers`
+  and its summary now says `timed out … (no failing test)`
+  ([#566](https://github.com/theurian/theurian/issues/566)); before that a green
+  walk at `--workers 4` ran past the flat 1800 s bound and every survivor
+  reported `HUNG`, which cost PR #581's round about 90 minutes.
 - Clean up a mutation run by the PIDs and paths recorded at spawn. A
   `pkill -f` pattern reaches other lanes.
 - Treat a red test as proof a failure exists, not as its location. Get the
@@ -291,19 +297,23 @@ quirks are recorded (see [The filing filter](#the-filing-filter)).
   against the live open set before it resumed — zero failures, zero
   double-closes
   ([execution record](https://github.com/theurian/theurian/issues/551#issuecomment-5553412781)).
-- Run the whole suite from a **non-dot checkout**. `controls_discharge` drops
-  every path with a dot component, so a checkout under `.claude/worktrees/`
-  gives it an empty test population and two census audits fail on the walker
-  rather than on the tree
-  ([#558](https://github.com/theurian/theurian/issues/558)). Both pass from a
-  plain clone of the same tree at `386aba76` — a branch commit of pull request
-  #580, not reachable from `main` and never going to be, since the squash
-  replaces it. Measured 2026-09-06.
+- A checkout's own path is not supposed to change what a walker over it finds.
+  `controls_discharge` keyed its dot filter on the absolute path until
+  [#558](https://github.com/theurian/theurian/issues/558), so a checkout under
+  `.claude/worktrees/` handed it an empty test population — 0 files kept of the
+  260 `rglob` found, against 204 from a plain clone — and two census audits
+  failed on the walker rather than on the tree. Fixed; the rule that outlives it
+  is the one a new walker inherits, so state each new repo-wide walker's key
+  (absolute or relative) when it lands.
 - Expect `test_bare_install`'s `daemon status` case to fail on a machine running
   a resident daemon: it asserts `listening is False`, and a daemon answering the
   default port makes it true. `lsof -nP -iTCP:7419 -sTCP:LISTEN` says whether
   the failure is the machine or the code. Measured 2026-09-06: it fails the same
-  way at `75fe9b4f` with nothing applied.
+  way at `75fe9b4f` with nothing applied. Under the mutation driver that failure
+  turns the control `control-red` and voids the batch, so name it —
+  `--deselect 'packages/theurian-core/tests/integration/test_bare_install.py::test_daemon_status_answers_normally_without_the_extra'`
+  — rather than losing the run; the id is printed with the summary, so the batch
+  still says what it did not cover.
 
 ## The learning loop
 
