@@ -337,7 +337,7 @@ class GitHubReviewProvider:
             project_id=project_id,
             provider=PROVIDER_ID,
             repository=entry,
-            number=_integer(node.get("number"), "pull request number"),
+            number=_positive_integer(node.get("number"), "pull request number"),
             title=_text(node.get("title")),
             author=_participant(node.get("author")),
             created_at=_instant(node.get("createdAt"), "createdAt"),
@@ -349,7 +349,7 @@ class GitHubReviewProvider:
             merged_at=_optional_instant(node.get("mergedAt")),
             ci_successful=queries.ci_outcome(state),
             linked_issue_ids=tuple(
-                str(_integer(issue.get("number"), "linked issue number"))
+                str(_positive_integer(issue.get("number"), "linked issue number"))
                 for issue in _nodes(_mapping(node.get("closingIssuesReferences")))
             ),
         )
@@ -453,10 +453,24 @@ def _next_cursor(connection: Mapping[str, Any]) -> str | None:
     A cursor is an opaque string this adapter hands back in a typed variable
     (clause 6). It chooses no destination: the vector is unchanged but for the
     value of ``after``.
+
+    It is also the one value a response supplies that **re-enters an argument
+    vector**, which is why its bytes are checked here and no other response
+    field's are. ``asyncio.create_subprocess_exec`` raises ``ValueError`` -- not
+    ``OSError`` -- on an argument carrying a NUL, and ``_start`` catches
+    ``OSError``, so a cursor with a NUL in it left this adapter as the traceback
+    clause 9 forbids rather than as an envelope.
     """
     page_info = _mapping(connection.get("pageInfo"))
     cursor = page_info.get("endCursor")
     if page_info.get("hasNextPage") is True and isinstance(cursor, str) and cursor:
+        if "\x00" in cursor:
+            raise ReviewIngestRefusedError(
+                RefusalGrade.TOOL_FAILED,
+                "GitHub's answer carried a pagination cursor with a NUL byte in it, "
+                "which is not a value that can be spawned as an argument. The read "
+                "stopped at the page boundary rather than handing it to a process.",
+            )
         return cursor
     return None
 
@@ -498,6 +512,26 @@ def _integer(value: object, field: str) -> int:
             f"record the item it belongs to.",
         )
     return value
+
+
+def _positive_integer(value: object, field: str) -> int:
+    """An integer a record's identity depends on, refused unless it is positive.
+
+    The same argument as :func:`_required_text`, one type over: ``ReviewEvent``
+    raises ``InvariantViolationError`` on a number below one, and that exception
+    would leave this adapter as the traceback clause 9 forbids. A linked issue
+    number has no domain invariant to reach at all -- a zero there is recorded as
+    the string ``"0"`` and looks like an issue -- so both go through here.
+    """
+    number = _integer(value, field)
+    if number < 1:
+        raise ReviewIngestRefusedError(
+            RefusalGrade.TOOL_FAILED,
+            f"GitHub's answer carried {number} as a {field}. GitHub numbers pull "
+            f"requests and issues from one, so this adapter cannot identify the "
+            f"record it belongs to.",
+        )
+    return number
 
 
 def _optional_integer(value: object) -> int | None:

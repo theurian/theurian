@@ -501,6 +501,104 @@ async def test_a_thread_past_the_comment_cap_is_reported_not_truncated(
     assert str(limits.MAX_COMMENTS_PER_THREAD) in str(raised.value)
 
 
+# -- clause 9: an answer this adapter cannot read is an envelope, never a traceback
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("number", (0, -1), ids=("zero", "negative"))
+async def test_a_pull_request_number_below_one_is_a_graded_refusal(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, number: int
+) -> None:
+    """``ReviewEvent`` bounds its number, and the bound must not be reached as a traceback.
+
+    ``__post_init__`` raises ``InvariantViolationError`` on a number below one.
+    That is the domain doing its job, and it is the wrong exception to leave this
+    adapter by: clause 9 says every way this arm declines carries the same
+    envelope. The refusal has to happen on the response, before the record is
+    constructed from it.
+    """
+    fake_gh.answer("prs", 1, _pull_requests(number=number))
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert raised.value.remedy
+
+
+@pytest.mark.asyncio
+async def test_a_linked_issue_number_below_one_is_a_graded_refusal(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The same check where no domain invariant would have caught it.
+
+    A linked issue number is recorded as a string, so a zero reaches
+    ``linked_issue_ids`` as ``"0"`` and reads downstream as an issue. Nothing
+    below this adapter would have refused it.
+    """
+    fake_gh.answer("prs", 1, _pull_requests(closingIssuesReferences={"nodes": [{"number": 0}]}))
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert "linked issue number" in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_a_cursor_carrying_a_nul_is_refused_rather_than_spawned(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The one response value that re-enters the argument vector, checked for its bytes.
+
+    ``asyncio.create_subprocess_exec`` raises ``ValueError`` on an argument with
+    a NUL in it, and ``_start`` catches ``OSError``, so this used to leave the
+    adapter as a traceback. The second page is canned as well, so a green result
+    here cannot come from the paging simply not happening.
+    """
+    first = _pull_requests()
+    first["data"]["repository"]["pullRequests"]["pageInfo"] = {
+        "hasNextPage": True,
+        "endCursor": "CURSOR\x00-1",
+    }
+    fake_gh.answer("prs", 1, first)
+    fake_gh.answer("prs", 2, _pull_requests(number=11))
+    provider = _provider(tmp_path, fake_gh)
+    before = fake_gh.invocations
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert raised.value.remedy
+    assert fake_gh.invocations == before + 3, (
+        "the version probe, the auth probe and the first page -- and no second "
+        "page: the cursor is refused before it can be spawned"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_merged_pull_request_with_no_merge_commit_is_refused(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """``ReviewEvent`` requires a merged pull request to record its merge commit.
+
+    Same argument as the number bound: the domain invariant is real, and reaching
+    it from here would be a traceback rather than an envelope. The summary names
+    the pull request so a reader knows which answer was unreadable.
+    """
+    fake_gh.answer("prs", 1, _pull_requests(merged=True, mergeCommit=None))
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert f"{REPOSITORY}#12" in str(raised.value)
+
+
 # -- the version floor and the authentication probe ---------------------------
 
 
