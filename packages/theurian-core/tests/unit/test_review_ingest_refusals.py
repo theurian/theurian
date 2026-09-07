@@ -261,6 +261,13 @@ def test_a_quoted_echo_is_bounded_after_quoting_not_before(hostile: str) -> None
         "quoting the value did not expand it, so this parametrisation cannot tell "
         "the two orderings apart and proves nothing about either"
     )
+    # The marker counts the *rendering*, which is what was cut -- not the value.
+    # For a character that escapes badly the two differ several-fold, and the
+    # larger is the honest answer to how much is missing from the sentence.
+    assert f"cut from {len(repr(value))} characters" in quoted, (
+        f"the marker does not report the rendering's length; it reads {quoted[-40:]!r} "
+        f"where `repr` of the value is {len(repr(value))} characters"
+    )
 
 
 def test_bounded_echo_renders_a_value_str_itself_refuses() -> None:

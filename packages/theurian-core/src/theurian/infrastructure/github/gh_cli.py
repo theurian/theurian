@@ -306,10 +306,15 @@ async def _start(
         # `UnicodeEncodeError` -- itself a `ValueError` -- while the vector is
         # being encoded for `execve`. Catching the pair *here* is what closes the
         # class rather than one member of it: it holds for every element of every
-        # vector, including values a later caller builds that this module never
-        # sees. The same pair is named and closed on two other boundaries in this
-        # repository, `infrastructure/sqlite/index_query.py` and
-        # `application/proposal_service.py`, for the same reason.
+        # vector this function is handed.
+        #
+        # It does **not** hold for an element that could not be built, which an
+        # earlier version of this comment credited it with. A rendering failure
+        # happens a whole stage before a spawn and never arrives here at all;
+        # `_binding` is the sibling seam that catches it. The same pair arrives at
+        # other boundaries in this repository too, and `_next_cursor`'s docstring
+        # names those members rather than counting them -- the count in this
+        # comment was wrong twice before it was removed.
         #
         # `strerror` and nothing else. The fallback used to be `exc` itself, and
         # `str()` of an `OSError` appends its `filename` -- which here is the

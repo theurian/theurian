@@ -2236,8 +2236,10 @@ def test_the_secret_scan_policy_is_read_at_the_recorded_call_sites_only() -> Non
     """SEC-11: where the *policy* is consulted, one of the two symbols held (#198, #461, #329).
 
     ``plugins/claude-code/commands/ingest.md`` names ``security.secretScan`` as
-    the one key ``.theurian/config.yaml`` has in force, which announces a
-    scanning control inside a document about ``theurian ingest``. The clause that
+    one of the **two** keys ``security/project_config.py`` reads from
+    ``.theurian/config.yaml`` -- this branch added
+    ``providers.review.repositories`` beside it -- which announces a scanning
+    control inside a document about ``theurian ingest``. The clause that
     keeps that from misleading a reader -- *"it covers the approval gate and the
     index build -- `theurian ingest` runs no scan of its own"* -- is pinned in
     :data:`SECRET_SCAN_PROSE_SURFACES`, and that pin holds **spelling**: it would

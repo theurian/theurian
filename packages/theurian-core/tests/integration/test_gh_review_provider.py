@@ -697,10 +697,11 @@ async def test_a_limit_below_one_is_refused_with_a_summary_that_is_true(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "limit",
-    (10**4300, 10**4301, -(10**4301)),
+    (10**4299, 10**4300, 10**4301, -(10**4301)),
     ids=(
         "the most digits str() will render",
         "one digit past what str() will render",
+        "two digits past it",
         "the same, below one",
     ),
 )
@@ -716,6 +717,11 @@ async def test_a_limit_too_large_to_render_is_still_a_summary_a_reader_can_act_o
     must answer with an envelope. At exactly 4300 digits it rendered, and then
     the summary ran past the type's cut and lost its own tail -- so the operator
     was told a number was refused and not what the cap was.
+
+    **``10**4299`` is the one that has 4300 digits**, and until it was added this
+    docstring described a regime none of the parameters reached: ``10**4300``
+    has 4301 and raises like the two after it, so every case was the raising one
+    and the renders-then-overruns half went undriven while the prose claimed it.
 
     Both are asserted here: a graded envelope for every value, and a summary that
     still names ``MAX_PULL_REQUESTS`` in the over-the-cap cases. Nothing is

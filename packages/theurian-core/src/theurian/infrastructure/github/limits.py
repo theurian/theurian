@@ -5,9 +5,14 @@ ones that are -- never an unbounded loop -- with **two exceptions, both named
 here rather than left for a reader to find**. :data:`REAP_SECONDS` bounds the
 cleanup that follows a stop rather than any work a caller asked for, so there is
 nothing for it to report. :data:`MAX_CHILD_STDERR_BYTES` is the one bound that
-*does* truncate silently: a child that writes 200,000 bytes to stderr has 2,000
-characters of it published and the rest dropped with nothing saying so
-(measured 2026-09-07). That is a deliberate trade rather than an oversight --
+*does* truncate silently: a child that writes 200,000 bytes of ASCII to stderr
+has 2,000 characters of it published and the rest dropped with nothing saying so.
+The 2,000 is
+:data:`~theurian.domain.review_ingest.MAX_REFUSAL_DETAIL_CHARS` deciding, not
+this constant -- 4,096 bytes are kept and the envelope's character bound cuts
+them again -- and it is **fewer for multi-byte output**, because this bound
+counts bytes and that one counts characters: 1,366 for Japanese text and 1,024
+for emoji (all three measured 2026-09-07). That is a deliberate trade rather than an oversight --
 what it cuts is a child's own diagnostic, not a record this adapter keeps, and
 the alternative costs a marker inside a published field that already refuses an
 oversized value at construction. It is recorded because "never a silent
@@ -41,7 +46,8 @@ REQUEST_TIMEOUT_SECONDS: Final = 30.0
 
 #: How long a killed child is given to die before it is left to the runtime.
 #:
-#: The module docstring's exception, and here is what it costs. It is spent
+#: The module docstring's **first** exception -- ``MAX_CHILD_STDERR_BYTES`` is
+#: the second -- and here is what this one costs. It is spent
 #: *after* a graded stop rather than on work a caller asked for -- reaping the
 #: child so no refusal leaves a process behind. It is also what an external
 #: cancellation pays: ``gh_cli._end`` runs from a ``finally``, so a caller that

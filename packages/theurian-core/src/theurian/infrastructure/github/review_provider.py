@@ -565,9 +565,14 @@ def _next_cursor(connection: Mapping[str, Any], what: str) -> str | None:
     ``_is_transportable`` guards a query term before FTS5, ``mcp/findings.py``'s
     ``_transportable`` guards a filter value before the store and the response,
     and this guards a cursor before an argv element.
-    ``application/proposal_service.py`` meets the same pair at a resolved path
-    and closes it the other way, by catching ``ValueError`` rather than checking
-    for each.
+    Those three are the **checking** members, and that list is exact. The
+    *catching* side -- code that meets the same pair and translates whatever
+    ``ValueError`` arrives, rather than testing for each -- is larger and is
+    deliberately not enumerated here: ``application/proposal_service.py`` at a
+    resolved path is one, ``gh_cli._start`` and ``gh_cli._binding`` are two more,
+    and a grep finds others still. Naming a subset of an unenumerated population
+    reads as naming the population, which is the mistake this paragraph exists
+    to stop making.
 
     **The closure is two seams, and neither of them is this function.** An argv
     element can fail at two stages, and they are caught in different places

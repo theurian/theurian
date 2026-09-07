@@ -117,7 +117,19 @@ class RefusalGrade(StrEnum):
     #: probe cannot: both are a session this run may not assume.
     TOOL_UNAUTHENTICATED = "tool-unauthenticated"
     #: ``gh`` ran and failed -- a non-zero exit, a timeout, or an output this
-    #: adapter cannot read as the response it asked for.
+    #: adapter cannot read as the response it asked for -- **or was never run**,
+    #: because the request could not be built: an argument this adapter could not
+    #: render, or an answer whose shape it could not check.
+    #:
+    #: That last group is the one whose remedy is weakest, and it is recorded
+    #: rather than smoothed over. The cure below says to run the request by hand,
+    #: which for a never-built request reproduces the *shape* and not the
+    #: failure, since the failure was in this adapter's own rendering. It keeps
+    #: the shared cure anyway: the summary is the field that describes this run
+    #: and it names the variable and says nothing was spawned, while the
+    #: alternatives were both declined for recorded reasons -- a remedy template
+    #: reopens the population :data:`REMEDIES` closes, and a grade per cause
+    #: makes this enum report which internal step failed.
     TOOL_FAILED = "tool-failed"
     #: A recorded bound was reached: the page cap, the pull-request cap, or the
     #: per-response byte cap. Reported, never a silent truncation.
@@ -260,13 +272,15 @@ def bounded_echo(value: object) -> str:
 
 
 def bounded_quote(value: object) -> str:
-    """``value`` **quoted** for a summary, bounded *after* quoting rather than before.
+    r"""``value`` **quoted** for a summary, bounded *after* quoting rather than before.
 
     The order is the whole of it, and getting it the other way round is a defect
     with no symptom until the value is hostile. A producer that writes
     ``{bounded_echo(x)!r}`` bounds the *plain* text and then quotes it, and
     quoting is not length-preserving: ``repr`` expands one NUL into the four
-    characters ``\x00``. So a megabyte of NULs cut to
+    characters ``\x00`` -- which this docstring can only say because it is raw,
+    the earlier form having put a real NUL into ``__doc__``. So a megabyte of
+    NULs cut to
     :data:`MAX_SUMMARY_ECHO_CHARS` came back four times that long, the summary ran
     past :data:`MAX_REFUSAL_SUMMARY_CHARS`, and the type's cut took the sentence's
     tail -- the exact outcome cutting the value is supposed to prevent.
