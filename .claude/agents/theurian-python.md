@@ -141,6 +141,14 @@ had enumerated. Three bars:
   `mkdir(parents=True, exist_ok=True)`s the parent before the open" was true
   when written and false by the end of the branch that wrote it — the read
   opener that branch added does not.
+- **A pasted command output is the verbatim bytes of a run you just made —
+  never reconstructed, never composed from memory.** Burned in from PR #596
+  round 1 (H-A): a CHANGELOG "pasted" zero-consumer grep whose output matched
+  no measurable state — the real command answered 5 lines / 3 files, and the
+  false paste hid an un-migrated construction site until a rebase turned it
+  red. Before committing any command+output pair, run the command one final
+  time against the text as committed and copy what it printed; if that differs
+  from what you meant to claim, the claim changes — the paste never does.
 
 ## Before you report done
 
