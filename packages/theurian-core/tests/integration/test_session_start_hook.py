@@ -514,6 +514,13 @@ def test_a_resolved_project_with_a_corrupt_pointer_warns_without_claiming_unreso
     ``_pointer_failure_fields`` rather than from ``_unresolved_status``. Round
     one (code review HIGH) caught the hook's warning claiming "could not be
     fully resolved" for exactly this arm, where resolution had succeeded.
+
+    The hook no longer lifts ``remedy`` out of the JSON itself -- a
+    SessionStart warning must stay a fixed literal (the
+    ``test_a_session_start_warning_*`` guards in ``test_plugin_boundary.py``)
+    -- so this row asserts the pointer at ``doctor``, not the planted remedy
+    sentence, which Core's own ``project status``/``doctor`` reads print in
+    full.
     """
     status_payload = json.dumps(
         {
@@ -532,11 +539,11 @@ def test_a_resolved_project_with_a_corrupt_pointer_warns_without_claiming_unreso
     assert result.returncode == 0
     assert "degraded" in result.stderr
     assert "doctor" in result.stderr
-    assert "Delete .theurian/state/active.json" in result.stderr
+    assert "Delete .theurian/state/active.json" not in result.stderr
     assert "could not be fully resolved" not in result.stderr
 
 
-def test_an_unreadable_registry_warns_and_surfaces_the_remedy(tmp_path: Path) -> None:
+def test_an_unreadable_registry_warns_and_points_at_doctor(tmp_path: Path) -> None:
     """B1: ``registered: null`` -- the registry itself could not be read.
 
     Measured against the real Core binary: a ``projects.json`` that is not
@@ -544,9 +551,15 @@ def test_an_unreadable_registry_warns_and_surfaces_the_remedy(tmp_path: Path) ->
     its own ``remedy``, and the same corruption makes
     ``_RegistryRead.holds_root`` answer ``None`` rather than ``False`` -- so
     ``registered`` is neither ``true`` nor ``false``, and the shipped hook's
-    ``"registered": *false`` grep does not match it either. The advisory in
-    ``remedy`` is Core's own sentence, not project content, and is safe to
-    print in full.
+    ``"registered": *false`` grep does not match it either.
+
+    The hook does not lift ``remedy`` out of the JSON and print it: a
+    SessionStart warning must stay a fixed literal (the
+    ``test_a_session_start_warning_*`` guards in ``test_plugin_boundary.py``),
+    since ``remedy`` can carry a path built from attacker-influenced
+    components. It warns about the degraded context and points at
+    ``/theurian:doctor``, which reads ``project status`` itself and can print
+    ``remedy`` in full.
     """
     status_payload = json.dumps(
         {
@@ -561,8 +574,9 @@ def test_an_unreadable_registry_warns_and_surfaces_the_remedy(tmp_path: Path) ->
     result = _run_hook(sandbox)
 
     assert result.returncode == 0
-    assert "PLANTED_REMEDY_TEXT" in result.stderr
+    assert "degraded" in result.stderr
     assert "doctor" in result.stderr
+    assert "PLANTED_REMEDY_TEXT" not in result.stderr
 
 
 def test_the_broken_context_warning_never_echoes_the_raw_reason(tmp_path: Path) -> None:

@@ -94,24 +94,21 @@ main() {
     # telling that case apart from a not-in-git repository; nothing here
     # assumes it is closed).
     #
-    # `reason` itself is never printed: Core's own `_unresolved_status`
-    # docstring records that a broken migration's `reason` carries the YAML
-    # parser's own source snippet -- project file bytes, not something a
-    # session-start hook may echo. `remedy`, when Core sends one, is its own
-    # advisory sentence describing a fix (`theurian project unregister ...`,
-    # `theurian migrate apply`, `theurian project register`) and is safe to
-    # surface.
+    # This branch is entered by matching the literal `"reason": *"` fragment
+    # above, never by parsing JSON, and `reason` itself is never printed:
+    # Core's own `_unresolved_status` docstring records that a broken
+    # migration's `reason` carries the YAML parser's own source snippet --
+    # project file bytes, not something a session-start hook may echo.
+    # `remedy` is Core's own advisory sentence and holds no such risk by
+    # itself, but a SessionStart warning must stay a fixed literal (see
+    # `test_a_session_start_warning_cannot_execute_anything` and
+    # `test_a_session_start_warning_is_a_terminated_literal` in
+    # test_plugin_boundary.py) -- this hook prints only strings it wrote
+    # itself, never one built from a field that could carry a path with
+    # attacker-influenced components. /theurian:doctor is where Core's own
+    # remedy belongs; it reads `project status` directly and can print
+    # `remedy` in full.
     theurian::warn "this repository's knowledge context is degraded. Run /theurian:doctor to diagnose."
-    local remedy
-    # `sed` stops at the first literal `"`, which is why this is safe rather
-    # than merely convenient: every shipped remedy constant is one plain
-    # sentence with no embedded quote, and a JSON string's own interior `"`
-    # is escaped as `\"` and so never matches `[^"]*` unescaped. A future
-    # remedy that needs one would require a JSON-aware read here instead.
-    remedy="$(printf '%s' "$status" | sed -n -E 's/.*"remedy": *"([^"]*)".*/\1/p' | head -n 1)"
-    if [ -n "$remedy" ]; then
-      theurian::warn "$remedy"
-    fi
   elif printf '%s' "$status" | grep -q '"indexStale": *true'; then
     theurian::warn "the knowledge index is stale. Run /theurian:index when convenient."
   fi
