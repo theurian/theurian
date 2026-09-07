@@ -2373,6 +2373,84 @@ async def test_one_grade_stops_the_listing_and_skips_one_of_its_nodes(
 
 
 @pytest.mark.asyncio
+async def test_an_unreadable_pull_request_number_denies_the_window_rather_than_being_skipped(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The number is repository scope, and the changelog states that as a decision.
+
+    ``packages/theurian-core/CHANGELOG.md``'s review-ingest entry puts *"a
+    pull-request number it cannot read"* inside the halting enumeration and gives
+    the reason: ``--since`` is applied to a pull request's number before its
+    record is built, so a pull request whose number cannot be read is one no
+    window can place. A skip is the answer for a fault that is a fact about one
+    pull request's *data*; the number is the key the window itself is expressed
+    in, so answering it as a skip would let a run continue past a record it
+    cannot place and report as though it had walked the window.
+
+    ``test_a_pull_request_number_below_one_is_a_graded_refusal`` already holds
+    that this arm refuses with an envelope rather than a traceback. What it
+    cannot see is the **scope**: a listing that folded the same fault into
+    ``skipped`` would still raise nothing there, because that fixture carries one
+    node and a page whose only node is skipped returns an empty listing either
+    way. So the fault is planted **beside a well-formed pull request**, and the
+    claim is that the good one does not come back either.
+
+    The contrast half is what makes the scope rule falsifiable rather than merely
+    stated. A record-scope fault in the same slot of the same page -- a label
+    overflow, which is a fact about that node's own data -- is answered as a skip
+    with the neighbour still listed. An implementation that had moved the number
+    into the skip channel passes the second half and fails the first; one that
+    had widened the halting rule to swallow the label cap passes the first and
+    fails the second.
+
+    Two stand-in children and two project roots, because each half needs its own
+    canned answers and :func:`_project` creates the directory it allowlists.
+    """
+    denying = _write_fake(tmp_path / "denying", version="2.86.0")
+    page = _pull_requests()
+    nodes = page["data"]["repository"]["pullRequests"]["nodes"]
+    nodes[:] = [{**nodes[0], "number": 13}, {**nodes[0], "number": 0}]
+    denying.answer("prs", 1, page)
+
+    try:
+        halted = await _provider(tmp_path / "a", denying).list_pull_requests(PROJECT, REPOSITORY)
+    except ReviewIngestRefusedError as refusal:
+        assert refusal.grade is RefusalGrade.TOOL_FAILED
+        assert refusal.remedy
+    else:
+        pytest.fail(
+            f"the unreadable number was answered as a skip "
+            f"({[skip.number for skip in halted.skipped]}) and pull requests "
+            f"{[event.number for event in halted.events]} were listed beside it. "
+            f"That is record scope, and packages/theurian-core/CHANGELOG.md's "
+            f"review-ingest entry says the number is on the repository side because "
+            f"`--since` is applied to a number: a pull request whose number cannot be "
+            f"read is one no window can place, so a run that continues past it cannot "
+            f"say what it walked. If this move is deliberate, that paragraph and its "
+            f"prose pin in tests/unit/test_review_ingest_changelog_claims.py move in "
+            f"the same commit."
+        )
+
+    skipping = _write_fake(tmp_path / "skipping", version="2.86.0")
+    contrast = _pull_requests()
+    contrast_nodes = contrast["data"]["repository"]["pullRequests"]["nodes"]
+    contrast_nodes[:] = [
+        {**contrast_nodes[0], "number": 13},
+        _over_the_label_cap(contrast_nodes[0], 12),
+    ]
+    skipping.answer("prs", 1, contrast)
+
+    listing = await _provider(tmp_path / "b", skipping).list_pull_requests(PROJECT, REPOSITORY)
+
+    assert [event.number for event in listing.events] == [13], (
+        "the record-scope half stopped listing the well-formed neighbour, so the "
+        "halting half above no longer distinguishes the two scopes: an adapter that "
+        "denied every window would pass both"
+    )
+    assert [skip.number for skip in listing.skipped] == [12]
+
+
+@pytest.mark.asyncio
 async def test_a_repository_reached_through_an_event_is_re_checked_against_the_allowlist(
     tmp_path: pathlib.Path, fake_gh: FakeGh
 ) -> None:
