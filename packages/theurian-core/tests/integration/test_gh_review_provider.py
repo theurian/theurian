@@ -876,6 +876,100 @@ async def test_a_cursor_carrying_a_nul_is_refused_rather_than_spawned(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cursor",
+    ("CURSOR\ud800", "CURSOR\udc80"),
+    ids=("a lone high surrogate", "a surrogate in the surrogateescape range"),
+)
+async def test_a_cursor_that_cannot_be_encoded_is_refused_rather_than_spawned(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, cursor: str
+) -> None:
+    """A surrogate is wire-legal JSON and is not an argument, so it stops at the boundary.
+
+    **Both arrive through ``json.loads``, not through a Python literal handed to
+    the adapter.** ``json.dumps`` writes each as the six-character escape a real
+    GitHub answer could carry -- the assertion below reads the canned file back
+    and checks the escape is what the child prints -- and the adapter decodes it
+    into a lone surrogate the way it decodes every other response.
+
+    The two behave differently one layer down, which is why both are driven.
+    ``\\ud800`` cannot be encoded at all: it raised ``UnicodeEncodeError`` out of
+    ``create_subprocess_exec``, an exception the spawn's ``except OSError``
+    did not catch. ``\\udc80`` raises nothing -- ``surrogateescape`` maps it back
+    to the byte ``0x80`` and the request is spawned with a cursor GitHub never
+    sent. A check on error handling alone would miss the second entirely.
+
+    The second page is canned, so a green result cannot come from the paging
+    simply not happening.
+    """
+    first = _pull_requests()
+    first["data"]["repository"]["pullRequests"]["pageInfo"] = {
+        "hasNextPage": True,
+        "endCursor": cursor,
+    }
+    fake_gh.answer("prs", 1, first)
+    fake_gh.answer("prs", 2, _pull_requests(number=11))
+    provider = _provider(tmp_path, fake_gh)
+
+    assert (
+        cursor.encode("ascii", "backslashreplace") in (fake_gh.directory / "prs1.json").read_bytes()
+    ), (
+        "the canned answer does not carry the surrogate as a JSON escape, so this "
+        "test is driving a Python value rather than something a response can say"
+    )
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert raised.value.remedy
+    assert fake_gh.invocations == 3, (
+        "the version probe, the auth probe and the first page -- and no second "
+        "page: the cursor is refused before it can be spawned"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cursor",
+    ("", None, 12),
+    ids=("an empty cursor", "a null cursor", "an integer cursor"),
+)
+async def test_another_page_with_no_usable_cursor_is_refused_not_read_as_the_last_page(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, cursor: object
+) -> None:
+    """``hasNextPage`` true and no cursor is a partial read, and it is graded as one.
+
+    The three shapes are one decision: whatever ``endCursor`` is, the answer said
+    there is more, and this adapter cannot ask for it. Returning the first page
+    then presents part of an answer as the whole -- exactly what
+    ``MAX_LINKED_ISSUES`` and the comment cap exist to refuse, arrived at from the
+    other direction and silently.
+
+    The second page is canned here too, so the refusal cannot be the paging
+    failing for want of a response.
+    """
+    first = _pull_requests()
+    first["data"]["repository"]["pullRequests"]["pageInfo"] = {
+        "hasNextPage": True,
+        "endCursor": cursor,
+    }
+    fake_gh.answer("prs", 1, first)
+    fake_gh.answer("prs", 2, _pull_requests(number=11))
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert "pull requests" in str(raised.value)
+    assert raised.value.remedy
+    assert fake_gh.invocations == 3, (
+        "a second page was asked for with a cursor the answer did not supply"
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_timestamp_with_no_offset_is_refused_rather_than_read_as_local_time(
     tmp_path: pathlib.Path, fake_gh: FakeGh
 ) -> None:

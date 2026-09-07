@@ -287,6 +287,33 @@ async def test_a_binary_that_cannot_be_started_is_a_graded_refusal() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "argument",
+    ("pass\x00", "pass\ud800"),
+    ids=("an embedded NUL", "an unpaired surrogate"),
+)
+async def test_an_argument_that_cannot_be_spawned_is_a_graded_refusal(argument: str) -> None:
+    """The spawn seam declines on **types**, so every argv element is covered at once.
+
+    ``create_subprocess_exec`` refuses an argument for two reasons and neither is
+    an ``OSError``: a NUL raises a bare ``ValueError``, and an unpaired surrogate
+    raises ``UnicodeEncodeError`` -- a ``ValueError`` -- while the vector is
+    encoded for ``execve``. A catch on ``OSError`` alone covers neither, which is
+    how a response-supplied pagination cursor left the adapter as a traceback.
+
+    Both arguments here are real: no seam is patched, and the exception comes out
+    of the spawn itself. The high surrogate is the one that raises -- ``\\udc80``
+    and its neighbours are what ``surrogateescape`` maps back to raw bytes, so
+    they encode silently and are refused a layer up, where the cursor is read.
+    """
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await run_bounded([sys.executable, "-c", argument], env=_ENV, timeout=1.0)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert raised.value.remedy
+
+
+@pytest.mark.asyncio
 async def test_a_spawn_failure_with_no_strerror_does_not_publish_the_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

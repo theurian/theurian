@@ -255,6 +255,10 @@ async def _start(
     output against a cap" are two things a reader can check separately -- the
     second is the property clause 10 is about, and it is easier to see when it is
     not sharing a function with the spawn's own failure handling.
+
+    **This is the seam every argv element passes through**, which is why the
+    catch below is on the exception *types* a spawn declines with rather than on
+    the byte values a particular caller was known to produce.
     """
     try:
         # The vector is the adapter's: an absolute binary path, literal flags, a
@@ -275,17 +279,29 @@ async def _start(
             stderr=asyncio.subprocess.PIPE,
             env=dict(env),
         )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        # **Two types, because a spawn declines an argument for two reasons and
+        # only one of them is an `OSError`.** An element carrying a NUL raises a
+        # bare `ValueError`, and one carrying an unpaired surrogate raises
+        # `UnicodeEncodeError` -- itself a `ValueError` -- while the vector is
+        # being encoded for `execve`. Catching the pair *here* is what closes the
+        # class rather than one member of it: it holds for every element of every
+        # vector, including values a later caller builds that this module never
+        # sees. The same pair is named and closed on two other boundaries in this
+        # repository, `infrastructure/sqlite/index_query.py` and
+        # `application/proposal_service.py`, for the same reason.
+        #
         # `strerror` and nothing else. The fallback used to be `exc` itself, and
         # `str()` of an `OSError` appends its `filename` -- which here is the
         # absolute path of the operator's `gh`, inside their home directory, in a
         # published envelope. An `OSError` raised with a single argument carries
         # no `strerror` at all, so that branch was reachable rather than
-        # theoretical; the class name locates the failure without a path.
+        # theoretical; the class name locates the failure without a path, and it
+        # is also what names a `ValueError`, which has no `strerror` to read.
+        named = exc.strerror if isinstance(exc, OSError) else None
         raise ReviewIngestRefusedError(
             RefusalGrade.TOOL_FAILED,
-            f"Review ingestion could not start the GitHub CLI: "
-            f"{exc.strerror or type(exc).__name__}.",
+            f"Review ingestion could not start the GitHub CLI: {named or type(exc).__name__}.",
         ) from exc
 
     if child.stdout is None or child.stderr is None:  # pragma: no cover - PIPE is requested above

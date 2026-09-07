@@ -176,7 +176,7 @@ class GitHubReviewProvider:
                 events.append(event)
                 if len(events) >= limit:
                     return tuple(events)
-            cursor = _next_cursor(connection)
+            cursor = _next_cursor(connection, "pull requests")
             if cursor is None:
                 return tuple(events)
         raise self._page_cap("pull requests", entry)
@@ -197,6 +197,9 @@ class GitHubReviewProvider:
 
         threads: list[ReviewThread] = []
         cursor: str | None = None
+        # Named once: the page cap's report and a cursor refusal describe the same
+        # read, and two spellings of it would drift apart.
+        what = f"review threads on #{event.number}"
         for _page in range(MAX_PAGES):
             variables: dict[str, str | int] = {
                 "owner": owner,
@@ -212,10 +215,10 @@ class GitHubReviewProvider:
             pull_request = _mapping(repo.get("pullRequest"))
             connection = _mapping(pull_request.get("reviewThreads"))
             threads.extend(self._thread(project_id, event, node) for node in _nodes(connection))
-            cursor = _next_cursor(connection)
+            cursor = _next_cursor(connection, what)
             if cursor is None:
                 return tuple(threads)
-        raise self._page_cap(f"review threads on #{event.number}", entry)
+        raise self._page_cap(what, entry)
 
     # -- the three pre-spawn refusals, in the order ADR-0030 fixes -------------
 
@@ -478,32 +481,64 @@ def _nodes(connection: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [node for node in nodes if isinstance(node, dict)]
 
 
-def _next_cursor(connection: Mapping[str, Any]) -> str | None:
-    """The cursor for the next page, or ``None`` when this was the last.
+def _next_cursor(connection: Mapping[str, Any], what: str) -> str | None:
+    """The cursor for the next page of ``what``, or ``None`` when there is none.
 
     A cursor is an opaque string this adapter hands back in a typed variable
     (clause 6). It chooses no destination: the vector is unchanged but for the
     value of ``after``.
 
     It is also the one value a response supplies that **re-enters an argument
-    vector**, which is why its bytes are checked here and no other response
-    field's are. ``asyncio.create_subprocess_exec`` raises ``ValueError`` -- not
-    ``OSError`` -- on an argument carrying a NUL, and ``_start`` catches
-    ``OSError``, so a cursor with a NUL in it left this adapter as the traceback
-    clause 9 forbids rather than as an envelope.
+    vector**, and what these checks ask is whether it can *be* one: no NUL, and
+    encodable as UTF-8. ``asyncio.create_subprocess_exec`` declines an argument
+    for both, raising a ``ValueError`` either way -- a bare one for the NUL and a
+    ``UnicodeEncodeError`` for an unpaired surrogate. That pair is the shape
+    ``infrastructure/sqlite/index_query.py``'s ``_is_spendable`` already guards a
+    query with, and ``application/proposal_service.py`` a resolved path; this is
+    the third boundary in the repository where the same two arrive together.
+
+    **The closure is the seam, not this function.** ``gh_cli._start`` catches
+    ``(OSError, ValueError)`` around the spawn, so *any* unspawnable argv element
+    -- this cursor, or a value some later caller builds -- leaves as a graded
+    envelope rather than as the traceback clause 9 forbids. What the checks here
+    add is a refusal that names the cursor and the read it stopped, raised before
+    a process exists at all rather than after one failed to start.
+
+    **A page this adapter cannot ask for is a refusal, not a last page.**
+    ``hasNextPage`` true with no usable ``endCursor`` says the answer in hand is
+    part of a larger one, so returning it would present a partial read as the
+    whole -- the silent truncation every recorded cap in this adapter exists to
+    replace with a report.
     """
     page_info = _mapping(connection.get("pageInfo"))
+    if page_info.get("hasNextPage") is not True:
+        return None
     cursor = page_info.get("endCursor")
-    if page_info.get("hasNextPage") is True and isinstance(cursor, str) and cursor:
-        if "\x00" in cursor:
-            raise ReviewIngestRefusedError(
-                RefusalGrade.TOOL_FAILED,
-                "GitHub's answer carried a pagination cursor with a NUL byte in it, "
-                "which is not a value that can be spawned as an argument. The read "
-                "stopped at the page boundary rather than handing it to a process.",
-            )
-        return cursor
-    return None
+    if not isinstance(cursor, str) or not cursor:
+        raise ReviewIngestRefusedError(
+            RefusalGrade.TOOL_FAILED,
+            f"GitHub reported another page of {what} and gave no cursor to ask for it "
+            f"with. The read stopped at the page boundary rather than returning what "
+            f"it had as though that were the whole answer.",
+        )
+    if "\x00" in cursor:
+        raise ReviewIngestRefusedError(
+            RefusalGrade.TOOL_FAILED,
+            f"GitHub's answer carried a pagination cursor for {what} with a NUL byte "
+            f"in it, which is not a value that can be spawned as an argument. The read "
+            f"stopped at the page boundary rather than handing it to a process.",
+        )
+    try:
+        cursor.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ReviewIngestRefusedError(
+            RefusalGrade.TOOL_FAILED,
+            f"GitHub's answer carried a pagination cursor for {what} that is not "
+            f"encodable text -- an unpaired surrogate, which JSON can spell and an "
+            f"argument vector cannot hold. The read stopped at the page boundary "
+            f"rather than handing it to a process.",
+        ) from exc
+    return cursor
 
 
 def _text(value: object) -> str:
