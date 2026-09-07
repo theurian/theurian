@@ -76,6 +76,30 @@ main() {
   status="$(theurian project status --json 2>/dev/null)" || return 0
   if printf '%s' "$status" | grep -q '"registered": *false'; then
     theurian::warn "this repository is not registered. Run /theurian:register-project."
+  elif printf '%s' "$status" | grep -q '"reason": *"'; then
+    # `reason` is Core's one field for "part of this status could not be
+    # resolved" (`_unresolved_status` in `cli/commands.py`), and it is present
+    # on exactly two `registered` values this branch can still see here --
+    # `true` (the registry still holds this root; a broken migration is what
+    # kept `resolve_context` from finishing) and `null` (the registry itself
+    # could not be read, so registration is unknowable). `registered: false`
+    # already took the branch above and never reaches this one, which is what
+    # keeps the "not registered" advice untouched (issue #381 owns telling
+    # that case apart from a not-in-git repository; nothing here assumes it
+    # is closed).
+    #
+    # `reason` itself is never printed: Core's own `_unresolved_status`
+    # docstring records that a broken migration's `reason` carries the YAML
+    # parser's own source snippet -- project file bytes, not something a
+    # session-start hook may echo. `remedy`, when Core sends one, is its own
+    # advisory sentence describing a fix (`theurian project unregister ...`,
+    # `theurian project register`) and is safe to surface.
+    theurian::warn "this repository's knowledge context is degraded and could not be fully resolved. Run /theurian:doctor to diagnose."
+    local remedy
+    remedy="$(printf '%s' "$status" | sed -n -E 's/.*"remedy": *"([^"]*)".*/\1/p' | head -n 1)"
+    if [ -n "$remedy" ]; then
+      theurian::warn "$remedy"
+    fi
   elif printf '%s' "$status" | grep -q '"indexStale": *true'; then
     theurian::warn "the knowledge index is stale. Run /theurian:index when convenient."
   fi
