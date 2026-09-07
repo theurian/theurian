@@ -42,9 +42,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   the gate cleared. `--limit` bounds how many pull requests are read (default one
   adapter page, capped at `MAX_PULL_REQUESTS`), `--since` stops at a
   pull-request number, `--json` emits the run as a document. It exits 0 on a
-  clean run, **1 when any record was withheld or any pull request could not be
-  read**, and 4 when a path under `.theurian/` could not be proved to stay inside
-  the working tree.
+  clean run — **which includes a `warn` run that found a secret and landed the
+  record anyway**; **1 on either of two documents**, the run document when the
+  run happened and was not clean (a record `block` withheld, or a pull request
+  the listing or a fetch could not read) and `{error, remedy}` when the command
+  refused before any report existed, which carries no `clean` field at all; and 4
+  when a path under `.theurian/` could not be proved to stay inside the working
+  tree.
 
   **It is an operator surface and reports identities, not content.** A
   repository, a pull-request number, a provider node id, a field name and a
@@ -55,24 +59,30 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
   **Failure containment is matched to scope, because the question is whether the
   set of records being iterated can still be trusted.** A repository-scope
-  failure — the allowlist, a repository that resolves private, a rename
-  redirect, a transport override, a `gh` that is missing, too old or
-  unauthenticated, an answer whose envelope cannot be read, the pull-request
-  listing's own page cap — halts the run: nothing is fetched afterwards and
-  nothing is written, because the set itself could not be established. A
-  record-scope failure withholds **that pull request's records whole**, reports
-  it by identity with its grade, and lets the run continue; the run then does not
-  read as clean. Record scope covers **both** the seam where one pull request's
-  threads or reviews refuse and the seam **inside the listing** where one pull
-  request's own data cannot be built into a record — an unreadable field of it,
-  its labels or closing issues past their cap. `list_pull_requests` answers those
-  as skipped pull requests rather than raising, so one pathological pull request
-  cannot deny a caller the rest of the repository; and the window is applied to a
-  pull request's number *before* its record is built, so `--since` steps over a
-  known-bad one. The split is by where the fault was and never by grade — a
-  node's label cap, a thread's comment cap and the listing's page cap all carry
-  `LIMIT_EXCEEDED`, and reading the grade would halt on an over-long thread and
-  skip a repository the project may not contact.
+  failure — everything `list_pull_requests` *raises*: the allowlist, a repository
+  that resolves private, a rename redirect, a transport override, a `gh` that is
+  missing, too old or unauthenticated, an answer whose envelope cannot be read, a
+  pagination cursor it cannot use, a pull-request number it cannot read, the
+  pull-request listing's own page cap — halts the run: nothing is fetched
+  afterwards and nothing is written, because the set itself could not be
+  established. A record-scope failure withholds **that pull request's records
+  whole**, reports it by identity with its grade, and lets the run continue; the
+  run then does not read as clean. Record scope covers **both** the seam where
+  one pull request's threads or reviews refuse and the seam **inside the
+  listing** where one pull request's own data cannot be built into a record — a
+  field the record build reads, its labels or closing issues past their cap.
+  `list_pull_requests` answers those as skipped pull requests rather than
+  raising, so one pathological pull request cannot deny a caller the rest of the
+  repository; and the window is applied to a pull request's number *before* its
+  record is built, so `--since` steps over a known-bad one. That ordering is also
+  why the **number** is on the repository side above and not here: a pull request
+  whose number cannot be read is one no window can place. The split is by where
+  the fault was and never by grade — a node's label cap, a thread's comment cap
+  and the listing's page cap all carry `LIMIT_EXCEEDED`, and reading the grade
+  would halt on an over-long thread and skip a repository the project may not
+  contact; `test_one_grade_halts_at_the_listing_and_skips_at_both_seams` in
+  `tests/unit/test_review_ingest_service.py` drives that one grade through all
+  three and asserts three different outcomes.
 
   **No advance marker, and that is a decision rather than an omission.** Nothing
   on disk records a pull request as seen, so a skipped record is re-attempted by
@@ -135,7 +145,19 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   default — withholds the flagged record whole so it is never written, not even
   partially; `warn` lands it and reports every finding; `off` scans nothing. The
   refusal is per record, so a flagged record in one pull request does not stop
-  another pull request landing, and the run exits non-zero.
+  another pull request landing, and a run that withheld one exits non-zero.
+
+  **A `warn` run exits 0, and `secretsWarned` is the published field that says a
+  secret landed anyway.** `clean` reads `true` there and `refused` is empty —
+  both honest, and both silent about a credential the run has just written into
+  `.theurian/review/`, a directory `theurian init` does not add to the managed
+  `.gitignore` block. The exit code is the project's own recorded choice and is
+  unchanged; what is new is a third boolean beside those two, so seeing the state
+  no longer means joining `secretScanPolicy` against a finding count and knowing
+  the rule. The schema's `security.secretScan` description names the same field,
+  and `test_warn_exits_zero_and_still_reports_the_finding` in
+  `tests/integration/test_review_ingest_cli.py` is what fails if it stops being
+  published.
 
   **This takes `propose accept`'s posture rather than `index build`'s, for the
   accept-time reason and not by analogy.** The build reports rather than refuses
