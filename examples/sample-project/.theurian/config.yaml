@@ -1,7 +1,6 @@
 apiVersion: theurian.dev/v1
 projectId: sample-order-service
 defaultBranch: main
-knowledgeDirectory: .theurian
 
 # Every provider defaults to a deterministic in-tree implementation. This project
 # works with no API key and no network (ADR-0009).

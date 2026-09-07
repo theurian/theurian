@@ -14,6 +14,58 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed
 
+- **The project-config schema stops advertising a knowledge directory you can
+  choose** ([#533](https://github.com/theurian/theurian/issues/533)). Since the
+  contract was first published (`0f8c387d`, 2026-08-01) it has carried
+  `knowledgeDirectory` with a `default` of `.theurian` and no `pattern`, which
+  reads as a setting: write a name, and the knowledge directory moves. It never
+  did. `ProjectPaths.of` composes the directory from
+  `DEFAULT_KNOWLEDGE_DIRECTORY`, and the one caller that passes the argument at
+  all — `cli/migration_pipeline.py` — passes the *registry's* value against a
+  rehearsal tree, never this file's. The published contract was wrong, and an
+  integrator who wrote against the document rather than the product has one line
+  to delete.
+
+  **The key is withdrawn, not deleted, and the difference is somebody's file.**
+  An honest schema must not punish past honesty in its users: an operator who set
+  the key because we published it must not have their config broken by our
+  correction; the removal makes the key absent-or-ignored, never a validation
+  failure. `additionalProperties: false` is deliberate throughout these schemas,
+  so deleting the property turns every configuration carrying the key into an
+  invalid one — measured, with the property deleted from a copy of the schema:
+  `Additional properties are not allowed ('knowledgeDirectory' was unexpected)`.
+  So the `default` goes, because the `default` was the claim; `deprecated: true`
+  and a `"Never in force"` description say what is left; and `type: string`
+  stays. The only assertion keyword on that property is therefore unchanged and
+  all three that moved are annotations, which do not decide validity — **no
+  document changes verdict**, and `protocolVersion` does not move.
+
+  **The rule that says which other defaults are honest** is now in the schema's
+  own root description: a published `default` is honest where a named test pins
+  it to the constant the product uses — `tests/unit/test_forest_derivation.py`
+  does that for the `raptor` block — and is a false claim otherwise. Eight
+  siblings carry a `default` with neither a reader nor such a test, `defaultBranch`
+  among them, and they are [#592](https://github.com/theurian/theurian/issues/592)
+  rather than this entry: the rule is what this change owed, not the sweep.
+
+  Taking the description rather than a bare `deprecated: true` moves the pin
+  count, and that is the machinery working rather than a cost to route around:
+  the schema publishes **13** descriptions — the root and 12 key blocks — and
+  **13 of the 13** carry a `WATCHED_KEY_DESCRIPTIONS` row in
+  `tests/unit/test_config_key_call_sites.py`: the root, `knowledgeDirectory`,
+  `providers`, `providers.embedding.apiKeyEnv`, `providers.embedding.endpointEnv`,
+  `providers.review.repositories`, `raptor.enabled`,
+  `raptor.minChildrenPerSummary`, `retrieval.includeStatuses`, `retrieval.rrfK`,
+  `security.maxSourceFileBytes`, `security.secretScan` and `traceabilityPolicy`.
+  Every published description is pinned.
+
+  `examples/sample-project/.theurian/config.yaml` dropped its copy of the line
+  for the other reason: accepted so that nobody's existing file breaks is not the
+  same as taught to the next reader, and the example is what a third party
+  copies. `tests/unit/test_knowledge_directory_key.py` holds both halves, and its
+  parametrised row for a directory name with a space is the tripwire on the
+  hazard #533 recorded — honour the key and that name renders unquoted into the
+  `rm` command `derived_escape_remedy` builds.
 - **`theurian doctor` no longer blames your migrations for a broken
   installation** ([#529](https://github.com/theurian/theurian/issues/529), O-3,
   SEC-6). A build that cannot locate or read the JSON Schemas it publishes
