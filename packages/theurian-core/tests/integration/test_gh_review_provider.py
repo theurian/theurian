@@ -1288,6 +1288,38 @@ async def test_a_gh_below_the_floor_is_refused_and_the_message_names_the_floor(
     assert fake.invocations == 1, "nothing beyond the version probe should have run"
 
 
+@pytest.mark.asyncio
+async def test_a_version_too_long_to_convert_is_a_graded_refusal_not_a_traceback(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The version probe reads a number out of a binary's own output, and ``int()`` can refuse.
+
+    CPython declines to convert a string past ``sys.get_int_max_str_digits()``,
+    4300 by default. So a ``gh`` printing a five-thousand-digit major version --
+    a broken build, or one chosen to be -- put a ``ValueError`` out of the probe
+    rather than the envelope clause 9 promises, on the path whose entire job is
+    to answer with a grade.
+
+    ``TOOL_TOO_OLD`` is the honest grade: an output this adapter cannot parse is
+    a binary it has no measurement of, which is the state that refusal already
+    names, and the message names the floor it could not compare against.
+
+    The digits are written past the interpreter's own limit rather than past
+    ``_MAX_VERSION_DIGITS``, so the input is the one that actually raised and not
+    a value chosen to sit on the new bound.
+    """
+    fake = _write_fake(tmp_path / "vast", version=f"{'9' * 5000}.86.0")
+    provider = _provider(tmp_path, fake)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.TOOL_TOO_OLD
+    assert "2.86.0" in str(raised.value)
+    assert raised.value.remedy
+    assert fake.invocations == 1, "nothing beyond the version probe should have run"
+
+
 def test_the_probe_stdout_bound_this_file_drives_is_the_one_the_probes_pass() -> None:
     """The restated number and the enforced one are two things, so they are compared.
 

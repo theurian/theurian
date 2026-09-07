@@ -99,6 +99,28 @@ _CHUNK_BYTES: Final = 64 * 1024
 
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
+#: The most digits one version component may carry and still be read as a number.
+#:
+#: ``gh`` prints small integers, so nine is generous by any measure a release has
+#: ever needed. The bound exists because ``int()`` **is not total**: CPython
+#: refuses to convert a string past ``sys.get_int_max_str_digits()``, 4300 by
+#: default, and a binary printing more than that -- a broken one, or one chosen
+#: to be -- would put a ``ValueError`` out of the version probe. That is the
+#: traceback clause 9 forbids, on the path whose whole job is to answer with a
+#: graded envelope instead. Past this bound the output is not a version this
+#: adapter can read, which is a state it already grades.
+_MAX_VERSION_DIGITS: Final = 9
+
+
+def _is_convertible(match: re.Match[str]) -> bool:
+    """Whether a matched version's three components can be converted at all.
+
+    Asked before :func:`int` rather than caught after it: a refusal that names
+    the version it could not read is the answer here, and an exception escaping
+    the probe is not.
+    """
+    return all(len(match[part]) <= _MAX_VERSION_DIGITS for part in (1, 2, 3))
+
 
 class _Closable(Protocol):
     """The one method :func:`_release` needs from a child's transport."""
@@ -467,11 +489,14 @@ class GhCli:
                 :data:`~theurian.infrastructure.github.limits.GH_VERSION_FLOOR`,
                 and when the version cannot be read at all -- an output this
                 adapter cannot parse is a binary it has no measurement of, which
-                is the same position as one below the floor.
+                is the same position as one below the floor. "Cannot be read"
+                includes a component past :data:`_MAX_VERSION_DIGITS`, which is
+                not fussiness: ``int()`` refuses a longer one and the
+                ``ValueError`` would leave this probe as a traceback.
         """
         outcome = await self._probe("--version")
         match = _VERSION.search(outcome.stdout.decode("utf-8", errors="replace"))
-        if outcome.returncode != 0 or match is None:
+        if outcome.returncode != 0 or match is None or not _is_convertible(match):
             raise ReviewIngestRefusedError(
                 RefusalGrade.TOOL_TOO_OLD,
                 f"Review ingestion could not read a version from `gh --version`, so it "
