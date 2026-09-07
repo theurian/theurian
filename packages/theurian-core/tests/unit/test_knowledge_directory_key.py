@@ -1,35 +1,45 @@
 """``knowledgeDirectory`` is withdrawn as a setting, and still accepted (#533).
 
-The published schema carried ``knowledgeDirectory`` with a ``default`` of
-``.theurian`` and no ``pattern`` for seven milestones, which reads as a knob: set
-it, and the knowledge directory moves. Nothing honours it. ``ProjectPaths.of``
-composes the directory from ``DEFAULT_KNOWLEDGE_DIRECTORY`` and the only caller
-that passes the argument at all is ``cli/migration_pipeline.py``, which passes the
-*registry's* value against a rehearsal tree -- never this file's.
+From the commit that first published the contract (``0f8c387d``, 2026-08-01) the
+schema carried ``knowledgeDirectory`` with a ``default`` of ``.theurian`` and no
+``pattern``, which reads as a knob: set it, and the knowledge directory moves.
+Nothing honours it. ``ProjectPaths.of`` composes the directory from
+``DEFAULT_KNOWLEDGE_DIRECTORY`` and the only caller that passes the argument at
+all is ``cli/migration_pipeline.py``, which passes the *registry's* value against
+a rehearsal tree -- never this file's.
 
-**Two things had to be true at once, and they pull in opposite directions.** The
-schema must stop advertising a setting that does not exist, and an operator who
-wrote the key *because we published it* must not have their file start failing
-validation for having believed us. Deleting the property does the first and
-breaks the second: ``additionalProperties: false`` is deliberate throughout these
-schemas, so a deleted property makes every file carrying it invalid. Measured
-against this repository's own document, with the property deleted from a copy of
-the schema::
+**Two things had to be true at once, and they pull in opposite directions**, which
+is what :data:`COMPATIBILITY_PRINCIPLE` states and what
+:func:`test_the_changelog_states_the_compatibility_principle_in_the_one_wording`
+holds to a single wording. The schema must stop advertising a setting that does
+not exist, and an operator who wrote the key *because we published it* must not
+have their file start failing validation for having believed us. Deleting the
+property does the first and breaks the second: ``additionalProperties: false`` is
+deliberate throughout these schemas, so a deleted property makes every file
+carrying it invalid. Measured against this repository's own document, with the
+property deleted from a copy of the schema::
 
     legacy-carrying: INVALID: Additional properties are not allowed
                               ('knowledgeDirectory' was unexpected)
 
 So the landing is annotation-only: the ``default`` is gone -- that is the claim
-being withdrawn -- and ``deprecated: true`` says what the key now is, while
-``type: string`` is kept so that **no instance changes verdict**. The record of
-why lives in the core changelog, where a correction to a published contract
-belongs; this module is what holds the tree to it.
+being withdrawn -- while ``deprecated: true`` and a ``"Never in force"``
+description say what the key now is, and ``type: string`` is kept so that **no
+instance changes verdict**. All three keywords that moved are annotations, which
+JSON Schema does not let decide validity; the property's one assertion keyword is
+untouched. The record of why lives in the core changelog, where a correction to a
+published contract belongs; this module is what holds the tree to it.
 
-The same name is a *different, live* surface elsewhere and is deliberately out of
-reach here: ``knowledgeDirectory`` is a field of every ``projects.json`` entry
-(``application/project_service.py``) and of the ``project status`` payload
-(``cli/commands.py``), pinned by ``tests/integration/test_wire_contract.py``.
-Registry field, config key: one spelling, two contracts.
+**The same spelling is a different, live surface, and it is deliberately out of
+reach here.** ``knowledgeDirectory`` is emitted twice in ``src/`` and neither is
+this key: it is a field of every ``projects.json`` registry entry
+(``application/project_service.py``), served by ``project list`` and the
+``project.list`` MCP tool -- which is the face
+``tests/integration/test_wire_contract.py`` pins -- and a field of ``theurian
+init --json``'s payload (``cli/commands.py``), which **nothing pins at all**:
+there is no ``schemas/cli`` document for ``init`` and no test asserts the field in
+that payload. ``theurian project status --json`` carries neither. Registry field,
+config key: one spelling, two contracts.
 
 Marked ``unit`` and writes only under ``tmp_path``.
 """
@@ -64,8 +74,27 @@ EXAMPLE_CONFIG: Final = (
     REPO_ROOT / "examples" / "sample-project" / ".theurian" / PROJECT_CONFIG_FILE
 )
 
+CORE_CHANGELOG: Final = REPO_ROOT / "packages" / "theurian-core" / "CHANGELOG.md"
+
 #: The key this module is about, spelled once.
 KEY: Final = "knowledgeDirectory"
+
+#: Why the key is withdrawn rather than deleted, in **one** wording.
+#:
+#: A principle restated in three places drifts into three principles, and the
+#: drift is invisible from inside any one of them: the first draft of this change
+#: carried "does not punish past honesty in its users" here, "must not punish past
+#: honesty in users" in the changelog, and a third paraphrase in the pull request.
+#: So there is one string, this one, and
+#: :func:`test_the_changelog_states_the_compatibility_principle_in_the_one_wording`
+#: is what keeps the durable copy equal to it. The module docstring above and the
+#: pull-request description refer to this constant rather than restating it.
+COMPATIBILITY_PRINCIPLE: Final = (
+    "An honest schema must not punish past honesty in its users: an operator who set "
+    "the key because we published it must not have their config broken by our "
+    "correction; the removal makes the key absent-or-ignored, never a validation "
+    "failure."
+)
 
 #: A configuration written while the key was published as a setting, with the
 #: value the schema's own ``default`` told its author to expect.
@@ -87,7 +116,13 @@ security:
 
 
 def _published_key() -> dict[str, Any]:
-    """The subschema the wheel publishes for the key, read rather than transcribed."""
+    """The subschema the repository's published schema carries for the key.
+
+    Read from the repository tree rather than transcribed, and the wheel's copy is
+    the same bytes by construction: ``packages/theurian-core/hatch_build.py``
+    force-includes this directory under ``theurian/schemas`` at build time, so
+    there is one document and not two to keep in step.
+    """
     schema = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
     properties = schema["properties"]
 
@@ -118,8 +153,16 @@ def test_the_schema_publishes_the_withdrawn_key_without_a_default() -> None:
     A ``default`` on a published property is an instruction: it tells a reader
     what they get if they say nothing, which is only meaningful for a key
     somebody reads. There is no reader, so the ``default`` was the whole of the
-    false claim -- and ``deprecated`` is JSON Schema's own word for what is left,
-    which schema-aware editors render rather than offer.
+    false claim, and ``deprecated`` is JSON Schema's own word for what is left.
+
+    **That argument reaches further than this key**, which is why the schema's
+    root description now carries the rule rather than this docstring: a published
+    ``default`` is honest where a named test pins it to the constant the product
+    uses -- ``tests/unit/test_forest_derivation.py`` does that for the ``raptor``
+    block -- and is a false claim otherwise. Eight siblings fail that rule today,
+    ``defaultBranch`` among them, and they are
+    `#592 <https://github.com/theurian/theurian/issues/592>`_ rather than this
+    module's business.
     """
     published = _published_key()
 
@@ -144,7 +187,7 @@ def test_the_schema_publishes_the_withdrawn_key_without_a_default() -> None:
 def test_a_configuration_written_while_the_key_was_a_setting_still_validates(
     label: str, text: str
 ) -> None:
-    """An honest schema does not punish past honesty in its users.
+    """:data:`COMPATIBILITY_PRINCIPLE`, run.
 
     An operator who set this key set it because the contract published it, with
     the contract's own default as the value. Withdrawing the claim must leave
@@ -240,12 +283,14 @@ def test_the_withdrawn_key_does_not_change_what_the_config_reader_answers(
 
 
 def test_the_bundled_example_does_not_teach_the_withdrawn_key() -> None:
-    """OSS-13: the example is copied, so it must not teach a key that does nothing.
+    """The example is copied, so it must not teach a key that does nothing.
 
-    ``test_examples.py::test_config_matches_its_schema`` cannot catch this, and
-    that is the point of keeping the key accepted: the example carrying it is
-    still *valid*. Valid and instructive are different questions, and this is the
-    second one.
+    **This module's own rule, not a citation.** OSS-13 is discharged by the row
+    that already exists -- ``test_examples.py`` asserts that the bundled example is
+    present and that its config validates -- and neither answers this question:
+    ``test_config_matches_its_schema`` *cannot* catch a withdrawn key here, which
+    is the point of keeping the key accepted. The example carrying it stays valid.
+    Valid and instructive are different questions, and this is the second one.
     """
     lines = [
         line
@@ -258,4 +303,31 @@ def test_the_bundled_example_does_not_teach_the_withdrawn_key() -> None:
         f"accepted so that nobody's existing file breaks, not so that the example "
         f"teaches it to the next reader -- a reader who copies this file copies "
         f"the line and believes the directory is theirs to name (#533)."
+    )
+
+
+def test_the_changelog_states_the_compatibility_principle_in_the_one_wording() -> None:
+    """RED means the principle has two spellings again, which is how it becomes two rules.
+
+    :data:`COMPATIBILITY_PRINCIPLE` is the reason this key was withdrawn instead of
+    deleted, and it is the sentence the *next* schema correction will be read
+    against. A principle that appears in a changelog, a docstring and a pull
+    request in three near-identical wordings has already started to drift: each
+    copy looks authoritative, and nothing says which one is the rule.
+
+    So the durable copy -- the changelog, which outlives the branch -- is held
+    equal to the constant, and everything else refers to the constant rather than
+    restating it. If the wording genuinely improves, it improves in one place and
+    this row carries it into the other.
+    """
+    changelog = " ".join(CORE_CHANGELOG.read_text(encoding="utf-8").split())
+
+    assert " ".join(COMPATIBILITY_PRINCIPLE.split()) in changelog, (
+        f"packages/theurian-core/CHANGELOG.md no longer states the compatibility "
+        f"principle in the wording this module records:\n\n"
+        f"  {COMPATIBILITY_PRINCIPLE}\n\n"
+        f"This is the sentence a later schema correction will be argued from. Do not "
+        f"repair this by loosening the match to a fragment: a fragment match is what "
+        f"lets a second wording live beside the first, which is the drift the pin "
+        f"exists to stop (#533)."
     )

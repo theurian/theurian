@@ -550,6 +550,27 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "`_PROXIMITY` -- so no row is owed for the table, and adding one would read as "
         "stale. Its owed-item *prose* at :735 is a member, and has its own row above.",
     ),
+    # A fourth member of that same class, from #533's changelog entry, and the
+    # first one outside `docs/`. Same reading, one measurement worth carrying to
+    # whoever does #576's refresh: **the refresh is not a one-line commit.**
+    # Measured 2026-09-07 on this branch, with `tracker_state.py --refresh`
+    # installed, `controls_discharge --offline` goes from exit 0 to exit 1 -- #429
+    # and #338 have closed since 2026-09-03, so the `providers.review.repositories`
+    # description and threat-model:5899 become DEAD OWNER rows needing a live
+    # owner each. That is why this entry recorded a row rather than refreshing:
+    # the refresh owes two repointings that are nobody's business here.
+    (
+        "packages/theurian-core/CHANGELOG.md",
+        "592",
+        "rather than this entry",
+        "correct -- open owner, snapshot-age false positive",
+        "#533's entry hands the eight sibling defaults -- a `default` with neither a "
+        "reader nor a test pinning it to the product's constant -- to #592, in owner "
+        "position. #592 was filed 2026-09-07 and read OPEN the same day (`gh issue view "
+        "592`); it is absent from the 2026-09-03 snapshot because it postdates it, so "
+        "the offline run reads a live owner as no owner. Not an owner defect: naming the "
+        "sweep's issue is what kept #533's own scope to one key.",
+    ),
     # The #586 row that stood here is gone, and *not* because the tracker
     # snapshot moved: T-6's first accepted residual no longer names #586 as the
     # owner of anything. That bound landed, so the paragraph states the improved

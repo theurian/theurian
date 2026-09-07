@@ -595,7 +595,10 @@ SCHEMA_ROOT_DESCRIPTION: Final = (
     "(ADR-0027 decision 3), so that one key is in force and every other key published "
     "here is reserved. Setting a reserved key changes nothing, and where a default "
     "below is also honoured by the product the code carries its own copy rather than "
-    "reading this file. The review-ingestion allowlist is owed with the first external "
+    "reading this file. A published `default` is honest where a named test pins it to "
+    "the constant the product uses -- `tests/unit/test_forest_derivation.py` does that "
+    "for the `raptor` block -- and is a false claim otherwise. "
+    "The review-ingestion allowlist is owed with the first external "
     "fetch path "
     "(https://github.com/theurian/theurian/issues/429)."
 )
@@ -620,7 +623,11 @@ def test_the_schema_root_description_is_exactly_what_this_file_records() -> None
     claim it now makes, because that is the review this pin exists to force. Round
     four is why the sentence is worth reading rather than copying: the description
     said "Each reserved key's own description says what it is owed with", and three
-    of the ten reserved keys carry such a clause.
+    of the eleven reserved keys carry such a clause -- `providers.review.repositories`,
+    `raptor.enabled` and `security.maxSourceFileBytes`, named rather than counted
+    because the key is what a reader would have to guess. ``knowledgeDirectory``
+    cites an issue as well and is not one of them: #533 is what *withdrew* that key,
+    which is not work it is owed.
     """
     schema = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
 
@@ -667,7 +674,7 @@ def _described_node(pointer: tuple[str, ...]) -> str:
 #: addition-proof one constant above (:data:`SCHEMA_ROOT_DESCRIPTION`) and then
 #: left the description that carries SEC-11's whole bound fragment-pinned.
 #:
-#: It is one of twelve pinned whole now, and the sentence that used to stand here
+#: It is one of thirteen pinned whole now, and the sentence that used to stand here
 #: -- "the other nine stay fragment-pinned on purpose: they describe reserved keys,
 #: so a sentence added to one asserts nothing a reader can act on" -- was false in
 #: two places, which round three planted. ``retrieval.includeStatuses`` describes
@@ -1174,13 +1181,25 @@ def test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it() -> Non
 #: because the sentence a reader has to be able to trust is no longer "this does
 #: nothing" but "this does exactly this much".
 #:
-#: The eleven key rows are in the order :func:`_described_key_paths` derives, so
+#: The twelve key rows are in the order :func:`_described_key_paths` derives, so
 #: the changelog sentence built from this table and the sentence built from the
 #: schema list the same names in the same order. That agreement is asserted by
 #: :func:`test_the_watched_descriptions_are_ordered_the_way_the_schema_derives_them`
 #: rather than left to a reader keeping two lists in step by eye.
 WATCHED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("(schema root)", (), SCHEMA_ROOT_DESCRIPTION),
+    (
+        "knowledgeDirectory",
+        (
+            "properties",
+            "knowledgeDirectory",
+        ),
+        "Never in force. Nothing in `src/` has ever read this key; the knowledge "
+        "directory is always `.theurian`, which `application/project_service.py` "
+        "composes from `DEFAULT_KNOWLEDGE_DIRECTORY`. Kept published so that a "
+        "configuration written while it was advertised still validates, and held to "
+        "both halves by `tests/unit/test_knowledge_directory_key.py`.",
+    ),
     (
         "providers",
         (
@@ -1934,16 +1953,18 @@ SECRET_SCAN_POLICY_IMPORTERS: tuple[str, ...] = (
 #: Number words as the changelog spells them, index = value.
 #:
 #: The sentences rebuilt below mix digits and words: a quantity that is the subject
-#: of the claim is bolded as a numeral -- "**12** descriptions", "**12 of the
-#: 12**" -- and a quantity in passing is spelled out, as in "five spellings in
+#: of the claim is bolded as a numeral -- "**13** descriptions", "**13 of the
+#: 13**" -- and a quantity in passing is spelled out, as in "five spellings in
 #: `WATCHED_SPELLINGS` -- four of them published key blocks". A derived number
 #: therefore has to be rendered the way the prose renders it, and this table is the
 #: word half.
 #:
-#: Twelve is the ceiling because the largest quantity these sentences carry is the
-#: number of published descriptions. A thirteenth is a schema change, and
-#: :func:`_number_word` refuses rather than silently formatting a digit into a
-#: sentence that spells its neighbours out.
+#: **The ceiling is the number of published descriptions**, which is what the
+#: largest word-rendered quantity -- the unpinned remainder, ``published - pinned``
+#: -- can reach when nothing is pinned at all. That is 13 since #533 tombstoned
+#: ``knowledgeDirectory`` with a description, so a fourteenth key block is a schema
+#: change and :func:`_number_word` refuses rather than silently formatting a digit
+#: into a sentence that spells its neighbours out.
 _NUMBER_WORDS: Final[tuple[str, ...]] = (
     "zero",
     "one",
@@ -1958,6 +1979,7 @@ _NUMBER_WORDS: Final[tuple[str, ...]] = (
     "ten",
     "eleven",
     "twelve",
+    "thirteen",
 )
 
 
@@ -2545,17 +2567,20 @@ def test_the_changelog_states_the_pin_reach_this_module_actually_has() -> None:
 
     The entry first said this module "now watches the root description as well as
     the eleven key blocks", which read as coverage and was not: three of the
-    twelve descriptions carry a row, and five spellings are watched of which one
-    is not a described block at all. Round one caught it by hand. This is the
+    twelve descriptions published *then* carried a row, and five spellings are
+    watched of which one is not a described block at all. Round one caught it by
+    hand. This is the
     contract that catches the next one -- every number in the two sentences is
     recomputed here from :data:`WATCHED_KEY_DESCRIPTIONS`,
     :data:`WATCHED_SPELLINGS` and the published schema, and the sentence is
     rebuilt from the results rather than pattern-matched.
 
     So the pin fails in both directions a coverage claim can drift. **Unpinning**
-    a key without touching the entry is RED, because the rebuilt sentence says "11
-    of the 12" where the file says twelve. Publishing a *thirteenth* key block is
-    RED for the same reason from the schema side. And a rewrite that quietly
+    a key without touching the entry is RED, because the rebuilt sentence says "12
+    of the 13" where the file says thirteen. Publishing a *fourteenth* key block is
+    RED for the same reason from the schema side -- which is the direction #533
+    took, arriving from a key that had no description until its `default` was
+    withdrawn. And a rewrite that quietly
     restores "as well as the eleven key blocks" is RED because that sentence is not
     the one this builds.
 
