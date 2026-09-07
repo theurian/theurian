@@ -44,27 +44,41 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   in that condition is worth publishing. `init`, `project register`, `ingest`,
   `findings build`, `propose` and `propose accept` move from 1 to 4 with them.
 
+  **The same three commands close a sibling face: an escaping
+  `.theurian/migrations`.** `.theurian` is honest there and only `migrations`
+  under it is the link, so `ProjectPaths.of` passes and the *migration loader*
+  refuses (`PathEscapeError`, #233) — a different escape type the ten
+  `_require_project` commands already graded 4, but that `project status` graded
+  **0** and `init`/`project register` graded **1** (measured at `dbad3898`). All
+  thirteen now grade it 4 too, so a doctored `.theurian` answers one code whether
+  the link is the directory itself or the migrations under it.
+
   `EXIT_STATE_ERROR` (4) is the survivor for #525's reason, unchanged: exit 1 is
   this CLI's "the command could not run here", and a working tree carrying a link
   force-added past ADR-0004's ignore is a knowledge-state problem the user must
   repair. Exit codes are a published contract, so this is called out as breaking;
   `docs/protocol/plugin-core-compatibility.md` records it beside #525's decision.
   The CP-2 envelope does not move — one `{error, remedy}` document on stderr with
-  stdout empty, carrying the knowledge-directory cure — only the number beside it.
+  stdout empty — only the number beside it.
 
   **The population is derived rather than listed.**
   `tests/integration/test_escaping_knowledge_dir_grading.py` reads the eight
   `ProjectPaths.of` call sites and the thirteen context-resolving callers out of
-  the source, classifies each call site, and drives every graded one. Both keys
-  were shown to fail on a planted member by name, so the closure is checkable
-  rather than asserted.
+  the source, and — since "uniform" is a claim about the resolvers, not a hope —
+  reads each resolver's `except` arms from the AST and asserts all three grade the
+  same escape types (both `PathEscapeError` and `ProjectPathEscapeError`) the same
+  way. Every key was shown to fail on a planted member by name, so the closure is
+  checkable rather than asserted.
 
   **What did *not* move, and why.** `theurian doctor` and `theurian setup` reach
   five of those call sites and keep reporting `conflicting`, "Could not check
-  initial-index." / "Could not check migrations-valid." — measured identical for
-  both faces before and after. A probe has to come back with a verdict, and
-  publishing a containment refusal as a claim about the operator's YAML is the
-  misattribution that placement decision exists to avoid.
+  initial-index." / "Could not check migrations-valid." for both faces — the step
+  status, summary and consent flag are byte-identical before and after. The one
+  thing that does change is the withheld `detail`: it names the exception type,
+  which is now `ProjectPathEscapeError` where it was the base `ProjectError` (a
+  type-name refinement, nothing a caller branches on). A probe has to come back
+  with a verdict, and publishing a containment refusal as a claim about the
+  operator's YAML is the misattribution that placement decision exists to avoid.
 
 ### Fixed
 

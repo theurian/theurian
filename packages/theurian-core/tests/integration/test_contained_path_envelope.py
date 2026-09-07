@@ -418,14 +418,17 @@ PLANTS: Final = (
         relative="knowledge",
         is_directory=True,
         remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
-        refuses=_EVERY_STATE_READER - {"project status"},
+        refuses=_EVERY_STATE_READER,
         outside_the_class_because=(
             "the migration loader refuses first. Every swept command that resolves a "
             "project exits 4 over this plant, but the refusal is `PathEscapeError` "
             "over the migration's `contentFile`, naming `.theurian/migrations` -- "
-            "`ProjectPaths.knowledge` is never asked. Its only consumer is "
-            "`proposal_service`, reached through `propose` and `propose accept`, "
-            "both outside this sweep. Attributed rather than asserted by "
+            "`ProjectPaths.knowledge` is never asked. `project status` joined the "
+            "refusing set at #550, when it gained an `except PathEscapeError` arm "
+            "grading the loader's escape `EXIT_STATE_ERROR` like every other "
+            "resolver; before that it degraded to exit 0 over this plant. Its only "
+            "consumer is `proposal_service`, reached through `propose` and `propose "
+            "accept`, both outside this sweep. Attributed rather than asserted by "
             "`test_the_knowledge_plant_is_refused_by_the_migration_loader_not_by_containment`."
         ),
     ),
@@ -1453,13 +1456,15 @@ def test_the_knowledge_plant_is_refused_by_the_migration_loader_not_by_containme
 ) -> None:
     """The one exclusion an exit code alone would misread as coverage.
 
-    An escaping ``.theurian/knowledge`` makes six swept commands exit 4 with a
-    clean envelope, which looks exactly like the containment class doing its job.
-    It is not: the refusal is the migration loader's ``PathEscapeError`` over the
-    migration's ``contentFile``, and ``ProjectPaths.knowledge`` -- whose only
+    An escaping ``.theurian/knowledge`` makes all seven swept state readers exit 4
+    with a clean envelope, which looks exactly like the containment class doing its
+    job. It is not: the refusal is the migration loader's ``PathEscapeError`` over
+    the migration's ``contentFile``, and ``ProjectPaths.knowledge`` -- whose only
     consumer is ``proposal_service``, reached through ``propose`` -- is never
     asked. Counting it as a covered member would put a helper no swept command
-    touches inside the closure argument.
+    touches inside the closure argument. (``project status`` was the seventh, and
+    exited 0 over this plant until #550 gave it the same ``except PathEscapeError``
+    arm the other six carry.)
 
     Attributed by the published cure rather than by reading the call graph: the
     remedy names ``.theurian/migrations`` and is neither of the two texts

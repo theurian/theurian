@@ -29,6 +29,7 @@ import pytest
 from theurian.application.project_service import (
     KNOWLEDGE_DIR_ESCAPE_REMEDY,
     ProjectError,
+    ProjectPathEscapeError,
     ProjectPaths,
     derived_escape_remedy,
 )
@@ -145,14 +146,20 @@ def test_a_knowledge_directory_that_will_not_resolve_is_a_project_error_not_a_va
 ) -> None:
     """The ``except`` arm: ``resolve`` can raise instead of answering a location.
 
-    An embedded NUL makes ``Path.resolve`` raise ``ValueError``; a name the
-    platform rejects makes it raise ``OSError``. Neither is a ``TheurianError``,
-    and callers of ``ProjectPaths.of`` only narrow to that -- so a join that will
-    not resolve is refused with the same remedy as one that resolves outside,
-    rather than escaping as a raw exception. Modelled on ``index_for``'s and
-    ``entry_root``'s conversions of the identical pair.
+    This is the driving test the arm's comment names, and the door it comes
+    through is the embedded NUL: it makes ``Path.resolve`` raise ``ValueError``
+    from the syscall layer (measured, ``lstat: embedded null character``). The
+    ``OSError`` half of the arm is a contract guarantee, not a POSIX branch --
+    ``resolve`` here is non-strict, and a symlink cycle, a dangling link and an
+    over-length name were each measured 2026-09-07 to resolve without raising
+    (Darwin), so only a stricter platform reaches it that way. Neither exception
+    is a ``TheurianError``, and callers of ``ProjectPaths.of`` only narrow to that
+    -- so a join that will not resolve is refused as the escape it is (the
+    ``ProjectPathEscapeError`` the CLI grades ``EXIT_STATE_ERROR`` since #550),
+    with the same remedy as one that resolves outside, rather than escaping as a
+    raw exception.
     """
-    with pytest.raises(ProjectError) as excinfo:
+    with pytest.raises(ProjectPathEscapeError) as excinfo:
         ProjectPaths.of(tmp_path, PurePosixPath(".theurian\x00evil"))
 
     assert excinfo.value.remedy == KNOWLEDGE_DIR_ESCAPE_REMEDY

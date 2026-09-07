@@ -1128,11 +1128,20 @@ class ProjectPaths:
         try:
             escapes = not knowledge_dir.resolve().is_relative_to(resolved)
         except (OSError, ValueError) as exc:
-            # A symlink cycle (`ELOOP`) or a name the platform rejects makes
-            # `resolve` raise rather than answer a location. Neither is a
-            # `TheurianError`, and a join that will not resolve to a place inside
-            # the project is refused for the same reason one that resolves
-            # outside is: nothing derived from it can be trusted to stay inside.
+            # Defensive parity with `_contain`'s own arm, and reachable through the
+            # same one door: an embedded NUL in `directory` raises `ValueError` from
+            # the syscall layer (measured, ``lstat: embedded null character``). The
+            # `OSError` half is a contract guarantee, not a POSIX branch -- `resolve`
+            # here is non-strict, so a symlink cycle, a dangling link, an
+            # over-`NAME_MAX` component and a path past `PATH_MAX` were each measured
+            # 2026-09-07 to resolve without raising (Darwin, CPython 3.13.3); only a
+            # platform that rejects the name outright (Windows, or a future stricter
+            # resolver) takes this arm by `OSError`. Every `directory` reaching here
+            # is the validated `knowledge_directory` or the constant default, so no
+            # real caller drives it -- but a path that will not resolve to a location
+            # is refused for the same reason one that resolves outside is: nothing
+            # derived from it can be trusted to stay inside. Driven by
+            # `test_project_paths_containment.py`'s embedded-NUL case.
             raise ProjectPathEscapeError(
                 f"{directory} does not resolve to a location inside {resolved}: {exc}",
                 remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,

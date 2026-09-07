@@ -63,6 +63,16 @@ What this cannot see, same as its sibling: a name it cannot resolve
 statically -- ``getattr``, a dispatch table, a re-export under a third name.
 It is a floor on the review a new call site gets, not a proof that an
 unguarded one cannot exist.
+
+**One evasion is closed rather than left to that caveat**, because it is cheap
+and was called out beside ``test_escaping_knowledge_dir_grading.py``'s twin key:
+an *aliased* import (``from … import resolve_context as rc`` then ``rc(...)``) or
+a module-attribute spelling (``ctx.resolve_context(...)``) slips past a scan
+keyed on the bare name. :func:`test_the_scan_is_not_evaded_by_an_import_alias`
+forbids both across the source, so the bare name is the only spelling and the
+population scan is complete over it. Fixed here as well as there deliberately: the
+two files share this knowledge, and a guard living only in the other one is a
+two-edit hazard.
 """
 
 from __future__ import annotations
@@ -219,6 +229,36 @@ def test_the_scanner_looks_for_names_the_product_actually_calls() -> None:
         "`_resolve_or_refuse` no longer exists in `theurian.cli.commands`; rename "
         "CALLEES and the pinned sets together, or this scan silently protects "
         "nothing"
+    )
+
+
+def test_the_scan_is_not_evaded_by_an_import_alias() -> None:
+    """The bare-name scan is complete only if no other spelling exists.
+
+    ``_call_sites`` matches a bare-name call, so ``from … import resolve_context
+    as rc`` then ``rc(...)``, or ``import … as m`` then ``m.resolve_context(...)``,
+    would reach the loader unseen. Neither is used; this asserts it, so the
+    population enumeration below rests on a forbidden alternative rather than on
+    trust. The twin guard in ``test_escaping_knowledge_dir_grading.py`` forbids the
+    same over ``ProjectPaths`` and the resolvers; kept here too so neither file's
+    deletion silently reopens the gap.
+    """
+    aliased: dict[str, list[str]] = {}
+    attributed: dict[str, list[str]] = {}
+    for path in sorted(SRC.rglob("*.py")):
+        module = path.relative_to(SRC).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name in CALLEES and alias.asname is not None:
+                        aliased.setdefault(module, []).append(f"{alias.name} as {alias.asname}")
+            elif isinstance(node, ast.Attribute) and node.attr in CALLEES:
+                attributed.setdefault(module, []).append(node.attr)
+
+    assert not aliased, f"a callee is imported under an alias the scan cannot follow: {aliased}"
+    assert not attributed, (
+        f"a callee is reached as a module attribute the bare-name scan cannot see: {attributed}"
     )
 
 

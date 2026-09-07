@@ -213,12 +213,16 @@ def _fail_a_path_escape(exc: ProjectPathEscapeError, *, as_json: bool) -> None:
     from the identical link one level deeper. ``test_escaping_knowledge_dir_grading.py``
     derives that population from the source and drives every graded member of it.
 
-    ``exc.remedy`` bare rather than through :func:`_context_remedy`: both of
-    ``_contain``'s raise sites pass a ``remedy``, and ``_contained`` supplies it
-    from ``ProjectPaths._escape_remedy``, keyed on the refused path -- so there
-    is no arrival here with an empty one for a default to answer, and
-    ``_context_remedy`` would return ``exc.remedy`` anyway. That the key survives
-    is pinned by
+    ``exc.remedy`` bare rather than through :func:`_context_remedy`: all four
+    ``raise ProjectPathEscapeError`` sites pass a ``remedy`` -- the two in
+    ``_contain`` (via ``_contained``'s ``ProjectPaths._escape_remedy``, keyed on
+    the refused path) and the two in ``ProjectPaths.of`` (``KNOWLEDGE_DIR_ESCAPE_REMEDY``,
+    since #550 routes ``of``'s refusals here too) -- so there is no arrival here
+    with an empty one for a default to answer, and ``_context_remedy`` would
+    return ``exc.remedy`` anyway. The enumeration is the guard, because
+    ``TheurianError.remedy`` defaults to ``""``: a fifth raise site that forgot a
+    remedy would publish a blank one. That the ``_contained`` key survives is
+    pinned by
     ``test_every_containment_refusal_publishes_the_remedy_for_the_path_it_refused``,
     which went RED under a mutation flattening ``_escape_remedy`` to one text.
 
@@ -940,18 +944,24 @@ def _resolve_or_refuse(
     """Resolve a context for the two commands that run *before* a project exists.
 
     ``init`` and ``project register`` cannot go through :func:`_require_project`:
-    it loads the migration set and opens the previously active state database, and
-    neither is there yet at ``init`` time. What they do share is this pair of
-    arms, and the pair is the point -- keeping them in one place is what stopped
-    them drifting the first time. The default remedy is "run this inside a Git
-    repository" because that is the failure both of them actually meet.
+    that one opens the previously active state database and verifies migration
+    history (:func:`_verify_history`, ``database_for``), which is meaningless
+    before a build exists, and it calls ``resolve_context()`` argument-less, so it
+    cannot carry ``project register``'s ``start`` and explicit ``project_id``.
+    Both paths *do* load the migration set -- ``resolve_context`` does that on
+    every route, which is why the escape arms below are shared rather than skipped.
+    The default remedy is "run this inside a Git repository" because that is the
+    failure both of them actually meet.
 
-    The escape arm goes first, and has to: ``ProjectPathEscapeError`` is a
-    ``ProjectError`` and so a ``TheurianError``, so a ``.theurian`` a clone
-    delivered as a link out of the working tree used to fall into the generic
-    branch and exit 1 -- publishing "Run this inside a Git repository." to
-    somebody standing in one, while the same clone's link one level deeper at
-    ``.theurian/state`` answered ``EXIT_STATE_ERROR`` (#550).
+    Both escape arms go before the generic branch, and have to: each escape type
+    is a ``TheurianError``, so a ``.theurian`` a clone delivered as a link out of
+    the tree (``ProjectPathEscapeError``) or a ``.theurian/migrations`` it
+    delivered the same way (the loader's ``PathEscapeError``) would otherwise fall
+    into the generic branch and exit 1 -- publishing "Run this inside a Git
+    repository." to somebody standing in one, while the same clone's link one
+    level deeper answered ``EXIT_STATE_ERROR`` (#550). The two arms are the same
+    grading :func:`_require_project` gives, kept identical by
+    ``test_every_cli_resolver_grades_the_same_escape_types``.
 
     Never returns on the failure paths -- :func:`_fail` raises ``typer.Exit`` --
     and the trailing ``raise`` is what says so to a type checker, the shape
@@ -961,6 +971,9 @@ def _resolve_or_refuse(
         return resolve_context(start, project_id)
     except ProjectPathEscapeError as exc:
         _fail_a_path_escape(exc, as_json=as_json)
+        raise
+    except PathEscapeError as exc:
+        _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
         raise
     except TheurianError as exc:
         _fail(
@@ -996,7 +1009,8 @@ def init_command(as_json: JsonOption = False) -> None:
         # symlink points outside the working tree (#237), rather than `mkdir`-ing
         # the knowledge directories at the link's target. Its `.remedy` names the
         # cure; without this `except` it arrived as a Typer traceback, since the
-        # only guard here wrapped `resolve_context`.
+        # resolve guard (`_resolve_or_refuse`, which `init` calls above) covers
+        # only the resolve and not this `initialize_project` call.
         _fail(
             str(exc),
             remedy=_context_remedy(exc, default="Repair the .theurian layout, then re-run."),
@@ -1425,10 +1439,18 @@ def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
 
     Exit 0 is kept deliberately: unlike every other command here, ``status``
     answers for repositories that are not yet a project at all, and "not
-    registered" -- for any reason, including "not inside a Git repository" -- is
-    a legitimate status rather than a command failure. Switching to the
-    ``{error, remedy}`` / non-zero contract the other commands use would make a
-    routine "you haven't set this up" status look like a crash.
+    registered" -- including "not inside a Git repository" -- is a legitimate
+    status rather than a command failure. Switching to the ``{error, remedy}`` /
+    non-zero contract the other commands use would make a routine "you haven't set
+    this up" status look like a crash.
+
+    **Two escape reasons are diverted away from here before it is reached, and are
+    not "any reason".** ``project_status`` grades ``ProjectPathEscapeError`` (an
+    escaping ``.theurian``) and ``PathEscapeError`` (the loader over an escaping
+    ``.theurian/migrations``) at ``EXIT_STATE_ERROR`` in their own arms, because a
+    doctored clone is not a repository "not set up yet" -- it is a knowledge-state
+    problem the user must repair (#550). So the exception this function receives is
+    a genuine "nothing resolved here", never a containment escape.
 
     But an ambiguous registry is not a routine "nothing here yet": it is a
     problem only the user can fix, and ``exc.remedy`` is the only place
@@ -1505,19 +1527,31 @@ def project_status(as_json: JsonOption = False) -> None:
     """Report registration, state hash, and index freshness for this repository."""
     try:
         context = resolve_context()
-    # A refusal, not a degradation, and this is the arm that tells them apart at
-    # the *resolve* -- the same distinction the two handlers below draw at the
-    # pointer and at the state database. `_unresolved_status` degrades to exit 0
-    # because "this directory is not a project" is an ordinary answer for a
-    # command that runs anywhere; a `.theurian` a clone delivered as a link out of
-    # the tree is not that. Measured at `8372cc8c`, this command answered exit 0
-    # with `registered: true` over exactly that plant, while the identical link one
-    # level deeper at `.theurian/state` answered 4 (#550). Reporting a registered
-    # project on the strength of a layout that is not in the working tree is a
-    # claim, and no partial answer about a tree in that condition is worth
-    # publishing.
+    # A refusal, not a degradation, and these two arms tell them apart at the
+    # *resolve* -- the same distinction the two handlers below draw at the pointer
+    # and at the state database. `_unresolved_status` degrades to exit 0 because
+    # "this directory is not a project" is an ordinary answer for a command that
+    # runs anywhere; a `.theurian` a clone delivered as a link out of the tree is
+    # not that. Measured at `8372cc8c`, this command answered exit 0 with
+    # `registered: true` over exactly that plant, while the identical link one
+    # level deeper at `.theurian/state` answered 4 (#550).
+    #
+    # Two escape types, one grade. `ProjectPathEscapeError` is `ProjectPaths.of`
+    # refusing an escaping `.theurian`; `PathEscapeError` is the migration loader
+    # refusing an escaping `.theurian/migrations`, honest `.theurian` and all
+    # (#233). The second reached this command through the generic branch below at
+    # exit 0 until this arm -- `project register` and `init` answered it 1 the same
+    # way, and `_require_project` answered it 4 -- so both are graded here exactly
+    # as `_require_project` grades them, kept identical by
+    # `test_every_cli_resolver_grades_the_same_escape_types`. Reporting a
+    # registered project on the strength of a layout that is not in the working
+    # tree is a claim, and no partial answer about a tree in that condition is
+    # worth publishing.
     except ProjectPathEscapeError as exc:
         _fail_a_path_escape(exc, as_json=as_json)
+        return
+    except PathEscapeError as exc:
+        _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
         return
     except TheurianError as exc:
         _emit(_unresolved_status(exc), as_json=as_json)
@@ -3059,16 +3093,21 @@ def _require_project(as_json: bool) -> tuple[CommandContext, Path]:
     # (issue #205). Every branch in *this* `try` is graded `EXIT_STATE_ERROR`
     # -- that is `_require_project`'s own grading, not a claim about every
     # consumer of these types: `init` and `project register` reach the same
-    # exceptions through their own direct `resolve_context()` calls and exit
-    # 1 via `_context_remedy`'s generic `except TheurianError` branch, and
-    # `project status` reaches exit 0 through `_unresolved_status`. An
-    # unreadable migration is a knowledge-state problem the user must fix in
+    # exceptions through `_resolve_or_refuse`, which grades a *non-escape*
+    # migration error (a checksum mismatch, a cycle) exit 1 via
+    # `_context_remedy`'s generic `except TheurianError` branch, and `project
+    # status` reaches exit 0 through `_unresolved_status`. The two *escape* types
+    # are the exception to that divergence since #550 -- `_resolve_or_refuse` and
+    # `project status` grade `PathEscapeError` and `ProjectPathEscapeError`
+    # `EXIT_STATE_ERROR` exactly as this function does, kept identical by
+    # `test_every_cli_resolver_grades_the_same_escape_types`. An unreadable
+    # migration is a knowledge-state problem the user must fix in
     # `_require_project`'s callers -- ten as of 22ce405b, 2026-09-07; re-count with
     # `grep -rn '_require_project(as_json)$' packages/theurian-core/src/theurian/cli/`
     # rather than trusting this number -- the same family as a checksum
     # mismatch or a dependency cycle above -- what varies between commands is
-    # the exit code their own contract already assigns to "could not resolve
-    # a project", not a re-grading of the exception itself.
+    # the exit code their own contract already assigns to a *non-escape* failure
+    # to resolve a project, not a re-grading of the exception itself.
     except MigrationError as exc:
         _fail(
             str(exc),
