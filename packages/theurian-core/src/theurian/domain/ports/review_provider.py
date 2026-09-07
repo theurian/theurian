@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from theurian.domain.identifiers import ProjectId
-from theurian.domain.review import ReviewEvent, ReviewThread
+from theurian.domain.review import ReviewEvent, ReviewSubmission, ReviewThread
 
 
 @runtime_checkable
@@ -48,4 +48,23 @@ class ReviewProvider(Protocol):
         self, project_id: ProjectId, event: ReviewEvent
     ) -> tuple[ReviewThread, ...]:
         """Review threads for one pull request, with comments and resolution state."""
+        ...
+
+    async def get_reviews(
+        self, project_id: ProjectId, event: ReviewEvent
+    ) -> tuple[ReviewSubmission, ...]:
+        """Top-level reviews for one pull request: the verdicts, not the line comments.
+
+        Its own method rather than a second return value from :meth:`get_threads`,
+        because FR-V1 names reviews and threads separately and providers carry
+        them as separate connections that paginate independently. A caller that
+        wants only threads then pays for only threads.
+
+        Implementations fetch these in a **per-pull-request** request. A
+        connection nested inside the pull-request listing is asked for once per
+        pull request in the page and carries no cursor an implementation could
+        follow, so what overflows there is lost with nothing to report it -- and
+        the same allowlist and timeout obligations :meth:`list_pull_requests`
+        records apply here unchanged.
+        """
         ...

@@ -9,10 +9,10 @@ refuse the request, and this decides what an answer is allowed to be read as.
 
 It is a module of its own because the adapter reached its size limit, and the
 split has a boundary worth keeping: nothing here spawns anything, nothing here
-consults the allowlist, and nothing here knows which read it is serving. Two
-records are built here rather than in the adapter -- a participant and a comment
--- because both are built straight out of a response's shapes and out of nothing
-else.
+consults the allowlist, and nothing here knows which read it is serving. Three
+records are built here rather than in the adapter -- a participant, a comment and
+a review submission -- because each is built straight out of a response's shapes
+and out of nothing else.
 """
 
 from __future__ import annotations
@@ -21,7 +21,8 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Final
 
-from theurian.domain.review import ReviewComment, ReviewParticipant
+from theurian.domain.identifiers import ProjectId
+from theurian.domain.review import ReviewComment, ReviewParticipant, ReviewSubmission
 from theurian.domain.review_ingest import (
     RefusalGrade,
     ReviewIngestRefusedError,
@@ -304,4 +305,30 @@ def comment(node: Mapping[str, Any]) -> ReviewComment:
         # `category` is a classification, and classification is FR-V2's -- out of
         # this slice and out of this path entirely (FR-V5).
         category=None,
+    )
+
+
+def submission(node: Mapping[str, Any], project_id: ProjectId, event_key: str) -> ReviewSubmission:
+    """One top-level review, as the provider spelled it.
+
+    ``state`` goes through :func:`required_text` rather than being folded to the
+    empty string, because it is the field the record exists to carry: a
+    submission whose verdict could not be read is not one this adapter can record
+    honestly, and :class:`~theurian.domain.review.ReviewSubmission` would raise
+    ``InvariantViolationError`` on an empty one -- the traceback clause 9 forbids
+    rather than the graded envelope it wants.
+
+    ``submitted_at`` is optional and is read as such: a review that was never
+    submitted has no submission time, and the alternative -- the ingestion time,
+    or the pull request's -- is a measurement nobody took, which every reader
+    downstream would take for one.
+    """
+    return ReviewSubmission(
+        external_id=required_text(node.get("id"), "review id"),
+        project_id=project_id,
+        event_key=event_key,
+        author=participant(node.get("author")),
+        body=text(node.get("body")),
+        state=required_text(node.get("state"), "review state"),
+        submitted_at=optional_instant(node.get("submittedAt")),
     )

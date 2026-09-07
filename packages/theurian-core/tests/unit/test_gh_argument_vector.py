@@ -21,11 +21,18 @@ from typing import Final
 import pytest
 
 import theurian
-from theurian.infrastructure.github import gh_cli, limits, queries
+from theurian.infrastructure.github import gh_cli, limits, queries, response, review_provider
 
 pytestmark = pytest.mark.unit
 
 GH_CLI_SOURCE: Final = pathlib.Path(gh_cli.__file__)
+
+#: The two modules that read a GraphQL answer: the adapter and the helpers it
+#: reads every field through.
+READING_SOURCES: Final[tuple[pathlib.Path, ...]] = (
+    pathlib.Path(review_provider.__file__),
+    pathlib.Path(response.__file__),
+)
 
 #: The package as *imported*, the reckoning ``test_network_call_sites.py`` uses:
 #: a hand-built relative path can drift from the installed package and would then
@@ -415,6 +422,84 @@ def test_a_page_size_the_document_spells_is_the_constant_that_names_the_cap(
         f"provider's `hasNextPage` check is priced against; the `first:` literal "
         f"in the document is the number GitHub is actually asked for. Move both "
         f"in the same change, or the cap is a message about a bound nothing sets."
+    )
+
+
+#: The one key the adapter reads that no document selects, with the reason:
+#: ``data`` is the envelope every GraphQL answer arrives wrapped in, not a field
+#: a document can ask for. An exemption with a reason rather than a filter,
+#: because the next name added here is meant to have to justify itself.
+_NOT_A_SELECTED_FIELD: Final[frozenset[str]] = frozenset({"data"})
+
+
+def _keys_read_from_a_response() -> set[str]:
+    """Every literal key the ``gh`` adapter reads out of an answer, from its syntax.
+
+    The population is ``.get("<name>")`` across :data:`READING_SOURCES`, read off
+    the source rather than transcribed. That is the direction that matters: a
+    mapping is driven by canned payloads a test writes, so a field the adapter
+    reads and no document selects stays green against the stand-in child and
+    arrives absent from a real ``gh`` -- which is the read producing an empty
+    string, a ``None``, or a refusal, for ever, with every test still passing.
+    """
+    keys: set[str] = set()
+    for source in READING_SOURCES:
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if not (isinstance(node, ast.Call) and len(node.args) == 1):
+                continue
+            function, argument = node.func, node.args[0]
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "get"
+                and isinstance(argument, ast.Constant)
+                and isinstance(argument.value, str)
+            ):
+                keys.add(argument.value)
+    return keys
+
+
+def test_every_field_the_adapter_reads_is_one_a_document_asks_for() -> None:
+    """RED means a read whose field no query selects, which is a read of nothing.
+
+    The other direction from :func:`test_every_first_literal_in_a_document_is_pinned_to_a_constant`
+    and the one a canned-payload suite cannot take by itself: those tests answer
+    with whatever the fixture wrote, so a mapping added without its selection is
+    green here and empty in production. `body`, `headRefName`, `milestone`,
+    `labels`, `state` and `submittedAt` all arrived that way and are held by this.
+    """
+    selected = "\n".join(_documents().values())
+    read = _keys_read_from_a_response()
+
+    assert len(read) > 20, (
+        f"the syntax scan found {len(read)} keys, too few to be the real population "
+        "-- the adapter has moved and this check is watching nothing."
+    )
+    unselected = sorted(
+        key
+        for key in read - _NOT_A_SELECTED_FIELD
+        if not re.search(rf"\b{re.escape(key)}\b", selected)
+    )
+
+    assert not unselected, (
+        f"the adapter reads {unselected} out of an answer and no document asks for "
+        f"any of them. Add the selection to the document in the same change as the "
+        f"read, or -- if the key is part of the response envelope rather than a "
+        f"field -- record it in `_NOT_A_SELECTED_FIELD` with the reason."
+    )
+
+
+def test_the_field_coverage_check_notices_a_read_with_no_selection() -> None:
+    """The can-fail companion: the check above passes trivially if its key is blind.
+
+    The planted key is a field name no document carries, matched the same way the
+    real ones are. Without this, a regex that never matches and a scan that finds
+    nothing both report the same clean result a correct check does.
+    """
+    selected = "\n".join(_documents().values())
+
+    assert not re.search(r"\bviewerCanDelete\b", selected), (
+        "a document now selects the planted field, so this control no longer "
+        "demonstrates that an unselected key would be caught"
     )
 
 

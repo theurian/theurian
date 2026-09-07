@@ -118,6 +118,45 @@ query($owner: String!, $name: String!, $number: Int!, $first: Int!, $after: Stri
 }
 """
 
+#: One pull request's **top-level reviews**: the verdicts, not the line comments.
+#:
+#: Its own document and its own request rather than a connection nested inside
+#: :data:`PULL_REQUESTS`, and the reason is the cost shape. A nested
+#: ``reviews(first: n)`` is asked for once per pull request in a page of fifty,
+#: and it carries no cursor this adapter could follow -- a truncation with
+#: nothing to report it. Here the connection is the top-level one, bound to
+#: ``$first`` and ``$after`` like every other paginated read, so it is bounded by
+#: :data:`~theurian.infrastructure.github.limits.MAX_PAGES` and stops with a
+#: graded refusal rather than silently. It declares the same five variables
+#: ``REVIEW_THREADS`` does, so :data:`VARIABLE_NAMES` does not move.
+#:
+#: ``submittedAt`` is nullable and stays that way in the record (decision 5): a
+#: review that was never submitted has no submission time, and the ingestion time
+#: is not it. ``state`` is carried as the spelling GitHub sends -- see
+#: :class:`~theurian.domain.review.ReviewSubmission` for why this model maps it
+#: onto nothing of its own.
+PULL_REQUEST_REVIEWS: Final = """\
+query($owner: String!, $name: String!, $number: Int!, $first: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    nameWithOwner
+    isPrivate
+    pullRequest(number: $number) {
+      number
+      reviews(first: $first, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          body
+          state
+          submittedAt
+          author { login ... on Node { id } }
+        }
+      }
+    }
+  }
+}
+"""
+
 #: ``StatusState``'s members, introspected 2026-09-05 against ``gh`` 2.86.0:
 #: ``{"EXPECTED", "ERROR", "FAILURE", "PENDING", "SUCCESS"}``.
 #:

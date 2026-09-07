@@ -49,9 +49,9 @@ mean.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
-from typing import Any, final
+from typing import Any, Final, NamedTuple, final
 
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
@@ -59,6 +59,7 @@ from theurian.domain.review import (
     ReviewComment,
     ReviewEvent,
     ReviewResolution,
+    ReviewSubmission,
     ReviewThread,
 )
 from theurian.domain.review_ingest import (
@@ -81,6 +82,28 @@ from theurian.infrastructure.github.limits import (
 from theurian.infrastructure.github.response import PROVIDER_ID
 from theurian.infrastructure.github.transport_guard import refuse_transport_overrides
 from theurian.security.review_allowlist import allowlisted_repository
+
+
+class _PerPullRequestRead(NamedTuple):
+    """One of the two reads that ask GitHub about a single pull request.
+
+    Three values because three things differ between them and nothing else does:
+    which document is sent, which connection the answer is read out of, and what
+    a refusal calls the read. ``subject`` is this module's own literal, which is
+    what keeps the page cap's summary free of anything a response chose.
+    """
+
+    document: str
+    connection: str
+    subject: str
+
+
+#: The review conversation anchored to files and lines.
+_THREADS: Final = _PerPullRequestRead(queries.REVIEW_THREADS, "reviewThreads", "review threads")
+
+#: The whole-pull-request verdicts. A read of its own rather than a connection
+#: nested in the pull-request listing -- see ``queries.PULL_REQUEST_REVIEWS``.
+_REVIEWS: Final = _PerPullRequestRead(queries.PULL_REQUEST_REVIEWS, "reviews", "reviews")
 
 
 @final
@@ -208,13 +231,62 @@ class GitHubReviewProvider:
         """
         entry = self._allowlisted(event.repository)
         cli = await self._ready()
-        owner, name = entry.split("/", 1)
+        return tuple(
+            [
+                self._thread(project_id, event, node)
+                async for node in self._pages_of(cli, entry, _THREADS, event)
+            ]
+        )
 
-        threads: list[ReviewThread] = []
+    async def get_reviews(
+        self, project_id: ProjectId, event: ReviewEvent
+    ) -> tuple[ReviewSubmission, ...]:
+        """Top-level reviews for one pull request: the verdicts, not the line comments.
+
+        A read of its own, for the reason ``PULL_REQUEST_REVIEWS`` is a document
+        of its own: ``reviews`` is a connection that paginates independently of
+        ``reviewThreads``, and asking for it nested inside the pull-request
+        listing would price it once per pull request in a page of fifty and leave
+        it no cursor to follow.
+
+        The repository is re-checked against the allowlist here for the reason
+        :meth:`get_threads` re-checks it, and the check is the *first* thing that
+        happens: a ``ReviewEvent`` is an ordinary value a caller can build, so a
+        repository nobody allowlisted produces no spawn rather than a filtered
+        result.
+        """
+        entry = self._allowlisted(event.repository)
+        cli = await self._ready()
+        return tuple(
+            [
+                response.submission(node, project_id, event.external_key)
+                async for node in self._pages_of(cli, entry, _REVIEWS, event)
+            ]
+        )
+
+    async def _pages_of(
+        self, cli: GhCli, entry: str, read: _PerPullRequestRead, event: ReviewEvent
+    ) -> AsyncIterator[Mapping[str, Any]]:
+        """Every node of one per-pull-request connection, page by page and bounded.
+
+        :data:`_THREADS` and :data:`_REVIEWS` are the whole of what differs
+        between the two. Everything else is the same read -- the same five
+        variables, the repository re-checked on **every** page rather than only
+        the first, the cursor discipline :func:`response.next_cursor` enforces,
+        and the
+        :data:`~theurian.infrastructure.github.limits.MAX_PAGES` stop -- and two
+        copies of it would be two places for a page cap to go missing from.
+
+        The refusal order a caller sees is unchanged by the generator: a page's
+        nodes are all consumed before the cursor for the next one is read, so a
+        record this adapter cannot build still refuses before a cursor this
+        adapter cannot spawn.
+        """
         cursor: str | None = None
+        owner, name = entry.split("/", 1)
         # Named once: the page cap's report and a cursor refusal describe the same
         # read, and two spellings of it would drift apart.
-        what = f"review threads on #{bounded_echo(event.number)}"
+        what = f"{read.subject} on #{bounded_echo(event.number)}"
         for _page in range(MAX_PAGES):
             variables: dict[str, str | int] = {
                 "owner": owner,
@@ -224,17 +296,13 @@ class GitHubReviewProvider:
             }
             if cursor is not None:
                 variables["after"] = cursor
-            repo = self._repository_of(
-                await self._request(cli, queries.REVIEW_THREADS, variables), entry
-            )
-            pull_request = response.mapping(repo.get("pullRequest"))
-            connection = response.mapping(pull_request.get("reviewThreads"))
-            threads.extend(
-                self._thread(project_id, event, node) for node in response.nodes(connection)
-            )
-            cursor = response.next_cursor(connection, what)
+            repo = self._repository_of(await self._request(cli, read.document, variables), entry)
+            page = response.mapping(response.mapping(repo.get("pullRequest")).get(read.connection))
+            for node in response.nodes(page):
+                yield node
+            cursor = response.next_cursor(page, what)
             if cursor is None:
-                return tuple(threads)
+                return
         raise self._page_cap(what, entry)
 
     # -- the three pre-spawn refusals, in the order ADR-0030 fixes -------------

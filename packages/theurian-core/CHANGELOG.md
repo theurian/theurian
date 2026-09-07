@@ -168,6 +168,15 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `ReviewResolution`'s reason — a review that was never submitted has no
   submission time, and the ingestion time is not it.
 
+  The adapter reads them through a new `ReviewProvider.get_reviews`, sending its
+  own per-pull-request document. A connection nested in the pull-request listing
+  would be asked for once per pull request in a page of fifty and would carry no
+  cursor to follow, so what overflowed there would be lost with nothing to
+  report it; the top-level connection paginates under the same `MAX_PAGES` stop
+  `get_threads` already had, and both reads now go through one page walker
+  rather than two copies of it. A review whose `id` or `state` cannot be read as
+  text is a `tool-failed` refusal, not a record with a blank verdict.
+
 ### Fixed
 
 - **The project-config schema stops advertising a knowledge directory you can

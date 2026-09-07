@@ -20,6 +20,13 @@ Two properties would be untestable otherwise, and both are the point:
 The script is ``/bin/sh`` and reaches only ``cat``, ``env`` and shell builtins,
 because the child's ``PATH`` is the adapter's fixed literal -- a Python stand-in
 would need an interpreter that literal does not promise.
+
+**Which canned answer the child returns is chosen from the argv it was handed.**
+A ``number=`` binding says the read is about one pull request, and both
+per-pull-request documents carry one -- so the reviews read is told apart by
+``submittedAt``, a token only ``PULL_REQUEST_REVIEWS`` selects. The two flags are
+collected in one pass and combined afterwards, so the answer does not depend on
+which order ``graphql_vector`` happens to emit the query and the variables in.
 """
 
 from __future__ import annotations
@@ -96,12 +103,15 @@ esac
 
 kind=prs
 page=1
+per_pr=0
 for a in "$@"; do
   case "$a" in
-    number=*) kind=threads ;;
+    number=*) per_pr=1 ;;
     after=*) page=2 ;;
+    *submittedAt*) kind=reviews ;;
   esac
 done
+if [ "$per_pr" = 1 ] && [ "$kind" = prs ]; then kind=threads; fi
 body="{state}/$kind$page.json"
 if [ -f "$body" ]; then cat "$body"; exit 0; fi
 printf 'no canned response for %s page %s\\n' "$kind" "$page" >&2
@@ -314,6 +324,33 @@ def _threads(*, has_more_comments: bool = False, resolved: bool = True) -> dict[
                                 },
                             }
                         ],
+                    },
+                },
+            }
+        }
+    }
+
+
+def _reviews(**overrides: Any) -> dict[str, Any]:
+    """One page of top-level reviews, in the shape ``PULL_REQUEST_REVIEWS`` asks for."""
+    node: dict[str, Any] = {
+        "id": "PRR_1",
+        "body": "The guard is right; the reason it gives is not.",
+        "state": "CHANGES_REQUESTED",
+        "submittedAt": "2026-09-01T13:00:00Z",
+        "author": {"login": "utchy", "id": "MDQ6VXNlcjE="},
+    }
+    node.update(overrides)
+    return {
+        "data": {
+            "repository": {
+                "nameWithOwner": REPOSITORY,
+                "isPrivate": False,
+                "pullRequest": {
+                    "number": 12,
+                    "reviews": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [node],
                     },
                 },
             }
@@ -1934,3 +1971,215 @@ async def test_a_repository_reached_through_an_event_is_re_checked_against_the_a
 
     assert raised.value.grade is RefusalGrade.REPOSITORY_NOT_ALLOWLISTED
     assert fake_gh.invocations == before
+
+
+# -- the top-level reviews read -----------------------------------------------
+
+
+async def _one_event(tmp_path: pathlib.Path, fake: FakeGh) -> tuple[GitHubReviewProvider, Any]:
+    """A provider and the pull request it just read, so a reviews test starts there."""
+    fake.answer("prs", 1, _pull_requests())
+    provider = _provider(tmp_path, fake)
+    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    return provider, event
+
+
+@pytest.mark.asyncio
+async def test_a_top_level_review_maps_onto_the_domain_record(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """FR-V1's *reviews*, carried as the provider gave them.
+
+    ``state`` is the field worth watching: it arrives here as a member GitHub
+    documents, and the record keeps the provider's spelling rather than mapping
+    it onto a vocabulary of this model's own.
+    """
+    fake_gh.answer("reviews", 1, _reviews())
+    provider, event = await _one_event(tmp_path, fake_gh)
+
+    (submission,) = await provider.get_reviews(PROJECT, event)
+
+    assert submission.external_id == "PRR_1"
+    assert submission.event_key == event.external_key
+    assert submission.author.external_id == "MDQ6VXNlcjE="
+    assert submission.author.display_name == "utchy"
+    assert submission.body == "The guard is right; the reason it gives is not."
+    assert submission.state == "CHANGES_REQUESTED"
+    assert submission.submitted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_review_state_this_adapter_has_never_heard_of_is_carried_not_folded(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The reason the record holds a string and not a closed set.
+
+    A schema may add a review state, and both answers a closed set could give are
+    wrong: refusing the record loses evidence over a member that is perfectly
+    valid upstream, and folding it into a default records a verdict nobody gave.
+    Neither happens -- the spelling GitHub sent is what the record carries.
+    """
+    fake_gh.answer("reviews", 1, _reviews(state="A_STATE_THIS_ADAPTER_HAS_NEVER_HEARD_OF"))
+    provider, event = await _one_event(tmp_path, fake_gh)
+
+    (submission,) = await provider.get_reviews(PROJECT, event)
+
+    assert submission.state == "A_STATE_THIS_ADAPTER_HAS_NEVER_HEARD_OF"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "submitted", (None, _ABSENT), ids=("a null submittedAt", "no submittedAt field at all")
+)
+async def test_a_review_that_was_never_submitted_records_no_time(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, submitted: object
+) -> None:
+    """ADR-0030 decision 5, on the reviews read: never the ingestion time.
+
+    ``submittedAt`` is nullable, and a review that was started and not submitted
+    has no submission time at all. Filling it with the ingestion time, or the
+    pull request's, is a measurement nobody took that every reader downstream
+    takes for one.
+    """
+    payload = _reviews()
+    node = payload["data"]["repository"]["pullRequest"]["reviews"]["nodes"][0]
+    if submitted is _ABSENT:
+        del node["submittedAt"]
+    else:
+        node["submittedAt"] = submitted
+    fake_gh.answer("reviews", 1, payload)
+    provider, event = await _one_event(tmp_path, fake_gh)
+
+    (submission,) = await provider.get_reviews(PROJECT, event)
+
+    assert submission.submitted_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "named"),
+    (("id", "review id"), ("state", "review state")),
+    ids=("no id", "no state"),
+)
+async def test_a_review_missing_a_field_its_identity_needs_is_a_graded_refusal(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, field: str, named: str
+) -> None:
+    """Clause 9 on the new read: an unreadable answer is an envelope, never a traceback.
+
+    ``ReviewSubmission`` raises ``InvariantViolationError`` on an empty
+    ``external_id`` and on a blank ``state``, so folding either to the empty
+    string would leave this adapter as the traceback the ADR forbids -- on a
+    response shape a partly-errored GraphQL answer produces routinely, with the
+    errored field back as ``null`` beside a ``data`` that looks ordinary.
+    """
+    fake_gh.answer("reviews", 1, _reviews(**{field: None}))
+    provider, event = await _one_event(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.get_reviews(PROJECT, event)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert named in str(raised.value)
+    assert raised.value.remedy
+
+
+@pytest.mark.asyncio
+async def test_a_second_page_of_reviews_is_asked_for_with_a_cursor(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The shared page walker, driven on the read it was extracted for.
+
+    Both per-pull-request reads go through one loop now, so this is the assertion
+    that the second of them paginates at all rather than inheriting the property
+    from its sibling's test.
+    """
+    first = _reviews()
+    first["data"]["repository"]["pullRequest"]["reviews"]["pageInfo"] = {
+        "hasNextPage": True,
+        "endCursor": "CURSOR-R1",
+    }
+    fake_gh.answer("reviews", 1, first)
+    fake_gh.answer("reviews", 2, _reviews(id="PRR_2", state="APPROVED"))
+    provider, event = await _one_event(tmp_path, fake_gh)
+    # Counted from where the pull-request read left off rather than written out:
+    # the two probes and that read come first, and a transcribed index would move
+    # the day another spawn is added ahead of this one.
+    before = fake_gh.invocations
+
+    submissions = await provider.get_reviews(PROJECT, event)
+
+    assert [submission.external_id for submission in submissions] == ["PRR_1", "PRR_2"]
+    page_one, page_two = fake_gh.argv(before + 1), fake_gh.argv(before + 2)
+    assert "after=CURSOR-R1" in page_two
+    assert [element for element in page_two if element not in page_one] == ["after=CURSOR-R1"]
+
+
+@pytest.mark.asyncio
+async def test_a_reviews_read_that_never_stops_paging_is_stopped_by_the_page_cap(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The page cap bounds the new read too, and its report names which read it was.
+
+    The canned answer always claims another page, which is the shape no element
+    cap can stop: ``get_reviews`` has no per-pull-request record cap of its own,
+    exactly as ``get_threads`` has none, so ``MAX_PAGES`` is the whole bound and
+    a test that never reached it would leave that unproven.
+    """
+    endless = _reviews()
+    endless["data"]["repository"]["pullRequest"]["reviews"]["pageInfo"] = {
+        "hasNextPage": True,
+        "endCursor": "CURSOR-R1",
+    }
+    fake_gh.answer("reviews", 1, endless)
+    fake_gh.answer("reviews", 2, endless)
+    provider, event = await _one_event(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.get_reviews(PROJECT, event)
+
+    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert str(limits.MAX_PAGES) in str(raised.value)
+    assert f"reviews on #{event.number}" in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_a_repository_reached_through_get_reviews_is_re_checked_against_the_allowlist(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The allowlist is a control on the new read as well, and it produces no spawn.
+
+    The second per-pull-request read is a second door to the same check, and a
+    door that only the first read is tested through is a control this file cannot
+    say holds. The recorder being unchanged is the whole assertion.
+    """
+    fake_gh.answer("reviews", 1, _reviews())
+    provider, event = await _one_event(tmp_path, fake_gh)
+    forged = dataclasses.replace(event, repository="acme/billing")
+    before = fake_gh.invocations
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.get_reviews(PROJECT, forged)
+
+    assert raised.value.grade is RefusalGrade.REPOSITORY_NOT_ALLOWLISTED
+    assert fake_gh.invocations == before
+
+
+@pytest.mark.asyncio
+async def test_a_private_repository_is_refused_on_the_reviews_read_too(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """Every page of every read is checked, not the first page of the first read.
+
+    ``_repository_of`` runs on each answer the walker receives, so a repository
+    that resolves as private mid-read refuses there. Driving it through
+    ``get_reviews`` is what says the new read did not route around the check.
+    """
+    private = _reviews()
+    private["data"]["repository"]["isPrivate"] = True
+    fake_gh.answer("reviews", 1, private)
+    provider, event = await _one_event(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.get_reviews(PROJECT, event)
+
+    assert raised.value.grade is RefusalGrade.REPOSITORY_IS_PRIVATE
