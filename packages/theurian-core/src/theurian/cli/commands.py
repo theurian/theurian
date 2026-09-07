@@ -1069,12 +1069,17 @@ def init_command(as_json: JsonOption = False) -> None:
         # re-raises), a full disk -- each of which ended `init --json` in a
         # traceback with an empty machine channel until this arm existed.
         #
-        # `UnicodeDecodeError` beside `OSError` and **not folded into it**: it is
-        # a `ValueError`, so an `except OSError` does not see it, and a
-        # `.gitignore` holding one non-UTF-8 byte went on producing the traceback
-        # this arm exists to stop (round one, adversarial M-7; #367's `init`
-        # face). `propose --local` has caught the pair together since it was
-        # written, which is where the shape is taken from.
+        # `UnicodeDecodeError` is kept beside `OSError` defensively and is no
+        # longer reachable through this call for `.gitignore` (#367): the
+        # `ensure_gitignore` read and write (`_read_authored_file`,
+        # `_write_gitignore`) now decode and encode with
+        # `errors="surrogateescape"`, which cannot fail to decode -- so a
+        # non-UTF-8 `.gitignore` makes `init` succeed rather than raise here.
+        # That retires the `.gitignore` decode source alone; the `OSError` arm
+        # above it is still live for the filesystem faults this comment already
+        # names, and `UnicodeDecodeError` is a `ValueError` an `except OSError`
+        # would not have seen anyway, so it stays in the tuple against a decode
+        # source this call does not have today.
         reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else "it is unreadable"
         _fail(
             f"The Theurian block could not be written to .gitignore: {reason}. "
@@ -1082,8 +1087,12 @@ def init_command(as_json: JsonOption = False) -> None:
             remedy=(
                 # No symbolic-link clause: a link never reaches this arm, and a
                 # cure naming a condition the reader cannot be in is the
-                # wrong-remedy shape this project has shipped three times.
-                "Make .gitignore a readable, writable, UTF-8 regular file, then re-run "
+                # wrong-remedy shape this project has shipped three times. No
+                # "UTF-8" clause either, for the same reason: since #367 this
+                # arm's reachable cause is `OSError` alone, and telling the
+                # operator to fix an encoding sends them to inspect a fault
+                # this exception is no longer raised for.
+                "Make .gitignore a readable, writable regular file, then re-run "
                 "`theurian init`. Until it carries the Theurian block, `git status` will "
                 "show derived state that ADR-0004 means to keep out of the repository."
             ),
