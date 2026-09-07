@@ -309,6 +309,13 @@ class GitHubReviewProvider:
                 f"here: the allowlist names a repository, not wherever that name now "
                 f"points. Nothing was read from the answer.",
             )
+        # **The one Boolean here that does not go through `_boolean`, and it is
+        # stricter rather than looser.** `_boolean` refuses a non-bool; this
+        # refuses everything that is not literally `False`, so an absent field, a
+        # `null`, the string `"false"` and the integer `0` are all read as "not
+        # shown to be public" and the repository is declined. The direction of
+        # the error is the whole point: an unreadable answer about visibility
+        # must not become an ingest.
         if repo.get("isPrivate") is not False:
             raise ReviewIngestRefusedError(
                 RefusalGrade.REPOSITORY_IS_PRIVATE,
@@ -337,16 +344,17 @@ class GitHubReviewProvider:
         and using the configured one keeps a project's own records in one
         spelling however GitHub happens to case its answer.
 
-        Two graded stops fire before any record exists, both for the same reason
-        :meth:`_comments_of` has its own: a record that *looks* whole and is not
-        is worse than a refusal naming what could not be read. A merged pull
-        request must carry its merge commit, and a pull request may not close
-        more issues than
+        Two graded stops of its own fire before any record exists -- beside the
+        shape checks each field read carries, :func:`_boolean` among them -- and
+        both are there for the reason :meth:`_comments_of` has its own: a record
+        that *looks* whole and is not is worse than a refusal naming what could
+        not be read. A merged pull request must carry its merge commit, and a
+        pull request may not close more issues than
         :data:`~theurian.infrastructure.github.limits.MAX_LINKED_ISSUES` -- the
         ``closingIssuesReferences`` connection paginates, and this adapter
         follows no cursor into it.
         """
-        merged = node.get("merged") is True
+        merged = _boolean(node.get("merged"), "`merged`")
         merge_commit = _mapping(node.get("mergeCommit")).get("oid")
         if merged and not isinstance(merge_commit, str):
             raise ReviewIngestRefusedError(
@@ -357,7 +365,10 @@ class GitHubReviewProvider:
             )
         linked = _mapping(node.get("closingIssuesReferences"))
         if (
-            _mapping(linked.get("pageInfo")).get("hasNextPage") is True
+            _boolean(
+                _mapping(linked.get("pageInfo")).get("hasNextPage"),
+                "`hasNextPage` on a pull request's linked issues",
+            )
             or len(_nodes(linked)) > MAX_LINKED_ISSUES
         ):
             raise ReviewIngestRefusedError(
@@ -399,12 +410,16 @@ class GitHubReviewProvider:
         external_id = _required_text(node.get("id"), "review thread id")
         comments = _mapping(node.get("comments"))
         built = self._comments_of(comments, external_id, event)
-        resolved = node.get("isResolved") is True
+        resolved = _boolean(node.get("isResolved"), "`isResolved` on a review thread")
+        # Read whether or not it is reached: a thread whose `isOutdated` is
+        # unreadable is an answer this adapter cannot check, and only checking it
+        # on the unresolved branch would make that depend on the other flag.
+        outdated = _boolean(node.get("isOutdated"), "`isOutdated` on a review thread")
         state = (
             ReviewThreadState.RESOLVED
             if resolved
             else ReviewThreadState.OUTDATED
-            if node.get("isOutdated") is True
+            if outdated
             else ReviewThreadState.OPEN
         )
         return ReviewThread(
@@ -442,9 +457,14 @@ class GitHubReviewProvider:
         is not is worse than a refusal that says which thread it was. The
         provider paginates comments, so a thread past the recorded cap would
         otherwise arrive silently truncated; and a thread with none at all is
-        not a shape ``ReviewThread`` can hold.
+        not a shape ``ReviewThread`` can hold. The cap's own flag is read through
+        :func:`_boolean`, so an unreadable ``hasNextPage`` is a third refusal
+        rather than a quiet "there is no more".
         """
-        if _mapping(comments.get("pageInfo")).get("hasNextPage") is True:
+        if _boolean(
+            _mapping(comments.get("pageInfo")).get("hasNextPage"),
+            "`hasNextPage` on a review thread's comments",
+        ):
             raise ReviewIngestRefusedError(
                 RefusalGrade.LIMIT_EXCEEDED,
                 f"Review thread {bounded_echo(external_id)} on {event.repository}"
@@ -476,6 +496,34 @@ def _mapping(value: object) -> Mapping[str, Any]:
     adapter would be the traceback clause 9 forbids.
     """
     return value if isinstance(value, dict) else {}
+
+
+def _boolean(value: object, field: str) -> bool:
+    """A field the schema types as ``Boolean``, refused rather than read loosely.
+
+    **Every one of these decides whether a record is whole**, which is why they
+    are refused instead of folded. ``hasNextPage`` says whether what arrived is
+    all of it, and ``merged`` selects the guard that a merged pull request
+    carries its merge commit; a comparison against ``is True`` reads the *string*
+    ``"true"`` as not-merged and skips that guard, and a missing ``pageInfo``
+    reads as no-next-page and returns a truncated answer as a complete one. Both
+    are documents a partly-errored GraphQL response can be -- the errored field
+    comes back ``null`` beside a ``data`` that otherwise looks ordinary -- so the
+    permissive read fails silently and in the direction that loses content.
+
+    ``isPrivate`` is the one Boolean this adapter reads that does not come
+    through here, and it is **stricter** rather than looser: see
+    :meth:`GitHubReviewProvider._repository_of`, where anything that is not
+    literally ``False`` refuses the repository.
+    """
+    if not isinstance(value, bool):
+        raise ReviewIngestRefusedError(
+            RefusalGrade.TOOL_FAILED,
+            f"GitHub's answer carried {field} as {type(value).__name__} where the "
+            f"schema types it Boolean, so this adapter cannot tell what the answer "
+            f"says. It records nothing out of an answer whose shape it cannot check.",
+        )
+    return value
 
 
 def _nodes(connection: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -516,7 +564,7 @@ def _next_cursor(connection: Mapping[str, Any], what: str) -> str | None:
     replace with a report.
     """
     page_info = _mapping(connection.get("pageInfo"))
-    if page_info.get("hasNextPage") is not True:
+    if not _boolean(page_info.get("hasNextPage"), f"`hasNextPage` on {what}"):
         return None
     cursor = page_info.get("endCursor")
     if not isinstance(cursor, str) or not cursor:

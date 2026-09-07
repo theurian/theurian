@@ -252,7 +252,10 @@ def _pull_requests(
         "baseRefOid": "b" * 40,
         "author": {"login": "utchy", "id": "MDQ6VXNlcjE="},
         "mergeCommit": {"oid": "c" * 40},
-        "closingIssuesReferences": {"nodes": [{"number": 523}]},
+        # `pageInfo` is here because the document asks for it: an answer without
+        # it is one this adapter refuses, so a fixture without it would be
+        # driving a response GitHub does not send.
+        "closingIssuesReferences": {"pageInfo": {"hasNextPage": False}, "nodes": [{"number": 523}]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
     }
     node.update(overrides)
@@ -837,7 +840,13 @@ async def test_a_linked_issue_number_below_one_is_a_graded_refusal(
     ``linked_issue_ids`` as ``"0"`` and reads downstream as an issue. Nothing
     below this adapter would have refused it.
     """
-    fake_gh.answer("prs", 1, _pull_requests(closingIssuesReferences={"nodes": [{"number": 0}]}))
+    fake_gh.answer(
+        "prs",
+        1,
+        _pull_requests(
+            closingIssuesReferences={"pageInfo": {"hasNextPage": False}, "nodes": [{"number": 0}]}
+        ),
+    )
     provider = _provider(tmp_path, fake_gh)
 
     with pytest.raises(ReviewIngestRefusedError) as raised:
@@ -1079,6 +1088,133 @@ async def test_a_pull_request_past_the_linked_issue_cap_is_reported_not_truncate
     assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
     assert f"{REPOSITORY}#12" in str(raised.value)
     assert str(limits.MAX_LINKED_ISSUES) in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_more_linked_issues_than_the_cap_is_refused_without_the_flag_saying_so(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The other arm of the same guard, which nothing drove and a mutation deleted.
+
+    The test above sends ``hasNextPage`` **and** a full page; this one sends a
+    page one longer than the cap with ``hasNextPage`` false, which is what an
+    answer looks like if the page size in the document and the constant ever
+    disagree. With only the first test, deleting the ``len(nodes)`` clause is a
+    change no test notices -- and then the constant is decorative and the
+    effective cap is whatever the query literal says.
+    """
+    over = _pull_requests(
+        closingIssuesReferences={
+            "pageInfo": {"hasNextPage": False},
+            "nodes": [{"number": issue} for issue in range(1, limits.MAX_LINKED_ISSUES + 2)],
+        }
+    )
+    fake_gh.answer("prs", 1, over)
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert str(limits.MAX_LINKED_ISSUES) in str(raised.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "page_info",
+    (_ABSENT, None, {"hasNextPage": "true", "endCursor": "CURSOR-1"}, {"endCursor": "CURSOR-1"}),
+    ids=(
+        "no pageInfo at all",
+        "a null pageInfo",
+        "hasNextPage as the string true",
+        "a pageInfo with no hasNextPage",
+    ),
+)
+async def test_a_paging_flag_that_is_not_a_boolean_is_refused_not_read_as_false(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, page_info: object
+) -> None:
+    """Every shape here used to read as *there is no next page*, and return.
+
+    That is the silent truncation the linked-issue cap and the comment cap exist
+    to replace with a report, arriving through the door those caps do not watch:
+    ``x is True`` is false for a missing field, for ``null``, and for the string
+    ``"true"`` alike, so a partly-errored response -- where the errored field
+    comes back ``null`` beside an otherwise ordinary ``data`` -- ended the read
+    and the caller was handed a page as though it were the answer.
+
+    The second page is canned, so a refusal cannot be the paging failing for want
+    of a response.
+    """
+    first = _pull_requests()
+    connection = first["data"]["repository"]["pullRequests"]
+    if page_info is _ABSENT:
+        del connection["pageInfo"]
+    else:
+        connection["pageInfo"] = page_info
+    fake_gh.answer("prs", 1, first)
+    fake_gh.answer("prs", 2, _pull_requests(number=11))
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert "hasNextPage" in str(raised.value)
+    assert raised.value.remedy
+
+
+@pytest.mark.asyncio
+async def test_a_merged_flag_that_is_not_a_boolean_is_refused_not_read_as_unmerged(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """``merged`` selects a guard, so reading it loosely disables the guard silently.
+
+    The payload is the shape that makes the failure visible: ``merged`` as the
+    string ``"true"`` and **no merge commit**. Under ``node.get("merged") is
+    True`` the string is not-merged, the merge-commit guard never runs, and a
+    record is written saying the pull request was never merged -- from an answer
+    that says it was.
+    """
+    fake_gh.answer("prs", 1, _pull_requests(merged="true", mergeCommit=None))
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert "merged" in str(raised.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "flags",
+    ({"isResolved": "true"}, {"isOutdated": None}),
+    ids=("isResolved as the string true", "isOutdated null"),
+)
+async def test_a_thread_flag_that_is_not_a_boolean_is_refused_not_folded_into_open(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, flags: dict[str, Any]
+) -> None:
+    """The thread's two state flags fold three ways, so a bad one is unrecoverable.
+
+    ``isResolved`` and ``isOutdated`` choose between ``RESOLVED``, ``OUTDATED``
+    and ``OPEN``, and every unreadable value folds into ``OPEN`` -- a resolved
+    thread recorded as open, with nothing in the record saying the flag was not
+    a flag. ``isOutdated`` is driven even in the shape where the resolved branch
+    would not reach it, because it is read unconditionally on purpose: whether an
+    answer is checkable must not depend on what another field in it says.
+    """
+    threads = _threads()
+    threads["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][0].update(flags)
+    fake_gh.answer("prs", 1, _pull_requests())
+    fake_gh.answer("threads", 1, threads)
+    provider = _provider(tmp_path, fake_gh)
+    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.get_threads(PROJECT, event)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert next(iter(flags)) in str(raised.value)
 
 
 @pytest.mark.asyncio
