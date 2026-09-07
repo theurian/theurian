@@ -102,8 +102,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   which is the cost of re-deriving a warning on a live fact: the sentence is
   true about a smaller object, and stale as soon as that object moves.
   [ADR-0030](../../docs/adr/0030-github-review-ingestion-spawns-gh.md) slice 1
-  shipped `security/review_allowlist.py`, which reads
-  `providers.review.repositories` and refuses a repository the list does not
+  shipped `security/review_allowlist.py`, which enforces
+  `providers.review.repositories` — read by `security/project_config.py`, the
+  file's one reader — and refuses a repository the list does not
   name before any process is spawned. The key is read and enforced; what it
   protects is the review-ingestion path, which no command reaches yet, and that
   — rather than "it protects no one" — is the sentence `ingest.md` now carries.
@@ -295,7 +296,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   read. The Rules also told the user that "Theurian will not contact a
   repository that is not listed" in `.theurian/config.yaml`, which read as a
   control in force. **What this entry said next was true when it was written and
-  is not true now — the correction below says what turned over.** It is not one:
+  is not true now — the correction below says what turned over. The entry's own
+  words about that control follow.** It is not one:
   **nothing reads the `providers.review.repositories` allowlist**, so it protects
   no one yet. That file itself *is* read, for one key — `security.secretScan`,
   by `security/project_config.py` and nothing else (ADR-0027 decision 3) — and
@@ -320,8 +322,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `security.secretScan` and the allowlist. `reviewIngestion: false` is still
   what `system.capabilities` reports, and it now means "no ingestion call
   surface is callable" rather than "nothing reaches GitHub". The rationale above
-  is in the past tense for the same reason. The two sentences marked above are
-  the exception and keep their published wording:
+  is in the past tense for the same reason. The two sentences beginning "It is
+  not one" and "That file itself *is* read" are the exception and keep their
+  published wording:
   `test_census_record_claims.py` holds them whole as what the #461 family was
   corrected *to*, so the turn-over is recorded here rather than written over
   them.
