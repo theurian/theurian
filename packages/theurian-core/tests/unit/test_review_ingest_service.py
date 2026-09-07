@@ -1068,10 +1068,21 @@ def test_a_single_line_comment_still_anchors_at_the_line_it_names() -> None:
     construction above. What it must not lose is the shape GitHub actually sends
     -- ``startLine: null`` with ``line`` set -- which is an anchor at one line
     rather than a missing locator.
+
+    **The equal pair is the boundary the grid cannot see.** ``_span`` drops an
+    end that ``last < first``; written ``last <= first`` it would drop an end
+    equal to its start, and ``(5, None)`` is a pair ``SourceAnchor`` accepts --
+    so the grid above stays green while a comment spanning one line loses the
+    end it named. The domain refuses nothing here; only this equality does.
     """
     assert _span(None, 12) == (12, None)
     assert _span(10, 12) == (10, 12)
     assert _span(10, None) == (10, None)
+    assert _span(5, 5) == (5, 5), (
+        "a start equal to its end is a one-line span, not an end to drop; "
+        "`last < first` is the comparison and `last <= first` is the mutation"
+    )
+    assert _span(5, 4) == (5, None)
 
 
 @pytest.mark.asyncio

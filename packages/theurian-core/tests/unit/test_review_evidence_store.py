@@ -441,12 +441,25 @@ def test_a_provider_id_that_is_already_a_name_is_spelled_out_rather_than_hashed(
 
     The expectations are written out rather than recomputed. A tag derived here
     from the function under test would agree with it however wrong both were.
+
+    **The trailing newline is the charset's anchor, driven at the behaviour.**
+    ``_FILESYSTEM_SAFE`` ends in ``\\Z`` and not ``$``, because Python's ``$``
+    also matches immediately before a trailing newline -- so ``"PRRT_abc\\n"``
+    would satisfy the verbatim arm and be spelled into a filename with a line
+    break in it. ``test_the_verbatim_charset_folds_one_ascii_character_at_a_time``
+    already reddens on that anchor from the charset's side (its ``following``
+    count goes from 65 to 66, measured); this is the same guard stated as what
+    the caller receives.
     """
     assert record_leaf("PRRT_kwDOABCD1M5abcde") == "PRRT_kwDOABCD1M5abcde~5f8f.json"
     assert record_leaf("prrt_kwdoabcd1m5abcde") == "prrt_kwdoabcd1m5abcde.json"
     assert record_leaf("42") == "42.json"
     assert record_leaf("../../etc/passwd").startswith("sha256-")
     assert record_leaf("sha256-anything").startswith("sha256-")
+    assert record_leaf("PRRT_abc\n").startswith("sha256-"), (
+        "an id ending in a newline was spelled into a leaf verbatim; the charset "
+        "is anchored with `\\Z` precisely so that `$` cannot let one through"
+    )
 
 
 def test_no_provider_id_can_be_made_to_name_another_ids_file() -> None:
@@ -1050,6 +1063,46 @@ def test_a_landed_file_the_domain_refuses_is_graded_and_names_the_file(
     assert "git log -p" in raised.value.remedy
 
 
+@pytest.mark.parametrize(
+    ("label", "record", "spelled"),
+    (
+        ("a pull request's number", _event(number=42), '"number": 42'),
+        ("a thread's line start", _thread(), '"lineStart": 10'),
+    ),
+    ids=("number", "lineStart"),
+)
+def test_a_boolean_where_an_integer_belongs_is_refused_rather_than_read_as_one(
+    tmp_path: Path, label: str, record: EvidenceRecord, spelled: str
+) -> None:
+    """``bool`` is an ``int`` subclass, and the codec's guard against that.
+
+    ``isinstance(True, int)`` is ``True`` in Python, so a codec checking only
+    ``isinstance(value, int)`` reads ``"lineStart": true`` as line 1 and
+    ``"number": true`` as pull request 1 -- a file that says something different
+    from what it appears to say, landing in the derived store slice 3 builds. The
+    ``isinstance(value, bool)`` arm is the whole guard and nothing drove it.
+
+    Two positions because two helpers reach it: ``_integer`` directly, and
+    ``_optional_integer``, whose ``is None`` early-out has to fall through rather
+    than treat ``true`` as absent.
+    """
+    store = _store(tmp_path)
+    (landed,) = store.write([record], run=RUN_ONE)
+    path = _review_root(tmp_path) / landed
+    text = path.read_text(encoding="utf-8")
+    key, _value = spelled.split(":", maxsplit=1)
+    assert spelled in text, (
+        f"{label}: the fixture does not spell {spelled!r}, so this drives nothing"
+    )
+    path.write_text(text.replace(spelled, f"{key}: true"), encoding="utf-8")
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.read_all()
+
+    assert "not an integer" in str(raised.value), label
+    assert landed in str(raised.value)
+
+
 def test_an_unreadable_record_names_the_repository_its_own_file_claims(tmp_path: Path) -> None:
     """The directory is a hash, so the refusal has to say which repository it is.
 
@@ -1199,16 +1252,37 @@ def test_a_write_the_filesystem_refuses_names_the_record_and_a_command(tmp_path:
 
 
 def test_a_file_that_is_not_a_record_is_left_alone(tmp_path: Path) -> None:
-    """The directory is the project's; a README beside the evidence is not an error."""
+    """The directory is the project's; a README beside the evidence is not an error.
+
+    Three positions, and the third is the one nothing drove. The walk selects on
+    :data:`EVIDENCE_SUFFIX` at the leaf, so a file **inside a kind directory**
+    that is not a ``.json`` is the case where that suffix test is the only thing
+    standing between an operating system's litter and a refusal that stops every
+    repository's ingest. ``.DS_Store`` is the one a macOS checkout of a committed
+    evidence tree actually produces, and ``read_all`` refuses whatever it lists
+    and cannot parse -- so admitting it would turn opening the directory in
+    Finder into a broken ``review ingest``.
+
+    The leftover ``.writing`` temporary is the same rule from the other side and
+    is why the suffix is what the walk keys on rather than "not a directory".
+    """
     store = _store(tmp_path)
-    store.write([_event(number=42)], run=RUN_ONE)
+    (landed,) = store.write([_event(number=42)], run=RUN_ONE)
     review = _review_root(tmp_path)
     (review / "README.md").write_text("committed on purpose", encoding="utf-8")
     (repository,) = [path for path in review.iterdir() if path.is_dir()]
     (repository / "notes").mkdir()
     (repository / "notes" / "scratch.json").write_text("{}", encoding="utf-8")
+    kind_directory = (review / landed).parent
+    (kind_directory / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+    (kind_directory / "42.json.writing").write_text("half a record", encoding="utf-8")
 
-    assert len(store.read_all()) == 1
+    stored = store.read_all()
+
+    assert [record.relative_path for record in stored] == [landed], (
+        "a file inside a kind directory that is not a record was listed, and "
+        "`read_all` refuses what it lists and cannot parse"
+    )
 
 
 # -- the run stamp ------------------------------------------------------------

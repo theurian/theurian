@@ -316,6 +316,39 @@ def test_two_thread_ids_that_differ_only_in_case_both_land_and_read_back(
     assert (second["new"], second["updated"], second["kept"]) == (0, 4, 0)
 
 
+def test_a_repository_asked_for_in_another_case_reads_its_own_records_back(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``landed_keys`` compares case-folded, and only a second run can show it.
+
+    GitHub treats owner and repository names case-insensitively, so an operator
+    may list ``Acme/Order-Service`` and type ``acme/order-service``. The adapter
+    records the **allowlisted** spelling on every record, and the reader filters
+    what is on disk by the **argument** -- so a byte comparison there matches
+    nothing and reports a repository that is fully landed as entirely ``new``.
+
+    The disk is the control: both runs write the same three files, because the
+    path is derived from the provider's spelling and not from the argument. So
+    the defect is invisible in the file count and visible only in the counts the
+    report publishes, which is why this drives two runs and asserts on both.
+    """
+    _settings(project, allowlisted=False)
+    shouted = "Acme/Order-Service"
+    event = replace(_event(42), repository=shouted, url=f"https://github.com/{shouted}/pull/42")
+    _install(monkeypatch, _canned((event,)))
+
+    first_code, first = _invoke("review", "ingest", shouted)
+    second_code, second = _invoke("review", "ingest", shouted.lower())
+
+    assert (first_code, second_code) == (0, 0)
+    assert (first["new"], first["updated"], first["kept"]) == (3, 0, 0)
+    assert (second["new"], second["updated"], second["kept"]) == (0, 3, 0), (
+        "the second run asked for the same repository in another case and read "
+        "none of its own records back: `landed_keys` is comparing bytes"
+    )
+    assert len(_landed(project)) == 3
+
+
 # -- scope-matched containment, through the CLI -------------------------------
 
 
