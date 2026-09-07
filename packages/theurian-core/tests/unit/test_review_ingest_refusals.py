@@ -22,10 +22,13 @@ import pytest
 from theurian.domain.errors import InvariantViolationError
 from theurian.domain.review_ingest import (
     MAX_REFUSAL_DETAIL_CHARS,
+    MAX_REFUSAL_SUMMARY_CHARS,
+    MAX_SUMMARY_ECHO_CHARS,
     REMEDIES,
     RefusalEnvelope,
     RefusalGrade,
     ReviewIngestRefusedError,
+    bounded_echo,
 )
 
 pytestmark = pytest.mark.unit
@@ -152,3 +155,86 @@ def test_a_detail_exactly_at_the_bound_is_accepted() -> None:
     )
 
     assert len(envelope.detail) == MAX_REFUSAL_DETAIL_CHARS
+
+
+def test_an_envelope_cuts_a_summary_past_the_recorded_bound() -> None:
+    """The bound that makes ``summary`` a bounded channel lives on the **type**.
+
+    A summary names what was refused, and what was refused arrives from outside
+    this package -- so a producer that interpolates a response value raw would
+    otherwise publish whatever that value is. A megabyte of pull-request number
+    produced a megabyte of summary, which is what this closes: not by asking
+    every producer to remember, but by cutting here, where every refusal that
+    exists and every refusal a later change adds passes through.
+
+    **Cut and not refused**, deliberately. Raising on an oversized summary would
+    replace a graded envelope with the traceback ADR-0030 clause 9 forbids, on
+    the one path that exists to avoid exactly that.
+    """
+    envelope = RefusalEnvelope(
+        grade=RefusalGrade.TOOL_FAILED,
+        summary="gh answered with " + "N" * 1_000_000,
+        detail="",
+        remedy=REMEDIES[RefusalGrade.TOOL_FAILED],
+    )
+
+    assert len(envelope.summary) == MAX_REFUSAL_SUMMARY_CHARS, (
+        f"a 1,000,017-character summary arrived at construction and left "
+        f"{len(envelope.summary)} characters long. The bound is on the type so that "
+        f"no producer has to remember it."
+    )
+    assert envelope.summary.startswith("gh answered with N")
+    assert envelope.summary.endswith("(cut)"), (
+        "the summary was shortened without saying so, which reads as a complete "
+        "sentence that happens to stop"
+    )
+
+
+def test_a_summary_exactly_at_the_bound_is_kept_whole() -> None:
+    """The boundary, so the cut above is not off by one in the cutting direction."""
+    envelope = RefusalEnvelope(
+        grade=RefusalGrade.TOOL_FAILED,
+        summary="s" * MAX_REFUSAL_SUMMARY_CHARS,
+        detail="",
+        remedy=REMEDIES[RefusalGrade.TOOL_FAILED],
+    )
+
+    assert envelope.summary == "s" * MAX_REFUSAL_SUMMARY_CHARS
+
+
+def test_the_exception_a_caller_prints_carries_the_cut_summary() -> None:
+    """``str(exc)`` is a second publication of the same sentence, and it is the same one.
+
+    ``ReviewIngestRefusedError`` passes the summary to ``TheurianError`` as well
+    as to the envelope. Handing the *argument* over rather than the envelope's
+    own value would leave the bound holding for ``envelope.summary`` and not for
+    the string a caller prints -- one bounded channel and one unbounded one,
+    carrying the same text.
+    """
+    error = ReviewIngestRefusedError(RefusalGrade.TOOL_FAILED, "boom " + "B" * 500_000)
+
+    assert len(str(error)) == MAX_REFUSAL_SUMMARY_CHARS
+    assert str(error) == error.envelope.summary
+
+
+def test_bounded_echo_cuts_a_long_value_and_says_by_how_much() -> None:
+    """A cut that does not say it cut reads as a value that happens to end there."""
+    echoed = bounded_echo("R" * 1_000_000)
+
+    assert echoed.startswith("R" * MAX_SUMMARY_ECHO_CHARS)
+    assert "cut from 1000000 characters" in echoed
+
+
+def test_bounded_echo_renders_a_value_str_itself_refuses() -> None:
+    """The rendering is total, because a refusal path may not raise.
+
+    ``str()`` of an integer is not total: CPython refuses past
+    ``sys.get_int_max_str_digits()`` -- 4300 by default -- and a JSON number can
+    carry more digits than that. Everything upstream of *this adapter* happens to
+    guard it (``json.loads`` applies the same limit), but ``bounded_echo`` is a
+    domain helper any producer may reach for, and one that raised here would turn
+    a refusal into the traceback the refusal exists to replace.
+    """
+    echoed = bounded_echo(-(10**5000))
+
+    assert echoed == "a value of type int this adapter cannot render"

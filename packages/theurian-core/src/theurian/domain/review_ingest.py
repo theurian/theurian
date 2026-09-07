@@ -25,22 +25,36 @@ provider as well as the grade belongs to **the change that adds one** -- a
 dimension added here on speculation would be a second key with one value in it.
 
 **A grade is the only thing a refusal distinguishes.** Two inputs that earn the
-same grade produce the same envelope shape, and the summaries name what the
-caller already supplied -- the repository it asked for, the limit it exceeded --
-rather than anything the request discovered about material the caller may not
-read.
+same grade produce the same envelope shape.
 
-**One summary is the exception, named here rather than left for a reader to
-find.** ``REPOSITORY_RESOLVED_ELSEWHERE`` echoes the ``owner/name`` GitHub
-answered with, which is a *redirect target* and not what the caller supplied. It
-is there because an operator cannot correct their own allowlist without it. What
-bounds it is the surface rather than the ordering -- the rename check runs
-*before* the private check, so the echoed name has not been shown to be public
-when it is printed: the name comes from the operator's own authenticated ``gh``
-resolving a repository their own ``.theurian/config.yaml`` lists, and no CLI
-command, MCP tool or application service reaches the adapter that raises it. A
-version that publishes these envelopes to somebody who is not the operator has to
-re-take this decision.
+**Every summary is bounded, and it is bounded on the type.** A summary says what
+was refused, and naming that often means naming a value from outside this
+package: the repository a caller asked for, the ``owner/name`` GitHub answered
+with, a pull request number, a review thread id. :meth:`RefusalEnvelope.__post_init__`
+cuts any summary past :data:`MAX_REFUSAL_SUMMARY_CHARS` -- which is what makes
+the bound a property of the *type* rather than a habit of its producers, so a
+refusal a later change adds inherits it without anyone auditing the call sites.
+``tests/unit/test_review_ingest_refusals.py::test_an_envelope_cuts_a_summary_past_the_recorded_bound``
+is the key, and its sibling holds the same for the ``str()`` a caller prints.
+
+**Producers cut their own echoes too, at :data:`MAX_SUMMARY_ECHO_CHARS`**, and
+that is not redundant with the bound above. The type's cut takes the *end* of a
+sentence, so a summary whose echoed value ran long would lose the cap it was
+reporting and the remedy's context with it; cutting the value instead keeps the
+sentence. :func:`bounded_echo` is where a producer does it, and
+``security/review_allowlist.py``'s ``_rendered`` is the same shape against its
+own bound.
+
+**The redirect target is the echo worth naming**, because it is the one that is
+neither the caller's own nor an identifier: ``REPOSITORY_RESOLVED_ELSEWHERE``
+echoes the ``owner/name`` GitHub answered with, and an operator cannot correct
+their own allowlist without seeing it. What makes it safe is the surface rather
+than the ordering -- the rename check runs *before* the private check, so the
+echoed name has not been shown to be public when it is printed: the name comes
+from the operator's own authenticated ``gh`` resolving a repository their own
+``.theurian/config.yaml`` lists, and no CLI command, MCP tool or application
+service reaches the adapter that raises it. A version that publishes these
+envelopes to somebody who is not the operator has to re-take this decision.
 """
 
 from __future__ import annotations
@@ -161,14 +175,74 @@ REMEDIES: Final[dict[RefusalGrade, str]] = {
 #: a bug in the producer rather than a megabyte in somebody's terminal.
 MAX_REFUSAL_DETAIL_CHARS: Final = 2_000
 
+#: How long a whole summary may be, **cut** at construction rather than refused.
+#: A summary is a sentence or two this package wrote plus the values those
+#: sentences name, and each of those is already cut at
+#: :data:`MAX_SUMMARY_ECHO_CHARS` where it is built -- so this is room for that
+#: shape rather than a measurement of it, and a backstop for a producer that
+#: interpolates something raw. What it is *not* is a number a response can reach:
+#: a megabyte of pull-request number arrives here and leaves as this many
+#: characters.
+MAX_REFUSAL_SUMMARY_CHARS: Final = 1_000
+
+#: How much of one value from outside this package a summary may echo before
+#: :func:`bounded_echo` cuts it and says by how much. Generous against every
+#: identifier this adapter names -- a ``owner/name``, a GraphQL node id, a pull
+#: request number -- and small enough that several in one sentence still leave it
+#: inside :data:`MAX_REFUSAL_SUMMARY_CHARS`.
+MAX_SUMMARY_ECHO_CHARS: Final = 200
+
+#: What the type's own cut appends, counted **inside**
+#: :data:`MAX_REFUSAL_SUMMARY_CHARS` so the bound is the length of what a caller
+#: receives and not that plus a marker.
+_SUMMARY_CUT_MARKER: Final = "... (cut)"
+
+
+def bounded_echo(value: object) -> str:
+    """``value`` as a refusal summary may name it: cut, and saying that it was cut.
+
+    A refusal names what it refused so the operator can act on it, and what it
+    refused arrived from outside this package -- a GraphQL response, or a
+    caller's own argument. Either can be a megabyte. The cut says how much was
+    dropped rather than trailing off, because a value silently shortened to look
+    plausible is worse for a reader than one that is visibly incomplete.
+
+    The rendering is deliberately total. A refusal path is the one place an
+    exception must not be raised -- ADR-0030 clause 9 wants an envelope, never a
+    traceback -- and ``str()`` of an integer is not total: CPython refuses to
+    render one past ``sys.get_int_max_str_digits()`` (4300 by default), which is
+    a shape a JSON number can carry. Nothing upstream of every producer promises
+    otherwise, so this answers with the type's name instead of raising.
+    """
+    try:
+        text = str(value)
+    except ValueError:
+        # `int.__str__` past the interpreter's digit limit is the measured member
+        # (`sys.set_int_max_str_digits`); the type name locates it without
+        # rendering it.
+        return f"a value of type {type(value).__name__} this adapter cannot render"
+    if len(text) <= MAX_SUMMARY_ECHO_CHARS:
+        return text
+    return f"{text[:MAX_SUMMARY_ECHO_CHARS]} (cut from {len(text)} characters)"
+
 
 @dataclass(frozen=True, slots=True)
 class RefusalEnvelope:
     """One refusal, as a caller receives it.
 
-    ``detail`` is the only field that can carry text this process did not write --
-    a spawned child's stderr, contained. It is bounded at construction so an
-    envelope cannot become the channel an unbounded child output travels down.
+    ``detail`` is the field that carries a spawned child's stderr, and the only
+    one that does. Its producer slices it to :data:`MAX_REFUSAL_DETAIL_CHARS`
+    and construction **refuses** an oversized one, so a chatty child cannot turn
+    an envelope into a log and a producer that forgets to slice fails here.
+
+    ``summary`` is bounded too, and by **cutting** rather than by refusing. The
+    asymmetry is the point rather than an oversight: a summary names what was
+    refused, and what was refused is often a value from a response or a caller,
+    so an oversized summary is a hostile *answer* arriving on a refusal path.
+    Raising there would replace the graded envelope with the traceback ADR-0030
+    clause 9 forbids -- the exact failure the refusal was constructed to avoid.
+    ``detail`` can afford to refuse because an oversized one is a bug in this
+    package rather than something somebody sent.
     """
 
     grade: RefusalGrade
@@ -187,6 +261,9 @@ class RefusalEnvelope:
                 f"Grade {self.grade.value!r} carries an empty remedy. "
                 "Remedies are looked up in `REMEDIES`, never passed in."
             )
+        if len(self.summary) > MAX_REFUSAL_SUMMARY_CHARS:
+            kept = MAX_REFUSAL_SUMMARY_CHARS - len(_SUMMARY_CUT_MARKER)
+            object.__setattr__(self, "summary", self.summary[:kept] + _SUMMARY_CUT_MARKER)
         if len(self.detail) > MAX_REFUSAL_DETAIL_CHARS:
             raise InvariantViolationError(
                 f"A refusal detail is bounded at {MAX_REFUSAL_DETAIL_CHARS} characters "
@@ -212,7 +289,11 @@ class ReviewIngestRefusedError(TheurianError):
             remedy=REMEDIES[grade],
         )
         self.remedy = self.envelope.remedy
-        super().__init__(summary)
+        # The envelope's summary and not the argument: the envelope is where the
+        # cut happens, and `str(exc)` is a second publication of the same
+        # sentence -- passing the raw one would leave the bound holding for
+        # `envelope.summary` and not for the exception a caller prints.
+        super().__init__(self.envelope.summary)
 
     @property
     def grade(self) -> RefusalGrade:

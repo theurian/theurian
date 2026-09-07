@@ -54,7 +54,11 @@ from theurian.domain.review import (
     ReviewResolution,
     ReviewThread,
 )
-from theurian.domain.review_ingest import RefusalGrade, ReviewIngestRefusedError
+from theurian.domain.review_ingest import (
+    RefusalGrade,
+    ReviewIngestRefusedError,
+    bounded_echo,
+)
 from theurian.infrastructure.github import queries
 from theurian.infrastructure.github.environment import child_environment
 from theurian.infrastructure.github.gh_cli import GhCli, locate_binary
@@ -199,7 +203,7 @@ class GitHubReviewProvider:
         cursor: str | None = None
         # Named once: the page cap's report and a cursor refusal describe the same
         # read, and two spellings of it would drift apart.
-        what = f"review threads on #{event.number}"
+        what = f"review threads on #{bounded_echo(event.number)}"
         for _page in range(MAX_PAGES):
             variables: dict[str, str | int] = {
                 "owner": owner,
@@ -301,9 +305,9 @@ class GitHubReviewProvider:
             raise ReviewIngestRefusedError(
                 RefusalGrade.REPOSITORY_RESOLVED_ELSEWHERE,
                 f"Review ingestion asked GitHub for {entry!r} and GitHub answered for "
-                f"{resolved!r}. A rename redirect is followed by nobody here: the "
-                f"allowlist names a repository, not wherever that name now points. "
-                f"Nothing was read from the answer.",
+                f"{bounded_echo(resolved)!r}. A rename redirect is followed by nobody "
+                f"here: the allowlist names a repository, not wherever that name now "
+                f"points. Nothing was read from the answer.",
             )
         if repo.get("isPrivate") is not False:
             raise ReviewIngestRefusedError(
@@ -347,9 +351,9 @@ class GitHubReviewProvider:
         if merged and not isinstance(merge_commit, str):
             raise ReviewIngestRefusedError(
                 RefusalGrade.TOOL_FAILED,
-                f"GitHub reported pull request {entry}#{node.get('number')} as merged "
-                f"with no merge commit, which is not a pull request this adapter can "
-                f"record honestly.",
+                f"GitHub reported pull request {entry}#{bounded_echo(node.get('number'))} "
+                f"as merged with no merge commit, which is not a pull request this "
+                f"adapter can record honestly.",
             )
         linked = _mapping(node.get("closingIssuesReferences"))
         if (
@@ -358,7 +362,7 @@ class GitHubReviewProvider:
         ):
             raise ReviewIngestRefusedError(
                 RefusalGrade.LIMIT_EXCEEDED,
-                f"Pull request {entry}#{node.get('number')} closes more than the "
+                f"Pull request {entry}#{bounded_echo(node.get('number'))} closes more than the "
                 f"recorded {MAX_LINKED_ISSUES}-issue cap. The read stopped rather than "
                 f"recording an event that looks whole and is not.",
             )
@@ -443,8 +447,9 @@ class GitHubReviewProvider:
         if _mapping(comments.get("pageInfo")).get("hasNextPage") is True:
             raise ReviewIngestRefusedError(
                 RefusalGrade.LIMIT_EXCEEDED,
-                f"Review thread {external_id} on {event.repository}#{event.number} "
-                f"carries more than the recorded {MAX_COMMENTS_PER_THREAD}-comment cap. "
+                f"Review thread {bounded_echo(external_id)} on {event.repository}"
+                f"#{bounded_echo(event.number)} carries more than the recorded "
+                f"{MAX_COMMENTS_PER_THREAD}-comment cap. "
                 f"The read stopped rather than recording a thread that looks whole and "
                 f"is not.",
             )
@@ -452,9 +457,9 @@ class GitHubReviewProvider:
         if not built:
             raise ReviewIngestRefusedError(
                 RefusalGrade.TOOL_FAILED,
-                f"GitHub returned review thread {external_id} on "
-                f"{event.repository}#{event.number} with no comments, which is not a "
-                f"thread this adapter can record.",
+                f"GitHub returned review thread {bounded_echo(external_id)} on "
+                f"{event.repository}#{bounded_echo(event.number)} with no comments, "
+                f"which is not a thread this adapter can record.",
             )
         return built
 
@@ -593,9 +598,9 @@ def _positive_integer(value: object, field: str) -> int:
     if number < 1:
         raise ReviewIngestRefusedError(
             RefusalGrade.TOOL_FAILED,
-            f"GitHub's answer carried {number} as a {field}. GitHub numbers pull "
-            f"requests and issues from one, so this adapter cannot identify the "
-            f"record it belongs to.",
+            f"GitHub's answer carried {bounded_echo(number)} as a {field}. GitHub "
+            f"numbers pull requests and issues from one, so this adapter cannot "
+            f"identify the record it belongs to.",
         )
     return number
 

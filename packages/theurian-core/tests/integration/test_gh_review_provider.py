@@ -35,7 +35,11 @@ import pytest
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.review import ReviewEvent
-from theurian.domain.review_ingest import RefusalGrade, ReviewIngestRefusedError
+from theurian.domain.review_ingest import (
+    MAX_REFUSAL_SUMMARY_CHARS,
+    RefusalGrade,
+    ReviewIngestRefusedError,
+)
 from theurian.infrastructure.github import environment, limits
 from theurian.infrastructure.github.review_provider import GitHubReviewProvider
 from theurian.infrastructure.github.transport_guard import GH_CONFIG_FILE
@@ -1075,6 +1079,58 @@ async def test_a_pull_request_past_the_linked_issue_cap_is_reported_not_truncate
     assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
     assert f"{REPOSITORY}#12" in str(raised.value)
     assert str(limits.MAX_LINKED_ISSUES) in str(raised.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "shape",
+    ("a merged pull request's number", "a capped pull request's number", "a resolved name"),
+)
+async def test_a_megabyte_of_answer_does_not_become_a_megabyte_of_summary(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, shape: str
+) -> None:
+    """A refusal names what it refused, and what it refused came from the answer.
+
+    Every summary below interpolates a value this adapter read out of a GraphQL
+    response, and a response is a document from somewhere else: a one-megabyte
+    ``number`` produced a one-megabyte summary, published in whatever a caller
+    prints it into. The envelope's ``detail`` was contained and its ``summary``
+    was not.
+
+    Both halves are asserted because they close different failures. The **cut**
+    is what bounds the channel; the **cap the sentence was reporting** surviving
+    the cut is what says the bound was applied to the value rather than to the
+    end of the sentence -- a summary cut at its tail keeps the megabyte and loses
+    the number an operator acts on.
+    """
+    million = "N" * 1_000_000
+    payloads = {
+        "a merged pull request's number": _pull_requests(
+            number=million, merged=True, mergeCommit=None
+        ),
+        "a capped pull request's number": _pull_requests(
+            number=million,
+            closingIssuesReferences={"pageInfo": {"hasNextPage": True}, "nodes": []},
+        ),
+        "a resolved name": _pull_requests(resolved_name="R" * 1_000_000),
+    }
+    fake_gh.answer("prs", 1, payloads[shape])
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    summary = raised.value.envelope.summary
+    assert len(summary) <= MAX_REFUSAL_SUMMARY_CHARS, (
+        f"the answer carried a megabyte and the published summary is {len(summary)} "
+        f"characters. `summary` is a channel for text this process did not write, "
+        f"and it is bounded on the type so that no producer has to remember it."
+    )
+    assert len(str(raised.value)) <= MAX_REFUSAL_SUMMARY_CHARS
+    assert "cut from 1000000 characters" in summary, (
+        "the megabyte was shortened without saying so; a value silently cut to look "
+        "plausible is worse for a reader than one that is visibly incomplete"
+    )
 
 
 # -- the version floor and the authentication probe ---------------------------
