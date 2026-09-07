@@ -19,8 +19,9 @@ module that also owns the pattern the schema publishes.
 
 ``providers.review.redactParticipantNames`` is R-12's ingestion-time redaction
 switch (ADR-0030 decision 3), and it takes the same split: this module answers
-what the file states, and the review-ingestion landing gate decides what a
-``True`` does to a record on its way to disk.
+what the file states, and ``application/review_landing_gate.py`` decides what a
+``True`` does to a record on its way to disk -- which display name is replaced,
+with what, and that ``external_id`` is kept so the identity graph survives.
 
 **Absent means ``block``, and unrecognised means refuse.** Those are two rules
 and not one. A project with no configuration file, or one that says nothing

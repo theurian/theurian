@@ -1919,15 +1919,21 @@ SECRET_SCAN_POLICY_MODULE: Final = "theurian.security.project_config"  # noqa: S
 #: list is a second place the policy is consulted, and a membership test cannot
 #: see it.
 #:
-#: **Two sites since #329**, and they sit at different layers on purpose.
+#: **Three sites, and they sit at different layers on purpose.**
 #: ``ProposalService`` holds a ``ProjectPaths`` and reads the policy itself, so no
 #: composition root can omit the control by forgetting to wire it. A build is
 #: addressed by a database path and has no project root, so ``theurian index
 #: build`` reads the policy at the CLI and hands it to a non-defaulted
 #: ``IndexRequest.secret_scan`` -- the same "cannot be omitted" property, moved
-#: onto the type.
+#: onto the type. The third arrived with ADR-0030 decision 4:
+#: ``review_landing_gate`` takes the project root and reads the policy itself, for
+#: ``ProposalService``'s reason and not the build's. **No command reaches it
+#: yet** -- the CLI verb is a later slice -- so the reach the four documents below
+#: describe is unchanged: ``security.secretScan`` still governs the approval gate
+#: and the index build, and nothing else a user can run.
 SECRET_SCAN_POLICY_CALL_SITES: dict[str, int] = {
     "application/proposal_service.py": 1,
+    "application/review_landing_gate.py": 1,
     "cli/index_commands.py": 1,
 }
 
@@ -1991,9 +1997,17 @@ SECRET_SCANNER_MODULE: Final = "theurian.security.content_secrets"  # noqa: S105
 #: ingest`` runs no scan of its own) are untouched by it: this module is
 #: ``theurian propose`` and ``theurian propose accept``, and neither is
 #: ``ingest``.
+#: **The third module is the review-ingestion gate** (ADR-0030 decision 4), whose
+#: single call screens one record's author-controlled fields before the record
+#: becomes a file. It is the only one of the three that *refuses* on a finding,
+#: because it is the only one that runs before the content exists anywhere in
+#: Theurian -- and no command reaches it yet, so the four documents this pin
+#: protects, which describe what ``theurian ingest`` and ``theurian index build``
+#: do, are untouched by it.
 SECRET_SCANNER_CALL_SITES: dict[str, int] = {
     "application/index_builder.py": 3,
     "application/proposal_service.py": 3,
+    "application/review_landing_gate.py": 1,
 }
 
 #: Each module of the shipped package that reaches :data:`SECRET_SCANNER_MODULE`
@@ -2005,12 +2019,14 @@ SECRET_SCANNER_CALL_SITES: dict[str, int] = {
 #: however it renames them; this one reddens on the routes that introduce no such
 #: binding at all -- ``import theurian.security.content_secrets``,
 #: ``from theurian.security import content_secrets``, and a call through the
-#: module object. Two importers today -- the accept path and the index build, one
-#: per shipped SEC-11 control (#198, #329) -- and a third is a module that has
-#: reached for the detector whatever it then does with it.
+#: module object. Three importers -- the accept path, the index build and the
+#: review-ingestion gate, one per SEC-11 control in the tree (#198, #329,
+#: ADR-0030 decision 4) -- and a fourth is a module that has reached for the
+#: detector whatever it then does with it.
 SECRET_SCANNER_IMPORTERS: tuple[str, ...] = (
     "application/index_builder.py",
     "application/proposal_service.py",
+    "application/review_landing_gate.py",
 )
 
 #: Each module of the shipped package that reaches
@@ -2024,15 +2040,19 @@ SECRET_SCANNER_IMPORTERS: tuple[str, ...] = (
 #: while ``ingest.md``, the schema description, ``SECURITY.md`` and T-15 all say
 #: the policy is consulted at the approval gate.
 #:
-#: **Six entries, and only two of them read a policy.** The membership is what
+#: **Seven entries, and only three of them read a policy.** The membership is what
 #: this pin holds; what each importer *does* with the module is held by the call
-#: count beside it, and the pair is what makes a seventh importer a change
-#: somebody has to explain. What each of the six takes:
+#: count beside it, and the pair is what makes an eighth importer a change
+#: somebody has to explain. What each of the seven takes:
 #:
 #: * ``application/project_service.py`` takes ``PROJECT_CONFIG_FILE`` -- the file
 #:   name, not the policy -- and reads nothing.
-#: * ``application/proposal_service.py`` and ``cli/index_commands.py`` are the two
-#:   that call ``read_secret_scan_policy``, one per shipped control.
+#: * ``application/proposal_service.py``, ``cli/index_commands.py`` and
+#:   ``application/review_landing_gate.py`` are the three that call
+#:   ``read_secret_scan_policy``, one per SEC-11 control in the tree. The gate
+#:   also calls ``read_review_participant_redaction``, which is the *other* reader
+#:   ADR-0030 added and which no key in this module watches by call count -- what
+#:   watches it is the ``(module, spelling)`` enumeration above.
 #: * ``application/index_builder.py`` takes ``SecretScanPolicy`` as the *type* of
 #:   ``IndexRequest.secret_scan``, and ``application/index_secret_scan.py`` takes
 #:   it as the type it records and reads back. Neither opens the file: a build is
@@ -2046,6 +2066,7 @@ SECRET_SCAN_POLICY_IMPORTERS: tuple[str, ...] = (
     "application/index_secret_scan.py",
     "application/project_service.py",
     "application/proposal_service.py",
+    "application/review_landing_gate.py",
     "cli/index_commands.py",
     "security/review_allowlist.py",
 )
