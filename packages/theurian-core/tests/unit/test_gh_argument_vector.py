@@ -558,24 +558,26 @@ def test_every_first_literal_in_a_document_is_pinned_to_a_constant() -> None:
 #: A bound belongs in this table when nothing else restates it test-side. A
 #: second restatement in a second file is a second copy free to drift from the
 #: first, which is the failure this whole table exists to prevent one level up.
-#: So four of ``limits.py``'s constants are deliberately absent, each restated by
-#: the file that *drives* it:
+#: So two of ``limits.py``'s constants are deliberately absent, each restated by
+#: the file that *drives* it -- :data:`_RESTATED_BY_THE_FILE_THAT_DRIVES_IT`,
+#: which is also where the pointer to each lives.
 #:
-#: * ``MAX_PROBE_STDOUT_BYTES`` -- ``test_gh_review_provider.py``'s
-#:   ``RECORDED_PROBE_STDOUT_BYTES``, which sizes a probe's stdout to the
-#:   boundary and one byte past it;
-#: * ``MAX_CHILD_STDERR_BYTES`` -- ``test_gh_bounded_read.py``'s
-#:   ``RECORDED_STDERR_BYTES``, where it is observed as a memory bound;
-#: * ``MAX_GH_CONFIG_BYTES`` and ``MAX_REPOSITORY_CHARS`` -- the two
-#:   fixture-independence rebuilds, in their own files.
+#: (A sentence here used to name ``MAX_GH_CONFIG_BYTES`` and
+#: ``MAX_REPOSITORY_CHARS`` in that group as well. Neither is a constant of
+#: ``limits.py``: they live in ``transport_guard.py`` and
+#: ``security/review_allowlist.py``, so this table was never the place they were
+#: absent from. Measured while adding the run-level ceilings below.)
 #:
-#: Three more are absent for a different reason: ``MAX_READ_BYTES_PER_CALL``,
-#: ``MAX_SPAWNS_PER_CALL`` and ``MAX_SECONDS_PER_CALL`` are *derived*, so
-#: restating a value here would pin a product rather than the derivation.
-#: :func:`test_the_derived_per_call_ceiling_is_still_the_product_of_its_factors`
-#: and :func:`test_the_derived_spawn_and_time_ceilings_are_still_their_derivations`
-#: are their pins, and the figures ``limits.py``'s prose names are entailed by
-#: those plus the factors below.
+#: The rest are absent for a different reason: they are *derived*, so restating a
+#: value here would pin a product rather than the derivation --
+#: :data:`_PINNED_AS_A_DERIVATION` names them beside the test that pins each, and
+#: the figures ``limits.py``'s prose names are entailed by those plus the factors
+#: below.
+#:
+#: **The three-way split is exhaustive, and that is measured rather than stated**
+#: -- :func:`test_every_recorded_limit_has_a_test_side_home` walks the module's
+#: own annotated assignments, so a constant added with no home reddens there
+#: instead of being priced by nobody.
 RECORDED_BOUNDS: Final[tuple[tuple[str, object], ...]] = (
     ("REQUEST_TIMEOUT_SECONDS", 30.0),
     ("REAP_SECONDS", 5.0),
@@ -588,6 +590,89 @@ RECORDED_BOUNDS: Final[tuple[tuple[str, object], ...]] = (
     ("MAX_RESPONSE_BYTES", 8 * 1024 * 1024),
     ("GH_VERSION_FLOOR", (2, 86, 0)),
 )
+
+#: The bounds a **driving** file restates, keyed to where that restatement is.
+#: Each is observed at its own boundary there, which is a stronger pin than an
+#: equality here and is why a second one here would only be a copy to drift.
+_RESTATED_BY_THE_FILE_THAT_DRIVES_IT: Final[dict[str, str]] = {
+    "MAX_PROBE_STDOUT_BYTES": (
+        "test_gh_review_provider.py's RECORDED_PROBE_STDOUT_BYTES, which sizes a "
+        "probe's stdout to the boundary and one byte past it"
+    ),
+    "MAX_CHILD_STDERR_BYTES": (
+        "test_gh_bounded_read.py's RECORDED_STDERR_BYTES, where it is observed as a memory bound"
+    ),
+}
+
+#: The **derived** bounds, keyed to the test that holds each one's derivation.
+#: A value written out here would pin the product and let the derivation become a
+#: literal, which is the drift these constants exist to prevent.
+_PER_CALL_BYTES_PIN: Final = "test_the_derived_per_call_ceiling_is_still_the_product_of_its_factors"
+_PER_CALL_PIN: Final = "test_the_derived_spawn_and_time_ceilings_are_still_their_derivations"
+_PER_RUN_PIN: Final = "test_the_run_level_ceilings_are_still_their_derivations"
+
+_PINNED_AS_A_DERIVATION: Final[dict[str, str]] = {
+    "MAX_READ_BYTES_PER_CALL": _PER_CALL_BYTES_PIN,
+    "MAX_SPAWNS_PER_CALL": _PER_CALL_PIN,
+    "MAX_SECONDS_PER_CALL": _PER_CALL_PIN,
+    "MAX_PORT_CALLS_PER_RUN": _PER_RUN_PIN,
+    "MAX_SPAWNS_PER_RUN": _PER_RUN_PIN,
+    "MAX_SECONDS_PER_RUN": _PER_RUN_PIN,
+    "MAX_READ_BYTES_PER_RUN": _PER_RUN_PIN,
+}
+
+
+def _limits_constants() -> set[str]:
+    """Every public module-level constant ``limits.py`` declares, from its source.
+
+    Read as annotated assignments rather than from ``dir(limits)``, which would
+    also answer with everything the module imported. Private names are excluded
+    because they are factors rather than published bounds -- ``_PROBE_SPAWNS`` is
+    the one, and it is restated as ``_RECORDED_PROBE_SPAWNS`` beside the test
+    that needs it not to be an identity.
+    """
+    source = pathlib.Path(limits.__file__).read_text(encoding="utf-8")
+    return {
+        node.target.id
+        for node in ast.parse(source).body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and not node.target.id.startswith("_")
+    }
+
+
+def test_every_recorded_limit_has_a_test_side_home() -> None:
+    """The admission rule made exhaustive: a new cap cannot arrive unpriced.
+
+    ``RECORDED_BOUNDS``' own prose enumerated which constants sit elsewhere and
+    why, and an enumeration in prose is a list that goes stale silently -- it
+    already had, naming two constants that are not ``limits.py``'s at all. The
+    three homes are tables now and this walks the module against their union.
+
+    RED here means a bound was added and nothing test-side prices it: put its
+    value in :data:`RECORDED_BOUNDS`, point at the file that drives it in
+    :data:`_RESTATED_BY_THE_FILE_THAT_DRIVES_IT`, or -- if it is a product of
+    other constants -- give it a derivation pin and a row in
+    :data:`_PINNED_AS_A_DERIVATION`.
+    """
+    declared = _limits_constants()
+    homed = (
+        {name for name, _ in RECORDED_BOUNDS}
+        | set(_RESTATED_BY_THE_FILE_THAT_DRIVES_IT)
+        | set(_PINNED_AS_A_DERIVATION)
+    )
+
+    assert declared, "no annotated constant found in `limits.py`, so this walk sees nothing"
+    assert declared - homed == set(), (
+        f"`limits.py` declares {sorted(declared - homed)} and no table here prices "
+        f"them. A cap with no test-side home is a number the prose can move without "
+        f"anything noticing."
+    )
+    assert homed - declared == set(), (
+        f"{sorted(homed - declared)} is priced here and is not a constant of "
+        f"`limits.py`. A row for a name that moved to another module reads as "
+        f"coverage this file does not have."
+    )
 
 
 @pytest.mark.parametrize(
@@ -677,6 +762,54 @@ def test_the_derived_spawn_and_time_ceilings_are_still_their_derivations() -> No
         f"{limits.MAX_SPAWNS_PER_CALL * (limits.REQUEST_TIMEOUT_SECONDS + limits.REAP_SECONDS)}. "
         f"The wall-clock ceiling is recorded as a derivation so it cannot drift; if it "
         f"has become a literal, the prose beside it names a figure nothing computes."
+    )
+
+
+def test_the_run_level_ceilings_are_still_their_derivations() -> None:
+    """The same argument one grain up: what a whole ``review ingest`` run may spend.
+
+    The per-call ceilings above price one port call; a run makes ``1 + 2N`` of
+    them, so the products a caller has to price against are these. They are the
+    numbers the severity table's "work no recorded limit bounds" row is answered
+    with, and none of them is stated by any single constant.
+
+    **The ``1 + 2N`` shape is not asserted here**, because it is not this
+    module's to hold: it is a property of ``ReviewIngestService``, and
+    ``tests/unit/test_review_ingest_service.py::test_a_run_makes_one_listing_call_and_two_per_pull_request``
+    drives it against the real service. What is held here is that the constants
+    remain the products of their factors rather than becoming literals.
+
+    ``MAX_SPAWNS_PER_RUN`` counts the probes **once**, not once per call, which
+    is the one place the run-level derivation is not a multiple of the per-call
+    one: ``_ready`` memoises the probed ``gh`` per adapter instance.
+    """
+    assert limits.MAX_PORT_CALLS_PER_RUN == 1 + 2 * limits.MAX_PULL_REQUESTS, (
+        f"`MAX_PORT_CALLS_PER_RUN` is {limits.MAX_PORT_CALLS_PER_RUN} and one listing "
+        f"plus two reads per {limits.MAX_PULL_REQUESTS} pull requests is "
+        f"{1 + 2 * limits.MAX_PULL_REQUESTS}. A per-record read added or removed moves "
+        f"every product below with it."
+    )
+    assert (
+        limits.MAX_SPAWNS_PER_RUN
+        == _RECORDED_PROBE_SPAWNS + limits.MAX_PORT_CALLS_PER_RUN * limits.MAX_PAGES
+    ), (
+        f"`MAX_SPAWNS_PER_RUN` is {limits.MAX_SPAWNS_PER_RUN} and the two probes plus "
+        f"{limits.MAX_PORT_CALLS_PER_RUN} calls of {limits.MAX_PAGES} pages is "
+        f"{_RECORDED_PROBE_SPAWNS + limits.MAX_PORT_CALLS_PER_RUN * limits.MAX_PAGES}. The "
+        f"probes are counted once per run because the adapter memoises them."
+    )
+    assert limits.MAX_SECONDS_PER_RUN == limits.MAX_SPAWNS_PER_RUN * (
+        limits.REQUEST_TIMEOUT_SECONDS + limits.REAP_SECONDS
+    ), (
+        f"`MAX_SECONDS_PER_RUN` is {limits.MAX_SECONDS_PER_RUN} and its factors give "
+        f"{limits.MAX_SPAWNS_PER_RUN * (limits.REQUEST_TIMEOUT_SECONDS + limits.REAP_SECONDS)}."
+    )
+    assert (
+        limits.MAX_READ_BYTES_PER_RUN
+        == limits.MAX_PORT_CALLS_PER_RUN * limits.MAX_READ_BYTES_PER_CALL
+    ), (
+        f"`MAX_READ_BYTES_PER_RUN` is {limits.MAX_READ_BYTES_PER_RUN} and its factors "
+        f"give {limits.MAX_PORT_CALLS_PER_RUN * limits.MAX_READ_BYTES_PER_CALL}."
     )
 
 

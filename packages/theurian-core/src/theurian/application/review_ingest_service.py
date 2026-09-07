@@ -54,6 +54,22 @@ arrives at those call sites and degrades **every remaining pull request** to a
 skip. That is loud rather than silent: each skip is reported by identity with
 its own envelope and the run does not read as clean.
 
+**What one run costs is bounded by the port's implementation, and the numbers
+live with it.** This service makes one
+:meth:`~theurian.domain.ports.review_provider.ReviewProvider.list_pull_requests`
+call and then two per pull request the listing built -- ``get_threads`` and
+``get_reviews`` -- which is the whole of its own contribution to the cost. A
+pull request the listing skipped is never fetched, so the per-record term counts
+built records rather than window slots.
+``test_a_run_makes_one_listing_call_and_two_per_pull_request`` is that shape,
+driven against the real service. What one of those calls may then spend --
+children spawned, wall clock, bytes read -- is the adapter's, and the shipped
+one records both grains as derived constants in
+``infrastructure/github/limits.py``: ``MAX_PORT_CALLS_PER_RUN``,
+``MAX_SPAWNS_PER_RUN``, ``MAX_SECONDS_PER_RUN`` and ``MAX_READ_BYTES_PER_RUN``.
+Named rather than imported, because this layer depends on the port and not on
+any adapter (ADR-0003); a second provider brings its own file of them.
+
 **This slice ships no advance marker, and that is a decision.** There is no
 "last ingested" file, no watermark, nothing that records a pull request as seen.
 The window is the caller's: an explicit ``since_number``, and otherwise the

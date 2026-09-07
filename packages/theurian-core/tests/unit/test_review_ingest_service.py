@@ -62,6 +62,10 @@ from theurian.domain.review import (
     ReviewThread,
 )
 from theurian.domain.review_ingest import RefusalGrade, ReviewIngestRefusedError
+from theurian.infrastructure.github.limits import (
+    MAX_PORT_CALLS_PER_RUN,
+    MAX_PULL_REQUESTS,
+)
 from theurian.infrastructure.review_evidence import (
     EvidenceRecord,
     IngestionRun,
@@ -383,6 +387,46 @@ async def test_a_record_outside_the_window_keeps_its_file_and_counts_as_kept(
         RUN_ONE.run_id,
         RUN_TWO.run_id,
     }
+
+
+@pytest.mark.asyncio
+async def test_a_run_makes_one_listing_call_and_two_per_pull_request(tmp_path: Path) -> None:
+    """The ``1 + 2N`` shape ``MAX_PORT_CALLS_PER_RUN`` is derived from.
+
+    The constant lives with the adapter that pays for it
+    (``infrastructure/github/limits.py``) and prices spawns, wall clock and
+    bytes off this count. What it rests on is a property of *this* service --
+    that a run asks the listing once and each built pull request twice -- so the
+    shape is driven here rather than asserted there, and a third per-record read
+    added later reddens this before it silently multiplies every product.
+
+    The skipped pull request is the second half: a record the listing could not
+    build is never fetched, so ``N`` counts built records rather than window
+    slots. Without it, a service that fetched skipped records too would pass a
+    count taken over a clean window.
+    """
+    fault = ReviewIngestRefusedError(
+        RefusalGrade.LIMIT_EXCEEDED,
+        f"Pull request {REPOSITORY}#41 carries more than the recorded label cap.",
+    )
+    provider = _provider([_event(42), _event(41), _event(40)], listing_faults={41: fault})
+
+    report, _lander, _root = await _run(tmp_path, provider)
+
+    built = report.pull_requests
+    assert (built, len(report.skipped)) == (2, 1)
+    assert provider.listings == 1, (
+        f"the run asked the listing {provider.listings} times; the cost model prices exactly one"
+    )
+    assert len(provider.reads) == 2 * built, (
+        f"{len(provider.reads)} per-pull-request reads for {built} built pull "
+        f"requests: the cost model prices two"
+    )
+    assert sorted({read for read, _number in provider.reads}) == ["get_reviews", "get_threads"]
+    assert 41 not in [number for _read, number in provider.reads], (
+        "the skipped pull request was fetched, so a skip costs a fetch after all"
+    )
+    assert MAX_PORT_CALLS_PER_RUN == 1 + 2 * MAX_PULL_REQUESTS
 
 
 # -- scope-matched containment ------------------------------------------------

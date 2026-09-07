@@ -152,6 +152,51 @@ MAX_SPAWNS_PER_CALL: Final = _PROBE_SPAWNS + MAX_PAGES
 #: to price against.
 MAX_SECONDS_PER_CALL: Final = MAX_SPAWNS_PER_CALL * (REQUEST_TIMEOUT_SECONDS + REAP_SECONDS)
 
+# -- what a whole run may spend -----------------------------------------------
+#
+# The three ceilings above price **one port call**. A run makes many, and the
+# severity table grades "a caller can make the system spend work no recorded
+# limit bounds" as HIGH -- so the run-level products are derived here rather
+# than left for a reader to multiply. Every factor is imported; no number below
+# is restated, which is what keeps these from drifting when a cap moves.
+
+#: **How many port calls one ``review ingest`` run may make**: one
+#: :meth:`~theurian.domain.ports.review_provider.ReviewProvider.list_pull_requests`,
+#: then ``get_threads`` and ``get_reviews`` once each per pull request the
+#: listing answered with. The listing is capped at :data:`MAX_PULL_REQUESTS`, so
+#: ``1 + 2 * MAX_PULL_REQUESTS`` is the ceiling.
+#:
+#: **A skipped pull request costs no fetch.** A record the listing could not
+#: build is answered as a skip and never fetched, so the ``2 *`` term counts
+#: *built* records and this bound is reached only by a window in which every
+#: pull request built. ``test_a_run_makes_one_listing_call_and_two_per_pull_request``
+#: in ``tests/unit/test_review_ingest_service.py`` drives the shape against the
+#: real service and is what fails if a third per-record read appears.
+MAX_PORT_CALLS_PER_RUN: Final = 1 + 2 * MAX_PULL_REQUESTS
+
+#: **The derived spawn ceiling on one run.** The probes are counted once, not
+#: once per call: ``GitHubReviewProvider._ready`` memoises the probed ``gh`` for
+#: the adapter's lifetime and one run uses one adapter. Every call after that may
+#: reach :data:`MAX_PAGES` children.
+MAX_SPAWNS_PER_RUN: Final = _PROBE_SPAWNS + MAX_PORT_CALLS_PER_RUN * MAX_PAGES
+
+#: **The derived wall-clock ceiling on one run**, at :data:`MAX_SECONDS_PER_CALL`'s
+#: own worst case per spawn. It is a large number -- days, not minutes -- and it
+#: is the honest one: a run that timed every child out spends this long refusing
+#: in a graded, reported way. What makes it payable is that the operator started
+#: it: ``review ingest`` is a CLI verb with no MCP surface in ADR-0030 slice 2,
+#: so no agent reaches this. ``--limit`` is how a caller buys a smaller ceiling
+#: -- every product here is linear in it -- and the shipped default is one page
+#: rather than :data:`MAX_PULL_REQUESTS`.
+MAX_SECONDS_PER_RUN: Final = MAX_SPAWNS_PER_RUN * (REQUEST_TIMEOUT_SECONDS + REAP_SECONDS)
+
+#: **The derived byte ceiling on one run**: what this process may be made to
+#: *read* from children, as opposed to hold. Memory stays bounded by
+#: :data:`MAX_RESPONSE_BYTES`, because a page is released once it is parsed, and
+#: a landed record is bounded again by ``security/paths.py``'s
+#: ``MAX_SOURCE_FILE_BYTES`` before it is written.
+MAX_READ_BYTES_PER_RUN: Final = MAX_PORT_CALLS_PER_RUN * MAX_READ_BYTES_PER_CALL
+
 #: The most stdout a **probe** may produce. ``gh --version`` prints one line and
 #: ``gh auth status`` a short report, so this is generous by orders of magnitude
 #: against either and still nothing a binary can spend memory with.

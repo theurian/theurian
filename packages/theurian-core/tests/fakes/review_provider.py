@@ -69,6 +69,11 @@ class CannedReviewProvider:
         #: Every per-pull-request read this fake was asked for, in order. What a
         #: caller asserts on when the claim is about a call that was *not* made.
         self.reads: list[ReadKey] = []
+        #: How many times the listing was asked for. Counted separately because
+        #: it is not a per-pull-request read: a caller pricing a run needs the
+        #: two terms of ``1 + 2N`` apart, and a listing called once per page or
+        #: once per record would be invisible in ``reads``.
+        self.listings = 0
 
     @property
     def provider_id(self) -> str:
@@ -98,6 +103,9 @@ class CannedReviewProvider:
         every service test drove a fake whose ordering made the bug
         unrepresentable.
         """
+        # Counted before the refusal, for the reason `_refuse` logs before it
+        # raises: "asked and refused" and "never asked" are different facts.
+        self.listings += 1
         if self._listing_refusal is not None:
             raise self._listing_refusal
         chosen: list[ReviewEvent] = []
