@@ -35,22 +35,27 @@ happen before a single record is built:
 comment body, a title, a display name, a file path as received -- is copied into
 the domain record as data. In particular a received ``path`` is never joined into
 a filesystem path here, and this slice writes no file at all.
+
+**What an answer may be read as lives next door**, in ``response.py``: every
+field below goes through one of its helpers rather than being indexed, so a
+``null`` where an object was expected is an ordinary answer and never a
+``KeyError`` escaping as the traceback clause 9 forbids. This module decides what
+to ask and when to refuse asking; that one decides what an answer is allowed to
+mean.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Final, final
+from typing import Any, final
 
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.review import (
     ReviewComment,
     ReviewEvent,
-    ReviewParticipant,
     ReviewResolution,
     ReviewThread,
 )
@@ -60,7 +65,7 @@ from theurian.domain.review_ingest import (
     bounded_echo,
     bounded_quote,
 )
-from theurian.infrastructure.github import queries
+from theurian.infrastructure.github import queries, response
 from theurian.infrastructure.github.environment import child_environment
 from theurian.infrastructure.github.gh_cli import GhCli, locate_binary
 from theurian.infrastructure.github.limits import (
@@ -70,16 +75,9 @@ from theurian.infrastructure.github.limits import (
     MAX_PULL_REQUESTS,
     PAGE_SIZE,
 )
+from theurian.infrastructure.github.response import PROVIDER_ID
 from theurian.infrastructure.github.transport_guard import refuse_transport_overrides
 from theurian.security.review_allowlist import allowlisted_repository
-
-#: Recorded on every participant and every anchor this adapter produces.
-PROVIDER_ID: Final = "github"
-
-#: What a deleted GitHub account resolves to. GitHub's own name for it, used
-#: because ``ReviewParticipant.external_id`` may not be empty and inventing an
-#: identifier per deleted author would make two records look like two people.
-GHOST_LOGIN: Final = "ghost"
 
 
 @final
@@ -182,15 +180,15 @@ class GitHubReviewProvider:
             repo = self._repository_of(
                 await self._request(cli, queries.PULL_REQUESTS, variables), entry
             )
-            connection = _mapping(repo.get("pullRequests"))
-            for node in _nodes(connection):
+            connection = response.mapping(repo.get("pullRequests"))
+            for node in response.nodes(connection):
                 event = self._event(project_id, entry, node)
                 if since_number is not None and event.number <= since_number:
                     return tuple(events)
                 events.append(event)
                 if len(events) >= limit:
                     return tuple(events)
-            cursor = _next_cursor(connection, "pull requests")
+            cursor = response.next_cursor(connection, "pull requests")
             if cursor is None:
                 return tuple(events)
         raise self._page_cap("pull requests", entry)
@@ -226,10 +224,12 @@ class GitHubReviewProvider:
             repo = self._repository_of(
                 await self._request(cli, queries.REVIEW_THREADS, variables), entry
             )
-            pull_request = _mapping(repo.get("pullRequest"))
-            connection = _mapping(pull_request.get("reviewThreads"))
-            threads.extend(self._thread(project_id, event, node) for node in _nodes(connection))
-            cursor = _next_cursor(connection, what)
+            pull_request = response.mapping(repo.get("pullRequest"))
+            connection = response.mapping(pull_request.get("reviewThreads"))
+            threads.extend(
+                self._thread(project_id, event, node) for node in response.nodes(connection)
+            )
+            cursor = response.next_cursor(connection, what)
             if cursor is None:
                 return tuple(threads)
         raise self._page_cap(what, entry)
@@ -303,7 +303,7 @@ class GitHubReviewProvider:
         be the one that was asked for (case-folded), and the repository must be
         public.
         """
-        repo = _mapping(_mapping(payload.get("data")).get("repository"))
+        repo = response.mapping(response.mapping(payload.get("data")).get("repository"))
         resolved = repo.get("nameWithOwner")
         if not isinstance(resolved, str) or not resolved:
             raise ReviewIngestRefusedError(
@@ -319,8 +319,8 @@ class GitHubReviewProvider:
                 f"here: the allowlist names a repository, not wherever that name now "
                 f"points. Nothing was read from the answer.",
             )
-        # **The one Boolean here that does not go through `_boolean`, and it is
-        # stricter rather than looser.** `_boolean` refuses a non-bool; this
+        # **The one Boolean here that does not go through `response.boolean`, and it is
+        # stricter rather than looser.** `response.boolean` refuses a non-bool; this
         # refuses everything that is not literally `False`, so an absent field, a
         # `null`, the string `"false"` and the integer `0` are all read as "not
         # shown to be public" and the repository is declined. The direction of
@@ -355,7 +355,7 @@ class GitHubReviewProvider:
         spelling however GitHub happens to case its answer.
 
         Two graded stops of its own fire before any record exists -- beside the
-        shape checks each field read carries, :func:`_boolean` among them -- and
+        shape checks each field read carries, :func:`response.boolean` among them -- and
         both are there for the reason :meth:`_comments_of` has its own: a record
         that *looks* whole and is not is worse than a refusal naming what could
         not be read. A merged pull request must carry its merge commit, and a
@@ -364,8 +364,8 @@ class GitHubReviewProvider:
         ``closingIssuesReferences`` connection paginates, and this adapter
         follows no cursor into it.
         """
-        merged = _boolean(node.get("merged"), "`merged`")
-        merge_commit = _mapping(node.get("mergeCommit")).get("oid")
+        merged = response.boolean(node.get("merged"), "`merged`")
+        merge_commit = response.mapping(node.get("mergeCommit")).get("oid")
         if merged and not isinstance(merge_commit, str):
             raise ReviewIngestRefusedError(
                 RefusalGrade.TOOL_FAILED,
@@ -373,13 +373,13 @@ class GitHubReviewProvider:
                 f"as merged with no merge commit, which is not a pull request this "
                 f"adapter can record honestly.",
             )
-        linked = _mapping(node.get("closingIssuesReferences"))
+        linked = response.mapping(node.get("closingIssuesReferences"))
         if (
-            _boolean(
-                _mapping(linked.get("pageInfo")).get("hasNextPage"),
+            response.boolean(
+                response.mapping(linked.get("pageInfo")).get("hasNextPage"),
                 "`hasNextPage` on a pull request's linked issues",
             )
-            or len(_nodes(linked)) > MAX_LINKED_ISSUES
+            or len(response.nodes(linked)) > MAX_LINKED_ISSUES
         ):
             raise ReviewIngestRefusedError(
                 RefusalGrade.LIMIT_EXCEEDED,
@@ -387,29 +387,30 @@ class GitHubReviewProvider:
                 f"recorded {MAX_LINKED_ISSUES}-issue cap. The read stopped rather than "
                 f"recording an event that looks whole and is not.",
             )
-        rollup = _nodes(_mapping(node.get("commits")))
+        rollup = response.nodes(response.mapping(node.get("commits")))
         state = None
         if rollup:
-            status = _mapping(_mapping(rollup[0].get("commit")).get("statusCheckRollup"))
+            commit = response.mapping(rollup[0].get("commit"))
+            status = response.mapping(commit.get("statusCheckRollup"))
             state = status.get("state") if isinstance(status.get("state"), str) else None
         return ReviewEvent(
             project_id=project_id,
             provider=PROVIDER_ID,
             repository=entry,
-            number=_positive_integer(node.get("number"), "pull request number"),
-            title=_text(node.get("title")),
-            author=_participant(node.get("author")),
-            created_at=_instant(node.get("createdAt"), "createdAt"),
-            url=_text(node.get("url")),
-            head_commit=_text(node.get("headRefOid")),
-            base_commit=_text(node.get("baseRefOid")),
+            number=response.positive_integer(node.get("number"), "pull request number"),
+            title=response.text(node.get("title")),
+            author=response.participant(node.get("author")),
+            created_at=response.instant(node.get("createdAt"), "createdAt"),
+            url=response.text(node.get("url")),
+            head_commit=response.text(node.get("headRefOid")),
+            base_commit=response.text(node.get("baseRefOid")),
             merged=merged,
             merge_commit=merge_commit if isinstance(merge_commit, str) else None,
-            merged_at=_optional_instant(node.get("mergedAt")),
+            merged_at=response.optional_instant(node.get("mergedAt")),
             ci_successful=queries.ci_outcome(state),
             linked_issue_ids=tuple(
-                str(_positive_integer(issue.get("number"), "linked issue number"))
-                for issue in _nodes(_mapping(node.get("closingIssuesReferences")))
+                str(response.positive_integer(issue.get("number"), "linked issue number"))
+                for issue in response.nodes(response.mapping(node.get("closingIssuesReferences")))
             ),
         )
 
@@ -417,14 +418,14 @@ class GitHubReviewProvider:
         self, project_id: ProjectId, event: ReviewEvent, node: Mapping[str, Any]
     ) -> ReviewThread:
         """One review thread, its comments, and its resolution if it has one."""
-        external_id = _required_text(node.get("id"), "review thread id")
-        comments = _mapping(node.get("comments"))
+        external_id = response.required_text(node.get("id"), "review thread id")
+        comments = response.mapping(node.get("comments"))
         built = self._comments_of(comments, external_id, event)
-        resolved = _boolean(node.get("isResolved"), "`isResolved` on a review thread")
+        resolved = response.boolean(node.get("isResolved"), "`isResolved` on a review thread")
         # Read whether or not it is reached: a thread whose `isOutdated` is
         # unreadable is an answer this adapter cannot check, and only checking it
         # on the unresolved branch would make that depend on the other flag.
-        outdated = _boolean(node.get("isOutdated"), "`isOutdated` on a review thread")
+        outdated = response.boolean(node.get("isOutdated"), "`isOutdated` on a review thread")
         state = (
             ReviewThreadState.RESOLVED
             if resolved
@@ -444,17 +445,17 @@ class GitHubReviewProvider:
             # for a quantity the provider does not record is the unknown one.
             resolution=ReviewResolution(
                 state=ReviewThreadState.RESOLVED,
-                resolved_by=_optional_participant(node.get("resolvedBy")),
+                resolved_by=response.optional_participant(node.get("resolvedBy")),
             )
             if resolved
             else None,
-            line_start=_optional_integer(node.get("startLine")),
-            line_end=_optional_integer(node.get("line")),
+            line_start=response.optional_integer(node.get("startLine")),
+            line_end=response.optional_integer(node.get("line")),
             # The thread's anchor commit is the first comment's `originalCommit`:
             # a thread has no commit of its own, and the first comment is the one
             # that opened it against a diff.
-            commit_sha=_optional_text(
-                _mapping(_nodes(comments)[0].get("originalCommit")).get("oid")
+            commit_sha=response.optional_text(
+                response.mapping(response.nodes(comments)[0].get("originalCommit")).get("oid")
             ),
         )
 
@@ -468,11 +469,11 @@ class GitHubReviewProvider:
         provider paginates comments, so a thread past the recorded cap would
         otherwise arrive silently truncated; and a thread with none at all is
         not a shape ``ReviewThread`` can hold. The cap's own flag is read through
-        :func:`_boolean`, so an unreadable ``hasNextPage`` is a third refusal
+        :func:`response.boolean`, so an unreadable ``hasNextPage`` is a third refusal
         rather than a quiet "there is no more".
         """
-        if _boolean(
-            _mapping(comments.get("pageInfo")).get("hasNextPage"),
+        if response.boolean(
+            response.mapping(comments.get("pageInfo")).get("hasNextPage"),
             "`hasNextPage` on a review thread's comments",
         ):
             raise ReviewIngestRefusedError(
@@ -483,7 +484,7 @@ class GitHubReviewProvider:
                 f"The read stopped rather than recording a thread that looks whole and "
                 f"is not.",
             )
-        built = tuple(_comment(comment) for comment in _nodes(comments))
+        built = tuple(response.comment(comment) for comment in response.nodes(comments))
         if not built:
             raise ReviewIngestRefusedError(
                 RefusalGrade.TOOL_FAILED,
@@ -492,276 +493,3 @@ class GitHubReviewProvider:
                 f"which is not a thread this adapter can record.",
             )
         return built
-
-
-# -- reading a response's shapes without trusting them ------------------------
-
-
-def _mapping(value: object) -> Mapping[str, Any]:
-    """``value`` as a mapping, or an empty one.
-
-    Every field below is read through this rather than indexed, because a GraphQL
-    response is a document from somewhere else: a ``null`` where an object was
-    expected is an ordinary answer, not a fault, and a ``KeyError`` escaping this
-    adapter would be the traceback clause 9 forbids.
-    """
-    return value if isinstance(value, dict) else {}
-
-
-def _boolean(value: object, field: str) -> bool:
-    """A field the schema types as ``Boolean``, refused rather than read loosely.
-
-    **Every one of these decides whether a record is whole**, which is why they
-    are refused instead of folded. ``hasNextPage`` says whether what arrived is
-    all of it, and ``merged`` selects the guard that a merged pull request
-    carries its merge commit; a comparison against ``is True`` reads the *string*
-    ``"true"`` as not-merged and skips that guard, and a missing ``pageInfo``
-    reads as no-next-page and returns a truncated answer as a complete one. Both
-    are documents a partly-errored GraphQL response can be -- the errored field
-    comes back ``null`` beside a ``data`` that otherwise looks ordinary -- so the
-    permissive read fails silently and in the direction that loses content.
-
-    ``isPrivate`` is the one Boolean this adapter reads that does not come
-    through here, and it is **stricter** rather than looser: see
-    :meth:`GitHubReviewProvider._repository_of`, where anything that is not
-    literally ``False`` refuses the repository.
-    """
-    if not isinstance(value, bool):
-        raise ReviewIngestRefusedError(
-            RefusalGrade.TOOL_FAILED,
-            f"GitHub's answer carried {field} as {type(value).__name__} where the "
-            f"schema types it Boolean, so this adapter cannot tell what the answer "
-            f"says. It records nothing out of an answer whose shape it cannot check.",
-        )
-    return value
-
-
-def _nodes(connection: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    """A connection's ``nodes``, keeping only the members that are objects."""
-    nodes = connection.get("nodes")
-    if not isinstance(nodes, list):
-        return []
-    return [node for node in nodes if isinstance(node, dict)]
-
-
-def _next_cursor(connection: Mapping[str, Any], what: str) -> str | None:
-    """The cursor for the next page of ``what``, or ``None`` when there is none.
-
-    A cursor is an opaque string this adapter hands back in a typed variable
-    (clause 6). It chooses no destination: the vector is unchanged but for the
-    value of ``after``.
-
-    It is also the one value a response supplies that **re-enters an argument
-    vector**, and what these checks ask is whether it can *be* one: no NUL, and
-    encodable as UTF-8. ``asyncio.create_subprocess_exec`` declines an argument
-    for both, raising a ``ValueError`` either way -- a bare one for the NUL and a
-    ``UnicodeEncodeError`` for an unpaired surrogate.
-
-    **That pair travels together, and this repository guards it in several
-    places -- named here rather than counted.** Counting them is what two
-    earlier versions of this sentence got wrong, in both directions. The key is
-    *a value crossing a boundary that accepts neither an embedded NUL nor an
-    unpaired surrogate*: ``infrastructure/sqlite/index_query.py``'s
-    ``_is_transportable`` guards a query term before FTS5, ``mcp/findings.py``'s
-    ``_transportable`` guards a filter value before the store and the response,
-    and this guards a cursor before an argv element.
-    Those three are the **checking** members, and that list is exact. The
-    *catching* side -- code that meets the same pair and translates whatever
-    ``ValueError`` arrives, rather than testing for each -- is larger and is
-    deliberately not enumerated here: ``application/proposal_service.py`` at a
-    resolved path is one, ``gh_cli._start`` and ``gh_cli._binding`` are two more,
-    and a grep finds others still. Naming a subset of an unenumerated population
-    reads as naming the population, which is the mistake this paragraph exists
-    to stop making.
-
-    **The closure is two seams, and neither of them is this function.** An argv
-    element can fail at two stages, and they are caught in different places
-    because one happens a whole stage before the other:
-    :func:`~theurian.infrastructure.github.gh_cli._binding` catches what
-    *rendering* declines, so an element that cannot be built refuses before any
-    vector exists; ``gh_cli._start`` catches what ``execve`` declines --
-    ``(OSError, ValueError)`` around the spawn -- so an element that was built
-    and cannot be run refuses there. An earlier version of this paragraph
-    credited the spawn's catch with "a value some later caller builds", which it
-    cannot see: a construction failure never reaches a spawn, and ``get_threads``
-    demonstrated it by leaving a ``ValueError`` as a traceback after its two
-    probes had already run. What the checks here add is a refusal that names the
-    cursor and the read it stopped, raised before either seam is reached.
-
-    **A page this adapter cannot ask for is a refusal, not a last page.**
-    ``hasNextPage`` true with no usable ``endCursor`` says the answer in hand is
-    part of a larger one, so returning it would present a partial read as the
-    whole -- the silent truncation this adapter's **read** caps exist to replace
-    with a report. (Its one bound that does truncate silently is the stderr
-    drain, which keeps a prefix of a child's own diagnostic; ``limits.py``
-    records that as the exception it is.)
-    """
-    page_info = _mapping(connection.get("pageInfo"))
-    if not _boolean(page_info.get("hasNextPage"), f"`hasNextPage` on {what}"):
-        return None
-    cursor = page_info.get("endCursor")
-    if not isinstance(cursor, str) or not cursor:
-        raise ReviewIngestRefusedError(
-            RefusalGrade.TOOL_FAILED,
-            f"GitHub reported another page of {what} and gave no cursor to ask for it "
-            f"with. The read stopped at the page boundary rather than returning what "
-            f"it had as though that were the whole answer.",
-        )
-    if "\x00" in cursor:
-        raise ReviewIngestRefusedError(
-            RefusalGrade.TOOL_FAILED,
-            f"GitHub's answer carried a pagination cursor for {what} with a NUL byte "
-            f"in it, which is not a value that can be spawned as an argument. The read "
-            f"stopped at the page boundary rather than handing it to a process.",
-        )
-    try:
-        cursor.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise ReviewIngestRefusedError(
-            RefusalGrade.TOOL_FAILED,
-            f"GitHub's answer carried a pagination cursor for {what} that is not "
-            f"encodable text -- an unpaired surrogate, which JSON can spell and an "
-            f"argument vector cannot hold. The read stopped at the page boundary "
-            f"rather than handing it to a process.",
-        ) from exc
-    return cursor
-
-
-def _text(value: object) -> str:
-    """A string field, or the empty string. Author-controlled text is never parsed."""
-    return value if isinstance(value, str) else ""
-
-
-def _optional_text(value: object) -> str | None:
-    """A string field, or ``None`` -- for a field the provider is allowed to omit."""
-    return value if isinstance(value, str) and value else None
-
-
-def _required_text(value: object, field: str) -> str:
-    """A string field a record's identity depends on, refused when it is missing.
-
-    The domain types raise ``InvariantViolationError`` on an empty identifier,
-    and that exception would leave this adapter as the traceback clause 9
-    forbids. Refusing here turns the same fact into a graded envelope with a
-    remedy.
-    """
-    text = _text(value)
-    if not text:
-        raise ReviewIngestRefusedError(
-            RefusalGrade.TOOL_FAILED,
-            f"GitHub's answer carried no {field}, so this adapter cannot identify the "
-            f"record it belongs to.",
-        )
-    return text
-
-
-def _integer(value: object, field: str) -> int:
-    """An integer field, refused rather than coerced when it is not one."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ReviewIngestRefusedError(
-            RefusalGrade.TOOL_FAILED,
-            f"GitHub's answer carried no readable {field}, so this adapter cannot "
-            f"record the item it belongs to.",
-        )
-    return value
-
-
-def _positive_integer(value: object, field: str) -> int:
-    """An integer a record's identity depends on, refused unless it is positive.
-
-    The same argument as :func:`_required_text`, one type over: ``ReviewEvent``
-    raises ``InvariantViolationError`` on a number below one, and that exception
-    would leave this adapter as the traceback clause 9 forbids. A linked issue
-    number has no domain invariant to reach at all -- a zero there is recorded as
-    the string ``"0"`` and looks like an issue -- so both go through here.
-    """
-    number = _integer(value, field)
-    # The refusal below renders `number`, and `str()` of an integer is not total:
-    # CPython refuses past `sys.get_int_max_str_digits()`, 4300 by default. What
-    # keeps that unreachable from here is `json.loads`, which applies the same
-    # interpreter limit while parsing -- so a longer number never becomes an
-    # `int` at all and `_request` refuses the document instead. The limit is a
-    # default rather than a guarantee, which is why `bounded_echo` renders this
-    # rather than an f-string: a process that raised it would otherwise turn this
-    # refusal into the traceback clause 9 forbids.
-    if number < 1:
-        raise ReviewIngestRefusedError(
-            RefusalGrade.TOOL_FAILED,
-            f"GitHub's answer carried {bounded_echo(number)} as a {field}. GitHub "
-            f"numbers pull requests and issues from one, so this adapter cannot "
-            f"identify the record it belongs to.",
-        )
-    return number
-
-
-def _optional_integer(value: object) -> int | None:
-    """A line number, or ``None``: GitHub leaves them null on an outdated thread."""
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _instant(value: object, field: str) -> datetime:
-    """A required timestamp, refused rather than fabricated when it cannot be read."""
-    parsed = _optional_instant(value)
-    if parsed is None:
-        raise ReviewIngestRefusedError(
-            RefusalGrade.TOOL_FAILED,
-            f"GitHub's answer carried no readable {field}, and this adapter records no "
-            f"timestamp it did not receive.",
-        )
-    return parsed
-
-
-def _optional_instant(value: object) -> datetime | None:
-    """An ISO-8601 timestamp, or ``None``. Never the ingestion time as a stand-in."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else None
-
-
-def _participant(actor: object) -> ReviewParticipant:
-    """An author, with GitHub's ``ghost`` standing in for a deleted account."""
-    resolved = _optional_participant(actor)
-    if resolved is not None:
-        return resolved
-    return ReviewParticipant(
-        provider=PROVIDER_ID, external_id=GHOST_LOGIN, display_name=GHOST_LOGIN
-    )
-
-
-def _optional_participant(actor: object) -> ReviewParticipant | None:
-    """An actor as a participant, or ``None`` when the provider recorded none.
-
-    ``external_id`` is the node id when the response carries one and the login
-    otherwise. The login is author-visible and can be changed by its owner, so it
-    is the weaker identity -- which is exactly why the id is preferred and the
-    display name is kept separately: redaction replaces a display name without
-    breaking the identity graph.
-    """
-    fields = _mapping(actor)
-    if not fields:
-        return None
-    login = _text(fields.get("login"))
-    node_id = _text(fields.get("id"))
-    external_id = node_id or login
-    if not external_id:
-        return None
-    return ReviewParticipant(
-        provider=PROVIDER_ID, external_id=external_id, display_name=login or external_id
-    )
-
-
-def _comment(node: Mapping[str, Any]) -> ReviewComment:
-    """One comment. The body crosses as bytes-in-a-string and is never interpreted."""
-    return ReviewComment(
-        external_id=_required_text(node.get("id"), "comment id"),
-        author=_participant(node.get("author")),
-        body=_text(node.get("body")),
-        created_at=_instant(node.get("createdAt"), "comment createdAt"),
-        # `category` is a classification, and classification is FR-V2's -- out of
-        # this slice and out of this path entirely (FR-V5).
-        category=None,
-    )

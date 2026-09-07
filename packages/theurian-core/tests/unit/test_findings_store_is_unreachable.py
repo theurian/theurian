@@ -413,6 +413,7 @@ _INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "github/gh_cli.py",
         "github/limits.py",
         "github/queries.py",
+        "github/response.py",
         "github/review_provider.py",
         "github/transport_guard.py",
         "raptor/__init__.py",
