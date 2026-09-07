@@ -1231,9 +1231,14 @@ def test_one_crowded_run_answers_the_published_ceiling_and_no_more() -> None:
 def test_a_spent_budget_buys_no_finding_at_all(spent: int) -> None:
     """The contract every accumulating caller subtracts against.
 
-    Both SEC-11 controls hand ``scan_text`` the budget they have *left*:
-    ``proposal_service._findings_in`` across the accept path's channels, and
-    ``index_builder._secrets_in`` across every body one build indexes. The loop
+    All three SEC-11 controls hand ``scan_text`` the budget they have *left*:
+    ``proposal_service._findings_in`` across the accept path's channels,
+    ``index_builder._secrets_in`` across every body one build indexes, and
+    ``review_landing_gate._verdict`` across one record's author-controlled fields
+    (ADR-0030 decision 4, whose budget is per *record* rather than per run --
+    that module records why). ``SECRET_SCANNER_CALL_SITES`` in
+    ``test_config_key_call_sites.py`` is what counts them, so a fourth caller
+    reddens a pin rather than this sentence. The loop
     appends and then tests the ceiling, so a run reaching it with nothing left to
     spend returned one finding anyway -- a per-build ceiling of twenty answering
     twenty-one (measured 2026-09-03, #329 round 1). Zero means zero, and a

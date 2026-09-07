@@ -167,7 +167,7 @@ query-side timeout that is still owed.
 | OpenAPI | summaries and descriptions | paths, operations, parameters, responses |
 | Git commit | subject and body | author, tree, parents, changed paths |
 | Git diff | hunk content | file paths, line ranges, change type |
-| GitHub review — **not built**, owed with review ingestion (roadmap Phase B), owned by [#479](https://github.com/theurian/theurian/issues/479) | comment bodies | thread structure, resolution, target lines, fix commit |
+| GitHub review — **no `SourceParser` is built**, and ADR-0030 slice 2's landing path is not one: it writes review evidence records under `.theurian/review/`, not `NormalizedDocument`s through this pipeline. Owed with the serving half, owned by [#479](https://github.com/theurian/theurian/issues/479) | comment bodies | thread structure, resolution, target lines, fix commit |
 
 ## Ingestion pipeline
 
@@ -203,11 +203,19 @@ other 199 from being available. Failures are reported per document with the path
 and the reason, and the run's exit status reflects that some documents were
 skipped.
 
-The same principle is owed further up, when review ingestion lands (roadmap
-Phase B): if LLM-based candidate generation fails, raw review ingestion must
-still succeed
-(FR-V5). Evidence collection and interpretation are to stay separate steps
-precisely so the fragile one cannot take down the reliable one.
+The same principle applies further up, and half of it now runs: if LLM-based
+candidate generation fails, raw review ingestion must still succeed (FR-V5).
+Evidence collection and interpretation are separate steps precisely so the
+fragile one cannot take down the reliable one.
+[ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) slice 2 built the
+reliable half — `theurian review ingest` fetches, screens and lands evidence —
+and holds FR-V5 **structurally rather than by a fallback**: no module it
+constructs reaches an embedding, summarization or reranking provider, which
+`tests/integration/test_review_ingest_is_model_free.py` asserts by walking the
+built pipeline's object graph rather than by scanning names. The fragile half
+does not exist yet, so there is nothing to fall back *from*; candidate
+generation (FR-V2, FR-V3) is what still has to arrive without breaking that
+property.
 
 **That work is owned by
 [#479](https://github.com/theurian/theurian/issues/479)**, which was filed from

@@ -26,15 +26,20 @@ Report what was ingested by source type and how many documents changed.
 - Ingestion never creates approved knowledge. Promotion requires
   `/theurian:propose` followed by human review and a merged pull request.
 - Review history from GitHub is **not ingested by this command**:
-  `system.capabilities` reports `reviewIngestion: false`, and `theurian ingest`
+  `theurian ingest`
   reads only local data: files under `.theurian/`, plus three `git` reads — the
   repository root (`rev-parse --show-toplevel`), HEAD (`rev-parse HEAD`), and
   the `origin` URL (`remote get-url origin`). The allowlist in
   `.theurian/config.yaml` is read and enforced (SEC-10, ADR-0030 decision 2):
   `security/review_allowlist.py` refuses a repository
   `providers.review.repositories` does not name, before any process is spawned.
-  It protects a different command — `theurian review ingest` — so do not tell
-  the user that listing a repository has turned anything on here. That file is
+  It protects a different command — `theurian review ingest`, which does fetch
+  review history and lands it as durable files under `.theurian/review/` — so do
+  not tell the user that listing a repository has turned anything on here.
+  `system.capabilities` reports `reviewIngestion: false`, and that flag is a
+  statement about **MCP tools**: no tool exposes review ingestion, which is why
+  it is a separate CLI verb the operator runs, and ADR-0030's serve slice is what
+  moves the flag. That file is
   read for three keys:
   `security/project_config.py` takes `security.secretScan`,
   `providers.review.repositories` and `providers.review.redactParticipantNames`

@@ -1297,9 +1297,15 @@ outbound request to `api.github.com` or a hostile host, which no suite here make
 They stay quoted, and they are re-taken **by hand** when clause 8's version floor
 moves, since what they measure is a property of the binary.
 
-Owed at implementation, each tied to the slice that discharges it:
+Owed at implementation, each tied to the slice that discharges it. A slice that
+lands moves its own items from *owed* to *landed* here and names the test that
+discharges each; an item a slice did **not** reach stays on the list with the
+slice that will, and is never quietly dropped.
 
-**Slice 1 — ingest**
+**Slice 1 — ingest** *(shipped at `7c486588`; the list below is still written as
+owed. Recording which test discharges each item is owed to slice 1's own record
+and has not been done — that is a gap in this section, not a claim that the tests
+are missing.)*
 
 - **Ten clause tests**, one per row of decision 1's table: the single spawn site
   (equality-pinned), the literal `graphql` endpoint with identity in variables,
@@ -1357,24 +1363,56 @@ Owed at implementation, each tied to the slice that discharges it:
 
 **Slice 2 — land**
 
-- **A flagged record under `block` never becomes a file** — a test with a
-  synthetic secret-bearing comment asserting that no file is written, that the
-  report names the record and not the matched bytes, and that the run does not
-  read as clean.
-- **`warn` lands and reports; `off` scans nothing** — one test each.
-- **The scan reads exactly the author-controlled fields** of decision 3's table —
-  a record whose secret sits in a label or a branch name is caught, not only one
-  whose secret sits in a body.
-- **Evidence files are the source** — a test that deleting the derived store and
-  rebuilding from the files reproduces the served content, and that a record whose
-  upstream has vanished survives a refetch.
-- **FR-V5, made checkable** — a walk of the ingest path's modules asserting that
-  none reaches an embedding, summarization or reranking provider, in the shape of
-  `test_no_registered_tool_can_reach_a_canonical_write`
-  (`tests/integration/test_mcp_tools.py:2357`): bytecode, not source, because a
-  provider resolved through a factory is invisible to a name scan. Until it lands,
-  decision 5's "no model exists anywhere in the ingest path" is design intent with
-  a named owner, not a measured property.
+Four of the five landed in slice 2 and each names the test that discharges it;
+the fifth is **half** discharged, and the half that is not says which slice
+takes it. Paths are `packages/theurian-core/tests/`.
+
+- **Landed in slice 2 — a flagged record under `block` never becomes a file.**
+  `unit/test_review_landing_gate.py::test_under_block_the_flagged_record_never_becomes_a_file`
+  plants a synthetic secret and asserts the file is absent;
+  `::test_no_report_line_carries_the_matched_bytes` holds the report to
+  identities and a bounded family prefix; and
+  `::test_under_block_a_flagged_record_does_not_stop_another_pull_request_landing`
+  holds the refusal to one record. That the run *does not read as clean* is the
+  CLI's half:
+  `integration/test_review_ingest_cli.py::test_block_exits_one_and_the_flagged_unit_is_absent_on_disk`.
+- **Landed in slice 2 — `warn` lands and reports; `off` scans nothing.**
+  `unit/test_review_landing_gate.py::test_under_warn_the_record_lands_and_every_finding_is_reported`
+  and `::test_under_off_the_detector_is_never_called`, the second with its own
+  positive control
+  (`::test_the_counter_would_have_seen_a_scan_under_the_default_policy`) so that
+  "never called" is not satisfied by a detector nothing reaches. The CLI's exit
+  codes are `integration/test_review_ingest_cli.py::test_warn_exits_zero_and_still_reports_the_finding`
+  and `::test_off_scans_nothing_and_lands_everything`.
+- **Landed in slice 2 — the scan reads exactly the author-controlled fields** of
+  decision 3's table.
+  `unit/test_review_landing_gate.py::test_a_secret_planted_in_any_author_controlled_field_refuses_the_record`
+  is parametrised one case per field, so a label and a head branch name are
+  driving inputs rather than an argument; the boundary is held from the other
+  side by `::test_a_secret_shaped_value_in_a_structural_field_does_not_refuse`
+  and `::test_the_url_is_structural_even_though_a_person_can_choose_a_branch_in_it`,
+  without which a gate that scanned every string on the object would pass every
+  positive case.
+- **Half landed in slice 2 — evidence files are the source.** The write→read-back
+  half is `unit/test_review_evidence_store.py::test_every_record_kind_reads_back_as_the_object_that_was_written`,
+  and the survival half is `::test_a_record_upstream_no_longer_returns_survives_the_refetch`
+  with `::test_a_refetch_rewrites_a_record_whose_content_changed_upstream` as the
+  positive control that keeps a store writing nothing at all from passing it.
+  **Still owed, and it belongs to slice 3:** *deleting the derived store,
+  rebuilding from the files, and reproducing the served content.* There is no
+  derived store to delete until slice 3 builds one, so this half cannot be
+  written earlier — it is not deferred, it is not yet expressible.
+- **Landed in slice 2 — FR-V5, made checkable.**
+  `integration/test_review_ingest_is_model_free.py::test_no_callable_in_the_built_pipeline_reaches_a_model`
+  walks the built ingest pipeline's object graph in the shape of
+  `test_no_registered_tool_can_reach_a_canonical_write`, with
+  `::test_the_walk_reaches_the_pipeline_it_claims_to_inspect` proving the walk is
+  not vacuous and three planted-model cases
+  (`::test_a_model_planted_on_a_service_method_reddens_the_walk` and its two
+  siblings) proving it can go RED. Decision 5's "no model exists anywhere in the
+  ingest path" is therefore a measured property rather than design intent — with
+  the bound that module's docstring states: a provider resolved through a factory
+  one level down is invisible to it.
 
 **Slice 3 — serve**
 

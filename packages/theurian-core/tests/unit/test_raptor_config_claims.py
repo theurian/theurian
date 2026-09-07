@@ -673,11 +673,18 @@ PRONOUN_CASES: Final[tuple[tuple[str, bool], ...]] = (
         True,
     ),
     # -- the descriptions the schema carries now, which must keep passing ----
+    #
+    # Transcribed from the wheel-shipped root `description`, and re-transcribed
+    # whenever it moves: ADR-0030 decision 3's `redactParticipantNames` made it
+    # three keys where slice 1 had made it two. A row here labelled "carries now"
+    # and holding a sentence the schema no longer carries would still pass -- the
+    # assertion is about the *pattern*, not about the file -- so the label is
+    # checked by hand until the pin these rows owe exists.
     (
-        "This file has one reader: `security/project_config.py` takes `security.secretScan` "
-        "and `providers.review.repositories` from it and nothing else (ADR-0027 decision 3, "
-        "ADR-0030 decision 2), so those two keys are in force and every other key published "
-        "here is reserved.",
+        "This file has one reader: `security/project_config.py` takes `security.secretScan`, "
+        "`providers.review.repositories` and `providers.review.redactParticipantNames` from "
+        "it and nothing else (ADR-0027 decision 3, ADR-0030 decisions 2 and 3), so those "
+        "three keys are in force and every other key published here is reserved.",
         False,
     ),
     (
@@ -694,8 +701,8 @@ PRONOUN_CASES: Final[tuple[tuple[str, bool], ...]] = (
         False,
     ),
     (
-        "No command exposes review ingestion yet, so listing a repository here starts "
-        "nothing on its own.",
+        "`theurian review ingest` is the command that reads it, so listing a repository "
+        "here starts nothing until you run that.",
         False,
     ),
     ("Every provider defaults to a deterministic in-tree implementation.", False),

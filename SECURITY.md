@@ -605,6 +605,34 @@ Ingested review history contains author identity and opinions.
   The SQLite serving store built from it is the deletable, derived half, and it
   rebuilds from those files.
 
+**Retention: an upstream deletion does not propagate, and that is the trade this
+design makes.** Durability and propagation are the same switch, and
+[ADR-0030](docs/adr/0030-github-review-ingestion-spawns-gh.md) decision 3 chose
+durability. A comment edited or deleted on GitHub therefore stays in
+`.theurian/review/` as the run that fetched it landed it: a later run refreshes
+what upstream still returns and **never deletes** what it no longer does — the
+vanished record keeps its file and its stamp saying which run last saw it.
+Nothing else revisits a landed file, so a record no later run fetches does not
+change.
+
+**Removing an ingested comment is a manual operation.** Today it is one step:
+delete that record's file under `.theurian/review/`. The file *is* the record,
+and no other copy exists — there is no serving store to reconcile yet. When
+ADR-0030's serve slice lands the SQLite store built from these files, the
+remediation becomes two steps: delete the file, then rebuild the derived store,
+which is the deletable half by construction. If the project commits
+`.theurian/review/` — Theurian does not git-ignore it, and whether to commit it
+is the project's decision — then deleting the file is a Git history question as
+well, on the same terms as any other committed content.
+
+**Display names are the part you can decide before ingestion, not after.**
+`providers.review.redactParticipantNames` in `.theurian/config.yaml` is `false`
+by default; set to `true`, `theurian review ingest` replaces every participant's
+display name with one fixed placeholder before the record becomes a file, and
+keeps the provider's stable id, so identity graphs survive the redaction. It is
+read at ingestion and applied at landing, so it governs what a run writes rather
+than what is already on disk.
+
 If you operate Theurian somewhere with data-protection obligations, treat the
 canonical store as containing personal data and apply your normal retention
 policy to `.theurian/`.

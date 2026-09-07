@@ -729,8 +729,11 @@ def _deployment_grant(as_json: bool) -> AuthorizationGrant | None:
 def _secret_scan_policy(paths: ProjectPaths, as_json: bool) -> SecretScanPolicy | None:
     """What this project does about a secret in what it serves (SEC-11, #329).
 
-    The same reader ``propose accept`` uses, on the same key, so the two SEC-11
-    controls cannot end up meaning different things by the same configuration.
+    The same reader ``propose accept`` uses, on the same key, so no two SEC-11
+    controls can end up meaning different things by the same configuration.
+    ``theurian review ingest`` became the third to call it with ADR-0030 decision
+    4; ``test_config_key_call_sites.py``'s ``SECRET_SCAN_POLICY_CALL_SITES`` is
+    what counts them, so a fourth reddens a pin rather than this sentence.
     Absent means ``block`` and unrecognised means refuse -- both rules belong to
     :func:`~theurian.security.project_config.read_secret_scan_policy`, and neither
     is re-decided here.

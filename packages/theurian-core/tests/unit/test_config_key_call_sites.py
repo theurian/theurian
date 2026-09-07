@@ -787,14 +787,19 @@ INGEST_COMMAND_DOC: Final = REPO_ROOT / "plugins" / "claude-code" / "commands" /
 #: moved.
 INGEST_CONFIG_BULLET: Final = (
     "Review history from GitHub is **not ingested by this command**: "
-    "`system.capabilities` reports `reviewIngestion: false`, and `theurian ingest` reads "
+    "`theurian ingest` reads "
     "only local data: files under `.theurian/`, plus three `git` reads — the repository "
     "root (`rev-parse --show-toplevel`), HEAD (`rev-parse HEAD`), and the `origin` URL "
     "(`remote get-url origin`). The allowlist in `.theurian/config.yaml` is read and "
     "enforced (SEC-10, ADR-0030 decision 2): `security/review_allowlist.py` refuses a "
     "repository `providers.review.repositories` does not name, before any process is "
-    "spawned. It protects a different command — `theurian review ingest` — so do not "
-    "tell the user that listing a repository has turned anything on here. That file is "
+    "spawned. It protects a different command — `theurian review ingest`, which does "
+    "fetch review history and lands it as durable files under `.theurian/review/` — so "
+    "do not tell the user that listing a repository has turned anything on here. "
+    "`system.capabilities` reports `reviewIngestion: false`, and that flag is a "
+    "statement about **MCP tools**: no tool exposes review ingestion, which is why it "
+    "is a separate CLI verb the operator runs, and ADR-0030's serve slice is what moves "
+    "the flag. That file is "
     "read for three keys: "
     "`security/project_config.py` takes `security.secretScan`, "
     "`providers.review.repositories` and `providers.review.redactParticipantNames` "
@@ -1157,13 +1162,16 @@ def test_the_secret_scan_description_is_exactly_what_this_file_records() -> None
 def test_the_scan_bound_is_byte_identical_where_two_surfaces_publish_it() -> None:
     """``ingest.md`` says it quotes the schema; this is that claim, run.
 
-    The paragraph reads "it covers the approval gate and the index build --
-    `theurian ingest` runs no scan of its own, and `theurian index build` scans
-    every body it indexes and reports rather than refusing (SEC-11, [#198],
-    [#329]), **the schema's own wording**". Two surfaces carrying one clause is
+    The paragraph reads "it covers the approval gate, the index build and review
+    ingestion -- `theurian ingest` runs no scan of its own, and `theurian index
+    build` scans every body it indexes ... and reports rather than refusing
+    (SEC-11, [#198], [#329]), **the schema's own wording**". Two surfaces
+    carrying one clause is
     how a bound drifts into two
     bounds: one of them gets tightened, a reader trusts whichever they opened,
-    and both look maintained.
+    and both look maintained. The transcription above is an illustration and is
+    elided; what is asserted is the clause derived from the schema below, which
+    is why this docstring moving is never what makes the test pass.
 
     The clause is **derived from the schema and matched byte for byte** in the
     document, so neither side can move alone. It is not transcribed here twice --
@@ -1789,8 +1797,9 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # that never returns to that shape moved nothing.
             #
             # Five fragments, because the corrected argument has five moving
-            # parts and each can be dropped on its own: the two keys the file
-            # is read for, the module that reads them, where the allowlist's
+            # parts and each can be dropped on its own: how many keys the file
+            # is read for (two when this was written, three since ADR-0030
+            # decision 3), the module that reads them, where the allowlist's
             # refusal happens, the key that selects nothing this command
             # reaches, and the conclusion the paragraph exists to deliver. The
             # last is pinned for the reason `RAPTOR_MD_SENTENCES` in
@@ -1972,8 +1981,11 @@ SECRET_SCANNER_MODULE: Final = "theurian.security.content_secrets"  # noqa: S105
 
 #: Where the detector runs, on the same terms as the reader's count above.
 #:
-#: **Two modules since #329**: the approval gate, and the index build. The second
-#: is SEC-11's other control -- the build reads every text channel it serves on
+#: **Three modules since ADR-0030 slice 2**, and the third is described at the
+#: end of this note rather than here so the two that came first keep their own
+#: reasons. The first two: the approval gate, and the index build since #329. The
+#: second is SEC-11's other store-side control -- the build reads every text
+#: channel it serves on
 #: every rebuild, so it reaches content that entered before the scanner shipped or
 #: through a hand-placed migration that never met ``accept``. It reports and never
 #: refuses, because by then the content is already in the canonical store and
@@ -2327,12 +2339,14 @@ def test_the_secret_scan_policy_is_read_at_the_recorded_call_sites_only() -> Non
     """SEC-11: where the *policy* is consulted, one of the two symbols held (#198, #461, #329).
 
     ``plugins/claude-code/commands/ingest.md`` names ``security.secretScan`` as
-    one of the **two** keys ``security/project_config.py`` reads from
-    ``.theurian/config.yaml`` -- this branch added
-    ``providers.review.repositories`` beside it -- which announces a scanning
+    one of the **three** keys ``security/project_config.py`` reads from
+    ``.theurian/config.yaml`` -- ADR-0030 decision 2 added
+    ``providers.review.repositories`` beside it and decision 3 added
+    ``providers.review.redactParticipantNames`` -- which announces a scanning
     control inside a document about ``theurian ingest``. The clause that
-    keeps that from misleading a reader -- *"it covers the approval gate and the
-    index build -- `theurian ingest` runs no scan of its own"* -- is pinned in
+    keeps that from misleading a reader -- *"it covers the approval gate, the
+    index build and review ingestion -- `theurian ingest` runs no scan of its
+    own"* -- is pinned in
     :data:`SECRET_SCAN_PROSE_SURFACES`, and that pin holds **spelling**: it would
     stay green word for word against a build that had started reading the policy
     on the ingest path.
@@ -2340,8 +2354,9 @@ def test_the_secret_scan_policy_is_read_at_the_recorded_call_sites_only() -> Non
     This is the fact side, and it holds **exactly two symbols and no more**:
     ``read_secret_scan_policy`` here, and ``scan_text`` in
     :func:`test_the_secret_scanner_runs_at_the_recorded_call_sites_only`. Each is
-    asserted against a recorded map of module to call count -- two sites each
-    since #329 shipped the index-build control, where it was one when only the
+    asserted against a recorded map of module to call count -- three modules each
+    since ADR-0030 slice 2 shipped the ingestion gate, two since #329 shipped the
+    index-build control, and one when only the
     accept path scanned. Round two's R2-C is why the second exists: this test
     alone pinned the *reader* and read as though it pinned the control, so a scan
     added on the ingest path that never consults the policy left it green.
@@ -2373,15 +2388,18 @@ def test_the_secret_scan_policy_is_read_at_the_recorded_call_sites_only() -> Non
         f"`{SECRET_SCAN_POLICY_READER}` is called {calls}, and the "
         f"recorded call sites are {SECRET_SCAN_POLICY_CALL_SITES}.\n\n"
         "A NEW call site: SEC-11's scan now runs somewhere besides `theurian "
-        "propose accept` and `theurian index build`, so "
-        "`plugins/claude-code/commands/ingest.md`'s \"it covers the approval gate "
-        'and the index build -- `theurian ingest` runs no scan of its own", the '
-        "identical clause in the schema's `security.secretScan` description, "
-        "SECURITY.md and the threat model's T-15 controls are all narrower than "
+        "propose accept`, `theurian index build` and `theurian review ingest`, so "
+        "`plugins/claude-code/commands/ingest.md`'s \"it covers the approval gate, "
+        "the index build and review ingestion -- `theurian ingest` runs no scan of "
+        'its own", the '
+        "identical clause in the schema's `security.secretScan` description, and "
+        "the threat model's T-15 controls are all narrower than "
         "the product. Correct them in the same change, then record the site "
-        "here.\n\n"
+        "here. SECURITY.md is the one to check rather than assume: its sentence "
+        "is scoped to what the *canonical store* holds, so a fourth control that "
+        "does not write there leaves it true.\n\n"
         "A MISSING call site: a control is gone while the schema still "
-        'publishes `default: "block"` and four documents still describe two '
+        'publishes `default: "block"` and those documents still describe three '
         "shipped points. Do not simply drop the entry."
     )
 

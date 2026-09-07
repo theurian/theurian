@@ -2024,7 +2024,8 @@ holds the ordering through the real CLI and
 the rest rests on.
 
 **The three SEC-11 controls sit at two opposite postures, and the posture is the
-answer to who is standing there and to what is already readable.** At accept time a human operator is present to
+answer to who is standing there and to what is already readable.** At accept
+time a human operator is present to
 act on a refusal — the proposal survives, the author corrects it — so refusing is
 the correct action and `block` is the default. At build time nobody is there, and
 the content is already readable through `knowledge.search` and `knowledge.get`,

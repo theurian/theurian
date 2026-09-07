@@ -33,6 +33,113 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   envelope carrying a remedy, with the child's stderr contained inside it.
   `theurian review ingest` is what reaches this code; **no MCP tool does**, so
   `system.capabilities` still reports `reviewIngestion: false`.
+- **`theurian review ingest OWNER/REPO`, the command that reaches it** (ADR-0030
+  decisions 3 and 4, part of
+  [#479](https://github.com/theurian/theurian/issues/479)). A new `review` Typer
+  group beside `findings`; `theurian ingest` — local sources, stores no content —
+  is untouched and unrelated. One run lists a repository's pull requests, fetches
+  each one's threads and top-level reviews, screens every record and writes what
+  the gate cleared. `--limit` bounds how many pull requests are read (default one
+  adapter page, capped at `MAX_PULL_REQUESTS`), `--since` stops at a
+  pull-request number, `--json` emits the run as a document. It exits 0 on a
+  clean run, **1 when any record was withheld or any pull request could not be
+  read**, and 4 when a path under `.theurian/` could not be proved to stay inside
+  the working tree.
+
+  **It is an operator surface and reports identities, not content.** A
+  repository, a pull-request number, a provider node id, a field name and a
+  refusal grade reach stdout; no title, body, comment text or participant name
+  does, and a secret-scan finding carries only the four-character redacted
+  prefix `SecretFinding` bounds it to. Serving review evidence is slice 3, with
+  its own disclosure round.
+
+  **Failure containment is matched to scope, because the question is whether the
+  set of records being iterated can still be trusted.** A repository-scope
+  failure — the allowlist, a repository that resolves private, a rename
+  redirect, a transport override, a `gh` that is missing, too old or
+  unauthenticated, the pull-request listing's own
+  page cap — halts the run: nothing is fetched afterwards and nothing is
+  written, because the set itself could not be established. A record-scope
+  failure withholds **that pull request's records whole**, reports it by
+  identity with its grade, and lets the run continue; the run then does not read
+  as clean. The split is by call site and never by grade — both scopes can raise
+  `LIMIT_EXCEEDED`, and reading the grade would halt on an over-long thread and
+  skip a repository the project may not contact.
+
+  **No advance marker, and that is a decision rather than an omission.** Nothing
+  on disk records a pull request as seen, so a skipped record is re-attempted by
+  the next run whose window covers it. A marker invented now would have to decide
+  whether a *skipped* record counts as seen, and answering yes would turn a skip
+  into permanent data loss; slice 3's store derives the marker from the evidence
+  files' own last-seen-run stamps.
+- **Review evidence lands as durable files under `.theurian/review/`** (ADR-0030
+  decision 3, part of [#479](https://github.com/theurian/theurian/issues/479)).
+  Structured JSON, one record per file, stamped with `formatVersion` 1 and
+  refused when read back at any other value — slice 3 builds the SQLite serving
+  store from these files, so the number is the contract between the two halves.
+  The grain is the pull-request event, the top-level review submission and the
+  review thread, one file each: a record is what the scan gate refuses whole, so
+  one file per pull request would discard a whole pull request's threads over a
+  single flagged comment.
+
+  **These files are the source, not a cache, and the difference is somebody's
+  data.** Upstream comments are editable and deletable, so a discarded local copy
+  of a deleted comment is data loss that no refetch recovers. Nothing here
+  deletes: a refetch updates what upstream still returns and leaves a vanished
+  record's file in place with the stamp saying which run last saw it.
+  `theurian init` therefore does **not** write `.theurian/review/` into the
+  managed `.gitignore` block, and whether a project commits its review evidence
+  is the project's decision — the command's help says both, because the operator
+  who reads only `--help` is the one who would otherwise delete it to "clear the
+  cache".
+
+  **No path is built from the configured `owner/repo`.** The published pattern
+  for `providers.review.repositories` accepts `../..`, so joining a configured
+  string into a filesystem path escapes the directory while satisfying the
+  contract. A repository becomes a hashed directory name; a record becomes a leaf
+  named after its provider id when that id is a name a filesystem should carry,
+  and after its `sha256-` hash otherwise. The two name sets are disjoint *by
+  construction* rather than by improbability — an id that already starts with the
+  hashed prefix is sent down the hashing arm — so no id can be made to name
+  another id's file, and every write and every read resolves through
+  `security/paths.py`'s containment on top of that.
+- **`security.secretScan` gains a third point: at ingestion, per record, before
+  the record becomes a file** (ADR-0030 decision 4, SEC-11, part of
+  [#479](https://github.com/theurian/theurian/issues/479)). `block` — the
+  default — withholds the flagged record whole so it is never written, not even
+  partially; `warn` lands it and reports every finding; `off` scans nothing. The
+  refusal is per record, so a flagged record in one pull request does not stop
+  another pull request landing, and the run exits non-zero.
+
+  **This takes `propose accept`'s posture rather than `index build`'s, for the
+  accept-time reason and not by analogy.** The build reports rather than refuses
+  because its content is already readable through `knowledge.search` and
+  `knowledge.get`, so refusing would deny ranking without un-disclosing anything.
+  That premise is false here: ingestion runs before the content exists anywhere
+  in Theurian, so refusing genuinely un-discloses.
+
+  **Redaction runs first and the scan then reads the landing candidate** — the
+  bytes that would be written, not the bytes that arrived. Two consequences,
+  both deliberate: a secret sitting *only* in a display name the redaction
+  removes does not refuse the record, because after redaction it is not in the
+  candidate at all; and the placeholder that replaced the name is scanned like
+  any other field rather than trusted.
+
+  **The report names the record; it never reproduces the match** — repository,
+  pull
+  request number, record id and, for a finding inside a comment, that comment's
+  id. Every finding's *location* is a fixed literal of the gate's own, never a
+  value that was scanned, which is the treatment a body whose own path was the
+  credential forced on `propose accept` ([#360](https://github.com/theurian/theurian/issues/360)).
+  What travels with it is the family name and the four-character redacted prefix
+  `SecretFinding` bounds on the type, so raising that bound is one edit in one
+  place. The finding budget is per record rather than per run, because a budget
+  shared across records would decide record N's fate with what records 1 to N−1
+  spent.
+
+  **A label is data and governs nothing** (ADR-0019, discharged rather than
+  cited): labels, the head branch name and the milestone are read as content to
+  scan and by nothing that decides anything.
 - **`providers.review.redactParticipantNames`, R-12's ingestion-time redaction
   switch** (ADR-0030 decision 3, part of
   [#479](https://github.com/theurian/theurian/issues/479)). A boolean, default
